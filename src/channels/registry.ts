@@ -19,6 +19,7 @@ export function registerChannel(channel: Channel): void {
 export function parseChannelKind(chatId: string): ChannelKind {
   if (chatId.startsWith('web:')) return 'web';
   if (chatId.startsWith('tg:')) return 'telegram';
+  if (chatId.startsWith('eng:')) return 'bridge'; // engine-fronted chat: eng:<platform>:<chat_id>
   return 'linq';
 }
 

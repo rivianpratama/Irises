@@ -35,8 +35,12 @@ making it. Walk the user through these stages, running the script for the mechan
      and `DATA_BACKEND=memory` (no database needed),
    - offers to reuse the Anthropic/OpenRouter key hermes already uses for Irises's own small voice
      models (never overwrites values the user set themselves),
+   - offers OPTIONAL bridge mode (front chosen hermes channels — WhatsApp, Discord, any of them —
+     with Irises, via a plugin installed through hermes's own plugin system; opt-in per chat via
+     `IRISES_FRONT` patterns, off by default — see `docs/ENGINES.md` § Bridge mode),
    - offers the OPTIONAL Telegram bot-token handoff (moves the bot from hermes to Irises so the
-     user keeps texting the same bot; reversible with `--revert`),
+     user keeps texting the same bot; reversible with `--revert`) — the plugin-free alternative
+     for Telegram only; skip it if bridge mode already fronts the bot,
    - installs dependencies, builds, starts Irises, and runs a health + engine round-trip check.
 4. Tell the user where to talk to Irises: the web chat URL the script prints, `npm run chat` in the
    clone for a terminal session, or their same Telegram bot if they did the handoff.

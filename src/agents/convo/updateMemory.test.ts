@@ -55,6 +55,7 @@ function stubEngine(): { engine: EngineBackend; remembered: Array<{ chatId: stri
     async cancelReminder() { return false; },
     async remember(chatId, handle, note) { remembered.push({ chatId, handle, note }); },
     async probe() { return { ok: true }; },
+    async channelSend() { /* noop */ },
   };
   return { engine, remembered };
 }

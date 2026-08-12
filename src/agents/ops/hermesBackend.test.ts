@@ -143,3 +143,29 @@ test('probe: ok on 200, degraded detail on non-200 and on refused', async () => 
   assert.equal(down.ok, false);
   assert.match(down.detail!, /not reachable/);
 });
+
+// ── bridge outbound (channelSend → the irises-bridge plugin's loopback listener) ──────────────
+
+test('channelSend: POSTs platform/chat/text (+thread/reply) to the bridge listener with the token', async (t) => {
+  process.env.ENGINE_PUSH_TOKEN = 'brtok';
+  t.after(() => { delete process.env.ENGINE_PUSH_TOKEN; });
+  const captured: Captured[] = [];
+  const be = new HermesBackend({ fetchFn: fakeFetch(200, { ok: true }, captured) });
+  await be.channelSend('whatsapp', '+1555', 'hello there', { threadId: '7', replyToId: 'm9' });
+  assert.equal(captured.length, 1);
+  assert.match(captured[0].url, /^http:\/\/127\.0\.0\.1:8655\/send$/);
+  assert.equal((captured[0].init.headers as Record<string, string>)['x-bridge-token'], 'brtok');
+  assert.deepEqual(JSON.parse(String(captured[0].init.body)), {
+    platform: 'whatsapp', chat_id: '+1555', text: 'hello there', thread_id: '7', reply_to_id: 'm9',
+  });
+});
+
+test('channelSend: non-OK → EngineRunError; refused → EngineUnavailableError with install hint', async () => {
+  const be502 = new HermesBackend({ fetchFn: fakeFetch(502, { error: 'platform not connected' }) });
+  await assert.rejects(be502.channelSend('signal', '+1', 'x'), (e: Error) =>
+    e instanceof EngineRunError && /bridge send failed: 502/.test(e.message));
+
+  const beDown = new HermesBackend({ fetchFn: (async () => { throw new TypeError('refused'); }) as typeof fetch });
+  await assert.rejects(beDown.channelSend('signal', '+1', 'x'), (e: Error) =>
+    e instanceof EngineUnavailableError && /irises-bridge plugin/.test(e.message));
+});

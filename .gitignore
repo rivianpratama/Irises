@@ -21,6 +21,10 @@ linqV3api.yaml
 # Local email-index extraction cache (regenerable)
 scripts/.index-cache.json
 
+# --- bridge plugins (python) ---
+__pycache__/
+*.pyc
+
 # --- web (Next.js debug client under web/) ---
 web/.next/
 web/out/

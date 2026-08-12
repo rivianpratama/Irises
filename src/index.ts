@@ -17,6 +17,8 @@ import * as convoClient from './agents/convo/client.js';
 import { getUserProfile, addMessage } from './state/conversation.js';
 import { runOpsAndFollowUp } from './agents/orchestrator.js';
 import { createEnginePushRouter } from './webhook/enginePush.js';
+import { bridgeChannel } from './channels/bridge/channel.js';
+import { createBridgeInboundRouter } from './channels/bridge/inboundRouter.js';
 import { voiceOutcome } from './agents/fallfirm/client.js';
 import { ensureChatId } from './db/repositories/memory.js';
 import { markOpsStart } from './state/opsCoordination.js';
@@ -884,6 +886,14 @@ if (process.env.WEB_ENABLED !== 'false') {
   app.use(createWebRouter({ enqueueInbound, agentClient: convoClient as unknown as AgentClient }));
 }
 registerTelegram(app, { enqueueInbound, agentClient: convoClient as unknown as AgentClient });
+// Bridge mode: engine-fronted chats (eng:<platform>:<chat>) — the engine's irises-bridge plugin
+// forwards fronted inbound turns to /api/bridge/inbound (having suppressed the engine's own reply)
+// and Irises answers back out through the engine's channel connections (EngineBackend.channelSend).
+// Registered whenever an engine is configured; inert until a plugin actually posts.
+if (process.env.OPS_BACKEND) {
+  registerChannel(bridgeChannel);
+  app.use(createBridgeInboundRouter({ enqueueInbound, agentClient: convoClient as unknown as AgentClient }));
+}
 
 // Primary webhook — Irises's front line is Convo (text-only); it adaptively delegates to Ops
 // (research) or MM (reads any non-text file the user texted). The cast bridges the concrete client

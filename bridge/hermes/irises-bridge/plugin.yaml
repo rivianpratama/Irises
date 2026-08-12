@@ -1,0 +1,13 @@
+name: irises-bridge
+version: 1.0.0
+description: >
+  Front hermes channels with Irises. Forwards inbound messages from fronted chats to a local
+  Irises instance (which answers in its own voice through this hermes's channel connections)
+  and suppresses hermes's own reply for those chats. Fronting is opt-in per chat/platform via
+  IRISES_FRONT patterns; everything else flows to hermes untouched.
+author: Irises
+license: MIT
+requires_env:
+  - IRISES_BRIDGE_TOKEN
+provides_hooks:
+  - pre_gateway_dispatch

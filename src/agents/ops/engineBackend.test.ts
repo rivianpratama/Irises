@@ -25,6 +25,7 @@ function stub(run: EngineBackend['runTask']): EngineBackend {
     async cancelReminder() { return false; },
     async remember() { /* noop */ },
     async probe() { return { ok: true }; },
+    async channelSend() { /* noop */ },
   };
 }
 

@@ -100,10 +100,12 @@ Supabase Postgres with an in-memory dev fallback (`DATA_BACKEND=memory`).
 
 ## 🔩 Already running hermes-agent or OpenClaw?
 
-Irises is built to sit **in front of the engine you already have** — your hermes or OpenClaw does
-all the deep work (research, email, files, reminders, memory), completely unmodified, while Irises
-is the warm texting persona your people actually talk to. One command wires it up, including an
-optional handoff of your existing Telegram bot (same bot, new brain):
+Irises is built to sit **in front of the engine you already have** — and it can appear on **every
+channel your engine already speaks** (WhatsApp, Signal, Discord, Slack, LINE, …). Your hermes or
+OpenClaw does all the deep work (research, email, files, reminders, memory) and keeps owning every
+bot and number, completely unmodified: a tiny bridge plugin — installed through the engine's own
+plugin system — hands chosen chats to Irises's voice and leaves the rest alone. One command wires
+it up (bridge mode is opt-in per chat; a plugin-free Telegram bot handoff remains the alternative):
 
 ```bash
 # hermes users — let your own agent set it up:

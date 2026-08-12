@@ -1,0 +1,9 @@
+{
+  "name": "irises-bridge",
+  "version": "1.0.0",
+  "description": "Front OpenClaw channels with Irises (bridge plugin — ships in the Irises repo).",
+  "type": "module",
+  "openclaw": {
+    "extensions": ["./index.ts"]
+  }
+}

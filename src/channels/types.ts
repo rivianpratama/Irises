@@ -11,7 +11,7 @@ import type { MessageEffect, ReplyTo } from '../webhook/types.js';
 
 export type { MediaAttachment, Reaction, ChatInfo, FetchedMessage };
 
-export type ChannelKind = 'linq' | 'web' | 'telegram';
+export type ChannelKind = 'linq' | 'web' | 'telegram' | 'bridge';
 
 // What a given transport can do. Optional Channel methods are called only when the matching cap is
 // true, so a channel that can't (say) render iMessage effects or do group ops simply advertises false

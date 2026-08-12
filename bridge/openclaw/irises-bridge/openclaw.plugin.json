@@ -1,0 +1,15 @@
+{
+  "id": "irises-bridge",
+  "name": "Irises Bridge",
+  "description": "Front OpenClaw channels with Irises: forwards inbound messages from fronted chats to a local Irises instance (which answers in its own voice through this OpenClaw's channel connections) and suppresses OpenClaw's own reply for those chats. Fronting is opt-in via IRISES_FRONT patterns.",
+  "version": "1.0.0",
+  "activation": {
+    "onStartup": true,
+    "onCapabilities": ["hook"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

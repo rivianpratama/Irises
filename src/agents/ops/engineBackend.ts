@@ -60,6 +60,11 @@ export interface EngineBackend {
   /** Forward a durable fact to the engine's own memory (scoped to this chat's engine session). */
   remember(chatId: string, agentHandle: string, note: string): Promise<void>;
   probe(): Promise<ProbeResult>;
+  /** Bridge mode: deliver a message THROUGH one of the engine's own channel connections
+   *  (the engine keeps owning the bot/number; Irises fronts it — see docs/ENGINES.md).
+   *  `platform` is the engine's channel name (telegram/whatsapp/discord/…), `chatId` the raw
+   *  platform chat id. Throws EngineUnavailableError/EngineRunError like runTask. */
+  channelSend(platform: string, chatId: string, text: string, opts?: { threadId?: string; replyToId?: string }): Promise<void>;
 }
 
 // ── dispatch ──────────────────────────────────────────────────────────────────

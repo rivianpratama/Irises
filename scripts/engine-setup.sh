@@ -92,10 +92,69 @@ telegram_revert() {
   set_env TELEGRAM_ENABLED "false"
   warn "now re-enable the telegram channel in your engine's config and restart its gateway;"
   warn "the bot token is still in your engine's config (this script never removed it)."
+  echo ""
+  say "bridge mode (if you enabled it): to stop fronting instantly, blank IRISES_FRONT in the"
+  say "engine's environment and restart its gateway. To remove the plugin entirely:"
+  if [ "$ENGINE" = "hermes" ]; then
+    say "  hermes:   remove 'irises-bridge' from plugins.enabled in $HERMES_CONFIG"
+    say "            (or: hermes plugins disable irises-bridge), delete ~/.hermes/plugins/irises-bridge,"
+    say "            then: hermes gateway restart"
+  else
+    say "  openclaw: openclaw plugins disable irises-bridge   (uninstall: openclaw plugins uninstall irises-bridge)"
+    say "            then restart the OpenClaw gateway"
+  fi
   exit 0
 }
 
 [ "$REVERT" = "1" ] && telegram_revert
+
+# ══ Bridge mode (front the engine's channels with Irises) ════════════════════
+# The plugins ship in this repo (bridge/hermes, bridge/openclaw) and install via each engine's
+# OFFICIAL plugin mechanism — engine code stays byte-for-byte untouched. Fronting is opt-in per
+# chat/platform via IRISES_FRONT patterns; with it unset the plugin is inert and the engine
+# answers everything itself, exactly as before.
+
+bridge_offer_hermes() {
+  printf '\033[33m[irises-setup]\033[0m front hermes channels (WhatsApp, Discord, Slack, …) with Irises? — bridge mode [y/N] '
+  read -r yn; [ "$yn" = "y" ] || [ "$yn" = "Y" ] || { say "skipping bridge mode (add later: docs/ENGINES.md § Bridge mode)"; return 0; }
+  local pdir="${HERMES_HOME:-$HOME/.hermes}/plugins"
+  local henv="${HERMES_HOME:-$HOME/.hermes}/.env"
+  say "installing the irises-bridge plugin: copying bridge/hermes/irises-bridge -> $pdir/"
+  mkdir -p "$pdir"
+  cp -R "$ROOT/bridge/hermes/irises-bridge" "$pdir/"
+  local ptoken; ptoken="$(get_env ENGINE_PUSH_TOKEN "$ENV_FILE")"
+  if ! grep -qE '^IRISES_BRIDGE_TOKEN=' "$henv" 2>/dev/null; then
+    say "appending IRISES_BRIDGE_TOKEN to $henv (same secret as Irises's ENGINE_PUSH_TOKEN)"
+    { echo ""; echo "# — added by Irises setup ($(date +%F)) — bridge mode —"; echo "IRISES_BRIDGE_TOKEN=$ptoken"; } >> "$henv"
+  fi
+  warn "manual steps (hermes config is yours — this script never edits config.yaml):"
+  warn "  1. enable the plugin:  hermes plugins enable irises-bridge"
+  warn "     (equivalent config.yaml form:  plugins:  /  enabled: [irises-bridge])"
+  warn "  2. choose WHAT Irises fronts — append to $henv, e.g.:"
+  warn "       IRISES_FRONT=telegram:*,whatsapp:+1555*     # patterns over <platform>:<chat_id>"
+  warn "     unset/empty = front NOTHING (hermes behaves exactly as before)"
+  warn "  3. restart:  hermes gateway restart"
+  say "fail policy: if Irises is down, hermes answers fronted chats itself (set IRISES_BRIDGE_FAIL=closed for silence instead)"
+}
+
+bridge_offer_openclaw() {
+  printf '\033[33m[irises-setup]\033[0m front OpenClaw channels (WhatsApp, Discord, Slack, …) with Irises? — bridge mode [y/N] '
+  read -r yn; [ "$yn" = "y" ] || [ "$yn" = "Y" ] || { say "skipping bridge mode (add later: docs/ENGINES.md § Bridge mode)"; return 0; }
+  say "installing the irises-bridge plugin via OpenClaw's own installer"
+  if openclaw plugins install "$ROOT/bridge/openclaw/irises-bridge"; then
+    openclaw plugins enable irises-bridge || warn "could not enable via CLI — set plugins.entries.irises-bridge.enabled: true yourself"
+  else
+    warn "install failed — run it yourself:  openclaw plugins install $ROOT/bridge/openclaw/irises-bridge"
+    return 0
+  fi
+  warn "manual steps:"
+  warn "  1. give the OpenClaw GATEWAY process two environment variables:"
+  warn "       IRISES_BRIDGE_TOKEN=<the ENGINE_PUSH_TOKEN value from $ENV_FILE>"
+  warn "       IRISES_FRONT=whatsapp:*,telegram:123        # patterns over <channel>:<conversation>"
+  warn "     unset/empty IRISES_FRONT = front NOTHING (OpenClaw behaves exactly as before)"
+  warn "  2. restart the OpenClaw gateway"
+  say "fail policy: if Irises is down, OpenClaw answers fronted chats itself (set IRISES_BRIDGE_FAIL=closed for silence instead)"
+}
 
 # ══ hermes ═══════════════════════════════════════════════════════════════════
 setup_hermes() {
@@ -134,6 +193,7 @@ setup_hermes() {
     warn "(Irises's own voice models need it; the engine key only covers deep work)"
   fi
 
+  bridge_offer_hermes
   telegram_handoff_hermes
 }
 
@@ -160,6 +220,7 @@ setup_openclaw() {
   fi
   warn "note: reminders via Irises are hermes-only for now (OpenClaw cron wiring pending — docs/ENGINES.md)"
 
+  bridge_offer_openclaw
   telegram_handoff_openclaw
 }
 

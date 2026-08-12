@@ -92,7 +92,110 @@ thread, the brain behind it becomes Irises (which uses your engine for everythin
 - **`TELEGRAM_ALLOWED_CHAT_IDS` is required.** After the handoff your engine's pairing/allowlist
   no longer guards the bot; Irises refuses to start the channel without its own allowlist.
   (DM `@userinfobot` to find your chat id.) v1 is DMs-only; groups stay with the engine.
-- Every other engine channel (WhatsApp, Discord, Slack…) stays with the engine, untouched.
+- Every other engine channel (WhatsApp, Discord, Slack…) stays with the engine, untouched —
+  unless you use **bridge mode** (next section), which fronts any of them without moving anything.
+- Handoff vs bridge: the handoff is the plugin-free option and covers Telegram only. Bridge mode
+  is the recommended path for engine users — it covers every channel and the engine keeps owning
+  the bot. Don't do both for the same bot.
+
+## Bridge mode — Irises on EVERY engine channel
+
+The engine already speaks WhatsApp, Signal, Discord, Slack, LINE, email, … Bridge mode puts
+Irises's voice in front of any of those chats **without the engine giving anything up**: a tiny
+plugin (shipped in this repo, installed through the engine's own official plugin system — engine
+code stays byte-for-byte untouched) forwards each fronted inbound message to Irises and suppresses
+the engine's own reply; Irises answers back out **through the engine's connection**. New platforms
+the engine gains later are fronted the same way — the plugin is platform-agnostic.
+
+```
+ user on WhatsApp/Signal/Discord/LINE/… ──▶ ENGINE gateway (owns the connection)
+                                                │ inbound
+                                     [irises-bridge plugin]        ← ships in bridge/,
+                                       fronted chat?                 installed by
+                                        │yes          │no            engine-setup.sh
+                                        ▼             ▼
+                          forward to Irises      fall through →
+                          suppress engine reply  engine answers itself
+                                        │
+                  POST /api/bridge/inbound  (x-bridge-token = ENGINE_PUSH_TOKEN)
+                                        ▼
+                    Irises: Convo (instant voice) → engine seam (deep work)
+                                        ▼
+                    outbound, back through the engine:
+                      hermes  → POST :8655/send → gateway.adapters[platform].send()
+                      openclaw→ gateway WS `send` RPC (the client Irises already holds)
+                                        ▼
+                          engine delivers on the SAME channel → user
+```
+
+**Mechanisms** (both are documented, public plugin surfaces): hermes — the `pre_gateway_dispatch`
+hook (fires for every non-internal inbound message on every platform before auth/dispatch;
+returning `skip` suppresses the reply; exceptions fall through to normal dispatch). OpenClaw —
+the `before_dispatch` hook (global claiming hook consumed before model dispatch; `{handled: true}`
+completes the turn with no agent run; slash commands are explicitly passed through so `/status`
+etc. stay with the operator).
+
+### Choosing what Irises fronts
+
+Fronting is **opt-in per chat/platform** and lives in the ENGINE's environment (the plugin must
+decide instantly, without calling home):
+
+```
+IRISES_FRONT=telegram:*,whatsapp:+1555*,discord:12345
+```
+
+Comma-separated glob patterns matched (case-insensitively) against `<platform>:<chat_id>`
+(hermes) / `<channel>:<conversation>` (OpenClaw). **Unset or empty = front nothing** — the plugin
+is inert and the engine behaves exactly as before. Never pattern your operator/control chats
+unless you mean it: a fronted chat talks to Irises, not to the engine.
+
+### Failure policy
+
+**Fail-open by default**: if Irises is unreachable (down, deploying, network), the engine answers
+fronted chats itself — the user gets a reply in the engine's persona rather than silence. Set
+`IRISES_BRIDGE_FAIL=closed` in the engine's environment to prefer silence over a persona glitch.
+
+### Engine-side environment (set where the GATEWAY runs)
+
+| Key | Default | Meaning |
+|---|---|---|
+| `IRISES_FRONT` | *(empty — front nothing)* | comma-separated glob patterns choosing fronted chats |
+| `IRISES_BRIDGE_TOKEN` | — | shared secret; must equal Irises's `ENGINE_PUSH_TOKEN` |
+| `IRISES_URL` | `http://127.0.0.1:3000` | where the plugin POSTs inbound messages |
+| `IRISES_BRIDGE_FAIL` | `open` | `open` = engine answers on bridge failure; `closed` = silence |
+| `IRISES_BRIDGE_PORT` | `8655` | hermes only: loopback listener for Irises's outbound sends |
+
+On the Irises side, `HERMES_BRIDGE_URL` (default `http://127.0.0.1:8655`) points at that hermes
+loopback listener; OpenClaw needs nothing extra (outbound rides the existing gateway WS client).
+
+### Caveats you should actually read
+
+- **Engine admission filters run BEFORE the bridge hook.** hermes `require_mention` /
+  `allowed_chats` / `ignored_channels` and OpenClaw `dmPolicy` / `groupPolicy` / `requireMention`
+  drop messages before the plugin ever sees them. For "Irises sees every message in this chat",
+  widen those per-channel gates — and understand what that means: **`IRISES_FRONT` (plus Irises's
+  own behavior) becomes the gate** for those chats. Widen admission only for chats you front.
+- **hermes**: `HERMES_SAFE_MODE=1` disables all plugins — the bridge silently stops fronting
+  (fail-open: hermes answers). The skipped inbound is not written to hermes's own chat history.
+- **OpenClaw**: registering `before_dispatch` changes restart-recovery chat admission (the gateway
+  defers `before_agent_reply` until after its durable checkpoint — upstream-documented behavior).
+  Turns claimed by the bridge are recorded as `before_dispatch_handled`.
+- **Media on split hosts**: hermes forwards media as LOCAL cached paths — fine when Irises and the
+  engine share a box (the engine re-reads them during deep work); cross-host media is a v2 item.
+- **Plugin API stability**: hook names/payloads are public plugin surfaces but less contractual
+  than the OpenAI-compat API. Each plugin is ~150 lines pinned to the engine version in this repo;
+  if an upstream rename ever lands, it's a small fix — and Irises's own channels keep working
+  regardless.
+- **Loops**: the bridge only ever forwards *inbound* user messages; Irises's replies leave through
+  the engine's outbound path, which does not re-enter the inbound hooks.
+
+### Install / remove
+
+`bash scripts/engine-setup.sh --engine hermes|openclaw` offers bridge mode interactively (it
+copies the plugin via `~/.hermes/plugins/` or `openclaw plugins install`, wires the token, and
+prints every change). Remove: blank `IRISES_FRONT` (instant), or disable the plugin
+(`hermes plugins disable irises-bridge` / `openclaw plugins disable irises-bridge`) and restart
+the gateway; `--revert` prints the same steps.
 
 ## Where to talk to what
 
@@ -104,6 +207,7 @@ thread, the brain behind it becomes Irises (which uses your engine for everythin
 
  BROWSER   http://localhost:3000        → Irises web chat (DEBUG_TOKEN-gated)
  TELEGRAM  @YourBot (after handoff)     → Irises
+ ANY ENGINE CHANNEL matching IRISES_FRONT → Irises (bridge mode; engine keeps the connection)
 ```
 
 ## Proactive messages (reminders, watched email)
@@ -136,7 +240,8 @@ fires, the engine does any work needed and POSTs to Irises, which voices it to y
 | `OPENCLAW_URL` | openclaw | default `ws://127.0.0.1:18789` |
 | `OPENCLAW_TOKEN` | openclaw | `gateway.auth.token` from the OpenClaw config |
 | `OPENCLAW_AGENT_ID` | openclaw | default `main` |
-| `ENGINE_PUSH_TOKEN` | both | guards `POST /api/engine/push` (generated by setup) |
+| `ENGINE_PUSH_TOKEN` | both | guards `POST /api/engine/push` AND `POST /api/bridge/inbound` (generated by setup) |
+| `HERMES_BRIDGE_URL` | hermes | bridge mode outbound: the plugin's loopback listener (default `http://127.0.0.1:8655`) |
 | `ENGINE_TIMEOUT_MS` | both | per-engine-call budget (default: `OPS_TASK_TIMEOUT_MS` − 15s) |
 | `ENGINE_MAX_CONCURRENT` | both | engine-call semaphore (default 2) |
 | `TELEGRAM_ENABLED` / `TELEGRAM_BOT_TOKEN` | — | the bot identity (often handed off from the engine) |
@@ -171,3 +276,12 @@ fires, the engine does any work needed and POSTs to Irises, which voices it to y
   the job, and that `ENGINE_PUSH_TOKEN` in the job's environment matches Irises's `.env`.
 - *Deep answers time out* — engines can take minutes on hard tasks. Raise `OPS_TASK_TIMEOUT_MS`
   (and `ENGINE_TIMEOUT_MS` follows it) if your engine's typical runs exceed 4 minutes.
+- *Bridge mode: engine still answers a chat I fronted* — pattern mismatch (check the gateway log:
+  the hermes plugin logs its active patterns at registration) or the plugin isn't enabled
+  (`hermes plugins list` / `openclaw plugins list`), or `HERMES_SAFE_MODE=1` is set. Patterns match
+  the FULL `<platform>:<chat_id>` string, lowercase.
+- *Bridge mode: nobody answers a fronted chat* — Irises can't deliver back. hermes: is the loopback
+  listener up (plugin logs "outbound listener on 127.0.0.1:8655") and does `HERMES_BRIDGE_URL`
+  point at it? OpenClaw: is the gateway WS reachable with `OPENCLAW_TOKEN`? Also check that
+  `IRISES_BRIDGE_TOKEN` on the engine equals `ENGINE_PUSH_TOKEN` in Irises's `.env` — the inbound
+  door 403s on mismatch (`bridge:inbound` events appear in `/debug` traces when forwarding works).

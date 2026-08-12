@@ -191,4 +191,27 @@ export class HermesBackend implements EngineBackend {
       return { ok: false, detail: String((err as Error)?.message ?? err) };
     }
   }
+
+  /** Bridge outbound: deliver through hermes's own channel adapters via the irises-bridge plugin's
+   *  loopback listener (bridge/hermes/irises-bridge ships in this repo; it calls
+   *  gateway.adapters[platform].send in-process — uniform across every hermes platform). */
+  async channelSend(platform: string, chatId: string, text: string, opts: { threadId?: string; replyToId?: string } = {}): Promise<void> {
+    const bridgeUrl = (process.env.HERMES_BRIDGE_URL || 'http://127.0.0.1:8655').replace(/\/$/, '');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20_000);
+    try {
+      const res = await this.deps.fetchFn(`${bridgeUrl}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-bridge-token': process.env.ENGINE_PUSH_TOKEN || '' },
+        body: JSON.stringify({ platform, chat_id: chatId, text, thread_id: opts.threadId, reply_to_id: opts.replyToId }),
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new EngineRunError(`bridge send failed: ${res.status} ${(await res.text().catch(() => '')).slice(0, 200)}`, 'tool_errors', res.status);
+    } catch (err) {
+      if (err instanceof EngineRunError) throw err;
+      throw new EngineUnavailableError(`hermes bridge listener not reachable at ${bridgeUrl} — is the irises-bridge plugin installed and enabled? (${(err as Error)?.message ?? err})`, err);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 }
