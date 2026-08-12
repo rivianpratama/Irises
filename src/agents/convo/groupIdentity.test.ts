@@ -16,6 +16,24 @@ import { memoryHandle, groupHandle } from '../../memory/identity.js';
 import { getPreference } from '../../db/repositories/memory.js';
 import type { LlmResult, LlmToolCall } from '../../llm/types.js';
 
+// Minimal engine stub (repo DI convention): captures remember() and accepts reminders.
+import { resetEngineBackendCache, type EngineBackend } from '../ops/engineBackend.js';
+function installStubEngine(): Array<{ chatId: string; handle: string; note: string }> {
+  const remembered: Array<{ chatId: string; handle: string; note: string }> = [];
+  const engine: EngineBackend = {
+    name: 'hermes',
+    async runTask() { throw new Error('not under test'); },
+    async createReminder() { return { id: 'r1', title: 't', schedule: 's' }; },
+    async listReminders() { return []; },
+    async cancelReminder() { return false; },
+    async remember(chatId, handle, note) { remembered.push({ chatId, handle, note }); },
+    async probe() { return { ok: true }; },
+  };
+  resetEngineBackendCache(engine);
+  return remembered;
+}
+
+
 function makeResult(bubbles: string[], toolCalls: LlmToolCall[]): LlmResult {
   const envelope = {
     confidence_level: 85,
@@ -54,14 +72,20 @@ test('group set_preference lands on the GROUP identity, never the sender', async
   assert.equal(await getPreference(a.chatContext.senderHandle!, 'address_as'), undefined, "sender's personal prefs untouched");
 });
 
-test('group update_memory builds the ReflexionTask for the GROUP identity', async () => {
+test('group update_memory forwards to the engine under the GROUP identity', async () => {
   __resetOpsCoordination();
-  const a = args(true);
-  const res = makeResult(['noted'], [{ name: 'update_memory', input: { request: 'the group prefers evening updates', meta_prompt: null } }]);
-  const out = await processConvoResult({ ...a, res, textToSend: 'we all prefer evening updates' });
-
-  assert.equal(out.reflexionTask?.agentHandle, groupHandle(a.chatId), 'curation targets the group tiers');
-  assert.equal(out.reflexionTask?.chatId, a.chatId);
+  const remembered = installStubEngine();
+  try {
+    const a = args(true);
+    const res = makeResult(['noted'], [{ name: 'update_memory', input: { request: 'the group prefers evening updates', meta_prompt: null } }]);
+    await processConvoResult({ ...a, res, textToSend: 'we all prefer evening updates' });
+    await new Promise(r => setTimeout(r, 10)); // fire-and-forget beat
+    assert.equal(remembered.length, 1, 'the note reached the engine');
+    assert.equal(remembered[0].handle, groupHandle(a.chatId), 'curation targets the group identity');
+    assert.equal(remembered[0].chatId, a.chatId);
+  } finally {
+    resetEngineBackendCache(undefined);
+  }
 });
 
 test('group delegate_to_ops stays bound to the SENDER (per-person Gmail/inbox access)', async () => {

@@ -61,7 +61,7 @@ test('scenario: a question queued mid-delivery is flagged with the true order an
   // The reply-quote anchor agrees (gapped), same signal, same log.
   assert.equal(merged.earliestReceivedAt > 0 && countSendsSince(chatId, merged.earliestReceivedAt) > 0, true);
 
-  const prompt = buildSystemPrompt(ctx(arrivals), false, false, '', [], undefined, undefined, history, 'how', undefined);
+  const prompt = buildSystemPrompt(ctx(arrivals), '', [], undefined, undefined, history, 'how', undefined);
   assert.match(prompt, /## Timing note — their message is OLDER than your latest sends/);
   assert.match(prompt, /typed BEFORE the last 2 messages you sent/);
   assert.match(prompt, /do NOT answer it again/);
@@ -96,7 +96,7 @@ test('scenario control: the same question arriving AFTER everything delivered ge
   assert.deepEqual(arrivals, [{ receivedAt: 6000, sendsAfterArrival: 0 }]);
   assert.equal(countSendsSince(chatId, merged.earliestReceivedAt) > 0, false, 'not gapped');
 
-  const prompt = buildSystemPrompt(ctx(arrivals), false, false, '', [], undefined, undefined, history, 'how', undefined);
+  const prompt = buildSystemPrompt(ctx(arrivals), '', [], undefined, undefined, history, 'how', undefined);
   assert.ok(!prompt.includes('## Timing note'), 'no stale flag when nothing was sent past it');
   assert.match(prompt, /## What their new message is landing on/, 'the ordinary landing note still renders');
 });
@@ -113,7 +113,7 @@ test('scenario: burst where only the older message is stale → only it is named
   }));
   assert.deepEqual(arrivals.map(a => a.sendsAfterArrival), [2, 0]);
 
-  const prompt = buildSystemPrompt(ctx(arrivals), false, false, '', [], undefined, undefined, history, 'how\n\nalso send me the doc', undefined);
+  const prompt = buildSystemPrompt(ctx(arrivals), '', [], undefined, undefined, history, 'how\n\nalso send me the doc', undefined);
   // Scope assertions to the Timing-note section itself (the persona elsewhere legitimately mentions
   // [msg N] and the word BEFORE in unrelated rules).
   const sectionStart = prompt.indexOf('## Timing note');

@@ -21,6 +21,24 @@ import { emptyMedia } from '../../webhook/types.js';
 import { markOpsStart, __resetOpsCoordination } from '../../state/opsCoordination.js';
 import type { LlmResult, LlmToolCall } from '../../llm/types.js';
 
+// Minimal engine stub (repo DI convention): captures remember() and accepts reminders.
+import { resetEngineBackendCache, type EngineBackend } from '../ops/engineBackend.js';
+function installStubEngine(): Array<{ chatId: string; handle: string; note: string }> {
+  const remembered: Array<{ chatId: string; handle: string; note: string }> = [];
+  const engine: EngineBackend = {
+    name: 'hermes',
+    async runTask() { throw new Error('not under test'); },
+    async createReminder() { return { id: 'r1', title: 't', schedule: 's' }; },
+    async listReminders() { return []; },
+    async cancelReminder() { return false; },
+    async remember(chatId, handle, note) { remembered.push({ chatId, handle, note }); },
+    async probe() { return { ok: true }; },
+  };
+  resetEngineBackendCache(engine);
+  return remembered;
+}
+
+
 // Build an LlmResult the way callConvoLLM hands one to processConvoResult: `text` is the JSON bubble
 // envelope (parseReply bridges it to legacy `\n---\n` wire text) and `toolCalls` are the parsed calls.
 function makeResult(bubbles: string[], toolCalls: LlmToolCall[], confidence = 85): LlmResult {
@@ -177,7 +195,9 @@ test('in-flight duplicate: no new task, and the un-grounded claim is salvaged aw
   __resetOpsCoordination();
 });
 
-test('schedule + delegate: the reminder confirmation survives (salvage must not swallow it)', async () => {
+test('schedule + delegate: the reminder confirmation survives (salvage must not swallow it)', async (t) => {
+  installStubEngine();
+  t.after(() => resetEngineBackendCache(undefined));
   // A turn that BOTH schedules and delegates: the model writes the reminder confirmation AND a holding
   // line. Salvage must NOT nuke the model's text (which would leave the reminder silently set) — the
   // action-bearing guard skips salvage so the confirmation ("9am") ships.

@@ -1,8 +1,8 @@
-// Coverage for the update_memory (Convo → Reflexion) delegation path: the tool call becomes a
-// ReflexionTask on the SEPARATE reflexionTask result field (never the one-per-turn delegatedTask
-// slot), it coexists with a research delegation in the same reply, duplicates in one reply
-// collapse to the first, and the JSON envelope schema actually offers the tool. Runs end-to-end
-// against the in-memory DB backend (no Supabase creds, no LLM calls on this path).
+// Coverage for the update_memory (Convo → engine memory) forwarding path: the tool call forwards
+// the note to the configured engine's remember() (the engine owns the long-term user model now),
+// it never occupies the one-per-turn delegatedTask slot so it coexists with a research delegation
+// in the same reply, and the JSON envelope schema actually offers the tool. Runs end-to-end
+// against the in-memory DB backend with a stubbed EngineBackend (repo DI convention).
 
 process.env.DATA_BACKEND = 'memory';
 
@@ -12,7 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { processConvoResult, type ChatContext } from './shared.js';
 import { emptyMedia } from '../../webhook/types.js';
 import { __resetOpsCoordination } from '../../state/opsCoordination.js';
-import { isReflexionTask } from '../types.js';
+import { resetEngineBackendCache, type EngineBackend } from '../ops/engineBackend.js';
 import { buildEnvelopeSchema } from '../../pipeline/bubbleJson.js';
 import { UPDATE_MEMORY_TOOL, DELEGATE_TO_OPS_TOOL } from './tools.js';
 import type { LlmResult, LlmToolCall } from '../../llm/types.js';
@@ -44,43 +44,76 @@ const baseArgs = () => {
   return { chatId: randomUUID(), handle: chatContext.senderHandle!, chatContext, history: [], media: emptyMedia() };
 };
 
-test('update_memory builds a ReflexionTask on its own result field, not the delegation slot', async () => {
-  __resetOpsCoordination();
-  const a = baseArgs();
-  const res = makeResult(['got it, fixed my notes'], [updateMemory('they moved from KW to eXp', 'supersede the brokerage fact; they said "i left keller williams" verbatim')]);
-  const out = await processConvoResult({ ...a, res, textToSend: "actually i left keller williams, i'm at eXp now" });
+/** Stub engine capturing remember() calls — swapped in via resetEngineBackendCache (DI). */
+function stubEngine(): { engine: EngineBackend; remembered: Array<{ chatId: string; handle: string; note: string }> } {
+  const remembered: Array<{ chatId: string; handle: string; note: string }> = [];
+  const engine: EngineBackend = {
+    name: 'hermes',
+    async runTask() { throw new Error('not under test'); },
+    async createReminder() { throw new Error('not under test'); },
+    async listReminders() { return []; },
+    async cancelReminder() { return false; },
+    async remember(chatId, handle, note) { remembered.push({ chatId, handle, note }); },
+    async probe() { return { ok: true }; },
+  };
+  return { engine, remembered };
+}
 
-  assert.ok(out.reflexionTask, 'a reflexion task was built');
-  assert.ok(isReflexionTask(out.reflexionTask!), 'it narrows via isReflexionTask');
-  assert.equal(out.reflexionTask!.trigger, 'delegated');
-  assert.equal(out.reflexionTask!.agentHandle, a.handle);
-  assert.equal(out.reflexionTask!.chatId, a.chatId);
-  assert.equal(out.reflexionTask!.request, 'they moved from KW to eXp');
-  assert.match(out.reflexionTask!.focus!, /supersede the brokerage fact/);
-  assert.equal(out.delegatedTask, null, 'the one-per-turn delegation slot stays free');
-  assert.ok(out.text, "Convo's own reply is the whole conversation (no follow-up will come)");
+test('update_memory forwards the note to the engine, never the delegation slot', async () => {
+  __resetOpsCoordination();
+  const { engine, remembered } = stubEngine();
+  resetEngineBackendCache(engine);
+  try {
+    const a = baseArgs();
+    const res = makeResult(['got it, fixed my notes'], [updateMemory('they moved from KW to eXp')]);
+    const out = await processConvoResult({ ...a, res, textToSend: "actually i left keller williams, i'm at eXp now" });
+
+    // remember() is fire-and-forget — give the microtask a beat to land.
+    await new Promise(r => setTimeout(r, 10));
+    assert.equal(remembered.length, 1, 'the note reached the engine');
+    assert.equal(remembered[0].note, 'they moved from KW to eXp');
+    assert.equal(remembered[0].chatId, a.chatId);
+    assert.equal(remembered[0].handle, a.handle);
+    assert.equal(out.delegatedTask, null, 'the one-per-turn delegation slot stays free');
+    assert.ok(out.text, "Convo's own reply is the whole conversation (no follow-up will come)");
+  } finally {
+    resetEngineBackendCache(undefined);
+  }
 });
 
 test('update_memory coexists with a research delegation in the SAME reply', async () => {
   __resetOpsCoordination();
-  const a = baseArgs();
-  const res = makeResult(
-    ['updating that', 'and looking that up now'],
-    [updateMemory('job changed to Acme'), delegateOps('latest on the Acme merger')],
-  );
-  const out = await processConvoResult({ ...a, res, textToSend: "i'm at Acme now btw — what's the latest on the merger?" });
+  const { engine, remembered } = stubEngine();
+  resetEngineBackendCache(engine);
+  try {
+    const a = baseArgs();
+    const res = makeResult(
+      ['updating that', 'and looking that up now'],
+      [updateMemory('job changed to Acme'), delegateOps('latest on the Acme merger')],
+    );
+    const out = await processConvoResult({ ...a, res, textToSend: "i'm at Acme now btw — what's the latest on the merger?" });
 
-  assert.ok(out.reflexionTask, 'memory update ran');
-  assert.ok(out.delegatedTask, 'research delegation ran too');
-  assert.equal(out.delegatedTask!.kind, 'web_research');
+    await new Promise(r => setTimeout(r, 10));
+    assert.equal(remembered.length, 1, 'memory note forwarded');
+    assert.ok(out.delegatedTask, 'research delegation ran too');
+    assert.equal(out.delegatedTask!.kind, 'web_research');
+  } finally {
+    resetEngineBackendCache(undefined);
+  }
 });
 
-test('a duplicate update_memory in one reply is a no-op (first wins)', async () => {
+test('update_memory with no engine configured is a safe no-op (turn still replies)', async () => {
   __resetOpsCoordination();
-  const a = baseArgs();
-  const res = makeResult(['on it'], [updateMemory('first ask'), updateMemory('second ask')]);
-  const out = await processConvoResult({ ...a, res, textToSend: 'clean up my notes' });
-  assert.equal(out.reflexionTask!.request, 'first ask');
+  resetEngineBackendCache(null);
+  try {
+    const a = baseArgs();
+    const res = makeResult(['noted'], [updateMemory('a fact with nowhere to go')]);
+    const out = await processConvoResult({ ...a, res, textToSend: 'remember this' });
+    assert.ok(out.text, 'the reply still ships');
+    assert.equal(out.delegatedTask, null);
+  } finally {
+    resetEngineBackendCache(undefined);
+  }
 });
 
 test('the JSON envelope schema offers update_memory when the tool is in the set', () => {

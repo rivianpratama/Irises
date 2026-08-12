@@ -27,7 +27,6 @@
     "copy:context": "cpx \"src/agents/**/*.md\" dist/agents && cpx \"src/**/*.txt\" dist",
     "start": "node dist/index.js",
     "install:web": "npm --prefix web install",
-    "backfill:index": "tsx scripts/backfill-index.ts",
     "test": "cross-env TZ=UTC tsx --test \"src/**/*.test.ts\" \"scripts/**/*.test.ts\""
   },
   "dependencies": {

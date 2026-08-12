@@ -1,21 +1,17 @@
 import { callLLM } from '../../llm/callLLM.js';
 import { transcribeAudio } from '../../llm/transcribe.js';
 import {
-  REACTION_TOOL, EFFECT_TOOL, REMEMBER_USER_TOOL, DELEGATE_TO_OPS_TOOL, DELEGATE_TO_MM_TOOL,
-  REQUEST_GMAIL_ACCESS_TOOL, DISCONNECT_GMAIL_TOOL, RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL, SET_PREFERENCE_TOOL,
+  REACTION_TOOL, EFFECT_TOOL, REMEMBER_USER_TOOL, DELEGATE_TO_OPS_TOOL,
+  RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL, SET_PREFERENCE_TOOL,
   SCHEDULE_AUTOMATION_TOOL, LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL, CANCEL_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL,
   UPDATE_MEMORY_TOOL,
 } from './tools.js';
-import { reflexionEnabled } from '../reflexion/client.js';
-import { ensureReflexionDaily } from '../reflexion/seed.js';
-import { ensureJudgeDaily } from '../judge/seed.js';
 import { rememberMedia } from './mediaRecall.js';
 import { getPreference, ensureChatId, clearDossier } from '../../db/repositories/memory.js';
 import { memoryHandle, isGroupHandle } from '../../memory/identity.js';
 import { retractAllForHandle } from '../../db/repositories/memoryMedium.js';
 import { expireShortTermNow } from '../../db/repositories/memoryShort.js';
 import { getLongDoc, saveLongDoc } from '../../db/repositories/memoryLong.js';
-import { getGmailToken } from '../../db/repositories/tokens.js';
 import { buildContextBlock } from '../../memory/dossier.js';
 import { getActiveOps } from '../../state/opsCoordination.js';
 import { getConversation, addMessage, clearConversation, clearUserProfile } from '../../state/conversation.js';
@@ -37,7 +33,7 @@ export type {
 
 /**
  * The Convo model doesn't receive the file bytes itself, so a media turn gets a bracketed text note
- * telling it a file arrived and to open it via delegate_to_mm (its own eyes — see the Attachments
+ * telling it a file arrived and to open it via a delegated look (its own eyes — see the Attachments
  * section of Context.md). The note is framed as "open it to look", NEVER "you can't see it": Irises
  * must never tell the user she can't see/read a file. Audio is folded in as a transcript (the cheap
  * fast path) UNLESS transcription failed, in which case the note flags the voice memo for a listen.
@@ -49,9 +45,9 @@ function describeAttachments(media: IncomingMedia, opts: { transcriptionFailed: 
   if (media.images.length) bits.push(n(media.images.length, 'a photo', 'photos'));
   if (media.video.length) bits.push(n(media.video.length, 'a video', 'videos'));
   if (media.docs.length) bits.push(n(media.docs.length, 'a document', 'documents'));
-  if (opts.transcriptionFailed) bits.push('a voice memo (transcription not folded in yet — delegate_to_mm to listen)');
+  if (opts.transcriptionFailed) bits.push('a voice memo (transcription not folded in yet — delegate a look to listen)');
   if (!bits.length) return '';
-  return `[they attached ${bits.join(' + ')} — the contents aren't unpacked into this note. to see/read what's inside, open it with delegate_to_mm (media_scope "this_turn"); that IS you looking. never guess at what's inside before opening it, and NEVER tell them you can't see/open it.]`;
+  return `[they attached ${bits.join(' + ')} — the contents aren't unpacked into this note. to see/read what's inside, open it with delegate_to_ops (media_scope "this_turn"); that IS you looking. never guess at what's inside before opening it, and NEVER tell them you can't see/open it.]`;
 }
 
 export async function chat(
@@ -110,18 +106,14 @@ export async function chat(
     // 1:1 only: prefs.chat_id is a proactive SEND target (email flags, sweeper) and the daily
     // Reflexion row points its reads at this chat — a group turn must repoint neither, or the
     // member's private email surfacing lands in the room and their nightly curation reads it.
-    void ensureChatId(handle, chatId); // so the sweeper/poller can reach them
-    void ensureReflexionDaily(handle, chatId);
-    void ensureJudgeDaily(handle, chatId);
+    void ensureChatId(handle, chatId); // so engine-initiated pushes can reach them
   }
-  const [gmailConnected, gmailDeclined, contextBlock, agentTz] = handle
+  const [contextBlock, agentTz] = handle
     ? await Promise.all([
-        sender ? getGmailToken(sender).then(Boolean) : Promise.resolve(false),
-        getPreference<boolean>(handle, 'gmail_declined').then(v => v === true),
         buildContextBlock(handle),
         getPreference<string>(handle, 'agent_tz'),
       ])
-    : [false, false, '', undefined];
+    : ['', undefined];
 
   // Transcribe audio (in parallel) and fold into the text — the cheap fast path for voice memos, so
   // Convo answers them at text-model latency without a background MM read.
@@ -151,12 +143,11 @@ export async function chat(
   if (textToSend) await addMessage(chatId, 'user', textToSend, chatContext?.senderHandle);
 
   const tools: LlmToolDef[] = [
-    REACTION_TOOL, EFFECT_TOOL, REMEMBER_USER_TOOL, DELEGATE_TO_OPS_TOOL, DELEGATE_TO_MM_TOOL, REQUEST_GMAIL_ACCESS_TOOL, SET_PREFERENCE_TOOL,
+    REACTION_TOOL, EFFECT_TOOL, REMEMBER_USER_TOOL, DELEGATE_TO_OPS_TOOL, SET_PREFERENCE_TOOL,
     SCHEDULE_AUTOMATION_TOOL, LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL, CANCEL_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL,
+    UPDATE_MEMORY_TOOL,
   ];
-  if (reflexionEnabled()) tools.push(UPDATE_MEMORY_TOOL); // the kill switch also unregisters the delegate tool
   if (chatContext?.isGroupChat) tools.push(RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL);
-  if (gmailConnected) tools.push(DISCONNECT_GMAIL_TOOL);
 
   // Label the current turn with when it actually ARRIVED, not lock-acquisition time — a message that
   // queued behind the chat lock (while a follow-up delivered) would otherwise read as arriving after
@@ -175,7 +166,7 @@ export async function chat(
   try {
     const res = await callConvoLLM({
       role: 'convo',
-      system: buildSystemPrompt(chatContext, gmailConnected, gmailDeclined, contextBlock, activeOps, undefined, tools, history, textToSend, agentTz || undefined),
+      system: buildSystemPrompt(chatContext, contextBlock, activeOps, undefined, tools, history, textToSend, agentTz || undefined),
       // The persona is the stable HEAD of that system string; mark its length so the Anthropic lane
       // caches the persona across turns instead of cache-writing the whole per-turn-varying system.
       systemCachePrefixLen: convoPersonaChars(),

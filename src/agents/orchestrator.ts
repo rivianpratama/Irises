@@ -1,19 +1,14 @@
 import { callLLM } from '../llm/callLLM.js';
 import { loadContext } from './loadContext.js';
 import { runTask } from './ops/client.js';
-import { runMmTask, CANNOT_OPEN, CANNOT_PROCESS, cannotProcessSummary } from './mm/client.js';
 import { withDeadline, DeadlineError } from './deadline.js';
-import { createConsentLink } from '../oauth/google.js';
 import { setPreference } from '../db/repositories/memory.js';
 import { addShortTerm } from '../db/repositories/memoryShort.js';
 import { buildUserMemory } from '../memory/wrappers.js';
-import { markOpsDone, isOpsCancelled, noteOpsProgress, markOpsEscalated, markOpsRetry, getOpsEtaStatus } from '../state/opsCoordination.js';
-import { detectCause, decide, splitMiss, buildEscalationMetaPrompt, type TriageDecision } from './ops/triage.js';
-import { OPS_ESCALATION_ENABLED, OPS_ESCALATION_TIMEOUT_MS, PROVIDERS, MODELS } from '../llm/models.js';
+import { markOpsDone, isOpsCancelled, noteOpsProgress, markOpsRetry, getOpsEtaStatus } from '../state/opsCoordination.js';
+import { detectCause, decide, splitMiss, type TriageDecision } from './ops/triage.js';
 import { selectInterveningUserMessages } from './interveningMessages.js';
 import { getConversation } from '../state/conversation.js';
-import { createAutomation } from '../db/repositories/automations.js';
-import { isValidCron } from '../pipeline/cron.js';
 import { redactInternalTools, stripEchoedHolding } from './guardrails.js';
 import { parseReply } from '../pipeline/bubbleJson.js';
 import { stripReplyTag } from '../state/replyThreading.js';
@@ -28,51 +23,10 @@ import { peekPendingInbound, selectUnseenPending } from '../state/inboundGlance.
 import type { SpeakContent, SpeakOpts, SpeakResult } from '../state/mouth.js';
 import type { LlmMessage } from '../llm/types.js';
 import { reportError } from '../diagnostics/errorLog.js';
-import type { OpsTask, OpsResult, OpsDebrief, OpsDebriefSink, MmTask, MmResult } from './types.js';
-
-// Shape Ops may (optionally) surface in result.data to request proactive follow-ups.
-// The primary path is Ops' schedule_followup tool (writes directly); this is a
-// defensive, future-proof second path that stays a no-op until data.followups exists.
-interface FollowupSpec {
-  instruction: string;
-  fireAt?: string;
-  cron?: string;
-  needsOps?: boolean;
-  opsKind?: string;
-  timezone?: string;
-  title?: string;
-  dedupeKey?: string;
-}
-
-async function materializeFollowups(result: OpsResult, task: OpsTask): Promise<void> {
-  const raw = (result.data as { followups?: unknown } | undefined)?.followups;
-  if (!Array.isArray(raw)) return;
-  for (const f of raw as FollowupSpec[]) {
-    if (!f?.instruction) continue;
-    // Normalize: an empty-string cron is "no cron", not a cron job (avoids a
-    // schedule_kind='once' row carrying cron='' that fails the DB CHECK).
-    const cron = typeof f.cron === 'string' && f.cron.trim() ? f.cron.trim() : null;
-    const timezone = f.timezone ?? 'America/Chicago';
-    const common = {
-      agentHandle: task.agentHandle, chatId: task.chatId, source: 'ops' as const,
-      title: f.title ?? null, instruction: f.instruction,
-      needsOps: f.needsOps === true, opsKind: f.opsKind ?? null,
-      timezone, respectQuietHours: true, dedupeKey: f.dedupeKey ?? null,
-    };
-    try {
-      if (cron) {
-        if (!isValidCron(cron, timezone)) { console.error('[orchestrator] followup skipped: invalid cron', cron); continue; }
-        await createAutomation({ ...common, scheduleKind: 'cron', cron });
-      } else {
-        const ts = f.fireAt ? Date.parse(f.fireAt) : NaN;
-        if (Number.isNaN(ts) || ts <= Date.now()) { console.error('[orchestrator] followup skipped: missing/past fireAt'); continue; }
-        await createAutomation({ ...common, scheduleKind: 'once', nextRunAt: new Date(ts).toISOString() });
-      }
-    } catch (err) {
-      console.error('[orchestrator] failed to materialize followup', err);
-    }
-  }
-}
+import type { OpsTask, OpsResult, OpsDebrief, OpsDebriefSink } from './types.js';
+// Slim note: proactive follow-ups no longer materialize locally — the ENGINE owns scheduling
+// (its cron fires and delivers back through the /api/engine/push endpoint), so the old
+// data.followups → automations path is gone along with the automations table itself.
 
 // The mouth contract (state/mouth.ts, implemented by index.ts): `content` may be pre-voiced text or
 // a voicer thunk that runs only once it owns the per-chat lock — the freshness guarantee every
@@ -86,10 +40,6 @@ export type SendFollowUp = (chatId: string, content: SpeakContent, opts?: SpeakO
 // dedup stay truthful for the task's whole actual lifetime. On timeout the normal catch below
 // sends the honest snag line and `finally` clears the in-flight marker, so a re-ask runs fresh.
 const OPS_TASK_TIMEOUT_MS = Number(process.env.OPS_TASK_TIMEOUT_MS || 4 * 60_000);
-// Hard deadline on one MM media read (a single read+voice pass — MM has no research leg).
-// Independent knob from Ops so the media lane can be tuned separately. MM runs SILENTLY (no
-// progress pings), so this is the only backstop against a dangling holding line.
-const MM_TASK_TIMEOUT_MS = Number(process.env.MM_TASK_TIMEOUT_MS || 4 * 60_000);
 
 /** Combine the user-cancel signal with an internal one (a per-leg timeout abort) so aborting EITHER
  *  stops the run. Used so a timed-out primary Ops leg is actually torn down at its next step check —
@@ -121,62 +71,10 @@ type ComposeMoment = 'answer' | 'auth' | 'miss' | 'transient' | 'needs_info';
 // the composer an honest signal so it never gets told garbage is "a verified answer, relay it".)
 const OPS_NON_ANSWERS = new Set([
   'no result',
-  'could not read the photo',
-  'failed to analyze the photo',
-  // MM's honest "I literally couldn't load that file" sentinel (see mm/client.ts). Like the photo
-  // strings, an unopenable attachment is a genuine MISS (ask them to resend), not an infra snag.
-  'could not open the attachment',
-  // NOTE: 'ran into a problem completing that' (the runTask/runMmTask catch-all crash string) is
+  // NOTE: 'ran into a problem completing that' (the runTask catch-all crash string) is
   // deliberately NOT here — it always rides status:'error' and must classify as 'transient' (an
-  // infra snag), not a miss. The photo/attachment strings stay: an unreadable file is a genuine miss.
-  'i need access to your gmail to answer that',
+  // infra snag), not a miss.
 ]);
-
-/** Build the honest-resend Outcome from MM's CANNOT_OPEN summary, which may carry a reason suffix
- *  ("(the link expired)" / "(the file is too large to open)"). Pure + exported so the wording is
- *  unit-testable. Kind stays `nothing_found` — a file that didn't come through is a genuine miss
- *  (ask them to resend), not an infra snag. */
-export function cannotOpenOutcome(summary: string, originalRequest: string): Outcome {
-  const s = summary.toLowerCase();
-  const expired = s.includes('expired');
-  const oversize = s.includes('too large');
-  return {
-    kind: 'nothing_found',
-    summary: expired
-      ? 'the link to that file expired before it loaded — not their fault, iMessage attachments go stale fast'
-      : oversize
-        ? 'that file came in too large to load'
-        : "that file didn't come through in one piece",
-    // The honest fix is always a resend — a specific file glitched in transit, which is NOT Irises
-    // conceding she can't see files. Never steer to "just describe it to me" (that reads as an
-    // inability); a capable person just asks for the file again.
-    nextStep: oversize
-      ? 'ask them warmly to send a smaller version'
-      : 'ask them warmly to resend it',
-    originalRequest,
-  };
-}
-
-/** Build the honest incapability Outcome from MM's CANNOT_PROCESS summary. Kind is `failed` —
- *  the model couldn't handle the media type, not a miss. Never asks to resend: the file was fine. */
-export function cannotProcessOutcome(summary: string, originalRequest: string): Outcome {
-  return {
-    kind: 'failed',
-    summary: `you can't process that kind of file right now — a temporary problem on your end, not theirs`,
-    nextStep: "let them know you can't open that kind of file at the moment — they don't need to resend anything",
-    originalRequest,
-  };
-}
-
-/** Shared snag Outcome for MM infra failures (all lanes exhausted / timeout). Never asks to resend. */
-export function mmSnagOutcome(originalRequest: string): Outcome {
-  return {
-    kind: 'failed',
-    summary: 'you hit a snag opening that on your end (not their fault)',
-    nextStep: "tell them to give you a few minutes and you'll take another look — they don't need to resend anything",
-    originalRequest,
-  };
-}
 
 function classifyResult(result: OpsResult): ComposeMoment {
   if (result.status === 'needs_auth') return 'auth';
@@ -593,56 +491,9 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
         record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:retry-result', detail: { status: result.status, moment, ms: Date.now() - t0, nextAction: triage.action } });
       }
 
-      if (triage.action === 'escalate' && !isOpsCancelled(task.chatId, task.id)) {
-        const escProvider = PROVIDERS.ops_escalation;
-        const escModel = MODELS.ops_escalation[escProvider];
-        const metaPrompt = buildEscalationMetaPrompt(task, result, triage);
-        record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:escalate', detail: { cause: triage.cause, provider: escProvider, model: escModel, debriefChars: metaPrompt.length } });
-        // Keep the in-flight marker fresh through the (up to 4 more min) second leg so getActiveOps +
-        // dedupe stay truthful past STALE_MS. Also extends the ETA and flags escalated.
-        markOpsEscalated(task.chatId, task.id);
-
-        // Escalation pings: fresh gate that allows an immediate first ping (quietMs=0) so the honest
-        // "taking a harder look" beat lands right at the start; gapMs then throttles the rest. It
-        // rides runPingCycle, so if the second look finishes before the beat is voiced it's dropped.
-        const esc = makePings(0);
-        pingStops.push(() => esc.gate.stop());
-        void esc.voiceAndPing('deeper_look', 'deeper_look');
-        const escHeartbeat = setTimeout(() => { void esc.voiceAndPing('heartbeat', 'heartbeat'); }, PROGRESS_GAP_MS);
-        (escHeartbeat as { unref?: () => void }).unref?.();
-        pingStops.push(() => clearTimeout(escHeartbeat));
-
-        // Same task.id + same (user) signal → cancel, dedupe, trace continuity, markOpsDone all keep
-        // working; escalationOf flips the run to the ops_escalation model and is the never-escalate-again
-        // guard. Seed the second leg's grounding corpus with the first pass's tool outputs so a fact it
-        // reuses from the brief digest grounds without a redundant re-fetch (see runTask seedCorpus).
-        const escTask: OpsTask = { ...task, escalationOf: task.id, metaPrompt };
-        const priorCorpus = result.debrief?.corpus ?? [];
-        const t0 = Date.now();
-        // Same abandoned-leg discipline as the primary: on deadline, abort the in-flight request
-        // and wait (bounded) for the leg to settle — otherwise a timed-out escalation keeps
-        // running tools + max-effort LLM steps in the background while the reply composes.
-        const escAbort = new AbortController();
-        const escRun = runTask(escTask, milestoneKey => { noteOpsProgress(escTask.chatId, escTask.id, milestoneKey); void esc.voiceAndPing('progress', milestoneKey); }, combineSignals(signal, escAbort.signal), undefined, priorCorpus);
-        try {
-          result = await withDeadline(escRun, OPS_ESCALATION_TIMEOUT_MS, `ops escalation ${task.id}`);
-        } catch (err) {
-          // Second look died too (deadline or throw) — keep the FIRST result and its classification.
-          // Terminal: no leg remains, so the user gets the first pass's miss/snag beat.
-          console.warn('[orchestrator] escalation run failed; keeping first result', err);
-          reportError({
-            source: 'ops', category: 'retry_exhausted', severity: 'warn', err,
-            detail: { stage: 'ops_escalation', cause: triage.cause, model: escModel }, chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
-          });
-          if (err instanceof DeadlineError) {
-            escAbort.abort();
-            await Promise.race([escRun.catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
-          }
-        }
-        esc.gate.stop(); clearTimeout(escHeartbeat);
-        moment = classifyResult(result);
-        record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:escalate-result', detail: { status: result.status, moment, ms: Date.now() - t0 } });
-      }
+      // Slim: no escalation leg. The engine IS the strong model — canEscalate() is permanently
+      // false (triage.ts), so an 'escalate' verdict can no longer occur; the single retry above is
+      // the whole ladder, and whatever it returns is final.
     }
 
     // Info-hole → a TARGETED question (rides the two-strike marker). ask_user is only ever returned for
@@ -660,13 +511,13 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
       return;
     }
 
-    // Mint the consent link on the FINAL result (needs_auth can come from either leg — e.g. the
-    // escalation touched Gmail while the primary never did). Was previously done only on the primary
-    // result, which shipped a literal "undefined" as the link when the escalation returned needs_auth.
+    // Slim: needs_auth no longer mints a local Gmail consent link (that whole flow moved to the
+    // engine, which manages its own account access). If an engine ever reports needs_auth without
+    // a link, classifyResult already routes it to the auth beat with whatever authUrl it carried.
     if (result.status === 'needs_auth' && !result.authUrl) {
-      result.authUrl = await createConsentLink(task.agentHandle, task.chatId, {
-        kind: 'reply_in_chat', chatId: task.chatId, agentHandle: task.agentHandle, request: task.request,
-      });
+      // No local auth to offer — voice it as a transient snag rather than a dead-end auth prompt.
+      result = { ...result, status: 'error', summary: 'ran into a problem completing that' };
+      moment = classifyResult(result);
     }
 
     const attempt = task.attempt ?? 1;
@@ -725,7 +576,6 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
             request: task.request, kind: task.kind, summary, at: Date.now(),
           }).catch(err => console.error('[orchestrator] failed to persist recent_research', err)),
         ]);
-        void materializeFollowups(result, task).catch(err => console.error('[orchestrator] materializeFollowups failed', err));
       }
 
       const composeStart = Date.now();
@@ -791,163 +641,6 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
   }
 }
 
-/**
- * Fire-and-forget: run a delegated MM (media-read) task, then deliver MM's OWN reply. MM voices
- * Irises's bubbles itself (runMmTask returns a pre-voiced MmResult) — there is NO composer hop on
- * this lane; the one flash pass that read the file also wrote the texts. A slim sibling of
- * runOpsAndFollowUp — it reuses classifyResult and the Fallfirm/cancellation machinery. The
- * DELIBERATE differences from the Ops path, each load-bearing:
- *   • SILENT — no ProgressGate, no heartbeat, no "still on it" pings. A media read is a quick look;
- *     the holding beat was Convo's own minimal bubble at delegation time. This is the Ops-vs-MM
- *     progress split the whole revamp turns on, and it lives right here at the runner level.
- *   • DIRECT VOICE — on 'answer' the summary ships as-is (stripEchoedHolding + redactInternalTools
- *     are the only nets); the composer's intervening-message nod and wait-time beat are deliberately
- *     dropped (a read is seconds-fast, replyTo anchors the reply to the asking message).
- *   • No auth leg — MM has no research tools, so needs_auth can no longer occur here; a file
- *     question that needs their inbox dangles the research and the follow-up turn rides
- *     delegate_to_ops.
- *   • No triage / escalation — there is no second-model leg for a media read.
- *   • No pending_clarification two-strike — a media miss is "resend it", not a steer-and-refine loop.
- * Kept verbatim from the Ops path: the isOpsCancelled delivery-suppression guard, the
- * media_analysis/recent_research stash on a real answer (now storing MM's RICH private analysis,
- * not the voiced text), replyToMessageId threading, and the finally { markOpsDone }. Never rejects:
- * all errors are handled so the floating promise is safe.
- */
-export async function runMmAndFollowUp(task: MmTask, sendFollowUp: SendFollowUp, signal?: AbortSignal): Promise<void> {
-  let finalSent = false;
-  try {
-    record({
-      type: 'delegation', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
-      label: 'delegate:media_read',
-      detail: {
-        request: task.request, metaPrompt: task.metaPrompt, addressHint: task.addressHint, dealHint: task.dealHint,
-        // Counts only — never the raw CDN URLs.
-        media: { images: task.media.images.length, video: task.media.video.length, audio: task.media.audio.length, docs: task.media.docs.length },
-      },
-    });
-
-    let result: MmResult;
-    try {
-      result = await withDeadline(runMmTask(task, signal), MM_TASK_TIMEOUT_MS, `mm task ${task.id}`);
-    } catch (err) {
-      if (!(err instanceof DeadlineError)) throw err;
-      record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'mm:timeout', detail: { ms: MM_TASK_TIMEOUT_MS } });
-      // trace:false — the mm:timeout event above is this turn's ERROR event.
-      reportError({
-        source: 'mm', category: 'timeout', message: `mm task ${task.id} exceeded its ${MM_TASK_TIMEOUT_MS}ms deadline`,
-        detail: { timeoutMs: MM_TASK_TIMEOUT_MS }, chatId: task.chatId, handle: task.agentHandle, taskId: task.id, trace: false,
-      });
-      // A timeout is an infra snag, not a miss — cannotProcessSummary names the media kinds so the
-      // user knows WHAT timed out, and the no-resend beat is voiced (the file was fine).
-      result = { taskId: task.id, kind: 'media_read', status: 'error', summary: cannotProcessSummary(task) };
-    }
-
-    // User cancelled (cancel_research). Deliver NOTHING — Convo already confirmed the drop live, so a
-    // late follow-up would land as a contradiction. This guard, not the loop's abort check, is the
-    // load-bearing half.
-    if (isOpsCancelled(task.chatId, task.id)) {
-      record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:cancelled', detail: { request: task.request } });
-      return;
-    }
-
-    // A file MM literally couldn't open is a distinct beat from an Ops "which one did you mean?" miss:
-    // the ASK was clear, the FILE didn't come through. An MmTask is always attempt 1, so it can never
-    // reach the soft give-up wording either. Voice an honest resend request directly via Fallfirm.
-    // (Matches the exact sentinel runMmTask emits on every unopenable-file path.)
-    if ((result.summary ?? '').toLowerCase().includes(CANNOT_OPEN)) {
-      const cannotOpenDelivery = await sendFollowUp(
-        task.chatId,
-        () => voiceOutcome(cannotOpenOutcome(result.summary ?? '', task.request), task.chatId, task.agentHandle),
-        {
-          replyTo: task.replyToMessageId ? { message_id: task.replyToMessageId } : undefined,
-          dropIf: () => isOpsCancelled(task.chatId, task.id),
-        },
-      );
-      finalSent = cannotOpenDelivery === 'sent';
-      if (!finalSent) record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:cancelled', detail: { request: task.request, afterCompose: true } });
-      return;
-    }
-
-    // Model incapability (all lanes failed transiently, or media the provider can't ingest).
-    // NOT a file problem — never ask to resend. Voice an honest "can't process right now".
-    if ((result.summary ?? '').toLowerCase().includes(CANNOT_PROCESS)) {
-      const cannotProcessDelivery = await sendFollowUp(
-        task.chatId,
-        () => voiceOutcome(cannotProcessOutcome(result.summary ?? '', task.request), task.chatId, task.agentHandle),
-        {
-          replyTo: task.replyToMessageId ? { message_id: task.replyToMessageId } : undefined,
-          dropIf: () => isOpsCancelled(task.chatId, task.id),
-        },
-      );
-      finalSent = cannotProcessDelivery === 'sent';
-      if (!finalSent) record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:cancelled', detail: { request: task.request, afterCompose: true } });
-      return;
-    }
-
-    const moment = classifyResult(result);
-
-    // Same mouth-held delivery as the Ops path: the analysis stash commits and the reply goes out
-    // INSIDE the per-chat lock, so the late media reply can never jump a reply Convo sent while MM
-    // was reading the file. MM's summary is ALREADY Irises's bubbles — no composer hop.
-    const delivery = await sendFollowUp(task.chatId, async () => {
-      if (isOpsCancelled(task.chatId, task.id)) return null;
-
-      if (moment === 'answer') {
-        // Stash the RICH private analysis (never the voiced text) so Convo can field same-topic
-        // follow-ups and a later Ops run can research from the full read without re-opening the
-        // file. Durable 24h short-term row first (see the Ops path above for the invariant);
-        // legacy prefs stash follows as the soak-window dual-write. meta.voiced keeps a short
-        // record of what was actually said on screen (retell-never-replay debugging).
-        const analysis = redactInternalTools((result.analysis ?? '').trim() || result.summary);
-        await addShortTerm({
-          agentHandle: task.agentHandle, chatId: task.chatId, kind: 'media_analysis',
-          request: task.request, content: analysis,
-          meta: { taskKind: task.kind, voiced: result.summary.slice(0, 300) }, taskId: task.id,
-        }).catch(err => console.error('[orchestrator] failed to persist short-term media analysis', err));
-        await setPreference(task.agentHandle, 'recent_research', {
-          request: task.request, kind: task.kind, summary: analysis, at: Date.now(),
-        }).catch(err => console.error('[orchestrator] failed to persist recent_research (mm)', err));
-        record({
-          type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
-          label: 'mm:direct-voice',
-          detail: { bubbles: result.summary.split('\n---\n').length, analysisChars: analysis.length },
-        });
-        // Pre-voiced delivery: strip a re-typed holding line (the same fused-echo tripwire the
-        // composer ran) and the internal-name net, then MM's bubbles ship verbatim.
-        return stripEchoedHolding(redactInternalTools(result.summary), task.holdingText);
-      }
-
-      // 'miss' | 'transient' ('auth' is impossible — MM has no research leg): the run failed or
-      // produced nothing voiceable. Same honest-snag Outcome as the catch below — Fallfirm words
-      // it; a failure path never ships raw MM output. Never asks to resend (the file was fine).
-      return voiceOutcome(mmSnagOutcome(task.request), task.chatId, task.agentHandle);
-    }, {
-      replyTo: task.replyToMessageId ? { message_id: task.replyToMessageId } : undefined,
-      dropIf: () => isOpsCancelled(task.chatId, task.id),
-    });
-    if (delivery !== 'sent') {
-      record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:cancelled', detail: { request: task.request, afterCompose: true } });
-      return;
-    }
-    finalSent = true;
-  } catch (err) {
-    if (isOpsCancelled(task.chatId, task.id)) {
-      record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:cancelled', detail: { request: task.request, afterError: true } });
-      return;
-    }
-    if (finalSent) {
-      record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'mm:late-error-after-send', detail: { error: String((err as Error)?.message ?? err) } });
-      return;
-    }
-    console.error('[orchestrator] runMmAndFollowUp failed', err);
-    try {
-      await sendFollowUp(
-        task.chatId,
-        () => voiceOutcome(mmSnagOutcome(task.request), task.chatId, task.agentHandle),
-        { dropIf: () => isOpsCancelled(task.chatId, task.id) },
-      );
-    } catch { /* give up silently */ }
-  } finally {
-    markOpsDone(task.chatId, task.id);
-  }
-}
+// Slim: runMmAndFollowUp is gone. Media the user texts now rides the SAME delegation seam as
+// everything else — Convo delegates with task.media attached, the engine adapter maps the files
+// (inline image blocks / fetchable URLs), and the Composer re-voices the engine's read.

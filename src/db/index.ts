@@ -4,7 +4,6 @@ export { getSupabase, driver } from './client.js';
 
 export * from './repositories/conversations.js';
 export * from './repositories/profiles.js';
-export * from './repositories/automations.js';
 export * from './repositories/tokens.js';
 export * from './repositories/oauth.js';
 export * from './repositories/workflows.js';

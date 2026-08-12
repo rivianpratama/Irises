@@ -46,18 +46,18 @@ export const DELEGATE_TO_OPS_TOOL: LlmToolDef = {
     'Hand a task to the Ops engine (a deliberate, powerful model with web search) for deep work. Use whenever the answer needs current/external facts from the web, the user\'s own email + attachments, or several sources combined,',
     'OR when a request is substantive enough that careful reasoning would help (use kind "general" for anything multi-step, multi-source, or with no single obvious tool).',
     'You will NOT get the answer this turn, so you MUST also write a short, warm holding text now. The holding text is YOU digging in yourself — never mention ops, an engine, a model, a system, delegating, or handing anything off; to the user there is only you. Make it SPECIFIC to what you are about to look up and word it differently each time, like a person would, e.g. "looking that up now", "lemme check your inbox for that", "digging through that thread now", "reading that page now 🙌". Do NOT reuse the same canned phrase every time. An emoji here is optional and occasional, so most of these need none, and when one fits, vary it rather than always using 👍.',
-    'Do NOT use for quick math, terminology/definitions, onboarding, or casual chit-chat. Answer those yourself, like a person would. A NEW file on this message (photo, PDF, voice memo, video) ALWAYS goes to delegate_to_mm first — that is where you open and read it. But research that refers BACK to a file you already looked at ("yes, check that clause", "is that price fair?") comes HERE with media_scope "earlier": the deeper look can re-open the file itself and it already has your full read of it (Recent research).',
+    'Do NOT use for quick math, terminology/definitions, onboarding, or casual chit-chat. Answer those yourself, like a person would. A NEW file on this message (photo, PDF, voice memo, video) comes HERE with media_scope "this_turn" — the look opens and reads it. Research that refers BACK to a file from an earlier turn ("yes, check that clause", "is that price fair?") comes HERE with media_scope "earlier": the look re-opens the stashed file itself.',
   ].join(' '),
   inputSchema: {
     type: 'object',
     properties: {
       kind: {
         type: 'string',
-        enum: ['web_research', 'document_read', 'draft', 'general'],
-        description: "web_research=current or external facts from the web plus reasoning (look something up, read a page, check what's true now); document_read=read or search the user's OWN connected email and its attachments; draft=write a message or note for them to send; general=substantive multi-source or multi-step reasoning with no single obvious tool — Ops carries the full toolset and your meta_prompt drives it.",
+        enum: ['web_research', 'document_read', 'draft', 'general', 'media_read'],
+        description: "web_research=current or external facts from the web plus reasoning (look something up, read a page, check what's true now); document_read=read or search the user's OWN email and its attachments; draft=write a message or note for them to send; media_read=the ask is ABOUT a file they texted (what's in this photo/PDF/memo); general=substantive multi-source or multi-step reasoning with no single obvious tool — Ops carries the full toolset and your meta_prompt drives it.",
       },
       request: { type: 'string', description: "The user's underlying ask, distilled." },
-      media_scope: { type: 'string', enum: ['this_turn', 'earlier', 'none'], description: 'Which chat file(s) this research is grounded in: earlier = a file they sent BEFORE this turn that the research is about (the usual case — the follow-up after you read it); this_turn = the file(s) on this very message (rare; new files normally go to delegate_to_mm first); none = no file is involved (the default when this message carries none).' },
+      media_scope: { type: 'string', enum: ['this_turn', 'earlier', 'none'], description: 'Which chat file(s) this look is grounded in: this_turn = the file(s) on this very message (the normal case for a new file); earlier = a file they sent BEFORE this turn that the ask refers back to; none = no file is involved (the default when this message carries none).' },
       meta_prompt: {
         type: 'string',
         description: "Write a clear instruction to Ops, in your own words, as if briefing a sharp colleague: what the user actually needs, any relevant context you know about them, and what a great answer looks like. Name where the answer should come from — the web, the user's own inbox/attachments, or a mix — so Ops knows which source to trust. Be specific and human, not a template. REQUIRED in practice for kind 'general' — there the brief is the main steering Ops gets.",
@@ -67,63 +67,16 @@ export const DELEGATE_TO_OPS_TOOL: LlmToolDef = {
   },
 };
 
-export const DELEGATE_TO_MM_TOOL: LlmToolDef = {
-  name: 'delegate_to_mm',
-  description: [
-    'Open a file the user texted — photos, videos, voice memos, PDFs, documents — and actually see/read it. This is your OWN eyes and ears: opening a file IS you looking, never a handoff, never something you announce. ANY new file on a message comes here FIRST, always.',
-    'The file bytes are not in your context, so the bracketed [they attached …] note is all you have UNTIL you open it here. ANY question whose answer lives INSIDE a file goes to this tool — "what\'s in this?", "read the fine print", "what does the memo say", a document photo, a screenshot to pull numbers off. Never guess at contents you haven\'t opened, and NEVER tell the user you can\'t see/hear/open a file — to them you simply take a look.',
-    'You will NOT get the answer this turn: your reply with what you saw lands in the thread on its own a moment later — same you, one voice, continuing from your holding line. If the file points at outside facts (their inbox, the web, the market), that reply answers the file and leaves the deeper pull dangling; when the user says the word, NEXT turn is a delegate_to_ops with media_scope "earlier".',
-    'Your holding line for this is a tiny human beat in your OWN words — a "hmm", a "one sec, looking at that", "lemme open this" energy — ONE short bubble at most, sometimes none at all. Never the bigger "pulling the records" research line, never the same phrase twice, never an explanation that you\'re handing it off (to the user there is only you, taking a look).',
-    'Use media_scope "earlier" when they\'re pointing back at a file they sent BEFORE this turn ("that photo from before", "reread the doc i sent"); otherwise "this_turn" (the default).',
-  ].join(' '),
-  inputSchema: {
-    type: 'object',
-    properties: {
-      request: { type: 'string', description: 'What they want to know from the file, distilled.' },
-      meta_prompt: { type: 'string', description: 'Brief the reader like a sharp colleague: what to look for, the context you know, what a great answer looks like.' },
-      media_scope: { type: 'string', enum: ['this_turn', 'earlier'], description: 'this_turn = the file(s) on this message (default); earlier = a file they sent previously that this message refers back to.' },
-      address: { type: 'string', description: 'A place/address if relevant to the file.' },
-      deal_ref: { type: 'string', description: 'A short name/reference for what the file is about, if any.' },
-    },
-    required: ['request'],
-  },
-};
-
-export const DISCONNECT_GMAIL_TOOL: LlmToolDef = {
-  name: 'disconnect_gmail',
-  description: [
-    "Disconnect / unlink the user's Gmail and stop reading their inbox. Revokes access and clears their cached email state. It's fully reversible — they can reconnect anytime.",
-    'This is CONFIRM-FIRST. On their FIRST request to disconnect/unlink/log out/stop you reading their inbox, do NOT call this tool — reply with one short bubble asking them to confirm (e.g. "you sure? i\'ll lose access to your inbox and stop flagging your emails").',
-    'Call this tool with confirmed=true ONLY in the turn they explicitly confirm, and also write a short warm "done, unlinked it" text. Never set confirmed=true on a first request. Do NOT use it at all if Gmail isn\'t connected.',
-  ].join(' '),
-  inputSchema: {
-    type: 'object',
-    properties: {
-      confirmed: { type: 'boolean', description: 'Must be true to disconnect. Set true ONLY after the user has explicitly confirmed in their latest message that they want to disconnect.' },
-    },
-    required: ['confirmed'],
-  },
-};
-
 export const SET_PREFERENCE_TOOL: LlmToolDef = {
   name: 'set_preference',
-  description: "Record a durable preference or onboarding fact about the user. Use for their name (key 'name'), their timezone (key 'agent_tz', IANA like 'America/Denver' — capture it whenever their timezone or location surfaces; it anchors reminders and their daily rhythm), their communication style (key 'comms_style'), how they want to be addressed (key 'address_as', e.g. value 'Chief' or 'Mr. Smith' — whatever they ask to be called), or declining Gmail (key 'gmail_declined', value true). Special key 'important_note': APPENDS one fact to a permanent remember-this list instead of overwriting — use it whenever they say \"remember this\" or restate something you'd forgotten (value = the fact, self-contained, e.g. 'is planning a trip to Japan in the fall'), and for a hard personal rule stated as one (they say 'never book me sunday mornings, ever' → value 'hard rule: no meetings or calls sunday mornings'). Persisted and remembered across conversations. You usually also write a normal text reply.",
+  description: "Record a durable preference or onboarding fact about the user. Use for their name (key 'name'), their timezone (key 'agent_tz', IANA like 'America/Denver' — capture it whenever their timezone or location surfaces; it anchors reminders and their daily rhythm), their communication style (key 'comms_style'), how they want to be addressed (key 'address_as', e.g. value 'Chief' or 'Mr. Smith' — whatever they ask to be called). Special key 'important_note': APPENDS one fact to a permanent remember-this list instead of overwriting — use it whenever they say \"remember this\" or restate something you'd forgotten (value = the fact, self-contained, e.g. 'is planning a trip to Japan in the fall'), and for a hard personal rule stated as one (they say 'never book me sunday mornings, ever' → value 'hard rule: no meetings or calls sunday mornings'). Persisted and remembered across conversations. You usually also write a normal text reply.",
   inputSchema: {
     type: 'object',
     properties: {
-      key: { type: 'string', description: "e.g. name, agent_tz (IANA timezone like 'America/Denver'), comms_style, address_as, important_note (appends to a permanent list), gmail_declined, respect_quiet_hours" },
+      key: { type: 'string', description: "e.g. name, agent_tz (IANA timezone like 'America/Denver'), comms_style, address_as, important_note (appends to a permanent list), respect_quiet_hours" },
       value: { description: 'The value (string, number, or boolean).' },
     },
     required: ['key', 'value'],
-  },
-};
-
-export const REQUEST_GMAIL_ACCESS_TOOL: LlmToolDef = {
-  name: 'request_gmail_access',
-  description: "Start Gmail connection. Use during onboarding, or whenever a request needs their email and Gmail is not yet connected. Generates a tappable consent link. You MUST also write a short text telling them to tap it. Do NOT use if already connected.",
-  inputSchema: {
-    type: 'object',
-    properties: { reason: { type: 'string', description: 'Why access is needed, shown to the user.' } },
   },
 };
 
@@ -146,7 +99,7 @@ export const SCHEDULE_AUTOMATION_TOOL: LlmToolDef = {
       cron: { type: 'string', description: 'Standard 5-field cron expression for a recurring automation (e.g. "0 9 * * 1" = every Monday 9am).' },
       timezone: { type: 'string', description: 'IANA timezone for the schedule (default America/Chicago).' },
       needs_ops: { type: 'boolean', description: 'true if fulfilling it needs fresh data at fire time (the web, their inbox).' },
-      ops_kind: { type: 'string', enum: ['web_research', 'document_read', 'draft', 'general'], description: 'Hint for what kind of fresh data to pull when needs_ops is true.' },
+      ops_kind: { type: 'string', enum: ['web_research', 'document_read', 'draft', 'general', 'media_read'], description: 'Hint for what kind of fresh data to pull when needs_ops is true.' },
     },
     required: ['instruction', 'schedule_kind'],
   },

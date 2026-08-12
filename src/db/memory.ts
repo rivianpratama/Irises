@@ -4,10 +4,9 @@
 
 import type {
   StoredMessage, UserProfile,
-  Automation, GmailToken, OAuthState, Workflow,
+  GmailToken, OAuthState, Workflow,
 } from './types.js';
 import type { AgentMemory } from './repositories/memory.js';
-import type { IndexedEmail } from './repositories/emails.js';
 import type { ShortTermEntry } from './repositories/memoryShort.js';
 import type { MediumEntry } from './repositories/memoryMedium.js';
 import type { LongRevision } from './repositories/memoryLong.js';
@@ -16,7 +15,6 @@ export const mem = {
   // chatId -> messages (also tracks lastActive for TTL emulation)
   messages: new Map<string, { content: StoredMessage; at: number }[]>(),
   profiles: new Map<string, UserProfile>(),
-  automations: new Map<string, Automation>(),
   gmailTokens: new Map<string, GmailToken>(),
   oauthState: new Map<string, OAuthState>(),
   workflows: new Map<string, Workflow>(),
@@ -30,8 +28,6 @@ export const mem = {
   // (which iMessage collapses to the user's own opening message) resolves to its text.
   // `at` drives TTL emulation; the repo prunes on write past a soft cap.
   inboundMessages: new Map<string, { chatId: string; content: string; senderHandle?: string; at: number }>(),
-  // handle -> (gmail message id -> indexed email). The local mail search index.
-  emails: new Map<string, Map<string, IndexedEmail>>(),
   // Three-tier memory (Stage 1 of the memory revamp). Same per-process caveat as above.
   memoryShort: new Map<string, ShortTermEntry[]>(),
   memoryMedium: new Map<string, MediumEntry[]>(),

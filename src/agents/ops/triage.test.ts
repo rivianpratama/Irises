@@ -3,13 +3,12 @@ process.env.TZ = 'UTC';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { detectCause, decide, splitMiss, buildEscalationMetaPrompt } from './triage.js';
-import { looksLikeToolError } from './client.js';
 import type { OpsResult, OpsTask, OpsDebrief, TaskKind } from '../types.js';
 import type { LlmResult } from '../../llm/types.js';
 
-// NOTE: OPS_ESCALATION_ENABLED and OPS_RETRY_ENABLED both default to true when the env var is unset
-// (the test env), so these tests exercise the enabled paths. The enabled=false downgrade takes the
-// SAME canEscalate/canRetry→false branch that an `escalationOf`/`retryOf`-set task takes (tested below).
+// NOTE: OPS_RETRY_ENABLED defaults to true when the env var is unset (the test env). Slim: there is
+// no escalation leg anymore (canEscalate is permanently false — the engine IS the strong model), so
+// causes that used to escalate now resolve to 'none' (today's transient/miss beat).
 
 function mkTask(over: Partial<OpsTask> = {}): OpsTask {
   return {
@@ -57,9 +56,9 @@ test('detectCause: llm_error from error status; empty_miss from clean-but-empty;
 
 // ── decide (deterministic matrix) ─────────────────────────────────────────────
 
-test('decide: stronger-model causes escalate on a normal first-look task', () => {
+test('decide: researchable causes resolve to none (Slim: no escalation leg exists)', () => {
   for (const cause of ['timeout', 'tool_errors', 'fidelity_suppressed'] as const) {
-    assert.equal(decide(cause, mkTask()).action, 'escalate', `${cause} should escalate`);
+    assert.equal(decide(cause, mkTask()).action, 'none', `${cause} should resolve to none`);
   }
 });
 
@@ -71,15 +70,11 @@ test('decide: transient lane causes take the cheap retry, not the expensive esca
   }
 });
 
-test('decide: a retry leg (retryOf set) ladders to escalation on a RESEARCHABLE miss, never retries again', () => {
-  // The ladder: a retry that comes back a researchable failure earns the ONE strong second look.
-  for (const cause of ['timeout', 'tool_errors', 'fidelity_suppressed'] as const) {
-    assert.equal(decide(cause, mkTask({ retryOf: 't1' })).action, 'escalate', `${cause} on a retry leg should escalate`);
+test('decide: a retry leg (retryOf set) is terminal — nothing ladders further', () => {
+  // Slim: the single cheap retry is the whole ladder; every cause on a retry leg resolves to none.
+  for (const cause of ['timeout', 'tool_errors', 'fidelity_suppressed', 'llm_error', 'rate_limited'] as const) {
+    assert.equal(decide(cause, mkTask({ retryOf: 't1' })).action, 'none', `${cause} on a retry leg should resolve to none`);
   }
-  // But a fresh transient error on the retry leg does NOT escalate (infra can't be fixed by a model) and
-  // cannot retry again — it gives up to today's transient beat.
-  assert.equal(decide('llm_error', mkTask({ retryOf: 't1' })).action, 'none');
-  assert.equal(decide('rate_limited', mkTask({ retryOf: 't1' })).action, 'none');
 });
 
 test('decide: escalationOf set → never escalates OR retries again (one per attempt)', () => {
@@ -113,17 +108,11 @@ test('splitMiss: INFO_HOLE with no concrete field falls back to none (generic st
   assert.equal(d.action, 'none');
 });
 
-test('splitMiss: RESEARCH_GAP → escalate with directive; escalationOf blocks it', async () => {
+test('splitMiss: RESEARCH_GAP resolves to none (Slim: no escalation leg exists)', async () => {
   const ok = await splitMiss(mkResult(), mkTask(), fakeLlm('{"verdict":"RESEARCH_GAP","missing":[],"directive":"check the attachments, not just the email bodies"}') as never);
-  assert.equal(ok.action, 'escalate');
-  assert.match(ok.researchDirective ?? '', /attachments/);
+  assert.equal(ok.action, 'none');
   const blocked = await splitMiss(mkResult(), mkTask({ escalationOf: 't1' }), fakeLlm('{"verdict":"RESEARCH_GAP","missing":[],"directive":"go deeper"}') as never);
   assert.equal(blocked.action, 'none');
-});
-
-test('splitMiss: RESEARCH_GAP on a RETRY leg still escalates (the ladder)', async () => {
-  const d = await splitMiss(mkResult(), mkTask({ retryOf: 't1' }), fakeLlm('{"verdict":"RESEARCH_GAP","missing":[],"directive":"go deeper"}') as never);
-  assert.equal(d.action, 'escalate');
 });
 
 test('splitMiss: UNANSWERABLE → give_up', async () => {
@@ -225,11 +214,8 @@ test('buildEscalationMetaPrompt: tool_errors names the failed routes AND the unt
   });
   const prompt = buildEscalationMetaPrompt(mkTask({ kind: 'document_read' }), result, { cause: 'tool_errors', action: 'escalate', deterministic: true });
   assert.match(prompt, /routes failed on the first pass: search_email/);
-  assert.match(prompt, /Untried routes/);
-  // A document_read tool that was never called shows up as a lead (e.g. the attachment route).
-  assert.match(prompt, /read_attachment/);
-  // But a pure side-effect tool (schedule_followup is in document_read's set) is NEVER suggested as a
-  // research route — it can't advance an answer.
+  // Slim: the native toolsets are gone, so there is no local notion of an untried route to suggest.
+  assert.doesNotMatch(prompt, /Untried routes/);
   assert.doesNotMatch(prompt, /schedule_followup/);
 });
 
@@ -248,20 +234,3 @@ test('buildEscalationMetaPrompt: an empty trail drops the tool blocks AND the "c
   assert.match(prompt, /start the research yourself/i); // instead: do the research from scratch
 });
 
-// ── looksLikeToolError (debrief tagging heuristic) ────────────────────────────
-
-test('looksLikeToolError: real errors are errors, clean "found nothing" is not', () => {
-  assert.equal(looksLikeToolError('tool search_email error: timeout'), true);
-  assert.equal(looksLikeToolError('error: upstream rejected the API key (401) — invalid'), true);
-  assert.equal(looksLikeToolError('GMAIL_NOT_CONNECTED'), true);
-  assert.equal(looksLikeToolError('no matching emails found'), false);
-  assert.equal(looksLikeToolError('no follow-ups on record yet'), false);
-  assert.equal(looksLikeToolError('matched entry on record: order #4182\nitems: 3'), false);
-  assert.equal(looksLikeToolError(''), false);
-  // Legit tool RESULTS that merely CONTAIN an error-ish word mid-line must not be mis-tagged (the
-  // word is only an error indicator when it ANCHORS the line) — else >half tripping it would flip an
-  // empty_miss to tool_errors and skip the ask_user/INFO_HOLE path.
-  assert.equal(looksLikeToolError('- id=abc | from: sender | subj: Request rejected by the vendor'), false);
-  assert.equal(looksLikeToolError('the review failed to surface any real problems'), false);
-  assert.equal(looksLikeToolError('status: invalid address on file'), false);
-});

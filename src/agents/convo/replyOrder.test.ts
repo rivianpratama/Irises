@@ -116,7 +116,7 @@ const ctxWith = (over: Partial<ChatContext>): ChatContext => ({
 
 test('gapped turn: the Timing-note section REPLACES the reply-order line', () => {
   const prompt = buildSystemPrompt(
-    ctxWith({ arrivals: gap(2) }), false, false, '', [], undefined, undefined, irisesRun, 'ok', undefined,
+    ctxWith({ arrivals: gap(2) }), '', [], undefined, undefined, irisesRun, 'ok', undefined,
   );
   assert.match(prompt, /## Timing note — their message is OLDER/);
   assert.ok(!prompt.includes('## What their new message is landing on'), 'the (now-inverted) reply-order line is suppressed when gapped');
@@ -124,7 +124,7 @@ test('gapped turn: the Timing-note section REPLACES the reply-order line', () =>
 
 test('non-gapped turn: the ordinary reply-order line shows, no Timing note', () => {
   const prompt = buildSystemPrompt(
-    ctxWith({ arrivals: gap(0) }), false, false, '', [], undefined, undefined, irisesRun, 'ok', undefined,
+    ctxWith({ arrivals: gap(0) }), '', [], undefined, undefined, irisesRun, 'ok', undefined,
   );
   assert.match(prompt, /## What their new message is landing on/);
   assert.ok(!prompt.includes('## Timing note'), 'no Timing note when nothing is stale');
@@ -135,12 +135,12 @@ test('non-gapped turn: the ordinary reply-order line shows, no Timing note', () 
 test('repliedTo "assistant": the bubble section shows; legacy repliedToText still works too', () => {
   const viaResolved = buildSystemPrompt(
     ctxWith({ repliedTo: { kind: 'assistant', text: 'the deposit clears on the 14th' } }),
-    false, false, '', [], undefined, undefined, irisesRun, 'breakdown?', undefined,
+    '', [], undefined, undefined, irisesRun, 'breakdown?', undefined,
   );
   assert.match(viaResolved, /## They tapped reply on a SPECIFIC earlier bubble of yours/);
   const viaLegacy = buildSystemPrompt(
     ctxWith({ repliedToText: 'the deposit clears on the 14th' }),
-    false, false, '', [], undefined, undefined, irisesRun, 'breakdown?', undefined,
+    '', [], undefined, undefined, irisesRun, 'breakdown?', undefined,
   );
   assert.match(viaLegacy, /## They tapped reply on a SPECIFIC earlier bubble of yours/);
 });
@@ -151,7 +151,7 @@ test('repliedTo "own-thread": thread section shows; BOTH order-read sections sup
       repliedTo: { kind: 'own-thread', rootText: 'when does the deposit clear?', assistantBubbles: ['the deposit clears on the 14th'] },
       arrivals: gap(2), // stale — would normally trigger the Timing note
     }),
-    false, false, '', [], undefined, undefined, irisesRun, 'can u do a breakdown', undefined,
+    '', [], undefined, undefined, irisesRun, 'can u do a breakdown', undefined,
   );
   assert.match(prompt, /## They tapped reply INSIDE one of your answer threads/);
   assert.match(prompt, /the deposit clears on the 14th/); // the answer bubble is quoted
@@ -162,7 +162,7 @@ test('repliedTo "own-thread": thread section shows; BOTH order-read sections sup
 test('repliedTo "unresolved": acknowledge-and-ask section shows, both order-read sections suppressed', () => {
   const prompt = buildSystemPrompt(
     ctxWith({ repliedTo: { kind: 'unresolved' }, arrivals: gap(0) }),
-    false, false, '', [], undefined, undefined, irisesRun, 'wdym', undefined,
+    '', [], undefined, undefined, irisesRun, 'wdym', undefined,
   );
   assert.match(prompt, /## They tapped reply on a SPECIFIC earlier message you can't pull up/);
   assert.match(prompt, /can't pull it up/); // acknowledge-and-ask voice, not a silent guess
@@ -173,7 +173,7 @@ test('repliedTo "unresolved": acknowledge-and-ask section shows, both order-read
 test('repliedTo assistant BEYOND recall: adds the "older than the conversation" acknowledge-and-ask note', () => {
   const prompt = buildSystemPrompt(
     ctxWith({ repliedTo: { kind: 'assistant', text: 'the deposit clears on the 14th', sentAtMs: NOW - 60 * MIN, viaLiveFetch: true } }),
-    false, false, '', [], undefined, undefined, irisesRun, 'breakdown?', undefined,
+    '', [], undefined, undefined, irisesRun, 'breakdown?', undefined,
   );
   assert.match(prompt, /## They tapped reply on a SPECIFIC earlier bubble of yours/);
   assert.match(prompt, /OLDER than the conversation you can see above/);
@@ -183,7 +183,7 @@ test('repliedTo assistant BEYOND recall: adds the "older than the conversation" 
 test('repliedTo assistant WITHIN recall: no beyond-recall note (the exchange is still visible)', () => {
   const prompt = buildSystemPrompt(
     ctxWith({ repliedTo: { kind: 'assistant', text: 'the deposit clears on the 14th', sentAtMs: NOW - 1 * MIN, viaLiveFetch: true } }),
-    false, false, '', [], undefined, undefined, irisesRun, 'breakdown?', undefined,
+    '', [], undefined, undefined, irisesRun, 'breakdown?', undefined,
   );
   assert.ok(!prompt.includes('OLDER than the conversation you can see above'), 'no beyond-recall note for a recent message');
 });

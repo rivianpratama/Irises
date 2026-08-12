@@ -15,17 +15,9 @@ import { registerTelegram } from './channels/telegram/index.js';
 import type { MediaAttachment } from './channels/types.js';
 import * as convoClient from './agents/convo/client.js';
 import { getUserProfile, addMessage } from './state/conversation.js';
-import { runOpsAndFollowUp, runMmAndFollowUp } from './agents/orchestrator.js';
+import { runOpsAndFollowUp } from './agents/orchestrator.js';
 import { voiceOutcome } from './agents/fallfirm/client.js';
-import { createOAuthRouter } from './oauth/routes.js';
-import type { DeferredTask } from './oauth/google.js';
-import { startAutonome } from './pipeline/automations.js';
-import { judgeNewEmailsForHandle, startEmailBackstop } from './pipeline/emailJudge.js';
-import { startWatchForHandle, startWatchRenewal } from './pipeline/gmailWatch.js';
-import { createGmailPushRouter } from './webhook/gmailPush.js';
 import { ensureChatId } from './db/repositories/memory.js';
-import { listConnectedHandles } from './db/repositories/tokens.js';
-import { ensureEmailSearchIndex } from './pipeline/indexEmail.js';
 import { markOpsStart } from './state/opsCoordination.js';
 import { estimateOpsEta } from './agents/etaEstimate.js';
 import { withChatLock } from './state/sendQueue.js';
@@ -46,8 +38,7 @@ import { beginTurn } from './diagnostics/trace.js';
 import { loadContext } from './agents/loadContext.js';
 import { redactInternalTools, stripOpsScaffolding } from './agents/guardrails.js';
 import { splitIntoBubbles } from './pipeline/bubbles.js';
-import { isMmTask, type OpsTask, type ReflexionTask } from './agents/types.js';
-import { runReflexionQueued } from './agents/reflexion/client.js';
+import type { OpsTask } from './agents/types.js';
 
 // Short, stable fingerprint of a persona body so /health can confirm which version is live.
 function personaFingerprint(body: string): { chars: number; hash: string } {
@@ -115,7 +106,7 @@ interface PendingMessage {
 type Reaction = { type: 'love' | 'like' | 'dislike' | 'laugh' | 'emphasize' | 'question'; re?: number } | { type: 'custom'; emoji: string; re?: number };
 
 // Result returned by an agent's chat(). New orchestration fields (delegatedTask,
-// gmailConsentUrl) are optional so the legacy Deepseek agent still satisfies it.
+// optional so the legacy Deepseek agent still satisfies it.
 interface AgentChatResult {
   text: string | null;
   reaction: Reaction | null;
@@ -126,8 +117,6 @@ interface AgentChatResult {
   groupChatIcon: { prompt: string } | null;
   removeMember: string | null;
   delegatedTask?: OpsTask | null;
-  reflexionTask?: ReflexionTask | null;
-  gmailConsentUrl?: string | null;
 }
 
 export interface AgentClient {
@@ -513,58 +502,6 @@ async function sendFollowUp(chatId: string, content: SpeakContent, opts: SpeakOp
   return speak(chatId, content, opts);
 }
 
-/**
- * Re-run a request after Gmail connects (the OAuth callback fires this). Returns true only when the
- * re-run put an outbound message ON SCREEN this instant (its inline reply, or the holding line that
- * precedes a delegated Ops run) — the connect callback relies on this to avoid double-saying the same
- * thing while never leaving OAuth in silence (INV-oauth-single-say).
- */
-async function runDeferredTask(task: DeferredTask): Promise<boolean> {
-  try {
-    const profile = await getUserProfile(task.agentHandle);
-    // Same one-mouth critical section as a live turn: the synthetic turn thinks AND speaks while
-    // holding the chat lock, so its reply can neither leapfrog nor be leapfrogged by a follow-up.
-    // sendBubbles is called directly (never sendFollowUp — that would nest the lock and deadlock).
-    let out: Awaited<ReturnType<typeof convoClient.chat>> | null = null;
-    let cancel: AbortController | null = null;
-    let delivered = false;
-    await withChatLock(task.chatId, async () => {
-      const result = await convoClient.chat(task.chatId, task.request, emptyMedia(), {
-        isGroupChat: false, participantNames: [], chatName: null,
-        senderHandle: task.agentHandle, senderProfile: profile,
-      });
-      out = result;
-      if (result.delegatedTask) {
-        // Delegating stays quiet before the back-line speaks, so the holding line MUST land now — it is
-        // the immediate on-screen message the connect-line gate relies on (INV-oauth-single-say).
-        if (result.text) {
-          await sendBubbles(task.chatId, splitIntoBubbles(result.text), { record: false });
-          delivered = true;
-        }
-        // Mark in-flight SYNCHRONOUSLY inside the turn's own critical section (INV-1): no other turn
-        // can run between the delegation decision and the marker. The AbortController is registered
-        // alongside so a user cancel can reach the running loop.
-        cancel = new AbortController();
-        markOpsStart(task.chatId, result.delegatedTask.id, { kind: result.delegatedTask.kind, request: result.delegatedTask.request, estimate: estimateOpsEta({ kind: result.delegatedTask.kind, request: result.delegatedTask.request, forceGrounding: result.delegatedTask.forceGrounding }) }, cancel);
-      } else if (result.text) {
-        await sendBubbles(task.chatId, splitIntoBubbles(result.text), { record: false });
-        delivered = true;
-      }
-    });
-    const delegated = out ? (out as Awaited<ReturnType<typeof convoClient.chat>>).delegatedTask : null;
-    if (delegated && cancel) {
-      if (isMmTask(delegated)) void runMmAndFollowUp(delegated, sendFollowUp, (cancel as AbortController).signal);
-      else void runOpsAndFollowUp(delegated, sendFollowUp, (cancel as AbortController).signal);
-    }
-    // Same silent memory lane as the live-turn path.
-    const deferredReflexion = out ? (out as Awaited<ReturnType<typeof convoClient.chat>>).reflexionTask : null;
-    if (deferredReflexion) void runReflexionQueued(deferredReflexion);
-    return delivered;
-  } catch (err) {
-    console.error('[main] runDeferredTask failed', err);
-    return false;
-  }
-}
 
 // The core processing logic extracted from the webhook handler. `lateArrivals`, when given, lets
 // the turn fold in messages that arrive while it WAITS for the chat mouth (see the drain block
@@ -717,7 +654,7 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
     arrivals,
   });
   turnOut = out;
-  const { text: responseText, reaction, effect, renameChat, rememberedUser, generatedImage, groupChatIcon, removeMember, delegatedTask, gmailConsentUrl } = out;
+  const { text: responseText, reaction, effect, renameChat, rememberedUser, generatedImage, groupChatIcon, removeMember, delegatedTask } = out;
   console.log(`[timing] agent: ${Date.now() - start}ms`);
   console.log(`[debug] responseText: ${responseText ? `"${responseText.substring(0, 50)}..."` : 'null'}, effect: ${effect ? JSON.stringify(effect) : 'null'}, renameChat: ${renameChat || 'null'}, generatedImage: ${generatedImage ? 'yes' : 'null'}, removeMember: ${removeMember || 'null'}`);
   // Send reaction if agent wants to. On a burst the model may target a specific [msg N] via `re` (e.g.
@@ -846,12 +783,6 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
     console.log(`[main] Reaction-only response (saved to history for context)`);
   }
 
-  // Send the Gmail consent link as its own tappable bubble (after the ack text).
-  if (gmailConsentUrl) {
-    await sendBubbles(chatId, [gmailConsentUrl], { record: false });
-    console.log(`[main] Sent Gmail consent link to ${from}`);
-  }
-
   // Mark delegated work in-flight AND kick it off, at the END of the critical section (after the
   // holding line has already been sent above — Ops therefore starts once the ack is out, never before
   // it). markOpsStart stays INSIDE the lock (INV-1, airtight): between the delegation decision and this
@@ -863,17 +794,10 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
   if (delegatedTask) {
     opsCancel = new AbortController();
     markOpsStart(chatId, delegatedTask.id, { kind: delegatedTask.kind, request: delegatedTask.request, estimate: estimateOpsEta({ kind: delegatedTask.kind, request: delegatedTask.request, forceGrounding: delegatedTask.forceGrounding }) }, opsCancel);
-    console.log(`[main] Delegating ${delegatedTask.kind} task to ${isMmTask(delegatedTask) ? 'MM' : 'Ops'}`);
-    if (isMmTask(delegatedTask)) void runMmAndFollowUp(delegatedTask, sendFollowUp, opsCancel.signal);
-    else void runOpsAndFollowUp(delegatedTask, sendFollowUp, opsCancel.signal);
+    console.log(`[main] Delegating ${delegatedTask.kind} task to the engine`);
+    void runOpsAndFollowUp(delegatedTask, sendFollowUp, opsCancel.signal);
   }
   })); // end withChatLock — think + speak went out as one ordered, uninterleaved unit
-
-  // Silent memory-curation lane — separate from the delegation slot: no markOpsStart, no holding
-  // line, no cancel wiring (nothing the user can see or cancel), no mouth. Per-handle queueing
-  // and in-flight dedupe live inside runReflexionQueued.
-  const reflexionTask = turnOut ? (turnOut as AgentChatResult).reflexionTask : null;
-  if (reflexionTask) void runReflexionQueued(reflexionTask);
 
   console.log(`[main] Reply sent to ${from}`);
 }
@@ -937,39 +861,8 @@ const createAgentWebhookHandler = (agentClient: AgentClient) => {
   );
 };
 
-// Gmail per-user OAuth callback (consent link is generated in chat by Irises).
-// onConnected: persist their chat + backfill their inbox so reminders start flowing.
-app.use(createOAuthRouter({
-  sendFollowUp,
-  runDeferredTask,
-  onConnected: (handle, chatId) => {
-    // prefs.chat_id is a proactive SEND target (email flags, sweeper) — never bind it to a
-    // group chat, or this user's private email surfacing lands in the room. On a getChat
-    // failure we skip the bind (their next 1:1 turn sets it) rather than risk mis-binding.
-    void (async () => {
-      try {
-        const info = await getChat(chatId);
-        const group = typeof info.is_group === 'boolean' ? info.is_group : info.handles.length > 2;
-        if (!group) void ensureChatId(handle, chatId);
-        else console.log(`[oauth] not binding ${handle}'s proactive chat_id to group chat ${chatId}`);
-      } catch (err) {
-        console.warn(`[oauth] getChat failed — skipping chat_id bind for ${handle} (their next 1:1 turn binds it)`, err);
-      }
-    })();
-    // Initialize the watermark (no backfill ping) and start the real-time push watch so new
-    // mail instantly triggers the Judge. The watch's first historyId becomes the sync cursor.
-    void (async () => {
-      await judgeNewEmailsForHandle(handle, sendFollowUp, { backfill: true });
-      await startWatchForHandle(handle);
-      // Populate the mail SEARCH index (broad: inbox+sent+archive) so search_inbox_local
-      // covers their history from day one. Paced internally; runs only while empty.
-      await ensureEmailSearchIndex(handle);
-    })().catch(err => console.error('[main] post-connect email setup failed', err));
-  },
-}));
-
-// Gmail push receiver — Cloud Pub/Sub POSTs here on new mail, firing the Judge in real time.
-app.use(createGmailPushRouter({ sendFollowUp }));
+// Slim: the Gmail OAuth + push routers are gone — the ENGINE owns email now. Engine-initiated
+// proactive messages (reminders, mail nudges) arrive via the /api/engine/push endpoint instead.
 
 // In-app prompt diagnostics dashboard (guarded by DEBUG_TOKEN / localhost).
 app.use(createDiagnosticsRouter());
@@ -1001,23 +894,8 @@ app.use(express.static(path.resolve(process.cwd(), 'web/out')));
 
 // Start server
 app.listen(PORT, () => {
-  // Autonome runner (fires all due automations — user-asked reminders, quiet-hours-held email
-  // flags, and Ops-scheduled follow-ups — voicing each through Irises's proactive persona).
-  // The Judge surfaces new mail in real time via Gmail push; startWatchRenewal keeps each
-  // push subscription alive (re-registers after restarts too), and startEmailBackstop is a
-  // slow safety-net poll that catches any dropped push notifications. All reuse the paced sender.
-  startAutonome(sendFollowUp);
-  startWatchRenewal();
-  startEmailBackstop(sendFollowUp);
-
-  // Mail SEARCH index self-heal: for every connected handle, backfill the emails table when
-  // it's empty (one cheap count otherwise). Independent of EMAIL_BACKFILL_ON_BOOT — the search
-  // index has no LLM cost, and Ops retrieval reliability depends on it existing.
-  void (async () => {
-    for (const handle of await listConnectedHandles()) {
-      await ensureEmailSearchIndex(handle).catch(err => console.error(`[index] search-index boot check failed for ${handle}`, err));
-    }
-  })();
+  // Slim boot: no local schedulers or email watchers — the ENGINE owns reminders and mail.
+  // Its cron jobs deliver back through POST /api/engine/push, voiced by the Composer.
 
   console.log(`
   Irises — a general, casual, do-anything assistant

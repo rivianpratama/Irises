@@ -11,8 +11,7 @@
 
 import { callLLM } from '../../llm/callLLM.js';
 import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
-import { OPS_ESCALATION_ENABLED, OPS_RETRY_ENABLED } from '../../llm/models.js';
-import { primaryToolNamesForKind } from './tools.js';
+import { OPS_RETRY_ENABLED } from '../../llm/models.js';
 import type { OpsResult, OpsTask, OpsFailureCause } from '../types.js';
 
 // What triage decides to do with a failed run:
@@ -40,11 +39,11 @@ export function isSecondLeg(task: OpsTask): boolean {
   return !!task.escalationOf || !!task.retryOf;
 }
 
-/** The ladder: a retry leg (retryOf) may still escalate ONCE — the cheap retry runs first, and a
- *  researchable miss it can't crack earns the strong second look. Only an escalation leg (escalationOf)
- *  is terminal. A two-strike refinement is a fresh task and earns its own. */
-export function canEscalate(task: OpsTask): boolean {
-  return OPS_ESCALATION_ENABLED && !task.escalationOf;
+/** Slim: there is no stronger native second look anymore — the engine IS the strong model, and the
+ *  single cheap retry (canRetry) is the whole ladder. Escalate verdicts therefore never fire; kept
+ *  as a function so the decision tables below read unchanged. */
+export function canEscalate(_task: OpsTask): boolean {
+  return false;
 }
 
 /** One cheap retry per attempt, for a transient lane blip. Full one-second-leg guard (never a
@@ -279,11 +278,10 @@ const SIDE_EFFECT_ONLY = new Set(['schedule_followup']);
 /** The kind's tools the first pass never called — the alternative RESEARCH routes the second look should
  *  reach for. Empty for 'general' (no discrete primary toolset), when every route was already tried, or
  *  once pure side-effect tools (never a research route) are dropped. */
-function untriedTools(task: OpsTask, result: OpsResult): string[] {
-  const all = primaryToolNamesForKind(task.kind);
-  if (!all.length) return [];
-  const tried = new Set((result.debrief?.toolsRun ?? []).map(t => t.name));
-  return all.filter(n => !tried.has(n) && !SIDE_EFFECT_ONLY.has(n));
+function untriedTools(_task: OpsTask, _result: OpsResult): string[] {
+  // Slim: the native toolsets are gone (the engine owns its own tools), so there is no local
+  // notion of an untried route to suggest.
+  return [];
 }
 
 /**

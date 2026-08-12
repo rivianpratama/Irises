@@ -1,9 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { loadContext } from '../loadContext.js';
-import { createConsentLink } from '../../oauth/google.js';
-import { createAutomation, listAutomations, cancelAutomation, deriveDedupeKey } from '../../db/repositories/automations.js';
+import { getEngineBackend } from '../ops/engineBackend.js';
 import { isValidCron } from '../../pipeline/cron.js';
-import { disconnectGmail } from '../../pipeline/gmailWatch.js';
 import { getPreference, setPreference } from '../../db/repositories/memory.js';
 // Directives/notes/facts are memory_medium rows now (Stage 1) — the "no error margin" tier:
 // writes throw MediumWriteError instead of silently mirroring, so a failed save is voiced,
@@ -34,14 +32,14 @@ import { voiceInstant } from '../fallfirm/voiceInstant.js';
 import { recallMedia, MEDIA_RECALL_TTL_MS } from './mediaRecall.js';
 import { hasMedia, type IncomingMedia } from '../../webhook/types.js';
 import type { LlmRequest, LlmResult, LlmMessage, LlmToolDef } from '../../llm/types.js';
-import type { OpsTask, MmTask, ReflexionTask, TaskKind, PendingClarification } from '../types.js';
+import type { OpsTask, TaskKind, PendingClarification } from '../types.js';
 import type { ResolvedReply } from '../../state/replyResolution.js';
 
 // ── Shared Convo types & logic ──────────────────────────────────────────────
 // The front-line chat surface (voice, tools, tool-result handling) lives here for the Convo agent
-// (convo/client.ts). Convo is the ONLY front line — a text model (DeepSeek) that adaptively delegates
-// to Ops (research) or MM (reads any non-text file the user texted). It never opens attachments
-// itself; a bracketed [they attached …] note tells it a file exists so it can delegate_to_mm.
+// (convo/client.ts). Convo is the ONLY front line — a text model that adaptively delegates deep
+// work (research, email, files the user texted) to the ENGINE via delegate_to_ops. It never opens
+// attachments itself; a bracketed [they attached …] note tells it a file exists so it delegates.
 
 export type StandardReactionType = 'love' | 'like' | 'dislike' | 'laugh' | 'emphasize' | 'question';
 export type ReactionType = StandardReactionType | 'custom';
@@ -95,17 +93,13 @@ export interface ChatResponse {
   groupChatIcon: { prompt: string } | null;
   removeMember: string | null;
   delegatedTask: OpsTask | null;
-  // Deliberately SEPARATE from the one-per-turn delegatedTask slot: a memory update promises no
-  // user-facing follow-up, so a turn can update memory AND delegate research in the same reply.
-  reflexionTask: ReflexionTask | null;
-  gmailConsentUrl: string | null;
 }
 
 export function emptyExtras() {
   return {
     reaction: null, effect: null, renameChat: null, rememberedUser: null,
     generatedImage: null, groupChatIcon: null, removeMember: null,
-    delegatedTask: null, reflexionTask: null, gmailConsentUrl: null,
+    delegatedTask: null,
   };
 }
 
@@ -123,10 +117,8 @@ const DEFAULT_TZ = 'America/Chicago';
 // Every valid delegation kind, for validating the model-written value (the envelope schema can't
 // enforce per-arg enums — see buildEnvelopeSchema). An unknown/missing kind coerces to 'general'
 // (the full-toolset catch-all) instead of poisoning the task with a bogus TaskKind.
-// NOTE: 'media_read' is deliberately NOT here — delegate_to_ops must never take it (the coercion to
-// 'general' guards a model slip). Media goes through delegate_to_mm, which builds the MmTask directly.
 const OPS_KINDS: readonly TaskKind[] = [
-  'web_research', 'document_read', 'draft', 'general',
+  'web_research', 'document_read', 'draft', 'general', 'media_read',
 ];
 
 function formatWhen(iso: string, tz: string): string {
@@ -139,9 +131,15 @@ function formatWhen(iso: string, tz: string): string {
   }
 }
 
-// Persist an automation the agent asked for. Returns an OUTCOME (voiced by Fallfirm downstream):
-// a `confirmation` (used only as a fallback if the model wrote no text of its own) or an `error`.
+// Reminders live ON THE ENGINE now (its cron fires them and delivers back through the
+// /api/engine/push endpoint) — Irises holds no automation rows. These handlers keep the exact
+// tool surface + voiced-outcome contract the persona was written against, backed by the engine.
 type ScheduleResult = { confirmation?: Outcome; error?: Outcome };
+
+const NO_ENGINE_SNAG: Outcome = {
+  kind: 'failed', summary: 'reminders live on your engine, which is offline right now',
+  nextStep: 'ask them to try again in a bit',
+};
 
 async function handleScheduleAutomation(input: Record<string, unknown>, handle: string, chatId: string): Promise<ScheduleResult> {
   const instruction = String(input.instruction ?? '').trim();
@@ -150,65 +148,64 @@ async function handleScheduleAutomation(input: Record<string, unknown>, handle: 
   // reminder that never got saved.
   if (!instruction) return { error: { kind: 'failed', summary: "couldn't tell what the reminder should say", nextStep: 'ask them what to remind them about and when' } };
   const timezone = (input.timezone as string) || DEFAULT_TZ;
-  const title = input.title ? String(input.title) : null;
-  const needsOps = input.needs_ops === true;
-  const opsKind = input.ops_kind ? String(input.ops_kind) : null;
+  const title = input.title ? String(input.title) : undefined;
   const snag: Outcome = { kind: 'failed', summary: 'saving that reminder hit a snag', nextStep: 'ask them to try again' };
+  const engine = getEngineBackend();
+  if (!engine) return { error: NO_ENGINE_SNAG };
   try {
-    let created;
-    let confirmation: Outcome;
     if (input.schedule_kind === 'cron') {
       const cron = String(input.cron ?? '');
       if (!cron || !isValidCron(cron, timezone)) {
         return { error: { kind: 'failed', summary: "that repeat schedule didn't parse", nextStep: 'ask them for the timing again' } };
       }
-      created = await createAutomation({ agentHandle: handle, chatId, source: 'convo', title, instruction, scheduleKind: 'cron', cron, timezone, needsOps, opsKind, respectQuietHours: false, dedupeKey: deriveDedupeKey('convo', instruction, cron) });
-      confirmation = { kind: 'confirmed', summary: 'a recurring reminder is now set — it repeats on their schedule' };
-    } else {
-      const ts = Date.parse(String(input.fire_at ?? ''));
-      if (Number.isNaN(ts)) return { error: { kind: 'failed', summary: "couldn't tell when they want the reminder", nextStep: 'ask what time to remind them' } };
-      if (ts <= Date.now()) return { error: { kind: 'failed', summary: 'the time they gave has already passed', nextStep: 'mention you can set it for a later time instead' } };
-      const fireAtIso = new Date(ts).toISOString();
-      created = await createAutomation({ agentHandle: handle, chatId, source: 'convo', title, instruction, scheduleKind: 'once', nextRunAt: fireAtIso, timezone, needsOps, opsKind, respectQuietHours: false, dedupeKey: deriveDedupeKey('convo', instruction, fireAtIso) });
-      confirmation = { kind: 'confirmed', summary: 'a one-time reminder is set', facts: formatWhen(fireAtIso, timezone).toLowerCase() };
+      await engine.createReminder({ chatId, agentHandle: handle, instruction, cron, title });
+      return { confirmation: { kind: 'confirmed', summary: 'a recurring reminder is now set — it repeats on their schedule' } };
     }
-    // null = the write failed (e.g. Supabase error); surface that, don't falsely confirm.
-    return created ? { confirmation } : { error: snag };
+    const ts = Date.parse(String(input.fire_at ?? ''));
+    if (Number.isNaN(ts)) return { error: { kind: 'failed', summary: "couldn't tell when they want the reminder", nextStep: 'ask what time to remind them' } };
+    if (ts <= Date.now()) return { error: { kind: 'failed', summary: 'the time they gave has already passed', nextStep: 'mention you can set it for a later time instead' } };
+    await engine.createReminder({ chatId, agentHandle: handle, instruction, fireAt: ts, title });
+    return { confirmation: { kind: 'confirmed', summary: 'a one-time reminder is set', facts: formatWhen(new Date(ts).toISOString(), timezone).toLowerCase() } };
   } catch (err) {
     console.error('[convo] schedule_automation failed', err);
     return { error: snag };
   }
 }
 
-// The agent's active automations, as an outcome Fallfirm voices (the list content is DATA it can't
-// author itself, so it's carried in `facts` for exact relay). Internal reflexion rows (the daily
-// memory pass + self-wakes) are filtered out — "what reminders do i have" must never surface the
-// memory machinery (the guardrail redaction is the backstop; this is the primary).
-async function renderAutomationsList(handle: string): Promise<Outcome> {
-  const items = (await listAutomations(handle)).filter(a => a.source !== 'reflexion');
-  if (!items.length) return { kind: 'nothing_found', summary: 'they have no reminders set up right now' };
-  const list = items.slice(0, 10).map((a, i) => {
-    const label = a.title || a.instruction.slice(0, 60);
-    const when = a.scheduleKind === 'cron' ? `repeats (${a.cron})` : `on ${formatWhen(a.nextRunAt, a.timezone)}`;
-    return `${i + 1}. ${label} — ${when}`;
-  }).join('\n');
-  return { kind: 'confirmed', summary: 'these are their current reminders', facts: list };
+// The chat's active reminders as an outcome Fallfirm voices (the list content is DATA it can't
+// author itself, so it's carried in `facts` for exact relay). Read live from the engine.
+async function renderAutomationsList(_handle: string, chatId: string): Promise<Outcome> {
+  const engine = getEngineBackend();
+  if (!engine) return NO_ENGINE_SNAG;
+  try {
+    const items = await engine.listReminders(chatId);
+    if (!items.length) return { kind: 'nothing_found', summary: 'they have no reminders set up right now' };
+    const list = items.slice(0, 10).map((a, i) => `${i + 1}. ${a.title} — ${a.schedule}`).join('\n');
+    return { kind: 'confirmed', summary: 'these are their current reminders', facts: list };
+  } catch (err) {
+    console.error('[convo] list reminders failed', err);
+    return { kind: 'failed', summary: 'pulling up their reminders hit a snag', nextStep: 'ask them to try again' };
+  }
 }
 
-// Cancel by fuzzy match on title/instruction. Returns null on a clean cancel (Convo's own
-// confirmation stands) or an OUTCOME to voice when 0 / many / failed.
-async function handleCancelAutomation(match: string, handle: string): Promise<Outcome | null> {
+// Cancel by fuzzy match on title. Returns null on a clean cancel (Convo's own confirmation
+// stands) or an OUTCOME to voice when 0 / many / failed.
+async function handleCancelAutomation(match: string, _handle: string, chatId: string): Promise<Outcome | null> {
   const m = match.trim().toLowerCase();
-  // Same reflexion-row exclusion as the list: internal rows can't be user-cancelled by fuzzy match.
-  const items = (await listAutomations(handle)).filter(a => a.source !== 'reflexion');
-  if (!items.length) return { kind: 'nothing_found', summary: 'they have no reminders set up to cancel' };
-  const matches = m
-    ? items.filter(a => (a.title || '').toLowerCase().includes(m) || a.instruction.toLowerCase().includes(m))
-    : items;
-  if (matches.length === 0) return { kind: 'nothing_found', summary: "couldn't find a reminder matching that", nextStep: 'mention you can list what they have' };
-  if (matches.length > 1) return { kind: 'failed', summary: 'several of their reminders match that', nextStep: 'mention you can list them so they can pick' };
-  const ok = await cancelAutomation(matches[0].id, handle);
-  return ok ? null : { kind: 'failed', summary: 'canceling that reminder hit a snag', nextStep: 'ask them to try again' };
+  const engine = getEngineBackend();
+  if (!engine) return NO_ENGINE_SNAG;
+  try {
+    const items = await engine.listReminders(chatId);
+    if (!items.length) return { kind: 'nothing_found', summary: 'they have no reminders set up to cancel' };
+    const matches = m ? items.filter(a => a.title.toLowerCase().includes(m)) : items;
+    if (matches.length === 0) return { kind: 'nothing_found', summary: "couldn't find a reminder matching that", nextStep: 'mention you can list what they have' };
+    if (matches.length > 1) return { kind: 'failed', summary: 'several of their reminders match that', nextStep: 'mention you can list them so they can pick' };
+    const ok = await engine.cancelReminder(matches[0].id);
+    return ok ? null : { kind: 'failed', summary: 'canceling that reminder hit a snag', nextStep: 'ask them to try again' };
+  } catch (err) {
+    console.error('[convo] cancel reminder failed', err);
+    return { kind: 'failed', summary: 'canceling that reminder hit a snag', nextStep: 'ask them to try again' };
+  }
 }
 
 // Cancel in-flight Ops research (chat-scoped, in-memory — synchronous by design). Returns null on a
@@ -476,8 +473,6 @@ export function convoPersonaChars(): number {
 
 export function buildSystemPrompt(
   chatContext: ChatContext | undefined,
-  gmailConnected: boolean,
-  gmailDeclined: boolean,
   contextBlock: string,
   activeOps: ActiveOps[] = [],
   extraSection?: string,
@@ -513,13 +508,6 @@ export function buildSystemPrompt(
     dyn.push(`## Getting their name\nYou don't know their name yet. Call them "boss" for now, let their name surface naturally, and save it with remember_user the moment it does.`);
   }
 
-  if (gmailConnected) {
-    dyn.push(`## Gmail status\nGmail is CONNECTED — meaning a DELEGATED look (delegate_to_ops) can read their inbox. YOU still cannot: you never see, search, or summarize their email inline, and you never claim to have checked it without a delegation result in front of you this conversation. Every inbox question = delegate + holding text. If they ask to disconnect, unlink, log out, or stop you reading their inbox: FIRST ask them to confirm in one short bubble (e.g. "you sure? i'll lose access to your inbox and stop flagging your emails") and do NOT disconnect yet. Only once they explicitly say yes, call disconnect_gmail with confirmed=true and warmly confirm it's done — reassure them it's reversible (they can reconnect anytime). Don't be pushy or talk them out of it. Never bring up disconnecting on your own.`);
-  } else if (gmailDeclined) {
-    dyn.push(`## Gmail status\nGmail is NOT connected and the user previously DECLINED. Do NOT bring it up on your own. Most things still work fine without it (the web, your own reasoning, your memory of past chats). Only if a request genuinely needs THEIR inbox, gently note it's required and offer the link once more, otherwise stay quiet about it. If they ask to disconnect/unlink their gmail, just tell them it isn't connected — nothing to disconnect.`);
-  } else {
-    dyn.push(`## Gmail status\nGmail is NOT connected. It's optional and only unlocks work on their OWN inbox (reading their email, threads, attachments). Most things already work fine without it (the web, your own reasoning, your memory of past chats), so don't push Gmail as a setup step. Offer it (request_gmail_access) only when a request actually needs their inbox. If they decline, call set_preference key="gmail_declined" value=true and don't ask again. If they ask to disconnect/unlink their gmail, just tell them it isn't connected — nothing to disconnect.`);
-  }
 
   // Durable memory + recent/active-deal context (the user's profile injected each turn) — external
   // data, so it's sub-tagged.
@@ -761,8 +749,6 @@ export async function processConvoResult(args: {
   let rememberedUser: ChatResponse['rememberedUser'] = null;
   let removeMember: string | null = null;
   let delegatedTask: OpsTask | null = null;
-  let reflexionTask: ReflexionTask | null = null;
-  let gmailConsentUrl: string | null = null;
   // True when the MODEL (not the routing gate below) built delegatedTask, so the salvage after the
   // loop knows to discard its un-grounded answer tail. Convo is single-shot — it never sees Ops'
   // result — so any substantive claim it wrote alongside a delegation is un-grounded, and the
@@ -779,9 +765,6 @@ export async function processConvoResult(args: {
   // A guaranteed confirmation for a successful schedule, voiced by Fallfirm ONLY as a fallback when
   // the model called schedule_automation but wrote no text of its own.
   let scheduleConfirmation: Outcome | null = null;
-  // Same idea for disconnect: a guaranteed outcome so the turn is never silent if the model called
-  // disconnect_gmail (or asked to confirm) but wrote no text of its own.
-  let disconnectConfirmation: Outcome | null = null;
   // And for "remember this": a saved important note must never be met with silence.
   let noteConfirmation: Outcome | null = null;
   // A directive/preference that saved silently (no failure note) — the turn must still acknowledge it
@@ -949,87 +932,14 @@ export async function processConvoResult(args: {
         recalledAgeMs: opsRecalledAgeMs,
         createdAt: Date.now(),
       };
-    } else if (call.name === 'delegate_to_mm' && chatContext?.senderHandle) {
-      // One delegation per turn wins (see delegate_to_ops guard above).
-      if (delegatedTask) continue;
-      // MM opens the ACTUAL file. Prefer this turn's attachments; media_scope "earlier" (or a turn
-      // that carries no attachment of its own) pulls the stashed prior file within the recall window.
-      const wantEarlier = String(input.media_scope ?? '') === 'earlier' || !hasMedia(media);
-      let mmMedia: IncomingMedia | null = !wantEarlier ? media : null;
-      let recalledAgeMs: number | undefined;
-      if (!mmMedia && handle) {
-        const rec = await recallMedia(handle, chatId);
-        if (rec && Date.now() - rec.at <= MEDIA_RECALL_TTL_MS) { mmMedia = rec.media; recalledAgeMs = Date.now() - rec.at; }
-      }
-      if (!mmMedia) {
-        // Nothing to read — the earlier file is gone / past the recall window. Honest nothing_found;
-        // Fallfirm voices it (ask them to resend). No task, no holding line.
-        outcomeParts.push({ kind: 'nothing_found', summary: "the attachment they're pointing back to is older than you can pull up again", nextStep: 'ask them to send it again' });
-        continue;
-      }
-      const mmRequest = String(input.request ?? textToSend);
-      // Same in-flight dedup as Ops: don't open the same file twice while a read is already running.
-      if (isDuplicateDelegation(chatId, 'media_read', mmRequest) === 'in_flight') {
-        suppressedDuplicate = true;
-        console.log('[convo] suppressing duplicate delegate_to_mm — already in flight');
-        continue;
-      }
-      modelDelegated = true;
-      // Build as a typed MmTask (it has the media/recalledAgeMs fields OpsTask doesn't), then assign
-      // to the OpsTask-typed delegatedTask — index.ts narrows it back with isMmTask() to pick runMmAndFollowUp.
-      const mmTask: MmTask = {
-        id: randomUUID(),
-        chatId,
-        agentHandle: chatContext.senderHandle,
-        kind: 'media_read',
-        request: mmRequest,
-        metaPrompt: input.meta_prompt ? String(input.meta_prompt) : undefined,
-        media: mmMedia,
-        recalledAgeMs,
-        addressHint: input.address ? String(input.address) : undefined,
-        dealHint: input.deal_ref ? String(input.deal_ref) : undefined,
-        replyToMessageId: chatContext?.incomingMessageId,
-        attempt: 1,
-        originConfidence: reply.confidenceLevel,
-        createdAt: Date.now(),
-      };
-      delegatedTask = mmTask;
     } else if (call.name === 'update_memory' && handle) {
-      // Silent memory-curation delegation. Deliberately NOT the delegatedTask slot: Reflexion
-      // promises no follow-up message, so this can coexist with a research delegation in the
-      // same turn. First update_memory wins; a duplicate in one reply is a no-op.
-      // Bound to the MEMORY handle: in a group chat Reflexion curates the group's shared
-      // identity (writes land under group:<chatId>), never a member's personal tiers.
-      if (!reflexionTask) {
-        reflexionTask = {
-          id: randomUUID(),
-          chatId,
-          agentHandle: handle,
-          kind: 'memory_update',
-          trigger: 'delegated',
-          request: String(input.request ?? textToSend),
-          focus: input.meta_prompt ? String(input.meta_prompt) : undefined,
-          attempt: 1,
-          createdAt: Date.now(),
-        };
-      }
-    } else if (call.name === 'request_gmail_access' && chatContext?.senderHandle) {
-      gmailConsentUrl = await createConsentLink(chatContext.senderHandle, chatId, {
-        kind: 'reply_in_chat', chatId, agentHandle: chatContext.senderHandle, request: textToSend,
-      });
-    } else if (call.name === 'disconnect_gmail' && chatContext?.senderHandle) {
-      // Confirm-gated: only revoke when the model passes confirmed=true (set after the user
-      // explicitly says yes). Either path sets a guaranteed confirmation line so the turn is
-      // never silent if the model wrote no text of its own.
-      // Per-PERSON facility: always the sender's Gmail, never the group memory identity.
-      if (input.confirmed === true) {
-        const { wasConnected } = await disconnectGmail(chatContext.senderHandle);
-        disconnectConfirmation = wasConnected
-          ? { kind: 'confirmed', summary: 'their gmail is now unlinked', nextStep: 'reassure them they can reconnect anytime' }
-          : { kind: 'nothing_found', summary: "their gmail isn't connected right now" };
-      } else {
-        // First ask: confirm before disconnecting (the model is told to ask, not act, here).
-        disconnectConfirmation = { kind: 'confirmed', summary: 'you need them to confirm before you disconnect their gmail — ask if they’re sure, noting they’ll lose inbox flagging' };
+      // Silent memory forwarding. The ENGINE owns the long-term user model now (per-chat engine
+      // session memory) — this hands the durable fact over fire-and-forget, so it can coexist with
+      // a research delegation in the same turn, exactly like the old Reflexion delegation did.
+      const engine = getEngineBackend();
+      const note = String(input.request ?? textToSend);
+      if (engine && note.trim()) {
+        void engine.remember(chatId, handle, note).catch(err => console.warn('[convo] engine remember failed', err));
       }
     } else if (call.name === 'schedule_automation' && chatContext?.senderHandle) {
       // Automations stay SENDER-owned even in groups: a group-owned needs_ops automation would
@@ -1039,9 +949,9 @@ export async function processConvoResult(args: {
       if (r.error) outcomeParts.push(r.error);
       else if (r.confirmation) scheduleConfirmation = r.confirmation;
     } else if (call.name === 'list_automations' && chatContext?.senderHandle) {
-      outcomeParts.push(await renderAutomationsList(chatContext.senderHandle));
+      outcomeParts.push(await renderAutomationsList(chatContext.senderHandle, chatId));
     } else if (call.name === 'cancel_automation' && chatContext?.senderHandle) {
-      const note = await handleCancelAutomation(String(input.match ?? ''), chatContext.senderHandle);
+      const note = await handleCancelAutomation(String(input.match ?? ''), chatContext.senderHandle, chatId);
       if (note) outcomeParts.push(note);
     } else if (call.name === 'cancel_research') {
       // Chat-scoped (works in groups, needs no handle) and synchronous — the in-flight map is the
@@ -1074,7 +984,7 @@ export async function processConvoResult(args: {
   //     text legitimately voices the ACTION's confirmation, not an un-grounded Ops answer. Nuking it
   //     would leave the confirmation unsaid — the !textResponse-gated voiceOutcome lines below would be
   //     blocked by the delegation's holding line, silently dropping "your 9am reminder is set".
-  const actionBearing = !!scheduleConfirmation || !!disconnectConfirmation || !!noteConfirmation || outcomeParts.length > 0;
+  const actionBearing = !!scheduleConfirmation || !!noteConfirmation || outcomeParts.length > 0;
   if (((modelDelegated && delegatedTask) || suppressedDuplicate) && !actionBearing) {
     // Ground = the user's own words for this ask: a figure they said themselves ("412 Maple") is an
     // echo the holding text may repeat, never a fabrication. Keeps Irises's persona-written holding
@@ -1093,8 +1003,8 @@ export async function processConvoResult(args: {
   // pre-append snapshot that does NOT contain it, so we must use textToSend, not history.)
   // Skips: any turn that already did real work — delegated, consent link, schedule/note/disconnect
   // action — must not be clobbered with a forced delegation + holding line.
-  if (process.env.ROUTING_GATE !== 'off' && !delegatedTask && !suppressedDuplicate && !gmailConsentUrl
-      && !scheduleConfirmation && !disconnectConfirmation && !noteConfirmation && outcomeParts.length === 0
+  if (process.env.ROUTING_GATE !== 'off' && !delegatedTask && !suppressedDuplicate
+      && !scheduleConfirmation && !noteConfirmation && outcomeParts.length === 0
       && handle && chatContext?.senderHandle) {
     const lastUser = textToSend ?? '';
     // In-flight dedup must be KIND-AGNOSTIC: the running task may have been delegated under any
@@ -1153,10 +1063,8 @@ export async function processConvoResult(args: {
     if (getActiveOps(chatId).length) textResponse = line;
     else console.log('[convo] dropped a stale still_on_it — the in-flight task answered while it was being voiced');
   }
-  if (!textResponse && gmailConsentUrl) textResponse = await voiceInstant({ kind: 'gmail_connect', request: textToSend }, chatId, handle ?? '');
   // Tool-outcome confirmations the model didn't voice itself: Fallfirm voices them in Irises's tone.
   if (!textResponse && scheduleConfirmation) textResponse = await voiceOutcome(scheduleConfirmation, chatId, handle);
-  if (!textResponse && disconnectConfirmation) textResponse = await voiceOutcome(disconnectConfirmation, chatId, handle);
   if (!textResponse && noteConfirmation) textResponse = await voiceOutcome(noteConfirmation, chatId, handle);
   // A directive/preference that saved with no bubble of its own must still land an acknowledgment —
   // a bare tool-only turn is what left the user hanging (the update_directives silent-success bug).
@@ -1234,10 +1142,10 @@ export async function processConvoResult(args: {
   // still reach it (a tool-only envelope whose tool has no acknowledgment floor was the original
   // bug). Leave a diagnostic event so the dashboard surfaces the next variant instead of it
   // vanishing without a trace.
-  if (!textResponse && !reaction && !effect && !renameChat && !rememberedUser && !removeMember && !delegatedTask && !reflexionTask && !gmailConsentUrl) {
+  if (!textResponse && !reaction && !effect && !renameChat && !rememberedUser && !removeMember && !delegatedTask) {
     console.warn('[convo] turn produced no user-visible output — nothing sent');
     record({ type: 'event', label: 'convo:silent_turn', chatId, handle });
   }
 
-  return { text: textResponse, reaction, effect, renameChat, rememberedUser, removeMember, delegatedTask, reflexionTask, gmailConsentUrl, generatedImage: null, groupChatIcon: null };
+  return { text: textResponse, reaction, effect, renameChat, rememberedUser, removeMember, delegatedTask, generatedImage: null, groupChatIcon: null };
 }
