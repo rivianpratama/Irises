@@ -1,7 +1,7 @@
 import type { LlmRequest } from './types.js';
 
 // OpenRouter providers — notably Google/Gemini — can't reliably fetch remote image URLs, and
-// messaging-CDN links (e.g. Linq's) are often not publicly retrievable. OpenRouter's own docs say
+// messaging-CDN links (e.g. a messaging platform's) are often not publicly retrievable. OpenRouter's own docs say
 // base64 is REQUIRED for images that aren't publicly accessible. So on the OpenRouter path we fetch
 // each image server-side and inline it as a base64 data URL (same approach as voice-memo transcription).
 

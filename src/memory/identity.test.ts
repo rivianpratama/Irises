@@ -1,7 +1,7 @@
 // Run with: npm test   (TZ=UTC tsx --test)
 // The memory-identity resolver: 1:1 turns keep the sender's handle; group turns get the
 // group's own `group:<chatId>` pseudo-handle (fresh shared identity, no member's personal
-// memory). The prefix can never collide with a real Linq handle (E.164/email — no ':').
+// memory). The prefix can never collide with a real transport handle (E.164/email — no ':').
 process.env.TZ = 'UTC';
 
 import test from 'node:test';

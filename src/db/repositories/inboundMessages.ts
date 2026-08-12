@@ -1,7 +1,7 @@
 import { getSupabase, logDbError } from '../client.js';
 import { mem } from '../memory.js';
 
-// Index of the user's OWN inbound text-bearing messages, keyed by Linq message_id.
+// Index of the user's OWN inbound text-bearing messages, keyed by transport message_id.
 // iMessage collapses a tapped reply to the THREAD ROOT, which — for a reply tapped
 // on one of Irises's Ops answers (those are threaded to the originating question) —
 // is the user's own opening message. This lets that id resolve back to the text
@@ -26,7 +26,7 @@ function pruneMem(): void {
   }
 }
 
-/** Remember a text-bearing message the user sent, keyed by its Linq message_id. Fire-and-forget; never throws. */
+/** Remember a text-bearing message the user sent, keyed by its transport message_id. Fire-and-forget; never throws. */
 export async function recordInboundMessage(chatId: string, messageId: string, content: string, senderHandle?: string): Promise<void> {
   if (!messageId || !content) return;
   const supabase = getSupabase();

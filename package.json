@@ -1,7 +1,7 @@
 {
   "name": "irises",
   "version": "1.0.0",
-  "description": "Irises — a private, general, casual do-anything assistant. A multi-agent brain reachable over a web debug chat, iMessage (Linq Blue), and (prepared) Telegram.",
+  "description": "Irises — a private, general, casual do-anything assistant. A multi-agent brain that is the user-facing interface for the OpenClaw/Hermes engines, reachable over a web/CLI debug chat and the engine bridge.",
   "main": "dist/index.js",
   "license": "MIT",
   "repository": {
@@ -14,8 +14,8 @@
     "claude",
     "anthropic",
     "multi-agent",
-    "imessage",
-    "telegram",
+    "openclaw",
+    "hermes",
     "chatbot",
     "typescript"
   ],

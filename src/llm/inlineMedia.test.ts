@@ -14,7 +14,7 @@ test('a remote audio URL gains inlined data + a mapped format; text is untouched
   const req: LlmRequest = {
     role: 'mm',
     messages: [{ role: 'user', content: [
-      { type: 'audio', url: 'https://cdn.linqapp.com/vm.m4a', mimeType: 'audio/mp4' },
+      { type: 'audio', url: 'https://cdn.example.com/vm.m4a', mimeType: 'audio/mp4' },
       { type: 'text', text: 'whats this' },
     ] }],
   };
@@ -29,7 +29,7 @@ test('a remote audio URL gains inlined data + a mapped format; text is untouched
 test('a remote video URL gains inlined data and the resolved mimeType', async () => {
   const req: LlmRequest = {
     role: 'mm',
-    messages: [{ role: 'user', content: [{ type: 'video', url: 'https://cdn.linqapp.com/clip', mimeType: 'video/mp4' }] }],
+    messages: [{ role: 'user', content: [{ type: 'video', url: 'https://cdn.example.com/clip', mimeType: 'video/mp4' }] }],
   };
   const out = await inlineMediaBlocks(req, async () => fetched('VklE', 'video/mp4'));
   const block = (out.messages[0].content as Any[])[0];

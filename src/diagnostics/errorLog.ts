@@ -23,7 +23,7 @@ export type ErrorSeverity = 'warn' | 'error' | 'fatal';
 
 export interface ReportedError {
   /** Who was working: convo|ops|judge|autonome|reflexion|mm|fallfirm|pipeline|db|llm|webhook|
-   *  linq|process|budget|diagnostics|memory. LLM failures use the CALLING role. */
+   *  process|budget|diagnostics|memory. LLM failures use the CALLING role. */
   source: string;
   /** What broke — see the category taxonomy in migration 0014. */
   category: string;

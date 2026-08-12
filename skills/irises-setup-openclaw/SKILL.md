@@ -1,6 +1,6 @@
 ---
 name: irises-setup-openclaw
-description: "Set up Irises — a texting persona (web chat, Telegram) that uses this OpenClaw as its deep-work engine."
+description: "Set up Irises — a user-facing front-end (web chat / CLI, plus the engine bridge) that uses this OpenClaw as its deep-work engine."
 metadata:
   {
     "openclaw":
@@ -36,13 +36,10 @@ making it. Walk the user through these stages, running the script for the mechan
    - offers OPTIONAL bridge mode (front chosen OpenClaw channels — WhatsApp, Discord, any of them —
      with Irises, via a plugin installed with `openclaw plugins install`; opt-in per chat via
      `IRISES_FRONT` patterns, off by default — see `docs/ENGINES.md` § Bridge mode),
-   - offers the OPTIONAL Telegram bot-token handoff (moves the bot from OpenClaw's
-     `channels.telegram` to Irises so the user keeps texting the same bot; reversible with
-     `--revert`) — the plugin-free alternative for Telegram only; skip it if bridge mode already
-     fronts the bot,
    - installs dependencies, builds, starts Irises, and runs a health + engine round-trip check.
 4. Tell the user where to talk to Irises: the web chat URL the script prints, `npm run chat` in the
-   clone for a terminal session, or their same Telegram bot if they did the handoff.
+   clone for a terminal session, or — if they enabled bridge mode — the engine's own channels they
+   chose to front.
 
 ## Notes
 
@@ -51,4 +48,4 @@ making it. Walk the user through these stages, running the script for the mechan
   cron wiring is pending) — everything else works on OpenClaw.
 - The user keeps using OpenClaw directly exactly as before; Irises is an additional,
   differently-voiced front door that uses it as an engine.
-- To undo the Telegram handoff: `bash scripts/engine-setup.sh --engine openclaw --revert`.
+- To undo bridge mode: `bash scripts/engine-setup.sh --engine openclaw --revert`.

@@ -19,12 +19,12 @@ export const mem = {
   oauthState: new Map<string, OAuthState>(),
   workflows: new Map<string, Workflow>(),
   agentMemory: new Map<string, AgentMemory>(),
-  // Linq message_id -> the bubble Irises sent, so an inbound reply_to can be resolved
+  // transport message_id -> the bubble Irises sent, so an inbound reply_to can be resolved
   // back to the text she said. `replyRootId` is the inbound id this bubble was sent
   // threaded to (present on Ops answers), the join key for thread-aware resolution.
   // `at` drives TTL emulation.
   sentMessages: new Map<string, { chatId: string; content: string; at: number; replyRootId?: string }>(),
-  // Linq message_id -> a text-bearing message the USER sent, so a thread-root reply_to
+  // transport message_id -> a text-bearing message the USER sent, so a thread-root reply_to
   // (which iMessage collapses to the user's own opening message) resolves to its text.
   // `at` drives TTL emulation; the repo prunes on write past a soft cap.
   inboundMessages: new Map<string, { chatId: string; content: string; senderHandle?: string; at: number }>(),

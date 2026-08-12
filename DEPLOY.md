@@ -32,8 +32,7 @@ The only other place you act is your repo on github.com (push) and a one-time ed
 
 - Access to the client's GCP project as **Owner**, with **billing enabled**. (Editor alone can't grant IAM roles — if you must use Editor, also get `roles/resourcemanager.projectIamAdmin`, or `gcp-setup.sh` fails at the role-binding step.)
 - The GitHub repo `rivianpratama/Irises` (you have push access).
-- **Linq Blue** dashboard access + your `LINQ_API_TOKEN`.
-- API keys for `/opt/irises/.env`: `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `LINQ_API_TOKEN`
+- API keys for `/opt/irises/.env`: `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`
   (required); Supabase / Gmail-OAuth / OpenAI (optional, add later).
 
 > **GO / NO-GO:** the only org-policy blocker for this path is
@@ -74,8 +73,7 @@ gcloud compute ssh irises --zone us-central1-a --tunnel-through-iap \
   --ssh-flag="-t" --command 'sudo nano /opt/irises/.env'
 ```
 
-Set `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `LINQ_API_TOKEN`, and `LINQ_AGENT_BOT_NUMBERS`
-(comma-separated E.164, e.g. `+14158707772`). Leave optional integrations blank for now.
+Set `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY`. Leave optional integrations blank for now.
 
 ## 3. Deploy — *local machine or Cloud Shell*
 
@@ -97,7 +95,7 @@ curl https://<YOUR_VM_IP>.nip.io/health
 
 ## 4. Connect the app
 
-1. **Linq Blue webhook** → point your Linq number at `https://<host>/webhook` (this is Irises, the Convo→Ops agent). The web debug chat is served at `/` and Telegram (when enabled) receives at `/webhook/telegram` — see `docs/CHANNELS.md`.
+1. **Web chat / CLI** → the web debug chat is served at `/` (gated by `DEBUG_TOKEN`); from a shell, `npm run chat` reaches the same endpoints. Engine-owned channels (Telegram, WhatsApp, …) are fronted through the bridge via `IRISES_FRONT` — see `docs/CHANNELS.md` and `docs/ENGINES.md`.
 2. **Real domain (recommended for the client-facing prod):** point an `A` record at the VM IP, then
    set `SITE_ADDRESS`, `PUBLIC_BASE_URL`, and `GOOGLE_OAUTH_REDIRECT_URI` in `/opt/irises/.env` to the
    domain and restart (`cd /opt/irises && sudo docker compose up -d`).
@@ -129,7 +127,7 @@ git push origin main      # builds, ships, restarts, and health-checks automatic
 ```
 
 **Config vs secrets — what to edit where:**
-- **Non-secret config** (models, pacing, `SWEEP_*`/`EMAIL_*`, `LINQ_AGENT_BOT_NUMBERS`, feature flags) lives in **`deploy/app.env`** — edit in your IDE, commit, push. The deploy ships it to `/opt/irises/app.env` and restarts. No SSH.
+- **Non-secret config** (models, pacing, `SWEEP_*`/`EMAIL_*`, feature flags) lives in **`deploy/app.env`** — edit in your IDE, commit, push. The deploy ships it to `/opt/irises/app.env` and restarts. No SSH.
 - **Secrets** (API keys, `SUPABASE_*`, OAuth client secret, `TOKEN_ENCRYPTION_KEY`) live **only** in `/opt/irises/.env` on the VM. A deploy never touches that file, so a push can't clobber your keys — edit them over SSH (Step 2) only when a key changes.
 - On any overlapping key, `app.env` wins, so the committed config is authoritative.
 
@@ -157,7 +155,7 @@ rollback-able. After a VM reboot the `irises` systemd unit brings the stack back
 | e2-micro (Always-Free) + external IP | **~$3** |
 | e2-small (2 GB) + external IP | **~$15** |
 
-Hosting only — your **LLM/messaging API spend (Anthropic, OpenRouter, Linq) is separate** and
+Hosting only — your **LLM API spend (Anthropic, OpenRouter) is separate** and
 usually larger. To resize: `gcloud compute instances stop irises` →
 `set-machine-type --machine-type e2-small` → `start`. The 2 GB swap + 512 MB heap cap let the free
 e2-micro hold up; move to e2-small if you see OOM-kills in the logs.

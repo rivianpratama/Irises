@@ -1,11 +1,11 @@
-// Synthetic identity for the web debug channel (single-user, no Linq/iMessage setup needed).
+// Synthetic identity for the web debug channel (single-user, no external messaging setup needed).
 //
 // The web channel lets you chat with Irises in the browser. It has no real phone handle, so we mint a
 // stable synthetic chatId + handle. The handle is what the memory tiers, Gmail OAuth, and
-// clarification/research state key on — default it to something DISTINCT from any real Linq phone
+// clarification/research state key on — default it to something DISTINCT from any real phone
 // handle so debug turns don't pollute a real user's memory (override via WEB_DEBUG_HANDLE to
 // deliberately test against a real handle's memory).
-import type { ChatInfo } from '../../linq/client.js';
+import type { ChatInfo } from '../types.js';
 
 export const WEB_DEBUG_HANDLE = process.env.WEB_DEBUG_HANDLE || 'web:guest';
 export const IRISES_SELF_HANDLE = 'web:irises';

@@ -111,7 +111,7 @@ export const webChannel: Channel = {
       replyTo: replyTo ? { message_id: replyTo.message_id } : undefined,
       effect: effect ? { type: effect.type, name: effect.name } : undefined,
     });
-    // Return a Linq-shaped result so recordSentBubble()/lookupSentBubble() work across channels.
+    // Return a SendMessageResponse-shaped result so recordSentBubble()/lookupSentBubble() work across channels.
     return {
       chat_id: chatId,
       message: {

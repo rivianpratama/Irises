@@ -70,8 +70,10 @@ test('validation: missing fields → 400; unregistered channel prefix → 400', 
 
   assert.equal((await post(base, { chatId: 'web:debug' }, 'sekrit')).status, 400);
   assert.equal((await post(base, { text: 'x' }, 'sekrit')).status, 400);
-  // tg: parses to the telegram channel, which is not registered in this test process.
-  assert.equal((await post(base, { chatId: 'tg:123', text: 'x' }, 'sekrit')).status, 400);
+  // An unrecognized prefix has no channel — resolveChannel throws "unroutable" → 400.
+  assert.equal((await post(base, { chatId: 'bare-123', text: 'x' }, 'sekrit')).status, 400);
+  // eng: parses to the bridge kind, which is not registered in this test process → 400.
+  assert.equal((await post(base, { chatId: 'eng:whatsapp:123', text: 'x' }, 'sekrit')).status, 400);
   assert.equal(sent.length, 0);
 });
 

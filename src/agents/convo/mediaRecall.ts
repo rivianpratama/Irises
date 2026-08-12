@@ -8,7 +8,7 @@ import { hasMedia, type IncomingMedia } from '../../webhook/types.js';
 // in a durable per-handle pref, mirroring `recent_research`.
 
 // How long after the user SENT media we can still re-attach it. Past this we ask them to resend.
-// NOTE: Linq CDN URLs are short-lived, so even inside this window a re-fetch can fail (MM then
+// NOTE: engine/CDN media URLs are short-lived, so even inside this window a re-fetch can fail (MM then
 // reports it couldn't open the file); guaranteeing the full day would require storing the bytes.
 export const MEDIA_RECALL_TTL_MS = Number(process.env.MEDIA_RECALL_TTL_MS || 24 * 60 * 60 * 1000);
 

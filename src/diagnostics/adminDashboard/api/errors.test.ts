@@ -47,12 +47,12 @@ test('filterMemoryErrors matches on source, category and severity', () => {
 test('filterMemoryErrors q is a case-insensitive substring of the message only', () => {
   const rows = [
     row({ message: 'openrouter length-starved: max_tokens=100' }),
-    row({ message: 'POST /chats/x/messages failed: 502 Bad Gateway', source: 'linq' }),
+    row({ message: 'POST /chats/x/messages failed: 502 Bad Gateway', source: 'webhook' }),
   ];
   assert.equal(filterMemoryErrors(rows, { q: 'LENGTH-STARVED' }).length, 1);
-  assert.equal(filterMemoryErrors(rows, { q: '502' })[0].source, 'linq');
-  // q never leaks into other columns — 'linq' is a source, not message text.
-  assert.equal(filterMemoryErrors(rows, { q: 'linq' }).length, 0);
+  assert.equal(filterMemoryErrors(rows, { q: '502' })[0].source, 'webhook');
+  // q never leaks into other columns — 'webhook' is a source, not message text.
+  assert.equal(filterMemoryErrors(rows, { q: 'webhook' }).length, 0);
 });
 
 test('filterMemoryErrors windows on since/before and sorts newest first', () => {
@@ -80,7 +80,7 @@ test('memoryErrorStats sums folded counts per dimension', () => {
   const rows = [
     row({ source: 'ops', category: 'timeout', severity: 'error', count: 3 }),
     row({ source: 'ops', category: 'truncation', severity: 'warn', count: 1 }),
-    row({ source: 'linq', category: 'send_failure', severity: 'error', count: 2 }),
+    row({ source: 'webhook', category: 'send_failure', severity: 'error', count: 2 }),
   ];
   const stats = memoryErrorStats(rows);
   const pick = (dimension: string, value: string) => stats.find(s => s.dimension === dimension && s.value === value);

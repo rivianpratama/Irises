@@ -65,14 +65,14 @@ export async function resolveTappedReply(messageId: string, chatId: string): Pro
  * Live fallback: fetch the tapped message straight from the channel when neither local index knows
  * it. Only reached on a double-miss (old thread), so the one HTTP call it costs is rare. Chat-scoped
  * like the local lookups — a message from another chat (id collision, forged webhook body) must never
- * leak in. A channel with no `getMessage` (web/telegram) skips straight to the honest 'unresolved',
+ * leak in. A channel with no `getMessage` (web/bridge) skips straight to the honest 'unresolved',
  * as does a true miss here (deleted / network failure / cross-chat) — both raise the tripwire.
  */
 async function resolveViaLiveFetch(messageId: string, chatId: string): Promise<ResolvedReply> {
   // getChannel (not resolveChannel) so an unregistered transport degrades to 'unresolved' rather
   // than throwing — this resolver sits on the reply path and must never break a turn.
   const kind = parseChannelKind(chatId);
-  const channel = getChannel(kind);
+  const channel = kind ? getChannel(kind) : undefined;
   const fetched = await channel?.getMessage?.(chatId, messageId).catch(() => null) ?? null;
   if (!fetched || fetched.chatId !== chatId) {
     console.warn(`[reply] tapped-reply target could not be resolved (chat ${chatId}, id ${messageId})`);

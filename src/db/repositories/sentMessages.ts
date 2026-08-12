@@ -6,7 +6,7 @@ import { mem } from '../memory.js';
 const TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
- * Remember a bubble Irises just sent, keyed by its Linq message_id. `replyRootId`, when the bubble
+ * Remember a bubble Irises just sent, keyed by its transport message_id. `replyRootId`, when the bubble
  * was sent threaded to an earlier message, is the inbound id it anchored to — so a later reply that
  * iMessage collapses to that root can be mapped back to this answer bubble. Fire-and-forget; never throws.
  */

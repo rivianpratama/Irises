@@ -6,7 +6,7 @@
 // Taxonomy for the select options — kept in sync with migration 0014 / the reportError contract.
 const SOURCES = [
   'convo', 'ops', 'judge', 'autonome', 'reflexion', 'mm', 'fallfirm', 'pipeline',
-  'db', 'llm', 'webhook', 'linq', 'process', 'budget', 'diagnostics', 'memory',
+  'db', 'llm', 'webhook', 'process', 'budget', 'diagnostics', 'memory',
 ];
 const CATEGORIES = [
   'llm_error', 'truncation', 'timeout', 'tool_failure', 'send_failure', 'db_error',

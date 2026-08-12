@@ -16,9 +16,9 @@ test('a data: image URL becomes a base64 source (Anthropic cannot read data: via
 });
 
 test('a real remote image URL stays a url source', () => {
-  const blocks: LlmContentBlock[] = [{ type: 'image', url: 'https://cdn.linqapp.com/x.jpg' }];
+  const blocks: LlmContentBlock[] = [{ type: 'image', url: 'https://cdn.example.com/x.jpg' }];
   const out = toAnthropicContent(blocks) as Any[];
-  assert.deepEqual(out[0].source, { type: 'url', url: 'https://cdn.linqapp.com/x.jpg' });
+  assert.deepEqual(out[0].source, { type: 'url', url: 'https://cdn.example.com/x.jpg' });
 });
 
 test('a plain string is passed through unchanged', () => {

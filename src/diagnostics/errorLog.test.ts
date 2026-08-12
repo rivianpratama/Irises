@@ -143,9 +143,9 @@ test('recursion firewall: a failing flush re-queues and reports NOTHING new', as
 
 test('getRecentErrors is newest-first and honours its limit', () => {
   _test.reset();
-  reportError({ source: 'linq', category: 'send_failure', message: 'first one', trace: false });
-  reportError({ source: 'linq', category: 'send_failure', message: 'second one', trace: false });
-  reportError({ source: 'linq', category: 'send_failure', message: 'third one', trace: false });
+  reportError({ source: 'webhook', category: 'send_failure', message: 'first one', trace: false });
+  reportError({ source: 'webhook', category: 'send_failure', message: 'second one', trace: false });
+  reportError({ source: 'webhook', category: 'send_failure', message: 'third one', trace: false });
 
   assert.deepEqual(getRecentErrors().map(r => r.message), ['third one', 'second one', 'first one']);
   assert.equal(getRecentErrors(2).length, 2);

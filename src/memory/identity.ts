@@ -6,7 +6,7 @@
 // update_memory), and no member's personal 1:1 memory ever loads into, or is written
 // from, a group conversation.
 //
-// The pseudo-handle can never collide with a real Linq handle: real handles are E.164
+// The pseudo-handle can never collide with a real transport handle: real handles are E.164
 // phone numbers or email addresses, and ':' appears in neither. It is a MEMORY key only —
 // it must never reach a send path, a Gmail/consent flow, or any per-person facility;
 // callers gate those on isGroupHandle().

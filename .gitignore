@@ -13,9 +13,6 @@ npm-debug.log*
 # Codex local configuration
 .codex/
 
-# OpenAPI spec (get the latest from https://apidocs.linqapp.com)
-linqV3api.yaml
-
 /reference
 
 # Local email-index extraction cache (regenerable)

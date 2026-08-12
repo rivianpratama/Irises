@@ -10,7 +10,7 @@ test('a remote image URL is rewritten to an inline base64 data URL; text is unto
   const req: LlmRequest = {
     role: 'convo',
     messages: [{ role: 'user', content: [
-      { type: 'image', url: 'https://cdn.linqapp.com/x.jpg' },
+      { type: 'image', url: 'https://cdn.example.com/x.jpg' },
       { type: 'text', text: 'whats in this' },
     ] }],
   };
@@ -37,9 +37,9 @@ test('plain-string content is passed through unchanged', async () => {
 });
 
 test('on a fetch failure the original remote URL is kept (graceful degrade)', async () => {
-  const req: LlmRequest = { role: 'convo', messages: [{ role: 'user', content: [{ type: 'image', url: 'https://cdn.linqapp.com/x.jpg' }] }] };
+  const req: LlmRequest = { role: 'convo', messages: [{ role: 'user', content: [{ type: 'image', url: 'https://cdn.example.com/x.jpg' }] }] };
   const out = await inlineImageBlocks(req, async () => null);
-  assert.equal((out.messages[0].content as Any[])[0].url, 'https://cdn.linqapp.com/x.jpg');
+  assert.equal((out.messages[0].content as Any[])[0].url, 'https://cdn.example.com/x.jpg');
 });
 
 test('a request with no images returns the same object reference (no needless clone)', async () => {

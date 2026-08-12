@@ -23,7 +23,7 @@ function newId(): string {
   return `local-${Math.random().toString(36).slice(2)}`;
 }
 
-// Standard tapback types → the glyph iMessage users expect; custom reactions carry their own emoji.
+// Standard tapback types → the glyph users expect; custom reactions carry their own emoji.
 const TAPBACK_EMOJI: Record<string, string> = {
   love: "❤️",
   like: "👍",

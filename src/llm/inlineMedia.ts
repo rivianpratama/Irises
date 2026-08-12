@@ -2,7 +2,7 @@ import { formatFromMime } from './transcribe.js';
 import type { LlmRequest, LlmContentBlock } from './types.js';
 
 // Native audio/video for the OpenRouter multimodal route. Like images (see inlineImages.ts),
-// messaging-CDN links (e.g. Linq's) aren't publicly fetchable, and Gemini/Vertex can't fetch remote
+// messaging-CDN links (e.g. a messaging platform's) aren't publicly fetchable, and Gemini/Vertex can't fetch remote
 // media anyway — audio must be base64 (no URL form at all), and video needs a base64 data URL. So we
 // fetch each block server-side and inline it: audio blocks get `{ data, format }`, video blocks get
 // `{ data }` (the mapper wraps it into a data: URL). Kept separate from inlineImages so the image

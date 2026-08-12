@@ -8,7 +8,7 @@
 // scripts/engine-setup.sh and handed to the engine's job environment — treat it like a credential
 // (it can make Irises speak).
 import { Router, type Request } from 'express';
-import { resolveChannel, parseChannelKind } from '../channels/registry.js';
+import { resolveChannel } from '../channels/registry.js';
 import { voiceOutcome } from '../agents/fallfirm/client.js';
 import { record } from '../diagnostics/trace.js';
 import type { SendFollowUp } from '../agents/orchestrator.js';
@@ -54,8 +54,8 @@ export function createEnginePushRouter(deps: { sendFollowUp: SendFollowUp }): Ro
     // channel is a config error on the engine side, surfaced hard so the job author notices.
     try {
       resolveChannel(chatId);
-    } catch {
-      res.status(400).json({ error: `no registered channel can deliver to "${parseChannelKind(chatId)}" chatIds` });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
       return;
     }
     const text = rawText.slice(0, MAX_TEXT_CHARS);

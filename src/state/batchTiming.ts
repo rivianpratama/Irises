@@ -1,6 +1,6 @@
 // Pure decision logic for the burst batcher (the timer plumbing lives in index.ts). Kept
 // side-effect-free so the rules can be unit-tested directly. Batching does NOT consult the user's
-// typing indicator — it proved unreliable (Linq/iMessage). It's a plain ROLLING window:
+// typing indicator — it proved unreliable. It's a plain ROLLING window:
 //  - flush `settleMs` (5s) after the LAST message,
 //  - every new message RESETS the window to 5s (it never accumulates to 10/15s, and there is no
 //    total-time ceiling — a burst is fully compiled no matter how long, then answered once it's

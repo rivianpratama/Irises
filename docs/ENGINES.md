@@ -13,7 +13,7 @@ its public API, and either side can update independently.
 │                                                                             │
 │   USER ──text──▶ Channels ──▶ Convo (instant reply)          Irises's voice │
 │    ▲             (web chat /                   │                            │
-│    │              Telegram)                    │ deep work?                 │
+│    │              CLI + bridge)                │ deep work?                 │
 │    │                                           ▼                            │
 │    └──reply──── Composer ◀───────────── runTask() seam                      │
 │                 (re-voices,                    │                            │
@@ -62,41 +62,6 @@ bash scripts/engine-setup.sh --engine hermes     # or: --engine openclaw
 The script is idempotent, prints every change before making it, and never edits engine code. For
 hermes it appends two lines to `~/.hermes/.env` (`API_SERVER_ENABLED`, `API_SERVER_KEY`) — the
 documented way to enable its API server; for OpenClaw it only *reads* the existing gateway token.
-
-## Same Telegram bot, new brain (the handoff)
-
-If you already text your engine's Telegram bot, Irises can take the bot over — same bot, same chat
-thread, the brain behind it becomes Irises (which uses your engine for everything deep):
-
-```
-        BEFORE                                   AFTER the handoff
- ───────────────────────                 ──────────────────────────────────
-  Telegram app                            Telegram app
-        │  same chat ────────────────────────▶ │   (nothing changes here)
-        ▼                                      ▼
-   @YourBot (token T)                     @YourBot (token T)
-        │                                      │  token moved by the script;
-        ▼                                      ▼  engine's channel disabled
- ┌──────────────────┐                   ┌───────────────────┐
- │  ENGINE gateway  │                   │      IRISES       │
- │  owns the bot,   │                   │ owns the bot,     │
- │  replies itself  │                   │ Convo/Composer    │
- └──────────────────┘                   │ voice; engine does│
-                                        │ the deep work     │
-                                        └───────────────────┘
-```
-
-- The setup script offers this interactively (`--revert` hands the bot back).
-- Telegram only allows ONE consumer per bot token, which is why the engine's channel must be
-  disabled — and why the handoff works cleanly once it is.
-- **`TELEGRAM_ALLOWED_CHAT_IDS` is required.** After the handoff your engine's pairing/allowlist
-  no longer guards the bot; Irises refuses to start the channel without its own allowlist.
-  (DM `@userinfobot` to find your chat id.) v1 is DMs-only; groups stay with the engine.
-- Every other engine channel (WhatsApp, Discord, Slack…) stays with the engine, untouched —
-  unless you use **bridge mode** (next section), which fronts any of them without moving anything.
-- Handoff vs bridge: the handoff is the plugin-free option and covers Telegram only. Bridge mode
-  is the recommended path for engine users — it covers every channel and the engine keeps owning
-  the bot. Don't do both for the same bot.
 
 ## Bridge mode — Irises on EVERY engine channel
 
@@ -203,10 +168,9 @@ the gateway; `--revert` prints the same steps.
  TERMINAL
  ├── hermes                    → your engine, directly (unchanged)
  │   openclaw dashboard / tui  → your engine, directly (unchanged)
- └── npm run chat              → Irises (same brain the Telegram bot uses)
+ └── npm run chat              → Irises (the same brain, from your shell)
 
  BROWSER   http://localhost:3000        → Irises web chat (DEBUG_TOKEN-gated)
- TELEGRAM  @YourBot (after handoff)     → Irises
  ANY ENGINE CHANNEL matching IRISES_FRONT → Irises (bridge mode; engine keeps the connection)
 ```
 
@@ -244,9 +208,7 @@ fires, the engine does any work needed and POSTs to Irises, which voices it to y
 | `HERMES_BRIDGE_URL` | hermes | bridge mode outbound: the plugin's loopback listener (default `http://127.0.0.1:8655`) |
 | `ENGINE_TIMEOUT_MS` | both | per-engine-call budget (default: `OPS_TASK_TIMEOUT_MS` − 15s) |
 | `ENGINE_MAX_CONCURRENT` | both | engine-call semaphore (default 2) |
-| `TELEGRAM_ENABLED` / `TELEGRAM_BOT_TOKEN` | — | the bot identity (often handed off from the engine) |
-| `TELEGRAM_ALLOWED_CHAT_IDS` | — | **required** comma-separated allowlist |
-| `TELEGRAM_MODE` | — | `polling` (default, no public URL) \| `webhook` |
+| `IRISES_FRONT` | bridge | engine-side glob list choosing fronted chats (e.g. `telegram:*`) — set where the gateway runs |
 | `ANTHROPIC_API_KEY` / `OPENROUTER_API_KEY` | — | Irises's own voice models (setup reuses the engine's when present) |
 
 ## Security notes (read before exposing anything)
@@ -255,10 +217,8 @@ fires, the engine does any work needed and POSTs to Irises, which voices it to y
   engine's FULL toolset — on default engine configs that includes a real shell on the host. Keep
   both engines loopback-only (the defaults) and never expose :8642 / :18789 publicly.
 - **Prompt injection reaches a capable agent.** Whatever users text Irises is distilled into
-  engine prompts. If people other than you can text your bot, consider your engine's sandboxing
-  options and keep the Telegram allowlist tight.
-- **Telegram media URLs embed the bot token.** Irises passes them to the engine for the current
-  turn only and never logs or persists them.
+  engine prompts. If people other than you can reach a fronted chat, consider your engine's
+  sandboxing options and keep `IRISES_FRONT` tight.
 - **Engine memory scope:** hermes scopes per-chat memory via session keys. OpenClaw's curated
   memory files are per-agent — all Irises chats share one engine-side user model there.
 - The engine can only make Irises SPEAK via the push endpoint with the right token; it can never
@@ -270,8 +230,6 @@ fires, the engine does any work needed and POSTs to Irises, which voices it to y
   Hermes: is `hermes gateway` running, and was it restarted after `API_SERVER_ENABLED=true`?
   Check `curl -H "Authorization: Bearer $HERMES_API_KEY" http://127.0.0.1:8642/v1/capabilities`.
   OpenClaw: is the gateway up (`openclaw gateway status`)? Is `@openclaw/gateway-client` installed?
-- *Telegram silent after handoff* — the engine's channel must be disabled (one poller per token),
-  and `TELEGRAM_ALLOWED_CHAT_IDS` must include your chat id (check the boot log).
 - *Reminders never fire* — hermes engine only (v1); check `GET /api/jobs` on the hermes API for
   the job, and that `ENGINE_PUSH_TOKEN` in the job's environment matches Irises's `.env`.
 - *Deep answers time out* — engines can take minutes on hard tasks. Raise `OPS_TASK_TIMEOUT_MS`

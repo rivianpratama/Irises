@@ -32,7 +32,7 @@ function delegateOps(request: string, opts: { media_scope?: 'this_turn' | 'earli
 }
 
 function withImage(): IncomingMedia {
-  return { images: [{ url: 'https://cdn.linqapp.com/x.jpg', mimeType: 'image/jpeg', attachmentId: 'att1' }], audio: [], video: [], docs: [] };
+  return { images: [{ url: 'https://cdn.example.com/x.jpg', mimeType: 'image/jpeg', attachmentId: 'att1' }], audio: [], video: [], docs: [] };
 }
 
 function ctx(): ChatContext {

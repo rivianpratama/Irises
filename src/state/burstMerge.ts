@@ -7,8 +7,7 @@
 // unchanged. `manifest` + `incomingMessageIds` are the ordered, text-bearing subset the model is shown
 // (numbered [msg 1], [msg 2] …) and that the send path maps `[[re:N]]` tags back onto.
 
-import type { IncomingMedia, MessageEffect, ReplyTo } from '../webhook/types.js';
-import type { MessageService } from '../webhook/handler.js';
+import type { IncomingMedia, MessageEffect, ReplyTo, MessageService } from '../webhook/types.js';
 
 export interface BurstInputMessage {
   from: string;
@@ -29,7 +28,7 @@ export interface MergedBurst {
   // message, how many of Irises's sends landed AFTER it was typed (a message queued behind the chat
   // lock while a follow-up delivered predates bubbles it never saw). See state/outboundLog.ts.
   manifest: { text: string; handle: string; receivedAt: number }[];
-  // LINQ ids of the same text-bearing messages, in the same order — index i ↔ manifest[i] ↔ tag N=i+1.
+  // Message ids of the same text-bearing messages, in the same order — index i ↔ manifest[i] ↔ tag N=i+1.
   incomingMessageIds: string[];
   incomingReplyTo?: ReplyTo;
   incomingEffect?: MessageEffect;

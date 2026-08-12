@@ -7,14 +7,18 @@ only ever calls `resolveChannel(chatId)` and speaks through the `Channel` interf
 ## How routing works
 
 Outbound is keyed by `chatId`, and the channel is derived from the `chatId` **prefix**, statelessly
-(so it survives process restarts — the proactive sweeper reads persisted rows carrying a bare
+(so it survives process restarts — the proactive sweeper reads persisted rows carrying the
 `chatId`):
 
-| Prefix            | Channel   | Example `chatId`      |
-|-------------------|-----------|-----------------------|
-| `web:`            | web       | `web:debug`           |
-| `tg:`             | telegram  | `tg:123456789`        |
-| *(anything else)* | linq      | `+15551234567`        |
+| Prefix            | Channel   | Example `chatId`         |
+|-------------------|-----------|--------------------------|
+| `web:`            | web / CLI | `web:debug`              |
+| `eng:`            | bridge    | `eng:telegram:123456789` |
+
+Any `chatId` without a recognized prefix is **unroutable** — `resolveChannel` throws a clear error
+(`expected web: or eng:`) rather than guessing a default. Irises is a front-end for the
+OpenClaw/Hermes engines, so every live chatId carries one of these prefixes; legacy bare / `tg:` ids
+from the removed channels no longer resolve.
 
 Inbound: every transport funnels into the single `enqueueInbound(...)` entry in `src/index.ts`, so
 burst-batching, the rolling settle window, the per-chat "mouth" lock, simulated-typing pacing, and
@@ -23,11 +27,13 @@ diagnostics apply uniformly regardless of channel.
 Code: `src/channels/` — `types.ts` (the `Channel` interface + capabilities), `registry.ts`
 (`registerChannel` / `resolveChannel` / `parseChannelKind`), and one folder per transport.
 
-## Web (debug chat)
+## Web (debug chat + CLI)
 
-Talk to Irises in the browser — no Linq/iMessage setup needed. The `web/` Next.js app is a **thin
+Talk to Irises in the browser — no accounts or engine setup needed. The `web/` Next.js app is a **thin
 client**: it POSTs your message and streams Irises's reply bubbles back over SSE. All the real work is
-server-side, using the server's `.env` API keys (no browser keys).
+server-side, using the server's `.env` API keys (no browser keys). The terminal REPL (`npm run chat`,
+`scripts/irises-chat.ts`) is the same channel from a shell — it talks to the same
+`/api/web/message` · `/api/web/stream` · `/api/web/cancel` endpoints.
 
 - `POST /api/web/message` `{ text, clientId? }` → `202` (the reply is not here — it streams).
 - `GET  /api/web/stream` → long-lived Server-Sent Events. The live reply **and** later async Ops
@@ -41,7 +47,7 @@ when `DEBUG_TOKEN` is set (do this in prod — messages spend real LLM tokens), 
 Open the web client as `/?token=YOUR_DEBUG_TOKEN` and it forwards the token on every request.
 
 On by default (`WEB_ENABLED` != `false`). Single-user identity defaults to `web:debug` /
-`WEB_DEBUG_HANDLE` (`web:guest`) — deliberately distinct from any real Linq handle so debug turns
+`WEB_DEBUG_HANDLE` (`web:guest`) — deliberately distinct from any real chat identity so debug turns
 don't pollute a real user's memory.
 
 Serving: `npm run dev:web` runs the Next dev server on its own port for local development. In
@@ -49,32 +55,15 @@ production the server serves the static export (`web/out`, from `npm run build:w
 SSE stream is same-origin (no CORS). Behind Caddy, the reverse-proxy sets `flush_interval -1` so SSE
 events flush immediately.
 
-## iMessage (Linq Blue)
+## Bridge (engine-owned channels)
 
-The original transport. Inbound arrives at `POST /webhook` (the Linq Blue webhook); outbound uses the
-Linq partner API (`src/linq/client.ts`). Set `LINQ_API_TOKEN` and `LINQ_AGENT_BOT_NUMBERS`, expose
-the server (e.g. `ngrok http 3000`), and point the Linq Blue webhook at `https://<host>/webhook`.
-
-## Telegram (prepared skeleton)
-
-Wired but **off by default**. The adapter (`src/channels/telegram/`) implements the `Channel`
-interface (Bot API `sendMessage` / `sendChatAction` / `getChat` / `setMessageReaction`) and parses
-inbound `Update`s at `POST /webhook/telegram` into the same `enqueueInbound` pipeline.
-
-To enable:
-
-1. Create a bot with [@BotFather](https://t.me/BotFather) and get its token.
-2. Set env: `TELEGRAM_ENABLED=true`, `TELEGRAM_BOT_TOKEN=<token>`, and optionally
-   `TELEGRAM_WEBHOOK_SECRET=<random>` (validated against the `X-Telegram-Bot-Api-Secret-Token` header).
-3. Register the webhook with Telegram (one-time), pointing at your public URL:
-   ```
-   curl "https://api.telegram.org/bot<token>/setWebhook" \
-     -d url="https://<your-host>/webhook/telegram" \
-     -d secret_token="<TELEGRAM_WEBHOOK_SECRET>"
-   ```
-
-**Left as TODOs in the skeleton** (not run live): inbound media download (`file_id` → `getFile` →
-URL), group-admin ops, and the `setWebhook` registration call above.
+When Irises sits in front of an engine (`OPS_BACKEND` set), it can answer on **every channel the
+engine already speaks** — Telegram, WhatsApp, Signal, Discord, LINE, … — without the engine giving
+up the connection. A small plugin in the engine forwards each fronted inbound turn to
+`POST /api/bridge/inbound`; Irises voices a reply and sends it **back out through the engine**, so it
+lands on the same channel. Fronted chats carry `eng:<platform>:<chat>` chatIds and are chosen by the
+engine-side `IRISES_FRONT` glob list (e.g. `IRISES_FRONT=telegram:*`). Full setup, hooks, and failure
+policy live in **[docs/ENGINES.md](ENGINES.md)**.
 
 ## Adding a channel
 

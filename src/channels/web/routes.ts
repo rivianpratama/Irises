@@ -1,6 +1,6 @@
-// Web debug channel HTTP routes — the browser talks to Irises's brain here (no Linq/iMessage needed).
+// Web debug channel HTTP routes — the browser (and the CLI, `npm run chat`) talk to Irises's brain here.
 //
-//   POST /api/web/message  — send a message; runs the SAME batching/mouth pipeline as Linq. 202s
+//   POST /api/web/message  — send a message; runs the SAME batching/mouth pipeline as every channel. 202s
 //                            immediately; the reply is NOT in this response — it streams below.
 //   GET  /api/web/stream   — long-lived SSE. The live reply AND later async Ops follow-ups arrive
 //                            here, in order (same per-chat mouth lock). Reconnect replays via

@@ -24,8 +24,8 @@ test('a rejecting send does not break the chain and never becomes an unhandled r
   process.on('unhandledRejection', onUnhandled);
   try {
     const ran: string[] = [];
-    const bad = withChatLock('c', async () => { ran.push('bad'); throw new Error('linq 500'); });
-    await assert.rejects(bad, /linq 500/);          // the caller can catch the real result
+    const bad = withChatLock('c', async () => { ran.push('bad'); throw new Error('transport 500'); });
+    await assert.rejects(bad, /transport 500/);          // the caller can catch the real result
     const good = await withChatLock('c', async () => { ran.push('good'); return 'ok'; });
     assert.equal(good, 'ok');                        // the NEXT send still runs
     assert.deepEqual(ran, ['bad', 'good']);

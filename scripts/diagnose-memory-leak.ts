@@ -264,7 +264,7 @@ async function main() {
   } else if (sharedThreads.length) {
     findings.push(`SHARED THREADS exist (${sharedThreads.length}) — harvest vector was reachable; no doc contamination found in the retained window.`);
   }
-  if (caseDupes.length || formatDupes.length) findings.push('HANDLE VARIANTS: same identity split/merged across handle strings — inspect Linq payload normalization.');
+  if (caseDupes.length || formatDupes.length) findings.push('HANDLE VARIANTS: same identity split/merged across handle strings — inspect inbound handle normalization (channels/web/identity.ts, channels/bridge/inboundRouter.ts).');
   if (contaminated.some(c => c.source === 'profile.name') && crossWrites === 0) {
     findings.push('profile.name contamination WITHOUT an observed remember_user cross-write in the retained turn window — either the write predates retention, or a path outside the fixed writers is involved. Investigate before assuming coverage.');
   }

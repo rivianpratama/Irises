@@ -5,7 +5,6 @@
 
 ## 1. Prerequisites
 - **Node 22+** and npm.
-- A **Linq Blue** partner account + an assigned phone number + API token.
 - **Anthropic** API key, **OpenRouter** API key (fallback + voice transcription).
 - **Supabase** project (free tier is fine).
 - **Google Cloud** project (for Gmail OAuth) + a public HTTPS domain for production.
@@ -29,7 +28,6 @@ AUTONOME_ENABLED=false       # don't send proactive texts locally
 EMAIL_BACKSTOP_ENABLED=false
 ANTHROPIC_API_KEY=sk-ant-...
 OPENROUTER_API_KEY=sk-or-... # for voice + fallback
-LINQ_API_TOKEN=...           # only needed to actually send/receive
 ```
 Run it:
 ```bash
@@ -39,8 +37,8 @@ curl http://localhost:3000/health      # -> {"status":"ok",...}
 ```
 Diagnostics dashboard: open `http://localhost:3000/debug` (localhost is allowed without a token).
 
-### 2b. Connect it to real iMessage + Gmail locally
-Irises needs a public HTTPS URL for Linq webhooks and the Google OAuth redirect.
+### 2b. Connect Gmail locally
+Irises needs a public HTTPS URL for the Google OAuth redirect.
 ```bash
 ngrok http 3000
 # note the https URL, e.g. https://ab12.ngrok-free.app
@@ -48,9 +46,8 @@ ngrok http 3000
 Then:
 - In `.env`, set `PUBLIC_BASE_URL=https://ab12.ngrok-free.app` and
   `GOOGLE_OAUTH_REDIRECT_URI=https://ab12.ngrok-free.app/oauth/google/callback`.
-- In the **Linq dashboard**, point the webhook for your number at `https://ab12.ngrok-free.app/webhook`.
 - In **Google Cloud Console**, add that same redirect URI to your OAuth client (see §4).
-- Restart `npm run dev`, then text your Linq number.
+- Restart `npm run dev`.
 
 `npm run build` compiles to `dist/` and copies the agent `Context.md` files; `npm start` runs the built server. Build it once to confirm everything compiles:
 ```bash
@@ -111,8 +108,6 @@ inbox backfill + reminders begin.
 
 ## 5. Other keys
 ```
-LINQ_API_TOKEN=...                      # Linq Blue partner token
-LINQ_AGENT_BOT_NUMBERS=+1XXXXXXXXXX     # the bot's number(s)
 TRANSCRIBE_MODEL=google/gemini-2.5-flash
 # per-agent model config lives in deploy/app.env: <AGENT>_PROVIDER (anthropic|openrouter) +
 # <AGENT>_MODEL (Anthropic slug) + <AGENT>_MODEL_OPENROUTER (OpenRouter slug) for CONVO / OPS /
@@ -138,7 +133,7 @@ For the full runbook see the repo-root **DEPLOY.md**.
 
 ## 7. Verification checklist
 - `curl https://your-domain.com/health` → 200.
-- Text the Linq number → Irises replies (paced bubbles).
+- Open the web chat URL (served at `/`) or run `npm run chat` → Irises replies (paced bubbles).
 - Ask "what does AS-IS mean" → answered inline (no delegation).
 - Ask a property/contract question → instant ack, then a follow-up.
 - Onboarding: new number → asked name → offered Gmail link; tap it → "gmail connected ✅",

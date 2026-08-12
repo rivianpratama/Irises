@@ -3,7 +3,7 @@
 // by another's.
 //
 // Rejection-SAFE by construction: the value stored as the chain head (`link`) is an ALWAYS-resolved
-// promise, so a throwing send (sendMessage rejects on a Linq/transport error) can never surface as
+// promise, so a throwing send (sendMessage rejects on a transport error) can never surface as
 // an unhandledRejection that takes down the single VM. The caller gets back `run` — the real result,
 // which may reject — and is responsible for catching it (fire-and-forget callers add `.catch`).
 const sendQueues = new Map<string, Promise<unknown>>();

@@ -6,12 +6,9 @@ import { installProcessErrorHandlers, reportError } from './diagnostics/errorLog
 installProcessErrorHandlers();
 import express from 'express';
 import path from 'node:path';
-import { createWebhookHandler } from './webhook/handler.js';
 import { resolveChannel, registerChannel } from './channels/registry.js';
-import { linqChannel } from './channels/linq/index.js';
 import { webChannel } from './channels/web/channel.js';
 import { createWebRouter } from './channels/web/routes.js';
-import { registerTelegram } from './channels/telegram/index.js';
 import type { MediaAttachment } from './channels/types.js';
 import * as convoClient from './agents/convo/client.js';
 import { getUserProfile, addMessage } from './state/conversation.js';
@@ -54,8 +51,7 @@ function personaFingerprint(body: string): { chars: number; hash: string } {
 // splitLongBubble backstop) lives in the pure, unit-tested ./pipeline/bubbles module.
 
 // Track message count per chat for contact card sharing.
-// The Linq API can only share IRISES'S OWN card (verified: POST /chats/{id}/share_contact_card
-// takes no body — always the from-number's card; docs.linqapp.com). Re-sharing it every few
+// A contact-card share (on a channel that supports it) posts IRISES'S OWN card. Re-sharing it every few
 // messages reads as self-promo spam mid-conversation, so it's opt-in and off by default;
 // when enabled, the card still goes out on the FIRST message (so Irises's name/photo replace
 // the bare number) and then on the interval.
@@ -90,8 +86,7 @@ app.get('/health', (_req, res) => {
 });
 
 // Types for debounce queue
-import { IncomingMedia, MessageEffect, ReplyTo, hasMedia, emptyMedia } from './webhook/types.js';
-import { MessageService } from './webhook/handler.js';
+import { IncomingMedia, MessageEffect, ReplyTo, MessageService, hasMedia, emptyMedia } from './webhook/types.js';
 
 interface PendingMessage {
   from: string;
@@ -131,7 +126,7 @@ export interface AgentClient {
 
 // ── Channel-routed outbound wrappers ─────────────────────────────────────────
 // Every outbound call resolves its transport from the chatId prefix (channels/registry.ts), so the
-// SAME send path below speaks over iMessage (Linq), the web debug channel (SSE), or Telegram with no
+// SAME send path below speaks over the web/CLI debug channel (SSE) or the engine bridge with no
 // change. Optional ops (effects, reactions, group ops, contact card) are guarded by the channel's
 // caps, so a channel that can't do one simply skips it instead of throwing.
 const sendMessage = (chatId: string, text: string, effect?: MessageEffect, replyTo?: ReplyTo, media?: MediaAttachment[]) =>
@@ -411,7 +406,7 @@ async function withTypingKeptAlive<T>(chatId: string, work: Promise<T>): Promise
  * send. That makes each bubble read as typed out. waitForUserQuiet keeps us from talking over
  * the user.
  * Single send path for the live reply and out-of-band follow-ups (Ops, sweeper, email,
- * post-OAuth) — and for EVERY channel, so web/telegram pace exactly like iMessage.
+ * post-OAuth) — and for EVERY channel, so web and the bridge pace exactly the same.
  */
 async function sendBubbles(chatId: string, rawBubbles: string[], opts: SendBubbleOpts = {}): Promise<void> {
   if (rawBubbles.length === 0) return;
@@ -422,7 +417,7 @@ async function sendBubbles(chatId: string, rawBubbles: string[], opts: SendBubbl
   // FLAGS:/Subject:/Sender: labels), so nothing — a model slip, or the composer-failure path that
   // falls back to Ops' raw summary — can ever reach the user as a labeled machine block. A bubble
   // that is empty after stripping (e.g. it was only a tag or a bare SOURCE:/FLAGS: line) is dropped
-  // so we never POST blank text to Linq. Inter-agent text (meta-prompts to Ops) never passes through
+  // so we never send blank text over the channel. Inter-agent text (meta-prompts to Ops) never passes through
   // here. `targets` (aligned to rawBubbles by index) gives each surviving bubble its own native
   // reply target; without it we fall back to replyToFirst.
   const prepared: { text: string; replyTo?: ReplyTo }[] = [];
@@ -807,7 +802,7 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
 
 /**
  * Enqueue one inbound message into the per-chat batching/mouth pipeline. This is the SINGLE inbound
- * entry every channel funnels through — the Linq webhook, the web debug channel, and Telegram — so
+ * entry every channel funnels through — the web/CLI channel and the engine bridge — so
  * burst-merge, the rolling settle window, the late-arrival fold, the mouth lock, and diagnostics
  * all apply uniformly regardless of transport.
  */
@@ -832,7 +827,7 @@ export function enqueueInbound(
 
   // Index this inbound message's id → text so a LATER tapped reply that the transport collapses to
   // the thread root (this user's own message) resolves to what they said. Sits HERE, in the single
-  // inbound entry point, so web/telegram inherit it for free. Fire-and-forget; the burst settle
+  // inbound entry point, so web/bridge inherit it for free. Fire-and-forget; the burst settle
   // window guarantees the write lands well before any turn reads it. Media-only messages carry no
   // resolvable text, so they're skipped.
   if (text?.trim()) void recordInboundMessage(chatId, messageId, text, from);
@@ -844,25 +839,15 @@ export function enqueueInbound(
   scheduleTick(chatId, burstSettleMs(pending));
 }
 
-/** Feed a channel's typing-indicator event into the send-pause tracker (opt-in waitForUserQuiet). */
+/** Feed a channel's typing-indicator event into the send-pause tracker (opt-in waitForUserQuiet).
+ *  DORMANT: no surviving inbound door emits typing events (web/CLI and the bridge don't forward
+ *  them), so this — and the PAUSE_WHILE_TYPING knob it feeds — is inert until a channel wires it. */
 export function setTypingInbound(chatId: string, isTyping: boolean): void {
   setTyping(chatId, isTyping);
 }
 
 /** The enqueueInbound signature — channel routers receive it via dependency injection. */
 export type EnqueueInbound = typeof enqueueInbound;
-
-const createAgentWebhookHandler = (agentClient: AgentClient) => {
-  return createWebhookHandler(
-    async (chatId, from, text, messageId, media, incomingEffect, incomingReplyTo, service) => {
-      enqueueInbound(agentClient, chatId, from, text, messageId, media, incomingEffect, incomingReplyTo, service);
-    },
-    // Typing events feed ONLY the opt-in waitForUserQuiet send-pause. Batching deliberately ignores
-    // them (the indicator is unreliable), so these never touch the batch timer.
-    async (chatId) => { setTypingInbound(chatId, true); },
-    async (chatId) => { setTypingInbound(chatId, false); }
-  );
-};
 
 // Slim: the Gmail OAuth + push routers are gone — the ENGINE owns email now. Engine-initiated
 // proactive messages (reminders, mail nudges, background findings) arrive here instead, voiced
@@ -877,15 +862,13 @@ app.use(createDiagnosticsRouter());
 app.use(createAdminDashboardRouter());
 
 // ── Channels ─────────────────────────────────────────────────────────────────
-// iMessage (Linq) is always registered. The web debug channel (chat with Irises in the browser — no
-// Linq/iMessage setup needed) is on unless WEB_ENABLED=false. Telegram is a prepared skeleton, off
-// unless TELEGRAM_ENABLED=true + TELEGRAM_BOT_TOKEN. Outbound routes by chatId prefix (channels/registry).
-registerChannel(linqChannel);
+// The web/CLI debug channel (chat with Irises in the browser or via `npm run chat` — no external
+// messaging setup needed) is on unless WEB_ENABLED=false. The bridge fronts the engine's own channel
+// connections. Outbound routes by chatId prefix (channels/registry).
 if (process.env.WEB_ENABLED !== 'false') {
   registerChannel(webChannel);
   app.use(createWebRouter({ enqueueInbound, agentClient: convoClient as unknown as AgentClient }));
 }
-registerTelegram(app, { enqueueInbound, agentClient: convoClient as unknown as AgentClient });
 // Bridge mode: engine-fronted chats (eng:<platform>:<chat>) — the engine's irises-bridge plugin
 // forwards fronted inbound turns to /api/bridge/inbound (having suppressed the engine's own reply)
 // and Irises answers back out through the engine's channel connections (EngineBackend.channelSend).
@@ -894,11 +877,6 @@ if (process.env.OPS_BACKEND) {
   registerChannel(bridgeChannel);
   app.use(createBridgeInboundRouter({ enqueueInbound, agentClient: convoClient as unknown as AgentClient }));
 }
-
-// Primary webhook — Irises's front line is Convo (text-only); it adaptively delegates to Ops
-// (research) or MM (reads any non-text file the user texted). The cast bridges the concrete client
-// to the relaxed AgentClient contract.
-app.post('/webhook', createAgentWebhookHandler(convoClient as unknown as AgentClient));
 
 // Serve the web debug client's static build (web/out from `npm run build:web`) at `/`, LAST so it
 // never shadows the API/webhook routes above. Same-origin as /api/web/* → no CORS for the SSE stream.
@@ -915,14 +893,15 @@ app.listen(PORT, () => {
   Server running on http://localhost:${PORT}
 
   Endpoints:
-    POST /webhook                 - iMessage (Linq Blue) → Convo→Ops
+    POST /api/web/message         - Web / CLI chat → Convo→Ops
+    POST /api/bridge/inbound      - Engine bridge inbound (OpenClaw/Hermes)
     POST /webhook/gmail           - Gmail push (Judge)
     GET  /oauth/google/callback   - Gmail OAuth
     GET  /debug                   - Prompt diagnostics
     GET  /dashboard               - Admin orchestration
     GET  /health                  - Health check
 
-  Chat with Irises over the web (no Linq/iMessage setup needed) via the web/ debug client,
-  or point a Linq Blue / Telegram webhook at this server.
+  Chat with Irises over the web debug client or the terminal (npm run chat).
+  Bridge mode fronts your engine's own messaging (WhatsApp, Telegram, Signal, …).
   `);
 });

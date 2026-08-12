@@ -2,7 +2,7 @@
 # Irises engine setup — wire this clone to an UNMODIFIED hermes-agent or OpenClaw engine.
 #
 #   bash scripts/engine-setup.sh --engine hermes            # or: openclaw
-#   bash scripts/engine-setup.sh --engine hermes --revert   # undo the Telegram handoff
+#   bash scripts/engine-setup.sh --engine hermes --revert   # undo bridge mode (unfront / uninstall plugin)
 #
 # Idempotent: safe to re-run. Every config change is printed before it is made, engine config is
 # only ever APPENDED to (hermes) or read (OpenClaw), and nothing in either engine's code is touched.
@@ -53,48 +53,13 @@ command -v npm  >/dev/null || { echo "npm is required"; exit 1; }
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 [ "$NODE_MAJOR" -ge 22 ] || { echo "Node 22+ required (found $(node -v))"; exit 1; }
 
-# ══ Telegram handoff (shared by both engines) ════════════════════════════════
+# ══ Revert (bridge mode) ═════════════════════════════════════════════════════
 HERMES_CONFIG="${HERMES_HOME:-$HOME/.hermes}/config.yaml"
 
-telegram_handoff_hermes() {
-  local token
-  token="$(grep -A6 'telegram:' "$HERMES_CONFIG" 2>/dev/null | grep -E 'token:' | head -1 | sed 's/.*token:[[:space:]]*//; s/["'"'"']//g' || true)"
-  if [ -z "$token" ]; then say "no Telegram bot configured in hermes — skipping handoff"; return 0; fi
-  printf '\033[33m[irises-setup]\033[0m hand the Telegram bot over from hermes to Irises? [y/N] '
-  read -r yn; [ "$yn" = "y" ] || [ "$yn" = "Y" ] || { say "leaving Telegram with hermes"; return 0; }
-  warn "Manual step (hermes config is yours, this script never edits it):"
-  warn "  1. In $HERMES_CONFIG, disable/remove the telegram platform entry"
-  warn "  2. Restart: hermes gateway restart (or your service manager)"
-  set_env TELEGRAM_ENABLED "true"
-  set_env TELEGRAM_BOT_TOKEN "$token"
-  say "Telegram token copied to Irises .env. REQUIRED: set TELEGRAM_ALLOWED_CHAT_IDS in .env"
-  say "(comma-separated chat ids — DM @userinfobot on Telegram to find yours). The channel"
-  say "refuses to start without it: after a handoff, hermes's pairing no longer guards this bot."
-}
-
-telegram_handoff_openclaw() {
-  local token
-  token="$(openclaw config get channels.telegram.botToken 2>/dev/null | tr -d '"' || true)"
-  if [ -z "$token" ] || [ "$token" = "undefined" ]; then say "no Telegram bot configured in OpenClaw — skipping handoff"; return 0; fi
-  printf '\033[33m[irises-setup]\033[0m hand the Telegram bot over from OpenClaw to Irises? [y/N] '
-  read -r yn; [ "$yn" = "y" ] || [ "$yn" = "Y" ] || { say "leaving Telegram with OpenClaw"; return 0; }
-  say "disabling OpenClaw's telegram channel (openclaw config set channels.telegram.enabled false)"
-  openclaw config set channels.telegram.enabled false || warn "could not set via CLI — disable channels.telegram in the OpenClaw config yourself"
-  warn "restart the OpenClaw gateway for the change to take effect"
-  set_env TELEGRAM_ENABLED "true"
-  set_env TELEGRAM_BOT_TOKEN "$token"
-  say "Telegram token copied to Irises .env. REQUIRED: set TELEGRAM_ALLOWED_CHAT_IDS in .env"
-  say "(comma-separated chat ids). The channel refuses to start without it."
-}
-
-telegram_revert() {
-  say "reverting the Telegram handoff on the Irises side:"
-  set_env TELEGRAM_ENABLED "false"
-  warn "now re-enable the telegram channel in your engine's config and restart its gateway;"
-  warn "the bot token is still in your engine's config (this script never removed it)."
-  echo ""
-  say "bridge mode (if you enabled it): to stop fronting instantly, blank IRISES_FRONT in the"
-  say "engine's environment and restart its gateway. To remove the plugin entirely:"
+bridge_revert() {
+  say "reverting bridge mode:"
+  say "to stop fronting instantly, blank IRISES_FRONT in the engine's environment and restart its"
+  say "gateway. To remove the plugin entirely:"
   if [ "$ENGINE" = "hermes" ]; then
     say "  hermes:   remove 'irises-bridge' from plugins.enabled in $HERMES_CONFIG"
     say "            (or: hermes plugins disable irises-bridge), delete ~/.hermes/plugins/irises-bridge,"
@@ -106,7 +71,7 @@ telegram_revert() {
   exit 0
 }
 
-[ "$REVERT" = "1" ] && telegram_revert
+[ "$REVERT" = "1" ] && bridge_revert
 
 # ══ Bridge mode (front the engine's channels with Irises) ════════════════════
 # The plugins ship in this repo (bridge/hermes, bridge/openclaw) and install via each engine's
@@ -194,7 +159,6 @@ setup_hermes() {
   fi
 
   bridge_offer_hermes
-  telegram_handoff_hermes
 }
 
 # ══ OpenClaw ═════════════════════════════════════════════════════════════════
@@ -221,7 +185,6 @@ setup_openclaw() {
   warn "note: reminders via Irises are hermes-only for now (OpenClaw cron wiring pending — docs/ENGINES.md)"
 
   bridge_offer_openclaw
-  telegram_handoff_openclaw
 }
 
 if [ "$ENGINE" = "hermes" ]; then setup_hermes; else setup_openclaw; fi
@@ -242,4 +205,4 @@ fi
 kill "$(cat /tmp/irises-setup.pid)" 2>/dev/null || true
 rm -f /tmp/irises-setup.pid
 
-say "done. Full docs: docs/ENGINES.md (security notes, Telegram allowlist, troubleshooting)."
+say "done. Full docs: docs/ENGINES.md (security notes, bridge mode, troubleshooting)."

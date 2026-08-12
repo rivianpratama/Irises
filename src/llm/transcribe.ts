@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 import { reportError } from '../diagnostics/errorLog.js';
 
 // Voice-memo transcription via OpenRouter's multimodal audio input (no OpenAI/Whisper).
-// Linq delivers voice memos as media parts (audio/mp4 = m4a from cdn.linqapp.com).
+// Voice memos arrive as audio media parts (audio/mp4 = m4a).
 // OpenRouter takes an `input_audio` content block: base64 data + a format string
 // (wav/mp3/m4a/aac/ogg/flac/...). The model must be audio-capable — default to a
 // Gemini flash model (accepts m4a); override with TRANSCRIBE_MODEL.

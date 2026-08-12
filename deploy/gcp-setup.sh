@@ -98,5 +98,5 @@ fi
 echo ""
 echo "FINAL STEP — add your API keys to the VM, then deploy:"
 echo "  gcloud compute ssh ${VM_NAME} --zone ${ZONE} --tunnel-through-iap --ssh-flag=\"-t\" --command 'sudo nano /opt/irises/.env'"
-echo "    (fill ANTHROPIC_API_KEY, OPENROUTER_API_KEY, LINQ_API_TOKEN, LINQ_AGENT_BOT_NUMBERS)"
+echo "    (fill ANTHROPIC_API_KEY, OPENROUTER_API_KEY — see deploy/env.vm.example for the rest)"
 echo "  Then: git push origin main   →   visit https://${VM_IP}.nip.io/health"

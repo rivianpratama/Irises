@@ -6,7 +6,9 @@
 
 **A warm, do-anything assistant you text like a person.**
 
-Irises is a private, server-side **multi-agent brain** reachable over the web, iMessage, and (soon) Telegram. A fast front-line agent replies instantly and quietly hands the hard stuff to a deeper research agent — then re-voices the answer in its own words. To you, there's only ever Irises.
+Irises is the **voice and the nerves** of an assistant — a fast front-line agent that replies in the
+moment, texts like a human, and hands the hard work to a **deep-work engine you already run**
+(hermes-agent or OpenClaw), then re-voices the result in its own words. To you, there's only ever Irises.
 
 <br/>
 
@@ -19,7 +21,7 @@ Irises is a private, server-side **multi-agent brain** reachable over the web, i
 
 <sub>
 
-[Highlights](#-highlights) • [How it works](#-how-it-works) • [Quick start](#-quick-start) • [Channels](#-channels) • [Configuration](#-configuration) • [Models](#-models) • [API](#-http-api) • [Deploy](#-deployment)
+[Highlights](#-highlights) • [How it works](#-how-it-works) • [Engines](#-already-running-hermes-agent-or-openclaw) • [Quick start](#-quick-start) • [Channels](#-channels) • [Configuration](#-configuration) • [Models](#-models) • [API](#-http-api) • [Deploy](#-deployment)
 
 </sub>
 
@@ -29,14 +31,14 @@ Irises is a private, server-side **multi-agent brain** reachable over the web, i
 
 ## ✨ Highlights
 
-- 🧠 **Two-tier agent design** — a fast **Convo** front line answers in the moment and delegates deep work to a powerful **Ops** researcher, which is re-voiced by a **Composer** so the seam never shows.
-- 💬 **One brain, many channels** — the same assistant over a **web debug chat**, **iMessage** (Linq Blue), and a **prepared Telegram** adapter. Add a channel by implementing one interface.
-- 🔌 **Provider-neutral LLM layer** — a single `callLLM` with Anthropic primary and automatic OpenRouter fallback; tool-calls, vision/PDF, web search, and prompt caching normalized to one shape.
+- 🗣️ **A voice, not another brain** — **Convo** answers in the moment and delegates every piece of deep work through one seam; a **Composer** re-voices whatever comes back so the hand-off never shows.
+- 🔩 **Sits in front of the engine you already run** — hermes-agent or OpenClaw does the research, files, mail, reminders and memory, completely unmodified (reminders need the hermes engine in v1 — the OpenClaw cron wiring is still pending). One command wires it up.
+- 💬 **One voice, many channels** — a **web debug chat**, a **terminal REPL** (`npm run chat`), and — in bridge mode — **every channel your engine already speaks** (Telegram, WhatsApp, Signal, Discord, Slack, LINE, …).
+- 🔌 **Provider-neutral LLM layer** — a single `callLLM` over Anthropic and OpenRouter, either one primary per role, with automatic fallback to the other lane on transient errors. Tool-calls, structured "bubble" output, and prompt caching normalized to one shape.
 - 🕰️ **Human texting feel** — burst-batching, a per-chat send lock, and simulated-typing pacing so replies land like a person typing, not a firehose.
-- 🧵 **Living memory** — short / medium / long tiers curated by a silent **Reflexion** agent, so Irises remembers what matters and forgets the noise.
-- 📥 **Proactive, not needy** — an **Autonome** sweeper fires reminders you set up, and a **Judge** triages new email into timely nudges (opt-in).
-- 🔍 **Fully observable** — `/debug` prompt traces and a `/dashboard` orchestration GUI show every agent-to-agent hop.
-- 🧪 **Batteries-included ops** — Docker + Caddy + GitHub Actions, an in-memory data backend for zero-infra local runs, and a green test suite.
+- 🧵 **Layered memory** — short / medium / long tiers held locally, with durable facts forwarded to the engine's own memory so both halves remember the same person.
+- 📥 **Proactive, not needy** — the engine's cron jobs and mail triage push back through `POST /api/engine/push`, get voiced by **Fallfirm**, and land on whatever channel the chat came from.
+- 🔍 **Fully observable** — `/debug` prompt traces and a `/dashboard` orchestration GUI show every hop, cost, and error.
 
 ## 🧠 How it works
 
@@ -44,56 +46,63 @@ Irises is a private, server-side **multi-agent brain** reachable over the web, i
 flowchart LR
     subgraph CH["📨 Channels"]
         direction TB
-        W["🌐 Web chat (SSE)"]
-        I["💬 iMessage (Linq Blue)"]
-        T["✈️ Telegram (skeleton)"]
+        W["🌐 Web chat (SSE) · terminal REPL"]
+        B["🌉 Bridge — Telegram · WhatsApp · Signal · Discord · …"]
     end
 
-    subgraph BRAIN["🧠 The brain"]
+    subgraph BRAIN["🧠 Irises — the voice"]
         direction TB
         CV["🗣️ Convo — fast front line"]
-        OPS["🔎 Ops — deep research"]
-        MM["🖼️ MM — reads files"]
         CMP["✍️ Composer — re-voices"]
-        CV -->|delegate| OPS
-        CV -->|files| MM
-        OPS --> CMP
-        MM --> CMP
+        FF["🛟 Fallfirm — holds & recovers"]
+    end
+
+    subgraph ENG["⚙️ Your engine — unmodified"]
+        E["hermes-agent · OpenClaw<br/>research · files · mail · cron · memory"]
     end
 
     W --> EI
-    I --> EI
-    T --> EI
+    B --> EI
     EI(["enqueueInbound() · batch · pace · lock"]) --> CV
     CV -->|instant reply| OUT
+    CV -->|delegate_to_ops| E
+    E -->|ANSWER · SOURCE · FLAGS| CMP
     CMP -->|follow-up| OUT
-    SW["⏰ Autonome"] -->|due reminders| OUT
-    JD["📥 Judge"] -->|new-mail triage| OUT
+    E -.->|cron · mail → POST /api/engine/push| FF
+    FF --> OUT
     OUT([" bubbles → same channel "])
 ```
 
 <table>
 <tr><td width="50%" valign="top">
 
-**LLM layer** · `src/llm`<br/>
-One `callLLM` entry point. Anthropic primary, OpenRouter fallback on transient errors. Tool-calls, vision/PDF, web search, prompt caching, and structured "bubble" output all normalized.
-
 **Agents** · `src/agents`<br/>
-`convo` · `ops` · `mm` · `composer` · `autonome` · `judge` · `fallfirm` · `reflexion` — each with a persona in its `Context.md`.
+`convo` (front line) · `ops` (the engine seam) · `composer` (re-voices results) · `fallfirm`
+(holding beats and failure recovery) — each with a persona in its `Context.md`.
+
+**The engine seam** · `src/agents/ops`<br/>
+`OPS_BACKEND` picks `hermes` (OpenAI-compatible API + cron REST) or `openclaw` (gateway
+WebSocket). Unset means deep work is honestly offline — Convo still chats.
+→ [docs/ENGINES.md](docs/ENGINES.md)
 
 **Channels** · `src/channels`<br/>
-A `Channel` abstraction over the outbound "mouth" with `linq`, `web` (SSE), and `telegram` adapters. → [docs/CHANNELS.md](docs/CHANNELS.md)
+One `Channel` abstraction with `web` (SSE + CLI) and `bridge` adapters.
+→ [docs/CHANNELS.md](docs/CHANNELS.md)
 
 </td><td width="50%" valign="top">
 
+**LLM layer** · `src/llm`<br/>
+One `callLLM` entry point. Per-role primary provider with the other lane as an automatic
+transient-error fallback, plus structured output, tool-calls, caching, and token budget guards.
+
 **State & memory** · `src/state`, `src/memory`<br/>
-Burst-batching, per-chat send lock, simulated-typing pacing, and short/medium/long memory tiers refreshed by the Reflexion curator.
+Burst-batching, per-chat send lock, simulated-typing pacing, and short/medium/long memory tiers.
 
 **Data** · `src/db` + `supabase/migrations`<br/>
 Supabase Postgres with an in-memory dev fallback (`DATA_BACKEND=memory`).
 
 **Diagnostics** · `src/diagnostics`<br/>
-`/debug` prompt traces and a `/dashboard` orchestration GUI showing the delegation graph.
+`/debug` prompt traces and a `/dashboard` GUI with cost, error, and memory views.
 
 </td></tr>
 </table>
@@ -101,11 +110,10 @@ Supabase Postgres with an in-memory dev fallback (`DATA_BACKEND=memory`).
 ## 🔩 Already running hermes-agent or OpenClaw?
 
 Irises is built to sit **in front of the engine you already have** — and it can appear on **every
-channel your engine already speaks** (WhatsApp, Signal, Discord, Slack, LINE, …). Your hermes or
-OpenClaw does all the deep work (research, email, files, reminders, memory) and keeps owning every
-bot and number, completely unmodified: a tiny bridge plugin — installed through the engine's own
-plugin system — hands chosen chats to Irises's voice and leaves the rest alone. One command wires
-it up (bridge mode is opt-in per chat; a plugin-free Telegram bot handoff remains the alternative):
+channel your engine already speaks**. Your hermes or OpenClaw does all the deep work and keeps
+owning every bot and number, completely unmodified: a tiny bridge plugin — installed through the
+engine's own plugin system — hands chosen chats to Irises's voice and leaves the rest alone. One
+command wires it up:
 
 ```bash
 # hermes users — let your own agent set it up:
@@ -118,29 +126,46 @@ openclaw skills install git:rivianpratama/irises
 git clone https://github.com/rivianpratama/irises && cd irises && bash scripts/engine-setup.sh --engine hermes
 ```
 
+Fronting is **opt-in per chat**: the engine-side `IRISES_FRONT` glob list (matched against
+`<platform>:<chat_id>`, empty by default) decides which conversations Irises answers. Everything else
+the engine keeps handling itself, and blanking `IRISES_FRONT` turns the plugin inert instantly. If the
+hook errors, the default `IRISES_BRIDGE_FAIL=open` lets the engine answer rather than go silent.
+
+> **v1 gap:** scheduling reminders through Irises requires the **hermes** engine (it uses hermes's
+> cron REST API). On OpenClaw everything else works, but reminder creation fails honestly until the
+> gateway's cron wiring lands.
+
 Full guide, diagrams, and security notes: **[docs/ENGINES.md](docs/ENGINES.md)**.
 
 ## 🚀 Quick start
 
-> **Prerequisites:** Node 22+, an `ANTHROPIC_API_KEY`. No database required — the in-memory backend runs infra-free.
+> **Prerequisites:** Node 22+ and at least one LLM key (`ANTHROPIC_API_KEY` and/or
+> `OPENROUTER_API_KEY`). No database required — the in-memory backend runs infra-free, and no engine
+> is needed just to chat.
 
 ```bash
 # 1. install both packages (server + web client)
 npm install && npm run install:web
 
-# 2. configure — copy the template and add your key
+# 2. configure — copy the template and add your key(s)
 cp .env.example .env
-#   set DATA_BACKEND=memory and ANTHROPIC_API_KEY=sk-ant-...
-#   (add OPENROUTER_API_KEY for the fallback + media/voice models)
+#   DATA_BACKEND=memory is already set; add ANTHROPIC_API_KEY / OPENROUTER_API_KEY
+#   (leave OPS_BACKEND commented out for now — deep work stays offline, chat still works)
 
-# 3. run the brain  →  http://localhost:3000  (GET /health → { "status": "ok" })
+# 3. run the brain  →  http://localhost:3000
 npm run dev
 
-# 4. in another terminal, run the web debug chat and start talking to Irises
+# 4. talk to Irises — in the browser…
 npm run dev:web
+
+# …or straight from a second terminal
+npm run chat
 ```
 
-That's it — **no Linq, iMessage, or Telegram setup needed** to chat with Irises locally.
+That's it — **no accounts or engine setup needed** to chat with Irises locally. When
+you're ready for the deep half, point `OPS_BACKEND` at your engine (see
+[docs/ENGINES.md](docs/ENGINES.md)) — until then Irises will tell you plainly that its research side
+is offline rather than guess.
 
 <details>
 <summary><b>Build & run scripts</b></summary>
@@ -151,13 +176,19 @@ That's it — **no Linq, iMessage, or Telegram setup needed** to chat with Irise
 |--------|--------------|
 | `npm run dev` | Server in watch mode (`tsx`) on `:3000` |
 | `npm run dev:web` | Web debug client (Next dev server) |
+| `npm run chat` | Terminal REPL onto the same web-chat endpoints (`/cancel`, `/quit`) |
 | `npm run build` | `tsc` → `dist/`, then copy each agent's `Context.md` + bundled `*.txt` |
+| `npm run copy:context` | The persona/asset copy step on its own |
 | `npm run build:web` | Static web client → `web/out/` (served by the server at `/` in prod) |
 | `npm start` | Run the built server (`node dist/index.js`) |
-| `npm test` | Server unit tests |
+| `npm test` | Server unit tests (Node test runner via `tsx --test`, TZ pinned to UTC) |
 | `npm run install:web` | Install the web client's dependencies |
 
-> The build **must** copy the persona files — the loader throws at boot if a `Context.md` is missing.
+> The build **must** copy the persona files — the loader fails fast on the first turn that needs a
+> missing `Context.md` rather than serving a persona-less agent.
+
+`npm run chat` also takes `-- --url http://host:8080 --token <DEBUG_TOKEN> --client-id mylane` for
+pointing at a remote instance.
 
 </details>
 
@@ -165,79 +196,99 @@ That's it — **no Linq, iMessage, or Telegram setup needed** to chat with Irise
 
 | Channel | How to reach Irises | Enable |
 |---------|-------------------|--------|
-| 🌐 **Web (debug)** | Browser chat streamed over SSE (`web/`), served at `/` | On by default (`WEB_ENABLED`); gated by `DEBUG_TOKEN` like `/debug` |
-| 💬 **iMessage** | Linq Blue webhook → `POST /webhook` | Set `LINQ_API_TOKEN` + `LINQ_AGENT_BOT_NUMBERS` |
-| ✈️ **Telegram** | `POST /webhook/telegram` *(prepared skeleton)* | `TELEGRAM_ENABLED=true` + `TELEGRAM_BOT_TOKEN` |
+| 🌐 **Web (debug)** | Browser chat over SSE (`web/`, served at `/`) or `npm run chat` in a terminal | On by default (`WEB_ENABLED`); gated by `DEBUG_TOKEN` like `/debug` |
+| 🌉 **Bridge** | Chats your engine already owns (Telegram, WhatsApp, Signal, Discord, …) → `POST /api/bridge/inbound` | Set `OPS_BACKEND`, install the bridge plugin, list chats in `IRISES_FRONT` |
 
-Outbound routes by `chatId` prefix (`web:` / `tg:` / bare = Linq), so async follow-ups and proactive
-reminders always return on the channel they came from. See **[docs/CHANNELS.md](docs/CHANNELS.md)**
-for the routing model and a guide to adding your own.
+Outbound routes by `chatId` prefix — `web:` → web / CLI, `eng:<platform>:<chat>` → bridge, anything
+else is **unroutable and throws** — so async follow-ups and engine-driven reminders always return on
+the channel they came from, even across a restart. See **[docs/CHANNELS.md](docs/CHANNELS.md)** for
+the routing model and a guide to adding your own.
 
 ## ⚙️ Configuration
 
-All server config is environment variables. `deploy/app.env` holds the committed, non-secret baseline (models, pacing, job intervals); your local `.env` layers on top with secrets. The essentials:
+All server config is environment variables. `deploy/app.env` holds the committed, non-secret baseline
+(models, pacing, intervals) and is loaded first; your local `.env` layers on top with secrets and
+overrides. The essentials:
 
 | Variable | Purpose |
 |----------|---------|
-| `ANTHROPIC_API_KEY` | Primary LLM provider (all roles) |
-| `OPENROUTER_API_KEY` | Fallback provider + media/voice transcription |
+| `ANTHROPIC_API_KEY` · `OPENROUTER_API_KEY` | The two LLM lanes — at least one, both recommended |
+| `OPS_BACKEND` | `hermes` or `openclaw`. Unset = deep work offline (Convo still chats) |
+| `HERMES_BASE_URL` · `HERMES_API_KEY` | hermes-agent's OpenAI-compatible API server + cron REST |
+| `OPENCLAW_URL` · `OPENCLAW_TOKEN` | OpenClaw gateway WebSocket |
+| `ENGINE_PUSH_TOKEN` | One secret guarding both engine-facing routes (push + bridge inbound) |
 | `DATA_BACKEND` | `memory` (no infra) or `supabase` |
-| `WEB_ENABLED` · `DEBUG_TOKEN` | Web debug chat + its access gate |
-| `LINQ_API_TOKEN` · `LINQ_AGENT_BOT_NUMBERS` | iMessage (Linq Blue) channel |
-| `TELEGRAM_ENABLED` · `TELEGRAM_BOT_TOKEN` | Telegram channel (skeleton) |
+| `WEB_ENABLED` · `DEBUG_TOKEN` | Web debug chat (browser + `npm run chat` CLI) + its access gate |
 
 <details>
 <summary><b>Full configuration reference</b></summary>
 
 <br/>
 
+**Engine (the deep half)** — see [docs/ENGINES.md](docs/ENGINES.md)
+
 | Variable | Purpose |
 |----------|---------|
-| `ANTHROPIC_API_KEY` | Primary LLM provider for every role. |
-| `OPENROUTER_API_KEY` | Automatic fallback + media/voice models. |
-| `OPENAI_API_KEY` | Optional (legacy image/utility paths). |
-| `DATA_BACKEND` | `memory` = zero-infra local; `supabase` = Postgres. |
-| `SUPABASE_URL` · `SUPABASE_SERVICE_ROLE_KEY` | Postgres data layer (omit for the in-memory fallback). |
-| `WEB_ENABLED` · `WEB_DEBUG_HANDLE` | Web channel toggle + its synthetic single-user identity. |
-| `LINQ_API_TOKEN` · `LINQ_API_BASE_URL` · `LINQ_AGENT_BOT_NUMBERS` | iMessage (Linq Blue). |
-| `TELEGRAM_ENABLED` · `TELEGRAM_BOT_TOKEN` · `TELEGRAM_WEBHOOK_SECRET` | Telegram (prepared skeleton). |
-| `GOOGLE_OAUTH_CLIENT_ID` · `GOOGLE_OAUTH_CLIENT_SECRET` · `GOOGLE_OAUTH_REDIRECT_URI` | Optional per-user Gmail read-only OAuth. |
-| `TOKEN_ENCRYPTION_KEY` | AES-256-GCM key encrypting Gmail refresh tokens at rest. |
-| `DEBUG_TOKEN` | Gates `/debug` **and** the web chat endpoints (unset = localhost-only). |
-| `DASHBOARD_PASSWORD` | Gates `/dashboard` (unset = localhost-only). |
-| `AUTONOME_ENABLED` · `EMAIL_POLL_ENABLED` · `EMAIL_BACKSTOP_ENABLED` | Proactive sweeper + email triage. |
-| `<ROLE>_MODEL` · `<ROLE>_PROVIDER` · `<ROLE>_MODEL_OPENROUTER` | Per-role model overrides (see below). |
-| `BATCH_SETTLE_MS` · `TYPING_CPM` · `TYPING_DELAY_MAX_MS` | Batching + simulated-typing pacing. |
+| `OPS_BACKEND` | `hermes` \| `openclaw`; unset = deep work offline, no local fallback. |
+| `HERMES_BASE_URL` · `HERMES_API_KEY` | hermes API server (default `http://127.0.0.1:8642`) and its `API_SERVER_KEY`. |
+| `OPENCLAW_URL` · `OPENCLAW_TOKEN` · `OPENCLAW_AGENT_ID` | Gateway WS (default `ws://127.0.0.1:18789`), auth token, agent (default `main`). |
+| `ENGINE_PUSH_TOKEN` | Shared secret for `POST /api/engine/push` (`x-engine-token`) **and** `POST /api/bridge/inbound` (`x-bridge-token`). Unset = loopback-only. |
+| `ENGINE_TIMEOUT_MS` · `ENGINE_MAX_CONCURRENT` | Per-call budget (default `OPS_TASK_TIMEOUT_MS − 15s`) and the engine-call semaphore (default 2). |
+| `HERMES_BRIDGE_URL` · `IRISES_PUSH_URL` | Where Irises sends bridge replies (default `http://127.0.0.1:8655`) and the push URL embedded in engine cron jobs. |
 
-Per-role tuning, escalation knobs, and pacing all have sensible defaults in `deploy/app.env` — see `.env.example` for the fully annotated list.
+**Channels**
+
+| Variable | Purpose |
+|----------|---------|
+| `WEB_ENABLED` · `WEB_DEBUG_HANDLE` · `WEB_DEBUG_CHAT_ID` | Web channel toggle + its synthetic single-user identity (browser chat and the `npm run chat` CLI). |
+
+**Data, access, and behavior**
+
+| Variable | Purpose |
+|----------|---------|
+| `DATA_BACKEND` · `SUPABASE_URL` · `SUPABASE_SERVICE_ROLE_KEY` | `memory` = zero-infra local; `supabase` = Postgres. |
+| `DEBUG_TOKEN` | Gates `/debug` **and** the web chat endpoints (unset = localhost-only). |
+| `DASHBOARD_PASSWORD` | Gates `/dashboard`. **Has a built-in default — set your own before exposing the port.** |
+| `PORT` · `NODE_ENV` | Listen port (3000 dev, 8080 in the image) and persona caching mode. |
+| `<ROLE>_PROVIDER` · `<ROLE>_MODEL` · `<ROLE>_MODEL_OPENROUTER` · `<ROLE>_MAX_TOKENS` · `<ROLE>_EFFORT` · `<ROLE>_THINKING` | Per-role model routing and reasoning knobs (see below). |
+| `OPS_TASK_TIMEOUT_MS` · `OPS_RETRY_ENABLED` · `OPS_PROGRESS_*` · `OPS_MAX_PROGRESS_PINGS` | Delegation deadline (4 min), the single cheap retry, and the "still on it" ping throttle. |
+| `ROUTING_GATE` | `off` disables the grounding screen that forces data questions through the engine. |
+| `BATCH_SETTLE_MS` · `TYPING_CPM` · `TYPING_DELAY_MAX_MS` · `PAUSE_WHILE_TYPING` | Batching + simulated-typing pacing. |
+| `LLM_DAILY_TOKEN_CAP` · `OPS_TASK_TOKEN_BUDGET` · `LLM_MAX_INPUT_TOKENS_EST` | Cost circuit breakers (tripping fails loud, never re-billed on the other lane). |
+| `DIAGNOSTICS_ENABLED` · `DIAGNOSTICS_*` | `/debug` trace buffer sizing and retention. |
+
+`.env.example` is the annotated local template; `deploy/app.env` carries the shared baseline. Note
+that `app.env` still ships inert leftovers from the pre-engine architecture (autonome / judge /
+reflexion / mm role blocks and the email knobs) — its own header marks them as read by nothing.
 
 </details>
 
 ## 🤖 Models
 
-| Role | Default model |
-|------|---------------|
-| **Convo** — fast front line | `claude-sonnet-5` |
-| **Ops** — deep research (+ escalation) | `claude-opus-4-8` |
-| **MM** — media reader | `google/gemini-3.5-flash` *(OpenRouter)* |
-| **Judge** — email triage | `claude-sonnet-4-6` |
-| **Reflexion** — memory curator | `claude-opus-4-8` |
-| **Composer / Autonome / Fallfirm / Classify** | Haiku-tier |
+Deep research has no model here — **it runs on your engine's model**. Irises itself only calls an LLM
+for three roles, shipped OpenRouter-primary with an Anthropic fallback lane:
 
-Every role has an OpenRouter fallback slug and is overridable via env.
+| Role | Shipped primary | Anthropic fallback |
+|------|-----------------|--------------------|
+| **Convo** — front line (and the Composer re-voice) | `openai/gpt-5.6-luna:nitro` | `claude-sonnet-5` |
+| **Classify** — routing, effects, failure triage | `openai/gpt-5.6-luna:nitro` | `claude-sonnet-4-6` |
+| **Fallfirm** — holding beats + recovery voice | `openai/gpt-5.6-luna:nitro` | `claude-sonnet-4-6` |
+| **Transcribe** — voice memos | `google/gemini-3.5-flash-lite:nitro` | *(OpenRouter only)* |
+
+Either provider can be primary per role: `<ROLE>_PROVIDER` picks the lane, and the other one becomes
+the automatic fallback on 5xx / 429 / network errors. With no `<ROLE>_PROVIDER` set, the code
+defaults are Anthropic-primary; `deploy/app.env` is what flips the shipped config to OpenRouter.
 
 ## 🔌 HTTP API
 
-| Method & path | Purpose |
-|---------------|---------|
-| `POST /api/web/message` · `GET /api/web/stream` · `POST /api/web/cancel` | Web debug chat (send / SSE stream / stop) |
-| `POST /webhook` | iMessage (Linq Blue) receiver |
-| `POST /webhook/telegram` | Telegram receiver *(skeleton)* |
-| `POST /webhook/gmail` | Gmail Pub/Sub push → fires the Judge |
-| `GET /oauth/google/callback` | Gmail OAuth redirect |
-| `GET /debug` | Prompt diagnostics *(token-gated)* |
-| `GET /dashboard` | Admin orchestration GUI *(password-gated)* |
-| `GET /health` | Health check |
+| Method & path | Purpose | Auth |
+|---------------|---------|------|
+| `POST /api/web/message` · `GET /api/web/stream` · `POST /api/web/cancel` | Web debug chat (browser + `npm run chat` CLI) — send / SSE stream / stop research | `DEBUG_TOKEN` (unset = localhost) |
+| `POST /api/engine/push` | Engine cron / mail → a voiced message on the right channel | `x-engine-token` |
+| `POST /api/bridge/inbound` | Bridge plugin forwards a fronted chat *(mounted when `OPS_BACKEND` is set)* | `x-bridge-token` |
+| `GET /debug` | Prompt diagnostics | `DEBUG_TOKEN` |
+| `GET /dashboard` | Admin orchestration GUI | `DASHBOARD_PASSWORD` |
+| `GET /health` | Health check + running-persona fingerprint | none |
 
 ## 🗂️ Project layout
 
@@ -245,15 +296,19 @@ Every role has an OpenRouter fallback slug and is overridable via env.
 irises/
 ├─ src/                    # the server brain (Express · TypeScript · Node 22)
 │  ├─ index.ts             #   HTTP entry, batching/mouth, boot
-│  ├─ agents/              #   convo · ops · mm · composer · autonome · judge · fallfirm · reflexion
-│  ├─ channels/            #   Channel abstraction + linq · web (SSE) · telegram adapters
+│  ├─ agents/              #   convo · ops (engine seam) · composer · fallfirm + orchestrator
+│  ├─ channels/            #   Channel abstraction + web (SSE + CLI) · bridge
 │  ├─ llm/                 #   callLLM: provider-neutral LLM layer (Anthropic + OpenRouter)
 │  ├─ state/ · memory/     #   send lock, batching, pacing · short/medium/long memory tiers
-│  ├─ db/ · pipeline/      #   Supabase | in-memory data layer · sweeper, email triage
-│  └─ oauth/ · diagnostics/#   Gmail OAuth · /debug + /dashboard
+│  ├─ db/ · pipeline/      #   Supabase | in-memory data layer · bubble, cron, time helpers
+│  ├─ webhook/             #   engine push door
+│  └─ diagnostics/         #   /debug traces + /dashboard GUI
+├─ bridge/                 # engine plugins — hermes (Python) · openclaw (TypeScript)
+├─ skills/                 # irises-setup-hermes · irises-setup-openclaw (engine-native installers)
+├─ scripts/                # engine-setup.sh · irises-chat.ts (REPL) · diagnose-memory-leak.ts
 ├─ supabase/migrations/    # Postgres schema
-├─ deploy/                 # docker-compose · Caddy · GCP setup / bootstrap
-├─ docs/                   # DEPLOY.md · CHANNELS.md
+├─ deploy/                 # docker-compose · Caddyfile · app.env · GCP provisioning
+├─ docs/                   # ENGINES.md · CHANNELS.md · DEPLOY.md · PROMPTING_CHARTER.md
 └─ web/                    # web debug client (Next.js, thin SSE client) — its own package
 ```
 
@@ -262,8 +317,13 @@ The server (root) and the web client (`web/`) are **two independent npm packages
 ## ☁️ Deployment
 
 Irises ships as a single Docker image (server `dist/` **and** the static web client `web/out/`, served
-together at `/`) running on a GCP Compute Engine VM behind **Caddy** for automatic HTTPS, auto-deployed
-on push via **GitHub Actions**. Production config lives in `/opt/irises/.env` (`PORT=8080`).
+together at `/`) running on a GCP Compute Engine VM behind **Caddy** for automatic HTTPS. Secrets and
+per-VM values (`IMAGE`, `SITE_ADDRESS`, API keys) live in `/opt/irises/.env`, layered *under* the
+committed `deploy/app.env` — which sets `PORT=8080` and wins on any overlapping key.
+
+Deploys are **manual** — build the image and `docker compose up` on the VM. There is no CI workflow in
+this repo; the inherited auto-deploy pipeline was removed, so any `.github/workflows` references still
+sitting in the deploy docs are stale.
 
 📖 Full runbook: **[docs/DEPLOY.md](docs/DEPLOY.md)**
 
@@ -276,11 +336,16 @@ npm run build:web                # static web client
 npm --prefix web run typecheck   # web type safety
 ```
 
+The web package also carries its own suites: `npm --prefix web run test` (Vitest) and
+`npm --prefix web run test:e2e` (Playwright, which builds and serves the app on `:4173`).
+
 ## 🤝 Contributing
 
 Issues and PRs are welcome. Before opening a PR, please run the [verification](#-verification) commands
-and keep the multi-agent machinery (the JSON bubble envelope, delegation seams, and grounding rules)
-intact — see [docs/PROMPTING_CHARTER.md](docs/PROMPTING_CHARTER.md) for the principles behind the prompts.
+and keep the machinery that makes Irises feel like one person (the JSON bubble envelope, the
+delegation seam, and the grounding rules) intact — see
+[docs/PROMPTING_CHARTER.md](docs/PROMPTING_CHARTER.md) for the principles behind the prompts, bearing
+in mind it's an inherited document that predates the engine split.
 
 ## 📄 License
 
