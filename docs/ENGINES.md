@@ -41,21 +41,21 @@ chats — and says honestly that its deep half is offline when you ask for more.
 **Hermes users** — in your hermes chat, or by hand:
 
 ```bash
-hermes skills install https://raw.githubusercontent.com/<owner>/irises/main/skills/irises-setup-hermes/SKILL.md
+hermes skills install https://raw.githubusercontent.com/rivianpratama/irises/main/skills/irises-setup-hermes/SKILL.md
 # then, in any hermes chat:   /irises-setup-hermes
 ```
 
 **OpenClaw users:**
 
 ```bash
-openclaw skills install git:<owner>/irises
+openclaw skills install git:rivianpratama/irises
 # then ask your OpenClaw to run the irises-setup-openclaw skill
 ```
 
 **Anyone, manually:**
 
 ```bash
-git clone https://github.com/<owner>/irises && cd irises
+git clone https://github.com/rivianpratama/irises && cd irises
 bash scripts/engine-setup.sh --engine hermes     # or: --engine openclaw
 ```
 

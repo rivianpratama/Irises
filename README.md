@@ -107,13 +107,13 @@ optional handoff of your existing Telegram bot (same bot, new brain):
 
 ```bash
 # hermes users — let your own agent set it up:
-hermes skills install https://raw.githubusercontent.com/<owner>/irises/main/skills/irises-setup-hermes/SKILL.md
+hermes skills install https://raw.githubusercontent.com/rivianpratama/irises/main/skills/irises-setup-hermes/SKILL.md
 
 # OpenClaw users:
-openclaw skills install git:<owner>/irises
+openclaw skills install git:rivianpratama/irises
 
 # anyone, manually:
-git clone https://github.com/<owner>/irises && cd irises && bash scripts/engine-setup.sh --engine hermes
+git clone https://github.com/rivianpratama/irises && cd irises && bash scripts/engine-setup.sh --engine hermes
 ```
 
 Full guide, diagrams, and security notes: **[docs/ENGINES.md](docs/ENGINES.md)**.
