@@ -98,6 +98,26 @@ Supabase Postgres with an in-memory dev fallback (`DATA_BACKEND=memory`).
 </td></tr>
 </table>
 
+## 🔩 Already running hermes-agent or OpenClaw?
+
+Irises is built to sit **in front of the engine you already have** — your hermes or OpenClaw does
+all the deep work (research, email, files, reminders, memory), completely unmodified, while Irises
+is the warm texting persona your people actually talk to. One command wires it up, including an
+optional handoff of your existing Telegram bot (same bot, new brain):
+
+```bash
+# hermes users — let your own agent set it up:
+hermes skills install https://raw.githubusercontent.com/<owner>/irises/main/skills/irises-setup-hermes/SKILL.md
+
+# OpenClaw users:
+openclaw skills install git:<owner>/irises
+
+# anyone, manually:
+git clone https://github.com/<owner>/irises && cd irises && bash scripts/engine-setup.sh --engine hermes
+```
+
+Full guide, diagrams, and security notes: **[docs/ENGINES.md](docs/ENGINES.md)**.
+
 ## 🚀 Quick start
 
 > **Prerequisites:** Node 22+, an `ANTHROPIC_API_KEY`. No database required — the in-memory backend runs infra-free.
