@@ -1,0 +1,28 @@
+# Caddy automatically obtains and renews a Let's Encrypt TLS cert for $SITE_ADDRESS,
+# then reverse-proxies HTTPS traffic to the app container on port 8080.
+#
+# SITE_ADDRESS (set in /opt/irises/.env) is either:
+#   - a zero-cost nip.io host:  34.27.1.2.nip.io   (just <YOUR_VM_EXTERNAL_IP>.nip.io)
+#   - or a real domain you point at the VM's IP:  app.yourdomain.com
+#
+# Ports 80 and 443 must be open to the internet (gcp-setup.sh opens them) so Let's Encrypt
+# can validate the host. nip.io shares Let's Encrypt rate limits — if issuance returns 429,
+# wait a while or switch to a real domain. To test issuance WITHOUT burning the prod limit,
+# add a global options block above the site with:
+#     {
+#         acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+#     }
+# (staging certs are untrusted by browsers — for validation only).
+
+{$SITE_ADDRESS} {
+	encode zstd gzip
+	reverse_proxy app:8080 {
+		# Required for the web debug channel's SSE stream (/api/web/stream): flush each event
+		# immediately instead of buffering, so bubbles/typing arrive live.
+		flush_interval -1
+		# Stop sending traffic to the app if it stops answering /health.
+		health_uri /health
+		health_interval 30s
+		health_timeout 5s
+	}
+}

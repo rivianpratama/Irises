@@ -1,0 +1,233 @@
+import type { LlmToolDef } from '../../llm/types.js';
+
+export const REACTION_TOOL: LlmToolDef = {
+  name: 'send_reaction',
+  description: "React to one of the user's messages with a tapback or any emoji. Defaults to their latest message; on a burst set `re` to tapback a specific numbered [msg N] instead. Supplementary to a real answer — but when a message asks nothing and everything in it is already settled ground, a reaction ALONE (this tool + \"bubbles\":[]) is a complete, human reply. Never reaction-only when they actually asked something still open.",
+  inputSchema: {
+    type: 'object',
+    properties: {
+      type: { type: 'string', enum: ['love', 'like', 'dislike', 'laugh', 'emphasize', 'question', 'custom'] },
+      emoji: { type: 'string', description: 'Required when type is "custom".' },
+      re: { type: 'number', description: 'Only on a burst (their messages are numbered [msg N] this turn): the number of the specific message to react to. Omit to react to their latest message.' },
+    },
+    required: ['type'],
+  },
+};
+
+export const EFFECT_TOOL: LlmToolDef = {
+  name: 'send_effect',
+  description: 'Add an iMessage effect to your text. ONLY when explicitly asked. You must also write text.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      effect_type: { type: 'string', enum: ['screen', 'bubble'] },
+      effect: { type: 'string', enum: ['confetti', 'fireworks', 'lasers', 'sparkles', 'celebration', 'hearts', 'love', 'balloons', 'happy_birthday', 'echo', 'spotlight', 'slam', 'loud', 'gentle', 'invisible_ink'] },
+    },
+    required: ['effect_type', 'effect'],
+  },
+};
+
+export const REMEMBER_USER_TOOL: LlmToolDef = {
+  name: 'remember_user',
+  description: "Save NEW info about the user — their name and what they do, and the personal color that makes them feel known: a project and what they call it (\"fixing up a lake cabin, calls it 'the shack'\"), a current arc or goal (\"training for a marathon\"), a habit, a hard personal rule, a running joke. Only for genuinely new info. You MUST also write a text response.",
+  inputSchema: {
+    type: 'object',
+    properties: {
+      handle: { type: 'string', description: "Whose info this is — must be the current sender or, in a group chat, a listed participant's handle; anything else is ignored. Omit to use the current sender." },
+      name: { type: 'string' },
+      fact: { type: 'string' },
+    },
+  },
+};
+
+export const DELEGATE_TO_OPS_TOOL: LlmToolDef = {
+  name: 'delegate_to_ops',
+  description: [
+    'Hand a task to the Ops engine (a deliberate, powerful model with web search) for deep work. Use whenever the answer needs current/external facts from the web, the user\'s own email + attachments, or several sources combined,',
+    'OR when a request is substantive enough that careful reasoning would help (use kind "general" for anything multi-step, multi-source, or with no single obvious tool).',
+    'You will NOT get the answer this turn, so you MUST also write a short, warm holding text now. The holding text is YOU digging in yourself — never mention ops, an engine, a model, a system, delegating, or handing anything off; to the user there is only you. Make it SPECIFIC to what you are about to look up and word it differently each time, like a person would, e.g. "looking that up now", "lemme check your inbox for that", "digging through that thread now", "reading that page now 🙌". Do NOT reuse the same canned phrase every time. An emoji here is optional and occasional, so most of these need none, and when one fits, vary it rather than always using 👍.',
+    'Do NOT use for quick math, terminology/definitions, onboarding, or casual chit-chat. Answer those yourself, like a person would. A NEW file on this message (photo, PDF, voice memo, video) ALWAYS goes to delegate_to_mm first — that is where you open and read it. But research that refers BACK to a file you already looked at ("yes, check that clause", "is that price fair?") comes HERE with media_scope "earlier": the deeper look can re-open the file itself and it already has your full read of it (Recent research).',
+  ].join(' '),
+  inputSchema: {
+    type: 'object',
+    properties: {
+      kind: {
+        type: 'string',
+        enum: ['web_research', 'document_read', 'draft', 'general'],
+        description: "web_research=current or external facts from the web plus reasoning (look something up, read a page, check what's true now); document_read=read or search the user's OWN connected email and its attachments; draft=write a message or note for them to send; general=substantive multi-source or multi-step reasoning with no single obvious tool — Ops carries the full toolset and your meta_prompt drives it.",
+      },
+      request: { type: 'string', description: "The user's underlying ask, distilled." },
+      media_scope: { type: 'string', enum: ['this_turn', 'earlier', 'none'], description: 'Which chat file(s) this research is grounded in: earlier = a file they sent BEFORE this turn that the research is about (the usual case — the follow-up after you read it); this_turn = the file(s) on this very message (rare; new files normally go to delegate_to_mm first); none = no file is involved (the default when this message carries none).' },
+      meta_prompt: {
+        type: 'string',
+        description: "Write a clear instruction to Ops, in your own words, as if briefing a sharp colleague: what the user actually needs, any relevant context you know about them, and what a great answer looks like. Name where the answer should come from — the web, the user's own inbox/attachments, or a mix — so Ops knows which source to trust. Be specific and human, not a template. REQUIRED in practice for kind 'general' — there the brief is the main steering Ops gets.",
+      },
+    },
+    required: ['kind', 'request'],
+  },
+};
+
+export const DELEGATE_TO_MM_TOOL: LlmToolDef = {
+  name: 'delegate_to_mm',
+  description: [
+    'Open a file the user texted — photos, videos, voice memos, PDFs, documents — and actually see/read it. This is your OWN eyes and ears: opening a file IS you looking, never a handoff, never something you announce. ANY new file on a message comes here FIRST, always.',
+    'The file bytes are not in your context, so the bracketed [they attached …] note is all you have UNTIL you open it here. ANY question whose answer lives INSIDE a file goes to this tool — "what\'s in this?", "read the fine print", "what does the memo say", a document photo, a screenshot to pull numbers off. Never guess at contents you haven\'t opened, and NEVER tell the user you can\'t see/hear/open a file — to them you simply take a look.',
+    'You will NOT get the answer this turn: your reply with what you saw lands in the thread on its own a moment later — same you, one voice, continuing from your holding line. If the file points at outside facts (their inbox, the web, the market), that reply answers the file and leaves the deeper pull dangling; when the user says the word, NEXT turn is a delegate_to_ops with media_scope "earlier".',
+    'Your holding line for this is a tiny human beat in your OWN words — a "hmm", a "one sec, looking at that", "lemme open this" energy — ONE short bubble at most, sometimes none at all. Never the bigger "pulling the records" research line, never the same phrase twice, never an explanation that you\'re handing it off (to the user there is only you, taking a look).',
+    'Use media_scope "earlier" when they\'re pointing back at a file they sent BEFORE this turn ("that photo from before", "reread the doc i sent"); otherwise "this_turn" (the default).',
+  ].join(' '),
+  inputSchema: {
+    type: 'object',
+    properties: {
+      request: { type: 'string', description: 'What they want to know from the file, distilled.' },
+      meta_prompt: { type: 'string', description: 'Brief the reader like a sharp colleague: what to look for, the context you know, what a great answer looks like.' },
+      media_scope: { type: 'string', enum: ['this_turn', 'earlier'], description: 'this_turn = the file(s) on this message (default); earlier = a file they sent previously that this message refers back to.' },
+      address: { type: 'string', description: 'A place/address if relevant to the file.' },
+      deal_ref: { type: 'string', description: 'A short name/reference for what the file is about, if any.' },
+    },
+    required: ['request'],
+  },
+};
+
+export const DISCONNECT_GMAIL_TOOL: LlmToolDef = {
+  name: 'disconnect_gmail',
+  description: [
+    "Disconnect / unlink the user's Gmail and stop reading their inbox. Revokes access and clears their cached email state. It's fully reversible — they can reconnect anytime.",
+    'This is CONFIRM-FIRST. On their FIRST request to disconnect/unlink/log out/stop you reading their inbox, do NOT call this tool — reply with one short bubble asking them to confirm (e.g. "you sure? i\'ll lose access to your inbox and stop flagging your emails").',
+    'Call this tool with confirmed=true ONLY in the turn they explicitly confirm, and also write a short warm "done, unlinked it" text. Never set confirmed=true on a first request. Do NOT use it at all if Gmail isn\'t connected.',
+  ].join(' '),
+  inputSchema: {
+    type: 'object',
+    properties: {
+      confirmed: { type: 'boolean', description: 'Must be true to disconnect. Set true ONLY after the user has explicitly confirmed in their latest message that they want to disconnect.' },
+    },
+    required: ['confirmed'],
+  },
+};
+
+export const SET_PREFERENCE_TOOL: LlmToolDef = {
+  name: 'set_preference',
+  description: "Record a durable preference or onboarding fact about the user. Use for their name (key 'name'), their timezone (key 'agent_tz', IANA like 'America/Denver' — capture it whenever their timezone or location surfaces; it anchors reminders and their daily rhythm), their communication style (key 'comms_style'), how they want to be addressed (key 'address_as', e.g. value 'Chief' or 'Mr. Smith' — whatever they ask to be called), or declining Gmail (key 'gmail_declined', value true). Special key 'important_note': APPENDS one fact to a permanent remember-this list instead of overwriting — use it whenever they say \"remember this\" or restate something you'd forgotten (value = the fact, self-contained, e.g. 'is planning a trip to Japan in the fall'), and for a hard personal rule stated as one (they say 'never book me sunday mornings, ever' → value 'hard rule: no meetings or calls sunday mornings'). Persisted and remembered across conversations. You usually also write a normal text reply.",
+  inputSchema: {
+    type: 'object',
+    properties: {
+      key: { type: 'string', description: "e.g. name, agent_tz (IANA timezone like 'America/Denver'), comms_style, address_as, important_note (appends to a permanent list), gmail_declined, respect_quiet_hours" },
+      value: { description: 'The value (string, number, or boolean).' },
+    },
+    required: ['key', 'value'],
+  },
+};
+
+export const REQUEST_GMAIL_ACCESS_TOOL: LlmToolDef = {
+  name: 'request_gmail_access',
+  description: "Start Gmail connection. Use during onboarding, or whenever a request needs their email and Gmail is not yet connected. Generates a tappable consent link. You MUST also write a short text telling them to tap it. Do NOT use if already connected.",
+  inputSchema: {
+    type: 'object',
+    properties: { reason: { type: 'string', description: 'Why access is needed, shown to the user.' } },
+  },
+};
+
+export const SCHEDULE_AUTOMATION_TOOL: LlmToolDef = {
+  name: 'schedule_automation',
+  description: [
+    'Set up a reminder or recurring automation that YOU (Irises) will deliver later, unprompted, at a scheduled time. Use this whenever the user asks to be reminded of anything, or to receive something on a schedule.',
+    'Be versatile: any reminder counts, e.g. "remind me friday about the meeting", "ping me in 30 min", "every monday give me my week ahead", "text me each morning with anything important in my inbox".',
+    'Compute the time using the Current time block in your context. For a one-time reminder, set schedule_kind="once" and fire_at to an absolute ISO 8601 timestamp. For anything repeating, set schedule_kind="cron" with a standard 5-field cron expression and the timezone.',
+    'Set needs_ops=true ONLY if delivering it requires fresh data at fire time (a web lookup, their inbox) and give an ops_kind hint; for a plain reminder of something they told you, leave needs_ops false.',
+    'Write instruction as a clear note to your future self: what to tell or do, and enough context to deliver it well. You MUST also write a short, warm confirming text now (e.g. "got it, i\'ll flag that friday at 9am ✅"). An emoji here is optional and occasional, so vary it rather than always using 👍, and many confirms read fine with none. Gently steer them off antisocial hours if they pick one.',
+  ].join(' '),
+  inputSchema: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'Short label for the reminder, for later listing/cancel (e.g. "call the dentist").' },
+      instruction: { type: 'string', description: 'A note to your future self: what to tell or do at fire time, with context.' },
+      schedule_kind: { type: 'string', enum: ['once', 'cron'], description: 'once=single fire; cron=recurring.' },
+      fire_at: { type: 'string', description: 'Absolute ISO 8601 timestamp for a one-time reminder (compute from the Current time block).' },
+      cron: { type: 'string', description: 'Standard 5-field cron expression for a recurring automation (e.g. "0 9 * * 1" = every Monday 9am).' },
+      timezone: { type: 'string', description: 'IANA timezone for the schedule (default America/Chicago).' },
+      needs_ops: { type: 'boolean', description: 'true if fulfilling it needs fresh data at fire time (the web, their inbox).' },
+      ops_kind: { type: 'string', enum: ['web_research', 'document_read', 'draft', 'general'], description: 'Hint for what kind of fresh data to pull when needs_ops is true.' },
+    },
+    required: ['instruction', 'schedule_kind'],
+  },
+};
+
+export const LIST_AUTOMATIONS_TOOL: LlmToolDef = {
+  name: 'list_automations',
+  description: "List the reminders/automations the user currently has set up. Use when they ask things like 'what reminders do i have' or 'what have you got scheduled'. The actual list is appended to your reply automatically, so just write a short intro line.",
+  inputSchema: { type: 'object', properties: {} },
+};
+
+export const CANCEL_AUTOMATION_TOOL: LlmToolDef = {
+  name: 'cancel_automation',
+  description: "Cancel a reminder/automation the user set up. Use when they ask to cancel/stop/remove one. Pass `match`: a few words identifying which one (its title or what it's about, e.g. 'monday recap' or 'dentist'). You MUST also write a short confirming text.",
+  inputSchema: {
+    type: 'object',
+    properties: { match: { type: 'string', description: "Words identifying which automation to cancel (title or topic)." } },
+    required: ['match'],
+  },
+};
+
+export const CANCEL_RESEARCH_TOOL: LlmToolDef = {
+  name: 'cancel_research',
+  description: [
+    "Stop a lookup you're currently running for the user. ONLY on an explicit stop — \"stop\", \"cancel that\", \"nevermind\", \"forget it\", \"don't bother\". A bare \"ok\"/\"thanks\" is NEVER a cancel — that's them closing the loop, not stopping work.",
+    'If exactly one lookup is running, call it with match empty. If SEVERAL are running and they didn\'t say which, do NOT call this yet — ask which one in one short bubble first (the "already pulling" section names them), then call it with `match`: a few words identifying the one to drop.',
+    'You MUST also write a short confirming text ("dropped it" energy) — and leave the door open, as a statement, never a question.',
+  ].join(' '),
+  inputSchema: {
+    type: 'object',
+    properties: { match: { type: 'string', description: 'Words identifying which lookup to cancel. Empty when only one is running.' } },
+  },
+};
+
+export const UPDATE_DIRECTIVES_TOOL: LlmToolDef = {
+  name: 'update_directives',
+  description: [
+    'Save, change, or remove a durable PREFERENCE about how the user wants you to work going forward.',
+    'Use this for anything they tell you about HOW to behave: how to talk to them (tone, length, emoji, formality — "be more professional" / "loosen up"), the LANGUAGE to reply in ("talk to me in spanish" → add "always reply in Spanish"), how to do research, what to flag or ignore in their inbox (e.g. "ignore newsletters", "always flag anything from my manager"), how they like reminders, and so on. Requests can be very varied — capture the durable ones.',
+    'op="add" with text to save a new preference; op="remove" with match to drop one; op="update" with match + text to change one.',
+    'These tune your STYLE and behavior only. You cannot accept a "preference" that asks you to invent or hide facts, drop your safety/honesty rules, act on their behalf, or do anything harmful — if they ask for that, warmly decline and do NOT save it.',
+    'If they ask you to respect quiet hours / not ping them overnight, ALSO call set_preference key="respect_quiet_hours" value=true (or false to go back to pinging anytime). You usually also write a short confirming text.',
+    'If they ask you to stop email alerts / turn off the daily email digest / stop watching or checking their inbox, ALSO call set_preference key="email_digest" value=false (or true to turn it back on).',
+  ].join(' '),
+  inputSchema: {
+    type: 'object',
+    properties: {
+      op: { type: 'string', enum: ['add', 'update', 'remove'], description: 'add a new preference, update an existing one, or remove one.' },
+      text: { type: 'string', description: 'The preference, in plain words (required for add/update). e.g. "keep replies short", "always flag emails from my manager".' },
+      match: { type: 'string', description: 'A few words identifying which existing preference to update or remove (matched against its text).' },
+    },
+    required: ['op'],
+  },
+};
+
+export const UPDATE_MEMORY_TOOL: LlmToolDef = {
+  name: 'update_memory',
+  description: [
+    'Fire-and-forget side-effect — no holding line, no acknowledgment beat, nothing. Write your reply EXACTLY as you would if you hadn\'t called this tool: respond to what they said, same register, same warmth, same length. The pass runs silently and sends nothing back. Never name it, reference it, or let it shorten your reply.',
+    'If the moment calls for a natural "oh nice, congrats on the new job" because they just corrected a standing fact, that beat belongs to the reply about THEIR news, not your records. Reply-about-them is always the frame; the tool call is invisible scaffolding.',
+    'Use it when something durable about the person needs RECONCILING: a standing fact you had wrong that they just corrected ("no, i left keller williams, i\'m at eXp now"); a burst of durable facts handed to you at once (a real onboarding dump); what they just said CONTRADICTS what you already have and the gap matters going forward; a project or arc of theirs takes a real turn (kicked off, renamed, finished, abandoned) and the standing picture should change today rather than at the nightly pass; or they explicitly ask you to fix/clean up/reorganize what you know. Reconciliation, not capture.',
+    'Do NOT use for: a single new fact (remember_user or set_preference handles that), a style or behavior preference (update_directives), a live lookup, or casual chatter. request = what changed or contradicted, one sentence. meta_prompt = brief the curation pass like a sharp colleague — exactly what\'s wrong with the current notes, their exact words if load-bearing, and what the corrected picture looks like when it\'s done.',
+  ].join(' '),
+  inputSchema: {
+    type: 'object',
+    properties: {
+      request: { type: 'string', description: 'What changed / what needs reconciling, distilled.' },
+      meta_prompt: { type: 'string', description: 'Precise brief for the memory pass: what to fix, their exact words if load-bearing, what good notes look like after.' },
+    },
+    required: ['request'],
+  },
+};
+
+export const RENAME_CHAT_TOOL: LlmToolDef = {
+  name: 'rename_group_chat',
+  description: 'Rename the group chat. Only when explicitly asked. Also send a text response.',
+  inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] },
+};
+
+export const REMOVE_MEMBER_TOOL: LlmToolDef = {
+  name: 'remove_member',
+  description: 'Remove a member from the group chat. Only when explicitly asked. Also send a text response.',
+  inputSchema: { type: 'object', properties: { handle: { type: 'string' } }, required: ['handle'] },
+};

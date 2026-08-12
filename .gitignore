@@ -1,0 +1,31 @@
+# --- server (repo root: the Irises brain) ---
+node_modules/
+dist/
+*.log
+npm-debug.log*
+*.tsbuildinfo
+
+# Secrets — NEVER commit. Use .env.example as the template.
+.env
+.env.*
+!.env.example
+
+# Codex local configuration
+.codex/
+
+# OpenAPI spec (get the latest from https://apidocs.linqapp.com)
+linqV3api.yaml
+
+/reference
+
+# Local email-index extraction cache (regenerable)
+scripts/.index-cache.json
+
+# --- web (Next.js debug client under web/) ---
+web/.next/
+web/out/
+web/coverage/
+web/playwright-report/
+web/test-results/
+web/.irises/
+web/irisesprompt/

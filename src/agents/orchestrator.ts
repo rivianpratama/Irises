@@ -1,0 +1,953 @@
+import { callLLM } from '../llm/callLLM.js';
+import { loadContext } from './loadContext.js';
+import { runTask } from './ops/client.js';
+import { runMmTask, CANNOT_OPEN, CANNOT_PROCESS, cannotProcessSummary } from './mm/client.js';
+import { withDeadline, DeadlineError } from './deadline.js';
+import { createConsentLink } from '../oauth/google.js';
+import { setPreference } from '../db/repositories/memory.js';
+import { addShortTerm } from '../db/repositories/memoryShort.js';
+import { buildUserMemory } from '../memory/wrappers.js';
+import { markOpsDone, isOpsCancelled, noteOpsProgress, markOpsEscalated, markOpsRetry, getOpsEtaStatus } from '../state/opsCoordination.js';
+import { detectCause, decide, splitMiss, buildEscalationMetaPrompt, type TriageDecision } from './ops/triage.js';
+import { OPS_ESCALATION_ENABLED, OPS_ESCALATION_TIMEOUT_MS, PROVIDERS, MODELS } from '../llm/models.js';
+import { selectInterveningUserMessages } from './interveningMessages.js';
+import { getConversation } from '../state/conversation.js';
+import { createAutomation } from '../db/repositories/automations.js';
+import { isValidCron } from '../pipeline/cron.js';
+import { redactInternalTools, stripEchoedHolding } from './guardrails.js';
+import { parseReply } from '../pipeline/bubbleJson.js';
+import { stripReplyTag } from '../state/replyThreading.js';
+import { timestampLabel, describeGap } from '../pipeline/chatTime.js';
+import { voiceOutcome } from './fallfirm/client.js';
+import { type Outcome } from './fallfirm/floor.js';
+import { voiceInstant, type VoiceInstantOpts } from './fallfirm/voiceInstant.js';
+import { type PingBudget, ProgressGate, runPingCycle } from './progressGate.js';
+import { wrapPrompt, dataTag } from '../llm/promptTag.js';
+import { record } from '../diagnostics/trace.js';
+import { peekPendingInbound, selectUnseenPending } from '../state/inboundGlance.js';
+import type { SpeakContent, SpeakOpts, SpeakResult } from '../state/mouth.js';
+import type { LlmMessage } from '../llm/types.js';
+import { reportError } from '../diagnostics/errorLog.js';
+import type { OpsTask, OpsResult, OpsDebrief, OpsDebriefSink, MmTask, MmResult } from './types.js';
+
+// Shape Ops may (optionally) surface in result.data to request proactive follow-ups.
+// The primary path is Ops' schedule_followup tool (writes directly); this is a
+// defensive, future-proof second path that stays a no-op until data.followups exists.
+interface FollowupSpec {
+  instruction: string;
+  fireAt?: string;
+  cron?: string;
+  needsOps?: boolean;
+  opsKind?: string;
+  timezone?: string;
+  title?: string;
+  dedupeKey?: string;
+}
+
+async function materializeFollowups(result: OpsResult, task: OpsTask): Promise<void> {
+  const raw = (result.data as { followups?: unknown } | undefined)?.followups;
+  if (!Array.isArray(raw)) return;
+  for (const f of raw as FollowupSpec[]) {
+    if (!f?.instruction) continue;
+    // Normalize: an empty-string cron is "no cron", not a cron job (avoids a
+    // schedule_kind='once' row carrying cron='' that fails the DB CHECK).
+    const cron = typeof f.cron === 'string' && f.cron.trim() ? f.cron.trim() : null;
+    const timezone = f.timezone ?? 'America/Chicago';
+    const common = {
+      agentHandle: task.agentHandle, chatId: task.chatId, source: 'ops' as const,
+      title: f.title ?? null, instruction: f.instruction,
+      needsOps: f.needsOps === true, opsKind: f.opsKind ?? null,
+      timezone, respectQuietHours: true, dedupeKey: f.dedupeKey ?? null,
+    };
+    try {
+      if (cron) {
+        if (!isValidCron(cron, timezone)) { console.error('[orchestrator] followup skipped: invalid cron', cron); continue; }
+        await createAutomation({ ...common, scheduleKind: 'cron', cron });
+      } else {
+        const ts = f.fireAt ? Date.parse(f.fireAt) : NaN;
+        if (Number.isNaN(ts) || ts <= Date.now()) { console.error('[orchestrator] followup skipped: missing/past fireAt'); continue; }
+        await createAutomation({ ...common, scheduleKind: 'once', nextRunAt: new Date(ts).toISOString() });
+      }
+    } catch (err) {
+      console.error('[orchestrator] failed to materialize followup', err);
+    }
+  }
+}
+
+// The mouth contract (state/mouth.ts, implemented by index.ts): `content` may be pre-voiced text or
+// a voicer thunk that runs only once it owns the per-chat lock — the freshness guarantee every
+// follow-up below leans on. 'dropped' means a staleness guard suppressed the send (that is a
+// deliberate outcome, not a failure).
+export type SendFollowUp = (chatId: string, content: SpeakContent, opts?: SpeakOpts) => Promise<SpeakResult>;
+
+// Hard deadline on one Ops run. Without it, a hung tool HTTP call or a slow multi-step Opus loop
+// leaves the user's holding text dangling FOREVER — they sit waiting until they ask "how's it
+// going?". Kept under opsCoordination's 5-min STALE_MS so "still on it" wording and the in-flight
+// dedup stay truthful for the task's whole actual lifetime. On timeout the normal catch below
+// sends the honest snag line and `finally` clears the in-flight marker, so a re-ask runs fresh.
+const OPS_TASK_TIMEOUT_MS = Number(process.env.OPS_TASK_TIMEOUT_MS || 4 * 60_000);
+// Hard deadline on one MM media read (a single read+voice pass — MM has no research leg).
+// Independent knob from Ops so the media lane can be tuned separately. MM runs SILENTLY (no
+// progress pings), so this is the only backstop against a dangling holding line.
+const MM_TASK_TIMEOUT_MS = Number(process.env.MM_TASK_TIMEOUT_MS || 4 * 60_000);
+
+/** Combine the user-cancel signal with an internal one (a per-leg timeout abort) so aborting EITHER
+ *  stops the run. Used so a timed-out primary Ops leg is actually torn down at its next step check —
+ *  instead of running its tool loop concurrently with the escalation second look for minutes. */
+function combineSignals(user: AbortSignal | undefined, internal: AbortSignal): AbortSignal {
+  if (!user) return internal;
+  if (typeof (AbortSignal as { any?: (s: AbortSignal[]) => AbortSignal }).any === 'function') {
+    return AbortSignal.any([user, internal]);
+  }
+  const c = new AbortController();
+  if (user.aborted || internal.aborted) c.abort();
+  else {
+    const onAbort = () => c.abort();
+    user.addEventListener('abort', onAbort, { once: true });
+    internal.addEventListener('abort', onAbort, { once: true });
+  }
+  return c.signal;
+}
+
+// What this turn actually is, from the agent's point of view (never the machinery's):
+// a real answer to hand over, a request that needs their Gmail, a look that came back with nothing
+// usable, or a transient snag (timeout / rate limit / crash) where the ASK was fine but the run
+// failed — that last one must NOT read as the miss re-aim ("which one did you mean?").
+type ComposeMoment = 'answer' | 'auth' | 'miss' | 'transient' | 'needs_info';
+
+// Ops's own "I came up empty" fallback strings (see ops/client.ts). When a summary IS one of
+// these — or is empty — there is no real answer to hand over, so it's a miss even though the
+// status is 'ok'. Lowercased, trimmed compare. (This is the seam, not a leak scrubber: it gives
+// the composer an honest signal so it never gets told garbage is "a verified answer, relay it".)
+const OPS_NON_ANSWERS = new Set([
+  'no result',
+  'could not read the photo',
+  'failed to analyze the photo',
+  // MM's honest "I literally couldn't load that file" sentinel (see mm/client.ts). Like the photo
+  // strings, an unopenable attachment is a genuine MISS (ask them to resend), not an infra snag.
+  'could not open the attachment',
+  // NOTE: 'ran into a problem completing that' (the runTask/runMmTask catch-all crash string) is
+  // deliberately NOT here — it always rides status:'error' and must classify as 'transient' (an
+  // infra snag), not a miss. The photo/attachment strings stay: an unreadable file is a genuine miss.
+  'i need access to your gmail to answer that',
+]);
+
+/** Build the honest-resend Outcome from MM's CANNOT_OPEN summary, which may carry a reason suffix
+ *  ("(the link expired)" / "(the file is too large to open)"). Pure + exported so the wording is
+ *  unit-testable. Kind stays `nothing_found` — a file that didn't come through is a genuine miss
+ *  (ask them to resend), not an infra snag. */
+export function cannotOpenOutcome(summary: string, originalRequest: string): Outcome {
+  const s = summary.toLowerCase();
+  const expired = s.includes('expired');
+  const oversize = s.includes('too large');
+  return {
+    kind: 'nothing_found',
+    summary: expired
+      ? 'the link to that file expired before it loaded — not their fault, iMessage attachments go stale fast'
+      : oversize
+        ? 'that file came in too large to load'
+        : "that file didn't come through in one piece",
+    // The honest fix is always a resend — a specific file glitched in transit, which is NOT Irises
+    // conceding she can't see files. Never steer to "just describe it to me" (that reads as an
+    // inability); a capable person just asks for the file again.
+    nextStep: oversize
+      ? 'ask them warmly to send a smaller version'
+      : 'ask them warmly to resend it',
+    originalRequest,
+  };
+}
+
+/** Build the honest incapability Outcome from MM's CANNOT_PROCESS summary. Kind is `failed` —
+ *  the model couldn't handle the media type, not a miss. Never asks to resend: the file was fine. */
+export function cannotProcessOutcome(summary: string, originalRequest: string): Outcome {
+  return {
+    kind: 'failed',
+    summary: `you can't process that kind of file right now — a temporary problem on your end, not theirs`,
+    nextStep: "let them know you can't open that kind of file at the moment — they don't need to resend anything",
+    originalRequest,
+  };
+}
+
+/** Shared snag Outcome for MM infra failures (all lanes exhausted / timeout). Never asks to resend. */
+export function mmSnagOutcome(originalRequest: string): Outcome {
+  return {
+    kind: 'failed',
+    summary: 'you hit a snag opening that on your end (not their fault)',
+    nextStep: "tell them to give you a few minutes and you'll take another look — they don't need to resend anything",
+    originalRequest,
+  };
+}
+
+function classifyResult(result: OpsResult): ComposeMoment {
+  if (result.status === 'needs_auth') return 'auth';
+  const s = (result.summary ?? '').trim();
+  // error/rate_limited = the run FAILED (crash, timeout, provider cap), not "nothing found" — voice
+  // as a transient snag, distinct from the miss re-aim. EXCEPT the vision "couldn't read the photo"
+  // failures, which ARE a miss (ask the user to resend), not an infra hiccup — so let those fall
+  // through to the OPS_NON_ANSWERS check below.
+  if ((result.status === 'error' || result.status === 'rate_limited') && !OPS_NON_ANSWERS.has(s.toLowerCase())) {
+    return 'transient';
+  }
+  if (result.status !== 'ok' && !OPS_NON_ANSWERS.has(s.toLowerCase())) return 'miss'; // not_found
+  if (s.length < 3) return 'miss';                         // empty / single token
+  if (OPS_NON_ANSWERS.has(s.toLowerCase())) return 'miss'; // Ops's explicit "came up empty"
+  // The explicit seam for an LLM-authored empty-handed summary: the Ops persona starts those
+  // with "NO RESULT:" (possibly inside its ANSWER: framing). Not keyword sniffing — it's a
+  // declared protocol between the two agents.
+  const lower = s.toLowerCase();
+  if (lower.startsWith('no result') || lower.startsWith('answer: no result')) return 'miss';
+  return 'answer';
+  // Note (charter §10.2 / plan RR#1): a long but content-free / reasoning-shaped summary still
+  // reads as 'answer' here; the composer's own fidelity gate ("one concrete fact you'd stake your
+  // name on?") is the backstop for that. We deliberately don't try to detect garbage by keyword.
+}
+
+// Inert private note telling the composer which beat it's on. Must stay BYTE-IDENTICAL to the
+// "which beat you're on" reference in composer/Context.md — Haiku keys off the surface form, and
+// the wording is deliberately harmless if it ever slips into a bubble (plan RR#3).
+const BEAT_FIRST = '(just making sure)';
+const BEAT_SECOND = "(couldn't get that one)";
+
+/**
+ * Compose Irises's user-facing follow-up. The composer persona (src/agents/composer/Context.md)
+ * carries all the HOW — fidelity, bubble splitting, the seamless voice, the two-strike miss
+ * behavior. This just hands over what came back as Irises's OWN finding, in machinery-free words,
+ * and (for a miss) the inert beat note. Facts come only from `instruction`, placed last.
+ */
+async function composeFollowUp(
+  result: OpsResult,
+  task: OpsTask,
+  moment: ComposeMoment,
+  extras: { missingFields?: string[]; giveUp?: boolean } = {},
+): Promise<string> {
+  const { chatId, agentHandle: handle } = task;
+  const attempt = task.attempt ?? 1;
+
+  let instruction: string;
+  if (moment === 'auth') {
+    instruction = `this one lives in their own gmail, which isn't hooked up yet. tell them warm and short, like a 10-second favor to themselves. put this link on its own line, exactly as is, nothing else on that line:\n${result.authUrl}`;
+  } else if (moment === 'needs_info') {
+    // Triage found the ask is genuinely under-specified — only they can fill it in. Same two-strike
+    // marker as a miss (their reply flows back as the refinement), but the question is AIMED: ask for
+    // exactly these details. Framed as Irises mid-look needing a steer, never as anything failing.
+    const fields = (extras.missingFields ?? []).filter(Boolean).join('; ');
+    instruction = `${BEAT_FIRST}\nwhat they wanted you to look into: "${task.request}"\nto pin this down you need one specific thing only they can give you: ${fields}. ask for exactly that as your OWN natural question, like you're mid-look and just need their steer — "which address is the martinez one under?" energy. one short bubble, ending on the question. never mention anything not working, anything you tried, or any process behind the curtain.`;
+  } else if (moment === 'miss') {
+    // No failure content is handed over — only the inert beat note and their own ask, so the
+    // composer can aim a steering question (first beat) or offer a real adjacent thing (second).
+    // giveUp (a triage "no productive retry" verdict, e.g. unanswerable) takes the soft second beat
+    // regardless of attempt — never re-interrogate when we already know asking more won't help.
+    const beat = (attempt >= 2 || extras.giveUp) ? BEAT_SECOND : BEAT_FIRST;
+    instruction = `${beat}\nwhat they wanted you to look into: "${task.request}"`;
+  } else if (moment === 'transient') {
+    // The run itself failed (timeout / rate limit / crash) — the ASK was fine. Tell them honestly
+    // that YOU hit a snag and will get back to it, and DON'T ask them to restate the question (that
+    // wrongly implies they were unclear). No fact content to relay.
+    instruction = `you hit a snag on your end pulling this up (a timeout / hiccup, not their fault) — tell them warmly and briefly that you couldn't finish it this moment and they should give you a nudge in a bit and you'll get it. do NOT ask them to rephrase or re-pick; the ask was clear. what they wanted: "${task.request}"`;
+  } else {
+    // Selection framing, not inventory framing: the composer gets THE QUESTION next to the result,
+    // answers that, and holds the rest as one offer. "exactly as written" scopes fidelity to the
+    // facts it relays — without the question here, a rich Ops pull reads as "relay all of this".
+    instruction = `here's what you came back with. what they asked: "${task.request}". answer THAT and lead with it — a couple of bubbles, not a report. anything in here that's true but beside their question, hold it and close with one short passing mention instead (like "got the full picture here too" — a statement of what's in reach, never a "want me to?" question). whatever you do relay — every number, date, name, ~ and maybe — stays exactly as written:\n\n${result.summary}`;
+
+    // The read behind this look was shaky: Convo scored its comprehension of the ask below the
+    // clean-delegation band when it launched. The answer is still real — but it answers Convo's
+    // READING of the question, so the user deserves one light "here's what i looked at" caveat and
+    // an open door to re-aim. In-flight signal only (task field), never from memory.
+    if (typeof task.originConfidence === 'number' && task.originConfidence < 60) {
+      instruction += `\n\none more thing about this one: when you started this look you were only partly sure what they meant (you read it as "${task.request}"). so as you answer, make WHICH thing you looked at unmistakable — name the deal/property/document in your first or second bubble, the way a person says "so for the maple st contract..." — and leave one short, natural opening to re-aim if you guessed wrong ("if you meant a different one, say the word"). one light touch, not an apology tour: never say you were unsure, never mention scores, checks, or anything behind the curtain. the facts themselves stay exact as always.`;
+    }
+  }
+
+  // Continue straight from the exact holding line Irises last sent, so the late reply reads as one
+  // seamless thread, not a fresh delivery. This is a continuity anchor only — never a fact source.
+  // The continuation is SEMANTIC, spelled out hard: a literal-minded model used to retype the
+  // holding line and glue its answer on with no whitespace ("...a Pine property nownothing under
+  // 'Pine'..."), which shipped as one fused bubble. stripEchoedHolding below is the code backstop.
+  if (task.holdingText) {
+    instruction += `\n\nthe last thing you said to them is below. it's ALREADY on their screen — never retype it or any part of it. your reply is the next text after it: fresh words that pick up where it left off, not a continuation of its sentence:\n"${task.holdingText}"`;
+  }
+
+  // How long they actually waited on the holding line (single app clock: task.createdAt and now
+  // are both stamped by this process). Most looks land in seconds-to-minutes and deserve no
+  // mention; past 10 minutes a person would give the wait one light beat, so tell the composer —
+  // capped hard at one, folded into the delivery, never an apology tour.
+  const waitMs = Date.now() - task.createdAt;
+  if (waitMs > 10 * 60_000) {
+    instruction += `\n\nthis look ran long on your end — they've been waiting ${describeGap(waitMs)}. ONE light half-beat nod to the wait ("took me a minute, but got it" energy), folded into the delivery, never an apology tour, never a precise duration.`;
+  }
+
+  try {
+    // Recent history for VOICE/continuity only — so the late reply reads like the same Irises.
+    // Facts still come ONLY from `instruction`, placed last; the persona enforces "the thread is
+    // not a fact source". History (voice window) and the composer memory layer are independent
+    // reads (the latter keys only on `handle`), so fetch them together off the late-reply critical
+    // path — mirrors voiceInstant.ts. userCtx is used further below, when `dynamic` is assembled.
+    const [history, userCtx] = await Promise.all([
+      getConversation(chatId),
+      buildUserMemory('composer', handle),
+    ]);
+
+    // Messages the user sent WHILE Ops ran (after the holding line). Computed over the FULL fetched
+    // history (not the sliced voice window, so a long burst can't push them out) and on a SINGLE
+    // clock. If any exist, tell the composer to nod to them, but ONLY as context: every fact still
+    // comes from the result.
+    const intervening = selectInterveningUserMessages(history, task.holdingAt);
+    if (intervening.length) {
+      instruction += `\n\nwhile you were looking they also texted you (this is CONTEXT, never a fact source): "${intervening.join(' / ')}". give it one light, natural nod — if it's just an ack ("ok"/"thanks"), don't belabor it, just deliver. every figure, date and name still comes ONLY from above; never treat their texts as facts.`;
+    }
+
+    // Texts that arrived so recently they haven't even entered history yet (still in the inbound
+    // settle queue / mid-processing) — invisible to the window above, but ON THE USER'S SCREEN.
+    // Without this glance the reply reads as if their newest texts don't exist. They are NOT
+    // answered here (the live thread picks them up next turn, and answering would double-say);
+    // the composer just must not compose blind to them.
+    const pendingNow = selectUnseenPending(peekPendingInbound(chatId), history).slice(0, 4);
+    if (pendingNow.length) {
+      instruction += `\n\njust now — while you're typing this — they sent: "${pendingNow.join(' / ')}" (CONTEXT only, never a fact source). you haven't answered those yet and this reply is NOT the place: you're mid-delivery, and the live thread picks them up next, so don't answer them and don't promise anything about them. deliver what you found; only if one of them clearly changes what they want from THIS answer, add one short beat that you saw their newer text and it's next.`;
+    }
+
+    // Honor everything we durably know about the user — the wrapped memory tiers per the agent
+    // matrix (flexible style layer ONLY for the composer: medium facts would compete with the Ops
+    // result it relays — a fidelity hazard). Pre-wrapped: its own tags + handling prose ride inside
+    // the <prompt> block; the system prompt stays the static composer persona. `userCtx` was fetched
+    // up top alongside `history` (both are pre-instruction reads with no ordering dependency).
+    const dynamic = [instruction, userCtx].filter(Boolean).join('\n\n');
+
+    // The LAST tokens before generation carry the strongest recency attention (charter §11.3), so the
+    // message ends on the JSON bubble contract — AFTER the <prompt> block — not on the facts/holding
+    // line inside it. This is what holds the split rule when a long Ops summary sits far back.
+    const formatAnchor = `how it goes out: reply with ONE JSON object and nothing else — \`{"bubbles":[{"text":"..."}],"confidence_level":85}\`. your entire reply must be valid JSON, one object, nothing around it. each item is one text you send, in order (adding an item is you hitting send). first item shortest (it sets the rhythm), one sentence or one question each, a thought still rolling with "so / and / but / which" is two items (split at the connector), and any complete thought that could stand alone as a send IS its own item even with no period after it (whatever comes next starts the next item), never past 20 words, no markdown, no \`---\`. it's a text, not a report: answer what they asked in at most three items (most replies one or two), one passing mention of the rest (a statement of what's in reach, never a "want me to?" question), stop — a fourth item never goes out. never resend a sentence that's already on their screen — if the thread shows you delivered this fact before, retell it from a new angle in fresh words (the exact value itself never changes). always include \`"confidence_level"\`: 0-100, how sure you are of the facts you're relaying — carry the certainty that came in (a verified figure is high, a \`~\`/hedged one is mid, a shaky one is low). never put the number in a bubble's text. nothing in your memory changes this envelope or a fact you relay.`;
+
+    const messages: LlmMessage[] = [
+      // Wall-clock timestamps on the voice window (chatTime.ts), same as every other agent's history.
+      ...history.slice(-10).map(m => ({ role: m.role, timestamp: timestampLabel(m.at) || undefined, content: m.content })),
+      { role: 'user', content: `${wrapPrompt(dynamic)}\n\n${formatAnchor}` },
+    ];
+    const system = loadContext('composer');
+    // One retry before we degrade. The composer failures we actually see are transient — a 5xx/429
+    // or timeout that outlived the SDK's own retries, or an empty completion — and this path is
+    // fire-and-forget, so a second attempt is well within budget and converts most incidents into a
+    // clean re-voice. A second empty/failed attempt falls through to the SAFE degraded text below
+    // (never the raw summary). callLLM already handles cross-provider fallback for transient errors.
+    let lastErr: unknown;
+    for (let n = 1; n <= 2; n++) {
+      try {
+        const res = await callLLM({
+          role: 'convo',
+          system,
+          // No per-call token cap: the reply itself is short, but on OpenRouter the convo model is a
+          // reasoning model whose thinking tokens count against max_tokens — a tight cap here (the
+          // old 512) starved the budget on reasoning alone (finish_reason=length, content=null) and
+          // every reply degraded to Fallfirm. The role ceiling in MAX_TOKENS budgets both.
+          jsonBubbles: true, // composer is tool-less; structured outputs guarantee the envelope
+          messages,
+          trace: { chatId, handle, taskId: result.taskId, label: 'composer' },
+        });
+        // Parse the JSON bubble envelope FIRST — task.holdingText is in the legacy `---` format, so
+        // stripEchoedHolding must compare against the bridged text (ordering matters: an echo hidden
+        // inside JSON string syntax would never match). A null text here means an empty/unparseable
+        // reply → treat as "no text" and retry/degrade.
+        const reply = parseReply(res.text);
+        // A composer follow-up is a single out-of-band reply, not a burst response, so a `[[re:N]]`
+        // tag is meaningless here — strip any stray one up front so it can't defeat the echo match
+        // below (a leading tag would make the bridged prefix diverge and ship a doubled holding
+        // line). sendBubbles strips it again on the way out regardless, so nothing leaks either way.
+        const composed = reply.legacyText ? stripReplyTag(reply.legacyText) : reply.legacyText;
+        // Tripwire for the fused-bubble failure: if the model retyped the holding line at the head
+        // of its reply (glued to the answer), cut the echo — that line is already on their screen.
+        if (composed) return stripEchoedHolding(composed, task.holdingText);
+        lastErr = new Error('composer returned no text');
+      } catch (err) {
+        lastErr = err;
+      }
+      if (n < 2) console.warn('[orchestrator] composer attempt failed, retrying once');
+    }
+    // Both attempts came back empty / threw: hand off to the degraded path below. Reported HERE
+    // (not per attempt) — an intermediate retry that recovers is not an incident; a spent ladder is,
+    // because the user gets Fallfirm's generic beat instead of the answer Ops actually found.
+    reportError({
+      source: 'convo', category: 'retry_exhausted', severity: 'warn', err: lastErr,
+      detail: { stage: 'composer', attempts: 2, moment }, chatId, handle, taskId: result.taskId,
+    });
+    throw lastErr;
+  } catch (err) {
+    console.error('[orchestrator] composeFollowUp failed — handing to Fallfirm', err);
+    // The composer's own attempts failed. Fallfirm is the second-chance voicer: it re-voices the
+    // outcome in Irises's tone (a fresh, simpler call often succeeds where the composer's did not),
+    // and if IT fails too, voiceOutcome drops to the hardcoded floor. We never relay result.summary
+    // here (raw ANSWER/SOURCE/FLAGS); Fallfirm gets a description of the SITUATION, not the facts —
+    // for 'answer' the real facts are already stashed in recent_research and answered on the re-ask.
+    let outcome: Outcome;
+    if (moment === 'auth') {
+      outcome = { kind: 'needs_auth', summary: 'this one lives in their own gmail, which isn’t hooked up yet', consentUrl: result.authUrl, originalRequest: task.request };
+    } else if (moment === 'needs_info') {
+      const fields = (extras.missingFields ?? []).filter(Boolean).join('; ');
+      outcome = { kind: 'nothing_found', summary: `you need one specific thing from them to finish: ${fields}`, nextStep: 'ask for exactly that, naturally, as your own question', originalRequest: task.request };
+    } else if (moment === 'miss') {
+      outcome = (attempt >= 2 || extras.giveUp)
+        ? { kind: 'nothing_found', summary: "couldn't track that one down after a couple looks", nextStep: 'mention you can come at it another way', originalRequest: task.request }
+        : { kind: 'nothing_found', summary: 'you need them to narrow down which one they mean', nextStep: 'ask a short steering question (which one exactly)', originalRequest: task.request };
+    } else if (moment === 'transient') {
+      outcome = { kind: 'failed', summary: 'you hit a snag pulling this up on your end (not their fault)', nextStep: "tell them to nudge you in a bit and you'll grab it" };
+    } else {
+      outcome = { kind: 'failed', summary: 'you have their answer but sending it glitched on your end', nextStep: "tell them to ping again and you'll fire it right over" };
+    }
+    return voiceOutcome(outcome, chatId, handle);
+  }
+}
+
+/**
+ * Fire-and-forget: run the delegated Ops task, then send a re-voiced follow-up.
+ * Never rejects: all errors are handled so the floating promise is safe.
+ */
+export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowUp, signal?: AbortSignal): Promise<void> {
+  // "Waiting on Ops" reassurances are for a GENUINELY long wait ONLY — the holding text ("one sec,
+  // pulling that fresh") already covers short and normal runs. User directive: at most 3 messages per
+  // task (holding + 1 mid-run update + final). The mid-run update fires only after 5 minutes of
+  // silence, with at least 5 minutes between pings, and a hard cap of 1 per run. Exception: the
+  // escalation "deeper look" beat fires immediately (~4 min in) as real news, but consumes the single
+  // update slot. Without this restraint runTask fires an onProgress for EVERY tool call, so a
+  // multi-tool run spilled its whole play-by-play into the chat. The ProgressGate is the one throttle
+  // both the tool milestones and the fallback heartbeat pass through, and the gate freezes the instant
+  // Ops settles. A shared PingBudget across legs enforces the run-wide cap. Sends ride the per-chat
+  // mouth (unpaced, but NEVER the lock-bypassing 'critical' lane — that could split a live reply's
+  // bubbles); a ping that queues behind the eventual answer or a live reply is DROPPED by the mouth's
+  // staleness guards instead of landing late.
+  const PROGRESS_QUIET_MS = Number(process.env.OPS_PROGRESS_QUIET_MS || 300_000); // silence for the first 5 min
+  const PROGRESS_GAP_MS = Number(process.env.OPS_PROGRESS_GAP_MS || 300_000);     // then once every 5 min
+  const MAX_PROGRESS_PINGS = Number(process.env.OPS_MAX_PROGRESS_PINGS || 1);
+
+  // One budget for the entire run — primary + escalation legs draw from the same pool, so the total
+  // mid-run update count can never exceed MAX_PROGRESS_PINGS regardless of how many legs fire.
+  const pingBudget: PingBudget = { remaining: MAX_PROGRESS_PINGS };
+
+  // Per-leg ping machinery. Each leg (primary, then the escalation second look) gets its OWN gate, so
+  // when the primary run is abandoned by a timeout its still-running loop's late onProgress calls hit
+  // a stopped gate and are suppressed — they can never leak a ping for a discarded result. The gate
+  // throttles FIRST, then runPingCycle voices + re-checks isStopped before sending (see progressGate).
+  const makePings = (quietMs: number) => {
+    const gate = new ProgressGate({ quietMs, gapMs: PROGRESS_GAP_MS, maxPings: MAX_PROGRESS_PINGS, budget: pingBudget });
+    const voiceAndPing = (kind: VoiceInstantOpts['kind'], key: string): Promise<void> =>
+      runPingCycle(
+        gate, key,
+        () => {
+          // The ETA the user was already promised at delegation time — read, never re-derived, so a
+          // ping can only repeat that number or say less (never a fresh, contradicting one).
+          const status = getOpsEtaStatus(task.chatId, task.id);
+          const eta = status ? { phrase: status.phrase, state: status.state as 'early' | 'closing' | 'overrun', remainingPhrase: status.remainingPhrase } : undefined;
+          return voiceInstant({ kind, request: task.request, addressHint: task.addressHint, dealHint: task.dealHint, eta }, task.chatId, task.agentHandle);
+        },
+        text => {
+          // A cancel_research that landed while this ping was being voiced must suppress it too — a
+          // "still on it" / "taking a harder look" beat after the user asked for silence is a
+          // contradiction (the gate's isStopped check doesn't observe cancellation).
+          if (isOpsCancelled(task.chatId, task.id)) return;
+          // The ping was voiced EARLY (the gate reserved its throttle slot before the slow voice
+          // call), so the mouth re-checks staleness the instant the send actually owns the lock:
+          //   • gate.isStopped — the answer settled while this ping queued: drop it, never land a
+          //     "still on it" after (or between the bubbles of) the real answer;
+          //   • isOpsCancelled — they asked for silence while it queued;
+          //   • staleIfSpokenSince — Irises said something after this was voiced (e.g. a live reply
+          //     to an intervening text): the ping is blind to that message, so it's stale — drop.
+          // paced:false keeps it snappy once it owns the mouth (a ping is meta, not prose).
+          const voicedAt = Date.now();
+          void sendFollowUp(task.chatId, text, {
+            paced: false,
+            dropIf: () => gate.isStopped || isOpsCancelled(task.chatId, task.id),
+            staleIfSpokenSince: voicedAt,
+          }).catch(() => { /* progress is best-effort */ });
+        },
+      );
+    return { gate, voiceAndPing };
+  };
+  const pingStops: Array<() => void> = [];
+  const stopAllPings = () => { for (const s of pingStops) s(); };
+
+  let finalSent = false; // the double-send latch: never voice a failure after an answer already shipped
+  try {
+    record({
+      type: 'delegation', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
+      label: `delegate:${task.kind}`, detail: { request: task.request, metaPrompt: task.metaPrompt, addressHint: task.addressHint, dealHint: task.dealHint },
+    });
+
+    // ── Primary leg ──────────────────────────────────────────────────────────
+    const primary = makePings(PROGRESS_QUIET_MS);
+    // Fallback reassurance the moment the wait crosses "long", in case Ops is deep in one slow tool.
+    const primaryHeartbeat = setTimeout(() => { void primary.voiceAndPing('heartbeat', 'heartbeat'); }, PROGRESS_QUIET_MS);
+    (primaryHeartbeat as { unref?: () => void }).unref?.();
+    const stopPrimary = () => { primary.gate.stop(); clearTimeout(primaryHeartbeat); };
+    pingStops.push(stopPrimary);
+
+    // The sink lets us read the (partial) debrief even if the run is abandoned by the deadline below.
+    const sink: OpsDebriefSink = {};
+    let timedOut = false;
+    let result: OpsResult;
+    // Internal abort so a timed-out primary leg is torn down (its loop exits at the next step check)
+    // BEFORE the escalation leg starts — otherwise two Ops loops on the same task.id would run tools
+    // concurrently for minutes. Combined with the user-cancel signal so cancel_research still reaches it.
+    const primaryAbort = new AbortController();
+    // Keep the promise: on timeout we must WAIT for the aborted leg to actually settle before the
+    // escalation starts, or the two legs bill tools + LLM steps concurrently (an ops:step5 landing
+    // after ops-esc:step0-2 had already run).
+    const primaryRun = runTask(task, milestoneKey => { noteOpsProgress(task.chatId, task.id, milestoneKey); void primary.voiceAndPing('progress', milestoneKey); }, combineSignals(signal, primaryAbort.signal), sink);
+    try {
+      result = await withDeadline(primaryRun, OPS_TASK_TIMEOUT_MS, `ops task ${task.id}`);
+    } catch (err) {
+      // Only a deadline becomes a triageable synthetic result; a genuine throw goes to the outer catch.
+      if (!(err instanceof DeadlineError)) throw err;
+      timedOut = true;
+      primaryAbort.abort(); // stop the abandoned loop so it doesn't keep hitting tools alongside the escalation
+      // The signal reaches the SDKs, so the in-flight request aborts in milliseconds — the race is
+      // only a bound against a pathological hang (e.g. a tool that ignores aborts).
+      await Promise.race([primaryRun.catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
+      // Snapshot the sink NOW (deep-copy the arrays): the abandoned run may still mutate them in place.
+      const snap: OpsDebrief | undefined = sink.debrief
+        ? { ...sink.debrief, toolsRun: [...sink.debrief.toolsRun], corpus: [...sink.debrief.corpus], endedAt: Date.now(), failure: { cause: 'timeout' } }
+        : undefined;
+      record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:timeout', detail: { ms: OPS_TASK_TIMEOUT_MS, steps: snap?.steps, tools: snap?.toolsRun.map(t => t.name) } });
+      // trace:false — the ops:timeout event above already carries the ERROR-side story for this turn.
+      reportError({
+        source: 'ops', category: 'timeout', message: `ops task ${task.id} exceeded its ${OPS_TASK_TIMEOUT_MS}ms deadline`,
+        detail: { timeoutMs: OPS_TASK_TIMEOUT_MS, kind: task.kind, steps: snap?.steps }, chatId: task.chatId, handle: task.agentHandle, taskId: task.id, trace: false,
+      });
+      result = { taskId: task.id, kind: task.kind, status: 'error', summary: 'ran into a problem completing that', debrief: snap };
+    }
+    stopPrimary(); // freeze primary pings before triage; the escalation leg gets its own gate
+
+    // User cancelled this lookup (cancel_research). Deliver NOTHING — Convo already confirmed the
+    // drop in the live turn, so a late follow-up would land as a contradiction. This guard, not the
+    // loop's abort check, is the load-bearing half.
+    if (isOpsCancelled(task.chatId, task.id)) {
+      record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:cancelled', detail: { request: task.request } });
+      return;
+    }
+
+    let moment = classifyResult(result);
+    let triage: TriageDecision | undefined;
+
+    // ── Triage + one-shot escalation ─────────────────────────────────────────
+    // Only for failing outcomes (a real answer / auth prompt is already good). Triage reasons about
+    // the cause; an escalate verdict runs ONE second look on the stronger model with an enriched brief.
+    if (moment !== 'answer' && moment !== 'auth') {
+      const cause = detectCause(result, timedOut);
+      // Only a genuine empty miss needs the LLM splitter; every other cause is deterministic.
+      triage = cause === 'empty_miss' ? await splitMiss(result, task) : decide(cause, task);
+      record({
+        type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:triage',
+        detail: { cause: triage.cause, action: triage.action, missingFields: triage.missingFields, directive: triage.researchDirective, deterministic: triage.deterministic, attempt: task.attempt ?? 1 },
+      });
+
+      if (triage.action === 'retry' && !isOpsCancelled(task.chatId, task.id)) {
+        // Cheap same-role retry for a transient lane blip: re-run the ORIGINAL brief on the same `ops`
+        // model (callLLM re-tries both providers per call, and the SDKs retry each ~2x), NOT the stronger
+        // escalation model. A fresh attempt clears a since-recovered blip at a fraction of the escalation
+        // cost. If it comes back a researchable MISS, the re-triage below ladders up to escalation.
+        record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:retry', detail: { cause: triage.cause, attempt: task.attempt ?? 1 } });
+        // Keep the in-flight clock fresh so dedupe + "still on it" stay truthful if the primary's
+        // llm_error landed late (see markOpsRetry). No ETA extension — a retry is meant to be quick.
+        markOpsRetry(task.chatId, task.id);
+
+        // A retry is deliberately SILENT: its gate carries the normal quiet window so a milestone can
+        // still note progress, but there's no "taking a harder look" announcement and no heartbeat — the
+        // retry deadline (OPS_TASK_TIMEOUT_MS) sits inside the quiet window, so a slow retry just waits.
+        const retry = makePings(PROGRESS_QUIET_MS);
+        pingStops.push(() => retry.gate.stop());
+
+        // Same task.id + user signal keep cancel/dedupe/trace-continuity/markOpsDone working; retryOf
+        // keeps the role on `ops` and blocks a retry-of-retry. This is a from-scratch fresh attempt on the
+        // ORIGINAL brief (not a trail continuation — the retry model is never told to reuse prior work),
+        // so it seeds NO prior corpus: grounding rests only on what this pass actually re-fetches.
+        const retryTask: OpsTask = { ...task, retryOf: task.id };
+        const t0 = Date.now();
+        const retryAbort = new AbortController();
+        const retryRun = runTask(retryTask, milestoneKey => { noteOpsProgress(retryTask.chatId, retryTask.id, milestoneKey); void retry.voiceAndPing('progress', milestoneKey); }, combineSignals(signal, retryAbort.signal), undefined, undefined);
+        try {
+          result = await withDeadline(retryRun, OPS_TASK_TIMEOUT_MS, `ops retry ${task.id}`);
+        } catch (err) {
+          // Retry died too (deadline or throw) — keep the FIRST result and its classification. The
+          // transient ladder is spent here, so this is the incident, not the primary's own blip.
+          console.warn('[orchestrator] retry run failed; keeping first result', err);
+          reportError({
+            source: 'ops', category: 'retry_exhausted', severity: 'warn', err,
+            detail: { stage: 'ops_retry', cause: triage.cause }, chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
+          });
+          if (err instanceof DeadlineError) {
+            retryAbort.abort();
+            await Promise.race([retryRun.catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
+          }
+        }
+        retry.gate.stop();
+        moment = classifyResult(result);
+        // Re-triage on the RETRY's result. The retry is usually the FIRST pass to actually research (an
+        // llm_error typically dies before any tool ran), so its outcome deserves the same triage the
+        // primary would have gotten. Use retryTask: its retryOf makes canRetry false (no retry-of-retry)
+        // but canEscalate TRUE (the ladder), so a researchable miss now yields an 'escalate' decision the
+        // escalate block below consumes, an INFO_HOLE still earns a targeted ask_user, and a fresh
+        // transient error gives up. detectCause(result, false): a timed-out/failed retry kept the original
+        // 'transient' result, so this only re-triages a retry that genuinely ran and came back soft.
+        if (moment !== 'answer' && moment !== 'auth' && !isOpsCancelled(task.chatId, task.id)) {
+          const retryCause = detectCause(result, false);
+          triage = retryCause === 'empty_miss' ? await splitMiss(result, retryTask) : decide(retryCause, retryTask);
+        }
+        record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:retry-result', detail: { status: result.status, moment, ms: Date.now() - t0, nextAction: triage.action } });
+      }
+
+      if (triage.action === 'escalate' && !isOpsCancelled(task.chatId, task.id)) {
+        const escProvider = PROVIDERS.ops_escalation;
+        const escModel = MODELS.ops_escalation[escProvider];
+        const metaPrompt = buildEscalationMetaPrompt(task, result, triage);
+        record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:escalate', detail: { cause: triage.cause, provider: escProvider, model: escModel, debriefChars: metaPrompt.length } });
+        // Keep the in-flight marker fresh through the (up to 4 more min) second leg so getActiveOps +
+        // dedupe stay truthful past STALE_MS. Also extends the ETA and flags escalated.
+        markOpsEscalated(task.chatId, task.id);
+
+        // Escalation pings: fresh gate that allows an immediate first ping (quietMs=0) so the honest
+        // "taking a harder look" beat lands right at the start; gapMs then throttles the rest. It
+        // rides runPingCycle, so if the second look finishes before the beat is voiced it's dropped.
+        const esc = makePings(0);
+        pingStops.push(() => esc.gate.stop());
+        void esc.voiceAndPing('deeper_look', 'deeper_look');
+        const escHeartbeat = setTimeout(() => { void esc.voiceAndPing('heartbeat', 'heartbeat'); }, PROGRESS_GAP_MS);
+        (escHeartbeat as { unref?: () => void }).unref?.();
+        pingStops.push(() => clearTimeout(escHeartbeat));
+
+        // Same task.id + same (user) signal → cancel, dedupe, trace continuity, markOpsDone all keep
+        // working; escalationOf flips the run to the ops_escalation model and is the never-escalate-again
+        // guard. Seed the second leg's grounding corpus with the first pass's tool outputs so a fact it
+        // reuses from the brief digest grounds without a redundant re-fetch (see runTask seedCorpus).
+        const escTask: OpsTask = { ...task, escalationOf: task.id, metaPrompt };
+        const priorCorpus = result.debrief?.corpus ?? [];
+        const t0 = Date.now();
+        // Same abandoned-leg discipline as the primary: on deadline, abort the in-flight request
+        // and wait (bounded) for the leg to settle — otherwise a timed-out escalation keeps
+        // running tools + max-effort LLM steps in the background while the reply composes.
+        const escAbort = new AbortController();
+        const escRun = runTask(escTask, milestoneKey => { noteOpsProgress(escTask.chatId, escTask.id, milestoneKey); void esc.voiceAndPing('progress', milestoneKey); }, combineSignals(signal, escAbort.signal), undefined, priorCorpus);
+        try {
+          result = await withDeadline(escRun, OPS_ESCALATION_TIMEOUT_MS, `ops escalation ${task.id}`);
+        } catch (err) {
+          // Second look died too (deadline or throw) — keep the FIRST result and its classification.
+          // Terminal: no leg remains, so the user gets the first pass's miss/snag beat.
+          console.warn('[orchestrator] escalation run failed; keeping first result', err);
+          reportError({
+            source: 'ops', category: 'retry_exhausted', severity: 'warn', err,
+            detail: { stage: 'ops_escalation', cause: triage.cause, model: escModel }, chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
+          });
+          if (err instanceof DeadlineError) {
+            escAbort.abort();
+            await Promise.race([escRun.catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
+          }
+        }
+        esc.gate.stop(); clearTimeout(escHeartbeat);
+        moment = classifyResult(result);
+        record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:escalate-result', detail: { status: result.status, moment, ms: Date.now() - t0 } });
+      }
+    }
+
+    // Info-hole → a TARGETED question (rides the two-strike marker). ask_user is only ever returned for
+    // attempt 1 (triage downgrades it to give_up on ≥2), so this only fires on a first look.
+    if (triage?.action === 'ask_user' && moment === 'miss' && (task.attempt ?? 1) < 2) moment = 'needs_info';
+    const giveUp = triage?.action === 'give_up';
+
+    stopAllPings(); // final result in hand — no more "still on it" before the (slower) compose+send
+
+    // Authoritative delivery guard, checked as LATE as possible: triage (a ~1-2s classify call) and the
+    // escalation leg (up to another 4 min) opened async windows AFTER the primary cancel-check above, so
+    // a cancel_research landing in either window must still suppress everything — no marker, no send.
+    if (isOpsCancelled(task.chatId, task.id)) {
+      record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:cancelled', detail: { request: task.request } });
+      return;
+    }
+
+    // Mint the consent link on the FINAL result (needs_auth can come from either leg — e.g. the
+    // escalation touched Gmail while the primary never did). Was previously done only on the primary
+    // result, which shipped a literal "undefined" as the link when the escalation returned needs_auth.
+    if (result.status === 'needs_auth' && !result.authUrl) {
+      result.authUrl = await createConsentLink(task.agentHandle, task.chatId, {
+        kind: 'reply_in_chat', chatId: task.chatId, agentHandle: task.agentHandle, request: task.request,
+      });
+    }
+
+    const attempt = task.attempt ?? 1;
+
+    // Deliver through the mouth: the durable markers AND the compose call run inside the per-chat
+    // lock (the voicer thunk below). Two invariants this buys:
+    //   • composeFollowUp reads the genuinely-latest thread — any reply Convo sent while Ops ran is
+    //     already recorded, and the thread CANNOT move between compose and send (nothing else can
+    //     own the mouth) — so the follow-up can never "jump the convo";
+    //   • pending_clarification/recent_research commit before any later turn can read them, because
+    //     the next turn's own LLM call queues behind this same lock — no turn can see the two-strike
+    //     marker before the steering question that explains it is on their screen.
+    // Latency split of the follow-up: composeMs = the composer LLM call; followupMs = the whole
+    // mouth-lock-wait + durable writes + compose + paced send. deliverMs (recorded below) is the
+    // remainder. composeMs is set inside the thunk, so it's a mutable closure var.
+    let composeMs = 0;
+    const followupStart = Date.now();
+    const delivery = await sendFollowUp(task.chatId, async () => {
+      // The authoritative cancel guard, now inside the mouth: triage and the escalation leg opened
+      // async windows, and the queue wait itself is one more — re-checked here before any durable
+      // state commits, so a cancelled lookup never writes markers or delivers.
+      if (isOpsCancelled(task.chatId, task.id)) return null;
+
+      // Two-strike state — stored ONLY when we actually asked them to narrow (a BEAT_FIRST miss or a
+      // needs_info question), so their next reply is read as the refinement. A give_up (soft
+      // BEAT_SECOND) is terminal, so no marker. AWAIT so the durable marker is committed BEFORE the
+      // in-flight flag clears in `finally` — otherwise a fast "ok" could land in the gap and Convo
+      // would re-delegate.
+      const askedToNarrow = moment === 'needs_info' || (moment === 'miss' && !giveUp);
+      if (askedToNarrow && attempt < 2) {
+        await setPreference(task.agentHandle, 'pending_clarification', {
+          request: task.request, kind: task.kind, metaPrompt: task.metaPrompt, attempt, at: Date.now(),
+          missingFields: triage?.missingFields,
+        }).catch(err => console.error('[orchestrator] failed to persist pending_clarification', err));
+      } else if (attempt >= 2) {
+        await setPreference(task.agentHandle, 'pending_clarification', null)
+          .catch(err => console.error('[orchestrator] failed to clear pending_clarification', err));
+      }
+
+      // Stash the research so Convo can answer same-topic follow-ups without re-delegating. ONLY on a
+      // real answer — never a miss. On an escalated answer this stores the (stronger) second look.
+      if (moment === 'answer') {
+        const summary = redactInternalTools(result.summary);
+        // Two independent durable writes — the 24h short-term row (the tier Convo's context block and
+        // Reflexion's daily pass read) and the legacy recent_research prefs stash (dual-write during
+        // the soak window). Run them together: Promise.all still awaits BOTH to completion before we
+        // proceed, preserving the markers-commit-before-any-later-read invariant (the next turn's LLM
+        // call queues behind this same mouth lock), just without the needless serial round trip. Each
+        // keeps its own .catch, so a single failure can't reject the batch.
+        await Promise.all([
+          addShortTerm({
+            agentHandle: task.agentHandle, chatId: task.chatId, kind: 'ops_research',
+            request: task.request, content: summary, meta: { taskKind: task.kind, attempt }, taskId: task.id,
+          }).catch(err => console.error('[orchestrator] failed to persist short-term research', err)),
+          setPreference(task.agentHandle, 'recent_research', {
+            request: task.request, kind: task.kind, summary, at: Date.now(),
+          }).catch(err => console.error('[orchestrator] failed to persist recent_research', err)),
+        ]);
+        void materializeFollowups(result, task).catch(err => console.error('[orchestrator] materializeFollowups failed', err));
+      }
+
+      const composeStart = Date.now();
+      const composed = await composeFollowUp(result, task, moment, { missingFields: triage?.missingFields, giveUp });
+      composeMs = Date.now() - composeStart;
+      return composed;
+    }, {
+      // Anchor the out-of-band answer to the user's original question: the FIRST bubble natively
+      // quotes the message that asked (replyToMessageId was set to that, never a trailing "thanks"),
+      // then the rest flows naturally — a person quotes once to anchor, not on every line.
+      replyTo: task.replyToMessageId ? { message_id: task.replyToMessageId } : undefined,
+      // composeFollowUp is itself a multi-second LLM call — a cancel_research can land during it.
+      // The mouth re-checks this as the LAST thing before the send, so a cancelled lookup never
+      // delivers after Convo confirmed the drop.
+      dropIf: () => isOpsCancelled(task.chatId, task.id),
+    });
+    const followupMs = Date.now() - followupStart;
+    record({
+      type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
+      label: 'ops:followup-timing',
+      detail: { composeMs, deliverMs: Math.max(0, followupMs - composeMs), followupMs, delivered: delivery === 'sent', moment },
+    });
+    if (delivery !== 'sent') {
+      record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:cancelled', detail: { request: task.request, afterCompose: true } });
+      return;
+    }
+    finalSent = true;
+  } catch (err) {
+    // A cancelled run that errored needs no voicing either — they asked for silence.
+    if (isOpsCancelled(task.chatId, task.id)) {
+      record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:cancelled', detail: { request: task.request, afterError: true } });
+      return;
+    }
+    // The answer already shipped — a late failure (e.g. a post-send throw) must NOT voice a "snag"
+    // on top of a delivered answer. Record it and stay silent.
+    if (finalSent) {
+      record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:late-error-after-send', detail: { error: String((err as Error)?.message ?? err) } });
+      return;
+    }
+    // The ASK was fine, the run/handoff didn't finish. Fallfirm voices the transient snag in-character
+    // (never asks them to rephrase); floor underneath if it fails too. Voiced under the mouth like
+    // every delivery, with the cancel guard re-checked there — silence stays honored even when the
+    // cancel lands while this snag line queues.
+    console.error('[orchestrator] runOpsAndFollowUp failed', err);
+    try {
+      await sendFollowUp(
+        task.chatId,
+        () => voiceOutcome(
+          { kind: 'failed', summary: 'you hit a snag pulling this up on your end (not their fault)', nextStep: "tell them to nudge you in a bit and you'll grab it", originalRequest: task.request },
+          task.chatId, task.agentHandle,
+        ),
+        { dropIf: () => isOpsCancelled(task.chatId, task.id) },
+      );
+    } catch { /* give up silently */ }
+  } finally {
+    stopAllPings(); // safety: kill every gate + heartbeat on every exit path
+    // End-to-end latency for the whole delegation, on the single app clock (Convo stamping
+    // task.createdAt → this exit): the one number the <60s target is measured against.
+    record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:duration', detail: { kind: task.kind, ms: Date.now() - task.createdAt } });
+    // Clear this task's in-flight marker LAST, so it outlives the result handoff above. Per-taskId
+    // clear means a concurrent distinct task's marker survives.
+    markOpsDone(task.chatId, task.id);
+  }
+}
+
+/**
+ * Fire-and-forget: run a delegated MM (media-read) task, then deliver MM's OWN reply. MM voices
+ * Irises's bubbles itself (runMmTask returns a pre-voiced MmResult) — there is NO composer hop on
+ * this lane; the one flash pass that read the file also wrote the texts. A slim sibling of
+ * runOpsAndFollowUp — it reuses classifyResult and the Fallfirm/cancellation machinery. The
+ * DELIBERATE differences from the Ops path, each load-bearing:
+ *   • SILENT — no ProgressGate, no heartbeat, no "still on it" pings. A media read is a quick look;
+ *     the holding beat was Convo's own minimal bubble at delegation time. This is the Ops-vs-MM
+ *     progress split the whole revamp turns on, and it lives right here at the runner level.
+ *   • DIRECT VOICE — on 'answer' the summary ships as-is (stripEchoedHolding + redactInternalTools
+ *     are the only nets); the composer's intervening-message nod and wait-time beat are deliberately
+ *     dropped (a read is seconds-fast, replyTo anchors the reply to the asking message).
+ *   • No auth leg — MM has no research tools, so needs_auth can no longer occur here; a file
+ *     question that needs their inbox dangles the research and the follow-up turn rides
+ *     delegate_to_ops.
+ *   • No triage / escalation — there is no second-model leg for a media read.
+ *   • No pending_clarification two-strike — a media miss is "resend it", not a steer-and-refine loop.
+ * Kept verbatim from the Ops path: the isOpsCancelled delivery-suppression guard, the
+ * media_analysis/recent_research stash on a real answer (now storing MM's RICH private analysis,
+ * not the voiced text), replyToMessageId threading, and the finally { markOpsDone }. Never rejects:
+ * all errors are handled so the floating promise is safe.
+ */
+export async function runMmAndFollowUp(task: MmTask, sendFollowUp: SendFollowUp, signal?: AbortSignal): Promise<void> {
+  let finalSent = false;
+  try {
+    record({
+      type: 'delegation', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
+      label: 'delegate:media_read',
+      detail: {
+        request: task.request, metaPrompt: task.metaPrompt, addressHint: task.addressHint, dealHint: task.dealHint,
+        // Counts only — never the raw CDN URLs.
+        media: { images: task.media.images.length, video: task.media.video.length, audio: task.media.audio.length, docs: task.media.docs.length },
+      },
+    });
+
+    let result: MmResult;
+    try {
+      result = await withDeadline(runMmTask(task, signal), MM_TASK_TIMEOUT_MS, `mm task ${task.id}`);
+    } catch (err) {
+      if (!(err instanceof DeadlineError)) throw err;
+      record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'mm:timeout', detail: { ms: MM_TASK_TIMEOUT_MS } });
+      // trace:false — the mm:timeout event above is this turn's ERROR event.
+      reportError({
+        source: 'mm', category: 'timeout', message: `mm task ${task.id} exceeded its ${MM_TASK_TIMEOUT_MS}ms deadline`,
+        detail: { timeoutMs: MM_TASK_TIMEOUT_MS }, chatId: task.chatId, handle: task.agentHandle, taskId: task.id, trace: false,
+      });
+      // A timeout is an infra snag, not a miss — cannotProcessSummary names the media kinds so the
+      // user knows WHAT timed out, and the no-resend beat is voiced (the file was fine).
+      result = { taskId: task.id, kind: 'media_read', status: 'error', summary: cannotProcessSummary(task) };
+    }
+
+    // User cancelled (cancel_research). Deliver NOTHING — Convo already confirmed the drop live, so a
+    // late follow-up would land as a contradiction. This guard, not the loop's abort check, is the
+    // load-bearing half.
+    if (isOpsCancelled(task.chatId, task.id)) {
+      record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:cancelled', detail: { request: task.request } });
+      return;
+    }
+
+    // A file MM literally couldn't open is a distinct beat from an Ops "which one did you mean?" miss:
+    // the ASK was clear, the FILE didn't come through. An MmTask is always attempt 1, so it can never
+    // reach the soft give-up wording either. Voice an honest resend request directly via Fallfirm.
+    // (Matches the exact sentinel runMmTask emits on every unopenable-file path.)
+    if ((result.summary ?? '').toLowerCase().includes(CANNOT_OPEN)) {
+      const cannotOpenDelivery = await sendFollowUp(
+        task.chatId,
+        () => voiceOutcome(cannotOpenOutcome(result.summary ?? '', task.request), task.chatId, task.agentHandle),
+        {
+          replyTo: task.replyToMessageId ? { message_id: task.replyToMessageId } : undefined,
+          dropIf: () => isOpsCancelled(task.chatId, task.id),
+        },
+      );
+      finalSent = cannotOpenDelivery === 'sent';
+      if (!finalSent) record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:cancelled', detail: { request: task.request, afterCompose: true } });
+      return;
+    }
+
+    // Model incapability (all lanes failed transiently, or media the provider can't ingest).
+    // NOT a file problem — never ask to resend. Voice an honest "can't process right now".
+    if ((result.summary ?? '').toLowerCase().includes(CANNOT_PROCESS)) {
+      const cannotProcessDelivery = await sendFollowUp(
+        task.chatId,
+        () => voiceOutcome(cannotProcessOutcome(result.summary ?? '', task.request), task.chatId, task.agentHandle),
+        {
+          replyTo: task.replyToMessageId ? { message_id: task.replyToMessageId } : undefined,
+          dropIf: () => isOpsCancelled(task.chatId, task.id),
+        },
+      );
+      finalSent = cannotProcessDelivery === 'sent';
+      if (!finalSent) record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:cancelled', detail: { request: task.request, afterCompose: true } });
+      return;
+    }
+
+    const moment = classifyResult(result);
+
+    // Same mouth-held delivery as the Ops path: the analysis stash commits and the reply goes out
+    // INSIDE the per-chat lock, so the late media reply can never jump a reply Convo sent while MM
+    // was reading the file. MM's summary is ALREADY Irises's bubbles — no composer hop.
+    const delivery = await sendFollowUp(task.chatId, async () => {
+      if (isOpsCancelled(task.chatId, task.id)) return null;
+
+      if (moment === 'answer') {
+        // Stash the RICH private analysis (never the voiced text) so Convo can field same-topic
+        // follow-ups and a later Ops run can research from the full read without re-opening the
+        // file. Durable 24h short-term row first (see the Ops path above for the invariant);
+        // legacy prefs stash follows as the soak-window dual-write. meta.voiced keeps a short
+        // record of what was actually said on screen (retell-never-replay debugging).
+        const analysis = redactInternalTools((result.analysis ?? '').trim() || result.summary);
+        await addShortTerm({
+          agentHandle: task.agentHandle, chatId: task.chatId, kind: 'media_analysis',
+          request: task.request, content: analysis,
+          meta: { taskKind: task.kind, voiced: result.summary.slice(0, 300) }, taskId: task.id,
+        }).catch(err => console.error('[orchestrator] failed to persist short-term media analysis', err));
+        await setPreference(task.agentHandle, 'recent_research', {
+          request: task.request, kind: task.kind, summary: analysis, at: Date.now(),
+        }).catch(err => console.error('[orchestrator] failed to persist recent_research (mm)', err));
+        record({
+          type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
+          label: 'mm:direct-voice',
+          detail: { bubbles: result.summary.split('\n---\n').length, analysisChars: analysis.length },
+        });
+        // Pre-voiced delivery: strip a re-typed holding line (the same fused-echo tripwire the
+        // composer ran) and the internal-name net, then MM's bubbles ship verbatim.
+        return stripEchoedHolding(redactInternalTools(result.summary), task.holdingText);
+      }
+
+      // 'miss' | 'transient' ('auth' is impossible — MM has no research leg): the run failed or
+      // produced nothing voiceable. Same honest-snag Outcome as the catch below — Fallfirm words
+      // it; a failure path never ships raw MM output. Never asks to resend (the file was fine).
+      return voiceOutcome(mmSnagOutcome(task.request), task.chatId, task.agentHandle);
+    }, {
+      replyTo: task.replyToMessageId ? { message_id: task.replyToMessageId } : undefined,
+      dropIf: () => isOpsCancelled(task.chatId, task.id),
+    });
+    if (delivery !== 'sent') {
+      record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:cancelled', detail: { request: task.request, afterCompose: true } });
+      return;
+    }
+    finalSent = true;
+  } catch (err) {
+    if (isOpsCancelled(task.chatId, task.id)) {
+      record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:cancelled', detail: { request: task.request, afterError: true } });
+      return;
+    }
+    if (finalSent) {
+      record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'mm:late-error-after-send', detail: { error: String((err as Error)?.message ?? err) } });
+      return;
+    }
+    console.error('[orchestrator] runMmAndFollowUp failed', err);
+    try {
+      await sendFollowUp(
+        task.chatId,
+        () => voiceOutcome(mmSnagOutcome(task.request), task.chatId, task.agentHandle),
+        { dropIf: () => isOpsCancelled(task.chatId, task.id) },
+      );
+    } catch { /* give up silently */ }
+  } finally {
+    markOpsDone(task.chatId, task.id);
+  }
+}

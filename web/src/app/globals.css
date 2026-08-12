@@ -1,0 +1,51 @@
+:root {
+  color-scheme: light;
+  --ink: #20201e;
+  --muted: #77756f;
+  --line: #dedbd3;
+  --paper: #f7f5ef;
+  --panel: #eeece5;
+  --white: #fffefb;
+  --accent: #f28a5d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: Arial, Helvetica, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+select {
+  cursor: pointer;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: #f5c9b5;
+}

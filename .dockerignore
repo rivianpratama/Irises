@@ -1,0 +1,28 @@
+# Build context excludes — keeps images small and prevents secrets/dev cruft
+# from being baked into the image. NOTE: src/**/*.md and src/**/*.txt are KEPT
+# on purpose — `npm run build` copies the agent persona/context files from src.
+.git
+.github
+node_modules
+dist
+.env
+.env.*
+!.env.example
+scratch
+reference
+demo.png
+*.log
+npm-debug.log*
+.DS_Store
+
+# web tier — the web-builder stage runs its own `npm ci` and `next build`; never ship
+# host artifacts (Windows-native node_modules would clobber the Linux install).
+web/node_modules
+web/.next
+web/out
+web/coverage
+web/playwright-report
+web/test-results
+web/.irises
+web/irisesprompt
+web/*.tsbuildinfo
