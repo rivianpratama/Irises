@@ -1,7 +1,7 @@
 // Channel abstraction — the seam that lets Irises's one brain speak over multiple transports.
 //
 // Irises is a user-facing front-end for the OpenClaw/Hermes engines. The outbound path in
-// src/index.ts (live replies, the mouth's async Ops follow-ups, the Autonome sweeper) is keyed by
+// src/index.ts (live replies, the mouth's async Ops follow-ups, engine push deliveries) is keyed by
 // chatId; this interface lets the same pipeline voice to the web/CLI debug channel (SSE) and to the
 // bridge (engine-fronted chats). The concrete transport is resolved per-chat from the chatId prefix
 // — see registry.ts (`web:*` → web, `eng:*` → bridge). The brain never imports a channel directly;

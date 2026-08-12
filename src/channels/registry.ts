@@ -1,8 +1,9 @@
 // Channel registry — resolves the transport for a chat from its chatId prefix, statelessly.
 //
-// Follow-ups fire minutes later and survive process restarts (the Autonome sweeper reads persisted
-// `automations` rows carrying a chatId; memory rows key on chatId). An in-memory origin→channel
-// map would be lost on the cold start the sweeper is designed to survive — so the channel MUST be
+// Follow-ups fire minutes later and survive process restarts: the engine's scheduled jobs deliver
+// back through POST /api/engine/push carrying the chatId they were created with (memory rows key on
+// chatId too), so a delivery can land on a process that never saw the original turn. An in-memory
+// origin→channel map would be lost on that cold start — so the channel MUST be
 // derivable from the chatId string itself, with zero lookup. Convention:
 //   web:<clientId>        → web / CLI debug channel   (default single-user: "web:debug")
 //   eng:<platform>:<chat> → bridge (engine-fronted chat, via OpenClaw/Hermes)

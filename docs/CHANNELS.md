@@ -7,8 +7,9 @@ only ever calls `resolveChannel(chatId)` and speaks through the `Channel` interf
 ## How routing works
 
 Outbound is keyed by `chatId`, and the channel is derived from the `chatId` **prefix**, statelessly
-(so it survives process restarts — the proactive sweeper reads persisted rows carrying the
-`chatId`):
+(so it survives process restarts — the engine's scheduled jobs deliver back through
+`POST /api/engine/push` carrying a persisted `chatId`, possibly to a process that never saw the
+original turn):
 
 | Prefix            | Channel   | Example `chatId`         |
 |-------------------|-----------|--------------------------|

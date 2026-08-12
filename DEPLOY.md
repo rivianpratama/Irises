@@ -33,7 +33,7 @@ The only other place you act is your repo on github.com (push) and a one-time ed
 - Access to the client's GCP project as **Owner**, with **billing enabled**. (Editor alone can't grant IAM roles — if you must use Editor, also get `roles/resourcemanager.projectIamAdmin`, or `gcp-setup.sh` fails at the role-binding step.)
 - The GitHub repo `rivianpratama/Irises` (you have push access).
 - API keys for `/opt/irises/.env`: `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`
-  (required); Supabase / Gmail-OAuth / OpenAI (optional, add later).
+  (required); Supabase / engine keys (optional, add later).
 
 > **GO / NO-GO:** the only org-policy blocker for this path is
 > `constraints/iam.disableServiceAccountKeyCreation` (the setup creates one deploy key). If the
@@ -97,26 +97,12 @@ curl https://<YOUR_VM_IP>.nip.io/health
 
 1. **Web chat / CLI** → the web debug chat is served at `/` (gated by `DEBUG_TOKEN`); from a shell, `npm run chat` reaches the same endpoints. Engine-owned channels (Telegram, WhatsApp, …) are fronted through the bridge via `IRISES_FRONT` — see `docs/CHANNELS.md` and `docs/ENGINES.md`.
 2. **Real domain (recommended for the client-facing prod):** point an `A` record at the VM IP, then
-   set `SITE_ADDRESS`, `PUBLIC_BASE_URL`, and `GOOGLE_OAUTH_REDIRECT_URI` in `/opt/irises/.env` to the
-   domain and restart (`cd /opt/irises && sudo docker compose up -d`).
-3. **(Optional) Gmail:** create an OAuth client (APIs & Services → Credentials → Create credentials →
-   OAuth client ID → Web application), put the client ID + secret in `.env`, and register
-   `https://<host>/oauth/google/callback` as an authorized redirect URI.
-4. **(Optional) Instant email — Gmail push → the Judge:** to have new email trigger the Judge in
-   real time (instead of only the hourly backstop poll), wire up Gmail push via Cloud Pub/Sub:
-   1. **Enable APIs:** Gmail API + Cloud Pub/Sub API in the same Google Cloud project as the OAuth client.
-   2. **Create a topic:** `gcloud pubsub topics create irises-gmail` (or via the console).
-   3. **Grant Gmail publish rights:** give `gmail-api-push@system.gserviceaccount.com` the
-      **Pub/Sub Publisher** role on that topic (Gmail publishes notifications through it).
-   4. **Create a push subscription** delivering to your endpoint with a shared secret in the query:
-      `gcloud pubsub subscriptions create irises-gmail-sub --topic=irises-gmail \`
-      `--push-endpoint="https://<host>/webhook/gmail?token=<GMAIL_PUSH_VERIFY_TOKEN>"`
-   5. **Set config:** `GMAIL_PUBSUB_TOPIC=projects/<project-id>/topics/irises-gmail` in `deploy/app.env`
-      (committed), and `GMAIL_PUSH_VERIFY_TOKEN=<a long random string>` in `/opt/irises/.env` (secret).
-   6. Restart. On each Gmail connect (and daily, via the renewal sweep) the app calls `users.watch`,
-      so push starts automatically. No extra OAuth scope is needed (`gmail.readonly` covers `watch`).
-      If `GMAIL_PUBSUB_TOPIC` is unset, push stays off and the hourly `EMAIL_BACKSTOP` poll carries
-      discovery. Keep the backstop on in prod regardless — Pub/Sub can occasionally drop a notification.
+   set `SITE_ADDRESS` in `/opt/irises/.env` to the domain and restart
+   (`cd /opt/irises && sudo docker compose up -d`).
+3. **Email, reminders, deep work** → these live on the external engine (OpenClaw or hermes-agent),
+   not in this app; connect one via `OPS_BACKEND` + engine keys in `/opt/irises/.env` and see
+   `docs/ENGINES.md`. (The old in-app Gmail OAuth/Pub/Sub push flow — `/webhook/gmail`,
+   `/oauth/google/callback` — was removed with the engine split; don't wire anything to those paths.)
 
 ---
 
@@ -127,8 +113,8 @@ git push origin main      # builds, ships, restarts, and health-checks automatic
 ```
 
 **Config vs secrets — what to edit where:**
-- **Non-secret config** (models, pacing, `SWEEP_*`/`EMAIL_*`, feature flags) lives in **`deploy/app.env`** — edit in your IDE, commit, push. The deploy ships it to `/opt/irises/app.env` and restarts. No SSH.
-- **Secrets** (API keys, `SUPABASE_*`, OAuth client secret, `TOKEN_ENCRYPTION_KEY`) live **only** in `/opt/irises/.env` on the VM. A deploy never touches that file, so a push can't clobber your keys — edit them over SSH (Step 2) only when a key changes.
+- **Non-secret config** (models, pacing, feature flags) lives in **`deploy/app.env`** — edit in your IDE, commit, push. The deploy ships it to `/opt/irises/app.env` and restarts. No SSH.
+- **Secrets** (API keys, `SUPABASE_*`, engine keys, `TOKEN_ENCRYPTION_KEY`) live **only** in `/opt/irises/.env` on the VM. A deploy never touches that file, so a push can't clobber your keys — edit them over SSH (Step 2) only when a key changes.
 - On any overlapping key, `app.env` wins, so the committed config is authoritative.
 
 **Logs / rollback** (from Cloud Shell or local, over IAP):

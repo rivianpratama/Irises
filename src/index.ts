@@ -405,13 +405,13 @@ async function withTypingKeptAlive<T>(chatId: string, work: Promise<T>): Promise
  * already waited through the LLM call), refreshing it so it never lapses into dead air, then
  * send. That makes each bubble read as typed out. waitForUserQuiet keeps us from talking over
  * the user.
- * Single send path for the live reply and out-of-band follow-ups (Ops, sweeper, email,
- * post-OAuth) — and for EVERY channel, so web and the bridge pace exactly the same.
+ * Single send path for the live reply and out-of-band follow-ups (Ops, engine push) —
+ * and for EVERY channel, so web and the bridge pace exactly the same.
  */
 async function sendBubbles(chatId: string, rawBubbles: string[], opts: SendBubbleOpts = {}): Promise<void> {
   if (rawBubbles.length === 0) return;
   // Hard guardrail: this is the single send path for EVERY user-facing bubble (live reply,
-  // Ops follow-up, sweeper, post-OAuth). Per bubble we (1) strip any `[[re:N]]` reply-routing tag
+  // Ops follow-up, engine push). Per bubble we (1) strip any `[[re:N]]` reply-routing tag
   // — a backstop so a model slip from ANY agent can never leak it, even when targets aren't supplied
   // — (2) scrub internal tool names, and (3) strip raw Ops summary scaffolding (ANSWER:/SOURCE:/
   // FLAGS:/Subject:/Sender: labels), so nothing — a model slip, or the composer-failure path that
@@ -895,8 +895,7 @@ app.listen(PORT, () => {
   Endpoints:
     POST /api/web/message         - Web / CLI chat → Convo→Ops
     POST /api/bridge/inbound      - Engine bridge inbound (OpenClaw/Hermes)
-    POST /webhook/gmail           - Gmail push (Judge)
-    GET  /oauth/google/callback   - Gmail OAuth
+    POST /api/engine/push         - Engine push door (scheduled/proactive delivery)
     GET  /debug                   - Prompt diagnostics
     GET  /dashboard               - Admin orchestration
     GET  /health                  - Health check

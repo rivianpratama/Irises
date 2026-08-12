@@ -7,8 +7,9 @@
 - **Node 22+** and npm.
 - **Anthropic** API key, **OpenRouter** API key (fallback + voice transcription).
 - **Supabase** project (free tier is fine).
-- **Google Cloud** project (for Gmail OAuth) + a public HTTPS domain for production.
-- For local webhook/OAuth testing: **ngrok** (or any HTTPS tunnel).
+- A public HTTPS host for production (the GCP VM path in §5 handles this with Caddy).
+- Optionally, an **engine** (OpenClaw or hermes-agent) for email/reminders/deep work — see
+  `docs/ENGINES.md`. Gmail, OAuth, and push webhooks live on the engine side, not in this app.
 
 ---
 
@@ -24,8 +25,6 @@ cp .env.example .env
 Edit `.env` and set at minimum:
 ```
 DATA_BACKEND=memory          # no Supabase needed
-AUTONOME_ENABLED=false       # don't send proactive texts locally
-EMAIL_BACKSTOP_ENABLED=false
 ANTHROPIC_API_KEY=sk-ant-...
 OPENROUTER_API_KEY=sk-or-... # for voice + fallback
 ```
@@ -37,17 +36,10 @@ curl http://localhost:3000/health      # -> {"status":"ok",...}
 ```
 Diagnostics dashboard: open `http://localhost:3000/debug` (localhost is allowed without a token).
 
-### 2b. Connect Gmail locally
-Irises needs a public HTTPS URL for the Google OAuth redirect.
-```bash
-ngrok http 3000
-# note the https URL, e.g. https://ab12.ngrok-free.app
-```
-Then:
-- In `.env`, set `PUBLIC_BASE_URL=https://ab12.ngrok-free.app` and
-  `GOOGLE_OAUTH_REDIRECT_URI=https://ab12.ngrok-free.app/oauth/google/callback`.
-- In **Google Cloud Console**, add that same redirect URI to your OAuth client (see §4).
-- Restart `npm run dev`.
+### 2b. Connect an engine locally (optional)
+Email, reminders, and deep work run on an external engine (OpenClaw or hermes-agent), not in
+this app — set `OPS_BACKEND` + the engine keys in `.env` and follow `docs/ENGINES.md`. Without
+an engine, the web chat still works; Irises just can't do engine-backed research or reminders.
 
 `npm run build` compiles to `dist/` and copies the agent `Context.md` files; `npm start` runs the built server. Build it once to confirm everything compiles:
 ```bash
@@ -65,12 +57,11 @@ npm run build && npm start
    SUPABASE_SERVICE_ROLE_KEY=eyJ...   # service_role
    # remove DATA_BACKEND=memory to use Supabase
    ```
-3. Apply the schema. **SQL Editor → New query**, paste and run, in order:
-   - `supabase/migrations/0001_init.sql`
-   - `supabase/migrations/0002_agent_memory.sql`
+3. Apply the schema. **SQL Editor → New query**, paste and run **every file in
+   `supabase/migrations/` in filename order** (`0001_init.sql` … `0016_turncost_user_chats.sql`).
    (Or with the Supabase CLI: `supabase link` then `supabase db push`.)
-4. The migrations create all tables, the `claim_due_reminders` RPC (used by the sweeper),
-   and enable RLS with no policies — the service-role key is what the server uses.
+4. The migrations create all tables and enable RLS with no policies — the service-role
+   key is what the server uses.
 5. Optional: enable the `pg_cron` extension if you want DB-side cleanup of expired
    `messages`/`oauth_state`; otherwise it's harmless to skip.
 
@@ -78,35 +69,7 @@ Without these env vars the app silently falls back to the in-memory store (dev o
 
 ---
 
-## 4. Google Gmail OAuth setup
-1. Google Cloud Console → create/select a project → **APIs & Services**.
-2. **Enable the Gmail API**.
-3. **OAuth consent screen**: external, add the scope
-   `https://www.googleapis.com/auth/gmail.readonly`. While testing, add the agent's Google
-   account under **Test users** (no full verification needed until you go broad).
-4. **Credentials → Create OAuth client ID → Web application**. Add an **Authorized redirect URI**:
-   - local: `https://<your-ngrok>/oauth/google/callback`
-   - prod: `https://<your-domain>/oauth/google/callback`
-5. Copy the client ID/secret into `.env`:
-   ```
-   GOOGLE_OAUTH_CLIENT_ID=...
-   GOOGLE_OAUTH_CLIENT_SECRET=...
-   GOOGLE_OAUTH_REDIRECT_URI=https://<domain-or-ngrok>/oauth/google/callback
-   PUBLIC_BASE_URL=https://<domain-or-ngrok>
-   ```
-6. Generate the token-encryption key (32 bytes):
-   ```bash
-   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
-   ```
-   → `TOKEN_ENCRYPTION_KEY=...`
-
-The agent connects Gmail in-chat: Irises sends a consent link, the user taps it, Google
-redirects to `/oauth/google/callback`, the encrypted refresh token is stored, and the
-inbox backfill + reminders begin.
-
----
-
-## 5. Other keys
+## 4. Other keys
 ```
 TRANSCRIBE_MODEL=google/gemini-2.5-flash
 # per-agent model config lives in deploy/app.env: <AGENT>_PROVIDER (anthropic|openrouter) +
@@ -117,7 +80,7 @@ TRANSCRIBE_MODEL=google/gemini-2.5-flash
 
 ---
 
-## 6. Deploy to a GCP Compute Engine VM
+## 5. Deploy to a GCP Compute Engine VM
 
 Deployment is fully automated. A single Compute Engine VM (e2-micro free-tier, or
 e2-small) runs the app and **Caddy** as **Docker containers** via `docker compose`. Images
@@ -131,13 +94,13 @@ For the full runbook see the repo-root **DEPLOY.md**.
 
 ---
 
-## 7. Verification checklist
+## 6. Verification checklist
 - `curl https://your-domain.com/health` → 200.
 - Open the web chat URL (served at `/`) or run `npm run chat` → Irises replies (paced bubbles).
 - Ask "what does AS-IS mean" → answered inline (no delegation).
-- Ask a property/contract question → instant ack, then a follow-up.
-- Onboarding: new number → asked name → offered Gmail link; tap it → "gmail connected ✅",
-  inbox backfill runs, and a `gmail_oauth_tokens` row appears in Supabase.
+- Ask a question that needs research → instant ack, then a follow-up.
 - `/debug?token=…` shows the prompts and the Convo→Ops delegation graph.
-- Seed a near-term deadline (or let an email come in) → a proactive reminder fires.
-- Logs: `sudo docker compose -f /opt/irises/docker-compose.yml logs -f app` shows `[sweeper]` and `[email] poller` running.
+- With an engine connected: ask for a reminder a couple of minutes out → the engine's cron
+  delivers it back through `POST /api/engine/push` and Irises pings you proactively.
+- Logs: `sudo docker compose -f /opt/irises/docker-compose.yml logs -f app` shows the boot
+  banner's endpoint list and `[channels] registered "web"` (plus `"bridge"` when an engine fronts chats).
