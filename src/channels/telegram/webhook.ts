@@ -1,39 +1,23 @@
-// Telegram inbound webhook (PREPARED SKELETON). Parses a Telegram Update into the neutral inbound
-// event and feeds the SAME enqueueInbound pipeline as Linq/web. Off unless registered (see ./index.ts).
+// Telegram inbound webhook — the alternative transport for deployments that already have a public
+// HTTPS URL (TELEGRAM_MODE=webhook; register it with setWebhook + a secret, see docs/CHANNELS.md).
+// Parsing, the allowlist, the DMs-only gate, and media extraction all live in inbound.ts, shared
+// verbatim with the polling transport.
 import { Router, type Request, type Response } from 'express';
-import { emptyMedia } from '../../webhook/types.js';
-import type { AgentClient, EnqueueInbound } from '../../index.js';
+import { handleTelegramUpdate, type TelegramDeps, type TelegramUpdate } from './inbound.js';
 
-interface TelegramUpdate {
-  message?: {
-    message_id: number;
-    text?: string;
-    chat: { id: number; type: string };
-    from?: { id: number; username?: string };
-    reply_to_message?: { message_id: number };
-  };
-}
-
-export function createTelegramWebhook(deps: { enqueueInbound: EnqueueInbound; agentClient: AgentClient }): Router {
+export function createTelegramWebhook(deps: TelegramDeps): Router {
   const router = Router();
-  const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
 
   router.post('/webhook/telegram', (req: Request, res: Response) => {
-    // Validate Telegram's secret-token header when configured.
+    // Validate Telegram's secret-token header when configured (read per-request so a rotated
+    // secret applies without a restart).
+    const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
     if (secret && req.header('X-Telegram-Bot-Api-Secret-Token') !== secret) { res.sendStatus(401); return; }
 
-    const update = req.body as TelegramUpdate;
-    const msg = update?.message;
-    if (!msg || typeof msg.text !== 'string') { res.sendStatus(200); return; }  // ignore non-text (media TODO)
-
-    const chatId = `tg:${msg.chat.id}`;
-    const from = `tg:${msg.from?.id ?? msg.chat.id}`;
-    const messageId = String(msg.message_id);
-    const replyTo = msg.reply_to_message ? { message_id: String(msg.reply_to_message.message_id) } : undefined;
-
-    // TODO(skeleton): inbound media (photo/document/voice) → file_id → getFile → download URL → IncomingMedia.
-    deps.enqueueInbound(deps.agentClient, chatId, from, msg.text, messageId, emptyMedia(), undefined, replyTo);
+    // Ack immediately — Telegram retries slow webhooks, and media extraction does its own fetches.
     res.sendStatus(200);
+    void handleTelegramUpdate(req.body as TelegramUpdate, deps)
+      .catch(err => console.error('[telegram] webhook update handling failed:', err));
   });
 
   return router;

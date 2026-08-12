@@ -1,10 +1,27 @@
-// Telegram channel client (PREPARED SKELETON — off by default; see docs/CHANNELS.md).
-//
-// Implements the Channel interface against the Telegram Bot API. It is wired and unit-testable, but
-// not started in production: registration is gated on TELEGRAM_ENABLED==='true' && TELEGRAM_BOT_TOKEN
-// (see ./index.ts). Inbound media download (file_id → getFile → URL) and group-admin ops are left as
-// documented TODOs.
+// Telegram channel client. Implements the Channel interface against the Telegram Bot API.
+// Registration is gated on TELEGRAM_ENABLED==='true' + TELEGRAM_BOT_TOKEN + a required allowlist
+// (see ./index.ts). Outbound handles text (4096-char split) and media (sendPhoto/sendDocument);
+// group-admin ops stay out of scope (caps.groupOps=false — v1 is DMs only).
 import type { Channel, ChatInfo, Reaction } from '../types.js';
+
+const CALL_TIMEOUT_MS = Number(process.env.TELEGRAM_CALL_TIMEOUT_MS || 15_000);
+const MAX_TEXT = 4096; // Telegram's hard per-message text cap
+
+/** Split at the cap, preferring the last newline/space inside each window so words survive. */
+export function splitTelegramText(text: string): string[] {
+  if (text.length <= MAX_TEXT) return [text];
+  const parts: string[] = [];
+  let rest = text;
+  while (rest.length > MAX_TEXT) {
+    const window = rest.slice(0, MAX_TEXT);
+    const cut = Math.max(window.lastIndexOf('\n'), window.lastIndexOf(' '), MAX_TEXT - 200);
+    const at = cut > 0 ? cut : MAX_TEXT;
+    parts.push(rest.slice(0, at));
+    rest = rest.slice(at).trimStart();
+  }
+  if (rest) parts.push(rest);
+  return parts;
+}
 
 function botToken(): string {
   const t = process.env.TELEGRAM_BOT_TOKEN;
@@ -23,6 +40,8 @@ async function call(method: string, body: Record<string, unknown>): Promise<Reco
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      // A hung Bot API call must never wedge the per-chat send lock (mirrors LINQ_SEND_TIMEOUT_MS).
+      signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
     });
     if (!res.ok) {
       console.warn(`[telegram] ${method} ${res.status}: ${(await res.text()).slice(0, 120)}`);
@@ -46,17 +65,35 @@ export const telegramChannel: Channel = {
   kind: 'telegram',
   caps: { effects: false, threading: true, reactions: true, groupOps: false, contactCard: false },
 
-  async sendMessage(chatId, text, _effect, replyTo) {
-    const res = await call('sendMessage', {
-      chat_id: telegramChatId(chatId),
-      text,
-      ...(replyTo ? { reply_parameters: { message_id: Number(replyTo.message_id) } } : {}),
-    });
-    const result = res?.result as { message_id?: number } | undefined;
-    const id = result?.message_id != null ? String(result.message_id) : 'tg-out';
+  async sendMessage(chatId, text, _effect, replyTo, media) {
+    const chat_id = telegramChatId(chatId);
+    const replyParams = replyTo ? { reply_parameters: { message_id: Number(replyTo.message_id) } } : {};
+    let lastId: string | null = null;
+
+    // Media first (an image lands, then the words about it — the natural texting order). Images
+    // ride sendPhoto, everything else sendDocument; each URL must be fetchable by Telegram.
+    for (const m of media ?? []) {
+      const isImage = /\.(jpe?g|png|gif|webp)(\?|$)/i.test(m.url);
+      const res = await call(isImage ? 'sendPhoto' : 'sendDocument', {
+        chat_id, ...(isImage ? { photo: m.url } : { document: m.url }), ...replyParams,
+      });
+      const result = res?.result as { message_id?: number } | undefined;
+      if (result?.message_id != null) lastId = String(result.message_id);
+    }
+
+    for (const [i, part] of splitTelegramText(text).entries()) {
+      if (!part.trim()) continue;
+      const res = await call('sendMessage', {
+        chat_id, text: part,
+        // Only the first part quotes the replied-to message; continuations flow bare.
+        ...(i === 0 && !(media?.length) ? replyParams : {}),
+      });
+      const result = res?.result as { message_id?: number } | undefined;
+      if (result?.message_id != null) lastId = String(result.message_id);
+    }
     return {
       chat_id: chatId,
-      message: { id, parts: [{ type: 'text', value: text }], sent_at: new Date().toISOString(), delivery_status: 'sent', is_read: false },
+      message: { id: lastId ?? 'tg-out', parts: [{ type: 'text', value: text }], sent_at: new Date().toISOString(), delivery_status: 'sent', is_read: false },
     };
   },
 

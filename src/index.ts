@@ -16,6 +16,7 @@ import type { MediaAttachment } from './channels/types.js';
 import * as convoClient from './agents/convo/client.js';
 import { getUserProfile, addMessage } from './state/conversation.js';
 import { runOpsAndFollowUp } from './agents/orchestrator.js';
+import { createEnginePushRouter } from './webhook/enginePush.js';
 import { voiceOutcome } from './agents/fallfirm/client.js';
 import { ensureChatId } from './db/repositories/memory.js';
 import { markOpsStart } from './state/opsCoordination.js';
@@ -862,7 +863,9 @@ const createAgentWebhookHandler = (agentClient: AgentClient) => {
 };
 
 // Slim: the Gmail OAuth + push routers are gone — the ENGINE owns email now. Engine-initiated
-// proactive messages (reminders, mail nudges) arrive via the /api/engine/push endpoint instead.
+// proactive messages (reminders, mail nudges, background findings) arrive here instead, voiced
+// by Fallfirm in Irises's tone and delivered through the per-chat mouth like any follow-up.
+app.use(createEnginePushRouter({ sendFollowUp }));
 
 // In-app prompt diagnostics dashboard (guarded by DEBUG_TOKEN / localhost).
 app.use(createDiagnosticsRouter());

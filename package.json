@@ -26,6 +26,7 @@
     "build:web": "npm --prefix web run build",
     "copy:context": "cpx \"src/agents/**/*.md\" dist/agents && cpx \"src/**/*.txt\" dist",
     "start": "node dist/index.js",
+    "chat": "tsx scripts/irises-chat.ts",
     "install:web": "npm --prefix web install",
     "test": "cross-env TZ=UTC tsx --test \"src/**/*.test.ts\" \"scripts/**/*.test.ts\""
   },
