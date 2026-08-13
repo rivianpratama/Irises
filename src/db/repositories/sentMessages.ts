@@ -1,8 +1,8 @@
-import { getSupabase, logDbError } from '../client.js';
-import { mem } from '../memory.js';
+import { logDbError } from '../client.js';
+import { stmt } from '../sqlite.js';
 
-// How long a sent bubble stays resolvable for a reply (matches the migration's 7-day expiry;
-// also bounds the in-memory fallback).
+// How long a sent bubble stays resolvable for a reply. Reads filter on created_at;
+// the retention sweep hard-deletes expired rows daily.
 const TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
@@ -12,19 +12,17 @@ const TTL_MS = 7 * 24 * 60 * 60 * 1000;
  */
 export async function recordSentBubble(chatId: string, messageId: string, content: string, replyRootId?: string): Promise<void> {
   if (!messageId || !content) return;
-  const supabase = getSupabase();
-  if (supabase) {
-    try {
-      const { error } = await supabase
-        .from('sent_messages')
-        .upsert({ message_id: messageId, chat_id: chatId, content, reply_root_id: replyRootId ?? null }, { onConflict: 'message_id' });
-      if (error) throw error;
-      return;
-    } catch (error) {
-      logDbError('recordSentBubble', error);
-    }
+  try {
+    stmt(
+      `INSERT INTO sent_messages (message_id, chat_id, content, reply_root_id, created_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(message_id) DO UPDATE SET
+         chat_id = excluded.chat_id, content = excluded.content,
+         reply_root_id = excluded.reply_root_id, created_at = excluded.created_at`
+    ).run(messageId, chatId, content, replyRootId ?? null, Date.now());
+  } catch (error) {
+    logDbError('recordSentBubble', error);
   }
-  mem.sentMessages.set(messageId, { chatId, content, at: Date.now(), replyRootId });
 }
 
 /**
@@ -34,26 +32,15 @@ export async function recordSentBubble(chatId: string, messageId: string, conten
  */
 export async function lookupSentBubble(messageId: string, chatId: string): Promise<string | null> {
   if (!messageId || !chatId) return null;
-  const supabase = getSupabase();
-  if (supabase) {
-    try {
-      const cutoff = new Date(Date.now() - TTL_MS).toISOString();
-      const { data, error } = await supabase
-        .from('sent_messages')
-        .select('content')
-        .eq('message_id', messageId)
-        .eq('chat_id', chatId)
-        .gt('created_at', cutoff)
-        .maybeSingle();
-      if (error) throw error;
-      return data?.content ?? null;
-    } catch (error) {
-      logDbError('lookupSentBubble', error);
-    }
+  try {
+    const row = stmt(
+      'SELECT content FROM sent_messages WHERE message_id = ? AND chat_id = ? AND created_at > ?'
+    ).get(messageId, chatId, Date.now() - TTL_MS) as { content: string } | undefined;
+    return row?.content ?? null;
+  } catch (error) {
+    logDbError('lookupSentBubble', error);
+    return null;
   }
-  const hit = mem.sentMessages.get(messageId);
-  if (hit && hit.chatId === chatId && Date.now() - hit.at <= TTL_MS) return hit.content;
-  return null;
 }
 
 /**
@@ -64,28 +51,15 @@ export async function lookupSentBubble(messageId: string, chatId: string): Promi
  */
 export async function listSentBubblesByReplyRoot(rootId: string, chatId: string, limit = 6): Promise<string[]> {
   if (!rootId || !chatId) return [];
-  const supabase = getSupabase();
-  if (supabase) {
-    try {
-      const cutoff = new Date(Date.now() - TTL_MS).toISOString();
-      const { data, error } = await supabase
-        .from('sent_messages')
-        .select('content')
-        .eq('reply_root_id', rootId)
-        .eq('chat_id', chatId)
-        .gt('created_at', cutoff)
-        .order('created_at', { ascending: true })
-        .limit(limit);
-      if (error) throw error;
-      return (data ?? []).map(r => r.content as string);
-    } catch (error) {
-      logDbError('listSentBubblesByReplyRoot', error);
-    }
+  try {
+    const rows = stmt(
+      `SELECT content FROM sent_messages
+       WHERE reply_root_id = ? AND chat_id = ? AND created_at > ?
+       ORDER BY created_at ASC LIMIT ?`
+    ).all(rootId, chatId, Date.now() - TTL_MS, limit) as unknown as Array<{ content: string }>;
+    return rows.map(r => r.content);
+  } catch (error) {
+    logDbError('listSentBubblesByReplyRoot', error);
+    return [];
   }
-  const now = Date.now();
-  return [...mem.sentMessages.values()]
-    .filter(v => v.chatId === chatId && v.replyRootId === rootId && now - v.at <= TTL_MS)
-    .sort((a, b) => a.at - b.at)
-    .slice(0, limit)
-    .map(v => v.content);
 }

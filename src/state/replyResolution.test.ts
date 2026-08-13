@@ -9,7 +9,7 @@ import { test, before, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { recordSentBubble } from '../db/repositories/sentMessages.js';
 import { recordInboundMessage } from '../db/repositories/inboundMessages.js';
-import { mem } from '../db/memory.js';
+import { resetStorageForTests } from '../db/sqlite.js';
 import type { ResolvedReply } from './replyResolution.js'; // type-only — does not load the module at import time
 import type { Channel, FetchedMessage } from '../channels/types.js';
 
@@ -40,8 +40,7 @@ before(async () => {
 });
 
 beforeEach(() => {
-  mem.sentMessages.clear();
-  mem.inboundMessages.clear();
+  resetStorageForTests();
   nextFetched = null;
   getMessageCalls = 0;
 });

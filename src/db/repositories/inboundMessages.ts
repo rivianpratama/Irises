@@ -1,5 +1,5 @@
-import { getSupabase, logDbError } from '../client.js';
-import { mem } from '../memory.js';
+import { logDbError } from '../client.js';
+import { stmt } from '../sqlite.js';
 
 // Index of the user's OWN inbound text-bearing messages, keyed by transport message_id.
 // Some transports collapse a tapped reply to the THREAD ROOT, which — for a reply tapped
@@ -9,40 +9,35 @@ import { mem } from '../memory.js';
 // user-authored rows out of the Irises-bubble lookup avoids any chance of injected
 // text satisfying a "what did Irises say" resolution). Ephemeral (~7 days).
 const TTL_MS = 7 * 24 * 60 * 60 * 1000;
-// Soft cap for the in-memory twin (Supabase enforces its own TTL). Prune on write —
-// unlike mem.sentMessages, which only TTL-checks on read and grows unbounded.
-const MEM_CAP = 2000;
+// Soft cap, pruned on write — a webhook flood must not grow the index unbounded
+// between retention sweeps.
+const CAP = 2000;
 
-function pruneMem(): void {
-  const now = Date.now();
-  for (const [id, v] of mem.inboundMessages) {
-    if (now - v.at > TTL_MS) mem.inboundMessages.delete(id);
-  }
-  // Map preserves insertion order — drop the oldest entries past the cap.
-  while (mem.inboundMessages.size > MEM_CAP) {
-    const oldest = mem.inboundMessages.keys().next().value;
-    if (oldest === undefined) break;
-    mem.inboundMessages.delete(oldest);
-  }
+function pruneOnWrite(now: number): void {
+  stmt('DELETE FROM inbound_messages WHERE created_at <= ?').run(now - TTL_MS);
+  stmt(
+    `DELETE FROM inbound_messages WHERE message_id IN (
+       SELECT message_id FROM inbound_messages ORDER BY created_at DESC LIMIT -1 OFFSET ?
+     )`
+  ).run(CAP);
 }
 
 /** Remember a text-bearing message the user sent, keyed by its transport message_id. Fire-and-forget; never throws. */
 export async function recordInboundMessage(chatId: string, messageId: string, content: string, senderHandle?: string): Promise<void> {
   if (!messageId || !content) return;
-  const supabase = getSupabase();
-  if (supabase) {
-    try {
-      const { error } = await supabase
-        .from('inbound_messages')
-        .upsert({ message_id: messageId, chat_id: chatId, content, sender_handle: senderHandle ?? null }, { onConflict: 'message_id' });
-      if (error) throw error;
-      return;
-    } catch (error) {
-      logDbError('recordInboundMessage', error);
-    }
+  try {
+    const now = Date.now();
+    stmt(
+      `INSERT INTO inbound_messages (message_id, chat_id, sender_handle, content, created_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(message_id) DO UPDATE SET
+         chat_id = excluded.chat_id, sender_handle = excluded.sender_handle,
+         content = excluded.content, created_at = excluded.created_at`
+    ).run(messageId, chatId, senderHandle ?? null, content, now);
+    pruneOnWrite(now);
+  } catch (error) {
+    logDbError('recordInboundMessage', error);
   }
-  mem.inboundMessages.set(messageId, { chatId, content, senderHandle, at: Date.now() });
-  pruneMem();
 }
 
 /**
@@ -52,24 +47,13 @@ export async function recordInboundMessage(chatId: string, messageId: string, co
  */
 export async function lookupInboundMessage(messageId: string, chatId: string): Promise<{ content: string; senderHandle?: string } | null> {
   if (!messageId || !chatId) return null;
-  const supabase = getSupabase();
-  if (supabase) {
-    try {
-      const cutoff = new Date(Date.now() - TTL_MS).toISOString();
-      const { data, error } = await supabase
-        .from('inbound_messages')
-        .select('content, sender_handle')
-        .eq('message_id', messageId)
-        .eq('chat_id', chatId)
-        .gt('created_at', cutoff)
-        .maybeSingle();
-      if (error) throw error;
-      return data ? { content: data.content as string, senderHandle: (data.sender_handle as string | null) ?? undefined } : null;
-    } catch (error) {
-      logDbError('lookupInboundMessage', error);
-    }
+  try {
+    const row = stmt(
+      'SELECT content, sender_handle FROM inbound_messages WHERE message_id = ? AND chat_id = ? AND created_at > ?'
+    ).get(messageId, chatId, Date.now() - TTL_MS) as { content: string; sender_handle: string | null } | undefined;
+    return row ? { content: row.content, ...(row.sender_handle ? { senderHandle: row.sender_handle } : {}) } : null;
+  } catch (error) {
+    logDbError('lookupInboundMessage', error);
+    return null;
   }
-  const hit = mem.inboundMessages.get(messageId);
-  if (hit && hit.chatId === chatId && Date.now() - hit.at <= TTL_MS) return { content: hit.content, senderHandle: hit.senderHandle };
-  return null;
 }
