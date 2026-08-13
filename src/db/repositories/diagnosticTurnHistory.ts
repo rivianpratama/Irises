@@ -1,4 +1,6 @@
-import { getSupabase, logDbError } from '../client.js';
+import { logDbError } from '../client.js';
+import { stmt } from '../sqlite.js';
+import { MAX_TURN_JSON_CHARS } from './diagnosticTurns.js';
 import type { Turn } from '../../diagnostics/turns.js';
 
 // Durable copy of EVERY orchestration turn (one row per turn, upserted on
@@ -7,8 +9,7 @@ import type { Turn } from '../../diagnostics/turns.js';
 // only place full `raw` wire payloads survive a restart — history rows strip
 // `raw` from events by default (DIAGNOSTICS_PERSIST_RAW=true opts back in),
 // since raw wire bodies are the MB-scale bulk of a turn. Fire-and-forget:
-// diagnostics persistence must never break a reply, and every function no-ops
-// (or returns empty) on the memory backend.
+// diagnostics persistence must never break a reply.
 
 const PERSIST_RAW = process.env.DIAGNOSTICS_PERSIST_RAW === 'true';
 const HISTORY_KEEP = Number(process.env.DIAGNOSTIC_HISTORY_KEEP || 50);
@@ -34,9 +35,11 @@ export interface HistoryKeyRow extends HistoryTurnMeta {
   userTurnCount: number;   // turns on this key whose source is 'user' (the picker gate)
 }
 
-const toMs = (ts: unknown): number => (typeof ts === 'string' ? Date.parse(ts) : 0);
-
 function rowToMeta(r: Record<string, unknown>): HistoryTurnMeta {
+  let agents: string[] = [];
+  if (typeof r.agents_json === 'string') {
+    try { agents = JSON.parse(r.agents_json) as string[]; } catch { /* keep [] */ }
+  }
   return {
     key: r.key as string,
     turnId: r.turn_id as string,
@@ -44,11 +47,11 @@ function rowToMeta(r: Record<string, unknown>): HistoryTurnMeta {
     handle: (r.handle as string | null) ?? null,
     source: (r.source as string) ?? 'system',
     trigger: (r.trigger as string | null) ?? null,
-    agents: (r.agents as string[]) ?? [],
-    eventCount: (r.event_count as number) ?? 0,
-    errorCount: (r.error_count as number) ?? 0,
-    startedAt: toMs(r.started_at),
-    lastAt: toMs(r.last_at),
+    agents,
+    eventCount: Number(r.event_count ?? 0),
+    errorCount: Number(r.error_count ?? 0),
+    startedAt: Number(r.started_at ?? 0),
+    lastAt: Number(r.last_at ?? 0),
   };
 }
 
@@ -69,48 +72,60 @@ export function stripRawForHistory(turn: Turn): Turn {
 }
 
 export async function saveTurnToHistory(turn: Turn): Promise<void> {
-  const supabase = getSupabase();
-  if (!supabase) return;
   try {
-    const { error } = await supabase.from('diagnostic_turn_history').upsert({
-      key: turn.key,
-      turn_id: turn.id,
-      chat_id: turn.chatId ?? null,
-      handle: turn.handle ?? null,
-      source: turn.source,
-      trigger: turn.trigger ?? null,
-      agents: turn.agents,
-      event_count: turn.eventCount,
-      error_count: countTurnErrors(turn),
-      started_at: new Date(turn.startedAt).toISOString(),
-      last_at: new Date(turn.lastAt).toISOString(),
-      turn: stripRawForHistory(turn) as unknown as Record<string, unknown>,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'key,turn_id' });
-    if (error) throw error;
+    const json = JSON.stringify(stripRawForHistory(turn));
+    if (json.length > MAX_TURN_JSON_CHARS) {
+      console.warn(`[diagnostics] skipping history persist for ${turn.key}/${turn.id} — ${json.length} chars exceeds the ${MAX_TURN_JSON_CHARS} write guard`);
+      return;
+    }
+    stmt(
+      `INSERT INTO diagnostic_turn_history
+         (key, turn_id, chat_id, handle, source, "trigger", agents_json,
+          event_count, error_count, started_at, last_at, turn_json, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(key, turn_id) DO UPDATE SET
+         chat_id = excluded.chat_id, handle = excluded.handle, source = excluded.source,
+         "trigger" = excluded."trigger", agents_json = excluded.agents_json,
+         event_count = excluded.event_count, error_count = excluded.error_count,
+         started_at = excluded.started_at, last_at = excluded.last_at,
+         turn_json = excluded.turn_json, updated_at = excluded.updated_at`
+    ).run(
+      turn.key,
+      turn.id,
+      turn.chatId ?? null,
+      turn.handle ?? null,
+      turn.source,
+      turn.trigger ?? null,
+      JSON.stringify(turn.agents),
+      turn.eventCount,
+      countTurnErrors(turn),
+      turn.startedAt,
+      turn.lastAt,
+      json,
+      Date.now(),
+    );
   } catch (error) {
     logDbError('saveTurnToHistory', error);
   }
 }
 
-const META_COLUMNS = 'key, turn_id, chat_id, handle, source, trigger, agents, event_count, error_count, started_at, last_at';
+const META_COLUMNS = 'key, turn_id, chat_id, handle, source, "trigger", agents_json, event_count, error_count, started_at, last_at';
 
 /** Per-key (or per-handle) turn metas, newest first, cursor-paginated on lastAt. */
 export async function listTurnHistory(opts: {
   key?: string; handle?: string; before?: number; limit?: number;
 }): Promise<HistoryTurnMeta[]> {
-  const supabase = getSupabase();
-  if (!supabase) return [];
   try {
-    let q = supabase.from('diagnostic_turn_history').select(META_COLUMNS);
-    if (opts.key) q = q.eq('key', opts.key);
-    if (opts.handle) q = q.eq('handle', opts.handle);
-    if (opts.before) q = q.lt('last_at', new Date(opts.before).toISOString());
-    const { data, error } = await q
-      .order('last_at', { ascending: false })
-      .limit(Math.min(Math.max(opts.limit ?? 30, 1), 100));
-    if (error) throw error;
-    return (data ?? []).map(r => rowToMeta(r as Record<string, unknown>));
+    const where: string[] = ['1=1'];
+    const args: Array<string | number> = [];
+    if (opts.key) { where.push('key = ?'); args.push(opts.key); }
+    if (opts.handle) { where.push('handle = ?'); args.push(opts.handle); }
+    if (opts.before) { where.push('last_at < ?'); args.push(opts.before); }
+    const rows = stmt(
+      `SELECT ${META_COLUMNS} FROM diagnostic_turn_history
+       WHERE ${where.join(' AND ')} ORDER BY last_at DESC LIMIT ?`
+    ).all(...args, Math.min(Math.max(opts.limit ?? 30, 1), 100)) as unknown as Record<string, unknown>[];
+    return rows.map(rowToMeta);
   } catch (error) {
     logDbError('listTurnHistory', error);
     return [];
@@ -118,25 +133,20 @@ export async function listTurnHistory(opts: {
 }
 
 /**
- * Newest N FULL turns for a key (turn jsonb, events raw-stripped at save time),
+ * Newest N FULL turns for a key (turn payload, events raw-stripped at save time),
  * returned oldest-first. One query — avoids N× getHistoricalTurn round trips when
  * a view needs every turn's events (e.g. the per-turn cost chat view).
  */
 export async function listFullTurnHistory(key: string, limit = 20): Promise<Turn[]> {
-  const supabase = getSupabase();
-  if (!supabase) return [];
   try {
-    const { data, error } = await supabase
-      .from('diagnostic_turn_history')
-      .select('turn')
-      .eq('key', key)
-      .order('last_at', { ascending: false })
-      .limit(Math.min(Math.max(limit, 1), 50));
-    if (error) throw error;
-    return ((data ?? []) as Array<{ turn: Turn | null }>)
-      .map(r => r.turn)
-      .filter((t): t is Turn => !!t && typeof t === 'object')
-      .reverse();
+    const rows = stmt(
+      'SELECT turn_json FROM diagnostic_turn_history WHERE key = ? ORDER BY last_at DESC LIMIT ?'
+    ).all(key, Math.min(Math.max(limit, 1), 50)) as unknown as Array<{ turn_json: string }>;
+    const turns: Turn[] = [];
+    for (const r of rows) {
+      try { turns.push(JSON.parse(r.turn_json) as Turn); } catch { /* skip a corrupt payload */ }
+    }
+    return turns.reverse();
   } catch (error) {
     logDbError('listFullTurnHistory', error);
     return [];
@@ -145,17 +155,11 @@ export async function listFullTurnHistory(key: string, limit = 20): Promise<Turn
 
 /** One full historical turn (events raw-stripped at save time). */
 export async function getHistoricalTurn(key: string, turnId: string): Promise<Turn | null> {
-  const supabase = getSupabase();
-  if (!supabase) return null;
   try {
-    const { data, error } = await supabase
-      .from('diagnostic_turn_history')
-      .select('turn')
-      .eq('key', key)
-      .eq('turn_id', turnId)
-      .maybeSingle();
-    if (error) throw error;
-    return (data?.turn as Turn | undefined) ?? null;
+    const row = stmt(
+      'SELECT turn_json FROM diagnostic_turn_history WHERE key = ? AND turn_id = ?'
+    ).get(key, turnId) as { turn_json: string } | undefined;
+    return row ? (JSON.parse(row.turn_json) as Turn) : null;
   } catch (error) {
     logDbError('getHistoricalTurn', error);
     return null;
@@ -164,16 +168,24 @@ export async function getHistoricalTurn(key: string, turnId: string): Promise<Tu
 
 /** Latest turn meta per key + real per-key turn counts (sidebar seed after restart). */
 export async function listHistoryKeys(limit = 300): Promise<HistoryKeyRow[]> {
-  const supabase = getSupabase();
-  if (!supabase) return [];
   try {
-    const { data, error } = await supabase.rpc('diagnostic_history_keys', { p_limit: limit, p_offset: 0 });
-    if (error) throw error;
-    return ((data ?? []) as Record<string, unknown>[]).map(r => {
+    const rows = stmt(
+      `SELECT * FROM (
+         SELECT ${META_COLUMNS},
+                row_number() OVER (PARTITION BY key ORDER BY last_at DESC)                 AS rn,
+                count(*) OVER (PARTITION BY key)                                            AS turn_count,
+                count(*) FILTER (WHERE source = 'user') OVER (PARTITION BY key)             AS user_turn_count,
+                max(handle) OVER (PARTITION BY key)                                         AS any_handle,
+                max(chat_id) OVER (PARTITION BY key)                                        AS any_chat_id
+         FROM diagnostic_turn_history
+       ) WHERE rn = 1
+       ORDER BY last_at DESC LIMIT ?`
+    ).all(Math.min(Math.max(limit, 1), 1000)) as unknown as Record<string, unknown>[];
+    return rows.map(r => {
       const meta = rowToMeta(r);
       // The representative (latest) turn may be an automation/system event that carried
       // no handle/chatId; fall back to the partition-wide value so the chat still shows
-      // under its user and scopes usage correctly. any_* are null pre-migration → no-op.
+      // under its user and scopes usage correctly.
       return {
         ...meta,
         handle: meta.handle ?? ((r.any_handle as string | null) ?? null),
@@ -194,71 +206,50 @@ export interface HistorySearchParams {
   source?: string;
   agent?: string;
   since?: number;      // epoch ms window start
-  deep?: boolean;      // scan turn payloads too (RPC)
+  deep?: boolean;      // scan turn payloads too
   limit?: number;
 }
 
 /**
- * Search turn history. Fast path filters meta columns via separate .ilike()
- * queries merged in Node (avoids .or() filter-string escaping pitfalls);
- * deep=true additionally scans the turn jsonb text via RPC.
+ * Search turn history. Fast path matches the meta columns (trigger/handle/key);
+ * deep=true additionally scans the persisted turn payload text. SQLite LIKE is
+ * ASCII-case-insensitive (the old ILIKE also folded unicode case) — close enough
+ * for a debug search.
  */
 export async function searchHistory(params: HistorySearchParams): Promise<HistoryTurnMeta[]> {
-  const supabase = getSupabase();
-  if (!supabase) return [];
   const limit = Math.min(Math.max(params.limit ?? 50, 1), 100);
-  const sinceIso = new Date(params.since ?? Date.now() - 7 * 86400_000).toISOString();
+  const since = params.since ?? Date.now() - 7 * 86400_000;
   try {
-    if (params.deep && params.q) {
-      const { data, error } = await supabase.rpc('diagnostic_history_search', {
-        p_q: params.q,
-        p_handle: params.handle ?? null,
-        p_source: params.source ?? null,
-        p_since: sinceIso,
-        p_limit: limit,
-      });
-      if (error) throw error;
-      let rows = ((data ?? []) as Record<string, unknown>[]).map(rowToMeta);
-      if (params.agent) rows = rows.filter(r => r.agents.includes(params.agent!));
-      return rows;
-    }
-
-    const base = () => {
-      let q = supabase.from('diagnostic_turn_history')
-        .select(META_COLUMNS)
-        .gte('last_at', sinceIso);
-      if (params.handle) q = q.eq('handle', params.handle);
-      if (params.source) q = q.eq('source', params.source);
-      if (params.agent) q = q.contains('agents', [params.agent]);
-      return q.order('last_at', { ascending: false }).limit(limit);
-    };
-
-    if (!params.q) {
-      const { data, error } = await base();
-      if (error) throw error;
-      return ((data ?? []) as Record<string, unknown>[]).map(rowToMeta);
-    }
-
-    // Escape ILIKE wildcards in the user's text; match trigger OR handle OR key.
-    const pat = `%${params.q.replace(/[%_\\]/g, m => `\\${m}`)}%`;
-    const results = await Promise.all([
-      base().ilike('trigger', pat),
-      base().ilike('handle', pat),
-      base().ilike('key', pat),
-    ]);
-    const seen = new Set<string>();
-    const merged: HistoryTurnMeta[] = [];
-    for (const { data, error } of results) {
-      if (error) throw error;
-      for (const r of (data ?? []) as Record<string, unknown>[]) {
-        const meta = rowToMeta(r);
-        const k = `${meta.key}\u0000${meta.turnId}`;
-        if (seen.has(k)) continue;
-        seen.add(k);
-        merged.push(meta);
+    const where: string[] = ['last_at >= ?'];
+    const args: Array<string | number> = [since];
+    if (params.handle) { where.push('handle = ?'); args.push(params.handle); }
+    if (params.source) { where.push('source = ?'); args.push(params.source); }
+    let postFilterAgent = false;
+    if (params.agent) {
+      if (params.deep && params.q) {
+        postFilterAgent = true;  // parity with the old RPC path, which post-filtered
+      } else {
+        where.push('EXISTS (SELECT 1 FROM json_each(agents_json) WHERE value = ?)');
+        args.push(params.agent);
       }
     }
-    return merged.sort((a, b) => b.lastAt - a.lastAt).slice(0, limit);
+    if (params.q) {
+      const pat = `%${params.q.replace(/[%_\\]/g, m => `\\${m}`)}%`;
+      if (params.deep) {
+        where.push('("trigger" LIKE ? ESCAPE \'\\\' OR turn_json LIKE ? ESCAPE \'\\\')');
+        args.push(pat, pat);
+      } else {
+        where.push('("trigger" LIKE ? ESCAPE \'\\\' OR handle LIKE ? ESCAPE \'\\\' OR key LIKE ? ESCAPE \'\\\')');
+        args.push(pat, pat, pat);
+      }
+    }
+    const rows = stmt(
+      `SELECT ${META_COLUMNS} FROM diagnostic_turn_history
+       WHERE ${where.join(' AND ')} ORDER BY last_at DESC LIMIT ?`
+    ).all(...args, limit) as unknown as Record<string, unknown>[];
+    let metas = rows.map(rowToMeta);
+    if (postFilterAgent) metas = metas.filter(r => r.agents.includes(params.agent!));
+    return metas;
   } catch (error) {
     logDbError('searchHistory', error);
     return [];
@@ -269,17 +260,18 @@ let pruneTimer: NodeJS.Timeout | null = null;
 
 /** Retention sweep: keep the newest N turns per key, drop rows past max age. */
 export function startHistoryPruneTimer(): void {
-  if (pruneTimer || !getSupabase()) return;
+  if (pruneTimer) return;
   const prune = async () => {
-    const supabase = getSupabase();
-    if (!supabase) return;
     try {
-      const { data, error } = await supabase.rpc('diagnostic_history_prune', {
-        p_keep: HISTORY_KEEP,
-        p_max_age_days: HISTORY_MAX_AGE_DAYS,
-      });
-      if (error) throw error;
-      const n = Number(data ?? 0);
+      const res = stmt(
+        `DELETE FROM diagnostic_turn_history WHERE id IN (
+           SELECT id FROM (
+             SELECT id, row_number() OVER (PARTITION BY key ORDER BY last_at DESC) AS rn, last_at
+             FROM diagnostic_turn_history
+           ) WHERE rn > ? OR last_at < ?
+         )`
+      ).run(HISTORY_KEEP, Date.now() - HISTORY_MAX_AGE_DAYS * 24 * 3600_000);
+      const n = Number(res.changes);
       if (n > 0) console.log(`[diagnostics] pruned ${n} historical turns (keep ${HISTORY_KEEP}/key, ${HISTORY_MAX_AGE_DAYS}d max)`);
     } catch (error) {
       logDbError('diagnosticHistoryPrune', error);

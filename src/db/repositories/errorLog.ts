@@ -1,10 +1,9 @@
-import { getSupabase, logDbError } from '../client.js';
+import { logDbError } from '../client.js';
+import { stmt, getDb } from '../sqlite.js';
 
-// Durable agent-wide error log (table + RPCs land in migration 0014; every function fails
-// soft until it's applied). The WRITER is src/diagnostics/errorLog.ts — it normalizes, folds
-// repeats by fingerprint and batches inserts; this module only maps rows to columns and reads
-// them back. Everything no-ops (or returns empty) on the memory backend, where the writer's
-// in-memory ring is the only store.
+// Durable agent-wide error log. The WRITER is src/diagnostics/errorLog.ts — it normalizes,
+// folds repeats by fingerprint and batches inserts; this module only maps rows to columns
+// and reads them back.
 
 const MAX_AGE_DAYS = Number(process.env.ERROR_LOG_MAX_AGE_DAYS || 30);
 const KEEP_ROWS = Number(process.env.ERROR_LOG_KEEP_ROWS || 20_000);
@@ -28,35 +27,38 @@ export interface StoredErrorRow {
   createdAt: number;
 }
 
-const COLUMNS = 'id, severity, source, category, message, detail, chat_id, handle, task_id, '
+const COLUMNS = 'id, severity, source, category, message, detail_json, chat_id, handle, task_id, '
   + 'fingerprint, count, first_at, last_at, created_at';
 
-const toMs = (v: unknown): number => (typeof v === 'string' ? Date.parse(v) : 0);
 /** Accepts epoch ms (repo convention) or an already-formatted ISO string. */
-const toIso = (v: number | string | undefined): string | null =>
-  v == null ? null : typeof v === 'number' ? new Date(v).toISOString() : v;
+const toMsParam = (v: number | string | undefined): number | null =>
+  v == null ? null : typeof v === 'number' ? v : Date.parse(v);
 
 function rowToError(r: Record<string, unknown>): StoredErrorRow {
+  let detail: Record<string, unknown> | null = null;
+  if (typeof r.detail_json === 'string') {
+    try { detail = JSON.parse(r.detail_json) as Record<string, unknown>; } catch { /* keep null */ }
+  }
   return {
     id: Number(r.id ?? 0),
     severity: (r.severity as string) ?? 'error',
     source: (r.source as string) ?? 'other',
     category: (r.category as string) ?? 'other',
     message: (r.message as string) ?? '',
-    detail: (r.detail as Record<string, unknown> | null) ?? null,
+    detail,
     chatId: (r.chat_id as string | null) ?? null,
     handle: (r.handle as string | null) ?? null,
     taskId: (r.task_id as string | null) ?? null,
     fingerprint: (r.fingerprint as string) ?? '',
     count: Number(r.count ?? 1),
-    firstAt: toMs(r.first_at),
-    lastAt: toMs(r.last_at),
-    createdAt: toMs(r.created_at),
+    firstAt: Number(r.first_at ?? 0),
+    lastAt: Number(r.last_at ?? 0),
+    createdAt: Number(r.created_at ?? 0),
   };
 }
 
 /**
- * Batched insert of folded error rows — one round trip per flush. Returns false (never
+ * Batched insert of folded error rows — one transaction per flush. Returns false (never
  * throws) so the writer can re-queue the batch and back off.
  *
  * EXEMPT from logDbError by design — this is the RECURSION FIREWALL: logDbError feeds the
@@ -65,25 +67,28 @@ function rowToError(r: Record<string, unknown>): StoredErrorRow {
  */
 export async function insertErrorRows(rows: StoredErrorRow[]): Promise<boolean> {
   if (!rows.length) return true;
-  const supabase = getSupabase();
-  if (!supabase) return true;                   // memory backend: the writer's ring is the store
+  const db = getDb();
   try {
-    const { error } = await supabase.from('error_log').insert(rows.map(r => ({
-      severity: r.severity,
-      source: r.source,
-      category: r.category,
-      message: r.message,
-      detail: r.detail,
-      chat_id: r.chatId,
-      handle: r.handle,
-      task_id: r.taskId,
-      fingerprint: r.fingerprint,
-      count: r.count,
-      first_at: new Date(r.firstAt).toISOString(),
-      last_at: new Date(r.lastAt).toISOString(),
-      // created_at defaults in the table.
-    })));
-    if (error) throw error;
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const r of rows) {
+        stmt(
+          `INSERT INTO error_log
+             (severity, source, category, message, detail_json, chat_id, handle, task_id,
+              fingerprint, count, first_at, last_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          r.severity, r.source, r.category, r.message,
+          r.detail ? JSON.stringify(r.detail) : null,
+          r.chatId, r.handle, r.taskId,
+          r.fingerprint, r.count, r.firstAt, r.lastAt, Date.now(),
+        );
+      }
+      db.exec('COMMIT');
+    } catch (inner) {
+      try { db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
+      throw inner;
+    }
     return true;
   } catch (error) {
     console.error(`[db] insertErrorRows failed (${rows.length} row(s) held for retry)`, error);
@@ -102,27 +107,29 @@ export interface ListErrorsParams {
   limit?: number;
 }
 
-/** Newest-first error rows matching the filter bar. Returns [] on the memory backend. */
+/** Newest-first error rows matching the filter bar. */
 export async function listErrors(params: ListErrorsParams): Promise<StoredErrorRow[]> {
-  const supabase = getSupabase();
-  if (!supabase) return [];
   try {
-    let q = supabase.from('error_log').select(COLUMNS);
-    if (params.source) q = q.eq('source', params.source);
-    if (params.category) q = q.eq('category', params.category);
-    if (params.severity) q = q.eq('severity', params.severity);
-    if (params.handle) q = q.eq('handle', params.handle);
-    const since = toIso(params.since);
-    if (since) q = q.gte('created_at', since);
-    const before = toIso(params.before);
-    if (before) q = q.lt('created_at', before);
-    // Escape ILIKE wildcards in the user's text (same escaping as searchHistory).
-    if (params.q) q = q.ilike('message', `%${params.q.replace(/[%_\\]/g, m => `\\${m}`)}%`);
-    const { data, error } = await q
-      .order('created_at', { ascending: false })
-      .limit(Math.min(Math.max(params.limit ?? 100, 1), 200));
-    if (error) throw error;
-    return ((data ?? []) as unknown as Record<string, unknown>[]).map(rowToError);
+    const where: string[] = ['1=1'];
+    const args: Array<string | number> = [];
+    if (params.source) { where.push('source = ?'); args.push(params.source); }
+    if (params.category) { where.push('category = ?'); args.push(params.category); }
+    if (params.severity) { where.push('severity = ?'); args.push(params.severity); }
+    if (params.handle) { where.push('handle = ?'); args.push(params.handle); }
+    const since = toMsParam(params.since);
+    if (since != null) { where.push('created_at >= ?'); args.push(since); }
+    const before = toMsParam(params.before);
+    if (before != null) { where.push('created_at < ?'); args.push(before); }
+    if (params.q) {
+      // Escape LIKE wildcards in the user's text (same escaping as searchHistory).
+      where.push("message LIKE ? ESCAPE '\\'");
+      args.push(`%${params.q.replace(/[%_\\]/g, m => `\\${m}`)}%`);
+    }
+    const rows = stmt(
+      `SELECT ${COLUMNS} FROM error_log WHERE ${where.join(' AND ')}
+       ORDER BY created_at DESC LIMIT ?`
+    ).all(...args, Math.min(Math.max(params.limit ?? 100, 1), 200)) as unknown as Record<string, unknown>[];
+    return rows.map(rowToError);
   } catch (error) {
     logDbError('listErrors', error);
     return [];
@@ -130,9 +137,8 @@ export async function listErrors(params: ListErrorsParams): Promise<StoredErrorR
 }
 
 // ---------------------------------------------------------------------------
-// Aggregates. supabase-js has no GROUP BY, so these are SQL RPCs (migration 0014).
-// Mapped defensively — an RPC missing (schema not pushed yet) degrades to an empty
-// summary strip rather than a broken tab.
+// Aggregates — plain SQL. `events` sums the folded `count` (occurrences: a
+// single row can stand for thousands); `rows` counts the folded rows behind it.
 // ---------------------------------------------------------------------------
 
 /** One dimension bucket: e.g. dimension 'source', value 'ops'. */
@@ -154,15 +160,24 @@ export interface TopErrorRow {
 }
 
 export async function getErrorStats(since: number | string): Promise<ErrorStatRow[]> {
-  const supabase = getSupabase();
-  if (!supabase) return [];
   try {
-    const { data, error } = await supabase.rpc('error_log_stats', { p_since: toIso(since) });
-    if (error) throw error;
-    return ((data ?? []) as Record<string, unknown>[]).map(r => ({
+    const s = toMsParam(since) ?? 0;
+    // Sort matches the old RPC contract exactly: dimension ascending, then events descending.
+    const rows = stmt(
+      `SELECT 'category' AS dimension, category AS value, coalesce(sum(count), 0) AS events, count(*) AS rows
+         FROM error_log WHERE created_at >= ? GROUP BY category
+       UNION ALL
+       SELECT 'severity', severity, coalesce(sum(count), 0), count(*)
+         FROM error_log WHERE created_at >= ? GROUP BY severity
+       UNION ALL
+       SELECT 'source', source, coalesce(sum(count), 0), count(*)
+         FROM error_log WHERE created_at >= ? GROUP BY source
+       ORDER BY 1, 3 DESC`
+    ).all(s, s, s) as unknown as Record<string, unknown>[];
+    return rows.map(r => ({
       dimension: (r.dimension as string) ?? '',
       value: (r.value as string) ?? '',
-      events: Number(r.events ?? r.count ?? 0),
+      events: Number(r.events ?? 0),
       rows: Number(r.rows ?? 0),
     }));
   } catch (error) {
@@ -172,22 +187,27 @@ export async function getErrorStats(since: number | string): Promise<ErrorStatRo
 }
 
 export async function getTopErrors(since: number | string, limit = 15): Promise<TopErrorRow[]> {
-  const supabase = getSupabase();
-  if (!supabase) return [];
   try {
-    const { data, error } = await supabase.rpc('error_log_top', {
-      p_since: toIso(since),
-      p_limit: Math.min(Math.max(limit, 1), 50),
-    });
-    if (error) throw error;
-    return ((data ?? []) as Record<string, unknown>[]).map(r => ({
+    // SQLite's documented bare-column-with-max() behavior returns source/category/severity/
+    // message from the max(last_at) row — the "newest sample" semantics the old RPC's
+    // array_agg(… ORDER BY last_at DESC)[1] produced.
+    const rows = stmt(
+      `SELECT fingerprint, source, category, severity, message,
+              coalesce(sum(count), 0) AS events, max(last_at) AS last_at
+       FROM error_log
+       WHERE created_at >= ?
+       GROUP BY fingerprint
+       ORDER BY events DESC, last_at DESC
+       LIMIT ?`
+    ).all(toMsParam(since) ?? 0, Math.min(Math.max(limit, 1), 50)) as unknown as Record<string, unknown>[];
+    return rows.map(r => ({
       fingerprint: (r.fingerprint as string) ?? '',
       severity: (r.severity as string) ?? 'error',
       source: (r.source as string) ?? 'other',
       category: (r.category as string) ?? 'other',
-      message: (r.message as string) ?? (r.sample_message as string) ?? '',
-      events: Number(r.events ?? r.count ?? 0),
-      lastAt: toMs(r.last_at),
+      message: (r.message as string) ?? '',
+      events: Number(r.events ?? 0),
+      lastAt: Number(r.last_at ?? 0),
     }));
   } catch (error) {
     logDbError('getTopErrors', error);
@@ -199,17 +219,18 @@ let pruneTimer: NodeJS.Timeout | null = null;
 
 /** Retention sweep: drop rows past max age, then trim to the newest N. */
 export function startErrorLogPruneTimer(): void {
-  if (pruneTimer || !getSupabase()) return;
+  if (pruneTimer) return;
   const prune = async () => {
-    const supabase = getSupabase();
-    if (!supabase) return;
     try {
-      const { data, error } = await supabase.rpc('error_log_prune', {
-        p_max_age_days: MAX_AGE_DAYS,
-        p_keep_rows: KEEP_ROWS,
-      });
-      if (error) throw error;
-      const n = Number(data ?? 0);
+      const res = stmt(
+        `DELETE FROM error_log WHERE id IN (
+           SELECT id FROM (
+             SELECT id, row_number() OVER (ORDER BY created_at DESC) AS rn, created_at
+             FROM error_log
+           ) WHERE rn > ? OR created_at < ?
+         )`
+      ).run(KEEP_ROWS, Date.now() - MAX_AGE_DAYS * 24 * 3600_000);
+      const n = Number(res.changes);
       if (n > 0) console.log(`[errlog] pruned ${n} error rows (keep ${KEEP_ROWS}, ${MAX_AGE_DAYS}d max)`);
     } catch (error) {
       logDbError('errorLogPrune', error);

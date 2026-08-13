@@ -1,11 +1,15 @@
-import { getSupabase, logDbError } from '../client.js';
+import { logDbError } from '../client.js';
+import { stmt } from '../sqlite.js';
 import type { Turn } from '../../diagnostics/turns.js';
 
 // Durable copy of the MOST RECENT orchestration turn per chat / per user, so the
 // /dashboard graph still has something to show after a restart or redeploy (the live
 // turn store is in-memory). One row per key, upserted on write. Fire-and-forget:
-// diagnostics persistence must never break a reply, and it no-ops on the memory
-// backend (the live store already holds everything there).
+// diagnostics persistence must never break a reply.
+
+// node:sqlite statements run synchronously on the event loop — refuse to persist a
+// pathological turn payload rather than stall a reply behind a multi-MB write.
+export const MAX_TURN_JSON_CHARS = 2_000_000;
 
 export interface PersistedTurnRow {
   key: string;
@@ -16,21 +20,30 @@ export interface PersistedTurnRow {
 }
 
 export async function saveLatestTurn(turn: Turn): Promise<void> {
-  const supabase = getSupabase();
-  if (!supabase) return;
   try {
-    const { error } = await supabase.from('diagnostic_turns').upsert({
-      key: turn.key,
-      chat_id: turn.chatId ?? null,
-      handle: turn.handle ?? null,
-      source: turn.source,
-      trigger: turn.trigger ?? null,
-      started_at: new Date(turn.startedAt).toISOString(),
-      last_at: new Date(turn.lastAt).toISOString(),
-      turn: turn as unknown as Record<string, unknown>,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'key' });
-    if (error) throw error;
+    const json = JSON.stringify(turn);
+    if (json.length > MAX_TURN_JSON_CHARS) {
+      console.warn(`[diagnostics] skipping latest-turn persist for ${turn.key} — ${json.length} chars exceeds the ${MAX_TURN_JSON_CHARS} write guard`);
+      return;
+    }
+    stmt(
+      `INSERT INTO diagnostic_turns (key, chat_id, handle, source, "trigger", started_at, last_at, turn_json, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET
+         chat_id = excluded.chat_id, handle = excluded.handle, source = excluded.source,
+         "trigger" = excluded."trigger", started_at = excluded.started_at,
+         last_at = excluded.last_at, turn_json = excluded.turn_json, updated_at = excluded.updated_at`
+    ).run(
+      turn.key,
+      turn.chatId ?? null,
+      turn.handle ?? null,
+      turn.source,
+      turn.trigger ?? null,
+      turn.startedAt,
+      turn.lastAt,
+      json,
+      Date.now(),
+    );
   } catch (error) {
     logDbError('saveLatestTurn', error);
   }
@@ -38,22 +51,23 @@ export async function saveLatestTurn(turn: Turn): Promise<void> {
 
 /** All persisted latest-turns, newest first. Used to seed the dashboard after a restart. */
 export async function listPersistedTurns(): Promise<PersistedTurnRow[]> {
-  const supabase = getSupabase();
-  if (!supabase) return [];
   try {
-    const { data, error } = await supabase
-      .from('diagnostic_turns')
-      .select('key, chat_id, handle, turn, updated_at')
-      .order('last_at', { ascending: false })
-      .limit(200);
-    if (error) throw error;
-    return (data ?? []).map(r => ({
-      key: r.key as string,
-      chatId: (r.chat_id as string | null) ?? null,
-      handle: (r.handle as string | null) ?? null,
-      turn: r.turn as Turn,
-      updatedAt: r.updated_at as string,
-    }));
+    const rows = stmt(
+      'SELECT key, chat_id, handle, turn_json, updated_at FROM diagnostic_turns ORDER BY last_at DESC LIMIT 200'
+    ).all() as unknown as Array<{ key: string; chat_id: string | null; handle: string | null; turn_json: string; updated_at: number }>;
+    const out: PersistedTurnRow[] = [];
+    for (const r of rows) {
+      try {
+        out.push({
+          key: r.key,
+          chatId: r.chat_id ?? null,
+          handle: r.handle ?? null,
+          turn: JSON.parse(r.turn_json) as Turn,
+          updatedAt: new Date(r.updated_at).toISOString(),
+        });
+      } catch { /* one corrupt payload must not sink the whole seed */ }
+    }
+    return out;
   } catch (error) {
     logDbError('listPersistedTurns', error);
     return [];
