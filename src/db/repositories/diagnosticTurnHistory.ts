@@ -252,7 +252,7 @@ export async function searchHistory(params: HistorySearchParams): Promise<Histor
       if (error) throw error;
       for (const r of (data ?? []) as Record<string, unknown>[]) {
         const meta = rowToMeta(r);
-        const k = `${meta.key} ${meta.turnId}`;
+        const k = `${meta.key}\u0000${meta.turnId}`;
         if (seen.has(k)) continue;
         seen.add(k);
         merged.push(meta);
