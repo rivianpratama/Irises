@@ -111,20 +111,14 @@ export const ORCH_JS = `
 
   // ---------- node catalog ----------
   var NODES = {
-    user:     {x:95,  y:260, label:'User',      sub:'iMessage',        color:'#6ea8fe', icon:'\\uD83D\\uDC64'},
-    gmail:    {x:95,  y:500, label:'Gmail',     sub:'push / inbox',    color:'#ff7b72', icon:'\\uD83D\\uDCE7'},
-    sched:    {x:95,  y:640, label:'Scheduler', sub:'automations',     color:'#8be9a8', icon:'\\u23F0'},
+    user:     {x:95,  y:260, label:'User',      sub:'web / bridge',    color:'#6ea8fe', icon:'\\uD83D\\uDC64'},
     router:   {x:300, y:260, label:'Router',    sub:'webhook \\u00B7 batch', color:'#9aa5b1', icon:'\\uD83D\\uDEA6'},
-    judge:    {x:300, y:500, label:'Judge',     sub:'email triage',    color:'#f6c453', icon:'\\u2696\\uFE0F'},
-    autonome: {x:300, y:640, label:'Autonome',  sub:'proactive voice', color:'#7bd5f5', icon:'\\uD83D\\uDD14'},
     classify: {x:520, y:105, label:'Classifier',sub:'group gate',      color:'#b58cf6', icon:'\\uD83D\\uDD00'},
     convo:    {x:520, y:260, label:'Convo',     sub:'Irises \\u00B7 chat',    color:'#5bd6a0', icon:'\\uD83D\\uDCAC'},
-    mm:       {x:520, y:410, label:'MM',        sub:'media reader',    color:'#4cc9c0', icon:'\\uD83D\\uDDBC\\uFE0F'},
     fallfirm: {x:520, y:565, label:'Fallfirm',  sub:'fallback voicer', color:'#d7a3ff', icon:'\\uD83D\\uDEDF'},
     memory:   {x:745, y:105, label:'Memory',    sub:'tiers \\u00B7 prefs',   color:'#9aa5b1', icon:'\\uD83E\\uDDE0'},
     ops:      {x:745, y:300, label:'Ops',       sub:'research engine', color:'#ffb454', icon:'\\uD83D\\uDD0E'},
-    composer: {x:745, y:490, label:'Composer',  sub:'answer voicer',   color:'#ff8fa3', icon:'\\u270D\\uFE0F'},
-    reflexion:{x:745, y:640, label:'Reflexion', sub:'memory curator',  color:'#a3b8ff', icon:'\\uD83E\\uDE9E'}
+    composer: {x:745, y:490, label:'Composer',  sub:'answer voicer',   color:'#ff8fa3', icon:'\\u270D\\uFE0F'}
   };
   var TOOL_X = 980, TOOL_Y0 = 120, TOOL_DY = 72;
   var BADGE_ROW_CAP = 5; // one row of node badges, then a "+N" overflow badge
@@ -138,24 +132,13 @@ export const ORCH_JS = `
       return out;
     }
     if (l==='turn:start'){ edges=[{from:'user',to:'router'}]; }
-    else if (l==='classify'||l==='classify:effect'||r==='classify'){ edges=[{from:'router',to:'classify'},{from:'classify',to:'router',ret:true}]; }
+    else if (l==='classify'||r==='classify'){ edges=[{from:'router',to:'classify'},{from:'classify',to:'router',ret:true}]; }
     else if (l==='convo'){ edges=[{from:'router',to:'convo'}]; if(ev.response!=null) edges.push({from:'convo',to:'user',ret:true}); }
-    else if (ev.type==='delegation' && l==='delegate:media_read'){ edges=[{from:'convo',to:'mm'}]; }
-    else if (ev.type==='delegation' && l==='delegate:memory_update'){ edges=[{from:'convo',to:'reflexion'}]; }
-    else if (ev.type==='delegation' && l.indexOf('autonome')===0){ edges=[{from:'sched',to:'autonome'},{from:'autonome',to:'ops'}]; }
     else if (ev.type==='delegation'){ edges=[{from:'convo',to:'ops'}]; }
     else if (l==='llm:fallback'){ node = roleNode(r); }
-    else if (l==='mm:direct-voice'){ edges=[{from:'mm',to:'user',ret:true}]; }
-    else if (l.indexOf('mm:')===0 || r==='mm'){ node='mm'; }
     else if (l.indexOf('ops:')===0 || r==='ops'){ node='ops'; edges=toolEdges(); }
     else if (l==='composer'){ edges=[{from:'ops',to:'composer'}]; if(ev.response!=null) edges.push({from:'composer',to:'user',ret:true}); }
     else if (l.indexOf('fallfirm')===0 || l==='voiceInstant' || r==='fallfirm'){ node='fallfirm'; if(ev.response!=null) edges=[{from:'fallfirm',to:'user'}]; }
-    else if (l==='judge' || r==='judge'){ edges=[{from:'gmail',to:'judge'}]; if(ev.response!=null) edges.push({from:'judge',to:'user',ret:true}); }
-    else if (l==='autonome' || r==='autonome'){ edges=[{from:'sched',to:'autonome'}]; if(ev.response!=null) edges.push({from:'autonome',to:'user',ret:true}); }
-    else if (l==='reflexion:wake_scheduled'){ edges=[{from:'reflexion',to:'sched'}]; }
-    else if (l==='reflexion:start'){ edges=[{from:(ev.detail&&ev.detail.trigger)==='delegated'?'convo':'sched',to:'reflexion'}]; }
-    else if (l==='reflexion:done'||l==='reflexion:aborted'){ node='reflexion'; edges=[{from:'reflexion',to:'memory',ret:true}]; }
-    else if (l.indexOf('reflexion')===0 || r==='reflexion'){ node='reflexion'; }
     else if (l==='dossier_update' || l==='directive_validate'){ node='memory'; }
     else { node='router'; }
     if (!edges.length && !node) node='router';
@@ -163,7 +146,6 @@ export const ORCH_JS = `
   }
   function roleNode(r){
     if (r && NODES[r]) return r;
-    if (r==='ops_escalation' || r==='ops_mm') return 'ops';
     return 'router';
   }
   function agentColor(ev){
@@ -371,7 +353,7 @@ export const ORCH_JS = `
         var pulse = badges.some(function(s){return s.n===lastN;}) && live;
         nodeSvgStr += nodeSvg(id, nodes[id], !!active[id], pulse);
         // Cap the stack at one row + a "+N" overflow badge (uncapped stacks grew
-        // straight down into the Composer/Reflexion boxes on research-heavy turns).
+        // straight down into the boxes below on research-heavy turns).
         var def = nodes[id];
         var shown = badges.slice(0, badges.length > BADGE_ROW_CAP ? BADGE_ROW_CAP-1 : BADGE_ROW_CAP);
         shown.forEach(function(s, i){

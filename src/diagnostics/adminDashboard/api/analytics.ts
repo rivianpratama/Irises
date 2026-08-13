@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getLlmRoleStats, getLlmHourly, listSlowestCalls, listRecentErrors } from '../../../db/repositories/tokenUsage.js';
-import { estimateCostUsd, OPS_DAILY_TOKEN_CAP, JUDGE_DAILY_TOKEN_CAP, LLM_DAILY_TOKEN_CAP } from '../../../llm/budget.js';
+import { estimateCostUsd, OPS_DAILY_TOKEN_CAP, LLM_DAILY_TOKEN_CAP } from '../../../llm/budget.js';
 import { driver } from '../../../db/client.js';
 import { authed } from '../auth.js';
 import { cached } from '../cache.js';
@@ -14,7 +14,6 @@ async function todaySpend() {
   let totalTokens = 0;
   let estCostUsd = 0;
   let opsTokens = 0;
-  let judgeTokens = 0;
   for (const s of stats) {
     const cost = estimateCostUsd(s.model, { inputTokens: s.inputTokens, outputTokens: s.outputTokens, cacheReadTokens: s.cacheReadTokens });
     const agg = byRole.get(s.role) ?? { role: s.role, calls: 0, totalTokens: 0, estCostUsd: 0 };
@@ -24,16 +23,14 @@ async function todaySpend() {
     byRole.set(s.role, agg);
     totalTokens += s.totalTokens;
     estCostUsd += cost;
-    if (s.role === 'ops' || s.role === 'ops_escalation') opsTokens += s.totalTokens;
-    if (s.role === 'judge') judgeTokens += s.totalTokens;
+    if (s.role === 'ops') opsTokens += s.totalTokens;
   }
   return {
     roles: [...byRole.values()].sort((a, b) => b.estCostUsd - a.estCostUsd),
     totalTokens,
     estCostUsd,
     opsTokens,
-    judgeTokens,
-    caps: { ops: OPS_DAILY_TOKEN_CAP || null, judge: JUDGE_DAILY_TOKEN_CAP || null, global: LLM_DAILY_TOKEN_CAP || null },
+    caps: { ops: OPS_DAILY_TOKEN_CAP || null, global: LLM_DAILY_TOKEN_CAP || null },
   };
 }
 

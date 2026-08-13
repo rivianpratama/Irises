@@ -1,6 +1,6 @@
-// Users: the roster — every known handle resolved to a profile, with gmail
-// watch health, live activity, and turn counts; each card links into the other
-// dashboard dimensions for that user.
+// Users: the roster — every known handle resolved to a profile, with live
+// activity and turn counts; each card links into the other dashboard
+// dimensions for that user.
 
 export const USERS_CSS = `
 .ucard .uname{font-weight:700;font-size:.95rem}
@@ -20,7 +20,7 @@ export const USERS_JS = `
   var M = window.MD;
   function render(j){
     var users = j.users||[];
-    var fp = users.map(function(u){ return u.handle+' '+u.turnCount+' '+(u.liveActivity?u.liveActivity.lastAt:0)+' '+u.watchOk; }).join(',');
+    var fp = users.map(function(u){ return u.handle+' '+u.turnCount+' '+(u.liveActivity?u.liveActivity.lastAt:0); }).join(',');
     M.renderIf('users:list', fp, function(){
       var root = document.getElementById('users-list');
       if (!users.length){ root.innerHTML = '<div class="empty">no users yet</div>'; return; }
@@ -36,9 +36,6 @@ export const USERS_JS = `
           + (u.liveActivity
               ? '<div class="umeta live">\\u25CF active '+M.esc(M.ago(u.liveActivity.lastAt))+' ago \\u2014 '+M.esc((u.liveActivity.trigger||u.liveActivity.source||'').slice(0,70))+'</div>'
               : (u.lastSeen?('<div class="umeta">last seen '+M.esc(M.ago(u.lastSeen))+' ago</div>'):''))
-          + '<div class="umeta">'+(u.gmailConnected
-              ? ('gmail: '+M.esc(u.gmailAddress||'connected')+' \\u00B7 watch <span class="'+(u.watchOk?'live':'')+'" style="color:'+(u.watchOk?'var(--ok)':'var(--err)')+'">'+(u.watchOk?'active':'expired')+'</span>')
-              : 'gmail: not connected')+'</div>'
           + '<div class="umeta">'+u.turnCount+' recorded turns</div>'
           + '<div class="ulinks">'+links.join('')+'</div>'
           + '</div>';

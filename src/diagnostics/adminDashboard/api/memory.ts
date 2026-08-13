@@ -4,19 +4,15 @@ import { getMemory } from '../../../db/repositories/memory.js';
 import { listShortTerm } from '../../../db/repositories/memoryShort.js';
 import { listMediumAll } from '../../../db/repositories/memoryMedium.js';
 import { getLongDoc, listLongRevisions } from '../../../db/repositories/memoryLong.js';
-import { getReflexionState } from '../../../db/repositories/reflexionState.js';
 import { authed } from '../auth.js';
 import { cached } from '../cache.js';
 
-// Read-only per-user memory inspector: all three tiers + Reflexion state.
+// Read-only per-user memory inspector: all three tiers.
 // Prefs are ALLOW-LISTED — agent_memory.prefs also carries operational stashes
-// (cursors, watch bookkeeping) that aren't the admin's business here, and the
+// (cursors, bookkeeping) that aren't the admin's business here, and the
 // inspector must never become a raw prefs dump.
 
-const PREF_ALLOWLIST = [
-  'chat_id', 'timezone',
-  'gmail_address', 'gmail_watch_expiration', 'gmail_last_push_at',
-] as const;
+const PREF_ALLOWLIST = ['chat_id', 'timezone'] as const;
 
 export function registerMemoryRoutes(router: Router): void {
   router.get('/dashboard/api/memory', async (req: Request, res: Response) => {
@@ -25,14 +21,13 @@ export function registerMemoryRoutes(router: Router): void {
       const handle = String(req.query.handle ?? '');
       if (!handle) { res.status(400).json({ error: 'handle required' }); return; }
       const payload = await cached(`memory:${handle}`, 5_000, async () => {
-        const [profile, agentMem, short, medium, longDoc, revisions, reflexion] = await Promise.all([
+        const [profile, agentMem, short, medium, longDoc, revisions] = await Promise.all([
           getUserProfile(handle),
           getMemory(handle),
           listShortTerm(handle, { limit: 50 }),
           listMediumAll(handle),
           getLongDoc(handle),
           listLongRevisions(handle, 10),
-          getReflexionState(handle),
         ]);
         const prefs: Record<string, unknown> = {};
         for (const k of PREF_ALLOWLIST) {
@@ -46,7 +41,6 @@ export function registerMemoryRoutes(router: Router): void {
           short,
           medium,
           long: { doc: longDoc, revisions },
-          reflexion,
         };
       });
       res.json(payload);

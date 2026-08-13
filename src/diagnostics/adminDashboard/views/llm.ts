@@ -103,8 +103,7 @@ export const LLM_JS = `
     var caps = today.caps||{};
     var checks = [
       {name:'global (every role)', tok: today.totalTokens||0, cap: caps.global},
-      {name:'ops (ops + ops_escalation)', tok: today.opsTokens||0, cap: caps.ops},
-      {name:'judge', tok: today.judgeTokens||0, cap: caps.judge}
+      {name:'ops', tok: today.opsTokens||0, cap: caps.ops}
     ].filter(function(c){ return c.cap; });
     var tripped = checks.filter(function(c){ return c.tok >= c.cap; });
     var near = checks.filter(function(c){ return c.tok < c.cap && c.tok >= c.cap*0.8; });
@@ -113,7 +112,7 @@ export const LLM_JS = `
       el.hidden = false; el.className = 'tripped';
       el.innerHTML = '<b>\\u26D4 daily token cap exhausted</b> \\u2014 '+names+'. '
         + 'LLM calls on the affected scope are blocked until the cap resets at UTC midnight (in '+fmtDur(msToUtcMidnight())+'). '
-        + 'The cap is a smoke alarm \\u2014 investigate the spike (per role/model below) before raising LLM_DAILY_TOKEN_CAP / OPS_DAILY_TOKEN_CAP / JUDGE_DAILY_TOKEN_CAP.';
+        + 'The cap is a smoke alarm \\u2014 investigate the spike (per role/model below) before raising LLM_DAILY_TOKEN_CAP / OPS_DAILY_TOKEN_CAP.';
       return;
     }
     if (near.length){
@@ -131,17 +130,9 @@ export const LLM_JS = `
     var caps = today.caps||{};
     var ops = capStyle(today.opsTokens||0, caps.ops);
     var all = capStyle(today.totalTokens||0, caps.global);
-    // Judge card only when a judge cap is configured — it runs a deep-research model per inbound
-    // email (gpt-5.6-luna-pro), so its own smoke-alarm card is worth the space when armed.
-    var judgeCard = '';
-    if (caps.judge){
-      var judge = capStyle(today.judgeTokens||0, caps.judge);
-      judgeCard = card('judge tokens vs daily cap', judge.hot?('<span style="color:var(--err)">'+judge.text+'</span>'):judge.text, 'per inbound email');
-    }
     document.getElementById('llm-today').innerHTML =
       card('est. spend today', fmtUsd(today.estCostUsd||0), roles)
-      + card('ops tokens vs daily cap', ops.hot?('<span style="color:var(--err)">'+ops.text+'</span>'):ops.text, 'ops + ops_escalation')
-      + judgeCard
+      + card('ops tokens vs daily cap', ops.hot?('<span style="color:var(--err)">'+ops.text+'</span>'):ops.text, 'ops')
       + card('all tokens vs daily cap', all.hot?('<span style="color:var(--err)">'+all.text+'</span>'):all.text, 'every role')
       + creditsCard(openrouter);
   }

@@ -177,7 +177,7 @@ export async function latestShortTerm(handle: string, kinds: ShortKind[]): Promi
   return list[0] ?? null;
 }
 
-/** Force-expire entries now (Gmail disconnect drops email_flags; /forget drops everything).
+/** Force-expire entries now (/forget drops everything; `kinds` allows a scoped expiry).
  *  Expiry, not deletion — rows still age out through the swept path like everything else. */
 export async function expireShortTermNow(handle: string, kinds?: ShortKind[]): Promise<void> {
   const nowIso = new Date().toISOString();

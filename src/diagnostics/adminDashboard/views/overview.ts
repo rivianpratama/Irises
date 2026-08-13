@@ -1,6 +1,6 @@
 // Overview: system-health landing view — process state, since-boot counters,
-// 24h LLM totals, Gmail watch health, automations, and the global (chat-less)
-// events that never reach the turn store.
+// 24h LLM totals, and the global (chat-less) events that never reach the
+// turn store.
 
 export const OVERVIEW_CSS = `
 #view-overview .brow{display:flex;align-items:center;gap:.5rem;margin:.22rem 0}
@@ -8,9 +8,6 @@ export const OVERVIEW_CSS = `
 #view-overview .btrack{flex:1;background:#0e1119;border-radius:6px;height:12px;overflow:hidden}
 #view-overview .bfill{height:100%;border-radius:6px}
 #view-overview .bval{flex:none;width:52px;font-size:.72rem;color:var(--mut)}
-.watchtag{font-size:.68rem;padding:.05rem .4rem;border-radius:6px;border:1px solid}
-.watchtag.ok{color:var(--ok);border-color:var(--ok)}
-.watchtag.bad{color:var(--err);border-color:var(--err)}
 .gevent{display:flex;gap:.6rem;font-size:.76rem;padding:.3rem 0;border-bottom:1px solid #1a1f2c;align-items:baseline}
 .gevent:last-child{border-bottom:0}
 .gevent .gt{color:var(--mut);flex:none}
@@ -24,8 +21,6 @@ export const OVERVIEW_HTML = `
 <div class="cards" style="margin-top:.8rem">
   <div class="cardbox" style="grid-column:1/-1"><div class="ct">LLM calls by agent (since boot)</div><div id="ov-roles"></div></div>
 </div>
-<h3 class="sh">Gmail</h3>
-<div class="tablewrap"><table class="t" id="ov-gmail"><thead><tr><th>user</th><th>handle</th><th>gmail</th><th>watch</th><th>expires</th><th>last push</th></tr></thead><tbody></tbody></table></div>
 <h3 class="sh">Global events <span style="text-transform:none;letter-spacing:0">(no chat/user attribution — invisible in the graph)</span></h3>
 <div class="cardbox" id="ov-global"></div>
 `;
@@ -41,17 +36,13 @@ export const OVERVIEW_JS = `
   function render(j){
     var upEl = document.getElementById('ov-top');
     var d = j.diagnostics||{};
-    var g = j.gmail||{connected:0,watches:[]};
     var l = j.llm24h||{calls:0,errors:0,fallbacks:0,totalTokens:0};
-    var a = j.automations;
-    var fpSrc = JSON.stringify([d, g, l, a, j.counters, j.driver, (j.globalEvents||[]).length ? j.globalEvents[j.globalEvents.length-1].id : 0]);
+    var fpSrc = JSON.stringify([d, l, j.counters, j.driver, (j.globalEvents||[]).length ? j.globalEvents[j.globalEvents.length-1].id : 0]);
     M.renderIf('ov:all', fpSrc, function(){
       upEl.innerHTML =
         card('uptime', '<span id="ov-uptime">'+M.esc(M.fmtDur(j.uptimeS))+'</span>', 'driver: '+M.esc(j.driver)+(j.driver==='memory'?' — history/analytics need Supabase':''))
         + card('diagnostics', d.enabled?'on':'<span style="color:var(--err)">OFF</span>', (d.bufferEvents||0)+' buffered events \\u00B7 '+(d.liveKeys||0)+' live chats')
-        + card('gmail users', String(g.connected), g.watches.filter(function(w){return w.watchOk;}).length+' watches healthy')
-        + card('LLM (24h)', M.fmtNum(l.calls)+' calls', M.fmtNum(l.totalTokens)+' tokens \\u00B7 '+l.errors+' errors \\u00B7 '+l.fallbacks+' fallbacks')
-        + (a ? card('automations', String(a.active), a.nextRunAt?('next: '+M.esc(M.fmtDateTime(a.nextRunAt))):'none scheduled') : '');
+        + card('LLM (24h)', M.fmtNum(l.calls)+' calls', M.fmtNum(l.totalTokens)+' tokens \\u00B7 '+l.errors+' errors \\u00B7 '+l.fallbacks+' fallbacks');
 
       var c = j.counters||{};
       document.getElementById('ov-counters').innerHTML =
@@ -63,16 +54,6 @@ export const OVERVIEW_JS = `
       var roles = Object.keys(c.byRole||{}).map(function(r){ return {label:r, value:c.byRole[r]}; });
       roles.sort(function(a,b){ return b.value-a.value; });
       document.getElementById('ov-roles').innerHTML = M.charts.barRows(roles);
-
-      var tb = document.querySelector('#ov-gmail tbody');
-      if (!g.watches.length){ tb.innerHTML = '<tr><td colspan="6"><div class="empty">no gmail-connected users</div></td></tr>'; }
-      else tb.innerHTML = g.watches.map(function(w){
-        return '<tr><td>'+M.esc(w.name||'\\u2014')+'</td><td><a href="'+M.buildHash('memory',[w.handle])+'">'+M.esc(w.handle)+'</a></td>'
-          + '<td>'+M.esc(w.gmailAddress||'\\u2014')+'</td>'
-          + '<td><span class="watchtag '+(w.watchOk?'ok':'bad')+'">'+(w.watchOk?'active':'expired')+'</span></td>'
-          + '<td>'+(w.watchExpiresAt?M.esc(M.fmtDateTime(w.watchExpiresAt)):'\\u2014')+'</td>'
-          + '<td>'+(w.lastPushAt?M.esc(M.ago(w.lastPushAt))+' ago':'\\u2014')+'</td></tr>';
-      }).join('');
 
       var ge = j.globalEvents||[];
       document.getElementById('ov-global').innerHTML = ge.length

@@ -1,5 +1,5 @@
 // Memory inspector: read-only per-user view of the three memory tiers
-// (short 24h / medium ledger / long doc + revisions) plus Reflexion state.
+// (short 24h / medium ledger / long doc + revisions).
 // Desktop: user rail + content pane; phones: a native select above the tabs.
 
 export const MEMORY_CSS = `
@@ -42,8 +42,7 @@ export const MEMORY_JS = `
   var TIERS = [
     {id:'short', label:'Short (24h)'},
     {id:'medium', label:'Medium ledger'},
-    {id:'long', label:'Long-term doc'},
-    {id:'reflexion', label:'Reflexion'}
+    {id:'long', label:'Long-term doc'}
   ];
 
   function renderRail(){
@@ -72,7 +71,6 @@ export const MEMORY_JS = `
     var d = S.data;
     var head = '<div class="memhead"><h2 class="vh">'+M.esc((d.profile&&d.profile.name)||S.handle)+'</h2>'
       + '<span class="pill">'+M.esc(S.handle)+'</span>'
-      + (d.prefs&&d.prefs.gmail_address?('<span class="pill">'+M.esc(d.prefs.gmail_address)+'</span>'):'')
       + (d.prefs&&d.prefs.timezone?('<span class="pill">'+M.esc(d.prefs.timezone)+'</span>'):'')
       + '<a href="'+M.buildHash('history',[],{handle:S.handle})+'" class="pill">turn history \\u2192</a>'
       + '</div>';
@@ -117,22 +115,6 @@ export const MEMORY_JS = `
       if (d.dossierMd){
         body += '<h3 class="sh">Legacy dossier</h3><div class="prewrap">'+M.esc(d.dossierMd)+'</div>';
       }
-    } else if (S.tier==='reflexion'){
-      var r = d.reflexion;
-      body = r
-        ? '<div class="kv">'
-          + '<span>last daily <b>'+(r.lastDailyAt?M.esc(M.fmtDateTime(r.lastDailyAt)):'never')+'</b></span>'
-          + '<span>last run <b>'+(r.lastRunAt?M.esc(M.fmtDateTime(r.lastRunAt)):'never')+'</b></span>'
-          + '<span>migrated <b>'+(r.migratedAt?M.esc(M.fmtDateTime(r.migratedAt)):'not yet')+'</b></span>'
-          + '</div>'
-          + '<h3 class="sh">Self-prompt</h3><div class="prewrap">'+M.esc(r.selfPromptMd||'(empty)')+'</div>'
-          + ((r.selfPromptRevs||[]).length
-            ? '<h3 class="sh">Self-prompt revisions</h3>'+r.selfPromptRevs.map(function(rev){
-                return '<details class="sec"><summary>'+M.esc(M.fmtDateTime(rev.at))+' \\u00B7 '+M.esc(rev.note||'')
-                  + '<span class="cnt">'+(rev.md||'').length+' ch</span></summary><pre>'+M.esc(rev.md||'')+'</pre></details>';
-              }).join('')
-            : '')
-        : '<div class="empty">no reflexion state for this user</div>';
     }
     el.innerHTML = head + tabs + body;
     Array.prototype.forEach.call(el.querySelectorAll('#mem-tabs button'), function(b){
@@ -175,7 +157,7 @@ export const MEMORY_JS = `
       if (!wired){ wired = true; wire(); }
       var prevHandle = S.handle;
       S.handle = params[0] || null;
-      S.tier = query.tier && ['short','medium','long','reflexion'].indexOf(query.tier)>=0 ? query.tier : 'short';
+      S.tier = query.tier && ['short','medium','long'].indexOf(query.tier)>=0 ? query.tier : 'short';
       M.ui.setPill(S.handle ? ('memory \\u00B7 '+S.handle) : 'memory', null);
       loadUsers();
       if (S.handle && S.handle !== prevHandle) loadMemory();
