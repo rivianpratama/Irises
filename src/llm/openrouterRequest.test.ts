@@ -171,8 +171,8 @@ const CONVO_LIKE_TOOLS = [
     },
   },
   {
-    name: 'disconnect_gmail',
-    description: 'unlink gmail',
+    name: 'unlink_account',
+    description: 'unlink an account',
     inputSchema: { type: 'object', properties: { confirmed: { type: 'boolean' } }, required: ['confirmed'] },
   },
 ];
@@ -191,7 +191,7 @@ test('toolsViaJson omits the native tools param and swaps in the extended envelo
   assert.deepEqual(Object.keys(schema.properties), ['confidence_level', 'tool_calls', 'bubbles']);
   // name is a hard enum of exactly the offered tools
   const items = schema.properties.tool_calls.items;
-  assert.deepEqual(items.properties.name.enum, ['delegate_to_ops', 'disconnect_gmail']);
+  assert.deepEqual(items.properties.name.enum, ['delegate_to_ops', 'unlink_account']);
   // args is the flat union: every arg from every tool, nullable, strict-required
   const args = items.properties.args;
   assert.equal(args.additionalProperties, false);

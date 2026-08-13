@@ -2,7 +2,7 @@ import { getSupabase, logDbError } from '../client.js';
 import { mem } from '../memory.js';
 
 // Index of the user's OWN inbound text-bearing messages, keyed by transport message_id.
-// iMessage collapses a tapped reply to the THREAD ROOT, which — for a reply tapped
+// Some transports collapse a tapped reply to the THREAD ROOT, which — for a reply tapped
 // on one of Irises's Ops answers (those are threaded to the originating question) —
 // is the user's own opening message. This lets that id resolve back to the text
 // that opened the exchange. Sibling to sent_messages (never merged into it: keeping

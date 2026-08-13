@@ -49,7 +49,7 @@ test('a bubble at or under the ceiling passes through untouched (persona keeps o
 });
 
 test('a link bubble is never broken, whatever its length', () => {
-  const link = 'tap here to connect your gmail read only and i can dig into that contract thread for you right away https://accounts.google.com/o/oauth2/v2/auth?client_id=abc&scope=gmail.readonly';
+  const link = 'tap here to open the full report i put together on that contract thread for you right away https://example.com/reports/2026/contract-thread?token=abc123&scope=read.only';
   assert.deepEqual(splitLongBubble(link), [link]);
 });
 

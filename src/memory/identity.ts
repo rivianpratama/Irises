@@ -8,7 +8,7 @@
 //
 // The pseudo-handle can never collide with a real transport handle: real handles are E.164
 // phone numbers or email addresses, and ':' appears in neither. It is a MEMORY key only —
-// it must never reach a send path, a Gmail/consent flow, or any per-person facility;
+// it must never reach a send path or any per-person facility;
 // callers gate those on isGroupHandle().
 
 export const GROUP_HANDLE_PREFIX = 'group:';

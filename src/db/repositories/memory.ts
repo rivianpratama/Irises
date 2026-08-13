@@ -162,7 +162,7 @@ export async function getPreference<T = unknown>(handle: string, key: string): P
   return m?.prefs[key] as T | undefined;
 }
 
-/** Record the agent's primary chat so background jobs (sweeper/poller) can reach them. */
+/** Record the agent's primary chat so background engine-push deliveries can reach them. */
 export async function ensureChatId(handle: string, chatId: string): Promise<void> {
   const m = await getMemory(handle);
   if (m?.prefs?.chat_id === chatId) return;

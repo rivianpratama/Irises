@@ -115,7 +115,7 @@ test('createReminder: one-time fireAt becomes a pinned cron with repeat:1; cron 
 test('listReminders scopes to this chat and strips the prefix; cancelReminder handles 404', async () => {
   const jobs = [
     { id: 1, name: `${jobPrefix('web:debug')}coffee`, schedule: '0 9 * * *' },
-    { id: 2, name: `${jobPrefix('tg:999')}other-chat`, schedule: '0 9 * * *' },
+    { id: 2, name: `${jobPrefix('eng:telegram:999')}other-chat`, schedule: '0 9 * * *' },
     { id: 3, name: 'someone-elses-job', schedule: '* * * * *' },
   ];
   const be = new HermesBackend({ fetchFn: fakeFetch(200, { jobs }) });

@@ -26,7 +26,7 @@ function shortEntry(over: Partial<ShortTermEntry>): ShortTermEntry {
 
 function baseData(over: Partial<UserMemoryData> = {}): UserMemoryData {
   return {
-    profile: { handle: '+15550005555', name: 'Rivian', facts: [], firstSeen: 0, lastSeen: 0 },
+    profile: { handle: '+15550005555', name: 'Jordan', facts: [], firstSeen: 0, lastSeen: 0 },
     memory: null,
     medium: { directives: [], notes: [], facts: {} },
     short: [],
@@ -142,7 +142,7 @@ test('empty tiers render nothing; the flexible block always renders (addressing 
   assert.ok(!out.includes('## Short-term memory'));
   assert.ok(!out.includes('## Medium-term memory'));
   assert.ok(out.includes('## Long-term memory'));
-  assert.ok(out.includes('use their name, "Rivian"'));
+  assert.ok(out.includes('use their name, "Jordan"'));
 });
 
 test('addressing precedence: address_as > name > boss (legacy parity)', () => {
@@ -247,7 +247,7 @@ test('known slots disappear one by one; a mature profile renders no scaffold at 
 
   const filled = renderUserMemory('convo', baseData({
     profile: {
-      handle: '+15550005555', name: 'Rivian', firstSeen: 0, lastSeen: 0,
+      handle: '+15550005555', name: 'Jordan', firstSeen: 0, lastSeen: 0,
       facts: ['has a daughter who plays saturday soccer', 'rides horses', 'grew up in Waco'],
     },
     medium: {
@@ -314,7 +314,7 @@ test('prefs address_as wins over a medium fact during the soak window', () => {
 
 test('no address_as anywhere still falls back to the profile name rule', () => {
   const out = renderUserMemory('convo', baseData(), NOW);
-  assert.ok(out.includes('use their name, "Rivian"'));
+  assert.ok(out.includes('use their name, "Jordan"'));
 });
 
 // ── Group audience (fresh shared identity, no personal fallbacks) ─────────────

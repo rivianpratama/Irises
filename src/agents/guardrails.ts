@@ -10,7 +10,7 @@
 //
 // Policy: the user must never see the name of an internal agent/role or the underlying model.
 // Irises presents as ONE entity; the back-line roles ("Ops", "Reflexion") and the model/provider
-// names are internal machinery. Irises's data sources — the web and the user's own Gmail — are
+// names are internal machinery. Irises's data sources — the web and the user's own email — are
 // ordinary and fine to name, so there is no external data-vendor brand to scrub here. The agents
 // may name their internal roles freely to EACH OTHER; this only rewrites text on its way to the
 // user, so a model slip — or the composer-failure path that relays Ops's raw summary with no

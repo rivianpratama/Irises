@@ -178,7 +178,7 @@ registerPendingInboundProvider(chatId => {
 // that message arrived (they now sit between them in the UI); the same log tells the prompt, per
 // message, how many sends landed after it was typed so a stale queued message isn't re-answered blind.
 // SINGLE source of truth for "is the user typing", with the time it was last set so a stale
-// 'started' (no matching 'stopped' — common on iMessage) self-expires. Lives outside PendingChat
+// 'started' (no matching 'stopped' — common on some transports) self-expires. Lives outside PendingChat
 // so it also survives between batches (waitForUserQuiet reads it during sends).
 const typingState = new Map<string, { isTyping: boolean; at: number }>();
 
@@ -251,7 +251,7 @@ async function processPendingChat(chatId: string) {
     // finally): from here to addMessage these texts exist nowhere else a voicer could see them.
     pending.inFlightBatch = messagesToProcess;
 
-    // A turn has exactly ONE identity (`from` picks whose memory loads, whose Gmail Ops reads,
+    // A turn has exactly ONE identity (`from` picks whose memory loads, whose data the engine reads,
     // whose profile the reply addresses), so a multi-sender group batch becomes one turn per
     // CONSECUTIVE same-sender run, answered in arrival order. 1:1 chats and single-sender
     // bursts are one run — identical to the old single-turn path.
@@ -520,8 +520,8 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
   }
 
   // Group-chat detection: trust the channel's own flag when present; the participant-count
-  // heuristic is the fallback only (it misfires when one person appears twice, e.g. iMessage
-  // + SMS handles).
+  // heuristic is the fallback only (it misfires when one person appears twice under
+  // two handles).
   const isGroupChat = typeof chatInfo.is_group === 'boolean' ? chatInfo.is_group : chatInfo.handles.length > 2;
   const participantNames = chatInfo.handles.map(h => h.handle);
 
@@ -821,7 +821,7 @@ export function setTypingInbound(chatId: string, isTyping: boolean): void {
 /** The enqueueInbound signature — channel routers receive it via dependency injection. */
 export type EnqueueInbound = typeof enqueueInbound;
 
-// Slim: the Gmail OAuth + push routers are gone — the ENGINE owns email now. Engine-initiated
+// The ENGINE owns email and every other account connection. Engine-initiated
 // proactive messages (reminders, mail nudges, background findings) arrive here instead, voiced
 // by Fallfirm in Irises's tone and delivered through the per-chat mouth like any follow-up.
 app.use(createEnginePushRouter({ sendFollowUp }));

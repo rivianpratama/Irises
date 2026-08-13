@@ -11,7 +11,7 @@ import type { Directive } from '../db/repositories/memory.js';
 export { renderDirectiveBlock } from './preferences.js';
 
 /** The structured fact slots (conversationally-learned, user-describing — never operational flags
- *  like chat_id/gmail_*). The canonical list: set_preference routes these to the medium tier, and
+ *  like chat_id). The canonical list: set_preference routes these to the medium tier, and
  *  renderFactsBlock renders them. Reflexion may also mint descriptive new slots beyond these. */
 export const FACT_KEYS: ReadonlySet<string> = new Set([
   'comms_style', 'address_as',

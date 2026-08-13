@@ -76,7 +76,7 @@ export interface LlmRequest {
   // jsonBubbles is set; it replaces the default schema at BOTH provider boundaries. Parsing the
   // extra fields back out stays the caller's job (parseMmReply, not parseReply).
   envelopeSchema?: Record<string, unknown>;
-  // Written tool calls (single-shot roles only — Convo/Convo-MM never see a tool result). The
+  // Written tool calls (single-shot roles only — Convo never sees a tool result). The
   // request's `tools` are NOT sent as the native API param; instead they (a) build the extended
   // envelope schema (buildEnvelopeSchema: a `tool_calls` field with a hard name enum) and (b) are
   // documented in the system prompt. The model WRITES its tool calls into the JSON reply; callLLM

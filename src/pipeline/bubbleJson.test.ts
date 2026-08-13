@@ -292,16 +292,16 @@ test('args as a JSON STRING (model slip) is parsed; boolean/number strings coerc
   const r = parseReply(JSON.stringify({
     confidence_level: 90,
     tool_calls: [
-      { name: 'disconnect_gmail', args: '{"confirmed":"true"}' },
-      { name: 'set_preference', args: { key: 'gmail_declined', value: 'true' } },
+      { name: 'unlink_account', args: '{"confirmed":"true"}' },
+      { name: 'set_preference', args: { key: 'feature_declined', value: 'true' } },
       { name: 'set_preference', args: { key: 'commission_split', value: '70' } },
       { name: 'schedule_automation', args: { instruction: 'nudge', needs_ops: 'false', schedule_kind: 'once' } },
     ],
     bubbles: [{ text: 'done' }],
   }));
   assert.deepEqual(r.toolCalls, [
-    { name: 'disconnect_gmail', input: { confirmed: true } },
-    { name: 'set_preference', input: { key: 'gmail_declined', value: true } },
+    { name: 'unlink_account', input: { confirmed: true } },
+    { name: 'set_preference', input: { key: 'feature_declined', value: true } },
     { name: 'set_preference', input: { key: 'commission_split', value: 70 } },
     { name: 'schedule_automation', input: { instruction: 'nudge', needs_ops: false, schedule_kind: 'once' } },
   ]);

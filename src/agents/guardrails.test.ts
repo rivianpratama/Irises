@@ -64,7 +64,7 @@ test('passthrough on missing holding text or empty reply', () => {
 // the deterministic tripwire in the single send path that keeps that scaffolding off the phone.
 
 test('drops SOURCE:/FLAGS: machinery lines entirely', () => {
-  assert.equal(stripOpsScaffolding('SOURCE: Gmail (riviantherealtor@gmail.com inbox)'), '');
+  assert.equal(stripOpsScaffolding('SOURCE: Email (sample@example.com inbox)'), '');
   assert.equal(stripOpsScaffolding('FLAGS: Worth a look'), '');
   assert.equal(stripOpsScaffolding('  source: public records  '), ''); // case + whitespace tolerant
 });
@@ -74,27 +74,27 @@ test('strips label prefixes but keeps the value', () => {
   assert.equal(stripOpsScaffolding("Subject: \"Security alert\""), '"Security alert"');
   assert.equal(stripOpsScaffolding('Sender: Google <no-reply@accounts.google.com>'), 'Google <no-reply@accounts.google.com>');
   assert.equal(stripOpsScaffolding('Summary: an app was granted access'), 'an app was granted access');
-  assert.equal(stripOpsScaffolding('NO RESULT: searched Gmail, found nothing'), 'searched Gmail, found nothing');
+  assert.equal(stripOpsScaffolding('NO RESULT: searched their email, found nothing'), 'searched their email, found nothing');
 });
 
 test('handles the full multi-line raw Ops block (the production leak)', () => {
   const raw = [
-    'ANSWER: Most recent email in Riv\'s inbox (Jul 2, 2026, 6:27 PM):',
+    'ANSWER: Most recent email in the user\'s inbox (Jul 2, 2026, 6:27 PM):',
     'Subject: "Security alert"',
     'Sender: Google <no-reply@accounts.google.com>',
     'Summary: Google says a third-party app was granted access.',
-    'SOURCE: Gmail (riviantherealtor@gmail.com inbox)',
+    'SOURCE: Email (sample@example.com inbox)',
     'FLAGS: Worth a look',
   ].join('\n');
   const out = stripOpsScaffolding(raw);
   // No structural labels survive.
   assert.doesNotMatch(out, /^\s*(ANSWER|SOURCE|FLAGS|SUMMARY|SUBJECT|SENDER|NO RESULT)\s*:/im);
   // The values do survive.
-  assert.match(out, /Most recent email in Riv's inbox/);
+  assert.match(out, /Most recent email in the user's inbox/);
   assert.match(out, /"Security alert"/);
   assert.match(out, /Google says a third-party app was granted access/);
   // SOURCE/FLAGS lines are gone completely.
-  assert.doesNotMatch(out, /Gmail \(riviantherealtor/);
+  assert.doesNotMatch(out, /Email \(sample@example/);
   assert.doesNotMatch(out, /Worth a look/);
 });
 

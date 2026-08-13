@@ -307,21 +307,11 @@ function renderToolDocs(tools: LlmToolDef[]): string {
   ].join('\n\n');
 }
 
-// Maps Ops's progress milestone keys (the tool that just started — see PROGRESS_PHRASE_TOOLS in
-// ops/client.ts) to a short user-meaning phrase, so Convo can say WHAT a run is doing rather than a
-// generic "still on it". Unmapped keys render no "right now" clause (safe fallback), and a mapped key
-// that isn't currently a progress tool is simply inert — the two lists don't have to match exactly.
-const MILESTONE_PHRASES: Record<string, string> = {
-  search_email: 'digging through emails',
-  search_inbox_local: 'digging through emails',
-  read_email: 'reading an email',
-  read_attachment: 'reading documents',
-  gmail_docs: 'reading documents',
-  read_url: 'reading a page',
-  recall_history: 'checking our past chats',
-  draft_text: 'drafting it',
-  web_search: 'searching the web',
-};
+// Maps a run's progress milestone keys to a short user-meaning phrase, so Convo can say WHAT a run
+// is doing rather than a generic "still on it". The engine reports one coarse 'engine' milestone
+// (no per-tool detail), which deliberately stays unmapped — unmapped keys render no "right now"
+// clause (safe fallback).
+const MILESTONE_PHRASES: Record<string, string> = {};
 
 /** Friendly elapsed label from an in-flight run's startedAt: "~40s", "~2m". */
 function elapsedLabel(startedAt: number): string {
@@ -448,9 +438,8 @@ export function renderArrivalGap(
 }
 
 /**
- * Build the front-line system prompt. Shared by Convo and Convo-MM so the group/burst/reply/platform/
- * time/Gmail sections never drift. `extraSection`, when given, is appended at the very end (Convo-MM
- * uses it for its short "you can see/hear media natively" addendum).
+ * Build the front-line system prompt: persona + the per-turn group/burst/reply/time
+ * sections. `extraSection`, when given, is appended at the very end (an optional addendum hook).
  */
 /** Byte length of Convo's static persona — the cache-reusable HEAD of buildSystemPrompt's output
  *  (which emits `${persona}\n\n${per-turn}…`). Passed as LlmRequest.systemCachePrefixLen so the
@@ -486,7 +475,7 @@ export function buildSystemPrompt(
   const dyn: string[] = [];
 
   // Tool docs lead the per-turn block: under toolsViaJson this is the model's ONLY view of its
-  // tools, and it's stable within a chat (varies only with group/gmail state), so it sits ahead of
+  // tools, and it's stable within a chat (varies only with group state), so it sits ahead of
   // the genuinely per-turn sections.
   if (tools?.length) dyn.push(renderToolDocs(tools));
 
@@ -658,7 +647,7 @@ export function formatHistory(messages: StoredMessage[], isGroupChat: boolean): 
  * finds no envelope, we show the model its own slip and ask for a resend, once, then fall through
  * to the existing legacy-splitter floor (never silent, never a dropped turn).
  *
- * Lives HERE (shared by Convo's one call site and Convo-MM's two), deliberately NOT in callLLM:
+ * Lives HERE (next to Convo's call site), deliberately NOT in callLLM:
  * fallfirm/autonome/composer also set jsonBubbles, and those are failure/voicing paths where a
  * hidden retry stacks latency onto already-degraded turns.
  *
@@ -918,7 +907,7 @@ export async function processConvoResult(args: {
       }
     } else if (call.name === 'schedule_automation' && chatContext?.senderHandle) {
       // Automations stay SENDER-owned even in groups: a group-owned needs_ops automation would
-      // run Ops under a pseudo-handle (no Gmail, consent link to nobody). The chatId on the row
+      // run Ops under a pseudo-handle nothing else recognizes. The chatId on the row
       // is still this chat, so a reminder scheduled from a group fires back into the group.
       const r = await handleScheduleAutomation(input, chatContext.senderHandle, chatId);
       if (r.error) outcomeParts.push(r.error);
@@ -1003,7 +992,7 @@ export async function processConvoResult(args: {
           // stays ON too (Ops seeds server-side results into the grounding corpus), so the question
           // can reach the open web and still be held to grounded facts.
           forceGrounding: true,
-          metaPrompt: `The user asked: "${lastUser}". This needs real, grounded data (the web, their Gmail if connected, or their own past chats) — do NOT answer from general knowledge. Use the right tools and return only grounded facts; if you can't find it, say so.`,
+          metaPrompt: `The user asked: "${lastUser}". This needs real, grounded data (the web, their own email, or their own past chats) — do NOT answer from general knowledge. Use the right tools and return only grounded facts; if you can't find it, say so.`,
           replyToMessageId: chatContext?.incomingMessageId, attempt: 1,
           originConfidence: reply.confidenceLevel,
           createdAt: Date.now(),

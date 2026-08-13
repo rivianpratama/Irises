@@ -1,7 +1,7 @@
 // Group-scoped fresh identity through the tool-dispatch layer: in a GROUP turn the memory
 // handle is the group's own `group:<chatId>` pseudo-handle, so memory verbs (set_preference,
 // update_memory) land on the group's shared identity and NEVER on any member's personal rows,
-// while per-person facilities (delegate_to_ops → Gmail) stay bound to the sender. Runs
+// while per-person facilities (delegate_to_ops → their own email) stay bound to the sender. Runs
 // end-to-end against the in-memory DB backend (no Supabase creds, no LLM calls on this path).
 
 process.env.DATA_BACKEND = 'memory';
@@ -89,7 +89,7 @@ test('group update_memory forwards to the engine under the GROUP identity', asyn
   }
 });
 
-test('group delegate_to_ops stays bound to the SENDER (per-person Gmail/inbox access)', async () => {
+test('group delegate_to_ops stays bound to the SENDER (per-person email/inbox access)', async () => {
   __resetOpsCoordination();
   const a = args(true);
   const res = makeResult(['on it'], [{ name: 'delegate_to_ops', input: { kind: 'general', request: 'whats due this week', meta_prompt: null } }]);

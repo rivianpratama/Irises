@@ -24,7 +24,7 @@ const client = process.env.OPENROUTER_API_KEY
 /** Map an audio MIME type to the OpenRouter `format` string. Shared with the media inliner. */
 export function formatFromMime(mime: string): string {
   const m = (mime || '').toLowerCase();
-  if (m.includes('mp4') || m.includes('m4a') || m.includes('aac')) return 'm4a'; // iMessage voice memos
+  if (m.includes('mp4') || m.includes('m4a') || m.includes('aac')) return 'm4a'; // voice memos
   if (m.includes('mpeg') || m.includes('mp3')) return 'mp3';
   if (m.includes('wav')) return 'wav';
   if (m.includes('ogg') || m.includes('opus')) return 'ogg';
