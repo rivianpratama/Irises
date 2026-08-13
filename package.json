@@ -36,18 +36,12 @@
     "cron-parser": "^4.9.0",
     "dotenv": "^17.2.3",
     "express": "^4.21.0",
-    "googleapis": "^173.0.0",
     "jsonrepair": "^3.15.0",
-    "nodemailer": "^9.0.3",
-    "officeparser": "^5.1.1",
-    "openai": "^6.16.0",
-    "pdfkit": "^0.19.1"
+    "openai": "^6.16.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
-    "@types/nodemailer": "^8.0.1",
-    "@types/pdfkit": "^0.17.6",
     "cpx2": "^9.0.0",
     "cross-env": "^7.0.3",
     "tsx": "^4.19.0",
