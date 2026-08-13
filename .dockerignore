@@ -11,6 +11,7 @@ dist
 *.log
 npm-debug.log*
 .DS_Store
+.irises
 
 # web tier — the web-builder stage runs its own `npm ci` and `next build`; never ship
 # host artifacts (Windows-native node_modules would clobber the Linux install).

@@ -13,6 +13,8 @@ services:
       - app.env     # committed, IDE-editable config shipped by each deploy (wins on overlap)
     expose:
       - "8080"                      # reachable only by caddy on the internal network
+    volumes:
+      - irises_state:/data          # IRISES_HOME: SQLite + memory-tier markdown survive redeploys
     mem_limit: 768m
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
@@ -37,5 +39,6 @@ services:
       - caddy_config:/config
 
 volumes:
+  irises_state:
   caddy_data:
   caddy_config:

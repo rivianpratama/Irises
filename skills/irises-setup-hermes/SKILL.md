@@ -31,8 +31,8 @@ making it. Walk the user through these stages, running the script for the mechan
    - enables the hermes API server if it is not already on (the documented `API_SERVER_ENABLED`
      switch plus a generated key, appended to hermes's own environment config — the script prints
      the exact change first — then asks you to restart `hermes gateway`),
-   - writes the Irises `.env`: `OPS_BACKEND=hermes`, the API key, a generated `ENGINE_PUSH_TOKEN`,
-     and `DATA_BACKEND=memory` (no database needed),
+   - writes the Irises `.env`: `OPS_BACKEND=hermes`, the API key, and a generated
+     `ENGINE_PUSH_TOKEN` (no database needed — Irises persists to `~/.irises` on its own),
    - offers to reuse the Anthropic/OpenRouter key hermes already uses for Irises's own small voice
      models (never overwrites values the user set themselves),
    - offers OPTIONAL bridge mode (front chosen hermes channels — WhatsApp, Discord, any of them —

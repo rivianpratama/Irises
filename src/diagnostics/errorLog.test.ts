@@ -1,9 +1,9 @@
 // Run with: npm test   (TZ=UTC tsx --test)
 // The error sink's load-bearing promises: it never throws (it lives in catch blocks on the reply
 // path), storms fold into one counted row instead of one row per occurrence, the trace mirror keeps
-// the dashboard's per-turn error count honest, a wedged Supabase can neither grow the heap without
-// bound nor feed itself (the recursion firewall), and logDbError's 110+ call sites now land durably.
-// Memory backend throughout: the repo insert no-ops, so the in-memory ring is the store.
+// the dashboard's per-turn error count honest, a wedged data layer can neither grow the heap without
+// bound nor feed itself (the recursion firewall), and logDbError's 110+ call sites land durably.
+// Ephemeral backend throughout (the tests below stub the flush fn where the write path matters).
 process.env.TZ = 'UTC';
 process.env.DATA_BACKEND = 'memory';
 
@@ -126,7 +126,7 @@ test('recursion firewall: a failing flush re-queues and reports NOTHING new', as
   _test.reset();
 
   let calls = 0;
-  _test.setFlushFn(async () => { calls++; throw new Error('supabase down'); });
+  _test.setFlushFn(async () => { calls++; throw new Error('db down'); });
   reportError({ source: 'judge', category: 'surfacing_failure', message: 'could not surface the email', trace: false });
   assert.equal(_test.queueSize(), 1);
 

@@ -5,6 +5,9 @@ dist/
 npm-debug.log*
 *.tsbuildinfo
 
+# Local state dir (if IRISES_HOME points into the repo)
+.irises/
+
 # Secrets — NEVER commit. Use .env.example as the template.
 .env
 .env.*

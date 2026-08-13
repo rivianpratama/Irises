@@ -144,7 +144,6 @@ setup_hermes() {
   set_env HERMES_BASE_URL "http://127.0.0.1:8642"
   set_env HERMES_API_KEY "$key"
   set_env ENGINE_PUSH_TOKEN "$(rand_token)"
-  set_env DATA_BACKEND "memory"
   set_env WEB_ENABLED "true"
 
   # 3. Voice-model keys: reuse what hermes already has (never overwrite user-set values)
@@ -175,7 +174,6 @@ setup_openclaw() {
   set_env OPENCLAW_URL "ws://127.0.0.1:18789"
   set_env OPENCLAW_TOKEN "$token"
   set_env ENGINE_PUSH_TOKEN "$(rand_token)"
-  set_env DATA_BACKEND "memory"
   set_env WEB_ENABLED "true"
 
   if [ -z "$(get_env ANTHROPIC_API_KEY "$ENV_FILE")" ] && [ -z "$(get_env OPENROUTER_API_KEY "$ENV_FILE")" ]; then

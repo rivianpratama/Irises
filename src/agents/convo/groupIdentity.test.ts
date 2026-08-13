@@ -2,7 +2,7 @@
 // handle is the group's own `group:<chatId>` pseudo-handle, so memory verbs (set_preference,
 // update_memory) land on the group's shared identity and NEVER on any member's personal rows,
 // while per-person facilities (delegate_to_ops → their own email) stay bound to the sender. Runs
-// end-to-end against the in-memory DB backend (no Supabase creds, no LLM calls on this path).
+// end-to-end against the ephemeral DB backend (no LLM calls on this path).
 
 process.env.DATA_BACKEND = 'memory';
 

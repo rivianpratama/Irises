@@ -98,8 +98,10 @@ transient-error fallback, plus structured output, tool-calls, caching, and token
 **State & memory** · `src/state`, `src/memory`<br/>
 Burst-batching, per-chat send lock, simulated-typing pacing, and short/medium/long memory tiers.
 
-**Data** · `src/db` + `supabase/migrations`<br/>
-Supabase Postgres with an in-memory dev fallback (`DATA_BACKEND=memory`).
+**Data** · `src/db`<br/>
+Local Hermes/OpenClaw-style store under `IRISES_HOME` (default `~/.irises`): SQLite
+(builtin `node:sqlite`) for machine data + per-user markdown for the curated memory
+tiers. `DATA_BACKEND=memory` = the same code, ephemeral (nothing persists).
 
 **Diagnostics** · `src/diagnostics`<br/>
 `/debug` prompt traces and a `/dashboard` GUI with cost, error, and memory views.
@@ -149,7 +151,7 @@ npm install && npm run install:web
 
 # 2. configure — copy the template and add your key(s)
 cp .env.example .env
-#   DATA_BACKEND=memory is already set; add ANTHROPIC_API_KEY / OPENROUTER_API_KEY
+#   add ANTHROPIC_API_KEY / OPENROUTER_API_KEY (state persists to ~/.irises by default)
 #   (leave OPS_BACKEND commented out for now — deep work stays offline, chat still works)
 
 # 3. run the brain  →  http://localhost:3000
@@ -217,7 +219,7 @@ overrides. The essentials:
 | `HERMES_BASE_URL` · `HERMES_API_KEY` | hermes-agent's OpenAI-compatible API server + cron REST |
 | `OPENCLAW_URL` · `OPENCLAW_TOKEN` | OpenClaw gateway WebSocket |
 | `ENGINE_PUSH_TOKEN` | One secret guarding both engine-facing routes (push + bridge inbound) |
-| `DATA_BACKEND` | `memory` (no infra) or `supabase` |
+| `IRISES_HOME` · `DATA_BACKEND` | State dir (default `~/.irises`) · `memory` = ephemeral run |
 | `WEB_ENABLED` · `DEBUG_TOKEN` | Web debug chat (browser + `npm run chat` CLI) + its access gate |
 
 <details>
@@ -246,7 +248,7 @@ overrides. The essentials:
 
 | Variable | Purpose |
 |----------|---------|
-| `DATA_BACKEND` · `SUPABASE_URL` · `SUPABASE_SERVICE_ROLE_KEY` | `memory` = zero-infra local; `supabase` = Postgres. |
+| `IRISES_HOME` · `DATA_BACKEND` | Where the local store lives (SQLite + memory markdown); `memory` = ephemeral. |
 | `DEBUG_TOKEN` | Gates `/debug` **and** the web chat endpoints (unset = localhost-only). |
 | `DASHBOARD_PASSWORD` | Gates `/dashboard`. **Has a built-in default — set your own before exposing the port.** |
 | `PORT` · `NODE_ENV` | Listen port (3000 dev, 8080 in the image) and persona caching mode. |
@@ -298,13 +300,12 @@ irises/
 │  ├─ channels/            #   Channel abstraction + web (SSE + CLI) · bridge
 │  ├─ llm/                 #   callLLM: provider-neutral LLM layer (Anthropic + OpenRouter)
 │  ├─ state/ · memory/     #   send lock, batching, pacing · short/medium/long memory tiers
-│  ├─ db/ · pipeline/      #   Supabase | in-memory data layer · bubble, cron, time helpers
+│  ├─ db/ · pipeline/      #   local data layer (SQLite + memory files) · bubble, cron, time helpers
 │  ├─ webhook/             #   engine push door
 │  └─ diagnostics/         #   /debug traces + /dashboard GUI
 ├─ bridge/                 # engine plugins — hermes (Python) · openclaw (TypeScript)
 ├─ skills/                 # irises-setup-hermes · irises-setup-openclaw (engine-native installers)
 ├─ scripts/                # engine-setup.sh · irises-chat.ts (REPL)
-├─ supabase/migrations/    # Postgres schema
 ├─ deploy/                 # docker-compose · Caddyfile · app.env · env.vm.example
 ├─ docs/                   # ENGINES.md · CHANNELS.md · DEPLOY.md · PROMPTING_CHARTER.md
 └─ web/                    # web debug client (Next.js, thin SSE client) — its own package

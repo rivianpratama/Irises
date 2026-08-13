@@ -29,8 +29,8 @@ making it. Walk the user through these stages, running the script for the mechan
    The script (read it first if the user wants — it is short and commented):
    - reads the existing gateway URL + token via `openclaw config get` (no OpenClaw config changes),
    - installs the `@openclaw/gateway-client` package into the Irises clone,
-   - writes the Irises `.env`: `OPS_BACKEND=openclaw`, `OPENCLAW_URL`, `OPENCLAW_TOKEN`, a generated
-     `ENGINE_PUSH_TOKEN`, and `DATA_BACKEND=memory` (no database needed),
+   - writes the Irises `.env`: `OPS_BACKEND=openclaw`, `OPENCLAW_URL`, `OPENCLAW_TOKEN`, and a
+     generated `ENGINE_PUSH_TOKEN` (no database needed — Irises persists to `~/.irises` on its own),
    - asks for an `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` for Irises's own small voice models
      (reusing one from the OpenClaw config/environment when present),
    - offers OPTIONAL bridge mode (front chosen OpenClaw channels — WhatsApp, Discord, any of them —

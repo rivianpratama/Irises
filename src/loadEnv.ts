@@ -2,8 +2,8 @@
 //
 // Single source of config truth: deploy/app.env — the SAME committed file prod uses —
 // is loaded as the baseline, then your local, gitignored .env is layered ON TOP to
-// override the few things that must differ locally (dev API keys, DATA_BACKEND=memory,
-// a local DEBUG_TOKEN).
+// override the few things that must differ locally (dev API keys, an IRISES_HOME or
+// DATA_BACKEND=memory override, a local DEBUG_TOKEN).
 //
 // Inside the Docker container NEITHER file exists (env is injected by docker compose),
 // so both calls are harmless no-ops there and the compose-provided process.env stands.

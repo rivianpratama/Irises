@@ -4,6 +4,9 @@
   "description": "Irises — a private, general, casual do-anything assistant. A multi-agent brain that is the user-facing interface for the OpenClaw/Hermes engines, reachable over a web/CLI debug chat and the engine bridge.",
   "main": "dist/index.js",
   "license": "MIT",
+  "engines": {
+    "node": ">=22.13"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/rivianpratama/Irises.git"
@@ -32,7 +35,6 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
-    "@supabase/supabase-js": "^2.108.2",
     "cron-parser": "^4.9.0",
     "dotenv": "^17.2.3",
     "express": "^4.21.0",

@@ -4,9 +4,8 @@
 > lands in a remote, rotate it in the provider console immediately.
 
 ## 1. Prerequisites
-- **Node 22+** and npm.
+- **Node 22.13+** and npm (the local store uses the builtin `node:sqlite`).
 - **Anthropic** API key, **OpenRouter** API key (fallback + voice transcription).
-- **Supabase** project (free tier is fine).
 - A public HTTPS host for production (any small VM running Docker — §5 handles this with Caddy).
 - Optionally, an **engine** (OpenClaw or hermes-agent) for email/reminders/deep work — see
   `docs/ENGINES.md`. Email, OAuth, and push webhooks live on the engine side, not in this app.
@@ -15,7 +14,7 @@
 
 ## 2. Run locally
 
-### 2a. Fastest path (in-memory, no infra)
+### 2a. Fastest path (no infra at all)
 ```bash
 git clone https://github.com/rivianpratama/Irises.git
 cd Irises
@@ -24,10 +23,11 @@ cp .env.example .env
 ```
 Edit `.env` and set at minimum:
 ```
-DATA_BACKEND=memory          # no Supabase needed
 ANTHROPIC_API_KEY=sk-ant-...
 OPENROUTER_API_KEY=sk-or-... # for voice + fallback
 ```
+State persists to `~/.irises` out of the box (override with `IRISES_HOME`); add
+`DATA_BACKEND=memory` if you want a throwaway run that leaves nothing behind.
 Run it:
 ```bash
 npm run dev          # tsx watch (hot reload)
@@ -48,24 +48,29 @@ npm run build && npm start
 
 ---
 
-## 3. Supabase setup
-1. Create a project at supabase.com → **Project Settings → API**: copy the **Project URL**
-   and the **service_role** key (server-side; bypasses RLS — never expose it client-side).
-2. Put them in `.env`:
-   ```
-   SUPABASE_URL=https://<project>.supabase.co
-   SUPABASE_SERVICE_ROLE_KEY=eyJ...   # service_role
-   # remove DATA_BACKEND=memory to use Supabase
-   ```
-3. Apply the schema. **SQL Editor → New query**, paste and run **every file in
-   `supabase/migrations/` in filename order** (`0001_init.sql` … `0003_telemetry.sql`).
-   (Or with the Supabase CLI: `supabase link` then `supabase db push`.)
-4. The migrations create all tables and enable RLS with no policies — the service-role
-   key is what the server uses.
-5. Optional: enable the `pg_cron` extension if you want DB-side cleanup of expired
-   `messages`; otherwise it's harmless to skip.
+## 3. Local storage
 
-Without these env vars the app silently falls back to the in-memory store (dev only — data is lost on restart).
+There is no database to provision. All state lives under **`IRISES_HOME`** (default
+`~/.irises`; `/data` inside the Docker image), in the same style as the engines it fronts:
+
+```
+$IRISES_HOME/
+├── irises.db                # SQLite (node:sqlite): conversations, profiles, prefs,
+│                            # short-term memory, reply threading, token ledger,
+│                            # error log, diagnostics
+└── memories/<handle>/       # per-user curated memory, human-readable markdown
+    ├── LONG.md + revisions/ # the long-term doc, every version snapshotted
+    ├── MEDIUM.md            # active directives/notes/facts (+ MEDIUM.archive.md lineage)
+    └── DOSSIER.md           # the LLM-merged dossier prose
+```
+
+- Schema is created automatically on first boot; retention sweeps (hourly/daily/6h) keep
+  the store bounded on a small VM.
+- **Backing up Irises = backing up this directory** (the `irises_state` volume in compose).
+- `DATA_BACKEND=memory` runs the same code against an ephemeral root — nothing persists
+  (used by the test suite and throwaway runs).
+- The daily token caps (`OPS_DAILY_TOKEN_CAP` / `LLM_DAILY_TOKEN_CAP` in `deploy/app.env`)
+  enforce out of the box now that the ledger is always present.
 
 ---
 

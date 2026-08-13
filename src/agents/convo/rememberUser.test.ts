@@ -3,7 +3,7 @@
 // addressing source in every later prompt for the victim). The guard: 1:1 allows only the
 // sender; a group chat also allows a listed participant; anything else is DROPPED (never
 // redirected to the sender — the model asserted whose info it is). Runs end-to-end against
-// the in-memory DB backend (no Supabase creds, no LLM calls on this path).
+// the ephemeral DB backend (no LLM calls on this path).
 
 process.env.DATA_BACKEND = 'memory';
 

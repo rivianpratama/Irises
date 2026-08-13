@@ -8,7 +8,7 @@
 // the task, salvage only the safe holding-style opener (salvageHoldingText) as the shipped text and
 // holdingText, discarding the un-grounded substantive tail — mirroring the routing-gate salvage.
 //
-// Exercised end-to-end against the in-memory DB backend (no Supabase creds), with voiceInstant
+// Exercised end-to-end against the ephemeral DB backend, with voiceInstant
 // degrading to its static floor when the LLM call fails — so processConvoResult runs for real.
 
 process.env.DATA_BACKEND = 'memory';

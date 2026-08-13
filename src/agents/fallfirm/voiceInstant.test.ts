@@ -2,7 +2,7 @@
 // moment into the <prompt> block the persona reads. The load-bearing invariants: it always steers
 // "don't repeat what's already on screen", and it carries NO facts and NO url (it's a wait line,
 // not an answer).
-process.env.DATA_BACKEND = 'memory'; // module transitively imports the db layer; keep it off Supabase
+process.env.DATA_BACKEND = 'memory'; // module transitively imports the db layer; keep it ephemeral
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
