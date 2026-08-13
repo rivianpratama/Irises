@@ -1,4 +1,5 @@
-import { getSupabase, logDbError } from '../client.js';
+import { logDbError } from '../client.js';
+import { stmt } from '../sqlite.js';
 import type { LlmUsage } from '../../llm/types.js';
 
 export interface TokenUsageRow {
@@ -22,52 +23,55 @@ export interface TokenUsageRow {
   /** The cap actually SENT (req.maxTokens ?? MAX_TOKENS[role]) — a tiny per-call cap binding over
    *  the role ceiling is the usual cause of truncation, and invisible without this column. */
   maxTokensSent?: number;
-  /** Provider-neutral truncation flag (isTruncatedStop). Truncated calls stay status='ok' — see
-   *  migration 0015: llm_role_stats/llm_hourly count status in ('ok','error') explicitly. */
+  /** Provider-neutral truncation flag (isTruncatedStop). Truncated calls stay status='ok' —
+   *  llm_role_stats/llm_hourly count status in ('ok','error') explicitly. */
   truncated?: boolean;
 }
 
 /**
- * Record one LLM call in the durable call ledger (tokens + latency + status +
- * fallback lane). Fire-and-forget analytics: never throws, and no-ops when
- * Supabase isn't configured (nothing reads this on the in-memory path, so
- * there's no fallback store to keep).
+ * Record one LLM call in the durable call ledger (tokens + latency + status + fallback
+ * lane). Fire-and-forget analytics: never throws. Always writes — on the memory driver
+ * the ledger is ephemeral but live, so budget caps and the dashboard see real numbers.
  */
 export async function recordTokenUsage(row: TokenUsageRow): Promise<void> {
-  const supabase = getSupabase();
-  if (!supabase) return;
   try {
-    const { error } = await supabase.from('token_usage').insert({
-      handle: row.handle ?? null,
-      chat_id: row.chatId ?? null,
-      task_id: row.taskId ?? null,
-      role: row.role,
-      label: row.label ?? null,
-      provider: row.provider,
-      model: row.model,
-      input_tokens: row.usage?.inputTokens ?? 0,
-      output_tokens: row.usage?.outputTokens ?? 0,
-      cache_creation_input_tokens: row.usage?.cacheCreationInputTokens ?? 0,
-      cache_read_input_tokens: row.usage?.cacheReadInputTokens ?? 0,
+    stmt(
+      `INSERT INTO token_usage
+         (handle, chat_id, task_id, role, label, provider, model,
+          input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+          latency_ms, fallback_from, status, error, stop_reason, max_tokens_sent, truncated, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      row.handle ?? null,
+      row.chatId ?? null,
+      row.taskId ?? null,
+      row.role,
+      row.label ?? null,
+      row.provider,
+      row.model,
+      row.usage?.inputTokens ?? 0,
+      row.usage?.outputTokens ?? 0,
+      row.usage?.cacheCreationInputTokens ?? 0,
+      row.usage?.cacheReadInputTokens ?? 0,
       // total_tokens is a generated column — don't insert it.
-      latency_ms: row.latencyMs ?? null,
-      fallback_from: row.fallbackFrom ?? null,
-      status: row.status ?? 'ok',
-      error: row.error ? row.error.slice(0, 500) : null,
-      stop_reason: row.stopReason ?? null,
-      max_tokens_sent: row.maxTokensSent ?? null,
-      truncated: row.truncated ?? false,
-    });
-    if (error) throw error;
+      row.latencyMs ?? null,
+      row.fallbackFrom ?? null,
+      row.status ?? 'ok',
+      row.error ? row.error.slice(0, 500) : null,
+      row.stopReason ?? null,
+      row.maxTokensSent ?? null,
+      row.truncated ? 1 : 0,
+      Date.now(),
+    );
   } catch (error) {
     logDbError('recordTokenUsage', error);
   }
 }
 
 // ---------------------------------------------------------------------------
-// Analytics readers (dashboard). Aggregates run in SQL RPCs — supabase-js has
-// no GROUP BY, and pulling a whole window of rows into Node on every dashboard
-// poll would be strictly worse than one indexed aggregate.
+// Analytics readers (dashboard + daily budget). Aggregates run as plain SQL —
+// one indexed GROUP BY beats pulling a whole window of rows into Node on every
+// dashboard poll.
 // ---------------------------------------------------------------------------
 
 export interface LlmRoleStat {
@@ -166,7 +170,7 @@ function rowToLite(r: Record<string, unknown>): UsageRowLite {
     cacheCreationTokens: num(r.cache_creation_input_tokens),
     status: (r.status as string) ?? 'ok',
     latencyMs: numOrNull(r.latency_ms),
-    createdAt: Date.parse(r.created_at as string),
+    createdAt: num(r.created_at),
   };
 }
 
@@ -174,26 +178,22 @@ function rowToLite(r: Record<string, unknown>): UsageRowLite {
  * Ledger rows inside a time window, scoped to a chat or (for chat-less turns like
  * the email Judge) to a handle with no chat_id — so a user's simultaneous chat
  * traffic can't leak into their email-turn costs. Uses the (chat_id, created_at)
- * / (handle, created_at) indexes. Returns [] on the memory backend.
+ * / (handle, created_at) indexes.
  */
 export async function listUsageInWindow(
   scope: { chatId?: string; handle?: string },
   sinceMs: number,
   untilMs: number,
 ): Promise<UsageRowLite[]> {
-  const supabase = getSupabase();
-  if (!supabase || (!scope.chatId && !scope.handle)) return [];
+  if (!scope.chatId && !scope.handle) return [];
   try {
-    let q = supabase.from('token_usage').select(LITE_COLUMNS);
-    if (scope.chatId) q = q.eq('chat_id', scope.chatId);
-    else q = q.eq('handle', scope.handle!).is('chat_id', null);
-    const { data, error } = await q
-      .gte('created_at', new Date(sinceMs).toISOString())
-      .lte('created_at', new Date(untilMs).toISOString())
-      .order('created_at', { ascending: true })
-      .limit(1000);
-    if (error) throw error;
-    return ((data ?? []) as unknown as Record<string, unknown>[]).map(rowToLite);
+    const scopeSql = scope.chatId ? 'chat_id = ?' : 'handle = ? AND chat_id IS NULL';
+    const rows = stmt(
+      `SELECT ${LITE_COLUMNS} FROM token_usage
+       WHERE ${scopeSql} AND created_at >= ? AND created_at <= ?
+       ORDER BY created_at ASC LIMIT 1000`
+    ).all(scope.chatId ?? scope.handle!, sinceMs, untilMs) as unknown as Record<string, unknown>[];
+    return rows.map(rowToLite);
   } catch (error) {
     logDbError('listUsageInWindow', error);
     return [];
@@ -203,20 +203,18 @@ export async function listUsageInWindow(
 /**
  * Ledger rows for a set of delegated task ids — the exact-attribution leg. Late
  * Ops/Composer work lands outside any turn's time window; task_id is how it still
- * bills to the turn that delegated it. Returns [] on the memory backend.
+ * bills to the turn that delegated it.
  */
 export async function listUsageForTasks(taskIds: string[]): Promise<UsageRowLite[]> {
-  const supabase = getSupabase();
-  if (!supabase || !taskIds.length) return [];
+  if (!taskIds.length) return [];
   try {
-    const { data, error } = await supabase
-      .from('token_usage')
-      .select(LITE_COLUMNS)
-      .in('task_id', taskIds.slice(0, 200))
-      .order('created_at', { ascending: true })
-      .limit(1000);
-    if (error) throw error;
-    return ((data ?? []) as unknown as Record<string, unknown>[]).map(rowToLite);
+    // json_each keeps one statement shape regardless of how many ids arrive.
+    const rows = stmt(
+      `SELECT ${LITE_COLUMNS} FROM token_usage
+       WHERE task_id IN (SELECT value FROM json_each(?))
+       ORDER BY created_at ASC LIMIT 1000`
+    ).all(JSON.stringify(taskIds.slice(0, 200))) as unknown as Record<string, unknown>[];
+    return rows.map(rowToLite);
   } catch (error) {
     logDbError('listUsageForTasks', error);
     return [];
@@ -224,29 +222,57 @@ export async function listUsageForTasks(taskIds: string[]): Promise<UsageRowLite
 }
 
 export async function getLlmRoleStats(since: number, handle?: string): Promise<LlmRoleStat[]> {
-  const supabase = getSupabase();
-  if (!supabase) return [];
   try {
-    const { data, error } = await supabase.rpc('llm_role_stats', {
-      p_since: new Date(since).toISOString(),
-      p_handle: handle ?? null,
+    const h = handle ?? null;
+    const groups = stmt(
+      `SELECT role, provider, model,
+              count(*) FILTER (WHERE status = 'ok')                              AS calls,
+              count(*) FILTER (WHERE status = 'error')                           AS errors,
+              count(*) FILTER (WHERE fallback_from IS NOT NULL)                  AS fallbacks,
+              round(avg(latency_ms) FILTER (WHERE status = 'ok'))                AS avg_latency_ms,
+              count(*) FILTER (WHERE status = 'ok' AND latency_ms IS NOT NULL)   AS ok_latency_n,
+              coalesce(sum(input_tokens), 0)                                     AS input_tokens,
+              coalesce(sum(output_tokens), 0)                                    AS output_tokens,
+              coalesce(sum(cache_read_input_tokens), 0)                          AS cache_read_tokens,
+              coalesce(sum(cache_creation_input_tokens), 0)                      AS cache_creation_tokens,
+              coalesce(sum(total_tokens), 0)                                     AS total_tokens
+       FROM token_usage
+       WHERE created_at >= ? AND (? IS NULL OR handle = ?)
+       GROUP BY role, provider, model
+       ORDER BY calls DESC`
+    ).all(since, h, h) as unknown as Record<string, unknown>[];
+    return groups.map(r => {
+      // Nearest-rank p95 per group (SQLite has no percentile_cont; the handful of
+      // groups makes one tiny indexed query each cheaper than a window scan).
+      let p95: number | null = null;
+      const n = num(r.ok_latency_n);
+      if (n > 0) {
+        const at = stmt(
+          `SELECT latency_ms FROM token_usage
+           WHERE created_at >= ? AND (? IS NULL OR handle = ?)
+             AND role = ? AND provider = ? AND model = ?
+             AND status = 'ok' AND latency_ms IS NOT NULL
+           ORDER BY latency_ms LIMIT 1 OFFSET ?`
+        ).get(since, h, h, r.role as string, r.provider as string, r.model as string,
+              Math.max(0, Math.ceil(0.95 * n) - 1)) as { latency_ms: number } | undefined;
+        p95 = at ? Number(at.latency_ms) : null;
+      }
+      return {
+        role: r.role as string,
+        provider: r.provider as string,
+        model: r.model as string,
+        calls: num(r.calls),
+        errors: num(r.errors),
+        fallbacks: num(r.fallbacks),
+        avgLatencyMs: numOrNull(r.avg_latency_ms),
+        p95LatencyMs: p95,
+        inputTokens: num(r.input_tokens),
+        outputTokens: num(r.output_tokens),
+        cacheReadTokens: num(r.cache_read_tokens),
+        cacheCreationTokens: num(r.cache_creation_tokens),
+        totalTokens: num(r.total_tokens),
+      };
     });
-    if (error) throw error;
-    return ((data ?? []) as Record<string, unknown>[]).map(r => ({
-      role: r.role as string,
-      provider: r.provider as string,
-      model: r.model as string,
-      calls: num(r.calls),
-      errors: num(r.errors),
-      fallbacks: num(r.fallbacks),
-      avgLatencyMs: numOrNull(r.avg_latency_ms),
-      p95LatencyMs: numOrNull(r.p95_latency_ms),
-      inputTokens: num(r.input_tokens),
-      outputTokens: num(r.output_tokens),
-      cacheReadTokens: num(r.cache_read_tokens),
-      cacheCreationTokens: num(r.cache_creation_tokens),
-      totalTokens: num(r.total_tokens),
-    }));
   } catch (error) {
     logDbError('getLlmRoleStats', error);
     return [];
@@ -254,13 +280,21 @@ export async function getLlmRoleStats(since: number, handle?: string): Promise<L
 }
 
 export async function getLlmHourly(since: number): Promise<LlmHourlyBucket[]> {
-  const supabase = getSupabase();
-  if (!supabase) return [];
   try {
-    const { data, error } = await supabase.rpc('llm_hourly', { p_since: new Date(since).toISOString() });
-    if (error) throw error;
-    return ((data ?? []) as Record<string, unknown>[]).map(r => ({
-      bucket: Date.parse(r.bucket as string),
+    const rows = stmt(
+      `SELECT (created_at / 3600000) * 3600000                       AS bucket,
+              count(*) FILTER (WHERE status = 'ok')                  AS calls,
+              count(*) FILTER (WHERE status = 'error')               AS errors,
+              count(*) FILTER (WHERE fallback_from IS NOT NULL)      AS fallbacks,
+              coalesce(sum(total_tokens), 0)                         AS total_tokens,
+              round(avg(latency_ms) FILTER (WHERE status = 'ok'))    AS avg_latency_ms
+       FROM token_usage
+       WHERE created_at >= ?
+       GROUP BY bucket
+       ORDER BY bucket`
+    ).all(since) as unknown as Record<string, unknown>[];
+    return rows.map(r => ({
+      bucket: num(r.bucket),
       calls: num(r.calls),
       errors: num(r.errors),
       fallbacks: num(r.fallbacks),
@@ -274,20 +308,16 @@ export async function getLlmHourly(since: number): Promise<LlmHourlyBucket[]> {
 }
 
 export async function listSlowestCalls(since: number, limit = 20): Promise<SlowLlmCall[]> {
-  const supabase = getSupabase();
-  if (!supabase) return [];
   try {
-    const { data, error } = await supabase
-      .from('token_usage')
-      .select('created_at, role, label, provider, model, latency_ms, input_tokens, output_tokens, cache_read_input_tokens, total_tokens, handle, chat_id')
-      .eq('status', 'ok')
-      .not('latency_ms', 'is', null)
-      .gte('created_at', new Date(since).toISOString())
-      .order('latency_ms', { ascending: false })
-      .limit(Math.min(Math.max(limit, 1), 50));
-    if (error) throw error;
-    return ((data ?? []) as Record<string, unknown>[]).map(r => ({
-      createdAt: Date.parse(r.created_at as string),
+    const rows = stmt(
+      `SELECT created_at, role, label, provider, model, latency_ms,
+              input_tokens, output_tokens, cache_read_input_tokens, total_tokens, handle, chat_id
+       FROM token_usage
+       WHERE status = 'ok' AND latency_ms IS NOT NULL AND created_at >= ?
+       ORDER BY latency_ms DESC LIMIT ?`
+    ).all(since, Math.min(Math.max(limit, 1), 50)) as unknown as Record<string, unknown>[];
+    return rows.map(r => ({
+      createdAt: num(r.created_at),
       role: r.role as string,
       label: (r.label as string | null) ?? null,
       provider: r.provider as string,
@@ -308,21 +338,17 @@ export async function listSlowestCalls(since: number, limit = 20): Promise<SlowL
 
 /** Most recent FAILED LLM calls in the window (status='error'), newest first — the dashboard's
  *  error log. Errors are already durably recorded by recordLlmError (callLLM.ts); this just reads
- *  them back. Mirrors listSlowestCalls' shape/limits; returns [] on the memory backend. */
+ *  them back. Mirrors listSlowestCalls' shape/limits. */
 export async function listRecentErrors(since: number, limit = 20): Promise<LlmErrorCall[]> {
-  const supabase = getSupabase();
-  if (!supabase) return [];
   try {
-    const { data, error } = await supabase
-      .from('token_usage')
-      .select('created_at, role, label, provider, model, latency_ms, error, handle, chat_id')
-      .eq('status', 'error')
-      .gte('created_at', new Date(since).toISOString())
-      .order('created_at', { ascending: false })
-      .limit(Math.min(Math.max(limit, 1), 50));
-    if (error) throw error;
-    return ((data ?? []) as Record<string, unknown>[]).map(r => ({
-      createdAt: Date.parse(r.created_at as string),
+    const rows = stmt(
+      `SELECT created_at, role, label, provider, model, latency_ms, error, handle, chat_id
+       FROM token_usage
+       WHERE status = 'error' AND created_at >= ?
+       ORDER BY created_at DESC LIMIT ?`
+    ).all(since, Math.min(Math.max(limit, 1), 50)) as unknown as Record<string, unknown>[];
+    return rows.map(r => ({
+      createdAt: num(r.created_at),
       role: r.role as string,
       label: (r.label as string | null) ?? null,
       provider: r.provider as string,
