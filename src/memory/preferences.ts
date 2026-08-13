@@ -129,7 +129,7 @@ export function renderPreferenceBlock(prefs: Record<string, unknown> | undefined
   return renderDirectiveBlock(raw);
 }
 
-/** Async convenience for agents that don't already have memory loaded (Composer/Autonome/Judge).
+/** Async convenience for agents that don't already have memory loaded (Composer/Fallfirm).
  *  Reads the medium tier first; falls back to the legacy prefs array during the soak window. */
 export async function buildPreferenceBlock(handle: string | undefined): Promise<string> {
   if (!handle) return '';

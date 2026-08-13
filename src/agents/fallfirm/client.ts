@@ -1,6 +1,6 @@
 // Fallfirm — the fallback+confirm voicer. When a primary agent couldn't voice a FAILURE or a
 // CONFIRMATION itself — Convo is single-shot and never sees a tool result (a scheduled time, an
-// invalid cron, a no-match cancel), or the composer/autonome/judge model call failed — the code used
+// invalid cron, a no-match cancel), or the composer model call failed — the code used
 // to ship a hardcoded string. Instead it now hands the OUTCOME to Fallfirm, which re-voices it in
 // Irises's tone, reading the recent thread so it lands as the next natural text. Same shape as the
 // Composer relay (static persona + <prompt> dynamic block + JSON anchor + a short voice-only history
@@ -21,7 +21,7 @@ import { fallfirmFloor, type Outcome } from './floor.js';
 export type { Outcome, OutcomeKind } from './floor.js';
 
 // Recent turns prepended for voice/continuity ONLY — never a fact source (facts come from the
-// outcome). Mirrors the composer/autonome window. Each turn carries its wall-clock stamp
+// outcome). Mirrors the composer window. Each turn carries its wall-clock stamp
 // (src/pipeline/chatTime.ts) so a cold thread isn't voiced like a live one.
 const HISTORY_WINDOW = 8;
 
@@ -31,8 +31,8 @@ function formatHistory(messages: StoredMessage[]): LlmMessage[] {
 
 // The dynamic block: who they are, the recent ask for continuity, and the outcome to voice. Hard
 // facts (a time, the consent URL) are labeled "relay exactly" — fidelity, same as the Composer.
-// `timingLine`, when set, says how cold the thread is — this voicer can fire out-of-band (Judge/
-// Autonome fallbacks) long after the last exchange.
+// `timingLine`, when set, says how cold the thread is — this voicer can fire out-of-band
+// (engine-push fallbacks) long after the last exchange.
 function buildOutcomeBrief(o: Outcome, userMemory: string, timingLine?: string): string {
   const lines: string[] = [
     `## What just happened — voice THIS as the next text in the thread (kind: ${o.kind})`,

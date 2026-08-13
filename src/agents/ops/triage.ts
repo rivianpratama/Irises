@@ -51,7 +51,7 @@ export function detectCause(result: OpsResult, timedOut: boolean): OpsFailureCau
   const fail = result.debrief?.failure?.cause;
   if (fail === 'fidelity_suppressed') return 'fidelity_suppressed';
   if (fail === 'tool_errors') return 'tool_errors';
-  if (fail === 'budget') return 'budget'; // must NOT read as llm_error (llm_error escalates)
+  if (fail === 'budget') return 'budget'; // must NOT read as llm_error (llm_error retries)
   if (result.status === 'rate_limited') return 'rate_limited';
   if (result.status === 'error') return 'llm_error';
   return 'empty_miss'; // status ok but classified as a miss, and not a fidelity suppression

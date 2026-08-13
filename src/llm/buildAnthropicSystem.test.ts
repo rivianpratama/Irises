@@ -10,7 +10,7 @@ test('no system → undefined; caching off → bare string (billed as ordinary i
   assert.equal(buildAnthropicSystem('you are irises', false, 5), 'you are irises');
 });
 
-test('caching on, no prefix boundary → the whole system is one cached block (Ops/Reflexion shape)', () => {
+test('caching on, no prefix boundary → the whole system is one cached block (whole-system shape)', () => {
   const out = buildAnthropicSystem('stable ops system', true, undefined) as Block[];
   assert.ok(Array.isArray(out));
   assert.equal(out.length, 1);

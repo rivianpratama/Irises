@@ -1,6 +1,6 @@
 // A hard deadline for one background agent run. Without it, a hung tool HTTP call or a slow
 // multi-step loop leaves the user's holding text dangling forever. Used by the orchestrator
-// (runOpsAndFollowUp / runMmAndFollowUp / the escalation leg) — a standalone module so the
+// (runOpsAndFollowUp and its retry leg) — a standalone module so the
 // orchestrator and agent clients don't import each other (which would be a cycle).
 
 /** Thrown by withDeadline on timeout (as opposed to a real error from the work). Callers use

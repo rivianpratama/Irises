@@ -74,15 +74,15 @@ test('task-budget registry: tool-internal usage reported under the taskId hits t
   assert.equal(budget.spentTokens(), 1_000, 'nothing lands after unregister');
 });
 
-test('unregister is compare-and-delete: an abandoned leg cannot evict the escalation leg budget', () => {
+test('unregister is compare-and-delete: an abandoned leg cannot evict the fresh leg budget', () => {
   const abandoned = new TaskBudget(1_000);
   registerTaskBudget('task-2', abandoned);
-  const escalation = new TaskBudget(1_000);
-  registerTaskBudget('task-2', escalation); // same task id, fresh leg
+  const secondLeg = new TaskBudget(1_000);
+  registerTaskBudget('task-2', secondLeg); // same task id, fresh leg
   unregisterTaskBudget('task-2', abandoned); // late cleanup from the abandoned leg
   reportTaskUsage('task-2', { inputTokens: 42, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 });
-  assert.equal(escalation.spentTokens(), 42, 'escalation budget still registered');
-  unregisterTaskBudget('task-2', escalation);
+  assert.equal(secondLeg.spentTokens(), 42, 'fresh leg budget still registered');
+  unregisterTaskBudget('task-2', secondLeg);
 });
 
 test('estimateCostUsd prices each gpt-5.6 tier (pro and non-pro alike); sonnet stays below the pro rate', () => {

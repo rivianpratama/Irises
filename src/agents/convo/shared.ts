@@ -325,9 +325,9 @@ function opsStatusLine(o: ActiveOps): string {
   const phrase = o.lastMilestone ? MILESTONE_PHRASES[o.lastMilestone] : undefined;
   let etaPace = '';
   // The "you said it'd take X" attribution only holds for an Ops run the user actually got a
-  // time-promise ack for. A scheduled/autonomous run never voiced one, and the media_read (MM) lane
+  // time-promise ack for. A scheduled/autonomous run never voiced one, and the media_read lane
   // is silent with no time promise at all — so neither gets an ETA-pace clause. Elapsed rides
-  // firstStartedAt (total, survives an escalation) so it stays consistent with the pace clause —
+  // firstStartedAt (total, survives a retry leg) so it stays consistent with the pace clause —
   // never "started ~30s ago (running past that)" after startedAt was reset for the second leg.
   if (o.origin !== 'scheduled' && o.kind !== 'media_read' && o.estimateMs != null && o.estimatePhrase) {
     const elapsed = Date.now() - o.firstStartedAt;
@@ -648,7 +648,7 @@ export function formatHistory(messages: StoredMessage[], isGroupChat: boolean): 
  * to the existing legacy-splitter floor (never silent, never a dropped turn).
  *
  * Lives HERE (next to Convo's call site), deliberately NOT in callLLM:
- * fallfirm/autonome/composer also set jsonBubbles, and those are failure/voicing paths where a
+ * fallfirm/composer also set jsonBubbles, and those are failure/voicing paths where a
  * hidden retry stacks latency onto already-degraded turns.
  *
  * No retry on stopReason 'length': a truncated envelope re-truncates on retry, and tier-4 repair
@@ -840,7 +840,7 @@ export async function processConvoResult(args: {
       // Attach the chat file(s) the research is grounded in, so Ops can open them itself
       // (read_chat_attachment). Default: this turn's attachments ride along automatically (a safety
       // net — new files normally route through delegate_to_mm first); media_scope 'earlier' recalls
-      // the 24h stash (the "yes, check it" follow-up after MM's read + dangle); 'none' opts out for
+      // the 24h stash (the "yes, check it" follow-up after a file read + dangle); 'none' opts out for
       // research unrelated to a file the same message happens to carry. An empty recall does NOT
       // kill the delegation — the research may stand alone — but the brief tells Ops the file is
       // gone so it answers honestly and asks for a resend if the file itself is essential.
@@ -899,7 +899,7 @@ export async function processConvoResult(args: {
     } else if (call.name === 'update_memory' && handle) {
       // Silent memory forwarding. The ENGINE owns the long-term user model now (per-chat engine
       // session memory) — this hands the durable fact over fire-and-forget, so it can coexist with
-      // a research delegation in the same turn, exactly like the old Reflexion delegation did.
+      // a research delegation in the same turn.
       const engine = getEngineBackend();
       const note = String(input.request ?? textToSend);
       if (engine && note.trim()) {

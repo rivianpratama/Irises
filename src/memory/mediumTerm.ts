@@ -12,7 +12,7 @@ export { renderDirectiveBlock } from './preferences.js';
 
 /** The structured fact slots (conversationally-learned, user-describing — never operational flags
  *  like chat_id). The canonical list: set_preference routes these to the medium tier, and
- *  renderFactsBlock renders them. Reflexion may also mint descriptive new slots beyond these. */
+ *  renderFactsBlock renders them. Curation may also mint descriptive new slots beyond these. */
 export const FACT_KEYS: ReadonlySet<string> = new Set([
   'comms_style', 'address_as',
 ]);
@@ -56,11 +56,11 @@ export function renderNotesBlock(notes: string[]): string {
 }
 
 /** Structured facts the user told us about themselves (not operational flags). The canonical
- *  slots render first, in a fixed order; any other durable fact Reflexion minted renders after. */
+ *  slots render first, in a fixed order; any other minted durable fact renders after. */
 export function renderFactsBlock(facts: Record<string, string>): string {
   const lines: string[] = [];
   if (facts.comms_style) lines.push(`comms style: ${facts.comms_style}`);
-  // Descriptive slots beyond the canonical ones (e.g. minted by Reflexion) — render them too so a
+  // Descriptive slots beyond the canonical ones — render them too so a
   // durable fact never goes unseen. address_as is rendered by the addressing header, not here.
   for (const [key, value] of Object.entries(facts)) {
     if (key === 'comms_style' || key === 'address_as' || !value) continue;

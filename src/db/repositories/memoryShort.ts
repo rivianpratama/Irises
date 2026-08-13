@@ -29,7 +29,7 @@ export interface ShortTermEntry {
 export const SHORT_TTL_MS = 24 * 60 * 60 * 1000;
 /** Full-fidelity, not unbounded: renderers slice much smaller; this caps storage growth. */
 export const SHORT_CONTENT_MAX_CHARS = 8000;
-/** Swept rows are deleted this long PAST expiry, so Reflexion's daily pass always finds
+/** Swept rows are deleted this long PAST expiry, so a daily review always finds
  *  a full ≥24h of context even if a run slips (~72h physical retention). */
 export const SHORT_SWEEP_GRACE_MS = Number(process.env.MEMORY_SHORT_SWEEP_GRACE_MS || 48 * 60 * 60 * 1000);
 
@@ -199,7 +199,7 @@ export async function expireShortTermNow(handle: string, kinds?: ShortKind[]): P
   );
 }
 
-/** Hard-delete rows well past expiry (grace default 48h). Called hourly off the Autonome
+/** Hard-delete rows well past expiry (grace default 48h). Called hourly off the background
  *  tick. Returns the number of rows deleted (supabase) or pruned (memory). */
 export async function sweepExpiredShortTerm(graceMs: number = SHORT_SWEEP_GRACE_MS): Promise<number> {
   const cutoffIso = new Date(Date.now() - graceMs).toISOString();

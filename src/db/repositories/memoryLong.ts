@@ -5,7 +5,7 @@
 //
 // Concurrency: optimistic. saveLongDoc carries the version the writer read; a stale
 // version returns null (no write) and the caller re-reads, re-merges, retries once.
-// Writers today: the legacy dossier refresh (dual-write, Stage 1) and Reflexion (Stage 3).
+// Writer today: the legacy dossier refresh (dual-write).
 //
 // Failure policy: FAIL LOUD like memoryMedium — a lost long-doc write is lost learning.
 
@@ -110,7 +110,7 @@ export async function saveLongDoc(
   });
 }
 
-/** Recent revisions, newest first (Reflexion's history view; nothing renders these). */
+/** Recent revisions, newest first (a history/debug view; nothing renders these). */
 export async function listLongRevisions(handle: string, limit = 10): Promise<LongRevision[]> {
   const supabase = getSupabase();
   if (supabase) {

@@ -76,7 +76,7 @@ type AnthropicSystemBlock = { type: 'text'; text: string; cache_control?: { type
  *    per-turn-varying tail (current time to ms, dossier, …), making every turn a full cache WRITE —
  *    no reads, ~25% premium, and the write tokens still count toward the daily cap. This is the bug
  *    the split fixes; the boundary is validated (0 < len < system.length) or we fall through.
- *  • caching on with no valid boundary → the whole system as one cached block (Ops/Reflexion, whose
+ *  • caching on with no valid boundary → the whole system as one cached block (roles whose
  *    system is stable end to end).
  * Exported for unit tests.
  */

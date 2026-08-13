@@ -22,7 +22,7 @@ export type { StoredErrorRow };
 export type ErrorSeverity = 'warn' | 'error' | 'fatal';
 
 export interface ReportedError {
-  /** Who was working: convo|ops|judge|autonome|reflexion|mm|fallfirm|pipeline|db|llm|webhook|
+  /** Who was working: convo|ops|fallfirm|pipeline|db|llm|webhook|
    *  process|budget|diagnostics|memory. LLM failures use the CALLING role. */
   source: string;
   /** What broke — see the category taxonomy in migration 0014. */

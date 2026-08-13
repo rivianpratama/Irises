@@ -115,7 +115,7 @@ export async function chat(
     : ['', undefined];
 
   // Transcribe audio (in parallel) and fold into the text — the cheap fast path for voice memos, so
-  // Convo answers them at text-model latency without a background MM read.
+  // Convo answers them at text-model latency without a background file read.
   const transcriptionResults = await Promise.all(media.audio.map(a => transcribeAudio(a.url, a.mimeType)));
   const transcriptions = transcriptionResults.filter((t): t is string => Boolean(t));
   const transcriptionFailed = transcriptionResults.some(t => !t);
@@ -155,7 +155,7 @@ export async function chat(
   const arrivedAt = chatContext?.arrivals?.[0]?.receivedAt ?? 0;
   const messages: LlmMessage[] = [
     ...formatHistory(history, chatContext?.isGroupChat ?? false),
-    // Text-only: Convo never ingests media natively — that's MM's job.
+    // Text-only: Convo never ingests media natively — the engine opens files.
     { role: 'user', timestamp: timestampLabel(arrivedAt > 0 ? arrivedAt : Date.now()) || undefined, content: textToSend || '...' },
   ];
 

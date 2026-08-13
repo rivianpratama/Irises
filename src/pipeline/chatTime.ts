@@ -164,7 +164,7 @@ function lastTimed(history: TimedTurn[]): TimedTurn | undefined {
  * stored thread BEFORE the current inbound message (the Convo flow fetches before it appends), so
  * a trailing user turn means THEIR last text went unanswered — the wait is Irises's; a trailing
  * assistant turn means the user is the one coming back. `mode: 'outreach'` reframes for a
- * Irises-initiated message (Autonome), where nobody is "replying" to anything.
+ * Irises-initiated message (an engine push), where nobody is "replying" to anything.
  */
 export function renderConversationTiming(
   history: TimedTurn[],

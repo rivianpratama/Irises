@@ -77,7 +77,7 @@ test('expireShortTermNow force-expires (optionally by kind)', async () => {
   assert.equal((await listShortTerm(HANDLE)).length, 0);
 });
 
-test('sweep deletes only rows past expiry+grace (Reflexion still sees a full day)', async () => {
+test('sweep deletes only rows past expiry+grace (a daily review still sees a full day)', async () => {
   reset();
   // Expired 3 days ago — well past the 48h grace.
   await addShortTerm({ agentHandle: HANDLE, kind: 'ops_research', content: 'ancient', taskId: 'x', ttlMs: -3 * 24 * 60 * 60 * 1000 });

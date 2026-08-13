@@ -63,9 +63,9 @@ export type OpsFailureCause =
   | 'tool_errors'          // most tool calls came back error-shaped
   | 'needs_auth'           // engine rejected the API key — operator config, no retry helps
   | 'cancelled'            // user killed the run
-  | 'budget';              // token budget exhausted — escalating would light a bigger fire
+  | 'budget';              // token budget exhausted — a retry would light a bigger fire
 
-/** One tool call the run made, for the escalation debrief's "what was already tried" ledger. */
+/** One tool call the run made, for the debrief's "what was already tried" ledger. */
 export interface OpsToolRun {
   name: string;
   argsSummary: string;   // JSON.stringify(input), capped ~200 chars
@@ -76,8 +76,8 @@ export interface OpsToolRun {
 
 /**
  * What the run actually did — filled by runTask on EVERY path (ok and failed) so a failure-
- * escalation prompt can say "here is what was already researched". In-memory only: it flows into
- * the escalation meta-prompt and diagnostics traces, NEVER to the user. Carried on OpsResult, and
+ * triage step can reason about "what was already researched". In-memory only: it flows into
+ * diagnostics traces, NEVER to the user. Carried on OpsResult, and
  * also written into a caller-held OpsDebriefSink so a partial trail survives a withDeadline timeout
  * (the abandoned runTask keeps filling the sink).
  */

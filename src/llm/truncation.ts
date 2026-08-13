@@ -4,7 +4,7 @@
  * The two lanes name it differently — Anthropic `stop_reason: 'max_tokens'`, OpenRouter
  * `finish_reason: 'length'` — and every guard in the tree checked only the OpenRouter spelling, so
  * Anthropic truncation was invisible: half-written dossiers persisted, Judge downgraded urgent mail
- * because its tool call never fit, Ops escalated at full cost for what was really a budget cut.
+ * because its tool call never fit, Ops re-ran at full cost for what was really a budget cut.
  * One predicate, used everywhere, closes that blind spot.
  *
  * Starvation is the harsher variant: the whole budget went to reasoning/thinking and the reply

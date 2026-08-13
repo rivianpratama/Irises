@@ -17,7 +17,7 @@
 // inside a data tag is data, never instructions" stays true — the handling rules live out here.
 //
 // The flexible payloads are the most capable injection surface in the system (user- and
-// Reflexion-authored markdown), so they pass a layered sanitizer before rendering:
+// curator-authored markdown), so they pass a layered sanitizer before rendering:
 // scope-section strip → per-SECTION unsafe screen → length cap at a section boundary →
 // tag-breakout neutralization. The outbound guardrails (redactInternalTools etc.) stay
 // untouched as the final net.
@@ -216,7 +216,7 @@ export function renderShortBlock(
   ].join('\n');
 }
 
-/** Medium-term wrapper (Convo, Autonome): durable facts + explicitly-kept notes. */
+/** Medium-term wrapper (Convo): durable facts + explicitly-kept notes. */
 export function renderMediumBlock(bundle: MediumBundle): string {
   const parts: string[] = [];
   const facts = renderFactsBlock(bundle.facts);
@@ -381,7 +381,7 @@ export function renderFlexibleBlock(
 // ── Discovery scaffold (Convo-only) ──────────────────────────────────────────
 // The "template" for a new/blank user, synthesized at RENDER time rather than written into
 // the DB: a stored template would sit inside a data tag (where content is DATA, never
-// instructions — the boundary above), and Reflexion would have to curate around fake rows.
+// instructions — the boundary above), and curation would have to work around fake rows.
 // Rendered as rigid wrapper guidance instead, each unknown slot carries its own go-learn-it
 // nudge and disappears automatically the moment the real value lands. Long-tier identity
 // slots lead (the priority); an empty operational picture gets its own fill-over-time note.
@@ -543,7 +543,7 @@ export function renderUserMemory(agent: MemoryAgent, data: UserMemoryData, nowMs
   const directives = data.medium.directives.length
     ? data.medium.directives
     : (Array.isArray(prefs.directives) ? (prefs.directives as Directive[]) : []);
-  // The addressing header must see MEDIUM facts too (a Reflexion-written address_as lives only
+  // The addressing header must see MEDIUM facts too (a curated address_as lives only
   // there), merged under the same prefs-wins soak order the discovery block already uses — a
   // rare failed medium write must never mask a newer prefs value.
   const factView: Record<string, unknown> = { ...data.medium.facts, ...prefs };

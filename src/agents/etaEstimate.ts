@@ -32,11 +32,6 @@ export function estimateOpsEta(input: { kind: TaskKind; request: string; forceGr
   return { bucketMs: 120_000, phrase: 'a couple of minutes' };
 }
 
-/** An escalation runs a whole second leg on a stronger model — the original bucket is spent. */
-export function extendForEscalation(prev?: EtaEstimate): EtaEstimate {
-  return { bucketMs: (prev?.bucketMs ?? 120_000) + 240_000, phrase: 'a few more minutes' };
-}
-
 export type EtaState = 'early' | 'closing' | 'overrun';
 
 export interface EtaStatus {

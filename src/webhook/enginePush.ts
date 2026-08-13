@@ -1,6 +1,6 @@
 // The proactive inbound door: the ENGINE's cron jobs (reminders, mail nudges, anything the user
 // scheduled through Irises) deliver their outcome here, and Irises voices it to the chat in its
-// own tone. This is the Slim replacement for the old local Autonome/Judge runners — the engine
+// own tone. The engine owns scheduling and email — the engine
 // does the work and the scheduling; Irises stays the mouth.
 //
 // Auth mirrors the web-channel convention (routes.ts): ENGINE_PUSH_TOKEN set → the x-engine-token

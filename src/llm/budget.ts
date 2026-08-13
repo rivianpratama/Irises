@@ -67,7 +67,7 @@ export function registerTaskBudget(taskId: string, budget: TaskBudget): void {
   taskBudgets.set(taskId, budget);
 }
 
-/** Compare-and-delete: an abandoned (timed-out) leg's late cleanup must not evict the escalation
+/** Compare-and-delete: an abandoned (timed-out) leg's late cleanup must not evict a fresh
  *  leg's budget, which re-registers under the same task id. */
 export function unregisterTaskBudget(taskId: string, budget: TaskBudget): void {
   if (taskBudgets.get(taskId) === budget) taskBudgets.delete(taskId);

@@ -258,7 +258,7 @@ export async function updateDossier(handle: string, recent: StoredMessage[]): Pr
       await saveDossier(handle, updated);
       console.log(`[memory] dossier updated for ${handle} (${updated.length} chars)`);
       // Stage-1 dual-write: mirror the merged doc into the versioned long tier so it accrues
-      // a warm, revision-tracked history before Reflexion (Stage 3) takes over as its writer.
+      // a warm, revision-tracked history.
       // Reads stay on dossier_md until then; a failure here is logged, never user-facing.
       try {
         const cur = await getLongDoc(handle);

@@ -8,8 +8,8 @@
 //   web:<clientId>        → web / CLI debug channel   (default single-user: "web:debug")
 //   eng:<platform>:<chat> → bridge (engine-fronted chat, via OpenClaw/Hermes)
 // Anything else is unroutable: Irises is a front-end for the OpenClaw/Hermes engines, so every live
-// chatId carries one of these prefixes. Legacy bare / `tg:` ids from the removed Linq/Telegram
-// channels no longer resolve — they throw loudly instead of silently misrouting.
+// chatId carries one of these prefixes. Legacy bare / `tg:` ids from the removed direct-messaging
+// transports no longer resolve — they throw loudly instead of silently misrouting.
 import type { Channel, ChannelKind } from './types.js';
 
 const channels = new Map<ChannelKind, Channel>();

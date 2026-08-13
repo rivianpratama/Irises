@@ -1,5 +1,5 @@
 // The outbound bubble pipeline — pure, unit-tested (see bubbles.test.ts), used by the single
-// send path in index.ts for EVERY user-facing reply (live Convo turns and Composer/Autonome/Judge
+// send path in index.ts for EVERY user-facing reply (live Convo turns and Composer/Fallfirm
 // follow-ups alike).
 //
 // Charter split (docs/PROMPTING_CHARTER.md §10.1): the persona prompts are the primary defense for

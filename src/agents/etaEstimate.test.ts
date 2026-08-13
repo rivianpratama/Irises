@@ -2,7 +2,7 @@ process.env.TZ = 'UTC';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { estimateOpsEta, extendForEscalation, etaStatus, CROSS_ENTITY_RE } from './etaEstimate.js';
+import { estimateOpsEta, etaStatus, CROSS_ENTITY_RE } from './etaEstimate.js';
 
 test('the quick kind (draft) returns about a minute', () => {
   assert.equal(estimateOpsEta({ kind: 'draft', request: 'write a thank-you note' }).phrase, 'about a minute');
@@ -43,19 +43,6 @@ test('CROSS_ENTITY_RE matches sweeps and leaves single-target asks alone', () =>
   assert.ok(CROSS_ENTITY_RE.test('is there anything outstanding'));
   assert.ok(!CROSS_ENTITY_RE.test('read the invoice jamie sent me'));
   assert.ok(!CROSS_ENTITY_RE.test('what time is the meeting'));
-});
-
-test('extendForEscalation adds time and returns the escalation phrase', () => {
-  const base = estimateOpsEta({ kind: 'general', request: 'something' });
-  const ext = extendForEscalation(base);
-  assert.equal(ext.phrase, 'a few more minutes');
-  assert.equal(ext.bucketMs, base.bucketMs + 240_000);
-});
-
-test('extendForEscalation works with no prior estimate', () => {
-  const ext = extendForEscalation();
-  assert.equal(ext.phrase, 'a few more minutes');
-  assert.equal(ext.bucketMs, 120_000 + 240_000);
 });
 
 test('etaStatus early state with remaining phrase', () => {

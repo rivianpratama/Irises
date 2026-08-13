@@ -218,7 +218,7 @@ test('toolsViaJson attaches the response-healing plugin, merged with file-parser
   assert.deepEqual(merged.map(p => p.id), ['response-healing', 'file-parser']);
 });
 
-test('tool-less jsonBubbles callers (composer/autonome/fallfirm shape) are byte-identical to before', () => {
+test('tool-less jsonBubbles callers (composer/fallfirm shape) are byte-identical to before', () => {
   const params = buildOpenRouterParams({ role: 'fallfirm', jsonBubbles: true, messages: [{ role: 'user', content: 'x' }] });
   const schema = (params.response_format as Any).json_schema.schema;
   assert.deepEqual(schema.required, ['confidence_level', 'bubbles']);

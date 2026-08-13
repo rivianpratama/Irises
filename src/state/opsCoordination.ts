@@ -11,22 +11,21 @@
 // Keyed by chatId then taskId so concurrent DISTINCT tasks coexist and each clears only its own
 // marker (no first-finisher-clears-everyone bug).
 import type { TaskKind } from '../agents/types.js';
-import { estimateOpsEta, extendForEscalation, etaStatus, type EtaEstimate, type EtaStatus } from '../agents/etaEstimate.js';
+import { estimateOpsEta, etaStatus, type EtaEstimate, type EtaStatus } from '../agents/etaEstimate.js';
 
 interface InFlightEntry {
   kind: TaskKind;
   request: string;
   normKey: string;
   startedAt: number; // epoch ms (app clock — only ever compared to Date.now())
-  firstStartedAt: number;  // epoch ms, set once, never reset — true elapsed survives escalation
-  origin?: 'scheduled';     // set for Autonome-scheduled runs; user-delegated runs leave it unset
-  lastMilestone?: string;   // most recent user-noticeable tool the run started (raw onProgress key)
+  firstStartedAt: number;  // epoch ms, set once, never reset — true elapsed survives a retry leg
+  origin?: 'scheduled';     // set for scheduled engine runs; user-delegated runs leave it unset
+  lastMilestone?: string;   // most recent user-noticeable milestone the run reported
   milestoneAt?: number;     // epoch ms that milestone landed — lets Convo say what's happening NOW
   cancel?: AbortController; // aborts the running task's step loop (best-effort, token-saving)
   cancelled?: boolean;      // the load-bearing flag: the orchestrator suppresses delivery on it
   estimateMs?: number;
   estimatePhrase?: string;
-  escalated?: boolean;
 }
 
 const inFlight = new Map<string, Map<string, InFlightEntry>>();   // chatId -> taskId -> entry
@@ -82,31 +81,15 @@ export function isOpsCancelled(chatId: string, taskId: string): boolean {
 }
 
 /**
- * Mark an in-flight task as escalated. An Ops escalation runs a SECOND leg, pushing total wall time
- * past STALE_MS (5 min) — after which getActiveOps + isDuplicateDelegation would silently drop the
- * task, so Convo would stop saying "still on it" and a duplicate re-ask could run mid-look. Resetting
- * the per-leg startedAt at the escalation's start restores the `timeout < STALE_MS` invariant (while
- * firstStartedAt stays put so true elapsed survives). Also extends the ETA via extendForEscalation
- * and flags `escalated`. In-place, and MUST preserve `cancelled` — this is NOT markOpsStart, which
- * would resurrect a cancelled entry and re-arm its dedupe key. No-op if the entry is already gone.
- */
-export function markOpsEscalated(chatId: string, taskId: string): void {
-  const entry = inFlight.get(chatId)?.get(taskId);
-  if (!entry || entry.cancelled) return;
-  entry.startedAt = Date.now();
-  entry.escalated = true;
-  const ext = extendForEscalation(entry.estimateMs != null ? { bucketMs: entry.estimateMs, phrase: entry.estimatePhrase ?? '' } : undefined);
-  entry.estimateMs = ext.bucketMs;
-  entry.estimatePhrase = ext.phrase;
-}
-
-/**
- * Keep-alive for the cheap RETRY leg (a transient-lane-blip second pass). Same STALE_MS problem as
- * markOpsEscalated: an llm_error can land LATE in the primary loop, so the retry may run well after the
- * original start and the entry would go stale mid-look (dropping dedupe + "still on it"). Resetting the
- * per-leg startedAt restores the `timeout < STALE_MS` invariant. Unlike escalation it does NOT flag
- * `escalated` or extend the ETA — a retry is expected to be quick and its pings stay silent inside the
- * normal quiet window. In-place; MUST preserve `cancelled`. No-op if the entry is already gone.
+ * Keep-alive for the cheap RETRY leg (a transient-lane-blip second pass). An llm_error can land
+ * LATE in the primary loop, so the retry may run well after the original start and the entry would
+ * go stale mid-look (past STALE_MS, getActiveOps + isDuplicateDelegation silently drop the task, so
+ * Convo would stop saying "still on it" and a duplicate re-ask could run mid-look). Resetting the
+ * per-leg startedAt restores the `timeout < STALE_MS` invariant (while firstStartedAt stays put so
+ * true elapsed survives). It does NOT extend the ETA — a retry is expected to be quick and its
+ * pings stay silent inside the normal quiet window. In-place, and MUST preserve `cancelled` — this
+ * is NOT markOpsStart, which would resurrect a cancelled entry and re-arm its dedupe key. No-op if
+ * the entry is already gone.
  */
 export function markOpsRetry(chatId: string, taskId: string): void {
   const entry = inFlight.get(chatId)?.get(taskId);
@@ -115,7 +98,7 @@ export function markOpsRetry(chatId: string, taskId: string): void {
 }
 
 /**
- * Compute the current ETA status for an in-flight task (elapsed from firstStartedAt so escalation
+ * Compute the current ETA status for an in-flight task (elapsed from firstStartedAt so a retry leg
  * doesn't reset the clock). Returns undefined for cancelled, stale, or missing entries.
  */
 export function getOpsEtaStatus(chatId: string, taskId: string): EtaStatus | undefined {
@@ -135,7 +118,7 @@ export function getOpsEtaStatus(chatId: string, taskId: string): EtaStatus | und
  * Unlike the texted progress pings (throttled to 1/run so the user isn't spammed), EVERY milestone
  * updates the registry — the throttle is about the mouth, not about what Convo is allowed to know.
  * In-place; no-op if the entry is gone or cancelled (a timed-out abandoned leg's late milestones
- * must never resurrect or mutate a cleared/cancelled entry — mirrors markOpsEscalated's discipline).
+ * must never resurrect or mutate a cleared/cancelled entry — mirrors markOpsRetry's discipline).
  */
 export function noteOpsProgress(chatId: string, taskId: string, milestoneKey: string): void {
   const entry = inFlight.get(chatId)?.get(taskId);
@@ -164,7 +147,6 @@ export interface ActiveOps {
   milestoneAt?: number;
   estimateMs?: number;
   estimatePhrase?: string;
-  escalated?: boolean;
 }
 
 /** Snapshot of research currently running for this chat (stale and cancelled entries filtered out —
@@ -175,7 +157,7 @@ export function getActiveOps(chatId: string): ActiveOps[] {
   const now = Date.now();
   return [...byTask.entries()]
     .filter(([, e]) => now - e.startedAt < STALE_MS && !e.cancelled)
-    .map(([taskId, e]) => ({ taskId, kind: e.kind, request: e.request, startedAt: e.startedAt, firstStartedAt: e.firstStartedAt, origin: e.origin, lastMilestone: e.lastMilestone, milestoneAt: e.milestoneAt, estimateMs: e.estimateMs, estimatePhrase: e.estimatePhrase, escalated: e.escalated }));
+    .map(([taskId, e]) => ({ taskId, kind: e.kind, request: e.request, startedAt: e.startedAt, firstStartedAt: e.firstStartedAt, origin: e.origin, lastMilestone: e.lastMilestone, milestoneAt: e.milestoneAt, estimateMs: e.estimateMs, estimatePhrase: e.estimatePhrase }));
 }
 
 /**

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import {
   markOpsStart, markOpsDone, getActiveOps, isDuplicateDelegation,
   requestOpsCancel, isOpsCancelled, noteOpsProgress, hasInFlightRequest,
-  normalizeRequest, __resetOpsCoordination, markOpsEscalated, markOpsRetry, getOpsEtaStatus,
+  normalizeRequest, __resetOpsCoordination, markOpsRetry, getOpsEtaStatus,
 } from './opsCoordination.js';
 
 test('markOpsStart is visible to a synchronous getActiveOps in the same tick (no async race)', () => {
@@ -98,25 +98,15 @@ test('getActiveOps exposes taskId so the cancel handler can target entries', () 
   assert.equal(getActiveOps('chatA')[0].taskId, 'task9');
 });
 
-test('markOpsEscalated keeps an in-flight task active + a duplicate through the second leg', () => {
+test('markOpsRetry keeps an in-flight task active + a duplicate through the second leg', () => {
   __resetOpsCoordination();
   markOpsStart('chatA', 'task1', { kind: 'general', request: 'deep research' });
-  // The escalation resets the per-leg clock; the task stays active/visible so Convo keeps saying
+  // The retry resets the per-leg clock; the task stays active/visible so Convo keeps saying
   // "still on it" and dedupe suppression stays truthful through the second leg.
-  markOpsEscalated('chatA', 'task1');
+  markOpsRetry('chatA', 'task1');
   assert.equal(getActiveOps('chatA').length, 1);
   assert.equal(getActiveOps('chatA')[0].taskId, 'task1');
   assert.equal(isDuplicateDelegation('chatA', 'general', 'deep research'), 'in_flight');
-});
-
-test('markOpsEscalated preserves a cancelled entry (never resurrects it)', () => {
-  __resetOpsCoordination();
-  markOpsStart('chatA', 'task1', { kind: 'general', request: 'deep research' }, new AbortController());
-  requestOpsCancel('chatA', 'task1');
-  markOpsEscalated('chatA', 'task1'); // must be a no-op on a cancelled entry
-  assert.equal(isOpsCancelled('chatA', 'task1'), true);
-  assert.equal(getActiveOps('chatA').length, 0); // still hidden — cancel wins
-  assert.equal(isDuplicateDelegation('chatA', 'general', 'deep research'), null); // still re-askable
 });
 
 test('origin is exposed via getActiveOps for scheduled runs; unset stays undefined (back-compat)', () => {
@@ -202,35 +192,13 @@ test('markOpsStart accepts an explicit estimate and stores it', () => {
   assert.equal(active.estimateMs, 999);
 });
 
-test('firstStartedAt is set on markOpsStart and survives markOpsEscalated', () => {
-  __resetOpsCoordination();
-  markOpsStart('chatA', 'task1', { kind: 'general', request: 'deep research' });
-  const before = getActiveOps('chatA')[0].firstStartedAt;
-  assert.equal(typeof before, 'number');
-  markOpsEscalated('chatA', 'task1');
-  const after = getActiveOps('chatA')[0];
-  assert.equal(after.firstStartedAt, before);
-  assert.equal(after.escalated, true);
-  assert.equal(after.estimatePhrase, 'a few more minutes');
-});
-
-test('markOpsEscalated is a no-op on cancelled or missing entries', () => {
-  __resetOpsCoordination();
-  assert.doesNotThrow(() => markOpsEscalated('chatA', 'nope'));
-  markOpsStart('chatA', 'task1', { kind: 'general', request: 'test' }, new AbortController());
-  requestOpsCancel('chatA', 'task1');
-  markOpsEscalated('chatA', 'task1');
-  assert.equal(isOpsCancelled('chatA', 'task1'), true);
-});
-
-test('markOpsRetry keeps the task alive but does NOT escalate or stretch the ETA', () => {
+test('markOpsRetry keeps the task alive but does NOT stretch the ETA', () => {
   __resetOpsCoordination();
   markOpsStart('chatA', 'task1', { kind: 'general', request: 'deep research' });
   const before = getActiveOps('chatA')[0];
   markOpsRetry('chatA', 'task1');
   const after = getActiveOps('chatA')[0];
   assert.equal(after.firstStartedAt, before.firstStartedAt); // true elapsed still honest
-  assert.equal(after.escalated, undefined);                  // a retry is not an escalation
   assert.equal(after.estimatePhrase, before.estimatePhrase); // never a different number
   assert.equal(isDuplicateDelegation('chatA', 'general', 'deep research'), 'in_flight');
 });

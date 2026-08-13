@@ -1,7 +1,7 @@
 // Scope a chat-history window to ONE user before it feeds a memory writer.
 //
 // Conversation history is keyed by chat, not by person — in any thread that ever carried a
-// second participant, an unfiltered window hands the dossier/Reflexion harvesters OTHER
+// second participant, an unfiltered window hands the dossier harvesters OTHER
 // people's words as if the target user said them ("call me Chief" leaking into the wrong
 // user's memory was exactly this). Every transcript a per-user memory writer consumes goes
 // through here first.

@@ -72,7 +72,7 @@ const HOLDING: Partial<Record<TaskKind, readonly string[]>> = {
   web_research: ['looking that up now', 'digging into that, one sec', 'checking on that, hang on'],
   document_read: ['checking your inbox, one sec', 'searching your email now', 'digging through your inbox, hang on'],
   draft: ['drafting that now', 'writing that up now', 'putting that draft together'],
-  // MM read — deliberately a tiny human beat (not a "pulling records" line), matching the minimal
+  // File read — deliberately a tiny human beat (not a "pulling records" line), matching the minimal
   // holding register for a media delegation. Fallback-only; the LLM voicer usually writes its own.
   media_read: ['one sec, looking at that', 'lemme open this up', 'taking a look at that now'],
 };

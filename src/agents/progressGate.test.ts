@@ -86,7 +86,7 @@ test('the first ping clears the gap even when quietMs < gapMs', () => {
 test('PROD primary leg (quiet=gap=300s, cap=1) fires ZERO reassurances across its 4-min Ops window', () => {
   // Mirrors deploy defaults: the primary gate's quiet window is 5 min, but OPS_TASK_TIMEOUT_MS=240s
   // kills the primary run at 4 min — so the quiet window never even opens. The holding line stands
-  // alone; any reassurance now comes from the escalation leg's immediate "deeper look" beat instead.
+  // alone; a second leg gets its own fresh gate against the same shared budget.
   const c = clock();
   const gate = new ProgressGate({ quietMs: 300_000, gapMs: 300_000, maxPings: 1, now: c.now });
   let allowed = 0;

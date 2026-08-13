@@ -1,4 +1,4 @@
-// Per-chat outbound serialization. Every user-facing send (live reply, Ops/Judge/Autonome
+// Per-chat outbound serialization. Every user-facing send (live reply, Ops follow-up, engine-push
 // follow-up, post-OAuth) acquires this lock so one logical message's bubbles can NEVER be split
 // by another's.
 //

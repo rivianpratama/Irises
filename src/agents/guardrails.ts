@@ -68,7 +68,7 @@ export function redactInternalTools(text: string | null | undefined): string {
 // "NO RESULT:", and, for email findings, "Subject:"/"Sender:"/"Summary:" (see ops/Context.md).
 // The Composer persona is supposed to strip every one of those and re-voice into Irises's chat
 // voice. When that primary defense doesn't run — the composer-failure fallback that would relay
-// Ops' raw summary with no model in the loop (orchestrator.composeFollowUp / autonome fallbackText)
+// Ops' raw summary with no model in the loop (orchestrator.composeFollowUp)
 // — this is the deterministic tripwire that keeps the scaffolding off the user's phone.
 //
 // It does NOT re-voice (no third-person→second-person, no reshaping) — that stays the persona's

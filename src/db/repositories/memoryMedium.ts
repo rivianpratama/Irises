@@ -138,7 +138,7 @@ export async function listMediumActive(handle: string, kinds?: MediumKind[]): Pr
     .sort((a, b) => a.createdAt - b.createdAt);
 }
 
-/** Every row for a handle including superseded/retracted (Reflexion's lineage view). */
+/** Every row for a handle including superseded/retracted (a lineage/debug view). */
 export async function listMediumAll(handle: string): Promise<MediumEntry[]> {
   const supabase = getSupabase();
   if (supabase) {

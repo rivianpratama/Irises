@@ -3,12 +3,12 @@ import { hasMedia, type IncomingMedia } from '../../webhook/types.js';
 
 // Prior-media recall. Conversation history is text-only, so when a text follow-up needs RAW detail
 // from an earlier image/video/voice memo/document ("zoom into the corner", "read the 3rd line"),
-// Convo (DeepSeek) can't help — it never saw the file. Convo re-delegates to MM with the stashed
+// Convo (text-only) can't help — it never saw the file. Convo re-delegates to the engine with the stashed
 // file re-attached (delegate_to_mm media_scope="earlier"). The media (URLs + mimeTypes only) lives
 // in a durable per-handle pref, mirroring `recent_research`.
 
 // How long after the user SENT media we can still re-attach it. Past this we ask them to resend.
-// NOTE: engine/CDN media URLs are short-lived, so even inside this window a re-fetch can fail (MM then
+// NOTE: engine/CDN media URLs are short-lived, so even inside this window a re-fetch can fail (the engine then
 // reports it couldn't open the file); guaranteeing the full day would require storing the bytes.
 export const MEDIA_RECALL_TTL_MS = Number(process.env.MEDIA_RECALL_TTL_MS || 24 * 60 * 60 * 1000);
 
@@ -48,7 +48,7 @@ export function describeMedia(media: IncomingMedia): string {
   return bits.join(' + ') || 'an attachment';
 }
 
-/** Human phrase for how long ago the media was sent, for MM's recall framing. */
+/** Human phrase for how long ago the media was sent, for the recall framing. */
 export function describeAge(ageMs: number): string {
   const min = Math.round(ageMs / 60_000);
   if (min < 2) return 'moments ago';

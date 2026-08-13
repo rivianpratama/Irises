@@ -6,13 +6,13 @@
 //
 // This computes the correct UTC instant for a wall-clock time in a real IANA zone,
 // handling DST, using Intl.DateTimeFormat offset arithmetic (no extra dependency) —
-// the same tz-aware approach already used by cron.ts and the Autonome quiet-hours.
+// the same tz-aware approach already used by cron.ts and the quiet-hours rule.
 
 /** Default IANA timezone for scheduling until a per-agent tz is stored (mirrors the runner/convo client). */
 export const DEFAULT_TZ = 'America/Chicago';
 
 /**
- * Quiet hours = 9pm–8am in the given IANA zone. The single definition shared by the Autonome
+ * Quiet hours = 9pm–8am in the given IANA zone. The single definition shared by the
  * runner (which defers respect_quiet_hours automations) and the email Judge (which decides
  * whether to hold a non-urgent flag to morning) — so the two can never silently diverge.
  */

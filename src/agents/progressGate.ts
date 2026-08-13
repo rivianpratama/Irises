@@ -3,10 +3,8 @@
 //
 // The law (user directive): at most 3 messages per task (holding line + at most 1 mid-run update +
 // final answer). The mid-run update fires only after 5 minutes of silence, with at least 5 minutes
-// between pings, and the hard cap of 1 per run. Exception: the escalation "deeper look" beat fires
-// immediately when escalation starts (~4 min in) because it's real news — but it consumes the single
-// update slot, so nothing else can follow. Both windows are env-overridable; the defaults encode the
-// 5-minute / max-1 rule.
+// between pings, and the hard cap of 1 per run. Both windows are env-overridable; the defaults
+// encode the 5-minute / max-1 rule.
 //
 // `allow(key)` is the gate: it is SYNCHRONOUS and RESERVES the slot the moment it returns true, so a
 // caller can check-then-voice (a slow LLM voice call) without a second concurrent milestone slipping

@@ -569,7 +569,7 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
   // The turn's WHOLE life — think (the LLM call, which reads history) → speak (every bubble) →
   // remember (the history record) — is ONE per-chat critical section. Holding the mouth across the
   // LLM call, not just the sends, is what makes the agents one entity in time (INV-2, extended):
-  //   • no follow-up (Ops/Judge/Autonome) can land between this turn's history read and its reply,
+  //   • no follow-up (an Ops answer or engine push) can land between this turn's history read and its reply,
   //     so the reply is never voiced blind to a message that would precede it on screen;
   //   • a queued follow-up voices only AFTER this reply is sent and recorded, so it speaks with
   //     full awareness of it. Order of voicing === order on screen === order in history.
