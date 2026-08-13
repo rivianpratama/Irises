@@ -1,6 +1,6 @@
 # Channels
 
-Irises is one server-side brain (the Convo → Ops/MM multi-agent pipeline) reachable over several
+Irises is one server-side brain (the Convo → Ops engine-seam pipeline) reachable over several
 transports. Each transport is a **channel**. The brain never talks to a transport directly — it
 only ever calls `resolveChannel(chatId)` and speaks through the `Channel` interface.
 

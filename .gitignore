@@ -10,13 +10,8 @@ npm-debug.log*
 .env.*
 !.env.example
 
-# Codex local configuration
-.codex/
-
-/reference
-
-# Local email-index extraction cache (regenerable)
-scripts/.index-cache.json
+# Claude Code local state
+.claude/
 
 # --- bridge plugins (python) ---
 __pycache__/
@@ -29,4 +24,3 @@ web/coverage/
 web/playwright-report/
 web/test-results/
 web/.irises/
-web/irisesprompt/

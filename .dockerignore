@@ -2,15 +2,12 @@
 # from being baked into the image. NOTE: src/**/*.md and src/**/*.txt are KEPT
 # on purpose — `npm run build` copies the agent persona/context files from src.
 .git
-.github
+.claude
 node_modules
 dist
 .env
 .env.*
 !.env.example
-scratch
-reference
-demo.png
 *.log
 npm-debug.log*
 .DS_Store
@@ -24,5 +21,4 @@ web/coverage
 web/playwright-report
 web/test-results
 web/.irises
-web/irisesprompt
 web/*.tsbuildinfo
