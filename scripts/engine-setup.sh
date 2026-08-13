@@ -48,10 +48,14 @@ set_env() {
 get_env() { grep -E "^${1}=" "${2}" 2>/dev/null | head -1 | cut -d= -f2- || true; }
 
 # ── prerequisites ────────────────────────────────────────────────────────────
-command -v node >/dev/null || { echo "node is required (22+)"; exit 1; }
+command -v node >/dev/null || { echo "node is required (22.13+)"; exit 1; }
 command -v npm  >/dev/null || { echo "npm is required"; exit 1; }
+# 22.13 is the floor: Irises's local store uses the builtin node:sqlite, unflagged since 22.13.
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
-[ "$NODE_MAJOR" -ge 22 ] || { echo "Node 22+ required (found $(node -v))"; exit 1; }
+NODE_MINOR="$(node -p 'process.versions.node.split(".")[1]')"
+if [ "$NODE_MAJOR" -lt 22 ] || { [ "$NODE_MAJOR" -eq 22 ] && [ "$NODE_MINOR" -lt 13 ]; }; then
+  echo "Node 22.13+ required (found $(node -v))"; exit 1
+fi
 
 # ══ Revert (bridge mode) ═════════════════════════════════════════════════════
 HERMES_CONFIG="${HERMES_HOME:-$HOME/.hermes}/config.yaml"

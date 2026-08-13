@@ -141,7 +141,7 @@ Full guide, diagrams, and security notes: **[docs/ENGINES.md](docs/ENGINES.md)**
 
 ## 🚀 Quick start
 
-> **Prerequisites:** Node 22+ and at least one LLM key (`ANTHROPIC_API_KEY` and/or
+> **Prerequisites:** Node 22.13+ (the local store uses the builtin `node:sqlite`) and at least one LLM key (`ANTHROPIC_API_KEY` and/or
 > `OPENROUTER_API_KEY`). No database required — the in-memory backend runs infra-free, and no engine
 > is needed just to chat.
 

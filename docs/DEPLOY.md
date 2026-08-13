@@ -67,6 +67,9 @@ $IRISES_HOME/
 - Schema is created automatically on first boot; retention sweeps (hourly/daily/6h) keep
   the store bounded on a small VM.
 - **Backing up Irises = backing up this directory** (the `irises_state` volume in compose).
+  The database runs in WAL mode, so copy it **quiesced**: `docker compose stop app`, copy the
+  volume (all of it — `irises.db` plus any `-wal`/`-shm` siblings), `docker compose start app`.
+  For a hot backup use `sqlite3 irises.db ".backup backup.db"` instead of a raw file copy.
 - `DATA_BACKEND=memory` runs the same code against an ephemeral root — nothing persists
   (used by the test suite and throwaway runs).
 - The daily token caps (`OPS_DAILY_TOKEN_CAP` / `LLM_DAILY_TOKEN_CAP` in `deploy/app.env`)

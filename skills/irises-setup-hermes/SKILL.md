@@ -24,7 +24,7 @@ OpenAI-compatible API server (`API_SERVER_ENABLED`) and the cron REST API.
 The repository ships an idempotent script that performs every step and prints each change before
 making it. Walk the user through these stages, running the script for the mechanical parts:
 
-1. Confirm prerequisites: Node 22+, git, and this hermes installation.
+1. Confirm prerequisites: Node 22.13+ (Irises's local store uses the builtin `node:sqlite`), git, and this hermes installation.
 2. Clone `https://github.com/rivianpratama/irises` into a folder the user picks (default `~/irises`).
 3. From the clone, run: `bash scripts/engine-setup.sh --engine hermes`
    The script (read it first if the user wants — it is short and commented):

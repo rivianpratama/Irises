@@ -23,7 +23,7 @@ RPC using the existing gateway token.
 The repository ships an idempotent script that performs every step and prints each change before
 making it. Walk the user through these stages, running the script for the mechanical parts:
 
-1. Confirm prerequisites: Node 22+, git, and a running OpenClaw gateway (`openclaw gateway status`).
+1. Confirm prerequisites: Node 22.13+ (Irises's local store uses the builtin `node:sqlite`), git, and a running OpenClaw gateway (`openclaw gateway status`).
 2. Clone `https://github.com/rivianpratama/irises` into a folder the user picks (default `~/irises`).
 3. From the clone, run: `bash scripts/engine-setup.sh --engine openclaw`
    The script (read it first if the user wants — it is short and commented):

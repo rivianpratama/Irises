@@ -12,6 +12,15 @@ export type DbDriver = 'sqlite' | 'memory';
 
 export const driver: DbDriver = process.env.DATA_BACKEND === 'memory' ? 'memory' : 'sqlite';
 
+// Boot visibility: an install upgraded from the Supabase era may still carry
+// DATA_BACKEND=memory in its .env — without this line it would run ephemeral
+// silently while the docs promise persistence.
+if (driver === 'memory') {
+  console.warn('[db] DATA_BACKEND=memory — EPHEMERAL storage, nothing persists across restarts. Unset it for the durable local store under IRISES_HOME (default ~/.irises).');
+} else {
+  console.log('[db] driver: sqlite — durable local store under IRISES_HOME (default ~/.irises)');
+}
+
 if (process.env.SUPABASE_URL || process.env.SUPABASE_SERVICE_ROLE_KEY) {
   console.warn('[db] Supabase support was removed — SUPABASE_* env vars are ignored. Data lives under IRISES_HOME (default ~/.irises).');
 }
