@@ -16,14 +16,6 @@ if (process.env.SUPABASE_URL || process.env.SUPABASE_SERVICE_ROLE_KEY) {
   console.warn('[db] Supabase support was removed — SUPABASE_* env vars are ignored. Data lives under IRISES_HOME (default ~/.irises).');
 }
 
-// TEMPORARY migration shim — deleted once every repository is ported off its
-// Supabase branch. Always null, so unported repositories compile (the type keeps
-// their dead branches type-checking) and run their old in-memory fallback.
-import type { SupabaseClient } from '@supabase/supabase-js';
-export function getSupabase(): SupabaseClient | null {
-  return null;
-}
-
 // Filled by src/diagnostics/errorLog.ts at module load — one slot instead of touching the
 // 110+ logDbError call sites, and no import cycle (this module never imports the sink).
 let dbErrorSink: ((scope: string, error: unknown) => void) | null = null;

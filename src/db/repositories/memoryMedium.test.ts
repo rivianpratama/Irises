@@ -1,9 +1,11 @@
-// Run with: npm test   (TZ=UTC tsx --test)
-// Exercises the medium (no-error-margin) memory tier on the in-memory backend: dedupe,
+// Run with: npm test   (TZ=UTC tsx --test — runner pins DATA_BACKEND=memory)
+// Exercises the medium (no-error-margin) memory tier on the MEDIUM.md file store: dedupe,
 // supersede chains, retraction, cap eviction, fact upsert semantics, and the concurrent
 // append regression the legacy prefs-array rebuild used to lose.
 process.env.TZ = 'UTC';
 
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -11,7 +13,7 @@ import {
   retractAllForHandle, addImportantNote, upsertFact,
   MAX_ACTIVE_DIRECTIVES, MAX_ACTIVE_NOTES,
 } from './memoryMedium.js';
-import { mem } from '../memory.js';
+import { memoriesDir } from '../stateDir.js';
 
 let seq = 0;
 function freshHandle(): string {
@@ -128,8 +130,26 @@ test('concurrent same-text appends dedupe to exactly one row', async () => {
   assert.equal((await listMediumActive(h, ['directive'])).length, 1);
 });
 
-test('in-memory rows are per-process (mem map is the dev backend)', async () => {
+test('entries live in MEDIUM.md; retired lineage lands in MEDIUM.archive.md', async () => {
   const h = freshHandle();
-  await addDirective(h, 'anything');
-  assert.ok(mem.memoryMedium.get(h)?.length === 1);
+  const d = await addDirective(h, 'anything');
+  const active = fs.readFileSync(path.join(memoriesDir(h), 'MEDIUM.md'), 'utf8');
+  assert.ok(active.includes('anything'));
+  assert.ok(active.includes(`id=${d!.id}`));
+  await retractEntry(h, d!.id);
+  const archive = fs.readFileSync(path.join(memoriesDir(h), 'MEDIUM.archive.md'), 'utf8');
+  assert.ok(archive.includes('status=retracted'));
+  assert.ok(!fs.readFileSync(path.join(memoriesDir(h), 'MEDIUM.md'), 'utf8').includes('anything'));
+});
+
+test('hand-edited (unannotated) segments are preserved verbatim across rewrites', async () => {
+  const h = freshHandle();
+  await addDirective(h, 'keep me');
+  const p = path.join(memoriesDir(h), 'MEDIUM.md');
+  fs.appendFileSync(p, '\n§\na human scribbled this without an annotation');
+  await addDirective(h, 'second entry');
+  const after = fs.readFileSync(p, 'utf8');
+  assert.ok(after.includes('a human scribbled this without an annotation'));
+  // the hand edit is preserved but never rendered as an entry
+  assert.equal((await listMediumActive(h)).length, 2);
 });

@@ -1,12 +1,14 @@
-// Run with: npm test   (TZ=UTC tsx --test)
-// Exercises the long (versioned markdown doc) memory tier on the in-memory backend:
+// Run with: npm test   (TZ=UTC tsx --test — runner pins DATA_BACKEND=memory)
+// Exercises the long (versioned markdown doc) memory tier on the LONG.md file store:
 // version bumps, per-save revision snapshots, and optimistic-concurrency conflicts.
 process.env.TZ = 'UTC';
 
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getLongDoc, saveLongDoc, listLongRevisions } from './memoryLong.js';
-import { mem } from '../memory.js';
+import { memoriesDir } from '../stateDir.js';
 
 let seq = 0;
 function freshHandle(): string {
@@ -64,8 +66,11 @@ test('two racing writers: exactly one wins, the loser conflicts', async () => {
   assert.equal((await getLongDoc(h))?.version, 2);
 });
 
-test('revisions accrue in the mem store (dev backend)', async () => {
+test('the head doc and revisions land as files under memories/<handle>/', async () => {
   const h = freshHandle();
-  await saveLongDoc(h, 'x', 0, 't');
-  assert.equal(mem.memoryLong.get(h)?.revisions.length, 1);
+  await saveLongDoc(h, '# doc body', 0, 't');
+  const head = fs.readFileSync(path.join(memoriesDir(h), 'LONG.md'), 'utf8');
+  assert.ok(head.startsWith('<!-- irises:long version=1 '));
+  assert.ok(head.endsWith('# doc body'));
+  assert.ok(fs.existsSync(path.join(memoriesDir(h), 'revisions', 'LONG.v0001.md')));
 });
