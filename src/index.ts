@@ -74,13 +74,9 @@ app.get('/health', (_req, res) => {
     timestamp: new Date().toISOString(),
     persona: {
       convo: personaFingerprint(loadContext('convo')),
-      mm: personaFingerprint(loadContext('mm')),
-      ops: personaFingerprint(loadContext('ops')),
       composer: personaFingerprint(loadContext('composer')),
-      autonome: personaFingerprint(loadContext('autonome')),
-      judge: personaFingerprint(loadContext('judge')),
       fallfirm: personaFingerprint(loadContext('fallfirm')),
-      reflexion: personaFingerprint(loadContext('reflexion')),
+      fallfirmProgress: personaFingerprint(loadContext('fallfirm', 'Progress.md')),
     },
   });
 });
