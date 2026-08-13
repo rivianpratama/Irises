@@ -194,6 +194,25 @@ fires, the engine does any work needed and POSTs to Irises, which voices it to y
 - **v1 gap:** reminders require the hermes engine; the OpenClaw cron wiring is pending (its
   `cron.add` RPC payload needs live verification). Everything else works on OpenClaw.
 
+## Memory boundary (Irises ↔ engine)
+
+Two memories exist side by side, on purpose, with a one-way contract:
+
+- **Irises's own memory** — the short/medium/long tiers, profiles and prefs under
+  `IRISES_HOME` (default `~/.irises`): SQLite for machine data, per-handle markdown under
+  `memories/` for the curated tiers. Private to Irises and its agents (`0700` dirs);
+  it is **never** inside the engine's workspace, and no engine code path can write it.
+- **The engine's memory** — whatever the engine keeps for its own sessions (hermes
+  `memories/MEMORY.md`/`USER.md`, OpenClaw's workspace + memory index). Irises never
+  writes engine storage directly. It **asks**: the `update_memory` tool and `/forget me`
+  both send a natural-language request through the chat's engine session (`remember()` in
+  `src/agents/ops/engineBackend.ts`), and the engine's own memory loop decides what to
+  keep, change, or drop.
+
+The one sanctioned reverse flow is *influence, not access*: engine task results land in
+Irises's short tier (and can be promoted by Irises's own tools), but the content passes
+through Irises's pipeline and injection defenses first — Irises decides and writes.
+
 ## Environment reference
 
 | Key | Mode | Meaning |

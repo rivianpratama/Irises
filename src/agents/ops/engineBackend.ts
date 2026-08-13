@@ -57,7 +57,11 @@ export interface EngineBackend {
   createReminder(spec: ReminderSpec): Promise<ReminderRef>;
   listReminders(chatId: string): Promise<ReminderRef[]>;
   cancelReminder(id: string): Promise<boolean>;
-  /** Forward a durable fact to the engine's own memory (scoped to this chat's engine session). */
+  /** ASK the engine to update its own memory (scoped to this chat's engine session). The
+   *  engine owns the decision — Irises never writes engine storage directly, and the same
+   *  channel carries update, correction, and forget requests (see docs/ENGINES.md, "Memory
+   *  boundary"). The reverse direction does not exist: engines have no path into Irises's
+   *  own tiers. */
   remember(chatId: string, agentHandle: string, note: string): Promise<void>;
   probe(): Promise<ProbeResult>;
   /** Bridge mode: deliver a message THROUGH one of the engine's own channel connections

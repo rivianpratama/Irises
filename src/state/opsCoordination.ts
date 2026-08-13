@@ -2,7 +2,7 @@
 // "is research running for this chat right now?" and "did we just delegate this exact ask?".
 //
 // Why in-memory and not durable prefs: this flag must be readable on the VERY NEXT turn (a user
-// types "ok" ~1.5s after we delegate). Routing it through async Supabase prefs loses that
+// types "ok" ~1.5s after we delegate). Routing it through async durable prefs loses that
 // read-after-write race and reproduces the exact bug this exists to kill. It is set SYNCHRONOUSLY
 // at the delegation point (before any await), so the next turn always sees it. Deployment is a
 // single VM, so a process-local map is authoritative. State dies with the VM — which is correct:

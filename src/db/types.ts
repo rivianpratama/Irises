@@ -1,13 +1,13 @@
-// Domain types for the Supabase data layer. Repositories map snake_case DB
-// columns <-> these camelCase shapes at the boundary.
+// Domain types for the local data layer. Repositories map snake_case columns
+// <-> these camelCase shapes at the boundary.
 
 export interface StoredMessage {
   role: 'user' | 'assistant';
   content: string;
   handle?: string; // sender handle (group chats)
-  at?: number;     // epoch ms the message was stored. Single-clock per backend (Supabase: DB
-                   // created_at; in-memory: Date.now()). Used to find messages a user sent
-                   // WHILE a background task ran. Never compare across backends.
+  at?: number;     // epoch ms the message was stored — app clock (single-host storage
+                   // means one clock everywhere). Used to find messages a user sent
+                   // WHILE a background task ran.
 }
 
 export interface UserProfile {

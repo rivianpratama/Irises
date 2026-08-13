@@ -897,9 +897,10 @@ export async function processConvoResult(args: {
         createdAt: Date.now(),
       };
     } else if (call.name === 'update_memory' && handle) {
-      // Silent memory forwarding. The ENGINE owns the long-term user model now (per-chat engine
-      // session memory) — this hands the durable fact over fire-and-forget, so it can coexist with
-      // a research delegation in the same turn.
+      // Silent memory ASK. The ENGINE owns its long-term user model (per-chat engine session
+      // memory) — this requests a reconciliation fire-and-forget (the engine decides what to
+      // keep; Irises never writes engine storage), so it can coexist with a research delegation
+      // in the same turn. Irises's own tiers are written only via its own tools.
       const engine = getEngineBackend();
       const note = String(input.request ?? textToSend);
       if (engine && note.trim()) {

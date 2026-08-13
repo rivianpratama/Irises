@@ -135,10 +135,12 @@ export class OpenClawBackend implements EngineBackend {
   }
 
   async remember(chatId: string, _agentHandle: string, note: string): Promise<void> {
+    // Phrased as a REQUEST — the engine owns its memory and decides how (and whether) to
+    // fold this in; Irises never writes engine storage directly.
     const client = await this.ensureClient();
     try {
       await client.request('agent', {
-        message: `Durable note about this user for your long-term memory (store it; no action needed, no reply beyond OK): ${note}`,
+        message: `Please update your memory about this user with the following, however you see fit — no user-visible action needed, reply OK: ${note}`,
         sessionKey: openclawSessionKey(chatId),
         idempotencyKey: `remember-${chatId}-${note.length}-${Date.now().toString(36)}`,
         timeout: 60,

@@ -152,7 +152,7 @@ export const LLM_JS = `
         + card('fallback rate', M.pct((j.fallbackRate||{}).rate||0), (t.fallbacks||0)+' served by the fallback lane');
 
       var note = document.getElementById('llm-note');
-      if (j.driver === 'memory'){ note.hidden=false; note.textContent='memory backend — no durable ledger'; }
+      if (j.driver === 'memory'){ note.hidden=false; note.textContent='ephemeral backend — ledger resets on restart'; }
       else note.hidden = true;
 
       var hourly = j.hourly||[];

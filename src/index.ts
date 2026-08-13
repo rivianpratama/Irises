@@ -18,6 +18,7 @@ import { bridgeChannel } from './channels/bridge/channel.js';
 import { createBridgeInboundRouter } from './channels/bridge/inboundRouter.js';
 import { voiceOutcome } from './agents/fallfirm/client.js';
 import { ensureChatId } from './db/repositories/memory.js';
+import { startRetentionTimers } from './db/retention.js';
 import { markOpsStart } from './state/opsCoordination.js';
 import { estimateOpsEta } from './agents/etaEstimate.js';
 import { withChatLock } from './state/sendQueue.js';
@@ -859,6 +860,10 @@ app.use(express.static(path.resolve(process.cwd(), 'web/out')));
 app.listen(PORT, () => {
   // Slim boot: no local schedulers or email watchers — the ENGINE owns reminders and mail.
   // Its cron jobs deliver back through POST /api/engine/push, voiced by the Composer.
+  // The only local timers are storage retention sweeps (short-tier expiry, 7d message
+  // windows, ledger age-out, LONG revision caps) + the error/history prunes that arm
+  // inside their own modules.
+  startRetentionTimers();
 
   console.log(`
   Irises — a general, casual, do-anything assistant

@@ -40,7 +40,7 @@ export const OVERVIEW_JS = `
     var fpSrc = JSON.stringify([d, l, j.counters, j.driver, (j.globalEvents||[]).length ? j.globalEvents[j.globalEvents.length-1].id : 0]);
     M.renderIf('ov:all', fpSrc, function(){
       upEl.innerHTML =
-        card('uptime', '<span id="ov-uptime">'+M.esc(M.fmtDur(j.uptimeS))+'</span>', 'driver: '+M.esc(j.driver)+(j.driver==='memory'?' — history/analytics need Supabase':''))
+        card('uptime', '<span id="ov-uptime">'+M.esc(M.fmtDur(j.uptimeS))+'</span>', 'driver: '+M.esc(j.driver)+(j.driver==='memory'?' — ephemeral, resets on restart':''))
         + card('diagnostics', d.enabled?'on':'<span style="color:var(--err)">OFF</span>', (d.bufferEvents||0)+' buffered events \\u00B7 '+(d.liveKeys||0)+' live chats')
         + card('LLM (24h)', M.fmtNum(l.calls)+' calls', M.fmtNum(l.totalTokens)+' tokens \\u00B7 '+l.errors+' errors \\u00B7 '+l.fallbacks+' fallbacks');
 

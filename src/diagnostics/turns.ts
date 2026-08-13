@@ -53,7 +53,7 @@ const taskIndex = new Map<string, Turn>();
 type OnTurnChange = (turn: Turn) => void;
 let onChange: OnTurnChange | null = null;
 
-/** trace.ts registers the persistence hook here (debounced Supabase upsert). */
+/** trace.ts registers the persistence hook here (debounced durable upsert). */
 export function setOnTurnChange(fn: OnTurnChange | null): void {
   onChange = fn;
 }

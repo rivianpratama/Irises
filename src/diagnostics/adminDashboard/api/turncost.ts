@@ -2,7 +2,6 @@ import { Router, Request, Response } from 'express';
 import { getTurns, type Turn } from '../../turns.js';
 import { listFullTurnHistory } from '../../../db/repositories/diagnosticTurnHistory.js';
 import { listUsageInWindow, listUsageForTasks, type UsageRowLite } from '../../../db/repositories/tokenUsage.js';
-import { driver } from '../../../db/client.js';
 import { assembleTurnCards, type AssembledCards } from './turncostAssembly.js';
 import { authed } from '../auth.js';
 import { cached } from '../cache.js';
@@ -12,7 +11,8 @@ import { cached } from '../cache.js';
 // cost comes from the token_usage ledger via task_id + padded-time-window claiming
 // (see turncostAssembly.ts — the ledger has no turn_id by design, nothing is written).
 
-/** App clock (turn timestamps) vs Postgres now() (ledger created_at) skew allowance. */
+/** Skew allowance between turn timestamps and ledger created_at (both app clock now;
+ *  the pad also absorbs debounced persist lag). */
 const CLOCK_PAD_MS = 90_000;
 
 interface TurncostPayload extends AssembledCards {
@@ -31,9 +31,11 @@ async function assemble(key: string, limit: number): Promise<TurncostPayload> {
     .sort((a, b) => a.startedAt - b.startedAt)
     .slice(-limit);
 
-  const usageAvailable = driver !== 'memory';
+  // The ledger exists on both drivers now (the memory driver just resets on restart) —
+  // the field survives for view compatibility.
+  const usageAvailable = true;
   let rows: UsageRowLite[] = [];
-  if (usageAvailable && turns.length) {
+  if (turns.length) {
     const chatId = turns.find(t => t.chatId)?.chatId;
     const scope = key.startsWith('handle:')
       ? { handle: key.slice('handle:'.length) }

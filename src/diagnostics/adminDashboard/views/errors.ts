@@ -126,7 +126,7 @@ export const ERRORS_JS = `
     var note = document.getElementById('err-note');
     if (drv === 'memory'){
       note.hidden = false;
-      note.textContent = 'memory backend \\u2014 in-process ring, cleared on restart';
+      note.textContent = 'ephemeral backend \\u2014 error log resets on restart';
     } else note.hidden = true;
     M.ui.setPill(rows.length+' error rows \\u00B7 '+cur.since, rows.length?'err':null);
   }

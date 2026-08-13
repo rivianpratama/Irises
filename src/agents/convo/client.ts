@@ -15,6 +15,7 @@ import { getLongDoc, saveLongDoc } from '../../db/repositories/memoryLong.js';
 import { buildContextBlock } from '../../memory/dossier.js';
 import { getActiveOps } from '../../state/opsCoordination.js';
 import { getConversation, addMessage, clearConversation, clearUserProfile } from '../../state/conversation.js';
+import { getEngineBackend } from '../ops/engineBackend.js';
 import { timestampLabel } from '../../pipeline/chatTime.js';
 import { hasMedia, type IncomingMedia } from '../../webhook/types.js';
 import { reportError } from '../../diagnostics/errorLog.js';
@@ -86,6 +87,15 @@ export async function chat(
           if (cur?.docMd) await saveLongDoc(h, '', cur.version, 'forget');
         })().catch(err => console.error('[convo] /forget long clear failed', err)),
       ]);
+      // The engine holds its own user model for this chat's session — ASK it to forget too
+      // (same request channel as update_memory; the engine owns the decision). Fire-and-forget:
+      // an engine hiccup must not block the local wipe that already happened.
+      const engine = getEngineBackend();
+      if (engine) {
+        void engine.remember(chatId, h,
+          'The user asked to be forgotten. Please remove or disregard everything you hold in memory about this user.',
+        ).catch(err => console.warn('[convo] /forget engine forget-ask failed', err));
+      }
       const summary = isGroupHandle(h)
         ? "this group's shared memory with you is reset — a fresh start for the whole chat (everyone's personal 1:1 memory is untouched)"
         : 'you forgot everything you knew about them';

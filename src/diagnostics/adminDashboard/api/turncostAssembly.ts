@@ -5,7 +5,7 @@ import { estimateCostUsd } from '../../../llm/budget.js';
 
 // Pure assembly logic for the "Turn cost" view: turn events → chat bubbles, and
 // token_usage rows → per-turn cost, with NO turn_id column in the ledger. Kept
-// free of Express/Supabase so the claiming/parsing rules are unit-testable.
+// free of Express and the data layer so the claiming/parsing rules are unit-testable.
 //
 // Attribution model (read-only, derived on every request):
 //   1. task_id (exact) — delegated Ops/MM/Composer work carries the taskId of the

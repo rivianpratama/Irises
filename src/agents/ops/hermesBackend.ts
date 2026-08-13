@@ -171,12 +171,14 @@ export class HermesBackend implements EngineBackend {
 
   async remember(chatId: string, _agentHandle: string, note: string): Promise<void> {
     // Ride the chat's own engine session: hermes's memory loop persists what lands in-session.
+    // Phrased as a REQUEST — the engine owns its memory and decides how (and whether) to fold
+    // this in; Irises never writes engine storage directly.
     const res = await this.request('/v1/chat/completions', {
       method: 'POST',
       headers: this.headers(chatId),
       body: JSON.stringify({
         model: 'hermes-agent', stream: false,
-        messages: [{ role: 'user', content: `Durable note about this user for your long-term memory (store it; no action needed, no reply beyond OK): ${note}` }],
+        messages: [{ role: 'user', content: `Please update your memory about this user with the following, however you see fit — no user-visible action needed, reply OK: ${note}` }],
       }),
     }, undefined, 60_000);
     await this.throwForStatus(res, 'memory note');

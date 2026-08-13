@@ -10,7 +10,7 @@
 //
 // Process-local by design (single VM), mirroring opsCoordination / inboundGlance: the settle queue and
 // these timestamps live and die with the process, so there is nothing durable to read. App clock only —
-// never compare these against DB `created_at` (Supabase clock), which is a different, unsynced clock.
+// same app clock the local data layer stamps, so comparisons stay coherent.
 //
 // This subsumes the old `lastAssistantSentAt` map: `lastSendAt` is exactly that value.
 

@@ -1,5 +1,5 @@
 // Tiny TTL memo for dashboard API reads, so the client poll loops never hammer
-// Supabase (generalizes the 10s persisted-rows cache the old dashboard had).
+// the data layer (generalizes the 10s persisted-rows cache the old dashboard had).
 // Concurrent callers of a cold key share one in-flight promise.
 
 interface Entry {

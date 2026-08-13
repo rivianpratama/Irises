@@ -25,7 +25,7 @@ export interface ReportedError {
   /** Who was working: convo|ops|fallfirm|pipeline|db|llm|webhook|
    *  process|budget|diagnostics|memory. LLM failures use the CALLING role. */
   source: string;
-  /** What broke — see the category taxonomy in migration 0014. */
+  /** What broke — see the category taxonomy on the error_log table (src/db/sqlite.ts). */
   category: string;
   message?: string;
   err?: unknown;
@@ -57,9 +57,9 @@ type FlushFn = (rows: StoredErrorRow[]) => Promise<boolean>;
 
 let seq = 0;
 const queue: StoredErrorRow[] = [];
-// Also kept on the Supabase backend: the dashboard's memory-mode path reads this ring, and
-// it is the only store when Supabase isn't configured. Holds the SAME objects as the queue,
-// so a fold bumps both at once.
+// The pre-flush live view (getRecentErrors) — errors are visible here the instant they're
+// reported, before the batched flush lands them in the durable log. Holds the SAME objects
+// as the queue, so a fold bumps both at once.
 const ring: StoredErrorRow[] = [];
 // Fingerprints already flushed, with when. The bumped count on a folded-after-flush entry
 // stays local — the durable row keeps the count it was written with; collapsing the storm is

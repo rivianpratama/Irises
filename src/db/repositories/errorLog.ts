@@ -127,7 +127,7 @@ export async function listErrors(params: ListErrorsParams): Promise<StoredErrorR
     }
     const rows = stmt(
       `SELECT ${COLUMNS} FROM error_log WHERE ${where.join(' AND ')}
-       ORDER BY created_at DESC LIMIT ?`
+       ORDER BY created_at DESC, id DESC LIMIT ?`
     ).all(...args, Math.min(Math.max(params.limit ?? 100, 1), 200)) as unknown as Record<string, unknown>[];
     return rows.map(rowToError);
   } catch (error) {
