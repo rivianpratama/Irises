@@ -1,19 +1,15 @@
--- Project Maria — three-tier memory storage (Stage 1 of the memory revamp).
---   memory_short  : 24h coherence tier — every Ops research result, MM media analysis,
---                   and Judge email flag, multi-entry and full-fidelity (replaces the
---                   latest-only prefs.recent_research / pending_email_contexts stashes).
---                   Ephemeral: read-time expiry filter + a swept hard delete is fine here.
+-- Irises — three-tier memory storage.
+--   memory_short  : 24h coherence tier — every research result, media analysis, and
+--                   flagged item, multi-entry and full-fidelity. Ephemeral: read-time
+--                   expiry filter + a swept hard delete is fine here.
 --   memory_medium : weeks–years operational tier — conversationally-learned facts,
 --                   directives, and important notes as first-class rows. Append-mostly
 --                   ledger: rows are SUPERSEDED or RETRACTED, never deleted (the one
---                   sanctioned hard-delete lives in the /forget path, Stage 3).
---                   Replaces the prefs.directives / prefs.important_notes JSONB arrays,
---                   whose read-rebuild-write pattern had a concurrency clobber window;
---                   dedupe is now enforced by unique indexes, not application reads.
---   memory_long   : one free-form markdown doc per user (profile + how Maria should
---                   behave — the future "flexible prompt layer"), with every version
---                   snapshotted into memory_long_revisions. Replaces agent_memory.dossier_md
---                   (kept frozen until Stage 3's Reflexion migration completes).
+--                   sanctioned hard-delete lives in the /forget path). Dedupe is
+--                   enforced by unique indexes, not application reads.
+--   memory_long   : one free-form markdown doc per user (profile + how the assistant
+--                   should behave — the flexible prompt layer), with every version
+--                   snapshotted into memory_long_revisions.
 -- Apply with: supabase db push   (or paste into the SQL editor). Idempotent.
 
 -- ---------------------------------------------------------------------------
@@ -37,8 +33,8 @@ create table if not exists memory_short (
   kind         text not null,               -- 'ops_research' | 'media_analysis' | 'email_flag'
   request      text,                        -- what was asked, verbatim
   content      text not null,               -- full-fidelity summary (app caps at 8000 chars)
-  meta         jsonb not null default '{}', -- taskKind/attempt | emailId/severity/deadline…
-  task_id      text,                        -- OpsTask/MmTask id, or gmail message id for flags
+  meta         jsonb not null default '{}', -- taskKind/attempt | severity/deadline…
+  task_id      text,                        -- task id, or the source message id for flags
   created_at   timestamptz not null default now(),
   expires_at   timestamptz not null default (now() + interval '24 hours')
 );
@@ -47,8 +43,8 @@ create index if not exists idx_memory_short_handle
   on memory_short(agent_handle, created_at desc);
 create index if not exists idx_memory_short_expiry
   on memory_short(expires_at);
--- At-most-once per task/email even when a retrying pipeline re-inserts (the Judge's
--- at-least-once batch loop, an orchestrator retry). Partial so null task_ids never collide.
+-- At-most-once per task even when a retrying pipeline re-inserts. Partial so
+-- null task_ids never collide.
 create unique index if not exists uq_memory_short_task
   on memory_short(agent_handle, kind, task_id)
   where task_id is not null;
@@ -62,11 +58,11 @@ create table if not exists memory_medium (
   id            uuid primary key default gen_random_uuid(),
   agent_handle  text not null,
   kind          memory_medium_kind not null,
-  key           text,                       -- fact slot name (e.g. 'brokerage'); null for directive/note
+  key           text,                       -- fact slot name (e.g. 'comms_style'); null for directive/note
   body          text not null,
   status        memory_medium_status not null default 'active',
   superseded_by uuid references memory_medium(id),
-  source        text not null default 'convo',  -- 'convo' | 'migration' | 'system' | 'reflexion'
+  source        text not null default 'convo',  -- 'convo' | 'migration' | 'system'
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now()
 );
@@ -157,7 +153,7 @@ create table if not exists memory_long_revisions (
   agent_handle text not null,
   version      int  not null,
   doc_md       text not null,
-  written_by   text not null default 'system',  -- 'dossier_llm' | 'migration' | 'reflexion' | 'forget'
+  written_by   text not null default 'system',  -- 'dossier_llm' | 'migration' | 'forget'
   created_at   timestamptz not null default now(),
   primary key (agent_handle, version)
 );
@@ -188,48 +184,3 @@ begin
   return v;
 end;
 $$ language plpgsql;
-
--- ---------------------------------------------------------------------------
--- One-time backfill from agent_memory.prefs (idempotent; safe to re-run).
--- MECHANICAL copies only — the semantic curation of dossier content is Reflexion's
--- first-run job (Stage 3). Directives carry their original uuid ids, so a re-run
--- is a PK-conflict no-op; notes/facts rely on the partial unique indexes the same way.
--- ---------------------------------------------------------------------------
-insert into memory_medium (id, agent_handle, kind, body, source, created_at)
-select (d->>'id')::uuid, am.handle, 'directive', d->>'text', 'migration',
-       case when d->>'createdAt' ~ '^[0-9]+' then to_timestamp((d->>'createdAt')::numeric / 1000.0)
-            else now() end
-from agent_memory am,
-     jsonb_array_elements(coalesce(am.prefs->'directives','[]'::jsonb)) d
-where (d ? 'id') and (d ? 'text') and coalesce(d->>'text','') <> ''
-      and (d->>'id') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-on conflict do nothing;
-
-insert into memory_medium (agent_handle, kind, body, source, created_at)
-select am.handle, 'important_note', n->>'note', 'migration',
-       case when n->>'at' ~ '^[0-9]+' then to_timestamp((n->>'at')::numeric / 1000.0)
-            else now() end
-from agent_memory am,
-     jsonb_array_elements(coalesce(am.prefs->'important_notes','[]'::jsonb)) n
-where (n ? 'note') and coalesce(n->>'note','') <> ''
-on conflict do nothing;
-
-insert into memory_medium (agent_handle, kind, key, body, source)
-select am.handle, 'fact', k.key, am.prefs->>k.key, 'migration'
-from agent_memory am
-cross join (values ('comms_style'),('business_state'),('brokerage'),('commission_split'),
-                   ('market_area'),('preferred_lender'),('preferred_title'),('address_as')) k(key)
-where am.prefs ? k.key
-  and jsonb_typeof(am.prefs->k.key) = 'string'
-  and length(am.prefs->>k.key) > 0
-on conflict do nothing;
-
--- Seed the long doc with the raw legacy dossier so downstream renderers never start
--- sparse; Reflexion's first pass rewrites it properly (and leaves this as revision 1).
-insert into memory_long (agent_handle, doc_md, version)
-select handle, dossier_md, 1 from agent_memory where coalesce(dossier_md,'') <> ''
-on conflict (agent_handle) do nothing;
-
-insert into memory_long_revisions (agent_handle, version, doc_md, written_by)
-select handle, 1, dossier_md, 'migration' from agent_memory where coalesce(dossier_md,'') <> ''
-on conflict do nothing;

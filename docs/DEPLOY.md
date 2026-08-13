@@ -58,12 +58,12 @@ npm run build && npm start
    # remove DATA_BACKEND=memory to use Supabase
    ```
 3. Apply the schema. **SQL Editor → New query**, paste and run **every file in
-   `supabase/migrations/` in filename order** (`0001_init.sql` … `0016_turncost_user_chats.sql`).
+   `supabase/migrations/` in filename order** (`0001_init.sql` … `0003_telemetry.sql`).
    (Or with the Supabase CLI: `supabase link` then `supabase db push`.)
 4. The migrations create all tables and enable RLS with no policies — the service-role
    key is what the server uses.
 5. Optional: enable the `pg_cron` extension if you want DB-side cleanup of expired
-   `messages`/`oauth_state`; otherwise it's harmless to skip.
+   `messages`; otherwise it's harmless to skip.
 
 Without these env vars the app silently falls back to the in-memory store (dev only — data is lost on restart).
 
