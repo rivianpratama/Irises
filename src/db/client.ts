@@ -1,31 +1,27 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+// Storage driver selection + the shared repository error sink.
+//
+//   'sqlite' — the default: durable local storage under IRISES_HOME (stateDir.ts).
+//              Machine tables live in irises.db (sqlite.ts); the curated memory
+//              tiers live as markdown under memories/<handle>/.
+//   'memory' — DATA_BACKEND=memory: the SAME code paths against an ephemeral
+//              root (SQLite ':memory:' + a throwaway temp dir). Nothing survives
+//              the process — tests and zero-residue local runs.
+//
+// Decided once at first import (tests set DATA_BACKEND before their imports).
+export type DbDriver = 'sqlite' | 'memory';
 
-// Driver is decided once at startup by presence of Supabase credentials.
-// Mirrors the original behavior where missing AWS creds => in-memory fallback.
-export type DbDriver = 'supabase' | 'memory';
+export const driver: DbDriver = process.env.DATA_BACKEND === 'memory' ? 'memory' : 'sqlite';
 
-const url = process.env.SUPABASE_URL;
-const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const forcedBackend = process.env.DATA_BACKEND; // 'supabase' | 'memory' (optional override)
-
-export const driver: DbDriver =
-  forcedBackend === 'memory'
-    ? 'memory'
-    : url && serviceKey
-      ? 'supabase'
-      : 'memory';
-
-let _client: SupabaseClient | null = null;
-if (driver === 'supabase') {
-  _client = createClient(url!, serviceKey!, { auth: { persistSession: false } });
-  console.log('[db] Using Supabase Postgres backend');
-} else {
-  console.warn('[db] No Supabase credentials (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY). Using in-memory backend.');
+if (process.env.SUPABASE_URL || process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  console.warn('[db] Supabase support was removed — SUPABASE_* env vars are ignored. Data lives under IRISES_HOME (default ~/.irises).');
 }
 
-/** Returns the Supabase client, or null when running on the in-memory fallback. */
+// TEMPORARY migration shim — deleted once every repository is ported off its
+// Supabase branch. Always null, so unported repositories compile (the type keeps
+// their dead branches type-checking) and run their old in-memory fallback.
+import type { SupabaseClient } from '@supabase/supabase-js';
 export function getSupabase(): SupabaseClient | null {
-  return _client;
+  return null;
 }
 
 // Filled by src/diagnostics/errorLog.ts at module load — one slot instead of touching the
@@ -36,8 +32,8 @@ export function setDbErrorSink(fn: (scope: string, error: unknown) => void): voi
   dbErrorSink = fn;
 }
 
-/** Convenience: true when a transient Supabase error should fall back to memory. */
+/** Repository error funnel: console + telemetry sink; never throws. */
 export function logDbError(scope: string, error: unknown): void {
-  console.error(`[db] ${scope} failed, falling back to in-memory store.`, error);
+  console.error(`[db] ${scope} failed.`, error);
   try { dbErrorSink?.(scope, error); } catch { /* never let telemetry break a repository */ }
 }
