@@ -35,8 +35,8 @@ test('detectCause: timeout flag wins over everything', () => {
   assert.equal(detectCause(mkResult({ status: 'ok', summary: 'a real answer' }), true), 'timeout');
 });
 
-test('detectCause: needs_auth from status', () => {
-  assert.equal(detectCause(mkResult({ status: 'needs_auth', summary: 'I need access to your Gmail to answer that.' }), false), 'needs_auth');
+test('detectCause: needs_auth from the debrief (engine rejected the API key)', () => {
+  assert.equal(detectCause(mkResult({ status: 'error', summary: 'ran into a problem completing that', debrief: mkDebrief({ failure: { cause: 'needs_auth' } }) }), false), 'needs_auth');
 });
 
 test('detectCause: cancelled sentinel from summary', () => {

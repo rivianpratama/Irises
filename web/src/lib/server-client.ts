@@ -19,7 +19,6 @@ export interface WebEvent {
   id?: string; // bubble: stable id (React key + reaction target)
   text?: string; // bubble text
   replyTo?: { message_id: string };
-  effect?: { type: string; name: string };
   state?: "start" | "stop"; // typing
   messageId?: string; // reaction: the message id it decorates
   reaction?: unknown; // reaction payload {type, emoji?}

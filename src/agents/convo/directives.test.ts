@@ -95,9 +95,9 @@ test('no outcome brief carries storage vocabulary for the voicer to pick up', as
 // ── Silent-turn regression: a tool-only update_directives (empty bubbles, no reaction) must never
 // leave the user hanging. The incident: "stop using capitals" saved a directive and sent nothing.
 
-test('tool-only directive success gets a tapback on iMessage (never a silent turn)', async () => {
+test('tool-only directive success gets a tapback (never a silent turn)', async () => {
   __resetOpsCoordination();
-  const a = baseArgs(); // ctx() sets no service → treated as reaction-capable (iMessage/RCS)
+  const a = baseArgs();
   // Empty bubbles + a directive call, exactly the envelope the model produced in the incident.
   const res = makeResult([], [directives('add', { text: 'no capital letters, keep it all lowercase' })]);
   const out = await processConvoResult({ ...a, res, textToSend: 'stop using capitals' });
@@ -106,21 +106,6 @@ test('tool-only directive success gets a tapback on iMessage (never a silent tur
   assert.deepEqual(out.reaction, { type: 'like' }, 'a like tapback acknowledges the saved preference');
   const stored = await listMediumActive(a.handle, ['directive']);
   assert.deepEqual(stored.map(d => d.body), ['no capital letters, keep it all lowercase'], 'the directive actually persisted');
-});
-
-test('tool-only directive success voices a line on SMS (no reactions there)', async () => {
-  __resetOpsCoordination();
-  const a = baseArgs();
-  a.chatContext.service = 'SMS';
-  const res = makeResult([], [directives('add', { text: 'text me only in the morning' })]);
-  const out = await processConvoResult({ ...a, res, textToSend: 'only text me in the mornings' });
-
-  assert.ok(out.text && out.text.trim().length > 0, 'SMS gets a voiced acknowledgment, not a dropped turn');
-  assert.equal(out.reaction, null, 'no reaction on SMS');
-  // Still no storage-vocabulary leak in the voiced floor.
-  for (const banned of ['saved', 'settings', 'preference stored', 'nothing saved']) {
-    assert.ok(!out.text!.toLowerCase().includes(banned), `voiced text leaked "${banned}": ${out.text}`);
-  }
 });
 
 test('a tool-only UPDATE of an existing directive also gets the acknowledgment beat', async () => {

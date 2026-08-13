@@ -74,7 +74,7 @@ test('a tapped reply silences the gap section (explicit target wins)', () => {
 });
 
 test('single stale message → BEFORE claim, send count, react license, closure + answer lines', () => {
-  const out = renderArrivalGap(gap(2), false, 'iMessage');
+  const out = renderArrivalGap(gap(2), false);
   assert.match(out, /Timing note — their message is OLDER/);
   assert.match(out, /typed BEFORE the last 2 messages you sent/);
   assert.match(out, /already answers or moots it, do NOT answer it again/);
@@ -83,16 +83,8 @@ test('single stale message → BEFORE claim, send count, react license, closure 
 });
 
 test('singular count reads "1 message" (not "1 messages")', () => {
-  const out = renderArrivalGap(gap(1), false, 'iMessage');
+  const out = renderArrivalGap(gap(1), false);
   assert.match(out, /the last 1 message you sent/);
-});
-
-test('SMS drops the reaction license for a brief-ack-or-silence one', () => {
-  const out = renderArrivalGap(gap(2), false, 'SMS');
-  assert.match(out, /Timing note/);
-  assert.ok(!out.includes('send_reaction'), 'no reaction tool on SMS');
-  assert.ok(!out.includes('tapback'), 'no tapback wording on SMS');
-  assert.match(out, /fold a brief ack into your reply only if it needs one, or let it pass silently/);
 });
 
 test('burst: names only the stale [msg N]s, and offers re-targeted reactions', () => {
@@ -102,7 +94,7 @@ test('burst: names only the stale [msg N]s, and offers re-targeted reactions', (
     { receivedAt: NOW - 6 * MIN, sendsAfterArrival: 1 },
     { receivedAt: NOW - 1 * MIN, sendsAfterArrival: 0 },
   ];
-  const out = renderArrivalGap(arrivals, false, 'iMessage');
+  const out = renderArrivalGap(arrivals, false);
   assert.match(out, /\[msg 1\] and \[msg 2\] were typed BEFORE the last 2 messages/);
   assert.ok(!out.includes('[msg 3]'), 'the non-stale message is not named');
   assert.match(out, /set `re` to its number on send_reaction/);
@@ -111,7 +103,7 @@ test('burst: names only the stale [msg N]s, and offers re-targeted reactions', (
 // ── buildSystemPrompt: which order-read section shows ─────────────────────────
 
 const ctxWith = (over: Partial<ChatContext>): ChatContext => ({
-  isGroupChat: false, participantNames: [], chatName: null, service: 'iMessage', ...over,
+  isGroupChat: false, participantNames: [], chatName: null, ...over,
 });
 
 test('gapped turn: the Timing-note section REPLACES the reply-order line', () => {

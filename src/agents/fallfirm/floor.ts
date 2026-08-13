@@ -12,7 +12,7 @@ import { pick } from '../textVariants.js';
 import type { TaskKind } from '../types.js';
 
 /** What happened, from the user's point of view — the thing Fallfirm (or this floor) must relay. */
-export type OutcomeKind = 'confirmed' | 'failed' | 'needs_auth' | 'nothing_found';
+export type OutcomeKind = 'confirmed' | 'failed' | 'nothing_found';
 
 export interface Outcome {
   kind: OutcomeKind;
@@ -20,8 +20,6 @@ export interface Outcome {
   summary: string;
   /** Hard facts that must be relayed EXACTLY if voiced (a time, an amount) — fidelity. */
   facts?: string;
-  /** A read-only consent URL, relayed verbatim on its own line (needs_auth). */
-  consentUrl?: string;
   /** Optional steer for the failure ("ask them for the timing again"). */
   nextStep?: string;
   /** What the user originally asked, for seamless continuity. */
@@ -29,17 +27,13 @@ export interface Outcome {
 }
 
 /**
- * Last-resort line for when Fallfirm's own LLM call fails. Generic and in-voice; carries the one
- * fidelity-critical datum (the consent URL) but never fabricates specifics. Returns legacy bubble text.
+ * Last-resort line for when Fallfirm's own LLM call fails. Generic and in-voice; never fabricates
+ * specifics. Returns legacy bubble text.
  */
 export function fallfirmFloor(o: Outcome): string {
   switch (o.kind) {
     case 'confirmed':
       return o.facts ? `done 👍\n---\n${o.facts}` : 'done 👍';
-    case 'needs_auth':
-      return o.consentUrl
-        ? `that one needs your gmail\n---\ntap to connect, read-only:\n${o.consentUrl}`
-        : 'that one needs your gmail connected first';
     case 'nothing_found':
       return "couldn't track that one down\n---\ni can come at it another way though";
     case 'failed':
@@ -97,17 +91,6 @@ export function stillOnItText(): string {
   return pick(STILL_ON_IT_POOL);
 }
 
-const GMAIL_CONNECT_POOL: readonly string[] = [
-  'tap the link to connect your gmail (read-only) and i can dig in',
-  'connect your gmail there, read-only, and i can get into it',
-  "that link connects your gmail, read-only, then i'm in",
-];
-
-/** Instant prompt when a consent link was generated but the model wrote no text of its own. */
-export function gmailConnectPrompt(): string {
-  return pick(GMAIL_CONNECT_POOL);
-}
-
 // Plain, no-context heartbeat variants — used when the task carries no address/deal hint, or on the
 // (roughly 40%) rolls that skip the hint even when one's available, so leaning on the hint never
 // becomes its own predictable pattern.
@@ -161,6 +144,3 @@ export function deeperLookText(task?: HeartbeatHint): string {
   return pick(DEEPER_LOOK_GENERIC);
 }
 
-/** Label floor for the whimsical text that accompanies an iMessage effect, when the tiny classifier
- *  that writes it fails. Mostly the effect's own name — no model turn worth spending on the fallback. */
-export const effectLabelFloor = (effectName: string): string => `${effectName}!`;

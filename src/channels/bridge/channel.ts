@@ -31,9 +31,9 @@ export function noteBridgeChat(chatId: string, meta: { isGroup: boolean; name?: 
 
 export const bridgeChannel: Channel = {
   kind: 'bridge',
-  caps: { effects: false, threading: true, reactions: false, groupOps: false, contactCard: false },
+  caps: { threading: true, reactions: false, groupOps: false, contactCard: false },
 
-  async sendMessage(chatId, text, _effect, replyTo) {
+  async sendMessage(chatId, text, replyTo) {
     const parsed = parseBridgeChatId(chatId);
     if (!parsed) throw new Error(`[bridge] malformed bridge chatId "${chatId}"`);
     const engine = getEngineBackend();

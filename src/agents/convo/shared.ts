@@ -43,8 +43,6 @@ import type { ResolvedReply } from '../../state/replyResolution.js';
 
 export type StandardReactionType = 'love' | 'like' | 'dislike' | 'laugh' | 'emphasize' | 'question';
 export type ReactionType = StandardReactionType | 'custom';
-export type MessageEffect = { type: 'screen' | 'bubble'; name: string };
-export type MessageService = 'iMessage' | 'SMS' | 'RCS';
 // `re` (optional) is the 1-based [msg N] index of the burst message to tapback instead of the latest —
 // index.ts resolves it to a channel message id via resolveReactionTarget, falling back to the latest.
 export type Reaction = { type: StandardReactionType; re?: number } | { type: 'custom'; emoji: string; re?: number };
@@ -53,10 +51,8 @@ export interface ChatContext {
   isGroupChat: boolean;
   participantNames: string[];
   chatName: string | null;
-  incomingEffect?: { type: 'screen' | 'bubble'; name: string };
   senderHandle?: string;
   senderProfile?: UserProfile | null;
-  service?: MessageService;
   incomingMessageId?: string;  // the inbound message id, so a delegated follow-up can thread back to it
   // Thread-aware tapped-reply resolution (state/replyResolution.ts): the earlier message they tapped
   // reply on, resolved to one of Irises's bubbles, the user's own thread root, or an honest unresolved.
@@ -86,7 +82,6 @@ export interface AudioInput { url: string; mimeType: string }
 export interface ChatResponse {
   text: string | null;
   reaction: Reaction | null;
-  effect: MessageEffect | null;
   renameChat: string | null;
   rememberedUser: { name?: string; fact?: string; isForSender?: boolean } | null;
   generatedImage: { url: string; prompt: string } | null;
@@ -97,7 +92,7 @@ export interface ChatResponse {
 
 export function emptyExtras() {
   return {
-    reaction: null, effect: null, renameChat: null, rememberedUser: null,
+    reaction: null, renameChat: null, rememberedUser: null,
     generatedImage: null, groupChatIcon: null, removeMember: null,
     delegatedTask: null,
   };
@@ -421,13 +416,11 @@ export function coerceReactionIndex(raw: unknown): number | undefined {
 export function renderArrivalGap(
   arrivals: { receivedAt: number; sendsAfterArrival: number }[] | undefined,
   hasTapped: boolean,
-  service?: MessageService,
 ): string {
   if (hasTapped || !arrivals?.length) return '';
   const staleIdx = arrivals.map((a, i) => (a.sendsAfterArrival > 0 ? i : -1)).filter(i => i >= 0);
   if (!staleIdx.length) return '';
 
-  const canReact = service !== 'SMS';
   const isBurst = arrivals.length > 1;
   // The oldest stale message sits behind the most sends; use that as the "last N" figure (an upper
   // bound for the younger ones — the note is qualitative and tells the model to check per-message).
@@ -446,13 +439,9 @@ export function renderArrivalGap(
   }
 
   lines.push('So before you answer it:');
-  if (canReact) {
-    lines.push('- If anything you\'ve sent since already answers or moots it, do NOT answer it again — react to that message instead (send_reaction), or add nothing for it.');
-    if (isBurst) lines.push('- To tapback a specific one, set `re` to its number on send_reaction.');
-  } else {
-    lines.push('- If anything you\'ve sent since already answers or moots it, do NOT answer it again — fold a brief ack into your reply only if it needs one, or let it pass silently.');
-  }
-  lines.push(`- A few-words ack closes the loop on what was on their screen THEN — one tiny beat${canReact ? ' or a tapback' : ''}, never new work.`);
+  lines.push('- If anything you\'ve sent since already answers or moots it, do NOT answer it again — react to that message instead (send_reaction), or add nothing for it.');
+  if (isBurst) lines.push('- To tapback a specific one, set `re` to its number on send_reaction.');
+  lines.push('- A few-words ack closes the loop on what was on their screen THEN — one tiny beat or a tapback, never new work.');
   lines.push('- Whatever still stands unanswered, answer normally — as of what they were asking then.');
 
   return lines.join('\n');
@@ -527,10 +516,6 @@ export function buildSystemPrompt(
     dyn.push(`## Group chat\nYou're in ${chatName} with: ${participants}. Address people by name; keep replies tight.`);
   }
 
-  if (chatContext?.incomingEffect) {
-    dyn.push(`## Incoming effect\nThe user sent a ${chatContext.incomingEffect.type} effect "${chatContext.incomingEffect.name}". Acknowledge if relevant.`);
-  }
-
   // Tapped-reply context. `repliedTo` is the thread-aware resolution; the deprecated `repliedToText`
   // (kind 'assistant' only) is still honored so an in-flight turn during the soak keeps working.
   const repliedTo: ResolvedReply | undefined = chatContext?.repliedTo
@@ -569,13 +554,6 @@ export function buildSystemPrompt(
     dyn.push(`## They sent several texts this turn — quote the ones that need it\n${dataTag('incoming_messages', lines)}\n\nTo natively quote one of these, add a \`"re": N\` field to the bubble that picks it up, where N is that message's number. The app turns it into a quote of that message sitting above your bubble; N never appears in your text. Quote SPARINGLY, like a person does: set \`re\` on the bubble that picks up a specific message (especially when you switch between their questions, or when a bubble alone would be ambiguous about which one it answers), then leave the follow-up bubbles about it with no \`re\`. Don't tag every bubble — that's unnatural. If nothing's ambiguous, use no \`re\` at all. Never write the reference in words ("you asked about X") — the quote does that. Always lead the bubble with the thing itself.\nThe same numbers work for a reaction: set \`re\` on send_reaction to tapback one specific message of these (e.g. one that's already been answered) instead of their latest.`);
   }
 
-  if (chatContext?.service) {
-    let platform = `## Platform\nThis conversation is over ${chatContext.service}.`;
-    if (chatContext.service === 'SMS') platform += ' Plain SMS, no reactions or effects, keep it simple.';
-    else if (chatContext.service === 'RCS') platform += ' RCS, reactions and typing work, no screen effects.';
-    dyn.push(platform);
-  }
-
   // Current time — so schedule_automation can turn "tomorrow 9am" / "in 30 min"
   // into an absolute fire_at, and pick the right timezone for recurring crons.
   // Anchored to the user's stored agent_tz when known (fallback: the Chicago default).
@@ -602,7 +580,7 @@ export function buildSystemPrompt(
     // suppresses both order-read sections (their "landing on your latest run" claim is exactly the
     // misattribution we're avoiding). The per-kind section above already told the model what to do.
     const tapped = hasTappedReply(chatContext);
-    const gapLine = renderArrivalGap(chatContext?.arrivals, tapped, chatContext?.service);
+    const gapLine = renderArrivalGap(chatContext?.arrivals, tapped);
     if (gapLine) dyn.push(gapLine);
     else {
       const orderLine = renderReplyOrder(history, incomingText, tapped);
@@ -718,11 +696,11 @@ export async function callConvoLLM(req: LlmRequest): Promise<LlmResult> {
 }
 
 /**
- * Process an LLM result into a ChatResponse: fold text, run every tool call (reactions, effects,
- * remember_user, delegate_to_ops, delegate_to_mm, gmail consent/disconnect, scheduling, directives),
- * apply the never-go-silent fallbacks, and persist history + refresh the dossier. `media` is this
- * turn's attachments — the delegate_to_mm handler forwards them to MM (media_scope "this_turn") or
- * recalls the stashed earlier file (media_scope "earlier").
+ * Process an LLM result into a ChatResponse: fold text, run every tool call (reactions,
+ * remember_user, delegate_to_ops, scheduling, directives), apply the never-go-silent fallbacks,
+ * and persist history + refresh the dossier. `media` is this turn's attachments — the delegate
+ * handler forwards them to the engine (media_scope "this_turn") or recalls the stashed earlier file
+ * (media_scope "earlier").
  */
 export async function processConvoResult(args: {
   res: LlmResult;
@@ -744,7 +722,6 @@ export async function processConvoResult(args: {
   const normalizedText = reply.legacyText;
   const textParts: string[] = normalizedText ? [normalizedText] : [];
   let reaction: Reaction | null = null;
-  let effect: MessageEffect | null = null;
   let renameChat: string | null = null;
   let rememberedUser: ChatResponse['rememberedUser'] = null;
   let removeMember: string | null = null;
@@ -777,8 +754,6 @@ export async function processConvoResult(args: {
       const re = coerceReactionIndex(input.re);
       if (input.type === 'custom' && input.emoji) reaction = { type: 'custom', emoji: String(input.emoji), ...(re != null ? { re } : {}) };
       else if (input.type !== 'custom') reaction = { type: input.type as StandardReactionType, ...(re != null ? { re } : {}) };
-    } else if (call.name === 'send_effect') {
-      effect = { type: input.effect_type as 'screen' | 'bubble', name: String(input.effect) };
     } else if (call.name === 'rename_group_chat') {
       renameChat = String(input.name);
     } else if (call.name === 'remove_member') {
@@ -1068,19 +1043,14 @@ export async function processConvoResult(args: {
   if (!textResponse && noteConfirmation) textResponse = await voiceOutcome(noteConfirmation, chatId, handle);
   // A directive/preference that saved with no bubble of its own must still land an acknowledgment —
   // a bare tool-only turn is what left the user hanging (the update_directives silent-success bug).
-  // A tapback is the lightest honest ack, so prefer it; SMS has no reactions, so voice a short line
-  // there instead. Only when the model produced NEITHER text NOR a reaction of its own — its own
-  // beat always wins. A reaction-only turn records `[reacted with like]`, which also breaks the
-  // self-perpetuating loop (next turn no longer sees a dangling unresolved ask).
+  // A tapback is the lightest honest ack. Only when the model produced NEITHER text NOR a reaction
+  // of its own — its own beat always wins. A reaction-only turn records `[reacted with like]`, which
+  // also breaks the self-perpetuating loop (next turn no longer sees a dangling unresolved ask).
   if (directiveActed && !textResponse && !reaction) {
-    if (chatContext?.service === 'SMS') {
-      textResponse = await voiceOutcome({ kind: 'confirmed', summary: "you've taken that on — it's their way from here on" }, chatId, handle);
-    } else {
-      reaction = { type: 'like' };
-    }
+    reaction = { type: 'like' };
   }
   // Tool-outcome notes (list / schedule-cancel / directive). Fallfirm is fallback-only here too:
-  // - Correction outcomes (failed / nothing_found / needs_auth) mean the model's optimistic text
+  // - Correction outcomes (failed / nothing_found) mean the model's optimistic text
   //   ("got it, cancelled") is WRONG — the voiced correction REPLACES it, never sits next to it.
   // - When the model already spoke and nothing went wrong, only raw `facts` (data the model can't
   //   author, e.g. the automations list) are appended verbatim — no Fallfirm re-voicing on top.
@@ -1116,8 +1086,6 @@ export async function processConvoResult(args: {
     // Stamp the holding line's canonical timestamp on the task (single-clock). The composer uses
     // it to find messages the user sends WHILE Ops runs, so the late reply can nod to them.
     if (delegatedTask) delegatedTask.holdingAt = holdingAt;
-  } else if (effect) {
-    await addMessage(chatId, 'assistant', `[sent ${effect.name} effect]`);
   } else if (reaction) {
     const d = reaction.type === 'custom' ? (reaction as { type: 'custom'; emoji: string }).emoji : reaction.type;
     await addMessage(chatId, 'assistant', `[reacted with ${d}]`);
@@ -1138,14 +1106,13 @@ export async function processConvoResult(args: {
   }
 
   // Tripwire: a turn that produced NOTHING the user or the thread can see — no bubble, no reaction,
-  // no effect, no action, no consent link — is the silent-turn failure mode. Legal code paths can
-  // still reach it (a tool-only envelope whose tool has no acknowledgment floor was the original
-  // bug). Leave a diagnostic event so the dashboard surfaces the next variant instead of it
-  // vanishing without a trace.
-  if (!textResponse && !reaction && !effect && !renameChat && !rememberedUser && !removeMember && !delegatedTask) {
+  // no action — is the silent-turn failure mode. Legal code paths can still reach it (a tool-only
+  // envelope whose tool has no acknowledgment floor was the original bug). Leave a diagnostic event
+  // so the dashboard surfaces the next variant instead of it vanishing without a trace.
+  if (!textResponse && !reaction && !renameChat && !rememberedUser && !removeMember && !delegatedTask) {
     console.warn('[convo] turn produced no user-visible output — nothing sent');
     record({ type: 'event', label: 'convo:silent_turn', chatId, handle });
   }
 
-  return { text: textResponse, reaction, effect, renameChat, rememberedUser, removeMember, delegatedTask, generatedImage: null, groupChatIcon: null };
+  return { text: textResponse, reaction, renameChat, rememberedUser, removeMember, delegatedTask, generatedImage: null, groupChatIcon: null };
 }

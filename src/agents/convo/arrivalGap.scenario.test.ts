@@ -40,7 +40,7 @@ function seedSends() {
 }
 
 const ctx = (arrivals: ChatContext['arrivals']): ChatContext => ({
-  isGroupChat: false, participantNames: [], chatName: null, service: 'iMessage',
+  isGroupChat: false, participantNames: [], chatName: null,
   senderHandle: '+15550001111', arrivals,
 });
 

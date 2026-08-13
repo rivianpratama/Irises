@@ -19,7 +19,6 @@ export interface WebEvent {
   id?: string;
   text?: string;
   replyTo?: { message_id: string };
-  effect?: { type: string; name: string };
   // typing
   state?: 'start' | 'stop';
   // reaction
@@ -99,17 +98,16 @@ export function webClientCount(chatId: string): number {
 
 export const webChannel: Channel = {
   kind: 'web',
-  // No iMessage effects or group ops in a browser; threading + reactions render as UI affordances.
-  caps: { effects: false, threading: true, reactions: true, groupOps: false, contactCard: false },
+  // No group ops in a browser; threading + reactions render as UI affordances.
+  caps: { threading: true, reactions: true, groupOps: false, contactCard: false },
 
-  async sendMessage(chatId, text, effect, replyTo) {
+  async sendMessage(chatId, text, replyTo) {
     const id = 'web-out-' + randomUUID();
     push(chatId, {
       type: 'bubble',
       id,
       text,
       replyTo: replyTo ? { message_id: replyTo.message_id } : undefined,
-      effect: effect ? { type: effect.type, name: effect.name } : undefined,
     });
     // Return a SendMessageResponse-shaped result so recordSentBubble()/lookupSentBubble() work across channels.
     return {

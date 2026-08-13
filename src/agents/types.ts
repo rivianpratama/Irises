@@ -98,7 +98,7 @@ export function isReflexionTask(task: OpsTask): task is ReflexionTask {
   return task.kind === 'memory_update';
 }
 
-export type OpsStatus = 'ok' | 'not_found' | 'needs_auth' | 'rate_limited' | 'error';
+export type OpsStatus = 'ok' | 'not_found' | 'rate_limited' | 'error';
 
 // Machine-readable reason a run failed, so the orchestrator's triage step can reason about it
 // (src/agents/ops/triage.ts) WITHOUT re-inspecting prose. Set by runTask on every failing path.
@@ -109,7 +109,7 @@ export type OpsFailureCause =
   | 'fidelity_suppressed'  // groundOrDowngrade withheld the answer (NO RESULT)
   | 'empty_miss'           // finished clean but found nothing usable
   | 'tool_errors'          // most tool calls came back error-shaped
-  | 'needs_auth'           // Gmail not connected — user action, never escalate
+  | 'needs_auth'           // engine rejected the API key — operator config, no retry helps
   | 'cancelled'            // user killed the run
   | 'budget';              // token budget exhausted — escalating would light a bigger fire
 
@@ -155,8 +155,7 @@ export interface OpsResult {
   status: OpsStatus;
   summary: string;          // accurate plain text; Convo re-voices this
   data?: Record<string, unknown>;
-  authUrl?: string;         // set when status === 'needs_auth'
-  debrief?: OpsDebrief;     // what the run did + why it failed; fuels triage + escalation
+  debrief?: OpsDebrief;     // what the run did + why it failed; fuels triage
 }
 
 /**

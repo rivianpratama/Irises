@@ -4,20 +4,10 @@
 // OpenClaw/Hermes bridge) through batching, the agents, and the send path. Not tied to any one
 // engine platform.
 
-export interface MessageEffect {
-  type: 'screen' | 'bubble';
-  name: string;
-}
-
 export interface ReplyTo {
   message_id: string;
   part_index?: number;
 }
-
-// The "texting service" a turn arrived over. Optional persona hint: the surviving inbound doors
-// (web/CLI, bridge) leave it unset, so it is effectively always undefined today — kept so a turn
-// that does carry it can still tune reply phrasing.
-export type MessageService = 'iMessage' | 'SMS' | 'RCS';
 
 export interface ExtractedMedia {
   url: string;

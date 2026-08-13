@@ -33,13 +33,12 @@ test('single message: combinedText is byte-identical to the plain text (non-burs
   assert.equal(r.manifest.length, 1);
 });
 
-test('takes the EARLIEST non-null reply-target / effect across the burst', () => {
+test('takes the EARLIEST non-null reply-target across the burst', () => {
   const r = mergeBurst([
     msg({ text: 'a', messageId: 'm1', incomingReplyTo: { message_id: 'x' } }),
-    msg({ text: 'b', messageId: 'm2', incomingReplyTo: { message_id: 'y' }, incomingEffect: { type: 'bubble', name: 'slam' } }),
+    msg({ text: 'b', messageId: 'm2', incomingReplyTo: { message_id: 'y' } }),
   ]);
   assert.deepEqual(r.incomingReplyTo, { message_id: 'x' });          // earliest wins
-  assert.deepEqual(r.incomingEffect, { type: 'bubble', name: 'slam' }); // only m2 had one
 });
 
 test('earliestReceivedAt is the min arrival time (or 0 when none are stamped)', () => {

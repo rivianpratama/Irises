@@ -425,7 +425,7 @@ export function renderFlexibleBlock(
 // instructions — the boundary above), and Reflexion would have to curate around fake rows.
 // Rendered as rigid wrapper guidance instead, each unknown slot carries its own go-learn-it
 // nudge and disappears automatically the moment the real value lands. Long-tier identity
-// slots lead (the priority); an empty operational picture gets the Gmail-connection nudge.
+// slots lead (the priority); an empty operational picture gets its own fill-over-time note.
 
 interface DiscoverySlot {
   known: (data: UserMemoryData, factView: Record<string, unknown>) => boolean;
@@ -460,8 +460,8 @@ const TEXTURE_FACTS_ENOUGH = 3;
 /**
  * The what-you-don't-know-YET section for the front line: open slots with their tradecraft,
  * the long-game guidance for collecting the personal texture that becomes the long-term
- * profile, and the Gmail nudge when the operational picture is empty. Returns '' once the
- * profile has matured (all slots known, texture banked, operational picture non-empty).
+ * profile, and the fill-over-time note when the operational picture is empty. Returns '' once
+ * the profile has matured (all slots known, texture banked, operational picture non-empty).
  */
 export function renderDiscoveryBlock(data: UserMemoryData): string {
   const prefs = data.memory?.prefs ?? {};
@@ -528,9 +528,8 @@ export function renderDiscoveryBlock(data: UserMemoryData): string {
   if (mediumEmpty) {
     lines.push(
       '',
-      'Their operational picture (notes, working habits, ongoing plans) is empty too. If their Gmail',
-      "isn't connected yet, that connection is what fills it — the onboarding beat covers the",
-      'ask; if it is connected, the picture fills itself as you work together.',
+      'Their operational picture (notes, working habits, ongoing plans) is empty too — it fills',
+      'itself as you work together; every real task teaches you something durable.',
     );
   }
   lines.push(

@@ -76,7 +76,7 @@ export function createBridgeInboundRouter(deps: { enqueueInbound: EnqueueInbound
     noteBridgeChat(chatId, { isGroup: b.is_group === true, name: b.chat_name || undefined });
     record({ type: 'event', chatId, label: 'bridge:inbound', detail: { engine: b.engine, platform, isGroup: b.is_group === true, chars: text.length, media: (b.media ?? []).length } });
     const replyTo = b.reply_to_id != null ? { message_id: String(b.reply_to_id) } : undefined;
-    deps.enqueueInbound(deps.agentClient, chatId, from, text, String(b.message_id ?? `eng-in-${Date.now().toString(36)}`), media, undefined, replyTo);
+    deps.enqueueInbound(deps.agentClient, chatId, from, text, String(b.message_id ?? `eng-in-${Date.now().toString(36)}`), media, replyTo);
     res.status(202).json({ ok: true, chatId });
   });
 

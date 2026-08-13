@@ -16,7 +16,9 @@ const URL_RE = /\bhttps?:\/\/\S+|\bwww\.\S+\.\S+/i;
 const STRONG: RegExp[] = [
   // Explicit retrieval verbs — "look it up", "find X", "search for", "pull up", "check my …".
   /\b(look\s+(?:it|this|that|them|up)|look up|pull up|pull the|search (?:for|up|my|the|through)|find (?:me |the |my |an? )?\S|check (?:my|the|on)|dig up|track down)\b/i,
-  // References to the user's OWN connected data (their inbox / email / messages / calendar / account).
+  // References to the user's OWN connected data (their inbox / email / messages / calendar /
+  // account). "gmail" stays: it's the user's own vocabulary for their inbox, still a correct
+  // delegation trigger even though the engine owns the account access.
   /\b(my|the)\s+(inbox|email|emails|gmail|messages?|calendar|schedule|account|order|invoice|subscription)\b/i,
   // Retrieval-history questions answerable only from their records ("did I get X", "has Y replied").
   /\b(did (?:i|we)\b|has\b[^?]*\b(responded|replied|sent|arrived)|when did (?:i|we)\b)\b/i,

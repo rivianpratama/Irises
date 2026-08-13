@@ -14,19 +14,6 @@ export const REACTION_TOOL: LlmToolDef = {
   },
 };
 
-export const EFFECT_TOOL: LlmToolDef = {
-  name: 'send_effect',
-  description: 'Add an iMessage effect to your text. ONLY when explicitly asked. You must also write text.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      effect_type: { type: 'string', enum: ['screen', 'bubble'] },
-      effect: { type: 'string', enum: ['confetti', 'fireworks', 'lasers', 'sparkles', 'celebration', 'hearts', 'love', 'balloons', 'happy_birthday', 'echo', 'spotlight', 'slam', 'loud', 'gentle', 'invisible_ink'] },
-    },
-    required: ['effect_type', 'effect'],
-  },
-};
-
 export const REMEMBER_USER_TOOL: LlmToolDef = {
   name: 'remember_user',
   description: "Save NEW info about the user — their name and what they do, and the personal color that makes them feel known: a project and what they call it (\"fixing up a lake cabin, calls it 'the shack'\"), a current arc or goal (\"training for a marathon\"), a habit, a hard personal rule, a running joke. Only for genuinely new info. You MUST also write a text response.",

@@ -1,4 +1,4 @@
-// The waiting voice — Irises's "still on it" / "on it" / "that's in your gmail" reassurance while a
+// The waiting voice — Irises's "still on it" / "on it" reassurance while a
 // delegated Ops look is still running. Built EXACTLY like the Composer relay (composeFollowUp) and
 // the outcome voicer (voiceOutcome): a static persona (fallfirm/Progress.md) + a <prompt> dynamic
 // block + a JSON bubble anchor + a voice-only window of the recent thread. The one thing it re-voices
@@ -18,7 +18,7 @@ import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
 import { timestampLabel } from '../../pipeline/chatTime.js';
 import type { LlmMessage } from '../../llm/types.js';
 import type { TaskKind } from '../types.js';
-import { holdingFloor, stillOnItText, gmailConnectPrompt, heartbeatText, deeperLookText } from './floor.js';
+import { holdingFloor, stillOnItText, heartbeatText, deeperLookText } from './floor.js';
 
 // Recent turns prepended for VOICE/continuity ONLY — never a fact source (this voice carries no
 // facts). This is the window that lets it see its own last holding line / ping so it never repeats.
@@ -41,7 +41,7 @@ export interface VoiceInstantEta {
 }
 
 export interface VoiceInstantOpts {
-  kind: 'holding' | 'still_on_it' | 'heartbeat' | 'progress' | 'gmail_connect' | 'deeper_look';
+  kind: 'holding' | 'still_on_it' | 'heartbeat' | 'progress' | 'deeper_look';
   taskKind?: TaskKind;
   request?: string;
   addressHint?: string;
@@ -95,11 +95,6 @@ export function buildProgressBrief(opts: VoiceInstantOpts, userCtx: string): str
       if (eta) lines.push(`this deeper pass buys more time — you MAY tell them it needs ${eta.phrase} ("this one's a deeper dig, give me a few more minutes" energy), loosely and never a precise number.`);
       lines.push('you already told them you were on it (see the thread). do NOT repeat that line. one short, warm beat that says this one is taking more digging than usual and you are staying on it. frame it as thoroughness, NEVER as anything failing or going wrong on your end or theirs. one short bubble.');
       break;
-    case 'gmail_connect':
-      lines.push("## Where the look is: it's in their own gmail, which isn't connected yet");
-      if (req) lines.push(`what they wanted: "${req}"`);
-      lines.push('a read-only connect link is sent as its OWN bubble right after your text — you never type the url. point them to it warmly, like a 10-second favor to themselves.');
-      break;
   }
   lines.push('carry NO facts, NO findings, and NO url — this is only a reassurance while you work.');
 
@@ -120,7 +115,6 @@ function floorFor(opts: VoiceInstantOpts): string {
     case 'holding': return opts.taskKind ? holdingFloor(opts.taskKind) : 'on it, one sec';
     case 'still_on_it': return stillOnItText();
     case 'heartbeat': return heartbeatText({ addressHint: opts.addressHint, dealHint: opts.dealHint });
-    case 'gmail_connect': return gmailConnectPrompt();
     case 'progress': return stillOnItText();
     case 'deeper_look': return deeperLookText({ addressHint: opts.addressHint, dealHint: opts.dealHint });
   }

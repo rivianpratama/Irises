@@ -60,10 +60,10 @@ function combineSignals(user: AbortSignal | undefined, internal: AbortSignal): A
 }
 
 // What this turn actually is, from the agent's point of view (never the machinery's):
-// a real answer to hand over, a request that needs their Gmail, a look that came back with nothing
-// usable, or a transient snag (timeout / rate limit / crash) where the ASK was fine but the run
-// failed — that last one must NOT read as the miss re-aim ("which one did you mean?").
-type ComposeMoment = 'answer' | 'auth' | 'miss' | 'transient' | 'needs_info';
+// a real answer to hand over, a look that came back with nothing usable, or a transient snag
+// (timeout / rate limit / crash) where the ASK was fine but the run failed — that last one must
+// NOT read as the miss re-aim ("which one did you mean?").
+type ComposeMoment = 'answer' | 'miss' | 'transient' | 'needs_info';
 
 // Ops's own "I came up empty" fallback strings (see ops/client.ts). When a summary IS one of
 // these — or is empty — there is no real answer to hand over, so it's a miss even though the
@@ -77,7 +77,6 @@ const OPS_NON_ANSWERS = new Set([
 ]);
 
 function classifyResult(result: OpsResult): ComposeMoment {
-  if (result.status === 'needs_auth') return 'auth';
   const s = (result.summary ?? '').trim();
   // error/rate_limited = the run FAILED (crash, timeout, provider cap), not "nothing found" — voice
   // as a transient snag, distinct from the miss re-aim. EXCEPT the vision "couldn't read the photo"
@@ -122,9 +121,7 @@ async function composeFollowUp(
   const attempt = task.attempt ?? 1;
 
   let instruction: string;
-  if (moment === 'auth') {
-    instruction = `this one lives in their own gmail, which isn't hooked up yet. tell them warm and short, like a 10-second favor to themselves. put this link on its own line, exactly as is, nothing else on that line:\n${result.authUrl}`;
-  } else if (moment === 'needs_info') {
+  if (moment === 'needs_info') {
     // Triage found the ask is genuinely under-specified — only they can fill it in. Same two-strike
     // marker as a miss (their reply flows back as the refinement), but the question is AIMED: ask for
     // exactly these details. Framed as Irises mid-look needing a steer, never as anything failing.
@@ -277,9 +274,7 @@ async function composeFollowUp(
     // here (raw ANSWER/SOURCE/FLAGS); Fallfirm gets a description of the SITUATION, not the facts —
     // for 'answer' the real facts are already stashed in recent_research and answered on the re-ask.
     let outcome: Outcome;
-    if (moment === 'auth') {
-      outcome = { kind: 'needs_auth', summary: 'this one lives in their own gmail, which isn’t hooked up yet', consentUrl: result.authUrl, originalRequest: task.request };
-    } else if (moment === 'needs_info') {
+    if (moment === 'needs_info') {
       const fields = (extras.missingFields ?? []).filter(Boolean).join('; ');
       outcome = { kind: 'nothing_found', summary: `you need one specific thing from them to finish: ${fields}`, nextStep: 'ask for exactly that, naturally, as your own question', originalRequest: task.request };
     } else if (moment === 'miss') {
@@ -424,10 +419,10 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
     let moment = classifyResult(result);
     let triage: TriageDecision | undefined;
 
-    // ── Triage + one-shot escalation ─────────────────────────────────────────
-    // Only for failing outcomes (a real answer / auth prompt is already good). Triage reasons about
-    // the cause; an escalate verdict runs ONE second look on the stronger model with an enriched brief.
-    if (moment !== 'answer' && moment !== 'auth') {
+    // ── Triage ───────────────────────────────────────────────────────────────
+    // Only for failing outcomes (a real answer is already good). Triage reasons about the cause;
+    // a retry verdict runs ONE cheap same-model second attempt.
+    if (moment !== 'answer') {
       const cause = detectCause(result, timedOut);
       // Only a genuine empty miss needs the LLM splitter; every other cause is deterministic.
       triage = cause === 'empty_miss' ? await splitMiss(result, task) : decide(cause, task);
@@ -484,7 +479,7 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
         // escalate block below consumes, an INFO_HOLE still earns a targeted ask_user, and a fresh
         // transient error gives up. detectCause(result, false): a timed-out/failed retry kept the original
         // 'transient' result, so this only re-triages a retry that genuinely ran and came back soft.
-        if (moment !== 'answer' && moment !== 'auth' && !isOpsCancelled(task.chatId, task.id)) {
+        if (moment !== 'answer' && !isOpsCancelled(task.chatId, task.id)) {
           const retryCause = detectCause(result, false);
           triage = retryCause === 'empty_miss' ? await splitMiss(result, retryTask) : decide(retryCause, retryTask);
         }
@@ -509,15 +504,6 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
     if (isOpsCancelled(task.chatId, task.id)) {
       record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:cancelled', detail: { request: task.request } });
       return;
-    }
-
-    // Slim: needs_auth no longer mints a local Gmail consent link (that whole flow moved to the
-    // engine, which manages its own account access). If an engine ever reports needs_auth without
-    // a link, classifyResult already routes it to the auth beat with whatever authUrl it carried.
-    if (result.status === 'needs_auth' && !result.authUrl) {
-      // No local auth to offer — voice it as a transient snag rather than a dead-end auth prompt.
-      result = { ...result, status: 'error', summary: 'ran into a problem completing that' };
-      moment = classifyResult(result);
     }
 
     const attempt = task.attempt ?? 1;

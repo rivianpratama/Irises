@@ -57,7 +57,7 @@ export function canRetry(task: OpsTask): boolean {
  */
 export function detectCause(result: OpsResult, timedOut: boolean): OpsFailureCause {
   if (timedOut) return 'timeout';
-  if (result.status === 'needs_auth') return 'needs_auth';
+  if (result.debrief?.failure?.cause === 'needs_auth') return 'needs_auth';
   const s = (result.summary ?? '').trim().toLowerCase();
   if (s === 'cancelled') return 'cancelled';
   const fail = result.debrief?.failure?.cause;
@@ -79,7 +79,7 @@ export function decide(cause: OpsFailureCause, task: OpsTask): TriageDecision {
     ({ cause, action, deterministic: true, ...extra });
 
   switch (cause) {
-    case 'needs_auth':   // user must connect Gmail — the auth moment handles it, no model fixes it
+    case 'needs_auth':   // engine rejected the API key — operator config; no retry helps
     case 'cancelled':    // user asked for silence
       return d('none');
     case 'budget':

@@ -40,7 +40,6 @@ function buildOutcomeBrief(o: Outcome, userMemory: string, timingLine?: string):
   ];
   if (timingLine) lines.push(timingLine);
   if (o.facts) lines.push(`Exact details to relay word-for-word (never round or reword these): ${o.facts}`);
-  if (o.consentUrl) lines.push(`Read-only consent link — put it on its OWN line, exactly as-is: ${o.consentUrl}`);
   if (o.nextStep) lines.push(`A next move to leave in their hands — say it as something you can do or that's within reach, never as a "want me to?" question: ${o.nextStep}`);
   if (o.originalRequest) lines.push(`What they asked, for continuity: "${o.originalRequest}"`);
 

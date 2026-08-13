@@ -1,7 +1,7 @@
 import { callLLM } from '../../llm/callLLM.js';
 import { transcribeAudio } from '../../llm/transcribe.js';
 import {
-  REACTION_TOOL, EFFECT_TOOL, REMEMBER_USER_TOOL, DELEGATE_TO_OPS_TOOL,
+  REACTION_TOOL, REMEMBER_USER_TOOL, DELEGATE_TO_OPS_TOOL,
   RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL, SET_PREFERENCE_TOOL,
   SCHEDULE_AUTOMATION_TOOL, LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL, CANCEL_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL,
   UPDATE_MEMORY_TOOL,
@@ -21,13 +21,13 @@ import { reportError } from '../../diagnostics/errorLog.js';
 import type { LlmMessage, LlmToolDef } from '../../llm/types.js';
 import { buildSystemPrompt, convoPersonaChars, processConvoResult, formatHistory, emptyExtras, callConvoLLM, annotateTappedReply } from './shared.js';
 import { voiceOutcome } from '../fallfirm/client.js';
-import { effectLabelFloor, helpText } from '../fallfirm/floor.js';
+import { helpText } from '../fallfirm/floor.js';
 import type { ChatContext, ChatResponse, Reaction } from './shared.js';
 
 // Shared front-line types/helpers live in ./shared.js. Re-export the types so existing imports of
 // `./convo/client.js` still resolve.
 export type {
-  StandardReactionType, ReactionType, MessageEffect, MessageService, Reaction,
+  StandardReactionType, ReactionType, Reaction,
   ChatContext, ImageInput, AudioInput, ChatResponse,
 } from './shared.js';
 
@@ -96,16 +96,15 @@ export async function chat(
 
   const history = await getConversation(chatId);
   // Two identities ride every turn: `sender` (the person texting — per-person facilities like
-  // Gmail, profiles, automations) and `handle` (WHOSE MEMORY this turn reads/writes). They are
+  // profiles and automations) and `handle` (WHOSE MEMORY this turn reads/writes). They are
   // the same in a 1:1; in a GROUP chat the memory identity is the group's own fresh
   // `group:<chatId>` pseudo-handle, so no member's personal memory ever loads into (or is
   // written from) a group conversation.
   const sender = chatContext?.senderHandle;
   const handle = memoryHandle(chatContext, chatId);
   if (handle && !isGroupHandle(handle)) {
-    // 1:1 only: prefs.chat_id is a proactive SEND target (email flags, sweeper) and the daily
-    // Reflexion row points its reads at this chat — a group turn must repoint neither, or the
-    // member's private email surfacing lands in the room and their nightly curation reads it.
+    // 1:1 only: prefs.chat_id is a proactive SEND target (engine push deliveries) — a group turn
+    // must not repoint it, or a member's private delivery lands in the room.
     void ensureChatId(handle, chatId); // so engine-initiated pushes can reach them
   }
   const [contextBlock, agentTz] = handle
@@ -143,7 +142,7 @@ export async function chat(
   if (textToSend) await addMessage(chatId, 'user', textToSend, chatContext?.senderHandle);
 
   const tools: LlmToolDef[] = [
-    REACTION_TOOL, EFFECT_TOOL, REMEMBER_USER_TOOL, DELEGATE_TO_OPS_TOOL, SET_PREFERENCE_TOOL,
+    REACTION_TOOL, REMEMBER_USER_TOOL, DELEGATE_TO_OPS_TOOL, SET_PREFERENCE_TOOL,
     SCHEDULE_AUTOMATION_TOOL, LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL, CANCEL_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL,
     UPDATE_MEMORY_TOOL,
   ];
@@ -216,20 +215,6 @@ export async function getGroupChatAction(message: string, sender: string, chatId
     // saying why. Reported so the mute is visible.
     reportError({ source: 'convo', category: 'classifier_failure', severity: 'warn', err: error, chatId });
     return { action: 'ignore' };
-  }
-}
-
-export async function getTextForEffect(effectName: string, chatId?: string): Promise<string> {
-  try {
-    const res = await callLLM({
-      role: 'classify',
-      maxTokens: 60,
-      messages: [{ role: 'user', content: `Write a very short, warm message (under 10 words) to send with a ${effectName} iMessage effect. Just the message.` }],
-      trace: { chatId, label: 'classify:effect' },
-    });
-    return res.text || effectLabelFloor(effectName);
-  } catch {
-    return effectLabelFloor(effectName);
   }
 }
 

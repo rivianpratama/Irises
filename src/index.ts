@@ -82,16 +82,14 @@ app.get('/health', (_req, res) => {
 });
 
 // Types for debounce queue
-import { IncomingMedia, MessageEffect, ReplyTo, MessageService, hasMedia, emptyMedia } from './webhook/types.js';
+import { IncomingMedia, ReplyTo, hasMedia, emptyMedia } from './webhook/types.js';
 
 interface PendingMessage {
   from: string;
   text: string;
   messageId: string;
   media: IncomingMedia;
-  incomingEffect?: MessageEffect;
   incomingReplyTo?: ReplyTo;
-  service?: MessageService;
   receivedAt: number;   // epoch ms this message was enqueued — used for reply-gap detection
 }
 
@@ -104,7 +102,6 @@ type Reaction = { type: 'love' | 'like' | 'dislike' | 'laugh' | 'emphasize' | 'q
 interface AgentChatResult {
   text: string | null;
   reaction: Reaction | null;
-  effect: { type: 'screen' | 'bubble'; name: string } | null;
   renameChat: string | null;
   rememberedUser: { name?: string; fact?: string; isForSender?: boolean } | null;
   generatedImage: { url: string; prompt: string } | null;
@@ -116,17 +113,16 @@ interface AgentChatResult {
 export interface AgentClient {
   chat: (chatId: string, userMessage: string, media: IncomingMedia, chatContext?: unknown) => Promise<AgentChatResult>;
   getGroupChatAction: (message: string, sender: string, chatId: string) => Promise<{ action: 'respond' | 'react' | 'ignore'; reaction?: Reaction }>;
-  getTextForEffect: (effectName: string, chatId?: string) => Promise<string>;
   generateImage: (prompt: string) => Promise<string | null>;
 }
 
 // ── Channel-routed outbound wrappers ─────────────────────────────────────────
 // Every outbound call resolves its transport from the chatId prefix (channels/registry.ts), so the
 // SAME send path below speaks over the web/CLI debug channel (SSE) or the engine bridge with no
-// change. Optional ops (effects, reactions, group ops, contact card) are guarded by the channel's
-// caps, so a channel that can't do one simply skips it instead of throwing.
-const sendMessage = (chatId: string, text: string, effect?: MessageEffect, replyTo?: ReplyTo, media?: MediaAttachment[]) =>
-  resolveChannel(chatId).sendMessage(chatId, text, effect, replyTo, media);
+// change. Optional ops (reactions, group ops, contact card) are guarded by the channel's caps, so
+// a channel that can't do one simply skips it instead of throwing.
+const sendMessage = (chatId: string, text: string, replyTo?: ReplyTo, media?: MediaAttachment[]) =>
+  resolveChannel(chatId).sendMessage(chatId, text, replyTo, media);
 const startTyping = (chatId: string) => resolveChannel(chatId).startTyping(chatId);
 const stopTyping = (chatId: string) => resolveChannel(chatId).stopTyping(chatId);
 const markAsRead = (chatId: string) => resolveChannel(chatId).markAsRead(chatId);
@@ -276,9 +272,7 @@ async function processPendingChat(chatId: string) {
           merged.combinedText,
           merged.lastMessageId,
           merged.media,
-          merged.incomingEffect,
           merged.incomingReplyTo,
-          merged.service,
           merged.incomingMessageIds,
           merged.manifest,
           merged.earliestReceivedAt,
@@ -351,7 +345,6 @@ function onTick(chatId: string) {
 }
 
 interface SendBubbleOpts {
-  effectForLast?: MessageEffect;  // an iMessage effect attaches only to the final text bubble
   replyToFirst?: ReplyTo;         // thread-reply attaches only to the first bubble (fallback when no targets)
   targets?: (ReplyTo | undefined)[]; // per-bubble native-reply targets, aligned by bubble index (overrides replyToFirst)
   record?: boolean;               // append the joined text to history (default true)
@@ -447,12 +440,7 @@ async function sendBubbles(chatId: string, rawBubbles: string[], opts: SendBubbl
       await holdTyping(chatId, typingDelayMs(text, i === 0), !isLast);
       await waitForUserQuiet(chatId);
     }
-    const sent = await sendMessage(
-      chatId,
-      text,
-      isLast ? opts.effectForLast : undefined,
-      replyTo,
-    );
+    const sent = await sendMessage(chatId, text, replyTo);
     // Remember this bubble by its channel message id so a later inbound reply_to can be resolved
     // back to what Irises said. `replyTo?.message_id` is the anchor this bubble was threaded to (an
     // inbound id) — the join key when a later tapped reply collapses to that thread root.
@@ -501,7 +489,7 @@ async function sendFollowUp(chatId: string, content: SpeakContent, opts: SpeakOp
 // the turn fold in messages that arrive while it WAITS for the chat mouth (see the drain block
 // inside the critical section below); `batch` must be the same array the pending-inbound glance
 // reads (pending.inFlightBatch), so drained texts stay visible to out-of-band voicers.
-async function processMessage(agentClient: AgentClient, chatId: string, from: string, text: string, messageId: string, media: IncomingMedia, incomingEffect?: MessageEffect, incomingReplyTo?: ReplyTo, service?: MessageService, incomingMessageIds: string[] = [], manifest: { text: string; handle: string; receivedAt: number }[] = [], earliestReceivedAt = 0, lateArrivals?: { batch: PendingMessage[]; drain: () => PendingMessage[] }) {
+async function processMessage(agentClient: AgentClient, chatId: string, from: string, text: string, messageId: string, media: IncomingMedia, incomingReplyTo?: ReplyTo, incomingMessageIds: string[] = [], manifest: { text: string; handle: string; receivedAt: number }[] = [], earliestReceivedAt = 0, lateArrivals?: { batch: PendingMessage[]; drain: () => PendingMessage[] }) {
 
   const start = Date.now();
   console.log(`[main] Processing message from ${from}`);
@@ -611,8 +599,6 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
       text = remerged.combinedText;
       messageId = remerged.lastMessageId;
       media = remerged.media;
-      incomingEffect = remerged.incomingEffect;
-      service = remerged.service;
       incomingMessageIds = remerged.incomingMessageIds;
       manifest = remerged.manifest;
       earliestReceivedAt = remerged.earliestReceivedAt;
@@ -632,10 +618,8 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
     isGroupChat,
     participantNames,
     chatName: chatInfo.display_name,
-    incomingEffect,
     senderHandle: from,
     senderProfile,
-    service,
     incomingMessageId: messageId,
     repliedTo,
     // Deprecated alias kept for the soak — 'assistant' only; every reader prefers `repliedTo`.
@@ -648,9 +632,9 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
     arrivals,
   });
   turnOut = out;
-  const { text: responseText, reaction, effect, renameChat, rememberedUser, generatedImage, groupChatIcon, removeMember, delegatedTask } = out;
+  const { text: responseText, reaction, renameChat, rememberedUser, generatedImage, groupChatIcon, removeMember, delegatedTask } = out;
   console.log(`[timing] agent: ${Date.now() - start}ms`);
-  console.log(`[debug] responseText: ${responseText ? `"${responseText.substring(0, 50)}..."` : 'null'}, effect: ${effect ? JSON.stringify(effect) : 'null'}, renameChat: ${renameChat || 'null'}, generatedImage: ${generatedImage ? 'yes' : 'null'}, removeMember: ${removeMember || 'null'}`);
+  console.log(`[debug] responseText: ${responseText ? `"${responseText.substring(0, 50)}..."` : 'null'}, renameChat: ${renameChat || 'null'}, generatedImage: ${generatedImage ? 'yes' : 'null'}, removeMember: ${removeMember || 'null'}`);
   // Send reaction if agent wants to. On a burst the model may target a specific [msg N] via `re` (e.g.
   // tapback the one message a later send already answered); resolveReactionTarget maps it to that id,
   // falling back to the latest message when there's no valid target.
@@ -675,13 +659,8 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
     }
   }
 
-  // Send text response if there is one (with optional effect)
+  // Send text response if there is one
   let finalText = responseText;
-  if (!finalText && effect) {
-    console.log(`[main] Agent sent effect without text, getting message...`);
-    finalText = await agentClient.getTextForEffect(effect.name, chatId);
-    console.log(`[timing] effect text followup: ${Date.now() - start}ms`);
-  }
 
   // If agent renamed chat but didn't send text, Fallfirm voices the confirmation (group chats only)
   if (!finalText && renameChat && isGroupChat) {
@@ -725,7 +704,6 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
     // recorded the assistant turn, so don't double-record here (record: false).
     if (bubbles.length > 0) {
       await sendBubbles(chatId, bubbles, {
-        effectForLast: !generatedImage ? (effect ?? undefined) : undefined,
         targets,
         record: false,
       });
@@ -741,7 +719,7 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
         await new Promise(resolve => setTimeout(resolve, 300));
         // Record a placeholder so a reply tapped on the image bubble resolves to something meaningful
         // (this path bypasses sendBubbles, hence the explicit recordSentBubble).
-        const sentImg = await sendMessage(chatId, '', effect ?? undefined, undefined, [{ url: imageUrl }]);
+        const sentImg = await sendMessage(chatId, '', undefined, [{ url: imageUrl }]);
         if (sentImg?.message?.id) void recordSentBubble(chatId, sentImg.message.id, `[you sent a generated image: ${generatedImage.prompt.slice(0, 80)}]`);
         await addMessage(chatId, 'assistant', `[generated an image: ${generatedImage.prompt.substring(0, 50)}...]`);
         console.log(`[timing] generateImage + sendImage: ${Date.now() - start}ms`);
@@ -771,7 +749,7 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
     }
 
     const threaded = anchorFirstTo || targets.some(Boolean);
-    const extras = [effect && 'effect', threaded && 'thread', generatedImage && 'image', groupChatIcon && 'icon', removeMember && 'removeMember'].filter(Boolean).join(', ');
+    const extras = [threaded && 'thread', generatedImage && 'image', groupChatIcon && 'icon', removeMember && 'removeMember'].filter(Boolean).join(', ');
     console.log(`[timing] total: ${Date.now() - start}ms (${extras || 'text only'})`);
   } else if (reaction) {
     console.log(`[main] Reaction-only response (saved to history for context)`);
@@ -809,9 +787,7 @@ export function enqueueInbound(
   text: string,
   messageId: string,
   media: IncomingMedia,
-  incomingEffect?: MessageEffect,
   incomingReplyTo?: ReplyTo,
-  service?: MessageService,
 ): void {
   if (!pendingChats.has(chatId)) {
     pendingChats.set(chatId, {
@@ -819,7 +795,7 @@ export function enqueueInbound(
     });
   }
   const pending = pendingChats.get(chatId)!;
-  pending.messages.push({ from, text, messageId, media, incomingEffect, incomingReplyTo, service, receivedAt: Date.now() });
+  pending.messages.push({ from, text, messageId, media, incomingReplyTo, receivedAt: Date.now() });
 
   // Index this inbound message's id → text so a LATER tapped reply that the transport collapses to
   // the thread root (this user's own message) resolves to what they said. Sits HERE, in the single

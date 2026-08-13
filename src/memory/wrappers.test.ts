@@ -223,7 +223,7 @@ test('every matrix agent produces a parseable, preamble-led render', () => {
 
 // ── Discovery scaffold (the blank-user "template", rendered as rigid guidance) ─
 
-test('a blank user gets the discovery scaffold: slot tradecraft + long-game texture + Gmail nudge', () => {
+test('a blank user gets the discovery scaffold: slot tradecraft + long-game texture + fill-over-time note', () => {
   const out = renderUserMemory('convo', baseData({ profile: null }), NOW);
   assert.ok(out.includes("## What you don't know about them YET"));
   // Slot tradecraft: signals + elicitation moves, not bare labels.
@@ -244,7 +244,7 @@ test('a blank user gets the discovery scaffold: slot tradecraft + long-game text
   assert.ok(out.includes('BANK every solid fact'));
   assert.ok(out.includes('remember_user with fact='));
   assert.ok(out.includes('Noticing is charm; showing your work is surveillance'));
-  assert.ok(out.includes("If their Gmail\nisn't connected yet")); // empty operational picture → connection nudge
+  assert.ok(out.includes('ongoing plans) is empty too — it fills\nitself as you work together')); // empty operational picture → fill-over-time note
   assert.ok(out.includes('YOUR homework, never theirs to see'));
   // The scaffold sits ABOVE the flexible block; the ladder keeps the recency anchor.
   assert.ok(out.indexOf("## What you don't know") < out.indexOf('## Long-term memory'));
@@ -282,7 +282,7 @@ test('slots filled but no personal texture yet → only the long-game section re
   assert.ok(out.includes("## What you don't know about them YET"));
   assert.ok(out.includes('### Reading them between the lines')); // texture still thin (0 profile facts)
   assert.ok(!out.includes('their BROKERAGE: unknown')); // no open slots listed
-  assert.ok(!out.includes("If their Gmail\nisn't connected yet")); // operational picture non-empty
+  assert.ok(!out.includes('is empty too — it fills')); // operational picture non-empty
 });
 
 test('the discovery scaffold is Convo-only; the never-say-blank rule reaches every agent', () => {

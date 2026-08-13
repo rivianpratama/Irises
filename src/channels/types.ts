@@ -6,7 +6,7 @@
 // bridge (engine-fronted chats). The concrete transport is resolved per-chat from the chatId prefix
 // — see registry.ts (`web:*` → web, `eng:*` → bridge). The brain never imports a channel directly;
 // it only ever calls resolveChannel(chatId).
-import type { MessageEffect, ReplyTo } from '../webhook/types.js';
+import type { ReplyTo } from '../webhook/types.js';
 
 // ── Channel data shapes ──────────────────────────────────────────────────────
 // The chat / message / reaction types the Channel interface is built on. Transport-neutral: web and
@@ -60,10 +60,9 @@ export type Reaction =
 export type ChannelKind = 'web' | 'bridge';
 
 // What a given transport can do. Optional Channel methods are called only when the matching cap is
-// true, so a channel that can't (say) render message effects or do group ops simply advertises false
-// and the send path skips that decoration instead of throwing.
+// true, so a channel that can't (say) do group ops simply advertises false and the send path skips
+// that decoration instead of throwing.
 export interface ChannelCaps {
-  effects: boolean;      // rich screen/bubble message effects
   threading: boolean;    // native reply-to quoting
   reactions: boolean;    // tapback / message reactions
   groupOps: boolean;     // rename / icon / remove participant
@@ -79,7 +78,6 @@ export interface Channel {
   sendMessage(
     chatId: string,
     text: string,
-    effect?: MessageEffect,
     replyTo?: ReplyTo,
     media?: MediaAttachment[],
   ): Promise<Partial<SendMessageResponse>>;
