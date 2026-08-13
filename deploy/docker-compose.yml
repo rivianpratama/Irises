@@ -1,12 +1,12 @@
 # Runs Irises on a single VM behind Caddy (which gives it automatic HTTPS).
-# - `app`   : your container, pulled from Artifact Registry. Internal only.
+# - `app`   : your container, pulled from any registry (or docker-loaded onto the box). Internal only.
 # - `caddy` : public entry point on 80/443; terminates TLS and proxies to the app.
 # Values are read from /opt/irises/.env on the VM (see env.vm.example). Never commit that .env.
-# Memory limits keep a leak in one container from taking down the whole 1 GB e2-micro.
+# Memory limits keep a leak in one container from taking down a small 1 GB VM.
 
 services:
   app:
-    image: ${IMAGE}                 # set in .env, e.g. us-central1-docker.pkg.dev/PROJECT/irises/irises:latest
+    image: ${IMAGE}                 # set in .env, e.g. ghcr.io/<you>/irises:latest
     restart: unless-stopped
     env_file:
       - .env        # VM-only: secrets + this-deployment values (IMAGE / URLs / keys)

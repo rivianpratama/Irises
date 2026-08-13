@@ -7,9 +7,9 @@
 - **Node 22+** and npm.
 - **Anthropic** API key, **OpenRouter** API key (fallback + voice transcription).
 - **Supabase** project (free tier is fine).
-- A public HTTPS host for production (the GCP VM path in §5 handles this with Caddy).
+- A public HTTPS host for production (any small VM running Docker — §5 handles this with Caddy).
 - Optionally, an **engine** (OpenClaw or hermes-agent) for email/reminders/deep work — see
-  `docs/ENGINES.md`. Gmail, OAuth, and push webhooks live on the engine side, not in this app.
+  `docs/ENGINES.md`. Email, OAuth, and push webhooks live on the engine side, not in this app.
 
 ---
 
@@ -73,24 +73,56 @@ Without these env vars the app silently falls back to the in-memory store (dev o
 ```
 TRANSCRIBE_MODEL=google/gemini-2.5-flash
 # per-agent model config lives in deploy/app.env: <AGENT>_PROVIDER (anthropic|openrouter) +
-# <AGENT>_MODEL (Anthropic slug) + <AGENT>_MODEL_OPENROUTER (OpenRouter slug) for CONVO / OPS /
-# CLASSIFY / AUTONOME / JUDGE. Web search + PDF work on both providers; on OpenRouter they need a
-# tools-capable model (supported_parameters includes "tools"). PDF engine: OPENROUTER_PDF_ENGINE.
+# <AGENT>_MODEL (Anthropic slug) + <AGENT>_MODEL_OPENROUTER (OpenRouter slug) for CONVO /
+# CLASSIFY / FALLFIRM. Deep research has no model here — it runs on your engine's model.
+# PDF engine: OPENROUTER_PDF_ENGINE.
 ```
 
 ---
 
-## 5. Deploy to a GCP Compute Engine VM
+## 5. Deploy to a VM
 
-Deployment is fully automated. A single Compute Engine VM (e2-micro free-tier, or
-e2-small) runs the app and **Caddy** as **Docker containers** via `docker compose`. Images
-are built by **GitHub Actions** and pushed to **Artifact Registry**; every push to `main`
-auto-deploys over an **IAP SSH tunnel** (`docker compose pull && docker compose up -d --wait`).
-All config/secrets live in a single **`/opt/irises/.env`** (chmod 600) read by Docker Compose.
-The app listens on **PORT 8080**; Caddy terminates HTTPS (automatic Let's Encrypt) for a
-`<VM_IP>.nip.io` host or a real domain and reverse-proxies to `app:8080`.
+Any small VM running Docker works (1 GB RAM is enough with the compose memory limits). The
+stack is two containers via `docker compose`: the app and **Caddy**, which terminates HTTPS
+(automatic Let's Encrypt) for a `<VM_IP>.nip.io` host or a real domain and reverse-proxies
+to `app:8080`. All secrets live in a single **`/opt/irises/.env`** (chmod 600) read by
+Docker Compose; the committed non-secret baseline is `deploy/app.env`.
 
-For the full runbook see the repo-root **DEPLOY.md**.
+1. Build and ship the image:
+   ```bash
+   docker build -t irises:latest .
+   # push to any registry the VM can pull from (ghcr.io/<you>/irises:latest, Docker Hub, …),
+   # or skip the registry entirely: docker save irises:latest | gzip > irises.tar.gz, scp it
+   # to the VM, and docker load < irises.tar.gz there.
+   ```
+2. On the VM, create `/opt/irises/` and copy in `deploy/docker-compose.yml`,
+   `deploy/Caddyfile`, and `deploy/app.env`.
+3. Create `/opt/irises/.env` from `deploy/env.vm.example`: set `IMAGE` to your image ref,
+   `SITE_ADDRESS` to `<VM_IP>.nip.io` or your domain, and fill in the API keys.
+   `chmod 600 /opt/irises/.env`. Open ports 80/443 in the host firewall.
+4. Start it:
+   ```bash
+   cd /opt/irises && docker compose up -d --wait
+   ```
+5. Optional — a systemd unit so the stack returns after a reboot:
+   ```ini
+   # /etc/systemd/system/irises.service
+   [Unit]
+   Description=Irises (docker compose)
+   Requires=docker.service
+   After=docker.service network-online.target
+   [Service]
+   Type=oneshot
+   RemainAfterExit=yes
+   WorkingDirectory=/opt/irises
+   ExecStart=/usr/bin/docker compose up -d
+   ExecStop=/usr/bin/docker compose down
+   [Install]
+   WantedBy=multi-user.target
+   ```
+   Then `systemctl daemon-reload && systemctl enable irises`.
+
+To ship an update: rebuild + push the image, then `docker compose pull && docker compose up -d --wait` on the VM.
 
 ---
 

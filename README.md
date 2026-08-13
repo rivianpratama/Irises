@@ -253,13 +253,11 @@ overrides. The essentials:
 | `<ROLE>_PROVIDER` · `<ROLE>_MODEL` · `<ROLE>_MODEL_OPENROUTER` · `<ROLE>_MAX_TOKENS` · `<ROLE>_EFFORT` · `<ROLE>_THINKING` | Per-role model routing and reasoning knobs (see below). |
 | `OPS_TASK_TIMEOUT_MS` · `OPS_RETRY_ENABLED` · `OPS_PROGRESS_*` · `OPS_MAX_PROGRESS_PINGS` | Delegation deadline (4 min), the single cheap retry, and the "still on it" ping throttle. |
 | `ROUTING_GATE` | `off` disables the grounding screen that forces data questions through the engine. |
-| `BATCH_SETTLE_MS` · `TYPING_CPM` · `TYPING_DELAY_MAX_MS` · `PAUSE_WHILE_TYPING` | Batching + simulated-typing pacing. |
+| `BATCH_SETTLE_MS` · `TYPING_CPM` · `TYPING_DELAY_MAX_MS` | Batching + simulated-typing pacing. |
 | `LLM_DAILY_TOKEN_CAP` · `OPS_TASK_TOKEN_BUDGET` · `LLM_MAX_INPUT_TOKENS_EST` | Cost circuit breakers (tripping fails loud, never re-billed on the other lane). |
 | `DIAGNOSTICS_ENABLED` · `DIAGNOSTICS_*` | `/debug` trace buffer sizing and retention. |
 
-`.env.example` is the annotated local template; `deploy/app.env` carries the shared baseline. Note
-that `app.env` still ships inert leftovers from the pre-engine architecture (autonome / judge /
-reflexion / mm role blocks and the email knobs) — its own header marks them as read by nothing.
+`.env.example` is the annotated local template; `deploy/app.env` carries the shared baseline.
 
 </details>
 
@@ -271,7 +269,7 @@ for three roles, shipped OpenRouter-primary with an Anthropic fallback lane:
 | Role | Shipped primary | Anthropic fallback |
 |------|-----------------|--------------------|
 | **Convo** — front line (and the Composer re-voice) | `openai/gpt-5.6-luna:nitro` | `claude-sonnet-5` |
-| **Classify** — routing, effects, failure triage | `openai/gpt-5.6-luna:nitro` | `claude-sonnet-4-6` |
+| **Classify** — routing, preference screens, failure triage | `openai/gpt-5.6-luna:nitro` | `claude-sonnet-4-6` |
 | **Fallfirm** — holding beats + recovery voice | `openai/gpt-5.6-luna:nitro` | `claude-sonnet-4-6` |
 | **Transcribe** — voice memos | `google/gemini-3.5-flash-lite:nitro` | *(OpenRouter only)* |
 
@@ -305,9 +303,9 @@ irises/
 │  └─ diagnostics/         #   /debug traces + /dashboard GUI
 ├─ bridge/                 # engine plugins — hermes (Python) · openclaw (TypeScript)
 ├─ skills/                 # irises-setup-hermes · irises-setup-openclaw (engine-native installers)
-├─ scripts/                # engine-setup.sh · irises-chat.ts (REPL) · diagnose-memory-leak.ts
+├─ scripts/                # engine-setup.sh · irises-chat.ts (REPL)
 ├─ supabase/migrations/    # Postgres schema
-├─ deploy/                 # docker-compose · Caddyfile · app.env · GCP provisioning
+├─ deploy/                 # docker-compose · Caddyfile · app.env · env.vm.example
 ├─ docs/                   # ENGINES.md · CHANNELS.md · DEPLOY.md · PROMPTING_CHARTER.md
 └─ web/                    # web debug client (Next.js, thin SSE client) — its own package
 ```
@@ -317,13 +315,12 @@ The server (root) and the web client (`web/`) are **two independent npm packages
 ## ☁️ Deployment
 
 Irises ships as a single Docker image (server `dist/` **and** the static web client `web/out/`, served
-together at `/`) running on a GCP Compute Engine VM behind **Caddy** for automatic HTTPS. Secrets and
+together at `/`) running on any small VM with Docker behind **Caddy** for automatic HTTPS. Secrets and
 per-VM values (`IMAGE`, `SITE_ADDRESS`, API keys) live in `/opt/irises/.env`, layered *under* the
 committed `deploy/app.env` — which sets `PORT=8080` and wins on any overlapping key.
 
-Deploys are **manual** — build the image and `docker compose up` on the VM. There is no CI workflow in
-this repo; the inherited auto-deploy pipeline was removed, so any `.github/workflows` references still
-sitting in the deploy docs are stale.
+Deploys are **manual** — build the image, push it to a registry the VM can pull from (or `docker save`
+/ `docker load` it across), and `docker compose up` on the VM.
 
 📖 Full runbook: **[docs/DEPLOY.md](docs/DEPLOY.md)**
 

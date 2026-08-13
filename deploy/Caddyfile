@@ -5,8 +5,8 @@
 #   - a zero-cost nip.io host:  34.27.1.2.nip.io   (just <YOUR_VM_EXTERNAL_IP>.nip.io)
 #   - or a real domain you point at the VM's IP:  app.yourdomain.com
 #
-# Ports 80 and 443 must be open to the internet (gcp-setup.sh opens them) so Let's Encrypt
-# can validate the host. nip.io shares Let's Encrypt rate limits — if issuance returns 429,
+# Ports 80 and 443 must be open to the internet (open them in your host firewall) so Let's
+# Encrypt can validate the host. nip.io shares Let's Encrypt rate limits — if issuance returns 429,
 # wait a while or switch to a real domain. To test issuance WITHOUT burning the prod limit,
 # add a global options block above the site with:
 #     {
