@@ -1,7 +1,7 @@
-// Run with: npm test   (TZ=UTC tsx --test)
-// Exercises the short-term (24h) memory tier on the in-memory backend: TTL read filter,
-// kind/chat scoping, task-id dedupe (the at-most-once index emulation), force-expiry,
-// and the sweep's grace window.
+// Run with: npm test   (TZ=UTC tsx --test — runner pins DATA_BACKEND=memory)
+// Exercises the short-term (24h) memory tier: TTL read filter, kind/chat scoping,
+// task-id dedupe (the at-most-once partial-unique index), force-expiry, and the
+// sweep's grace window.
 process.env.TZ = 'UTC';
 
 import test from 'node:test';
@@ -10,12 +10,12 @@ import {
   addShortTerm, listShortTerm, latestShortTerm, expireShortTermNow, sweepExpiredShortTerm,
   SHORT_TTL_MS, SHORT_CONTENT_MAX_CHARS,
 } from './memoryShort.js';
-import { mem } from '../memory.js';
+import { stmt } from '../sqlite.js';
 
 const HANDLE = '+15550002222';
 
 function reset() {
-  mem.memoryShort.delete(HANDLE);
+  stmt('DELETE FROM memory_short WHERE agent_handle = ?').run(HANDLE);
 }
 
 test('addShortTerm + listShortTerm round-trip, newest first, default 24h expiry', async () => {
@@ -88,8 +88,9 @@ test('sweep deletes only rows past expiry+grace (a daily review still sees a ful
 
   const removed = await sweepExpiredShortTerm();
   assert.equal(removed, 1);
-  const raw = mem.memoryShort.get(HANDLE) ?? [];
-  assert.deepEqual(raw.map(e => e.taskId).sort(), ['y', 'z']);
+  // Raw rows: the graced entry is invisible to reads but physically present.
+  const raw = stmt('SELECT task_id FROM memory_short WHERE agent_handle = ?').all(HANDLE) as unknown as Array<{ task_id: string }>;
+  assert.deepEqual(raw.map(r => r.task_id).sort(), ['y', 'z']);
   // Reads still only show the live row.
   assert.deepEqual((await listShortTerm(HANDLE)).map(e => e.taskId), ['z']);
 });
