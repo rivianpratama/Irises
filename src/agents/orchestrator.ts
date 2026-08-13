@@ -43,7 +43,7 @@ const OPS_TASK_TIMEOUT_MS = Number(process.env.OPS_TASK_TIMEOUT_MS || 4 * 60_000
 
 /** Combine the user-cancel signal with an internal one (a per-leg timeout abort) so aborting EITHER
  *  stops the run. Used so a timed-out primary Ops leg is actually torn down at its next step check —
- *  instead of running its tool loop concurrently with the escalation second look for minutes. */
+ *  instead of running its tool loop concurrently with a retry leg for minutes. */
 function combineSignals(user: AbortSignal | undefined, internal: AbortSignal): AbortSignal {
   if (!user) return internal;
   if (typeof (AbortSignal as { any?: (s: AbortSignal[]) => AbortSignal }).any === 'function') {
@@ -298,24 +298,23 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
   // "Waiting on Ops" reassurances are for a GENUINELY long wait ONLY — the holding text ("one sec,
   // pulling that fresh") already covers short and normal runs. User directive: at most 3 messages per
   // task (holding + 1 mid-run update + final). The mid-run update fires only after 5 minutes of
-  // silence, with at least 5 minutes between pings, and a hard cap of 1 per run. Exception: the
-  // escalation "deeper look" beat fires immediately (~4 min in) as real news, but consumes the single
-  // update slot. Without this restraint runTask fires an onProgress for EVERY tool call, so a
-  // multi-tool run spilled its whole play-by-play into the chat. The ProgressGate is the one throttle
-  // both the tool milestones and the fallback heartbeat pass through, and the gate freezes the instant
-  // Ops settles. A shared PingBudget across legs enforces the run-wide cap. Sends ride the per-chat
-  // mouth (unpaced, but NEVER the lock-bypassing 'critical' lane — that could split a live reply's
-  // bubbles); a ping that queues behind the eventual answer or a live reply is DROPPED by the mouth's
-  // staleness guards instead of landing late.
+  // silence, with at least 5 minutes between pings, and a hard cap of 1 per run. Without this
+  // restraint runTask fires an onProgress for EVERY tool call, so a multi-tool run spilled its whole
+  // play-by-play into the chat. The ProgressGate is the one throttle both the tool milestones and
+  // the fallback heartbeat pass through, and the gate freezes the instant Ops settles. A shared
+  // PingBudget across legs enforces the run-wide cap. Sends ride the per-chat mouth (unpaced, but
+  // NEVER the lock-bypassing 'critical' lane — that could split a live reply's bubbles); a ping that
+  // queues behind the eventual answer or a live reply is DROPPED by the mouth's staleness guards
+  // instead of landing late.
   const PROGRESS_QUIET_MS = Number(process.env.OPS_PROGRESS_QUIET_MS || 300_000); // silence for the first 5 min
   const PROGRESS_GAP_MS = Number(process.env.OPS_PROGRESS_GAP_MS || 300_000);     // then once every 5 min
   const MAX_PROGRESS_PINGS = Number(process.env.OPS_MAX_PROGRESS_PINGS || 1);
 
-  // One budget for the entire run — primary + escalation legs draw from the same pool, so the total
+  // One budget for the entire run — the primary and retry legs draw from the same pool, so the total
   // mid-run update count can never exceed MAX_PROGRESS_PINGS regardless of how many legs fire.
   const pingBudget: PingBudget = { remaining: MAX_PROGRESS_PINGS };
 
-  // Per-leg ping machinery. Each leg (primary, then the escalation second look) gets its OWN gate, so
+  // Per-leg ping machinery. Each leg (primary, then the cheap retry) gets its OWN gate, so
   // when the primary run is abandoned by a timeout its still-running loop's late onProgress calls hit
   // a stopped gate and are suppressed — they can never leak a ping for a discarded result. The gate
   // throttles FIRST, then runPingCycle voices + re-checks isStopped before sending (see progressGate).
@@ -377,12 +376,11 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
     let timedOut = false;
     let result: OpsResult;
     // Internal abort so a timed-out primary leg is torn down (its loop exits at the next step check)
-    // BEFORE the escalation leg starts — otherwise two Ops loops on the same task.id would run tools
+    // BEFORE a retry leg starts — otherwise two Ops loops on the same task.id would run tools
     // concurrently for minutes. Combined with the user-cancel signal so cancel_research still reaches it.
     const primaryAbort = new AbortController();
-    // Keep the promise: on timeout we must WAIT for the aborted leg to actually settle before the
-    // escalation starts, or the two legs bill tools + LLM steps concurrently (an ops:step5 landing
-    // after ops-esc:step0-2 had already run).
+    // Keep the promise: on timeout we must WAIT for the aborted leg to actually settle before a
+    // second leg starts, or the two legs bill tools + LLM steps concurrently.
     const primaryRun = runTask(task, milestoneKey => { noteOpsProgress(task.chatId, task.id, milestoneKey); void primary.voiceAndPing('progress', milestoneKey); }, combineSignals(signal, primaryAbort.signal), sink);
     try {
       result = await withDeadline(primaryRun, OPS_TASK_TIMEOUT_MS, `ops task ${task.id}`);
@@ -390,7 +388,7 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
       // Only a deadline becomes a triageable synthetic result; a genuine throw goes to the outer catch.
       if (!(err instanceof DeadlineError)) throw err;
       timedOut = true;
-      primaryAbort.abort(); // stop the abandoned loop so it doesn't keep hitting tools alongside the escalation
+      primaryAbort.abort(); // stop the abandoned loop so it doesn't keep hitting tools alongside a retry
       // The signal reaches the SDKs, so the in-flight request aborts in milliseconds — the race is
       // only a bound against a pathological hang (e.g. a tool that ignores aborts).
       await Promise.race([primaryRun.catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
@@ -406,7 +404,7 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
       });
       result = { taskId: task.id, kind: task.kind, status: 'error', summary: 'ran into a problem completing that', debrief: snap };
     }
-    stopPrimary(); // freeze primary pings before triage; the escalation leg gets its own gate
+    stopPrimary(); // freeze primary pings before triage; a retry leg gets its own gate
 
     // User cancelled this lookup (cancel_research). Deliver NOTHING — Convo already confirmed the
     // drop in the live turn, so a late follow-up would land as a contradiction. This guard, not the
@@ -428,14 +426,12 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
       triage = cause === 'empty_miss' ? await splitMiss(result, task) : decide(cause, task);
       record({
         type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:triage',
-        detail: { cause: triage.cause, action: triage.action, missingFields: triage.missingFields, directive: triage.researchDirective, deterministic: triage.deterministic, attempt: task.attempt ?? 1 },
+        detail: { cause: triage.cause, action: triage.action, missingFields: triage.missingFields, deterministic: triage.deterministic, attempt: task.attempt ?? 1 },
       });
 
       if (triage.action === 'retry' && !isOpsCancelled(task.chatId, task.id)) {
-        // Cheap same-role retry for a transient lane blip: re-run the ORIGINAL brief on the same `ops`
-        // model (callLLM re-tries both providers per call, and the SDKs retry each ~2x), NOT the stronger
-        // escalation model. A fresh attempt clears a since-recovered blip at a fraction of the escalation
-        // cost. If it comes back a researchable MISS, the re-triage below ladders up to escalation.
+        // Cheap same-role retry for a transient lane blip: re-run the ORIGINAL brief on the same
+        // engine. A fresh attempt clears a since-recovered blip; whatever it returns is final.
         record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:retry', detail: { cause: triage.cause, attempt: task.attempt ?? 1 } });
         // Keep the in-flight clock fresh so dedupe + "still on it" stay truthful if the primary's
         // llm_error landed late (see markOpsRetry). No ETA extension — a retry is meant to be quick.
@@ -474,11 +470,10 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
         moment = classifyResult(result);
         // Re-triage on the RETRY's result. The retry is usually the FIRST pass to actually research (an
         // llm_error typically dies before any tool ran), so its outcome deserves the same triage the
-        // primary would have gotten. Use retryTask: its retryOf makes canRetry false (no retry-of-retry)
-        // but canEscalate TRUE (the ladder), so a researchable miss now yields an 'escalate' decision the
-        // escalate block below consumes, an INFO_HOLE still earns a targeted ask_user, and a fresh
-        // transient error gives up. detectCause(result, false): a timed-out/failed retry kept the original
-        // 'transient' result, so this only re-triages a retry that genuinely ran and came back soft.
+        // primary would have gotten. Use retryTask: its retryOf makes canRetry false (no retry-of-retry),
+        // an INFO_HOLE still earns a targeted ask_user, and a fresh transient error gives up.
+        // detectCause(result, false): a timed-out/failed retry kept the original 'transient' result,
+        // so this only re-triages a retry that genuinely ran and came back soft.
         if (moment !== 'answer' && !isOpsCancelled(task.chatId, task.id)) {
           const retryCause = detectCause(result, false);
           triage = retryCause === 'empty_miss' ? await splitMiss(result, retryTask) : decide(retryCause, retryTask);
@@ -486,9 +481,8 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
         record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:retry-result', detail: { status: result.status, moment, ms: Date.now() - t0, nextAction: triage.action } });
       }
 
-      // Slim: no escalation leg. The engine IS the strong model — canEscalate() is permanently
-      // false (triage.ts), so an 'escalate' verdict can no longer occur; the single retry above is
-      // the whole ladder, and whatever it returns is final.
+      // No deeper ladder beyond the single retry — the engine IS the strong model, and whatever the
+      // retry returns is final.
     }
 
     // Info-hole → a TARGETED question (rides the two-strike marker). ask_user is only ever returned for
@@ -498,9 +492,9 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
 
     stopAllPings(); // final result in hand — no more "still on it" before the (slower) compose+send
 
-    // Authoritative delivery guard, checked as LATE as possible: triage (a ~1-2s classify call) and the
-    // escalation leg (up to another 4 min) opened async windows AFTER the primary cancel-check above, so
-    // a cancel_research landing in either window must still suppress everything — no marker, no send.
+    // Authoritative delivery guard, checked as LATE as possible: triage (a ~1-2s classify call) and a
+    // retry leg opened async windows AFTER the primary cancel-check above, so a cancel_research
+    // landing in either window must still suppress everything — no marker, no send.
     if (isOpsCancelled(task.chatId, task.id)) {
       record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:cancelled', detail: { request: task.request } });
       return;
@@ -522,7 +516,7 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
     let composeMs = 0;
     const followupStart = Date.now();
     const delivery = await sendFollowUp(task.chatId, async () => {
-      // The authoritative cancel guard, now inside the mouth: triage and the escalation leg opened
+      // The authoritative cancel guard, now inside the mouth: triage and the retry leg opened
       // async windows, and the queue wait itself is one more — re-checked here before any durable
       // state commits, so a cancelled lookup never writes markers or delivers.
       if (isOpsCancelled(task.chatId, task.id)) return null;
@@ -544,11 +538,11 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
       }
 
       // Stash the research so Convo can answer same-topic follow-ups without re-delegating. ONLY on a
-      // real answer — never a miss. On an escalated answer this stores the (stronger) second look.
+      // real answer — never a miss.
       if (moment === 'answer') {
         const summary = redactInternalTools(result.summary);
-        // Two independent durable writes — the 24h short-term row (the tier Convo's context block and
-        // Reflexion's daily pass read) and the legacy recent_research prefs stash (dual-write during
+        // Two independent durable writes — the 24h short-term row (the tier Convo's context block
+        // reads) and the legacy recent_research prefs stash (dual-write during
         // the soak window). Run them together: Promise.all still awaits BOTH to completion before we
         // proceed, preserving the markers-commit-before-any-later-read invariant (the next turn's LLM
         // call queues behind this same mouth lock), just without the needless serial round trip. Each

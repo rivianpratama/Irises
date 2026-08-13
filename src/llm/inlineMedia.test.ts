@@ -12,7 +12,7 @@ const fetched = (base64: string, mime: string): FetchedMedia => ({ base64, mime,
 
 test('a remote audio URL gains inlined data + a mapped format; text is untouched', async () => {
   const req: LlmRequest = {
-    role: 'mm',
+    role: 'ops',
     messages: [{ role: 'user', content: [
       { type: 'audio', url: 'https://cdn.example.com/vm.m4a', mimeType: 'audio/mp4' },
       { type: 'text', text: 'whats this' },
@@ -28,7 +28,7 @@ test('a remote audio URL gains inlined data + a mapped format; text is untouched
 
 test('a remote video URL gains inlined data and the resolved mimeType', async () => {
   const req: LlmRequest = {
-    role: 'mm',
+    role: 'ops',
     messages: [{ role: 'user', content: [{ type: 'video', url: 'https://cdn.example.com/clip', mimeType: 'video/mp4' }] }],
   };
   const out = await inlineMediaBlocks(req, async () => fetched('VklE', 'video/mp4'));
@@ -42,7 +42,7 @@ test('an audio/video block that already carries data is left as-is and the fetch
   let called = false;
   const spy = async () => { called = true; return fetched('NEW', 'audio/mp4'); };
   const req: LlmRequest = {
-    role: 'mm',
+    role: 'ops',
     messages: [{ role: 'user', content: [{ type: 'audio', mimeType: 'audio/mp4', data: 'OLD', format: 'm4a' }] }],
   };
   const out = await inlineMediaBlocks(req, spy);
@@ -52,7 +52,7 @@ test('an audio/video block that already carries data is left as-is and the fetch
 
 test('a fetch/size failure DROPS the media block but keeps sibling text', async () => {
   const req: LlmRequest = {
-    role: 'mm',
+    role: 'ops',
     messages: [{ role: 'user', content: [
       { type: 'video', url: 'https://cdn/huge.mp4', mimeType: 'video/mp4' },
       { type: 'text', text: 'look at this' },
@@ -67,7 +67,7 @@ test('a fetch/size failure DROPS the media block but keeps sibling text', async 
 
 test('images/text/document blocks are untouched (handled elsewhere / already base64)', async () => {
   const req: LlmRequest = {
-    role: 'mm',
+    role: 'ops',
     messages: [{ role: 'user', content: [
       { type: 'image', url: 'https://cdn/x.jpg' },
       { type: 'document', mediaType: 'application/pdf', data: 'UERG' },
@@ -78,7 +78,7 @@ test('images/text/document blocks are untouched (handled elsewhere / already bas
 });
 
 test('plain-string content is passed through unchanged', async () => {
-  const req: LlmRequest = { role: 'mm', messages: [{ role: 'user', content: 'just text' }] };
+  const req: LlmRequest = { role: 'ops', messages: [{ role: 'user', content: 'just text' }] };
   const out = await inlineMediaBlocks(req, async () => fetched('X', 'audio/mp4'));
   assert.equal(out.messages[0].content, 'just text');
 });

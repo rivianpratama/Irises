@@ -99,16 +99,16 @@ test('PROD primary leg (quiet=gap=300s, cap=1) fires ZERO reassurances across it
 
 // ── Shared run-wide budget: the total mid-run update count is capped across ALL legs ────────────
 
-test('a shared budget caps mid-run updates across two gates (primary + escalation legs)', () => {
+test('a shared budget caps mid-run updates across two gates (primary + retry legs)', () => {
   // The budget is what makes the cap run-wide rather than per-leg: gate B is blocked even though its
   // OWN pingCount is still 0, because gate A already spent the one shared slot.
   const budget: PingBudget = { remaining: 1 };
   const c = clock();
   const primary = new ProgressGate({ quietMs: 0, gapMs: 0, maxPings: 1, budget, now: c.now });
-  const esc = new ProgressGate({ quietMs: 0, gapMs: 0, maxPings: 1, budget, now: c.now });
+  const retry = new ProgressGate({ quietMs: 0, gapMs: 0, maxPings: 1, budget, now: c.now });
   assert.equal(primary.allow('heartbeat'), true, 'primary spends the one shared slot');
   assert.equal(budget.remaining, 0, 'the shared budget is debited synchronously on the reserve');
-  assert.equal(esc.allow('deeper_look'), false, 'escalation gate is blocked by the shared budget despite its own count being 0');
+  assert.equal(retry.allow('heartbeat-2'), false, 'the second gate is blocked by the shared budget despite its own count being 0');
 });
 
 test('a deduped or blocked ping never debits the shared budget', () => {
@@ -122,7 +122,7 @@ test('a deduped or blocked ping never debits the shared budget', () => {
   assert.equal(budget.remaining, 0, 'neither the dedupe nor the budget-blocked call went negative');
 });
 
-test('escalation shape: primary silent through its window, then esc deeper_look fires exactly once', () => {
+test('two-leg shape: primary silent through its window, then a fresh gate spends the one slot', () => {
   // End-to-end mirror of runOpsAndFollowUp: one budget spans both legs.
   const budget: PingBudget = { remaining: 1 };
   const c = clock();
@@ -136,11 +136,11 @@ test('escalation shape: primary silent through its window, then esc deeper_look 
   assert.equal(primaryPings, 0, 'primary never pings before the 4-min timeout');
   primary.stop(); // primary leg frozen on timeout, budget still intact
 
-  // Escalation leg: fresh gate, quiet 0 so the "deeper look" beat lands immediately, same budget.
-  const esc = new ProgressGate({ quietMs: 0, gapMs: 300_000, maxPings: 1, budget, now: c.now });
-  assert.equal(esc.allow('deeper_look'), true, 'the escalation beat fires immediately');
-  c.advance(300_000); // the escalation heartbeat timer would fire here
-  assert.equal(esc.allow('heartbeat'), false, 'escalation heartbeat suppressed — the one update was the deeper-look beat');
+  // Second leg: fresh gate, quiet 0 so its first beat lands immediately, same budget.
+  const second = new ProgressGate({ quietMs: 0, gapMs: 300_000, maxPings: 1, budget, now: c.now });
+  assert.equal(second.allow('progress'), true, 'the second leg spends the remaining slot');
+  c.advance(300_000); // the heartbeat timer would fire here
+  assert.equal(second.allow('heartbeat'), false, 'heartbeat suppressed — the one update was already spent');
 });
 
 // ── runPingCycle: the allow → voice → drop-if-settled → send ordering ──────────────────────────

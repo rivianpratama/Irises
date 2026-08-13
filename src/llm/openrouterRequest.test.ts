@@ -44,12 +44,12 @@ test('an un-inlined audio/video block (no data) is dropped rather than emitting 
 });
 
 test('hasNativeMedia is true for audio/video, false for image/text/document', () => {
-  const mk = (block: Any): LlmRequest => ({ role: 'mm', messages: [{ role: 'user', content: [block] }] });
+  const mk = (block: Any): LlmRequest => ({ role: 'ops', messages: [{ role: 'user', content: [block] }] });
   assert.equal(hasNativeMedia(mk({ type: 'audio', mimeType: 'audio/mp4', data: 'x' })), true);
   assert.equal(hasNativeMedia(mk({ type: 'video', mimeType: 'video/mp4', data: 'x' })), true);
   assert.equal(hasNativeMedia(mk({ type: 'image', url: 'u' })), false);
   assert.equal(hasNativeMedia(mk({ type: 'document', mediaType: 'application/pdf', data: 'x' })), false);
-  assert.equal(hasNativeMedia({ role: 'mm', messages: [{ role: 'user', content: 'plain' }] }), false);
+  assert.equal(hasNativeMedia({ role: 'ops', messages: [{ role: 'user', content: 'plain' }] }), false);
 });
 
 test('a plain string content is passed through untouched', () => {
@@ -127,19 +127,19 @@ test('system prompt becomes a leading system message', () => {
 });
 
 test('model + max_tokens default from the role tables; modelOverride wins', () => {
-  const base = buildOpenRouterParams({ role: 'judge', messages: [{ role: 'user', content: 'x' }] });
+  const base = buildOpenRouterParams({ role: 'fallfirm', messages: [{ role: 'user', content: 'x' }] });
   assert.equal(typeof base.model, 'string');
   assert.ok((base.max_tokens ?? 0) > 0);
 
-  const overridden = buildOpenRouterParams({ role: 'judge', modelOverride: 'openai/gpt-4o', messages: [{ role: 'user', content: 'x' }] });
+  const overridden = buildOpenRouterParams({ role: 'fallfirm', modelOverride: 'openai/gpt-4o', messages: [{ role: 'user', content: 'x' }] });
   assert.equal(overridden.model, 'openai/gpt-4o');
 });
 
-test('mm role resolves to its OpenRouter model + max_tokens from the role tables', () => {
-  const params = buildOpenRouterParams({ role: 'mm', messages: [{ role: 'user', content: 'x' }] });
-  assert.equal(params.model, MODELS.mm.openrouter);
-  assert.equal(params.max_tokens, MAX_TOKENS.mm);
-  assert.equal(MAX_TOKENS.mm, 8192); // high non-binding ceiling — reasoning tokens count against max_tokens on OpenRouter
+test('fallfirm role resolves to its OpenRouter model + max_tokens from the role tables', () => {
+  const params = buildOpenRouterParams({ role: 'fallfirm', messages: [{ role: 'user', content: 'x' }] });
+  assert.equal(params.model, MODELS.fallfirm.openrouter);
+  assert.equal(params.max_tokens, MAX_TOKENS.fallfirm);
+  assert.equal(MAX_TOKENS.fallfirm, 8192); // high non-binding ceiling — reasoning tokens count against max_tokens on OpenRouter
 });
 
 test('jsonBubbles adds a strict json_schema response_format + require_parameters routing', () => {

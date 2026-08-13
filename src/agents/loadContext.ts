@@ -21,7 +21,7 @@ interface Cached { body: string; mtimeMs: number }
 const cache = new Map<string, Cached>();
 
 export function loadContext(
-  agent: 'convo' | 'ops' | 'composer' | 'autonome' | 'judge' | 'mm' | 'fallfirm' | 'reflexion',
+  agent: 'convo' | 'composer' | 'fallfirm',
   // A second persona can live beside Context.md in the same folder (e.g. fallfirm's Progress.md — the
   // waiting-on-Ops voice, a distinct persona from its outcome voice). The build copies every .md under
   // src/agents, so a sibling file is picked up with no extra wiring. Cache is keyed per file.

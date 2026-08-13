@@ -5,7 +5,6 @@ import type { LlmRoleStat } from '../db/repositories/tokenUsage.js';
 // Daily caps are read at module load — set env BEFORE the dynamic import (each test file runs in
 // its own process, so this doesn't leak into budget.test.ts, which asserts the caps-off default).
 process.env.OPS_DAILY_TOKEN_CAP = '1000';
-process.env.JUDGE_DAILY_TOKEN_CAP = '2000';
 process.env.LLM_DAILY_TOKEN_CAP = '5000';
 
 const stat = (role: string, totalTokens: number): LlmRoleStat => ({
@@ -14,23 +13,12 @@ const stat = (role: string, totalTokens: number): LlmRoleStat => ({
   inputTokens: totalTokens, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens,
 });
 
-test('ops+ops_escalation spend over the ops cap trips ops roles but not convo', async () => {
+test('ops spend over the ops cap trips the ops role but not convo', async () => {
   const { checkDailyBudget, resetDailySpendCache, BudgetExceededError } = await import('./budget.js');
   resetDailySpendCache();
-  const fetchStats = async () => [stat('ops', 700), stat('ops_escalation', 400), stat('convo', 100)];
+  const fetchStats = async () => [stat('ops', 1100), stat('convo', 100)];
   await assert.rejects(checkDailyBudget('ops', { fetchStats }), BudgetExceededError);
-  await assert.rejects(checkDailyBudget('ops_escalation', { fetchStats }), BudgetExceededError);
   await checkDailyBudget('convo', { fetchStats }); // global (1200) still under 5000
-});
-
-test('judge spend over the judge cap trips judge only — not ops, not convo', async () => {
-  const { checkDailyBudget, resetDailySpendCache, BudgetExceededError } = await import('./budget.js');
-  resetDailySpendCache();
-  // judge 2500 >= 2000 cap; ops 100 < 1000; global 2600 < 5000.
-  const fetchStats = async () => [stat('judge', 2500), stat('ops', 100)];
-  await assert.rejects(checkDailyBudget('judge', { fetchStats }), BudgetExceededError);
-  await checkDailyBudget('ops', { fetchStats });   // ops bucket under its own cap
-  await checkDailyBudget('convo', { fetchStats });  // global still under
 });
 
 test('global cap trips every role', async () => {

@@ -1,17 +1,12 @@
-// Orchestration contract shared by the Convo (front-line), Ops (back-line research) and MM
-// (back-line media-analysis) agents.
+// Orchestration contract shared by the Convo (front-line) and Ops (engine-seam) agents.
 import type { IncomingMedia } from '../webhook/types.js';
 
 export type TaskKind =
   | 'web_research'       // current/external facts from the web + reasoning
   | 'document_read'      // read/search the user's OWN connected email + attachments
   | 'draft'              // write a message/note for the user to send
-  | 'media_read'         // MM-only: read the non-text file(s) the user texted. Never offered to
-                         // delegate_to_ops and never enters the Ops tool loop — it runs runMmTask.
-  | 'memory_update'      // Reflexion-only: curate the memory tiers. Never offered to
-                         // delegate_to_ops and never enters the Ops loop — it runs runReflexion,
-                         // fully silent (no composer, no follow-up message).
-  | 'general';           // substantive multi-source/multi-step reasoning — Ops carries the full toolset
+  | 'media_read'         // the engine opens and reads the non-text file(s) the user texted
+  | 'general';           // substantive multi-source/multi-step reasoning
 
 export interface OpsTask {
   id: string;
@@ -23,16 +18,10 @@ export interface OpsTask {
   addressHint?: string;
   dealHint?: string;
   replyToMessageId?: string; // inbound message that triggered this task; the follow-up threads back to it
-  // Set ONLY by the orchestrator's escalation leg — the id of the ORIGINAL task this is a second,
-  // stronger-model look at (see src/agents/ops/triage.ts). Its presence is the hard "one escalation
-  // per attempt" guard: an escalated run never triage-escalates again, and inside runTask it flips the
-  // LLM role to `ops_escalation` and prefixes trace labels `ops-esc:`. A two-strike refinement
-  // (attempt≥2) is a fresh task WITHOUT this field, so it can earn its own single escalation.
-  escalationOf?: string;
-  // Set ONLY by the orchestrator's retry leg — the id of the task this is a cheap SAME-model second
-  // attempt at, after a transient lane blip (an llm_error / rate limit, not a research failure).
-  // Unlike escalationOf it does NOT change the model or the brief; it only marks the leg so triage
-  // can refuse to retry a retry (one per attempt) and the trace labels read `ops-retry:`.
+  // Set ONLY by the orchestrator's retry leg — the id of the task this is a cheap second attempt
+  // at, after a transient lane blip (an llm_error / rate limit, not a research failure). It does
+  // NOT change the brief; it only marks the leg so triage can refuse to retry a retry (one per
+  // attempt) and the trace labels read `ops-retry:`.
   retryOf?: string;
   // Which attempt this is for the same underlying ask. 1 = first look; 2+ = a re-run after the
   // agent answered a steering question. Drives the composer's two-strike miss behavior (first
@@ -55,47 +44,10 @@ export interface OpsTask {
   forceGrounding?: boolean;
   // Chat attachment refs the task is grounded in (remote CDN URLs + mimeTypes; a signed URL dies in
   // ~15min but attachmentId re-signs at read time). Set by the delegate handlers — this turn's
-  // files, or the 24h recall stash — so Ops can open them with read_chat_attachment. On an MmTask
-  // this is the read subject itself (required there).
+  // files, or the 24h recall stash — so the engine can open them.
   media?: IncomingMedia;
   recalledAgeMs?: number;    // set when the media came from the 24h stash (drives "sent X ago" framing)
   createdAt: number;
-}
-
-/**
- * An MM (media-analysis) task. Structurally an OpsTask with `kind` pinned to 'media_read' plus the
- * actual attachments to open. Because it extends OpsTask and MM returns an MmResult (an OpsResult
- * whose `summary` is already Irises-voiced bubble text), the shared back-line plumbing —
- * markOpsStart/Done, isDuplicateDelegation, cancellation, classifyResult, the Fallfirm failure
- * floor — is reused verbatim; only the runner (runMmTask/runMmAndFollowUp) differs, and MM's answer
- * is delivered DIRECTLY (no composer re-voice).
- */
-export interface MmTask extends OpsTask {
-  kind: 'media_read';
-  media: IncomingMedia;      // the files the user texted (remote CDN URLs + mimeTypes)
-}
-
-/** Narrows an OpsTask to an MmTask so the launch site can pick runMmAndFollowUp over runOpsAndFollowUp. */
-export function isMmTask(task: OpsTask): task is MmTask {
-  return task.kind === 'media_read';
-}
-
-/**
- * A Reflexion (memory-curation) task. Extends OpsTask for shape-compat with the shared plumbing,
- * but deliberately rides a SEPARATE result field out of a Convo turn (reflexionTask, not the
- * one-per-turn delegatedTask slot): it promises no user-facing follow-up, so a turn can update
- * memory AND delegate research. replyToMessageId/holdingText/originConfidence stay unset — the
- * silent path never threads or voices.
- */
-export interface ReflexionTask extends OpsTask {
-  kind: 'memory_update';
-  trigger: 'daily' | 'delegated' | 'self_wake';
-  focus?: string; // what to reconcile (delegated: Convo's meta-prompt; self_wake: the stored reason)
-}
-
-/** Narrows an OpsTask to a ReflexionTask (the silent memory-curation lane). */
-export function isReflexionTask(task: OpsTask): task is ReflexionTask {
-  return task.kind === 'memory_update';
 }
 
 export type OpsStatus = 'ok' | 'not_found' | 'rate_limited' | 'error';
@@ -156,18 +108,6 @@ export interface OpsResult {
   summary: string;          // accurate plain text; Convo re-voices this
   data?: Record<string, unknown>;
   debrief?: OpsDebrief;     // what the run did + why it failed; fuels triage
-}
-
-/**
- * MM's result. `summary` stays the delivery string — pre-voiced legacy bubble text ("a\n---\nb")
- * on success, and byte-identical failure sentinels (CANNOT_OPEN…, 'cancelled', the crash phrase)
- * on every other path — so classifyResult, the includes(CANNOT_OPEN) seam, timeout and
- * cancellation machinery all work unchanged. `analysis` is the rich user-invisible extraction
- * persisted to the media_analysis short-term row (Convo context + Ops research briefs).
- */
-export interface MmResult extends OpsResult {
-  kind: 'media_read';
-  analysis?: string;        // set only on a voiced answer
 }
 
 /**

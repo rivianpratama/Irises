@@ -12,7 +12,6 @@ import { processConvoResult, type ChatContext } from './shared.js';
 import { rememberMedia } from './mediaRecall.js';
 import { emptyMedia, type IncomingMedia } from '../../webhook/types.js';
 import { __resetOpsCoordination } from '../../state/opsCoordination.js';
-import { isMmTask } from '../types.js';
 import type { LlmResult, LlmToolCall } from '../../llm/types.js';
 
 function makeResult(bubbles: string[], toolCalls: LlmToolCall[], confidence = 85): LlmResult {
@@ -52,7 +51,7 @@ test('this-turn media auto-attaches to the OpsTask (safety net), no recall frami
   const out = await processConvoResult({ ...a, res, textToSend: 'is this price fair?' });
 
   assert.ok(out.delegatedTask, 'a task was delegated');
-  assert.equal(isMmTask(out.delegatedTask!), false, 'it is an Ops task, not MM');
+  assert.notEqual(out.delegatedTask!.kind, 'media_read', 'it is a general Ops task');
   assert.equal(out.delegatedTask!.media?.images.length, 1, 'this-turn file rides the task');
   assert.equal(out.delegatedTask!.recalledAgeMs, undefined);
 });
@@ -64,7 +63,7 @@ test('media_scope "earlier" recalls the stashed file with an age', async () => {
   const res = makeResult(['on it, digging into that clause'], [delegateOps('check the renewal clause on that agreement', { media_scope: 'earlier' })]);
   const out = await processConvoResult({ ...a, res, textToSend: 'yes check it' });
 
-  assert.ok(out.delegatedTask && !isMmTask(out.delegatedTask), 'an Ops task');
+  assert.ok(out.delegatedTask && out.delegatedTask.kind !== 'media_read', 'a general Ops task');
   assert.equal(out.delegatedTask!.media?.images.length, 1, 'the earlier file rides the task');
   assert.equal(typeof out.delegatedTask!.recalledAgeMs, 'number', 'recall framing age is set');
 });

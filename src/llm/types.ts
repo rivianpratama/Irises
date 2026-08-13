@@ -1,6 +1,6 @@
 // Provider-neutral LLM shapes so agents never import SDK types directly.
 
-export type LlmRole = 'convo' | 'ops' | 'ops_escalation' | 'ops_mm' | 'classify' | 'autonome' | 'judge' | 'mm' | 'fallfirm' | 'reflexion' | 'reflexion_delegated';
+export type LlmRole = 'convo' | 'ops' | 'classify' | 'fallfirm';
 export type LlmProvider = 'anthropic' | 'openrouter';
 
 export interface LlmTextBlock { type: 'text'; text: string }

@@ -84,13 +84,13 @@ test('a long doc trying to break out of its tag renders fully inside the tag', (
 
 // ── Tier matrix & assembly ────────────────────────────────────────────────────
 
-test('matrix: composer/fallfirm get flexible only; judge short is own_flags; convo gets all', () => {
+test('matrix: composer/fallfirm get flexible only; convo gets all', () => {
   const data = baseData({
     short: [
       shortEntry({ id: 'r', kind: 'ops_research', request: 'comps', content: 'three comps' }),
       shortEntry({ id: 'f', kind: 'email_flag', content: 'wire change', meta: { from: 'title', subject: 'wire' } }),
     ],
-    medium: { directives: [], notes: ['lockbox 4421'], facts: { brokerage: 'Compass' } },
+    medium: { directives: [], notes: ['lockbox 4421'], facts: { comms_style: 'clipped' } },
   });
 
   const convo = renderUserMemory('convo', data, NOW);
@@ -102,38 +102,24 @@ test('matrix: composer/fallfirm get flexible only; judge short is own_flags; con
   assert.ok(!composer.includes('<memory_medium>')); // fidelity hazard — excluded
   assert.ok(composer.includes('## Long-term memory'));
 
-  const judge = renderUserMemory('judge', data, NOW);
-  assert.ok(judge.includes('wire change')); // own flags visible
-  assert.ok(!judge.includes('three comps')); // research is not
-  assert.ok(!judge.includes('<memory_medium>')); // evidence leak — excluded
-
-  const autonome = renderUserMemory('autonome', data, NOW);
-  assert.ok(!autonome.includes('<memory_short>')); // stale-look tempt — excluded
-  assert.ok(autonome.includes('<memory_medium>'));
-
   const fallfirm = renderUserMemory('fallfirm', data, NOW);
   assert.ok(!fallfirm.includes('<memory_short>') && !fallfirm.includes('<memory_medium>'));
 });
 
-test('judge with includeMedium: the digest-synthesis opt-in adds medium, nothing else moves', () => {
+test('includeMedium: the opt-in adds medium for a flexible-only agent, nothing else moves', () => {
   const data = baseData({
-    short: [
-      shortEntry({ id: 'r', kind: 'ops_research', request: 'comps', content: 'three comps' }),
-      shortEntry({ id: 'f', kind: 'email_flag', content: 'wire change', meta: { from: 'title', subject: 'wire' } }),
-    ],
-    medium: { directives: [], notes: ['lockbox 4421'], facts: { brokerage: 'Compass' } },
+    short: [shortEntry({ id: 'r', kind: 'ops_research', request: 'comps', content: 'three comps' })],
+    medium: { directives: [], notes: ['lockbox 4421'], facts: { comms_style: 'clipped' } },
   });
 
-  const out = renderUserMemory('judge', data, NOW, { includeMedium: true });
+  const out = renderUserMemory('composer', data, NOW, { includeMedium: true });
   assert.ok(out.includes('<memory_medium>') && out.includes('lockbox 4421'));
-  assert.ok(out.includes('wire change')); // own flags still visible
-  assert.ok(!out.includes('three comps')); // research still isn't
-  assert.equal(AGENT_MEMORY_MATRIX.judge.medium, false); // the opt-in never rewrites the matrix
+  assert.ok(!out.includes('three comps')); // short stays excluded
+  assert.equal(AGENT_MEMORY_MATRIX.composer.medium, false); // the opt-in never rewrites the matrix
 
-  const short = out.indexOf('## Short-term memory');
   const medium = out.indexOf('## Medium-term memory');
   const flexible = out.indexOf('## Long-term memory');
-  assert.ok(short !== -1 && short < medium && medium < flexible);
+  assert.ok(medium !== -1 && medium < flexible);
 });
 
 test('flexible block renders LAST (recency) and the preamble FIRST', () => {
@@ -198,13 +184,13 @@ test('per-agent MUST-NOT overlays land in the right prompts', () => {
   const data = baseData();
   assert.ok(renderUserMemory('convo', data, NOW).includes('update_directives'));
   assert.ok(renderUserMemory('composer', data, NOW).includes("alter a fact you're relaying"));
-  assert.ok(renderUserMemory('judge', data, NOW).includes('fraud or fidelity floor'));
+  assert.ok(renderUserMemory('fallfirm', data, NOW).includes("alter a fact you're relaying"));
 });
 
 test('short block caps entries and stamps ages; medium block carries durable facts', () => {
   const entries = Array.from({ length: 12 }, (_, i) =>
     shortEntry({ id: `e${i}`, content: `look ${i}`, createdAt: NOW - i * 60_000 }));
-  const block = renderShortBlock(entries, 'all', NOW);
+  const block = renderShortBlock(entries, NOW);
   assert.ok(block.includes('look 0') && block.includes('look 7'));
   assert.ok(!block.includes('look 8')); // capped at 8
   assert.ok(/\[research, (just now|\dm ago)\]/.test(block));
@@ -287,7 +273,7 @@ test('slots filled but no personal texture yet → only the long-game section re
 
 test('the discovery scaffold is Convo-only; the never-say-blank rule reaches every agent', () => {
   const blank = baseData({ profile: null });
-  for (const agent of ['composer', 'judge', 'autonome', 'fallfirm'] as MemoryAgent[]) {
+  for (const agent of ['composer', 'fallfirm'] as MemoryAgent[]) {
     const out = renderUserMemory(agent, blank, NOW);
     assert.ok(!out.includes("## What you don't know"), agent); // discovery is the front line's job
     assert.ok(out.includes('tell them you know nothing about them'), agent); // the rule still binds
@@ -379,18 +365,14 @@ test('convo gets the weave dose: flexible weave lines + short/medium connect + n
   assert.ok(out.includes('never open a reply from this record'));
 });
 
-test('recognition overlay lands for composer AND mm, never for judge/autonome/fallfirm', () => {
+test('recognition overlay lands for composer, never for fallfirm', () => {
   const data = baseData();
   assert.ok(renderUserMemory('composer', data, NOW).includes('RECOGNIZE what the result is about'));
-  assert.ok(renderUserMemory('mm', data, NOW).includes('RECOGNIZE what the file is about'));
-  for (const agent of ['judge', 'autonome', 'fallfirm'] as MemoryAgent[]) {
-    const out = renderUserMemory(agent, data, NOW);
-    assert.ok(!out.includes('RECOGNIZE what'), agent);
-    assert.ok(!out.includes('draw on their standing picture'), agent);
-  }
-  // The relays never get the full weave dose either — recognition only.
+  const fallfirm = renderUserMemory('fallfirm', data, NOW);
+  assert.ok(!fallfirm.includes('RECOGNIZE what'));
+  assert.ok(!fallfirm.includes('draw on their standing picture'));
+  // The relay never gets the full weave dose either — recognition only.
   assert.ok(!renderUserMemory('composer', data, NOW).includes('draw on their standing picture'));
-  assert.ok(!renderUserMemory('mm', data, NOW).includes('draw on their standing picture'));
 });
 
 test('the flexible MUST-NOT bans WORK facts while allowing personal-color framing', () => {

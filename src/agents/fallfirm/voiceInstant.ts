@@ -18,7 +18,7 @@ import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
 import { timestampLabel } from '../../pipeline/chatTime.js';
 import type { LlmMessage } from '../../llm/types.js';
 import type { TaskKind } from '../types.js';
-import { holdingFloor, stillOnItText, heartbeatText, deeperLookText } from './floor.js';
+import { holdingFloor, stillOnItText, heartbeatText } from './floor.js';
 
 // Recent turns prepended for VOICE/continuity ONLY — never a fact source (this voice carries no
 // facts). This is the window that lets it see its own last holding line / ping so it never repeats.
@@ -41,7 +41,7 @@ export interface VoiceInstantEta {
 }
 
 export interface VoiceInstantOpts {
-  kind: 'holding' | 'still_on_it' | 'heartbeat' | 'progress' | 'deeper_look';
+  kind: 'holding' | 'still_on_it' | 'heartbeat' | 'progress';
   taskKind?: TaskKind;
   request?: string;
   addressHint?: string;
@@ -88,13 +88,6 @@ export function buildProgressBrief(opts: VoiceInstantOpts, userCtx: string): str
       pushPaceBeat();
       lines.push('you already told them you were on it (see the thread). do NOT repeat that line. name what is slow in fresh words, or add one small warm beat. one short bubble.');
       break;
-    case 'deeper_look':
-      lines.push('## Where the look is: STILL running — the first pass came up short, so you are digging deeper on it');
-      if (req) lines.push(`what you are taking a harder look at: "${req}"`);
-      if (hint) lines.push(`it's about: ${hint} — name it if it reads natural`);
-      if (eta) lines.push(`this deeper pass buys more time — you MAY tell them it needs ${eta.phrase} ("this one's a deeper dig, give me a few more minutes" energy), loosely and never a precise number.`);
-      lines.push('you already told them you were on it (see the thread). do NOT repeat that line. one short, warm beat that says this one is taking more digging than usual and you are staying on it. frame it as thoroughness, NEVER as anything failing or going wrong on your end or theirs. one short bubble.');
-      break;
   }
   lines.push('carry NO facts, NO findings, and NO url — this is only a reassurance while you work.');
 
@@ -116,7 +109,6 @@ function floorFor(opts: VoiceInstantOpts): string {
     case 'still_on_it': return stillOnItText();
     case 'heartbeat': return heartbeatText({ addressHint: opts.addressHint, dealHint: opts.dealHint });
     case 'progress': return stillOnItText();
-    case 'deeper_look': return deeperLookText({ addressHint: opts.addressHint, dealHint: opts.dealHint });
   }
 }
 

@@ -81,20 +81,15 @@ export function reportTaskUsage(taskId: string | undefined, usage?: LlmResult['u
 
 // ── (c) daily per-role kill switch ──────────────────────────────────────────
 
-/** Daily billed-token cap for the ops+ops_escalation roles combined. 0 = off. */
+/** Daily billed-token cap for the ops role. 0 = off. */
 export const OPS_DAILY_TOKEN_CAP = Number(process.env.OPS_DAILY_TOKEN_CAP || 0);
-/** Daily billed-token cap for the judge role alone. 0 = off. Judge runs per inbound email and can
- *  be pointed at a deep-research-class model, so it gets its own smoke alarm independent of the
- *  global cap (whose trip would kill every role). A tripped judge cap degrades that email to
- *  "not important" (judge/client.ts) — mail flow continues, only surfacing stops. */
-export const JUDGE_DAILY_TOKEN_CAP = Number(process.env.JUDGE_DAILY_TOKEN_CAP || 0);
 /** Daily billed-token cap across ALL roles. 0 = off. */
 export const LLM_DAILY_TOKEN_CAP = Number(process.env.LLM_DAILY_TOKEN_CAP || 0);
 
 const STATS_CACHE_MS = 5 * 60_000;
-const OPS_ROLES = new Set(['ops', 'ops_escalation']);
+const OPS_ROLES = new Set(['ops']);
 
-interface DailySpend { ops: number; judge: number; total: number; fetchedAt: number; dayKey: string }
+interface DailySpend { ops: number; total: number; fetchedAt: number; dayKey: string }
 let cache: DailySpend | null = null;
 let warnedDayKey: string | null = null;
 
@@ -116,14 +111,12 @@ async function fetchDailySpend(now: number, fetchStats: typeof getLlmRoleStats):
     return [];
   });
   let ops = 0;
-  let judge = 0;
   let total = 0;
   for (const s of stats) {
     total += s.totalTokens;
     if (OPS_ROLES.has(s.role)) ops += s.totalTokens;
-    if (s.role === 'judge') judge += s.totalTokens;
   }
-  return { ops, judge, total, fetchedAt: now, dayKey: utcDayKey(now) };
+  return { ops, total, fetchedAt: now, dayKey: utcDayKey(now) };
 }
 
 /** Test seam: reset the 5-minute cache between cases. */
@@ -138,15 +131,15 @@ export async function checkDailyBudget(
   role: string,
   deps: { now?: () => number; fetchStats?: typeof getLlmRoleStats } = {},
 ): Promise<void> {
-  if (!OPS_DAILY_TOKEN_CAP && !JUDGE_DAILY_TOKEN_CAP && !LLM_DAILY_TOKEN_CAP) return;
+  if (!OPS_DAILY_TOKEN_CAP && !LLM_DAILY_TOKEN_CAP) return;
   const now = deps.now?.() ?? Date.now();
   if (!cache || now - cache.fetchedAt > STATS_CACHE_MS || cache.dayKey !== utcDayKey(now)) {
     cache = await fetchDailySpend(now, deps.fetchStats ?? getLlmRoleStats);
   }
   const nearing = (spent: number, cap: number) => cap > 0 && spent >= cap * 0.8 && spent < cap;
-  if ((nearing(cache.ops, OPS_DAILY_TOKEN_CAP) || nearing(cache.judge, JUDGE_DAILY_TOKEN_CAP) || nearing(cache.total, LLM_DAILY_TOKEN_CAP)) && warnedDayKey !== cache.dayKey) {
+  if ((nearing(cache.ops, OPS_DAILY_TOKEN_CAP) || nearing(cache.total, LLM_DAILY_TOKEN_CAP)) && warnedDayKey !== cache.dayKey) {
     warnedDayKey = cache.dayKey;
-    const line = `daily token spend at 80%+ of cap (ops=${cache.ops}/${OPS_DAILY_TOKEN_CAP || '∞'}, judge=${cache.judge}/${JUDGE_DAILY_TOKEN_CAP || '∞'}, total=${cache.total}/${LLM_DAILY_TOKEN_CAP || '∞'})`;
+    const line = `daily token spend at 80%+ of cap (ops=${cache.ops}/${OPS_DAILY_TOKEN_CAP || '∞'}, total=${cache.total}/${LLM_DAILY_TOKEN_CAP || '∞'})`;
     console.warn(`[budget] ${line}`);
     // Once-per-day, sharing warnedDayKey with the console line above: the near-miss is the only
     // warning before a cap trip kills the role, so it needs to outlive the log buffer.
@@ -154,7 +147,6 @@ export async function checkDailyBudget(
       source: 'budget', category: 'budget', severity: 'warn', message: line,
       detail: {
         ops: cache.ops, opsCap: OPS_DAILY_TOKEN_CAP || null,
-        judge: cache.judge, judgeCap: JUDGE_DAILY_TOKEN_CAP || null,
         total: cache.total, totalCap: LLM_DAILY_TOKEN_CAP || null,
         dayKey: cache.dayKey,
       },
@@ -165,9 +157,6 @@ export async function checkDailyBudget(
   }
   if (OPS_DAILY_TOKEN_CAP > 0 && OPS_ROLES.has(role) && cache.ops >= OPS_DAILY_TOKEN_CAP) {
     throw new BudgetExceededError(`daily ops token cap exhausted (${cache.ops}/${OPS_DAILY_TOKEN_CAP})`);
-  }
-  if (JUDGE_DAILY_TOKEN_CAP > 0 && role === 'judge' && cache.judge >= JUDGE_DAILY_TOKEN_CAP) {
-    throw new BudgetExceededError(`daily judge token cap exhausted (${cache.judge}/${JUDGE_DAILY_TOKEN_CAP})`);
   }
 }
 

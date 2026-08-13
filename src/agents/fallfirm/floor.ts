@@ -122,25 +122,3 @@ export function heartbeatText(task?: HeartbeatHint): string {
   return pick(HEARTBEAT_GENERIC);
 }
 
-// "Taking a harder look" beat — sent when a first Ops pass came up short and the orchestrator kicks
-// off a second, deeper look. Frames it as thoroughness, never as a failure (the user never learns a
-// pass came up empty). Hint-aware like the heartbeat so it names the actual thing when there is one.
-const DEEPER_LOOK_GENERIC: readonly string[] = [
-  "this one's taking more digging than usual, staying on it",
-  'taking a closer look at this one, hang tight',
-  'going a little deeper on this one, give me a bit',
-  "still on it, this one needs a closer look",
-];
-const DEEPER_LOOK_WITH_HINT: readonly ((hint: string) => string)[] = [
-  hint => `taking a closer look at ${hint}, hang tight`,
-  hint => `going a bit deeper on ${hint}, give me a sec`,
-  hint => `${hint}'s taking more digging than usual, staying on it`,
-];
-
-/** Floor for the deeper-look ping fired when a first Ops pass came up short and a second look starts. */
-export function deeperLookText(task?: HeartbeatHint): string {
-  const hint = task?.addressHint || task?.dealHint;
-  if (hint && Math.random() < 0.6) return pick(DEEPER_LOOK_WITH_HINT)(hint);
-  return pick(DEEPER_LOOK_GENERIC);
-}
-

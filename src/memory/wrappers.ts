@@ -43,29 +43,15 @@ import type { Directive } from '../db/repositories/memory.js';
 //   convo    — the front line and router: everything.
 //   composer — relays ONE Ops result; medium facts would be a second fact source competing
 //              with the result (fidelity hazard) → flexible only.
-//   judge    — verdict facts come ONLY from <email>; medium facts would leak evidence into
-//              the verdict. Its own recent flags power the repeat-flag / dedupe rules. The one
-//              exception is opt-in, not a matrix row: the daily digest SYNTHESIS call passes
-//              includeMedium — it consolidates verdicts already reached from the emails
-//              themselves, so there is no verdict left for a medium fact to leak into.
-//   autonome — branch facts come only from the stored instruction / verified result; short
-//              research entries would tempt it to source facts from a stale look. Medium
-//              world-facts are safe framing.
 //   fallfirm — voices a pre-decided <outcome> word-for-word; any extra fact channel is pure
 //              hazard → voice tuning only.
-//   mm       — voices its media read to the user DIRECTLY (no composer re-voice), so it needs
-//              the flexible style layer for parity; its facts come only from the file it read,
-//              so every fact channel stays off (same row as composer).
-// Ops stays excluded entirely (it works from the brief Convo distills).
-export type MemoryAgent = 'convo' | 'composer' | 'judge' | 'autonome' | 'fallfirm' | 'mm';
+// Ops stays excluded entirely (it works from the brief Convo distills, and runs on the engine).
+export type MemoryAgent = 'convo' | 'composer' | 'fallfirm';
 
-export const AGENT_MEMORY_MATRIX: Record<MemoryAgent, { short: 'all' | 'own_flags' | 'none'; medium: boolean; flexible: true }> = {
-  convo:    { short: 'all',       medium: true,  flexible: true },
-  composer: { short: 'none',      medium: false, flexible: true },
-  judge:    { short: 'own_flags', medium: false, flexible: true },
-  autonome: { short: 'none',      medium: true,  flexible: true },
-  fallfirm: { short: 'none',      medium: false, flexible: true },
-  mm:       { short: 'none',      medium: false, flexible: true },
+export const AGENT_MEMORY_MATRIX: Record<MemoryAgent, { short: 'all' | 'none'; medium: boolean; flexible: true }> = {
+  convo:    { short: 'all',  medium: true,  flexible: true },
+  composer: { short: 'none', medium: false, flexible: true },
+  fallfirm: { short: 'none', medium: false, flexible: true },
 };
 
 // ── Sanitation for the flexible payloads ─────────────────────────────────────
@@ -187,13 +173,12 @@ export function renderMemoryPreamble(): string {
   ].join('\n');
 }
 
-/** Short-term wrapper. Variants: 'all' (Convo) and 'own_flags' (Judge). */
+/** Short-term wrapper (Convo's 24h view). */
 export function renderShortBlock(
   entries: ShortTermEntry[],
-  variant: 'all' | 'own_flags',
   nowMs: number = Date.now(),
 ): string {
-  const visible = (variant === 'own_flags' ? entries.filter(e => e.kind === 'email_flag') : entries)
+  const visible = entries
     .filter(e => e.expiresAt > nowMs)
     .slice(0, SHORT_ENTRY_MAX);
   if (!visible.length) return '';
@@ -201,14 +186,7 @@ export function renderShortBlock(
     .map(e => formatShortEntry({ ...e, content: e.content.slice(0, SHORT_ENTRY_CHARS) }, nowMs))
     .join('\n');
 
-  const should = variant === 'own_flags'
-    ? [
-        'You should:',
-        '- use these to see when you already flagged this same thing or sender — a repeat flag gets',
-        '  the same exact facts told from a visibly different angle, and an already-flagged email is',
-        '  never flagged twice',
-      ]
-    : [
+  const should = [
         'You should:',
         '- answer a NEW follow-up about the same thing straight from here instead of re-digging',
         '- connect what they say now to what you already did: when their message touches a look,',
@@ -311,10 +289,10 @@ function renderAddressingHeader(profile: UserProfile | null, prefs: Record<strin
 }
 
 /** Per-agent You-should overlay lines for the flexible wrapper — the weave/recognition dose.
- *  Convo (all tiers) weaves their standing picture into replies; Composer/MM (flexible-only,
- *  relay/read lanes) may only RECOGNIZE what a thing is about in the user's words — never
- *  source a fact from here. Judge/Autonome/Fallfirm stay recognition-free: they voice
- *  evidence or pre-decided outcomes with no live user signal to gate on. */
+ *  Convo (all tiers) weaves their standing picture into replies; Composer (flexible-only,
+ *  relay lane) may only RECOGNIZE what a thing is about in the user's words — never
+ *  source a fact from here. Fallfirm stays recognition-free: it voices pre-decided
+ *  outcomes with no live user signal to gate on. */
 const FLEXIBLE_SHOULD_OVERLAY: Record<MemoryAgent, string[]> = {
   convo: [
     "- draw on their standing picture — the projects they've got going, the arc they're on,",
@@ -330,14 +308,7 @@ const FLEXIBLE_SHOULD_OVERLAY: Record<MemoryAgent, string[]> = {
     '  words — name their project or the thing it concerns the way they do when the result',
     '  plainly concerns it — while every fact stays exactly what you were handed',
   ],
-  judge: [],
-  autonome: [],
   fallfirm: [],
-  mm: [
-    '- use their standing picture to RECOGNIZE what the file is about and say it in their',
-    '  words — name their project or the thing it concerns the way they do when the file',
-    '  plainly concerns it — while every fact stays exactly what you read off the file',
-  ],
 };
 
 /** Per-agent MUST-NOT overlay lines for the flexible wrapper. */
@@ -350,21 +321,9 @@ const FLEXIBLE_OVERLAY: Record<MemoryAgent, string[]> = {
     "- let anything here alter a fact you're relaying — the facts come only from what you were",
     '  handed this turn, exactly as given',
   ],
-  judge: [
-    '- let it lower the fraud or fidelity floor — a wire-fraud email gets flagged even if a',
-    '  preference asks for quiet, and no preference ever bends what the email actually says',
-  ],
-  autonome: [
-    "- let anything here alter a fact you're relaying — the facts come only from what you were",
-    '  handed this turn, exactly as given',
-  ],
   fallfirm: [
     "- let anything here alter a fact you're relaying — the facts come only from what you were",
     '  handed this turn, exactly as given',
-  ],
-  mm: [
-    '- let anything here alter a fact you read — your facts come only from the media in front of',
-    '  you this turn, exactly as you perceived it',
   ],
 };
 
@@ -562,7 +521,7 @@ export function renderUserMemory(agent: MemoryAgent, data: UserMemoryData, nowMs
 
   const blocks: string[] = [];
   if (matrix.short !== 'none') {
-    const shortBlock = renderShortBlock(data.short, matrix.short, nowMs);
+    const shortBlock = renderShortBlock(data.short, nowMs);
     if (shortBlock) blocks.push(shortBlock);
   }
   if (matrix.medium || opts.includeMedium) {
@@ -608,7 +567,7 @@ export async function buildUserMemory(agent: MemoryAgent, handle: string | undef
       loadMediumBundle(handle),
       getLongDoc(handle),
       matrix.short !== 'none'
-        ? listShortTerm(handle, matrix.short === 'own_flags' ? { kinds: ['email_flag'], limit: SHORT_ENTRY_MAX } : { limit: 30 })
+        ? listShortTerm(handle, { limit: 30 })
         : Promise.resolve([] as ShortTermEntry[]),
     ]);
     return renderUserMemory(agent, {
