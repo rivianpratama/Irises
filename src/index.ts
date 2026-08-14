@@ -19,6 +19,11 @@ import { createBridgeInboundRouter } from './channels/bridge/inboundRouter.js';
 import { voiceOutcome } from './agents/fallfirm/client.js';
 import { ensureChatId } from './db/repositories/memory.js';
 import { startRetentionTimers } from './db/retention.js';
+import { getVersion } from './update/version.js';
+import { getUpdateStatus, startUpdateChecker } from './update/checker.js';
+import { createUpdateAnnouncer } from './update/announce.js';
+import { writePidFileAtBoot } from './update/pidfile.js';
+import { initSelfUpdate } from './update/selfUpdate.js';
 import { markOpsStart } from './state/opsCoordination.js';
 import { estimateOpsEta } from './agents/etaEstimate.js';
 import { withChatLock } from './state/sendQueue.js';
@@ -70,9 +75,13 @@ app.use(express.json());
 // Context.md version the running process is actually serving (in dev it reflects
 // the latest file via loadContext's mtime hot-reload).
 app.get('/health', (_req, res) => {
+  const u = getUpdateStatus();
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
+    // Which BUILD is live (git sha/branch), and whether the checker has seen a newer one upstream.
+    version: getVersion(),
+    update: { available: u.updateAvailable, remoteSha: u.remoteSha, lastCheckAt: u.lastCheckAt, lastCheckOk: u.lastCheckOk },
     persona: {
       convo: personaFingerprint(loadContext('convo')),
       composer: personaFingerprint(loadContext('composer')),
@@ -864,6 +873,15 @@ app.listen(PORT, () => {
   // windows, ledger age-out, LONG revision caps) + the error/history prunes that arm
   // inside their own modules.
   startRetentionTimers();
+
+  // Update mechanism: a pidfile so `scripts/update.sh --restart` can cycle this process, a periodic
+  // check of the git remote for a newer build, and — woven through Fallfirm/Convo — a proactive
+  // "upgrade available" note plus a "got my upgrades" confirmation after the operator applies it.
+  writePidFileAtBoot();
+  initSelfUpdate({ sendFollowUp });   // wires "update yourself" from chat → detached updater + status voice
+  const updateAnnouncer = createUpdateAnnouncer({ sendFollowUp });
+  startUpdateChecker({ onUpdateDetected: sha => void updateAnnouncer.onUpdateDetected(sha) });
+  void updateAnnouncer.announceUpgradeAppliedIfReceipt();
 
   console.log(`
   Irises — a general, casual, do-anything assistant

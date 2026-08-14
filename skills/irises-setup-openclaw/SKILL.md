@@ -49,3 +49,5 @@ making it. Walk the user through these stages, running the script for the mechan
 - The user keeps using OpenClaw directly exactly as before; Irises is an additional,
   differently-voiced front door that uses it as an engine.
 - To undo bridge mode: `bash scripts/engine-setup.sh --engine openclaw --revert`.
+- To update later: `bash scripts/update.sh` from the clone (pull + rebuild, then restart). Irises
+  also checks for new versions itself and mentions them in chat.

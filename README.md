@@ -21,7 +21,7 @@ moment, texts like a human, and hands the hard work to a **deep-work engine you 
 
 <sub>
 
-[Highlights](#-highlights) • [How it works](#-how-it-works) • [Engines](#-already-running-hermes-agent-or-openclaw) • [Quick start](#-quick-start) • [Channels](#-channels) • [Configuration](#-configuration) • [Models](#-models) • [API](#-http-api) • [Deploy](#-deployment)
+[Highlights](#-highlights) • [How it works](#-how-it-works) • [Engines](#-already-running-hermes-agent-or-openclaw) • [Quick start](#-quick-start) • [Updating](#-updating) • [Channels](#-channels) • [Configuration](#-configuration) • [Models](#-models) • [API](#-http-api) • [Deploy](#-deployment)
 
 </sub>
 
@@ -183,7 +183,7 @@ is offline rather than guess.
 | `npm run copy:context` | The persona/asset copy step on its own |
 | `npm run build:web` | Static web client → `web/out/` (served by the server at `/` in prod) |
 | `npm start` | Run the built server (`node dist/index.js`) |
-| `npm test` | Server unit tests (Node test runner via `tsx --test`, TZ pinned to UTC) |
+| `npm test` | Unit tests for `src/` and `scripts/` (Node test runner via `tsx --test`, TZ pinned to UTC, ephemeral `DATA_BACKEND=memory`) |
 | `npm run install:web` | Install the web client's dependencies |
 
 > The build **must** copy the persona files — the loader fails fast on the first turn that needs a
@@ -193,6 +193,37 @@ is offline rather than guess.
 pointing at a remote instance.
 
 </details>
+
+## 🔄 Updating
+
+**Just tell Irises in chat: "update yourself."** It pulls the latest code, rebuilds, restarts itself,
+and confirms when it's back — no terminal needed. If there's nothing new (or something can't apply) it
+says so. This is single-user by design; if you use bridge mode to front *other people's* chats, set
+`UPDATE_SELF_ENABLED=false` so a fronted contact can't trigger a rebuild.
+
+Prefer the terminal? A git-clone install also updates with one command from the clone:
+
+```bash
+bash scripts/update.sh
+```
+
+It fast-forwards `git pull`s, reinstalls deps and rebuilds (`npm ci && npm run build`, plus the web
+client when it's installed), refreshes the engine bridge plugin **only if `bridge/` changed** (and
+reminds you to restart the gateway), and writes an update receipt. Then **restart the server** to run
+the new build. It's safe by design: fast-forward only (never auto-merges divergent local commits),
+refuses a dirty working tree, and never touches your data under `$IRISES_HOME`.
+
+Flags: `--check` (report only — exit `10` if an update is available, `0` if not), `--yes` (skip the
+prompt), `--restart` (also stop + relaunch via the pidfile), `--no-restart`.
+
+**Irises notices on its own, too.** The running server periodically checks the remote for a newer
+build and surfaces it — on `/health` (`version` + `update` fields), on the `/dashboard` overview
+card, and in chat: it mentions the waiting upgrade once to recently-active chats, woven naturally
+into the conversation, and voices a brief "got my upgrades" after you apply it and restart. Tune or
+silence this with the `UPDATE_*` env vars (see [Configuration](#-configuration)); set
+`UPDATE_ANNOUNCE_ENABLED=false` to keep it quiet, `UPDATE_CHECK_ENABLED=false` to stop checking.
+
+Docker/VM installs update by rebuilding the image instead — see [docs/DEPLOY.md](docs/DEPLOY.md) § 5.
 
 ## 📡 Channels
 
@@ -305,7 +336,7 @@ irises/
 │  └─ diagnostics/         #   /debug traces + /dashboard GUI
 ├─ bridge/                 # engine plugins — hermes (Python) · openclaw (TypeScript)
 ├─ skills/                 # irises-setup-hermes · irises-setup-openclaw (engine-native installers)
-├─ scripts/                # engine-setup.sh · irises-chat.ts (REPL)
+├─ scripts/                # engine-setup.sh · update.sh · irises-chat.ts (REPL)
 ├─ deploy/                 # docker-compose · Caddyfile · app.env · env.vm.example
 ├─ docs/                   # ENGINES.md · CHANNELS.md · DEPLOY.md · PROMPTING_CHARTER.md
 └─ web/                    # web debug client (Next.js, thin SSE client) — its own package

@@ -25,7 +25,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "dev:web": "npm --prefix web run dev",
-    "build": "tsc && cpx \"src/agents/**/*.md\" dist/agents && cpx \"src/**/*.txt\" dist",
+    "build": "tsc && cpx \"src/agents/**/*.md\" dist/agents && cpx \"src/**/*.txt\" dist && node scripts/stamp-version.js",
     "build:web": "npm --prefix web run build",
     "copy:context": "cpx \"src/agents/**/*.md\" dist/agents && cpx \"src/**/*.txt\" dist",
     "start": "node dist/index.js",

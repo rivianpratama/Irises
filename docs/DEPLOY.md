@@ -132,6 +132,50 @@ Docker Compose; the committed non-secret baseline is `deploy/app.env`.
 
 To ship an update: rebuild + push the image, then `docker compose pull && docker compose up -d --wait` on the VM.
 
+### Updating a git-clone install
+
+Installs made with `git clone` + `scripts/engine-setup.sh` (rather than the Docker image) update in
+place:
+
+```bash
+bash scripts/update.sh        # add --check to preview, --yes to skip the prompt, --restart to relaunch
+```
+
+The script fast-forwards `git pull`s the current branch, runs `npm ci && npm run build` (and
+`npm run install:web && npm run build:web` when the web client is present), refreshes the engine
+bridge plugin only if `bridge/` changed between the old and new commit — then reminds you to restart
+the engine gateway — and writes `$IRISES_HOME/update-receipt.json`. Restart the server (or pass
+`--restart`, which cycles it via `$IRISES_HOME/irises.pid`) to run the new build. Your data under
+`$IRISES_HOME` is never touched, and a divergent local branch is never auto-merged (the script stops
+and tells you to reconcile it).
+
+Or skip the terminal entirely: tell Irises **"update yourself"** in chat. It spawns the same
+`scripts/update.sh --yes --restart` as a detached process (so the updater survives the restart), acks
+immediately, and voices the result — "got my upgrades" on success, "already on the latest" or the
+failure reason otherwise. This is single-user by design (`UPDATE_SELF_ENABLED`, default `true`); if
+bridge mode fronts other people's chats, set `UPDATE_SELF_ENABLED=false` so only the terminal path
+remains.
+
+One edge to know: if a new build *compiles* but then crashes on boot, the self-update has already
+stopped the old server to relaunch, so nothing is left running to voice the failure — check
+`$IRISES_HOME/logs/server.log` and `self-update.log`. (A build that fails to compile never restarts, so
+the old server keeps running and voices the failure normally.)
+
+The running server also checks the remote itself and reports what it finds:
+
+- `GET /health` gains a `version` object (git `sha` / `branch` / build stamp) and an `update` object
+  (`available`, `remoteSha`, `lastCheckAt`, `lastCheckOk`).
+- The `/dashboard` overview shows a **version** card that turns amber when an update is available.
+- In chat, Irises mentions a waiting upgrade once to recently-active chats and voices a short
+  confirmation after you apply it.
+
+Knobs (in `deploy/app.env` / `.env`): `UPDATE_CHECK_ENABLED` (default `true`),
+`UPDATE_CHECK_INTERVAL_MS` (default 6h, floored at 15min), `UPDATE_CHECK_BRANCH` (defaults to the
+clone's branch), `UPDATE_ANNOUNCE_ENABLED` (default `true` — `false` keeps detection but sends no
+chat messages), `UPDATE_ANNOUNCE_ACTIVE_WINDOW_MS` (default 48h, the "recently active" window),
+`UPDATE_SELF_ENABLED` (default `true` — the chat "update yourself" trigger). A
+Docker image built without `.git` reports `version.source: "unknown"` and disables the checker.
+
 ---
 
 ## 6. Verification checklist

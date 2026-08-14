@@ -6,6 +6,8 @@ import { driver } from '../../../db/client.js';
 import { getLlmRoleStats } from '../../../db/repositories/tokenUsage.js';
 import { authed } from '../auth.js';
 import { cached } from '../cache.js';
+import { getVersion } from '../../../update/version.js';
+import { getUpdateStatus } from '../../../update/checker.js';
 
 // System-health landing view: process state, since-boot counters, 24h LLM
 // totals, and the global events that never reach the turn store.
@@ -32,11 +34,14 @@ export function registerOverviewRoutes(router: Router): void {
         .filter(ev => !ev.chatId && !ev.handle)
         .slice(-20)
         .map(ev => ({ id: ev.id, ts: ev.ts, type: ev.type, label: ev.label ?? null, role: ev.role ?? null, detail: ev.detail ?? null }));
+      const u = getUpdateStatus();
       res.json({
         now: Date.now(),
         startedAt: counters.startedAt,
         uptimeS: Math.floor((Date.now() - counters.startedAt) / 1000),
         driver,
+        version: getVersion(),
+        update: { available: u.updateAvailable, remoteSha: u.remoteSha, lastCheckAt: u.lastCheckAt, lastCheckOk: u.lastCheckOk },
         diagnostics: {
           enabled: diagnosticsEnabled,
           bufferEvents: getTraces().length,

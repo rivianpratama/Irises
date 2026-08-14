@@ -3,7 +3,7 @@
 // newest-40 cap, insertion-order ties, and the profile upsert/merge semantics.
 import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { getConversation, addMessage, clearConversation } from './conversations.js';
+import { getConversation, addMessage, clearConversation, listActiveChats } from './conversations.js';
 import { getUserProfile, listUserProfiles, updateUserProfile, addUserFact, setUserName, clearUserProfile } from './profiles.js';
 import { resetStorageForTests, stmt } from '../sqlite.js';
 
@@ -52,6 +52,27 @@ test('clearConversation deletes only that chat', async () => {
   await clearConversation('b');
   assert.equal((await getConversation('a')).length, 1);
   assert.deepEqual(await getConversation('b'), []);
+});
+
+test('listActiveChats: distinct chats, recency order, window cutoff, limit', async () => {
+  const ins = stmt('INSERT INTO messages (chat_id, role, content, handle, created_at) VALUES (?,?,?,?,?)');
+  ins.run('web:a', 'user', 'a1', null, 1000);
+  ins.run('web:a', 'user', 'a2', null, 3000); // a's most-recent = 3000
+  ins.run('web:b', 'user', 'b1', null, 5000); // b's most-recent = 5000
+  ins.run('eng:c', 'user', 'c1', null, 2000);
+
+  // Distinct chats, ordered by most-recent activity desc.
+  const all = await listActiveChats(0);
+  assert.deepEqual(all.map(r => r.chatId), ['web:b', 'web:a', 'eng:c']);
+  assert.equal(all.find(r => r.chatId === 'web:a')?.lastAt, 3000);
+
+  // Window cutoff excludes chats whose newest message is at/below the bound.
+  const recent = await listActiveChats(2500);
+  assert.deepEqual(recent.map(r => r.chatId), ['web:b', 'web:a']);
+
+  // Limit caps the row count (still most-recent first).
+  const capped = await listActiveChats(0, 1);
+  assert.deepEqual(capped.map(r => r.chatId), ['web:b']);
 });
 
 test('profiles: upsert merge, fact dedupe, name idempotence, epoch-seconds clock', async () => {

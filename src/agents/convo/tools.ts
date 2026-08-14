@@ -121,6 +121,16 @@ export const CANCEL_RESEARCH_TOOL: LlmToolDef = {
   },
 };
 
+export const UPDATE_SELF_TOOL: LlmToolDef = {
+  name: 'update_self',
+  description: [
+    'Update YOUR OWN software to the latest version — pull the newest code, rebuild, and restart yourself.',
+    'ONLY when the user explicitly asks you to update/upgrade YOURSELF (e.g. "update yourself", "upgrade to the latest", "grab the new version", "install your update"). This is about Irises\'s own code — NOT researching a topic, NOT their apps, NOT anything else. If it\'s ambiguous whether they mean you, ask before calling.',
+    'It takes a moment and you may restart, so ALSO write ONE short holding bubble in your own voice ("on it, grabbing the update now — back in a sec"). If there\'s nothing new you\'ll say so afterwards; you never need to check first.',
+  ].join(' '),
+  inputSchema: { type: 'object', properties: {} },
+};
+
 export const UPDATE_DIRECTIVES_TOOL: LlmToolDef = {
   name: 'update_directives',
   description: [

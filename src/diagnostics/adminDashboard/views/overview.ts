@@ -37,10 +37,19 @@ export const OVERVIEW_JS = `
     var upEl = document.getElementById('ov-top');
     var d = j.diagnostics||{};
     var l = j.llm24h||{calls:0,errors:0,fallbacks:0,totalTokens:0};
-    var fpSrc = JSON.stringify([d, l, j.counters, j.driver, (j.globalEvents||[]).length ? j.globalEvents[j.globalEvents.length-1].id : 0]);
+    var ver = j.version||{};
+    var upd = j.update||{};
+    var fpSrc = JSON.stringify([d, l, j.counters, j.driver, ver.sha, upd, (j.globalEvents||[]).length ? j.globalEvents[j.globalEvents.length-1].id : 0]);
     M.renderIf('ov:all', fpSrc, function(){
+      var vhead = ver.shortSha ? M.esc(ver.shortSha) : (ver.source==='unknown' ? '<span style="color:var(--mut)">unknown</span>' : '—');
+      var vsub;
+      if (upd.available) vsub = '<span style="color:var(--warn)">update available — run <code>bash scripts/update.sh</code></span>';
+      else if (upd.lastCheckAt && upd.lastCheckOk===false) vsub = '<span style="color:var(--mut)">up to date (last remote check failed)</span>';
+      else if (ver.source==='unknown') vsub = 'no git build stamp — update checks off';
+      else vsub = '<span style="color:var(--ok)">up to date</span>'+(ver.branch?' \\u00B7 '+M.esc(ver.branch):'');
       upEl.innerHTML =
         card('uptime', '<span id="ov-uptime">'+M.esc(M.fmtDur(j.uptimeS))+'</span>', 'driver: '+M.esc(j.driver)+(j.driver==='memory'?' — ephemeral, resets on restart':''))
+        + card('version', vhead, vsub)
         + card('diagnostics', d.enabled?'on':'<span style="color:var(--err)">OFF</span>', (d.bufferEvents||0)+' buffered events \\u00B7 '+(d.liveKeys||0)+' live chats')
         + card('LLM (24h)', M.fmtNum(l.calls)+' calls', M.fmtNum(l.totalTokens)+' tokens \\u00B7 '+l.errors+' errors \\u00B7 '+l.fallbacks+' fallbacks');
 

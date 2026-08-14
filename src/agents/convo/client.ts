@@ -4,8 +4,9 @@ import {
   REACTION_TOOL, REMEMBER_USER_TOOL, DELEGATE_TO_OPS_TOOL,
   RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL, SET_PREFERENCE_TOOL,
   SCHEDULE_AUTOMATION_TOOL, LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL, CANCEL_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL,
-  UPDATE_MEMORY_TOOL,
+  UPDATE_MEMORY_TOOL, UPDATE_SELF_TOOL,
 } from './tools.js';
+import { selfUpdateEnabled } from '../../update/selfUpdate.js';
 import { rememberMedia } from './mediaRecall.js';
 import { getPreference, ensureChatId, clearDossier } from '../../db/repositories/memory.js';
 import { memoryHandle, isGroupHandle } from '../../memory/identity.js';
@@ -23,6 +24,7 @@ import type { LlmMessage, LlmToolDef } from '../../llm/types.js';
 import { buildSystemPrompt, convoPersonaChars, processConvoResult, formatHistory, emptyExtras, callConvoLLM, annotateTappedReply } from './shared.js';
 import { voiceOutcome } from '../fallfirm/client.js';
 import { helpText } from '../fallfirm/floor.js';
+import { claimPendingUpdateNote } from '../../update/announce.js';
 import type { ChatContext, ChatResponse, Reaction } from './shared.js';
 
 // Shared front-line types/helpers live in ./shared.js. Re-export the types so existing imports of
@@ -157,6 +159,8 @@ export async function chat(
     UPDATE_MEMORY_TOOL,
   ];
   if (chatContext?.isGroupChat) tools.push(RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL);
+  // "update yourself" from chat — offered only when enabled (single-user by design; see selfUpdate.ts).
+  if (selfUpdateEnabled()) tools.push(UPDATE_SELF_TOOL);
 
   // Label the current turn with when it actually ARRIVED, not lock-acquisition time — a message that
   // queued behind the chat lock (while a follow-up delivered) would otherwise read as arriving after
@@ -172,10 +176,14 @@ export async function chat(
   // Synchronous read of what Ops is working on for this chat RIGHT NOW (in-memory, race-free).
   const activeOps = getActiveOps(chatId);
 
+  // If a version update is pending and this chat hasn't been told yet, weave a one-off mention into
+  // this reply (claimed once per chat per version — this suppresses the cold proactive push for it).
+  const updateNote = claimPendingUpdateNote(chatId);
+
   try {
     const res = await callConvoLLM({
       role: 'convo',
-      system: buildSystemPrompt(chatContext, contextBlock, activeOps, undefined, tools, history, textToSend, agentTz || undefined),
+      system: buildSystemPrompt(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined),
       // The persona is the stable HEAD of that system string; mark its length so the Anthropic lane
       // caches the persona across turns instead of cache-writing the whole per-turn-varying system.
       systemCachePrefixLen: convoPersonaChars(),

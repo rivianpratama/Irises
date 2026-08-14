@@ -29,6 +29,7 @@ import { record } from '../../diagnostics/trace.js';
 import { reportError } from '../../diagnostics/errorLog.js';
 import { voiceOutcome, type Outcome } from '../fallfirm/client.js';
 import { voiceInstant } from '../fallfirm/voiceInstant.js';
+import { requestSelfUpdate } from '../../update/selfUpdate.js';
 import { recallMedia, MEDIA_RECALL_TTL_MS } from './mediaRecall.js';
 import { hasMedia, type IncomingMedia } from '../../webhook/types.js';
 import type { LlmRequest, LlmResult, LlmMessage, LlmToolDef } from '../../llm/types.js';
@@ -927,6 +928,11 @@ export async function processConvoResult(args: {
       const { note, acted } = await handleUpdateDirectives(input, handle);
       if (note) outcomeParts.push(note);
       else if (acted) directiveActed = true;
+    } else if (call.name === 'update_self') {
+      // Chat-triggered self-update: spawns the detached updater and returns an "on it" ack (or a
+      // reason it can't). A 'confirmed' ack only voices if the model wrote no holding bubble; a
+      // 'failed' reason replaces the model's optimistic text (assembly below).
+      outcomeParts.push(await requestSelfUpdate(chatId, handle));
     }
   }
 

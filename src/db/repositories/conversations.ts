@@ -58,6 +58,27 @@ export async function addMessage(
   return at;
 }
 
+/**
+ * Distinct chats with any message newer than `sinceMs`, most-recent first — the audience for a
+ * proactive update announcement. Reuses idx_messages_chat_created; the 7d message window keeps the
+ * scan small. Returns [] on any error (same fail-soft contract as getConversation).
+ */
+export async function listActiveChats(sinceMs: number, limit = 20): Promise<{ chatId: string; lastAt: number }[]> {
+  try {
+    const rows = stmt(
+      `SELECT chat_id AS chatId, MAX(created_at) AS lastAt FROM messages
+       WHERE created_at > ?
+       GROUP BY chat_id
+       ORDER BY lastAt DESC
+       LIMIT ?`
+    ).all(sinceMs, limit) as unknown as { chatId: string; lastAt: number }[];
+    return rows;
+  } catch (error) {
+    logDbError('listActiveChats', error);
+    return [];
+  }
+}
+
 export async function clearConversation(chatId: string): Promise<void> {
   try {
     stmt('DELETE FROM messages WHERE chat_id = ?').run(chatId);
