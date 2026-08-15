@@ -18,6 +18,11 @@ that delegates ALL deep work (research, files, memory) to the OpenClaw gateway i
 OpenClaw stays completely unmodified; Irises talks to it only over the Gateway WebSocket `agent`
 RPC using the existing gateway token.
 
+Irises rides **on top of** this OpenClaw: on boot it auto-detects it (sets `OPS_BACKEND=openclaw`),
+reuses the gateway token, and makes its own voice **inherit OpenClaw's model** — so there is nothing
+to configure by hand. The setup below just installs the gateway client and generates the push token;
+everything else is derived at boot.
+
 ## What setup does
 
 The repository ships an idempotent script that performs every step and prints each change before

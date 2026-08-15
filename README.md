@@ -141,33 +141,71 @@ Full guide, diagrams, and security notes: **[docs/ENGINES.md](docs/ENGINES.md)**
 
 ## 🚀 Quick start
 
-> **Prerequisites:** Node 22.13+ (the local store uses the builtin `node:sqlite`) and at least one LLM key (`ANTHROPIC_API_KEY` and/or
-> `OPENROUTER_API_KEY`). No database required — the in-memory backend runs infra-free, and no engine
-> is needed just to chat.
+Irises is meant to sit **on top of the engine you already run**, so the default way to install it is
+to **let that engine set it up** — no npm, no config files. Ask your hermes or OpenClaw, and it clones
+Irises, wires it in, and starts it from one command in its own CLI:
+
+```bash
+# hermes — let your own agent install + set it up:
+hermes skills install https://raw.githubusercontent.com/rivianpratama/irises/main/skills/irises-setup-hermes/SKILL.md
+#   then, in any hermes chat:  /irises-setup-hermes
+
+# OpenClaw:
+openclaw skills install git:rivianpratama/irises
+#   then ask OpenClaw to run the  irises-setup-openclaw  skill
+```
+
+That's the whole setup. On boot Irises **auto-detects your engine** (`OPS_BACKEND` is set for you),
+**reuses the engine's API key**, and makes its own voice **inherit the engine's model** — so *the model
+Irises speaks with is the model your engine uses*. **There is no `.env` to write** (you still can — see
+[Configuration](#-configuration) — anything you set wins). Full guide, bridge mode, and security notes:
+**[docs/ENGINES.md](docs/ENGINES.md)**.
+
+> **Prerequisites:** Node 22.13+ (the local store uses the builtin `node:sqlite`). No database, and —
+> when you install onto an engine — no keys or config of your own: Irises reuses what the engine
+> already has.
+
+<details>
+<summary><b>Prefer to wire it up by hand? (still on top of your engine)</b></summary>
+
+<br/>
+
+```bash
+git clone https://github.com/rivianpratama/irises && cd irises
+bash scripts/engine-setup.sh --engine hermes     # or: --engine openclaw
+```
+
+The script is idempotent and prints every change before making it: it enables the engine's API
+surface if needed, generates the push token, and derives everything else at boot. See
+[docs/ENGINES.md](docs/ENGINES.md).
+
+</details>
+
+<details>
+<summary><b>🐛 Debug: run standalone, with no engine at all</b></summary>
+
+<br/>
+
+This is the **debug path** — Irises with no deep-work engine behind it. Convo still chats, but every
+research/email/files/reminders request answers honestly that its deep half is offline. Use it to hack
+on the persona and pipeline without an engine running.
 
 ```bash
 # 1. install both packages (server + web client)
 npm install && npm run install:web
 
-# 2. configure — copy the template and add your key(s)
+# 2. add at least one LLM key (no engine to borrow one from here)
 cp .env.example .env
-#   add ANTHROPIC_API_KEY / OPENROUTER_API_KEY (state persists to ~/.irises by default)
-#   (leave OPS_BACKEND commented out for now — deep work stays offline, chat still works)
+#   set ANTHROPIC_API_KEY and/or OPENROUTER_API_KEY (leave OPS_BACKEND unset)
 
 # 3. run the brain  →  http://localhost:3000
 npm run dev
 
-# 4. talk to Irises — in the browser…
-npm run dev:web
-
-# …or straight from a second terminal
+# 4. talk to Irises — in the browser (npm run dev:web) or a second terminal:
 npm run chat
 ```
 
-That's it — **no accounts or engine setup needed** to chat with Irises locally. When
-you're ready for the deep half, point `OPS_BACKEND` at your engine (see
-[docs/ENGINES.md](docs/ENGINES.md)) — until then Irises will tell you plainly that its research side
-is offline rather than guess.
+</details>
 
 <details>
 <summary><b>Build & run scripts</b></summary>
@@ -239,14 +277,16 @@ the routing model and a guide to adding your own.
 
 ## ⚙️ Configuration
 
-All server config is environment variables. `deploy/app.env` holds the committed, non-secret baseline
-(models, pacing, intervals) and is loaded first; your local `.env` layers on top with secrets and
-overrides. The essentials:
+**On top of an engine you normally set none of this** — Irises auto-detects the backend, reuses the
+engine's key, and inherits its model (see [Models](#-models)). Everything here is optional override.
+Config is environment variables, layered lowest → highest: `deploy/app.env` (committed, non-secret
+baseline) loads first, then **engine auto-discovery** fills in / updates what it can from your engine,
+then your local `.env` layers on top and wins over both. The knobs you're most likely to touch:
 
 | Variable | Purpose |
 |----------|---------|
-| `ANTHROPIC_API_KEY` · `OPENROUTER_API_KEY` | The two LLM lanes — at least one, both recommended |
-| `OPS_BACKEND` | `hermes` or `openclaw`. Unset = deep work offline (Convo still chats) |
+| `ANTHROPIC_API_KEY` · `OPENROUTER_API_KEY` | The two LLM lanes — auto-reused from the engine when present; set to override |
+| `OPS_BACKEND` | `hermes` or `openclaw` — **auto-detected**; set to force one. Unset + no engine found = deep work offline (Convo still chats) |
 | `HERMES_BASE_URL` · `HERMES_API_KEY` | hermes-agent's OpenAI-compatible API server + cron REST |
 | `OPENCLAW_URL` · `OPENCLAW_TOKEN` | OpenClaw gateway WebSocket |
 | `ENGINE_PUSH_TOKEN` | One secret guarding both engine-facing routes (push + bridge inbound) |
@@ -262,8 +302,9 @@ overrides. The essentials:
 
 | Variable | Purpose |
 |----------|---------|
-| `OPS_BACKEND` | `hermes` \| `openclaw`; unset = deep work offline, no local fallback. |
-| `HERMES_BASE_URL` · `HERMES_API_KEY` | hermes API server (default `http://127.0.0.1:8642`) and its `API_SERVER_KEY`. |
+| `OPS_BACKEND` | `hermes` \| `openclaw`; **auto-detected at boot** from the installed engine — set to force one. Unset + none found = deep work offline, no local fallback. |
+| `ENGINE_MODEL_INHERIT` | `off` to stop Irises's voice roles inheriting the engine's model and keep its own shipped models (default: on). |
+| `HERMES_BASE_URL` · `HERMES_API_KEY` | hermes API server (default `http://127.0.0.1:8642`) and its `API_SERVER_KEY` (auto-derived from `~/.hermes/.env` when unset). |
 | `OPENCLAW_URL` · `OPENCLAW_TOKEN` · `OPENCLAW_AGENT_ID` | Gateway WS (default `ws://127.0.0.1:18789`), auth token, agent (default `main`). |
 | `ENGINE_PUSH_TOKEN` | Shared secret for `POST /api/engine/push` (`x-engine-token`) **and** `POST /api/bridge/inbound` (`x-bridge-token`). Unset = loopback-only. |
 | `ENGINE_TIMEOUT_MS` · `ENGINE_MAX_CONCURRENT` | Per-call budget (default `OPS_TASK_TIMEOUT_MS − 15s`) and the engine-call semaphore (default 2). |
@@ -296,19 +337,28 @@ overrides. The essentials:
 
 ## 🤖 Models
 
-Deep research has no model here — **it runs on your engine's model**. Irises itself only calls an LLM
-for three roles, shipped OpenRouter-primary with an Anthropic fallback lane:
+**By default, Irises speaks with your engine's model.** Deep work already runs on the engine; on top
+of that, at boot Irises reads the model your hermes/OpenClaw is configured with and uses it for its own
+three voice roles too — so there's *one* model, not two. Both engines express their model as a
+`provider/model` slug, which Irises's OpenRouter lane consumes verbatim (an exact match), reusing the
+engine's key. Nothing to configure.
 
-| Role | Shipped primary | Anthropic fallback |
+Override any role independently whenever you want (say, a cheaper/faster voice): set `<ROLE>_MODEL` /
+`<ROLE>_MODEL_OPENROUTER` / `<ROLE>_PROVIDER` — anything you set wins over what's inherited. To stop
+inheriting and keep Irises's own shipped models instead, set `ENGINE_MODEL_INHERIT=off`.
+
+With **no engine** (the debug/standalone path) Irises falls back to its own shipped models — three
+roles, OpenRouter-primary with an Anthropic fallback lane:
+
+| Role | Standalone default | Anthropic fallback |
 |------|-----------------|--------------------|
 | **Convo** — front line (and the Composer re-voice) | `openai/gpt-5.6-luna:nitro` | `claude-sonnet-5` |
 | **Classify** — routing, preference screens, failure triage | `openai/gpt-5.6-luna:nitro` | `claude-sonnet-4-6` |
 | **Fallfirm** — holding beats + recovery voice | `openai/gpt-5.6-luna:nitro` | `claude-sonnet-4-6` |
-| **Transcribe** — voice memos | `google/gemini-3.5-flash-lite:nitro` | *(OpenRouter only)* |
+| **Transcribe** — voice memos *(never inherited — needs an audio model)* | `google/gemini-3.5-flash-lite:nitro` | *(OpenRouter only)* |
 
-Either provider can be primary per role: `<ROLE>_PROVIDER` picks the lane, and the other one becomes
-the automatic fallback on 5xx / 429 / network errors. With no `<ROLE>_PROVIDER` set, the code
-defaults are Anthropic-primary; `deploy/app.env` is what flips the shipped config to OpenRouter.
+`<ROLE>_PROVIDER` picks the primary lane per role; the other becomes the automatic fallback on 5xx /
+429 / network errors.
 
 ## 🔌 HTTP API
 

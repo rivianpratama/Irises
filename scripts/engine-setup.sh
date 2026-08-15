@@ -4,6 +4,12 @@
 #   bash scripts/engine-setup.sh --engine hermes            # or: openclaw
 #   bash scripts/engine-setup.sh --engine hermes --revert   # undo bridge mode (unfront / uninstall plugin)
 #
+# NOTE: Irises ALSO auto-detects the engine at boot (src/agents/ops/engineDiscovery.ts) — it sets
+# OPS_BACKEND, reuses the engine's API key, and inherits its model with no .env. This script does the
+# parts discovery can't: enabling the engine's API surface, generating the push token, and (optionally)
+# installing the bridge plugin. The .env values it writes are just made explicit — harmless and
+# overrideable. So it's the "fuller wiring" path; plain boot-time discovery covers the basics alone.
+#
 # Idempotent: safe to re-run. Every config change is printed before it is made, engine config is
 # only ever APPENDED to (hermes) or read (OpenClaw), and nothing in either engine's code is touched.
 set -euo pipefail
