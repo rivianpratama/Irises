@@ -26,11 +26,13 @@
 // sanitizeDirectives in src/memory/preferences.ts. This module only persists.
 
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { logDbError } from '../client.js';
 import { memoriesDir } from '../stateDir.js';
 import { atomicWriteText, readTextIfExists, appendText } from '../files.js';
 import { withHandleLock } from './memory.js';
+import { archiveEntries, type ArchiveSource } from './memoryArchive.js';
 
 export type MediumKind = 'fact' | 'directive' | 'important_note';
 export type MediumStatus = 'active' | 'superseded' | 'retracted';
@@ -62,6 +64,17 @@ export class MediumWriteError extends Error {
 // by superseding the oldest active entry after an insert lands — never by refusing the new one.
 export const MAX_ACTIVE_DIRECTIVES = 40;
 export const MAX_ACTIVE_NOTES = 20;
+
+/** supersededBy sentinel for a cap eviction. The old code pointed the evicted row at whichever
+ *  entry happened to trip the cap, which reads as "replaced by that" in the lineage — it wasn't;
+ *  it aged out. A sentinel says why. */
+export const CAP_EVICTED = 'cap-eviction';
+
+/** MEDIUM.archive.md is append-only, so it grows forever. Rotated once it passes this size,
+ *  keeping the newest MEDIUM_ARCHIVE_KEEP parsable entries — the deep lineage lives in the
+ *  memory_archive table (searchable), and this file is the human-readable recent tail. */
+export const MEDIUM_ARCHIVE_MAX_BYTES = 256 * 1024;
+export const MEDIUM_ARCHIVE_KEEP = 200;
 
 const WRITE_ATTEMPTS = 2;
 
@@ -169,11 +182,60 @@ function writeActive(handle: string, file: ActiveFile): void {
   atomicWriteText(activePath(handle), parts.length ? `${FILE_HEADER}\n${parts.join(DELIM)}\n` : `${FILE_HEADER}\n`);
 }
 
-/** Append retired entries to the lineage ledger. Each append ends with the delimiter, so
- *  a torn tail is skipped by the tolerant parser instead of corrupting the next entry. */
+/** Why this entry left the active file, for the archive table's `source` column. */
+function retireSource(e: MediumEntry): ArchiveSource {
+  if (e.status === 'retracted') return 'medium_retracted';
+  if (e.supersededBy === CAP_EVICTED) return 'medium_cap_evicted';
+  return 'medium_superseded';
+}
+
+/**
+ * The ONE choke point for retiring entries: every retire path (edit, retraction, cap eviction,
+ * the /forget sweep) funnels through here, so the searchable archive table and the human-readable
+ * ledger file can never disagree about what was retired.
+ *
+ * Each append ends with the delimiter, so a torn tail is skipped by the tolerant parser instead
+ * of corrupting the next entry. Callers already hold the handle lock and run inside durably(),
+ * so the rotation below is safe to do in place.
+ */
 function appendArchive(handle: string, retired: MediumEntry[]): void {
   if (!retired.length) return;
+  // Table copy FIRST and fire-and-forget: archiveEntries never throws or rejects (it is the
+  // lineage bonus, not the job), so a DB hiccup must not stop the ledger append below.
+  void archiveEntries(retired.map(e => ({
+    source: retireSource(e),
+    agentHandle: handle,
+    kind: e.kind,
+    request: e.key,
+    content: e.body,
+    meta: { mediumId: e.id, status: e.status, source: e.source, supersededBy: e.supersededBy },
+    createdAt: e.createdAt,
+  })));
   appendText(archivePath(handle), retired.map(e => renderEntry(e) + DELIM).join(''));
+  rotateArchiveIfLarge(handle);
+}
+
+/** Trim MEDIUM.archive.md back to its newest entries once it passes the size cap. Unparsable
+ *  segments are dropped here (they were already invisible to loadArchive) — the entries
+ *  themselves survive in memory_archive, which is what recall actually searches. */
+function rotateArchiveIfLarge(handle: string): void {
+  const p = archivePath(handle);
+  let size = 0;
+  try {
+    size = fs.statSync(p).size;
+  } catch {
+    return; // no file / unreadable — nothing to rotate
+  }
+  if (size <= MEDIUM_ARCHIVE_MAX_BYTES) return;
+  try {
+    const entries = loadArchive(handle);
+    const keep = entries.slice(-MEDIUM_ARCHIVE_KEEP);
+    atomicWriteText(p, keep.map(e => renderEntry(e) + DELIM).join(''));
+    console.log(`[memory-medium] rotated ${path.basename(p)} for ${handle}: kept the newest ${keep.length} of ${entries.length} entries (deep lineage lives in memory_archive)`);
+  } catch (error) {
+    // A failed rotation is a big file, not a lost write — the append already landed.
+    logDbError('memory-medium archive rotation', error);
+  }
 }
 
 function loadArchive(handle: string): MediumEntry[] {
@@ -217,7 +279,26 @@ export async function listMediumActive(handle: string, kinds?: MediumKind[]): Pr
   }
 }
 
-/** Every entry for a handle including superseded/retracted (a lineage/debug view). */
+/**
+ * Unannotated segments of MEDIUM.md — hand edits, or an entry whose annotation got mangled.
+ * They are preserved verbatim on every rewrite but never RENDERED into a prompt, so without a
+ * way to see them a corrupted entry is silently absent from Irises's memory. Surfaced in the
+ * dashboard's memory inspector (mediumPreserved) alongside the once-per-handle warn.
+ */
+export async function listMediumPreserved(handle: string): Promise<string[]> {
+  try {
+    return loadActive(handle).preserved;
+  } catch (error) {
+    logDbError('listMediumPreserved', error);
+    return [];
+  }
+}
+
+/**
+ * Every entry for a handle including superseded/retracted (a lineage/debug view). Bounded by
+ * MEDIUM.archive.md's rotation — the DEEP lineage (and the only searchable copy) lives in the
+ * memory_archive table (memoryArchive.ts), which every retire path feeds through appendArchive.
+ */
 export async function listMediumAll(handle: string): Promise<MediumEntry[]> {
   try {
     return [...loadActive(handle).entries, ...loadArchive(handle)].sort((a, b) => a.createdAt - b.createdAt);
@@ -230,7 +311,7 @@ export async function listMediumAll(handle: string): Promise<MediumEntry[]> {
 /** Move active entries beyond a kind's cap to the archive as superseded-by-newest. Runs
  *  inside the caller's read-modify-write (a brief over-cap was harmless before; now the
  *  cap simply lands in the same rewrite). */
-function enforceCap(file: ActiveFile, kind: MediumKind, cap: number, newestId: string, retired: MediumEntry[]): void {
+function enforceCap(file: ActiveFile, kind: MediumKind, cap: number, retired: MediumEntry[]): void {
   const active = file.entries
     .filter(e => e.status === 'active' && e.kind === kind)
     .sort((a, b) => a.createdAt - b.createdAt);
@@ -239,7 +320,7 @@ function enforceCap(file: ActiveFile, kind: MediumKind, cap: number, newestId: s
   const now = Date.now();
   for (const old of active.slice(0, excess)) {
     old.status = 'superseded';
-    old.supersededBy = newestId;
+    old.supersededBy = CAP_EVICTED; // aged out, NOT replaced by the entry that tripped the cap
     old.updatedAt = now;
     file.entries = file.entries.filter(e => e.id !== old.id);
     retired.push(old);
@@ -265,7 +346,7 @@ export async function addDirective(handle: string, text: string, source = 'convo
       };
       file.entries.push(entry);
       const retired: MediumEntry[] = [];
-      enforceCap(file, 'directive', MAX_ACTIVE_DIRECTIVES, entry.id, retired);
+      enforceCap(file, 'directive', MAX_ACTIVE_DIRECTIVES, retired);
       appendArchive(handle, retired);
       writeActive(handle, file);
       return entry;
@@ -359,7 +440,7 @@ export async function addImportantNote(handle: string, note: string, source = 'c
       };
       file.entries.push(entry);
       const retired: MediumEntry[] = [];
-      enforceCap(file, 'important_note', MAX_ACTIVE_NOTES, entry.id, retired);
+      enforceCap(file, 'important_note', MAX_ACTIVE_NOTES, retired);
       appendArchive(handle, retired);
       writeActive(handle, file);
       return clean;

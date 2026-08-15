@@ -1,20 +1,20 @@
-// The voice of the update system. Every user-facing word goes through Fallfirm (voiceOutcome) or,
-// for the mid-conversation weave, through Convo — never a hardcoded string (see fallfirm/floor.ts).
+// The voice of the update system. Every user-facing word is written by a model — the Composer on
+// the proactive path, Convo on the mid-conversation weave — never a hardcoded string (see
+// fallfirm/floor.ts).
 //
 // Two moments, two paths:
-//   • availability — the checker detects a new remote build → a proactive Fallfirm note to
-//     recently-active chats ("you've got an upgrade waiting, run this to apply it"), delivered on
-//     the same per-chat mouth the engine-push feature uses (src/webhook/enginePush.ts).
+//   • availability — the checker detects a new remote build → a proactive note to recently-active
+//     chats ("you've got an upgrade waiting, run this to apply it"), handed to the shared proactive
+//     delivery pipeline (src/pipeline/proactiveDelivery.ts) that the engine-push door also uses, so
+//     it inherits identity resolution, idempotency and quiet-hours deferral for free.
 //   • upgrade applied — the operator ran scripts/update.sh and restarted → on boot the receipt is
-//     consumed and Fallfirm voices a light "got my upgrades" confirmation.
+//     consumed and a light "got my upgrades" confirmation goes out the same way.
 //
 // A live conversation gets the availability note WOVEN in instead of a cold push: claimPendingUpdateNote()
 // hands Convo a one-off prompt note for its next reply. Both paths claim through the same
 // claimAnnouncement() gate, so a chat is told exactly once per version — weave OR push, never both.
 
-import { voiceOutcome } from '../agents/fallfirm/client.js';
-import type { Outcome } from '../agents/fallfirm/floor.js';
-import type { SendFollowUp } from '../agents/orchestrator.js';
+import type { ProactiveMessage, ProactiveOutcome } from '../pipeline/proactiveDelivery.js';
 import { listActiveChats } from '../db/repositories/conversations.js';
 import { parseChannelKind, getChannel } from '../channels/registry.js';
 import { reportError } from '../diagnostics/errorLog.js';
@@ -43,27 +43,26 @@ function defaultRoutable(chatId: string): boolean {
   return !!kind && !!getChannel(kind);
 }
 
-function availabilityOutcome(shortSha: string): Outcome {
-  return {
-    kind: 'confirmed',
-    summary:
-      'a newer version of you is ready for the server you run on — mention it once, casual and brief, like you heard you have an upgrade waiting. nothing changes until your person applies it, so hand them the command and leave it with them.',
-    // relayed word-for-word (the consent-URL precedent): the command must land exactly.
-    facts: `to apply: run \`${APPLY_COMMAND}\` from the Irises folder, then restart the server (new build ${shortSha})`,
-    nextStep: 'they can run it whenever suits — you keep working exactly as you are until then',
-  };
+/** The apply command, relayed word-for-word (the consent-URL precedent): it must land exactly. */
+function availabilityText(shortSha: string): string {
+  return `to apply: run \`${APPLY_COMMAND}\` from the Irises folder, then restart the server (new build ${shortSha})`;
 }
 
-function upgradedOutcome(receipt: UpdateReceipt, shortSha: string): Outcome {
-  // Commit subjects are DEV copy, so they ride `summary` (voiced, never verbatim), NOT `facts`.
+function availabilityFraming(): string {
+  return 'this one is about you: a newer version of you is ready for the server you run on. mention it once, casual and brief, like you heard you have an upgrade waiting. nothing changes until your person applies it, so hand them the command exactly as written and leave it with them — they can run it whenever suits, and you keep working exactly as you are until then.';
+}
+
+function upgradedText(shortSha: string): string {
+  return `now on build ${shortSha}`;
+}
+
+function upgradedFraming(receipt: UpdateReceipt): string {
+  // Commit subjects are DEV copy, so they ride the FRAMING (voiced, never relayed verbatim).
   const highlights = receipt.changes.slice(0, 5).join('; ');
-  return {
-    kind: 'confirmed',
-    summary:
-      'you just came back from an upgrade your person applied — you are running the new version now. say it once, light and personal (like "got my upgrades, back and good as new"), never a changelog dump. for your own awareness only, paraphrase at most one highlight or none: ' +
-      (highlights || '(no notable highlights)'),
-    facts: `now on build ${shortSha}`,
-  };
+  return (
+    'this one is about you: you just came back from an upgrade your person applied, and you are running the new version now. say it once, light and personal (like "got my upgrades, back and good as new"), never a changelog dump. for your own awareness only, paraphrase at most one highlight or none: ' +
+    (highlights || '(no notable highlights)')
+  );
 }
 
 export interface UpdateAnnouncer {
@@ -73,7 +72,10 @@ export interface UpdateAnnouncer {
   announceUpgradeAppliedIfReceipt(): Promise<void>;
 }
 
-export function createUpdateAnnouncer(deps: { sendFollowUp: SendFollowUp; isRoutable?: (chatId: string) => boolean }): UpdateAnnouncer {
+export function createUpdateAnnouncer(deps: {
+  deliver: (msg: ProactiveMessage) => Promise<ProactiveOutcome>;
+  isRoutable?: (chatId: string) => boolean;
+}): UpdateAnnouncer {
   const isRoutable = deps.isRoutable ?? defaultRoutable;
 
   async function audience(): Promise<string[]> {
@@ -81,12 +83,18 @@ export function createUpdateAnnouncer(deps: { sendFollowUp: SendFollowUp; isRout
     return chats.map(c => c.chatId).filter(isRoutable);
   }
 
-  // Thunk-voiced and mouth-locked (via sendFollowUp), so Fallfirm reads the thread AS it will look
-  // when the note lands — that is what lets even a cold push read as woven-in. Returns whether the
-  // send succeeded so the caller can release its claim on failure.
-  async function deliver(chatId: string, makeOutcome: () => Outcome, label: string): Promise<boolean> {
+  // The shared proactive pipeline voices this through the Composer under the per-chat mouth, so it
+  // reads the thread AS it will look when the note lands — that is what lets even a cold push read
+  // as woven-in. Returns whether the announcement is SETTLED: sent, dropped by a staleness guard,
+  // parked for morning, or already told (a duplicate) all count; only a genuine failure releases the
+  // claim so the weave can still recover it on the chat's next turn.
+  async function deliver(chatId: string, msg: ProactiveMessage, label: string): Promise<boolean> {
     try {
-      await deps.sendFollowUp(chatId, () => voiceOutcome(makeOutcome(), chatId, ''), {});
+      const outcome = await deps.deliver(msg);
+      if (outcome === 'failed') {
+        reportError({ source: 'process', category: 'update_announce', severity: 'warn', chatId, message: `update ${label} announce failed`, trace: false });
+        return false;
+      }
       return true;
     } catch (err) {
       reportError({ source: 'process', category: 'update_announce', severity: 'warn', err, chatId, message: `update ${label} announce failed`, trace: false });
@@ -103,7 +111,10 @@ export function createUpdateAnnouncer(deps: { sendFollowUp: SendFollowUp; isRout
       // weave can't double-fire during the await; on a delivery failure, release the claim so the note
       // can still recover on the chat's next turn (the checker won't re-fire for the same sha).
       if (!claimAnnouncement(remoteSha, chatId)) continue;
-      const ok = await deliver(chatId, () => availabilityOutcome(short), 'availability');
+      const ok = await deliver(chatId, {
+        chatId, kind: 'update', text: availabilityText(short), framing: availabilityFraming(),
+        dedupeKey: `update:availability:${short}:${chatId}`,
+      }, 'availability');
       if (!ok) unclaimAnnouncement(remoteSha, chatId);
     }
   }
@@ -132,15 +143,18 @@ export function createUpdateAnnouncer(deps: { sendFollowUp: SendFollowUp; isRout
     // The consume-rename above is the once-guard across boots, so this sweep needs no per-chat claim;
     // it visits each active chat once.
     for (const chatId of await audience()) {
-      await deliver(chatId, () => upgradedOutcome(receipt, short), 'upgraded');
+      await deliver(chatId, {
+        chatId, kind: 'update', text: upgradedText(short), framing: upgradedFraming(receipt),
+        dedupeKey: `update:applied:${short}:${chatId}`,
+      }, 'upgraded');
     }
   }
 
   return { onUpdateDetected, announceUpgradeAppliedIfReceipt };
 }
 
-/** Test seam: the outcome builders (kept private to the module otherwise). */
-export const _internal = { availabilityOutcome, upgradedOutcome };
+/** Test seam: the text/framing builders (kept private to the module otherwise). */
+export const _internal = { availabilityText, availabilityFraming, upgradedText, upgradedFraming };
 
 /**
  * The weave seam Convo calls on every turn. Returns a one-off prompt note (system-authored guidance,

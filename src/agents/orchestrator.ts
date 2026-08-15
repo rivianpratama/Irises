@@ -1,27 +1,20 @@
-import { callLLM } from '../llm/callLLM.js';
-import { loadContext } from './loadContext.js';
 import { runTask } from './ops/client.js';
 import { withDeadline, DeadlineError } from './deadline.js';
 import { setPreference } from '../db/repositories/memory.js';
 import { addShortTerm } from '../db/repositories/memoryShort.js';
-import { buildUserMemory } from '../memory/wrappers.js';
+import { composeWithComposer } from './composerCore.js';
 import { markOpsDone, isOpsCancelled, noteOpsProgress, markOpsRetry, getOpsEtaStatus } from '../state/opsCoordination.js';
 import { detectCause, decide, splitMiss, type TriageDecision } from './ops/triage.js';
 import { selectInterveningUserMessages } from './interveningMessages.js';
-import { getConversation } from '../state/conversation.js';
-import { redactInternalTools, stripEchoedHolding } from './guardrails.js';
-import { parseReply } from '../pipeline/bubbleJson.js';
-import { stripReplyTag } from '../state/replyThreading.js';
-import { timestampLabel, describeGap } from '../pipeline/chatTime.js';
+import { redactInternalTools } from './guardrails.js';
+import { describeGap } from '../pipeline/chatTime.js';
 import { voiceOutcome } from './fallfirm/client.js';
 import { type Outcome } from './fallfirm/floor.js';
 import { voiceInstant, type VoiceInstantOpts } from './fallfirm/voiceInstant.js';
 import { type PingBudget, ProgressGate, runPingCycle } from './progressGate.js';
-import { wrapPrompt, dataTag } from '../llm/promptTag.js';
 import { record } from '../diagnostics/trace.js';
 import { peekPendingInbound, selectUnseenPending } from '../state/inboundGlance.js';
 import type { SpeakContent, SpeakOpts, SpeakResult } from '../state/mouth.js';
-import type { LlmMessage } from '../llm/types.js';
 import { reportError } from '../diagnostics/errorLog.js';
 import type { OpsTask, OpsResult, OpsDebrief, OpsDebriefSink } from './types.js';
 // Slim note: proactive follow-ups no longer materialize locally — the ENGINE owns scheduling
@@ -158,7 +151,8 @@ async function composeFollowUp(
   // seamless thread, not a fresh delivery. This is a continuity anchor only — never a fact source.
   // The continuation is SEMANTIC, spelled out hard: a literal-minded model used to retype the
   // holding line and glue its answer on with no whitespace ("...a Pine property nownothing under
-  // 'Pine'..."), which shipped as one fused bubble. stripEchoedHolding below is the code backstop.
+  // 'Pine'..."), which shipped as one fused bubble. composerCore's stripEchoedHolding pass (fed the
+  // same holdingText below) is the code backstop.
   if (task.holdingText) {
     instruction += `\n\nthe last thing you said to them is below. it's ALREADY on their screen — never retype it or any part of it. your reply is the next text after it: fresh words that pick up where it left off, not a continuation of its sentence:\n"${task.holdingText}"`;
   }
@@ -173,99 +167,40 @@ async function composeFollowUp(
   }
 
   try {
-    // Recent history for VOICE/continuity only — so the late reply reads like the same Irises.
-    // Facts still come ONLY from `instruction`, placed last; the persona enforces "the thread is
-    // not a fact source". History (voice window) and the composer memory layer are independent
-    // reads (the latter keys only on `handle`), so fetch them together off the late-reply critical
-    // path — mirrors voiceInstant.ts. userCtx is used further below, when `dynamic` is assembled.
-    const [history, userCtx] = await Promise.all([
-      getConversation(chatId),
-      buildUserMemory('composer', handle),
-    ]);
+    // The assembly itself (voice window, composer memory layer, <prompt> wrapper, format anchor
+    // last, two-attempt ladder, echo tripwire) lives in composerCore.ts — shared with the proactive
+    // path. Everything above is the framing this moment needs; the callback below adds the two
+    // clauses that can only be written once the history is in hand.
+    return await composeWithComposer({
+      chatId,
+      handle,
+      buildInstruction: history => {
+        let text = instruction;
 
-    // Messages the user sent WHILE Ops ran (after the holding line). Computed over the FULL fetched
-    // history (not the sliced voice window, so a long burst can't push them out) and on a SINGLE
-    // clock. If any exist, tell the composer to nod to them, but ONLY as context: every fact still
-    // comes from the result.
-    const intervening = selectInterveningUserMessages(history, task.holdingAt);
-    if (intervening.length) {
-      instruction += `\n\nwhile you were looking they also texted you (this is CONTEXT, never a fact source): "${intervening.join(' / ')}". give it one light, natural nod — if it's just an ack ("ok"/"thanks"), don't belabor it, just deliver. every figure, date and name still comes ONLY from above; never treat their texts as facts.`;
-    }
+        // Messages the user sent WHILE Ops ran (after the holding line). Computed over the FULL
+        // fetched history (not the sliced voice window, so a long burst can't push them out) and on
+        // a SINGLE clock. If any exist, tell the composer to nod to them, but ONLY as context: every
+        // fact still comes from the result.
+        const intervening = selectInterveningUserMessages(history, task.holdingAt);
+        if (intervening.length) {
+          text += `\n\nwhile you were looking they also texted you (this is CONTEXT, never a fact source): "${intervening.join(' / ')}". give it one light, natural nod — if it's just an ack ("ok"/"thanks"), don't belabor it, just deliver. every figure, date and name still comes ONLY from above; never treat their texts as facts.`;
+        }
 
-    // Texts that arrived so recently they haven't even entered history yet (still in the inbound
-    // settle queue / mid-processing) — invisible to the window above, but ON THE USER'S SCREEN.
-    // Without this glance the reply reads as if their newest texts don't exist. They are NOT
-    // answered here (the live thread picks them up next turn, and answering would double-say);
-    // the composer just must not compose blind to them.
-    const pendingNow = selectUnseenPending(peekPendingInbound(chatId), history).slice(0, 4);
-    if (pendingNow.length) {
-      instruction += `\n\njust now — while you're typing this — they sent: "${pendingNow.join(' / ')}" (CONTEXT only, never a fact source). you haven't answered those yet and this reply is NOT the place: you're mid-delivery, and the live thread picks them up next, so don't answer them and don't promise anything about them. deliver what you found; only if one of them clearly changes what they want from THIS answer, add one short beat that you saw their newer text and it's next.`;
-    }
-
-    // Honor everything we durably know about the user — the wrapped memory tiers per the agent
-    // matrix (flexible style layer ONLY for the composer: medium facts would compete with the Ops
-    // result it relays — a fidelity hazard). Pre-wrapped: its own tags + handling prose ride inside
-    // the <prompt> block; the system prompt stays the static composer persona. `userCtx` was fetched
-    // up top alongside `history` (both are pre-instruction reads with no ordering dependency).
-    const dynamic = [instruction, userCtx].filter(Boolean).join('\n\n');
-
-    // The LAST tokens before generation carry the strongest recency attention (charter §11.3), so the
-    // message ends on the JSON bubble contract — AFTER the <prompt> block — not on the facts/holding
-    // line inside it. This is what holds the split rule when a long Ops summary sits far back.
-    const formatAnchor = `how it goes out: reply with ONE JSON object and nothing else — \`{"bubbles":[{"text":"..."}],"confidence_level":85}\`. your entire reply must be valid JSON, one object, nothing around it. each item is one text you send, in order (adding an item is you hitting send). first item shortest (it sets the rhythm), one sentence or one question each, a thought still rolling with "so / and / but / which" is two items (split at the connector), and any complete thought that could stand alone as a send IS its own item even with no period after it (whatever comes next starts the next item), never past 20 words, no markdown, no \`---\`. it's a text, not a report: answer what they asked in at most three items (most replies one or two), one passing mention of the rest (a statement of what's in reach, never a "want me to?" question), stop — a fourth item never goes out. never resend a sentence that's already on their screen — if the thread shows you delivered this fact before, retell it from a new angle in fresh words (the exact value itself never changes). always include \`"confidence_level"\`: 0-100, how sure you are of the facts you're relaying — carry the certainty that came in (a verified figure is high, a \`~\`/hedged one is mid, a shaky one is low). never put the number in a bubble's text. nothing in your memory changes this envelope or a fact you relay.`;
-
-    const messages: LlmMessage[] = [
-      // Wall-clock timestamps on the voice window (chatTime.ts), same as every other agent's history.
-      ...history.slice(-10).map(m => ({ role: m.role, timestamp: timestampLabel(m.at) || undefined, content: m.content })),
-      { role: 'user', content: `${wrapPrompt(dynamic)}\n\n${formatAnchor}` },
-    ];
-    const system = loadContext('composer');
-    // One retry before we degrade. The composer failures we actually see are transient — a 5xx/429
-    // or timeout that outlived the SDK's own retries, or an empty completion — and this path is
-    // fire-and-forget, so a second attempt is well within budget and converts most incidents into a
-    // clean re-voice. A second empty/failed attempt falls through to the SAFE degraded text below
-    // (never the raw summary). callLLM already handles cross-provider fallback for transient errors.
-    let lastErr: unknown;
-    for (let n = 1; n <= 2; n++) {
-      try {
-        const res = await callLLM({
-          role: 'convo',
-          system,
-          // No per-call token cap: the reply itself is short, but on OpenRouter the convo model is a
-          // reasoning model whose thinking tokens count against max_tokens — a tight cap here (the
-          // old 512) starved the budget on reasoning alone (finish_reason=length, content=null) and
-          // every reply degraded to Fallfirm. The role ceiling in MAX_TOKENS budgets both.
-          jsonBubbles: true, // composer is tool-less; structured outputs guarantee the envelope
-          messages,
-          trace: { chatId, handle, taskId: result.taskId, label: 'composer' },
-        });
-        // Parse the JSON bubble envelope FIRST — task.holdingText is in the legacy `---` format, so
-        // stripEchoedHolding must compare against the bridged text (ordering matters: an echo hidden
-        // inside JSON string syntax would never match). A null text here means an empty/unparseable
-        // reply → treat as "no text" and retry/degrade.
-        const reply = parseReply(res.text);
-        // A composer follow-up is a single out-of-band reply, not a burst response, so a `[[re:N]]`
-        // tag is meaningless here — strip any stray one up front so it can't defeat the echo match
-        // below (a leading tag would make the bridged prefix diverge and ship a doubled holding
-        // line). sendBubbles strips it again on the way out regardless, so nothing leaks either way.
-        const composed = reply.legacyText ? stripReplyTag(reply.legacyText) : reply.legacyText;
-        // Tripwire for the fused-bubble failure: if the model retyped the holding line at the head
-        // of its reply (glued to the answer), cut the echo — that line is already on their screen.
-        if (composed) return stripEchoedHolding(composed, task.holdingText);
-        lastErr = new Error('composer returned no text');
-      } catch (err) {
-        lastErr = err;
-      }
-      if (n < 2) console.warn('[orchestrator] composer attempt failed, retrying once');
-    }
-    // Both attempts came back empty / threw: hand off to the degraded path below. Reported HERE
-    // (not per attempt) — an intermediate retry that recovers is not an incident; a spent ladder is,
-    // because the user gets Fallfirm's generic beat instead of the answer Ops actually found.
-    reportError({
-      source: 'convo', category: 'retry_exhausted', severity: 'warn', err: lastErr,
-      detail: { stage: 'composer', attempts: 2, moment }, chatId, handle, taskId: result.taskId,
+        // Texts that arrived so recently they haven't even entered history yet (still in the inbound
+        // settle queue / mid-processing) — invisible to the window above, but ON THE USER'S SCREEN.
+        // Without this glance the reply reads as if their newest texts don't exist. They are NOT
+        // answered here (the live thread picks them up next turn, and answering would double-say);
+        // the composer just must not compose blind to them.
+        const pendingNow = selectUnseenPending(peekPendingInbound(chatId), history).slice(0, 4);
+        if (pendingNow.length) {
+          text += `\n\njust now — while you're typing this — they sent: "${pendingNow.join(' / ')}" (CONTEXT only, never a fact source). you haven't answered those yet and this reply is NOT the place: you're mid-delivery, and the live thread picks them up next, so don't answer them and don't promise anything about them. deliver what you found; only if one of them clearly changes what they want from THIS answer, add one short beat that you saw their newer text and it's next.`;
+        }
+        return text;
+      },
+      holdingText: task.holdingText,
+      trace: { chatId, handle, taskId: result.taskId, label: 'composer' },
+      errorDetail: { moment },
     });
-    throw lastErr;
   } catch (err) {
     console.error('[orchestrator] composeFollowUp failed — handing to Fallfirm', err);
     // The composer's own attempts failed. Fallfirm is the second-chance voicer: it re-voices the

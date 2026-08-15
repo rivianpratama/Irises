@@ -3,7 +3,7 @@
 // (Convo controls Ops, so the dossier only needs to live in Convo; Convo passes
 // relevant slices to Ops via meta-prompts.)
 import { callLLM } from '../llm/callLLM.js';
-import { getMemory, saveDossier } from '../db/repositories/memory.js';
+import { getMemory, saveDossier, getForgetEpoch } from '../db/repositories/memory.js';
 import { getUserProfile } from '../db/repositories/profiles.js';
 import { listShortTerm, SHORT_TTL_MS, type ShortTermEntry } from '../db/repositories/memoryShort.js';
 import { getLongDoc, saveLongDoc } from '../db/repositories/memoryLong.js';
@@ -201,6 +201,62 @@ export function dossierUpdateUsable(res: { truncated: boolean }): boolean {
 }
 
 /**
+ * Persist a completed merge: the legacy dossier first, then the versioned long-tier mirror.
+ * Split out of updateDossier so the two race guards can be tested without an LLM call.
+ *
+ * `baseline` is the state this merge STARTED from — the forget epoch and the doc it merged
+ * into. Both guards are "stale beats clobbered", the same doctrine as dossierUpdateUsable:
+ *   • epoch moved  → a /forget landed mid-merge; writing would resurrect what they wiped.
+ *   • long-doc version conflict → someone else wrote while we were saving. If their content
+ *     differs from our baseline, THEY have something we merged from a stale copy — abort and
+ *     let the next pass redo the merge from their doc. Only pure version drift (identical
+ *     content at a newer version) is safe to retry, and that's the one case that retries.
+ * `deps` is the DI seam for tests (no module mocks in this repo).
+ */
+export async function persistDossierMerge(
+  handle: string,
+  updated: string,
+  baseline: { epoch: number; dossierMd: string },
+  deps: {
+    saveLong?: typeof saveLongDoc;
+    getLong?: typeof getLongDoc;
+  } = {},
+): Promise<{ dossierSaved: boolean; longSaved: boolean }> {
+  const saveLong = deps.saveLong ?? saveLongDoc;
+  const getLong = deps.getLong ?? getLongDoc;
+
+  const dossierSaved = await saveDossier(handle, updated, { ifForgetEpoch: baseline.epoch });
+  if (!dossierSaved) return { dossierSaved: false, longSaved: false };
+  console.log(`[memory] dossier updated for ${handle} (${updated.length} chars)`);
+
+  // Stage-1 dual-write: mirror the merged doc into the versioned long tier so it accrues
+  // a warm, revision-tracked history. Reads stay on dossier_md until then; a failure here is
+  // logged, never user-facing.
+  try {
+    const cur = await getLong(handle);
+    let version = await saveLong(handle, updated, cur?.version ?? 0, 'dossier_llm');
+    if (version == null) {
+      if (getForgetEpoch(handle) !== baseline.epoch) {
+        console.warn('[memory] long-doc save aborted — /forget landed mid-merge');
+        return { dossierSaved, longSaved: false };
+      }
+      const cur2 = await getLong(handle);
+      if ((cur2?.docMd ?? '').trim() !== baseline.dossierMd.trim()) {
+        // The winner wrote DIFFERENT content. The old code retried at the fresh version and
+        // clobbered it with a merge that never saw it (the /forget-empty-doc bug).
+        console.warn('[memory] long-doc save aborted — another writer landed different content mid-merge');
+        return { dossierSaved, longSaved: false };
+      }
+      version = await saveLong(handle, updated, cur2?.version ?? 0, 'dossier_llm');
+    }
+    return { dossierSaved, longSaved: version != null };
+  } catch (err) {
+    console.error('[memory] long-doc dual-write failed (legacy dossier already saved)', err);
+    return { dossierSaved, longSaved: false };
+  }
+}
+
+/**
  * Refresh the durable dossier from recent conversation. Async + throttled; never
  * blocks a turn. A cheap Haiku pass merges new durable facts into the existing doc.
  */
@@ -216,6 +272,9 @@ export async function updateDossier(handle: string, recent: StoredMessage[]): Pr
     const scoped = scopeHistoryToUser(recent, handle);
     if (!scoped.some(m => m.role === 'user')) return;
     const memory = await getMemory(handle);
+    // The fence for a /forget that lands while the LLM below is thinking (see getForgetEpoch):
+    // read alongside the doc this merge is about to merge INTO, so the pair is one baseline.
+    const epoch0 = getForgetEpoch(handle);
     const transcript = buildDossierTranscript(handle, scoped);
     if (!transcript.trim()) return;
 
@@ -255,22 +314,7 @@ export async function updateDossier(handle: string, recent: StoredMessage[]): Pr
       return;
     }
     if (updated && updated !== (memory?.dossierMd ?? '').trim()) {
-      await saveDossier(handle, updated);
-      console.log(`[memory] dossier updated for ${handle} (${updated.length} chars)`);
-      // Stage-1 dual-write: mirror the merged doc into the versioned long tier so it accrues
-      // a warm, revision-tracked history.
-      // Reads stay on dossier_md until then; a failure here is logged, never user-facing.
-      try {
-        const cur = await getLongDoc(handle);
-        const saved = await saveLongDoc(handle, updated, cur?.version ?? 0, 'dossier_llm');
-        if (saved == null) {
-          // Version conflict (another writer won the race) — re-read and retry once.
-          const cur2 = await getLongDoc(handle);
-          await saveLongDoc(handle, updated, cur2?.version ?? 0, 'dossier_llm');
-        }
-      } catch (err) {
-        console.error('[memory] long-doc dual-write failed (legacy dossier already saved)', err);
-      }
+      await persistDossierMerge(handle, updated, { epoch: epoch0, dossierMd: memory?.dossierMd ?? '' });
     }
   } catch (err) {
     console.error('[memory] updateDossier failed', err);

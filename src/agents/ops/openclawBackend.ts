@@ -163,7 +163,7 @@ export class OpenClawBackend implements EngineBackend {
   /** Bridge outbound: the gateway `send` RPC delivers through ANY configured OpenClaw channel
    *  (verified: src/gateway/server-methods/send.ts; scope operator.write; idempotencyKey required).
    *  No plugin needed on the outbound side — the same WS client the deep-work seam uses. */
-  async channelSend(platform: string, chatId: string, text: string, opts: { threadId?: string; replyToId?: string } = {}): Promise<void> {
+  async channelSend(platform: string, chatId: string, text: string, opts: { threadId?: string; replyToId?: string } = {}): Promise<{ messageId?: string }> {
     const client = await this.ensureClient();
     try {
       await client.request('send', {
@@ -174,6 +174,9 @@ export class OpenClawBackend implements EngineBackend {
         ...(opts.replyToId ? { replyToId: opts.replyToId } : {}),
         idempotencyKey: `irises-${chatId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       }, { timeoutMs: 20_000 });
+      // The send RPC's reply carries no platform message id, so tapped-reply matching on this
+      // engine falls back to the synthetic bubble id (bridge/channel.ts).
+      return {};
     } catch (err) {
       this.dropClient();
       throw new EngineUnavailableError(`OpenClaw channel send failed (${(err as Error)?.message ?? err})`, err);

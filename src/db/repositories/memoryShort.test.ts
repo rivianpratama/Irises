@@ -8,8 +8,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   addShortTerm, listShortTerm, latestShortTerm, expireShortTermNow, sweepExpiredShortTerm,
-  SHORT_TTL_MS, SHORT_CONTENT_MAX_CHARS,
+  deleteShortTermForHandle, SHORT_TTL_MS, SHORT_CONTENT_MAX_CHARS,
 } from './memoryShort.js';
+import { listArchiveFor, purgeArchiveFor, searchArchive } from './memoryArchive.js';
 import { stmt } from '../sqlite.js';
 
 const HANDLE = '+15550002222';
@@ -93,6 +94,49 @@ test('sweep deletes only rows past expiry+grace (a daily review still sees a ful
   assert.deepEqual(raw.map(r => r.task_id).sort(), ['y', 'z']);
   // Reads still only show the live row.
   assert.deepEqual((await listShortTerm(HANDLE)).map(e => e.taskId), ['z']);
+});
+
+test('the sweep ARCHIVES what it deletes (a day\'s findings stay searchable)', async () => {
+  reset();
+  await purgeArchiveFor({ handle: HANDLE });
+  await addShortTerm({
+    agentHandle: HANDLE, chatId: 'chat-sweep', kind: 'ops_research',
+    request: 'what did the inspector say about the roof',
+    content: 'the inspector flagged three cracked tiles on the north slope',
+    meta: { taskId: 'ignored' }, taskId: 'sweep-1',
+    ttlMs: -3 * 24 * 60 * 60 * 1000,   // well past expiry + grace
+  });
+  await addShortTerm({ agentHandle: HANDLE, kind: 'ops_research', content: 'still live', taskId: 'live-1' });
+
+  assert.equal(await sweepExpiredShortTerm(), 1);
+  const archived = await listArchiveFor(HANDLE);
+  assert.equal(archived.length, 1, 'only the swept row was archived');
+  assert.equal(archived[0].source, 'short_expired');
+  assert.equal(archived[0].kind, 'ops_research');
+  assert.equal(archived[0].chatId, 'chat-sweep');
+  assert.match(archived[0].request!, /inspector/);
+  assert.equal(archived[0].meta.taskId, 'sweep-1');
+  // And it is reachable by the words in it — the whole point of archiving it.
+  assert.equal((await searchArchive({ query: 'cracked tiles', handle: HANDLE })).length, 1);
+  await purgeArchiveFor({ handle: HANDLE });
+});
+
+test('deleteShortTermForHandle hard-deletes (a /forget must not archive on the way out)', async () => {
+  reset();
+  await purgeArchiveFor({ handle: HANDLE });
+  await addShortTerm({ agentHandle: HANDLE, kind: 'email_flag', content: 'forget this flag', taskId: 'f1' });
+  await addShortTerm({ agentHandle: HANDLE, kind: 'ops_research', content: 'and this research', taskId: 'r1' });
+  const other = '+15550003333';
+  await addShortTerm({ agentHandle: other, kind: 'ops_research', content: 'someone else', taskId: 'o1' });
+
+  assert.equal(await deleteShortTermForHandle(HANDLE), 2);
+  const raw = stmt('SELECT count(*) AS n FROM memory_short WHERE agent_handle = ?').get(HANDLE) as { n: number };
+  assert.equal(raw.n, 0, 'gone from the table, not merely expired');
+  assert.equal((await listArchiveFor(HANDLE)).length, 0, 'and NOT archived — that would be a forget leak');
+  assert.equal((await listShortTerm(other)).length, 1, 'another handle is untouched');
+  // A later sweep has nothing left to archive for them.
+  await sweepExpiredShortTerm();
+  assert.equal((await listArchiveFor(HANDLE)).length, 0);
 });
 
 test('content is capped at SHORT_CONTENT_MAX_CHARS', async () => {

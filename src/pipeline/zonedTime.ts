@@ -11,17 +11,48 @@
 /** Default IANA timezone for scheduling until a per-agent tz is stored (mirrors the runner/convo client). */
 export const DEFAULT_TZ = 'America/Chicago';
 
+/** The quiet-hours window in wall-clock hours of the user's zone: 9pm through 8am. */
+export const QUIET_START_HOUR = 21;
+export const QUIET_END_HOUR = 8;
+
 /**
  * Quiet hours = 9pm–8am in the given IANA zone. The single definition shared by the
- * runner (which defers respect_quiet_hours automations) and the email Judge (which decides
- * whether to hold a non-urgent flag to morning) — so the two can never silently diverge.
+ * proactive delivery pipeline (which defers non-reminder pushes for respect_quiet_hours
+ * users) and the email Judge (which decides whether to hold a non-urgent flag to
+ * morning) — so the two can never silently diverge.
  */
-export function inQuietHours(timeZone: string = DEFAULT_TZ): boolean {
+export function inQuietHours(timeZone: string = DEFAULT_TZ, nowMs: number = Date.now()): boolean {
   try {
-    const hour = Number(new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone }).format(new Date()));
-    return hour >= 21 || hour < 8;
+    const hour = Number(new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone }).format(new Date(nowMs)));
+    return hour >= QUIET_START_HOUR || hour < QUIET_END_HOUR;
   } catch {
     return false;
+  }
+}
+
+/**
+ * The UTC instant quiet hours next END in `timeZone` — the deferral target for a proactive
+ * message that arrived overnight. Today's 8am when we're still before it (a 2am arrival waits
+ * a few hours), else tomorrow's (a 10pm arrival waits until morning). Returns `nowMs`
+ * unchanged when we are NOT in quiet hours, so a caller can defer unconditionally and get a
+ * no-op. DST-correct: the 8am target is resolved as a wall clock in the zone, not by adding
+ * hours to now.
+ */
+export function nextQuietHoursEndMs(timeZone: string = DEFAULT_TZ, nowMs: number = Date.now()): number {
+  try {
+    if (!inQuietHours(timeZone, nowMs)) return nowMs;
+    // The zone's own calendar day/hour: shift the instant by the zone offset and read it as UTC.
+    const local = new Date(nowMs + zoneOffsetMs(timeZone, nowMs));
+    const hour = local.getUTCHours();
+    // Before 8am → today's 8am; the evening half of the window rolls to tomorrow (Date.UTC
+    // inside zonedTimeToUtcMs normalizes a day past month end).
+    const day = local.getUTCDate() + (hour < QUIET_END_HOUR ? 0 : 1);
+    return zonedTimeToUtcMs(
+      { year: local.getUTCFullYear(), month: local.getUTCMonth() + 1, day, hour: QUIET_END_HOUR },
+      timeZone,
+    );
+  } catch {
+    return nowMs;
   }
 }
 
@@ -30,7 +61,7 @@ export function inQuietHours(timeZone: string = DEFAULT_TZ): boolean {
  * Renders the instant in the zone, reinterprets that wall clock as if it were UTC,
  * and takes the difference — which is the zone's offset at that instant (DST-aware).
  */
-function tzOffsetMs(timeZone: string, instant: number): number {
+export function zoneOffsetMs(timeZone: string, instant: number): number {
   const dtf = new Intl.DateTimeFormat('en-US', {
     timeZone,
     hourCycle: 'h23', // avoids the "24" some engines emit for midnight under hour12:false
@@ -58,8 +89,8 @@ export function zonedTimeToUtcMs(
   // offset itself depends on the instant, so refine once using the corrected guess —
   // this resolves DST transitions correctly.
   const guess = Date.UTC(year, month - 1, day, hour, minute, second);
-  const o1 = tzOffsetMs(timeZone, guess);
-  const o2 = tzOffsetMs(timeZone, guess - o1);
+  const o1 = zoneOffsetMs(timeZone, guess);
+  const o2 = zoneOffsetMs(timeZone, guess - o1);
   return guess - o2;
 }
 

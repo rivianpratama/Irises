@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { loadContext } from '../loadContext.js';
-import { getEngineBackend } from '../ops/engineBackend.js';
+import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
 import { isValidCron } from '../../pipeline/cron.js';
 import { getPreference, setPreference } from '../../db/repositories/memory.js';
 // Directives/notes/facts are memory_medium rows now (Stage 1) — the "no error margin" tier:
@@ -11,6 +11,7 @@ import {
   listMediumActive, upsertFact, MediumWriteError,
 } from '../../db/repositories/memoryMedium.js';
 import { latestShortTerm } from '../../db/repositories/memoryShort.js';
+import { searchArchive, type ArchiveHit } from '../../db/repositories/memoryArchive.js';
 import { validateDirective } from '../../memory/preferences.js';
 import { FACT_KEYS } from '../../memory/mediumTerm.js';
 import { updateDossier, PENDING_CLARIFICATION_TTL_MS } from '../../memory/dossier.js';
@@ -22,7 +23,8 @@ import { addMessage, setUserName, addUserFact, UserProfile, StoredMessage } from
 import { redactInternalTools } from '../guardrails.js';
 import { stripReplyTag } from '../../state/replyThreading.js';
 import { parseReply } from '../../pipeline/bubbleJson.js';
-import { timestampLabel, renderConversationTiming } from '../../pipeline/chatTime.js';
+import { timestampLabel, renderConversationTiming, describeGap } from '../../pipeline/chatTime.js';
+import { DEFAULT_TZ } from '../../pipeline/zonedTime.js';
 import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
 import { callLLM } from '../../llm/callLLM.js';
 import { record } from '../../diagnostics/trace.js';
@@ -107,9 +109,6 @@ const ROUTING_RECENT_TTL_MS = 45 * 60 * 1000;
 // blends in and never repeats); the floor pool ships only if that model call fails, so a delegate
 // turn is never left without an ack.
 
-// Default timezone for scheduling until per-agent tz is stored (mirrors the runner).
-const DEFAULT_TZ = 'America/Chicago';
-
 // Every valid delegation kind, for validating the model-written value (the envelope schema can't
 // enforce per-arg enums — see buildEnvelopeSchema). An unknown/missing kind coerces to 'general'
 // (the full-toolset catch-all) instead of poisoning the task with a bogus TaskKind.
@@ -154,13 +153,15 @@ async function handleScheduleAutomation(input: Record<string, unknown>, handle: 
       if (!cron || !isValidCron(cron, timezone)) {
         return { error: { kind: 'failed', summary: "that repeat schedule didn't parse", nextStep: 'ask them for the timing again' } };
       }
-      await engine.createReminder({ chatId, agentHandle: handle, instruction, cron, title });
+      // The zone rides along: the cron's wall clock is the USER's, and the engine's cron may run in
+      // a different one (the adapter shifts the fields).
+      await engine.createReminder({ chatId, agentHandle: handle, instruction, cron, title, timezone });
       return { confirmation: { kind: 'confirmed', summary: 'a recurring reminder is now set — it repeats on their schedule' } };
     }
     const ts = Date.parse(String(input.fire_at ?? ''));
     if (Number.isNaN(ts)) return { error: { kind: 'failed', summary: "couldn't tell when they want the reminder", nextStep: 'ask what time to remind them' } };
     if (ts <= Date.now()) return { error: { kind: 'failed', summary: 'the time they gave has already passed', nextStep: 'mention you can set it for a later time instead' } };
-    await engine.createReminder({ chatId, agentHandle: handle, instruction, fireAt: ts, title });
+    await engine.createReminder({ chatId, agentHandle: handle, instruction, fireAt: ts, title, timezone });
     return { confirmation: { kind: 'confirmed', summary: 'a one-time reminder is set', facts: formatWhen(new Date(ts).toISOString(), timezone).toLowerCase() } };
   } catch (err) {
     console.error('[convo] schedule_automation failed', err);
@@ -309,10 +310,13 @@ function renderToolDocs(tools: LlmToolDef[]): string {
 }
 
 // Maps a run's progress milestone keys to a short user-meaning phrase, so Convo can say WHAT a run
-// is doing rather than a generic "still on it". The engine reports one coarse 'engine' milestone
-// (no per-tool detail), which deliberately stays unmapped — unmapped keys render no "right now"
-// clause (safe fallback).
-const MILESTONE_PHRASES: Record<string, string> = {};
+// is doing rather than a generic "still on it". 'engine' is the ONLY key any adapter emits
+// (engineBackend.ts onProgress) — and it fires AFTER the concurrency slot is acquired, so it
+// genuinely means "running now", not "queued behind another run". Unmapped keys render no "right
+// now" clause at all (safe fallback), which is what left every status line generic.
+const MILESTONE_PHRASES: Record<string, string> = {
+  engine: 'actively digging (the run is on the engine)',
+};
 
 /** Friendly elapsed label from an in-flight run's startedAt: "~40s", "~2m". */
 function elapsedLabel(startedAt: number): string {
@@ -685,6 +689,46 @@ export async function callConvoLLM(req: LlmRequest): Promise<LlmResult> {
   return res;
 }
 
+// ── recall_memory: the archive second pass ──────────────────────────────────────────────────
+// How many archived snippets reach the prompt. Small on purpose: they are possibly-stale
+// fragments competing with live context, and six is already a lot to weigh.
+const ARCHIVE_RECALL_LIMIT = 6;
+
+/**
+ * The final user-role message of the recall second pass: plain guidance (system-authored, so
+ * bare prose) wrapping the hits in a data tag. The label line is load-bearing — every snippet
+ * is something RETIRED from a tier, so it may have been superseded by something newer, and the
+ * model must not present it as current. Pure + exported for tests.
+ */
+export function renderArchiveRecallPass(query: string, hits: ArchiveHit[], nowMs = Date.now()): string {
+  const guidance = [
+    `You just searched your own archived memory for "${query}".`,
+    hits.length
+      ? 'Answer their last message from these snippets: use them for substance, note how old something is where the age changes the answer, and never present a stale detail as current. If they don\'t actually contain what they asked about, say so honestly instead of stretching them.'
+      : 'Nothing in your archive matched. Do NOT invent a memory — tell them honestly you don\'t have it and ask them to run it by you once more, in your normal voice.',
+    'Never mention searching, an archive, a lookup, or a tool: to them this is just you remembering. Same JSON envelope, same bubble rules as always.',
+  ].join(' ');
+  if (!hits.length) return guidance;
+  const lines = hits.map(h => {
+    const ago = describeGap(nowMs - h.entry.createdAt);
+    const req = h.entry.request ? `${h.entry.request} — ` : '';
+    return `[${h.entry.source}, ${ago} ago] ${req}${h.snippet}`;
+  });
+  return `${guidance}\n\n${dataTag('memory_archive_results', `(archived, possibly superseded — these were retired from your live memory)\n${lines.join('\n')}`)}`;
+}
+
+/**
+ * What the second pass needs to re-invoke the model: the same system prompt and messages the
+ * first call used, plus this turn's tool list (the pass re-sends it MINUS recall_memory, which
+ * is what makes the recursion loop-proof). `call` is the DI seam tests inject.
+ */
+export interface ConvoTurnContext {
+  system: string;
+  messages: LlmMessage[];
+  tools: LlmToolDef[];
+  call?: (req: LlmRequest) => Promise<LlmResult>;
+}
+
 /**
  * Process an LLM result into a ChatResponse: fold text, run every tool call (reactions,
  * remember_user, delegate_to_ops, scheduling, directives), apply the never-go-silent fallbacks,
@@ -700,6 +744,11 @@ export async function processConvoResult(args: {
   textToSend: string;
   history: StoredMessage[];
   media: IncomingMedia;
+  // The first call's system/messages/tools, so a recall_memory call can run its one bounded
+  // second pass. Optional: callers that don't pass it get the voiced-outcome fallback instead.
+  turn?: ConvoTurnContext;
+  // True when THIS is the recall second pass — the recursion fence.
+  archivePass?: boolean;
 }): Promise<ChatResponse> {
   const { res, chatId, handle, chatContext, textToSend, history, media } = args;
 
@@ -737,6 +786,9 @@ export async function processConvoResult(args: {
   // A directive/preference that saved silently (no failure note) — the turn must still acknowledge it
   // (a tapback, or a voiced line on SMS) so a tool-only reply never leaves the user hanging.
   let directiveActed = false;
+  // The FIRST recall_memory query this turn (a second call in the same envelope is ignored — one
+  // archive search per turn, and the second pass below is what answers from it).
+  let recallQuery: string | null = null;
 
   for (const call of res.toolCalls) {
     const input = call.input;
@@ -778,9 +830,11 @@ export async function processConvoResult(args: {
         }
       }
     } else if (call.name === 'set_preference' && handle) {
-      // 'important_note' APPENDS to the remember-this ledger (a memory_medium row, rendered
-      // verbatim into every user-facing prompt); the 8 structured fact keys dual-write to the
-      // medium tier + legacy prefs (soak window); every other key is a plain prefs overwrite.
+      // Four routes out of this one tool: 'important_note' APPENDS to the remember-this ledger
+      // (a memory_medium row, rendered verbatim into every user-facing prompt); 'name' is a
+      // PROFILE column, not a pref; the two structured fact keys (comms_style, address_as —
+      // FACT_KEYS) dual-write to the medium tier + legacy prefs (soak window); every other key
+      // is a plain prefs overwrite.
       if (String(input.key) === 'important_note' && input.value != null) {
         try {
           const saved = await addImportantNote(handle, String(input.value));
@@ -791,6 +845,14 @@ export async function processConvoResult(args: {
           // is fail-loud — voice the snag instead of confirming a save that didn't happen.
           noteConfirmation = { kind: 'failed', summary: 'saving that note hit a snag on your end', nextStep: 'ask them to try again in a minute' };
         }
+      } else if (String(input.key) === 'name' && input.value != null && !isGroupHandle(handle)) {
+        // The dead-key bug: the persona and this tool both advertise key 'name', but the name
+        // every prompt renders is user_profiles.name — nothing has ever read prefs.name, so a
+        // model that used set_preference instead of remember_user saw its write silently
+        // vanish. Route it to the profile, and purge any stale prefs.name left by that era.
+        // Group identities skip this: a group has no person's name to set.
+        await setUserName(handle, String(input.value));
+        await setPreference(handle, 'name', undefined);
       } else if (input.key && FACT_KEYS.has(String(input.key))) {
         // Medium tier first; legacy prefs copy keeps the soak-window fallback readable. A medium
         // failure here is logged, not voiced — fact writes have no confirmation beat to correct,
@@ -905,7 +967,11 @@ export async function processConvoResult(args: {
       const engine = getEngineBackend();
       const note = String(input.request ?? textToSend);
       if (engine && note.trim()) {
-        void engine.remember(chatId, handle, note).catch(err => console.warn('[convo] engine remember failed', err));
+        // Through the engine slot: this is a full agent run on the engine (its memory loop thinks
+        // about the note), so an unmetered fire-and-forget could push a chatty turn past the
+        // engine's concurrency cap and 429 a real delegation that was already waiting.
+        void withEngineSlot(() => engine.remember(chatId, handle, note))
+          .catch(err => console.warn('[convo] engine remember failed', err));
       }
     } else if (call.name === 'schedule_automation' && chatContext?.senderHandle) {
       // Automations stay SENDER-owned even in groups: a group-owned needs_ops automation would
@@ -924,6 +990,11 @@ export async function processConvoResult(args: {
       // authority and the flag must be set before this turn's reply goes out.
       const note = handleCancelResearch(String(input.match ?? ''), chatId);
       if (note) outcomeParts.push(note);
+    } else if (call.name === 'recall_memory') {
+      // Just captured here — the search + the answer happen in one bounded second pass after
+      // the loop (Convo is single-shot, so a result can't come back inside this call).
+      const q = String(input.query ?? '').trim();
+      if (q && recallQuery == null) recallQuery = q;
     } else if (call.name === 'update_directives' && handle) {
       const { note, acted } = await handleUpdateDirectives(input, handle);
       if (note) outcomeParts.push(note);
@@ -933,6 +1004,80 @@ export async function processConvoResult(args: {
       // reason it can't). A 'confirmed' ack only voices if the model wrote no holding bubble; a
       // 'failed' reason replaces the model's optimistic text (assembly below).
       outcomeParts.push(await requestSelfUpdate(chatId, handle));
+    }
+  }
+
+  // ── recall_memory's bounded second pass ───────────────────────────────────────────────────
+  // Convo is single-shot (toolsViaJson): a tool call never returns its result to the model in the
+  // same call, so a SEARCH tool is worthless without a second call. This is that call, bounded
+  // three ways — only the first query of the turn runs, the second call is made with
+  // recall_memory STRIPPED from the tools (so it cannot ask again), and `archivePass` fences the
+  // recursion outright (depth ≤ 2).
+  // DELEGATION WINS on conflict: if the model also delegated, the composer is already coming back
+  // with grounded facts and a second draft here would race it onto the user's screen.
+  if (recallQuery && !args.archivePass && !delegatedTask && !suppressedDuplicate) {
+    const hits = await searchArchive({ query: recallQuery, handle, chatId, limit: ARCHIVE_RECALL_LIMIT });
+    record({
+      type: 'event',
+      label: 'memory:archive_recall',
+      chatId,
+      handle,
+      detail: { query: recallQuery, hits: hits.length, top: hits[0]?.entry.source },
+    });
+    const turn = args.turn;
+    // An action-bearing first pass keeps its own assembly: recursing would discard the
+    // confirmation for a reminder/note/list this turn already performed (the second pass has no
+    // idea it happened). The voiced-outcome fallback below carries the recall result instead, so
+    // both land.
+    const firstPassActed = !!scheduleConfirmation || !!noteConfirmation || outcomeParts.length > 0;
+    let secondPassFailed = !turn || firstPassActed;
+    if (turn && !firstPassActed) {
+      const strippedTools = turn.tools.filter(t => t.name !== 'recall_memory');
+      const messages: LlmMessage[] = [
+        ...turn.messages,
+        { role: 'user', content: renderArchiveRecallPass(recallQuery, hits) },
+      ];
+      try {
+        const second = await (turn.call ?? callConvoLLM)({
+          role: 'convo',
+          system: turn.system,
+          systemCachePrefixLen: convoPersonaChars(),
+          tools: strippedTools,
+          jsonBubbles: true,
+          toolsViaJson: true,
+          messages,
+          trace: { chatId, handle, label: 'convo:archive_recall' },
+        });
+        // The first pass's draft is DISCARDED — same discipline as the delegation salvage below:
+        // it was written BEFORE the snippets existed, so anything it says about their past is a
+        // guess, and the second pass re-answers the same question with the real material.
+        return await processConvoResult({
+          ...args,
+          res: second,
+          archivePass: true,
+          turn: { ...turn, tools: strippedTools, messages },
+        });
+      } catch (err) {
+        console.error('[convo] recall_memory second pass failed', err);
+        secondPassFailed = true;
+      }
+    }
+    if (secondPassFailed) {
+      // Never a silent turn: voice what the search found (or didn't) as an outcome, so the user
+      // gets an honest answer even when the second call is unavailable or fails.
+      outcomeParts.push(hits.length
+        ? {
+            kind: 'confirmed',
+            summary: 'you dug back through what you already knew and found it',
+            // Trimmed hard: `facts` can reach the user verbatim (the model already wrote text),
+            // and a wall of raw archive text is not a reply.
+            facts: hits.slice(0, 2).map(h => h.snippet.slice(0, 200)).join('\n'),
+          }
+        : {
+            kind: 'nothing_found',
+            summary: "you went back through what you know and it genuinely isn't there",
+            nextStep: 'ask them to run the details by you once more',
+          });
     }
   }
 
@@ -974,8 +1119,11 @@ export async function processConvoResult(args: {
   // pre-append snapshot that does NOT contain it, so we must use textToSend, not history.)
   // Skips: any turn that already did real work — delegated, consent link, schedule/note/disconnect
   // action — must not be clobbered with a forced delegation + holding line.
+  // Also skipped on the recall second pass: that answer IS grounded (in the user's own archived
+  // memory), and forcing a delegation there would discard it for a holding line.
   if (process.env.ROUTING_GATE !== 'off' && !delegatedTask && !suppressedDuplicate
       && !scheduleConfirmation && !noteConfirmation && outcomeParts.length === 0
+      && !args.archivePass
       && handle && chatContext?.senderHandle) {
     const lastUser = textToSend ?? '';
     // In-flight dedup must be KIND-AGNOSTIC: the running task may have been delegated under any

@@ -10,7 +10,9 @@ process.env.TZ = 'UTC';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DOSSIER_SYSTEM_PROMPT, buildDossierTranscript, dossierUpdateUsable } from './dossier.js';
+import { DOSSIER_SYSTEM_PROMPT, buildDossierTranscript, dossierUpdateUsable, persistDossierMerge } from './dossier.js';
+import { saveDossier, clearDossier, getMemory, getForgetEpoch } from '../db/repositories/memory.js';
+import { getLongDoc, saveLongDoc } from '../db/repositories/memoryLong.js';
 
 test('dossier prompt harvests both fact families', () => {
   assert.ok(DOSSIER_SYSTEM_PROMPT.includes('OPERATIONAL:'));
@@ -77,4 +79,80 @@ test('dossierUpdateUsable rejects a truncated rewrite, however plausible the tex
 
 test('dossierUpdateUsable accepts a clean rewrite', () => {
   assert.equal(dossierUpdateUsable({ truncated: false }), true);
+});
+
+// ── The mid-merge /forget race + the clobbering conflict retry ────────────────
+// The merge is read → LLM → write, so a /forget can land INSIDE it. persistDossierMerge is the
+// post-LLM half, split out so both guards are testable with no model in the loop.
+
+let seq = 0;
+function freshHandle(): string {
+  return `+1555400${(seq++).toString().padStart(4, '0')}`;
+}
+
+test('saveDossier refuses a write whose forget epoch is stale', async () => {
+  const h = freshHandle();
+  assert.equal(await saveDossier(h, 'first draft'), true, 'no epoch given → always writes');
+  assert.equal(await saveDossier(h, 'clobber', { ifForgetEpoch: 99 }), false);
+  assert.equal((await getMemory(h))?.dossierMd, 'first draft');
+});
+
+test('a /forget between the baseline read and the persist writes NOTHING', async () => {
+  const h = freshHandle();
+  await saveDossier(h, 'they run a print shop');
+  const epoch0 = getForgetEpoch(h);
+
+  await clearDossier(h);   // the user asked to be forgotten mid-merge
+
+  const res = await persistDossierMerge(
+    h,
+    'they run a print shop and just hired two people',
+    { epoch: epoch0, dossierMd: 'they run a print shop' },
+  );
+  assert.equal(res.dossierSaved, false);
+  assert.equal(res.longSaved, false);
+  assert.equal((await getMemory(h))?.dossierMd, '', 'the wipe stands');
+});
+
+test('long-doc version conflict + DIFFERENT content aborts (the empty forget revision survives)', async () => {
+  const h = freshHandle();
+  await saveLongDoc(h, '', 0, 'forget');   // the empty doc /forget leaves behind
+
+  const attempts: number[] = [];
+  const res = await persistDossierMerge(
+    h,
+    'a fully merged dossier',
+    { epoch: getForgetEpoch(h), dossierMd: 'the doc this merge started from' },
+    {
+      saveLong: async (_h, _doc, expectedVersion) => { attempts.push(expectedVersion); return null; },
+    },
+  );
+  assert.equal(res.dossierSaved, true, 'the legacy dossier still saved');
+  assert.equal(res.longSaved, false);
+  assert.equal(attempts.length, 1, 'no blind retry at the fresh version');
+  assert.equal((await getLongDoc(h))?.docMd, '', 'the forget revision was NOT clobbered');
+});
+
+test('long-doc version conflict + UNCHANGED content retries once at the fresh version', async () => {
+  const h = freshHandle();
+  await saveLongDoc(h, 'the doc this merge started from', 0, 'dossier_llm');
+
+  let calls = 0;
+  const res = await persistDossierMerge(
+    h,
+    'a fully merged dossier',
+    { epoch: getForgetEpoch(h), dossierMd: 'the doc this merge started from' },
+    {
+      saveLong: async (handle, doc, expectedVersion, writtenBy) => {
+        calls++;
+        if (calls === 1) return null;   // pure version drift — nobody changed the content
+        return saveLongDoc(handle, doc, expectedVersion, writtenBy);
+      },
+    },
+  );
+  assert.equal(calls, 2);
+  assert.equal(res.longSaved, true);
+  const doc = await getLongDoc(h);
+  assert.equal(doc?.docMd, 'a fully merged dossier');
+  assert.equal(doc?.version, 2);
 });

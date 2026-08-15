@@ -10,6 +10,7 @@
 import { randomUUID } from 'node:crypto';
 import { logDbError } from '../client.js';
 import { stmt } from '../sqlite.js';
+import { archiveEntries } from './memoryArchive.js';
 
 export type ShortKind = 'ops_research' | 'media_analysis' | 'email_flag';
 
@@ -144,8 +145,10 @@ export async function latestShortTerm(handle: string, kinds: ShortKind[]): Promi
   return list[0] ?? null;
 }
 
-/** Force-expire entries now (/forget drops everything; `kinds` allows a scoped expiry).
- *  Expiry, not deletion — rows still age out through the swept path like everything else. */
+/** Force-expire entries now — a SCOPED retirement (e.g. drop this handle's email flags once
+ *  they're acted on): the rows stop rendering but still age out through the swept path, which
+ *  archives them. /forget deliberately does NOT come here (see deleteShortTermForHandle) — for a
+ *  wipe, "expire then archive 48h later" is a leak. */
 export async function expireShortTermNow(handle: string, kinds?: ShortKind[]): Promise<void> {
   try {
     const params: Array<string | number> = [Date.now(), handle];
@@ -160,11 +163,40 @@ export async function expireShortTermNow(handle: string, kinds?: ShortKind[]): P
   }
 }
 
+/** Hard-delete every row for a handle (the /forget path). NOT expireShortTermNow: an
+ *  expiry-then-sweep would ARCHIVE the forgotten rows when the grace window closed, so a
+ *  forget would quietly leak back into recall 48h later. */
+export async function deleteShortTermForHandle(handle: string): Promise<number> {
+  try {
+    return Number(stmt('DELETE FROM memory_short WHERE agent_handle = ?').run(handle).changes);
+  } catch (error) {
+    logDbError('deleteShortTermForHandle', error);
+    return 0;
+  }
+}
+
 /** Hard-delete rows well past expiry (grace default 48h). Called hourly by the retention
  *  timers (src/db/retention.ts). Returns the number of rows deleted. */
 export async function sweepExpiredShortTerm(graceMs: number = SHORT_SWEEP_GRACE_MS): Promise<number> {
+  const cutoff = Date.now() - graceMs;
   try {
-    const res = stmt('DELETE FROM memory_short WHERE expires_at < ?').run(Date.now() - graceMs);
+    // Archive before the delete: a day's research/media/email findings are exactly what a
+    // "what did you find out about that last month" question needs, and this is the last
+    // moment they exist. Best-effort (archiveEntries never throws) — the sweep still runs.
+    const rows = stmt('SELECT * FROM memory_short WHERE expires_at < ?').all(cutoff) as unknown as ShortRow[];
+    if (rows.length) {
+      await archiveEntries(rows.map(fromRow).map(e => ({
+        source: 'short_expired' as const,
+        agentHandle: e.agentHandle,
+        chatId: e.chatId,
+        kind: e.kind,
+        request: e.request,
+        content: e.content,
+        meta: { ...e.meta, ...(e.taskId ? { taskId: e.taskId } : {}) },
+        createdAt: e.createdAt,
+      })));
+    }
+    const res = stmt('DELETE FROM memory_short WHERE expires_at < ?').run(cutoff);
     return Number(res.changes);
   } catch (error) {
     logDbError('sweepExpiredShortTerm', error);

@@ -28,11 +28,15 @@ interface BridgeInbound {
   media?: Array<{ url?: string; path?: string; mimeType?: string; mime_type?: string; filename?: string }>;
 }
 
+// Exact match, never a substring: `includes('127.0.0.1')` also accepts a real remote address that
+// merely CONTAINS the loopback text, and the tokenless mode is the dev fallback that guards a door
+// which can make Irises speak.
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+
 function authorized(req: Request): boolean {
   const token = process.env.ENGINE_PUSH_TOKEN;
   if (token) return req.headers['x-bridge-token'] === token;
-  const ip = req.ip || req.socket.remoteAddress || '';
-  return ip.includes('127.0.0.1') || ip.includes('::1');
+  return LOOPBACK.has(req.ip || req.socket.remoteAddress || '');
 }
 
 /** Map the plugin's media list into IncomingMedia buckets by mime type. hermes forwards LOCAL
@@ -73,7 +77,13 @@ export function createBridgeInboundRouter(deps: { enqueueInbound: EnqueueInbound
     }
     const chatId = `eng:${platform}:${rawChat}`;
     const from = `eng:${platform}:${b.sender_id != null ? String(b.sender_id) : rawChat}`;
-    noteBridgeChat(chatId, { isGroup: b.is_group === true, name: b.chat_name || undefined });
+    noteBridgeChat(chatId, {
+      isGroup: b.is_group === true,
+      name: b.chat_name || undefined,
+      // The plugin has always forwarded thread_id; dropping it here is what sent replies to a
+      // Telegram forum topic back into the group's General.
+      threadId: b.thread_id != null ? String(b.thread_id) : undefined,
+    });
     record({ type: 'event', chatId, label: 'bridge:inbound', detail: { engine: b.engine, platform, isGroup: b.is_group === true, chars: text.length, media: (b.media ?? []).length } });
     const replyTo = b.reply_to_id != null ? { message_id: String(b.reply_to_id) } : undefined;
     deps.enqueueInbound(deps.agentClient, chatId, from, text, String(b.message_id ?? `eng-in-${Date.now().toString(36)}`), media, replyTo);

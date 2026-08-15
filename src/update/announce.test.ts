@@ -1,5 +1,6 @@
-// Run with: npm test   (DATA_BACKEND=memory). sendFollowUp is faked and its voice thunk is never
-// invoked, so no LLM call happens; the audience comes from the real in-memory messages table.
+// Run with: npm test   (DATA_BACKEND=memory). `deliver` is faked — no voicing, no LLM call — so
+// this covers the announcer's own logic: the audience, the claim gate shared with the weave, which
+// delivery outcomes count as told, and the text/framing split.
 import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createUpdateAnnouncer, claimPendingUpdateNote, _internal } from './announce.js';
@@ -8,7 +9,7 @@ import { _resetStateForTests } from './state.js';
 import { resetStorageForTests, stmt } from '../db/sqlite.js';
 import { registerChannel } from '../channels/registry.js';
 import { webChannel } from '../channels/web/channel.js';
-import type { SpeakContent, SpeakOpts, SpeakResult } from '../state/mouth.js';
+import type { ProactiveMessage, ProactiveOutcome } from '../pipeline/proactiveDelivery.js';
 
 registerChannel(webChannel); // makes web: chatIds routable (sms: stays unroutable)
 
@@ -16,12 +17,12 @@ function seedChat(chatId: string, at: number): void {
   stmt('INSERT INTO messages (chat_id, role, content, handle, created_at) VALUES (?,?,?,?,?)').run(chatId, 'user', 'hi', null, at);
 }
 
-function makeAnnouncer(sent: string[]) {
-  const sendFollowUp = async (chatId: string, _c: SpeakContent, _o?: SpeakOpts): Promise<SpeakResult> => {
-    sent.push(chatId); // note: we do NOT call the voice thunk → no LLM
-    return 'sent';
+function makeAnnouncer(sent: ProactiveMessage[], outcome: ProactiveOutcome = 'sent') {
+  const deliver = async (msg: ProactiveMessage): Promise<ProactiveOutcome> => {
+    sent.push(msg);
+    return outcome;
   };
-  return createUpdateAnnouncer({ sendFollowUp });
+  return createUpdateAnnouncer({ deliver });
 }
 
 beforeEach(() => {
@@ -37,21 +38,25 @@ test('onUpdateDetected announces once to each routable active chat, skipping unr
   seedChat('web:b', now - 1000); // more recent → first
   seedChat('sms:x', now - 500);  // unroutable → skipped
   _setUpdateStatusForTests({ remoteSha: 'sha1', updateAvailable: true });
-  const sent: string[] = [];
+  const sent: ProactiveMessage[] = [];
   const announcer = makeAnnouncer(sent);
 
   await announcer.onUpdateDetected('sha1');
-  assert.deepEqual(sent, ['web:b', 'web:a']);
+  assert.deepEqual(sent.map(m => m.chatId), ['web:b', 'web:a']);
+  // The update note rides the same proactive door as an engine push, as its own kind.
+  assert.deepEqual([...new Set(sent.map(m => m.kind))], ['update']);
+  // Per-moment, per-chat dedupe key: a re-detect of the same build can never double-tell a chat.
+  assert.deepEqual(sent.map(m => m.dedupeKey), ['update:availability:sha1:web:b', 'update:availability:sha1:web:a']);
 
   await announcer.onUpdateDetected('sha1'); // already claimed → no repeat
-  assert.deepEqual(sent, ['web:b', 'web:a']);
+  assert.equal(sent.length, 2);
 });
 
 test('UPDATE_ANNOUNCE_ENABLED=false sends nothing', async () => {
   process.env.UPDATE_ANNOUNCE_ENABLED = 'false';
   seedChat('web:a', Date.now() - 1000);
   _setUpdateStatusForTests({ remoteSha: 'sha1', updateAvailable: true });
-  const sent: string[] = [];
+  const sent: ProactiveMessage[] = [];
   await makeAnnouncer(sent).onUpdateDetected('sha1');
   assert.deepEqual(sent, []);
 });
@@ -79,29 +84,47 @@ test('weave and push are mutually exclusive per chat (whoever claims first wins)
   assert.ok(claimPendingUpdateNote('web:a'));
 
   // the cold push then skips web:a and only reaches web:b
-  const sent: string[] = [];
+  const sent: ProactiveMessage[] = [];
   await makeAnnouncer(sent).onUpdateDetected('sha3');
-  assert.deepEqual(sent, ['web:b']);
+  assert.deepEqual(sent.map(m => m.chatId), ['web:b']);
 });
 
-test('a failed push delivery releases the claim so the weave can still recover it', async () => {
+test("a 'failed' delivery releases the claim so the weave can still recover it", async () => {
   seedChat('web:a', Date.now() - 1000);
   _setUpdateStatusForTests({ remoteSha: 'sha4', updateAvailable: true });
-  const failing = createUpdateAnnouncer({ sendFollowUp: async () => { throw new Error('bridge down'); } });
-  await failing.onUpdateDetected('sha4');
-  // claim was released on the failed send → the weave can still get the note for this chat/version
+  await createUpdateAnnouncer({ deliver: async () => 'failed' }).onUpdateDetected('sha4');
+  // claim was released → the weave can still get the note for this chat/version
   assert.ok(claimPendingUpdateNote('web:a'));
 });
 
-test('outcome builders: availability carries the exact command in facts; upgrade keeps changelog out of facts', () => {
-  const avail = _internal.availabilityOutcome('abc1234');
-  assert.equal(avail.kind, 'confirmed');
-  assert.match(avail.facts!, /bash scripts\/update\.sh/);
-  assert.match(avail.facts!, /abc1234/);
+test("a thrown delivery also releases the claim", async () => {
+  seedChat('web:a', Date.now() - 1000);
+  _setUpdateStatusForTests({ remoteSha: 'sha5', updateAvailable: true });
+  await createUpdateAnnouncer({ deliver: async () => { throw new Error('bridge down'); } }).onUpdateDetected('sha5');
+  assert.ok(claimPendingUpdateNote('web:a'));
+});
 
-  const upgraded = _internal.upgradedOutcome({ oldSha: 'a'.repeat(40), newSha: 'b'.repeat(40), appliedAt: 'x', changes: ['secret1 fix', 'secret2 feat'] }, 'bbbbbbb');
-  assert.equal(upgraded.kind, 'confirmed');
-  assert.equal(upgraded.facts, 'now on build bbbbbbb');
-  assert.doesNotMatch(upgraded.facts!, /secret/);      // commit subjects never ride facts (verbatim)
-  assert.match(upgraded.summary, /secret1 fix/);        // they ride summary (voiced)
+test("'deferred' and 'duplicate' hold the claim — the chat is told, or was already", async () => {
+  seedChat('web:a', Date.now() - 1000);
+  _setUpdateStatusForTests({ remoteSha: 'sha6', updateAvailable: true });
+  await createUpdateAnnouncer({ deliver: async () => 'deferred' }).onUpdateDetected('sha6');
+  assert.equal(claimPendingUpdateNote('web:a'), null, 'a parked note is not a lost note');
+
+  _resetStateForTests();
+  _setUpdateStatusForTests({ remoteSha: 'sha7', updateAvailable: true });
+  await createUpdateAnnouncer({ deliver: async () => 'duplicate' }).onUpdateDetected('sha7');
+  assert.equal(claimPendingUpdateNote('web:a'), null);
+});
+
+test('builders: availability carries the exact command as relayed text; the changelog stays in framing', () => {
+  const text = _internal.availabilityText('abc1234');
+  assert.match(text, /bash scripts\/update\.sh/);
+  assert.match(text, /abc1234/);
+  assert.match(_internal.availabilityFraming(), /once/);
+
+  assert.equal(_internal.upgradedText('bbbbbbb'), 'now on build bbbbbbb');
+  const framing = _internal.upgradedFraming({ oldSha: 'a'.repeat(40), newSha: 'b'.repeat(40), appliedAt: 'x', changes: ['secret1 fix', 'secret2 feat'] });
+  // Commit subjects are DEV copy: they ride the framing (voiced), never the relayed-exactly text.
+  assert.match(framing, /secret1 fix/);
+  assert.doesNotMatch(_internal.upgradedText('bbbbbbb'), /secret/);
 });

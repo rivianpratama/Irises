@@ -7,6 +7,7 @@ export {
   getConversation,
   addMessage,
   clearConversation,
+  hasHistory,
 } from '../db/repositories/conversations.js';
 export {
   getUserProfile,

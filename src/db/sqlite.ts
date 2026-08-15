@@ -1,8 +1,9 @@
 // The machine-data store: one SQLite database (node:sqlite — no dependency)
 // holding everything relational: conversations, profiles, prefs, the short
-// memory tier, reply-threading indexes, the token ledger, the error log, and
-// diagnostics. The curated medium/long tiers live as markdown files instead
-// (files.ts + the memoryMedium/memoryLong repositories).
+// memory tier, the cold archive under all of them, reply-threading indexes,
+// the token ledger, the error log, and diagnostics. The curated medium/long
+// tiers live as markdown files instead (files.ts + the memoryMedium/memoryLong
+// repositories).
 //
 // Exactly ONE DatabaseSync per process: a second ':memory:' open would be a
 // fresh empty database, and a second file handle a needless writer. Opened
@@ -86,6 +87,41 @@ CREATE INDEX IF NOT EXISTS idx_memory_short_handle ON memory_short(agent_handle,
 CREATE INDEX IF NOT EXISTS idx_memory_short_expiry ON memory_short(expires_at);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_memory_short_task
   ON memory_short(agent_handle, kind, task_id) WHERE task_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS proactive_deliveries (
+  id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
+  meta_json TEXT NOT NULL DEFAULT '{}', dedupe_key TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','delivered','failed')),
+  deliver_after INTEGER, created_at INTEGER NOT NULL, delivered_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_proactive_dedupe ON proactive_deliveries(dedupe_key, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_proactive_due ON proactive_deliveries(status, deliver_after) WHERE status = 'pending';
+
+-- Cold storage under every tier: rows retired anywhere upstream (a superseded medium entry,
+-- an expired short row, a pruned message, an evicted profile fact) land here so "search your
+-- own past" has something to read. The source column is deliberately CHECK-less — the repo owns
+-- the union (memoryArchive.ts ARCHIVE_SOURCES), and a CHECK would need a schema bump to add
+-- a feed. Searched via memory_archive_fts (FTS5 when the build has it, LIKE otherwise).
+CREATE TABLE IF NOT EXISTS memory_archive (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_handle TEXT,
+  chat_id TEXT,
+  source TEXT NOT NULL,
+  kind TEXT,
+  request TEXT,
+  content TEXT NOT NULL,
+  meta_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL,
+  archived_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_archive_handle ON memory_archive(agent_handle, archived_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_archive_chat ON memory_archive(chat_id, archived_at DESC);
+
+CREATE TABLE IF NOT EXISTS forget_epochs (
+  agent_handle TEXT PRIMARY KEY,
+  epoch INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS token_usage (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,8 +212,32 @@ CREATE INDEX IF NOT EXISTS idx_errlog_fingerprint ON error_log(fingerprint, crea
 CREATE INDEX IF NOT EXISTS idx_errlog_handle      ON error_log(handle, created_at DESC);
 `;
 
+// The archive's full-text index is OPTIONAL: fts5 is a compile-time SQLite option and
+// node:sqlite ships whatever the bundled amalgamation was built with. Created (with its
+// sync triggers) on a best-effort basis after the base DDL; when it fails the archive still
+// works and searchArchive degrades to a LIKE scan. Archive rows are immutable, so INSERT +
+// DELETE triggers are the whole contract — there is no UPDATE path to mirror.
+const FTS_DDL = `
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_archive_fts
+  USING fts5(content, request, content='memory_archive', content_rowid='id');
+CREATE TRIGGER IF NOT EXISTS memory_archive_fts_ai AFTER INSERT ON memory_archive BEGIN
+  INSERT INTO memory_archive_fts(rowid, content, request) VALUES (new.id, new.content, new.request);
+END;
+CREATE TRIGGER IF NOT EXISTS memory_archive_fts_ad AFTER DELETE ON memory_archive BEGIN
+  INSERT INTO memory_archive_fts(memory_archive_fts, rowid, content, request)
+    VALUES ('delete', old.id, old.content, old.request);
+END;
+`;
+
 let db: DatabaseSync | null = null;
+let fts = false;
 const stmts = new Map<string, StatementSync>();
+
+/** True when memory_archive_fts exists on this connection (fts5 compiled in). */
+export function ftsAvailable(): boolean {
+  getDb();
+  return fts;
+}
 
 /** The process-wide database, opened and bootstrapped on first use. */
 export function getDb(): DatabaseSync {
@@ -195,6 +255,16 @@ export function getDb(): DatabaseSync {
       throw new Error(`[db] ${p} has schema v${v}, newer than this build (v${SCHEMA_VERSION}) — refusing to open`);
     }
     opened.exec(DDL);
+    try {
+      opened.exec(FTS_DDL);
+      fts = true;
+    } catch (error) {
+      fts = false;
+      // A file written by an FTS-capable build carries the triggers; without the virtual table
+      // they make every archive INSERT fail. Dropping them keeps the archive writable here.
+      try { opened.exec('DROP TRIGGER IF EXISTS memory_archive_fts_ai; DROP TRIGGER IF EXISTS memory_archive_fts_ad;'); } catch { /* nothing to drop */ }
+      console.warn('[db] fts5 unavailable — archive search falls back to LIKE scans', error);
+    }
     if (v < SCHEMA_VERSION) opened.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } catch (err) {
     try { opened.close(); } catch { /* already broken */ }
@@ -236,10 +306,16 @@ export function resetStorageForTests(): void {
     DELETE FROM sent_messages;
     DELETE FROM inbound_messages;
     DELETE FROM memory_short;
+    DELETE FROM forget_epochs;
+    DELETE FROM proactive_deliveries;
     DELETE FROM token_usage;
     DELETE FROM error_log;
     DELETE FROM diagnostic_turns;
     DELETE FROM diagnostic_turn_history;
   `);
+  // Its own statement, and tolerant: the delete goes through the BASE table so the FTS delete
+  // trigger keeps the index in sync, but a DB carrying triggers without the virtual table
+  // (FTS-capable writer, FTS-less reader) would throw and take the whole reset with it.
+  try { d.exec('DELETE FROM memory_archive'); } catch { /* trigger-less/partial FTS state */ }
   try { fs.rmSync(path.join(irisesHome(), 'memories'), { recursive: true, force: true }); } catch { /* best-effort */ }
 }

@@ -134,6 +134,13 @@ test('redacts "reflexion" leaks into plain "my memory"', () => {
   assert.equal(redactInternalTools('Reflexion is reviewing the day'), 'my memory is reviewing the day');
 });
 
+test('redacts a leaked recall_memory tool name, but never ordinary prose', () => {
+  assert.equal(redactInternalTools('let me check recall_memory for that'), 'let me check my memory for that');
+  assert.equal(redactInternalTools('my recall-memory tool has it'), 'my memory has it');
+  // The bare bigram is left alone — this rule targets the identifier, not English.
+  assert.equal(redactInternalTools("i can't recall memory of that day"), "i can't recall memory of that day");
+});
+
 test('redacts model/provider names into plain "AI" (the "what model are you" leak)', () => {
   assert.equal(redactInternalTools('i run on deepseek'), 'i run on AI');
   assert.equal(redactInternalTools("that's chatgpt under the hood"), "that's AI under the hood");

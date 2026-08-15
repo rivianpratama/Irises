@@ -4,14 +4,15 @@ import {
   REACTION_TOOL, REMEMBER_USER_TOOL, DELEGATE_TO_OPS_TOOL,
   RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL, SET_PREFERENCE_TOOL,
   SCHEDULE_AUTOMATION_TOOL, LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL, CANCEL_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL,
-  UPDATE_MEMORY_TOOL, UPDATE_SELF_TOOL,
+  UPDATE_MEMORY_TOOL, UPDATE_SELF_TOOL, RECALL_MEMORY_TOOL,
 } from './tools.js';
 import { selfUpdateEnabled } from '../../update/selfUpdate.js';
 import { rememberMedia } from './mediaRecall.js';
 import { getPreference, ensureChatId, clearDossier } from '../../db/repositories/memory.js';
 import { memoryHandle, isGroupHandle } from '../../memory/identity.js';
 import { retractAllForHandle } from '../../db/repositories/memoryMedium.js';
-import { expireShortTermNow } from '../../db/repositories/memoryShort.js';
+import { deleteShortTermForHandle } from '../../db/repositories/memoryShort.js';
+import { purgeArchiveFor } from '../../db/repositories/memoryArchive.js';
 import { getLongDoc, saveLongDoc } from '../../db/repositories/memoryLong.js';
 import { buildContextBlock } from '../../memory/dossier.js';
 import { getActiveOps } from '../../state/opsCoordination.js';
@@ -78,12 +79,18 @@ export async function chat(
     const h = memoryHandle(chatContext, chatId);
     if (h) {
       await Promise.all([clearUserProfile(h), clearDossier(h)]);
-      // Stage-1 tiers: retract every medium row, expire the short tier, and write an EMPTY long
-      // doc as a new revision (history preserved — Stage 3's forgetUser becomes the one sanctioned
-      // hard-delete). Best-effort here: a tier hiccup must not block the legacy forget above.
+      // Stage-1 tiers: retract every medium row, DELETE the short tier, purge the cold archive,
+      // and write an EMPTY long doc as a new revision (head history preserved — Stage 3's
+      // forgetUser becomes the one sanctioned hard-delete of the revisions themselves).
+      // Best-effort here: a tier hiccup must not block the legacy forget above.
+      //
+      // The short tier is deleted, NOT expired: an expiry would leave the rows to be swept 48h
+      // later, and the sweep ARCHIVES what it sweeps — a forget that reappears in recall two days
+      // on. Same reason the archive is purged for both the handle and this chat.
       await Promise.all([
         retractAllForHandle(h).catch(err => console.error('[convo] /forget medium retract failed', err)),
-        expireShortTermNow(h).catch(err => console.error('[convo] /forget short expire failed', err)),
+        deleteShortTermForHandle(h).catch(err => console.error('[convo] /forget short delete failed', err)),
+        purgeArchiveFor({ handle: h, chatId }).catch(err => console.error('[convo] /forget archive purge failed', err)),
         (async () => {
           const cur = await getLongDoc(h);
           if (cur?.docMd) await saveLongDoc(h, '', cur.version, 'forget');
@@ -156,7 +163,7 @@ export async function chat(
   const tools: LlmToolDef[] = [
     REACTION_TOOL, REMEMBER_USER_TOOL, DELEGATE_TO_OPS_TOOL, SET_PREFERENCE_TOOL,
     SCHEDULE_AUTOMATION_TOOL, LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL, CANCEL_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL,
-    UPDATE_MEMORY_TOOL,
+    UPDATE_MEMORY_TOOL, RECALL_MEMORY_TOOL,
   ];
   if (chatContext?.isGroupChat) tools.push(RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL);
   // "update yourself" from chat — offered only when enabled (single-user by design; see selfUpdate.ts).
@@ -180,10 +187,14 @@ export async function chat(
   // this reply (claimed once per chat per version — this suppresses the cold proactive push for it).
   const updateNote = claimPendingUpdateNote(chatId);
 
+  // Held in a variable (not inlined): recall_memory's second pass re-invokes the model with this
+  // SAME system + messages, minus the recall tool (see processConvoResult).
+  const system = buildSystemPrompt(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined);
+
   try {
     const res = await callConvoLLM({
       role: 'convo',
-      system: buildSystemPrompt(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined),
+      system,
       // The persona is the stable HEAD of that system string; mark its length so the Anthropic lane
       // caches the persona across turns instead of cache-writing the whole per-turn-varying system.
       systemCachePrefixLen: convoPersonaChars(),
@@ -193,7 +204,10 @@ export async function chat(
       messages,
       trace: { chatId, handle, label: 'convo' },
     });
-    const result = await processConvoResult({ res, chatId, handle, chatContext, textToSend, history, media });
+    const result = await processConvoResult({
+      res, chatId, handle, chatContext, textToSend, history, media,
+      turn: { system, messages, tools },
+    });
     // Stash this turn's media for a LATER text follow-up to recall (delegate_to_mm media_scope
     // "earlier"). Written AFTER processConvoResult so an "earlier" recall THIS turn still resolves to
     // the PRIOR file — writing it before would let a new-media turn that references an earlier file

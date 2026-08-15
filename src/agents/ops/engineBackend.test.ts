@@ -5,7 +5,7 @@ process.env.TZ = 'UTC';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resetEngineBackendCache, getEngineBackend, EngineRunError, EngineUnavailableError, type EngineBackend } from './engineBackend.js';
+import { resetEngineBackendCache, getEngineBackend, withEngineSlot, computeEngineTimeoutMs, EngineRunError, EngineUnavailableError, type EngineBackend } from './engineBackend.js';
 import { runTask, buildTaskPrompt, looksLikeMiss } from './client.js';
 import { emptyMedia } from '../../webhook/types.js';
 import type { OpsTask, OpsDebriefSink } from '../types.js';
@@ -25,7 +25,7 @@ function stub(run: EngineBackend['runTask']): EngineBackend {
     async cancelReminder() { return false; },
     async remember() { /* noop */ },
     async probe() { return { ok: true }; },
-    async channelSend() { /* noop */ },
+    async channelSend() { return {}; },
   };
 }
 
@@ -42,6 +42,72 @@ test('OPS_BACKEND unset → no engine; unknown value → no engine', () => {
     if (prev === undefined) delete process.env.OPS_BACKEND; else process.env.OPS_BACKEND = prev;
     resetEngineBackendCache(undefined);
   }
+});
+
+test('getEngineBackend: a null answer is NOT cached — OPS_BACKEND set later still resolves', () => {
+  resetEngineBackendCache(undefined);
+  const prev = process.env.OPS_BACKEND;
+  try {
+    delete process.env.OPS_BACKEND;
+    assert.equal(getEngineBackend(), null);
+    // Caching the null pinned deep work offline for the whole process whenever anything asked
+    // before the env was loaded.
+    process.env.OPS_BACKEND = 'hermes';
+    assert.equal(getEngineBackend()?.name, 'hermes');
+  } finally {
+    if (prev === undefined) delete process.env.OPS_BACKEND; else process.env.OPS_BACKEND = prev;
+    resetEngineBackendCache(undefined);
+  }
+});
+
+test('computeEngineTimeoutMs: default, explicit override, and the small-orchestrator clamp', () => {
+  assert.equal(computeEngineTimeoutMs({}), 225_000, '4min orchestrator default − 15s');
+  // The operator's own number is taken as written, in both directions.
+  assert.equal(computeEngineTimeoutMs({ ENGINE_TIMEOUT_MS: '9000' }), 9_000);
+  assert.equal(computeEngineTimeoutMs({ ENGINE_TIMEOUT_MS: '600000', OPS_TASK_TIMEOUT_MS: '30000' }), 600_000);
+  assert.equal(computeEngineTimeoutMs({ ENGINE_TIMEOUT_MS: 'nonsense' }), 225_000, 'junk falls back to derived');
+  assert.equal(computeEngineTimeoutMs({ OPS_TASK_TIMEOUT_MS: '60000' }), 45_000);
+  // Below 45s the old `max(30s, orch − 15s)` floor OUTLIVED the orchestrator's own deadline, so
+  // every slow engine surfaced as a synthetic DeadlineError instead of a mapped timeout.
+  assert.equal(computeEngineTimeoutMs({ OPS_TASK_TIMEOUT_MS: '20000' }), 15_000);
+  assert.equal(computeEngineTimeoutMs({ OPS_TASK_TIMEOUT_MS: '6000' }), 5_000, 'floored, never zero/negative');
+});
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>(r => { resolve = r; });
+  return { promise, resolve };
+}
+const tick = () => new Promise(r => setTimeout(r, 0));
+
+test('withEngineSlot: only MAX_CONCURRENT run at once; the rest are admitted FIFO', async () => {
+  const max = Number(process.env.ENGINE_MAX_CONCURRENT) || 2;
+  const names = Array.from({ length: max + 2 }, (_, i) => `run${i}`);
+  const gates = names.map(() => deferred());
+  const started: string[] = [];
+  const finished: string[] = [];
+  const all = names.map((n, i) => withEngineSlot(async () => {
+    started.push(n);
+    await gates[i].promise;
+    finished.push(n);
+  }));
+
+  await tick();
+  assert.deepEqual(started, names.slice(0, max), 'the cap admits exactly MAX_CONCURRENT');
+  gates[0].resolve();
+  await tick();
+  assert.deepEqual(started, names.slice(0, max + 1), 'a freed slot admits the longest waiter');
+  gates[1].resolve();
+  await tick();
+  assert.deepEqual(started, names, 'and then the next');
+  for (const g of gates) g.resolve();
+  await Promise.all(all);
+  assert.deepEqual(finished, names, 'FIFO end to end — no waiter is skipped');
+});
+
+test('withEngineSlot: a throwing call still releases its slot', async () => {
+  await assert.rejects(withEngineSlot(async () => { throw new Error('engine said no'); }), /engine said no/);
+  assert.equal(await withEngineSlot(async () => 'the slot is free'), 'the slot is free');
 });
 
 test('runTask with no engine: honest error OpsResult, debrief filled, sink assigned', async () => {

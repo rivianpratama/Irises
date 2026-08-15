@@ -42,7 +42,16 @@ export interface ImportantNote {
 // (a Convo turn, the orchestrator's result handoff, a Judge batch) can't interleave their
 // read→merge→upsert and clobber each other's keys. Single-VM, single-process deployment makes
 // an in-process lock sufficient; if a second process ever shares IRISES_HOME, this must become
-// an flock-style sidecar lock on the memory files.
+// an flock-style sidecar lock on the memory files. The same single-writer assumption covers the
+// SQLite-side merge paths that ride this queue (user_profiles, forget_epochs, memory_archive
+// evictions). The one place two Irises processes can genuinely overlap today is a restart, and
+// that window is held shut by the updater's pidfile handshake (src/update/pidfile.ts) rather
+// than by a lock file here.
+//
+// NOT re-entrant, by construction: it is a promise-chain queue, so calling withHandleLock for
+// the SAME handle from inside a locked section deadlocks (the inner call waits on the outer,
+// which waits on the inner). Every function here follows the same shape — private unlocked
+// helpers, wrapped ONCE at the export boundary.
 const writeLocks = new Map<string, Promise<unknown>>();
 // Exported so the tier repositories (memoryMedium/memoryLong) share the SAME per-handle
 // queue — a prefs merge and a medium-entry cap eviction for one user never interleave.
@@ -106,12 +115,64 @@ function getMemoryStrict(handle: string): AgentMemory | null {
   return { handle, dossierMd: dossierMd ?? '', prefs: prefs ?? {} };
 }
 
-export async function saveDossier(handle: string, dossierMd: string): Promise<void> {
+// ── /forget epochs (the mid-merge race) ─────────────────────────────────────────────
+// The dossier refresh is a long read→LLM→write. A /forget that lands INSIDE that window used
+// to be undone seconds later: the merge had already read the pre-forget doc and happily wrote
+// it back over the wipe. The epoch is the fence — clearDossier bumps it, and a merge that
+// carries a stale epoch aborts instead of resurrecting what the user asked to be forgotten.
+
+/** The handle's forget generation (0 when they've never been forgotten). Sync + fail-soft:
+ *  a read error returns 0, which makes the epoch check pass — the wipe-protection is a guard,
+ *  never a reason to lose a legitimate write. */
+export function getForgetEpoch(handle: string): number {
+  try {
+    const row = stmt('SELECT epoch FROM forget_epochs WHERE agent_handle = ?').get(handle) as { epoch: number } | undefined;
+    return row?.epoch ?? 0;
+  } catch (error) {
+    logDbError('getForgetEpoch', error);
+    return 0;
+  }
+}
+
+/** Advance the handle's forget generation. Sync and lock-FREE on purpose: it is called from
+ *  inside clearDossier's locked section (withHandleLock is not re-entrant). */
+export function bumpForgetEpoch(handle: string): number {
+  try {
+    const next = getForgetEpoch(handle) + 1;
+    stmt(
+      `INSERT INTO forget_epochs (agent_handle, epoch, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(agent_handle) DO UPDATE SET epoch = excluded.epoch, updated_at = excluded.updated_at`
+    ).run(handle, next, Date.now());
+    return next;
+  } catch (error) {
+    logDbError('bumpForgetEpoch', error);
+    return 0;
+  }
+}
+
+/**
+ * Write the dossier. `opts.ifForgetEpoch` is the epoch the CALLER read before it started
+ * merging: when it no longer matches, a /forget landed mid-merge and this write would undo it,
+ * so the save is refused. Returns whether the doc was written.
+ */
+export async function saveDossier(
+  handle: string,
+  dossierMd: string,
+  opts?: { ifForgetEpoch?: number },
+): Promise<boolean> {
   return withHandleLock(handle, async () => {
+    // Re-read inside the lock: clearDossier's bump also happens under it, so this is the point
+    // where "did a forget land while I was thinking?" has a definite answer.
+    if (opts?.ifForgetEpoch != null && getForgetEpoch(handle) !== opts.ifForgetEpoch) {
+      console.warn('[memory] dossier save aborted — /forget landed mid-merge');
+      return false;
+    }
     try {
       atomicWriteText(dossierPath(handle), dossierMd);
+      return true;
     } catch (error) {
       console.error(`[memory] DURABLE WRITE LOST for ${handle} — dossier write failed`, error);
+      return false;
     }
   });
 }
@@ -120,6 +181,8 @@ export async function saveDossier(handle: string, dossierMd: string): Promise<vo
  *  Preserves operational prefs like chat_id so background jobs can still reach them. */
 export async function clearDossier(handle: string): Promise<void> {
   return withHandleLock(handle, async () => {
+    // Fence any dossier merge already in flight for this handle (see getForgetEpoch above).
+    bumpForgetEpoch(handle);
     let existing: Record<string, unknown> | null;
     try {
       existing = readPrefsStrict(handle);

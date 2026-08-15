@@ -22,6 +22,11 @@ interface RedactionRule {
 }
 
 const INTERNAL_TOOL_REDACTIONS: RedactionRule[] = [
+  // Tool names are machinery too. recall_memory is the one whose name a model is tempted to
+  // SAY ("let me check recall_memory") because the turn is literally about remembering — to the
+  // user that is just Irises's own memory. Matched as the IDENTIFIER only (underscore/hyphen):
+  // the bare bigram "recall memory" is left alone so ordinary prose can never be mangled.
+  { pattern: /\b(?:(?:my|the|our)\s+)?recall[_-]memory(?:\s+(?:tool|search|lookup))?\b/gi, replacement: 'my memory' },
   // "Reflexion" is a banned name — the memory curator. To the user, memory work is just
   // Irises remembering things; "my reflexion pass will tidy that up" cracks the seam the same way
   // "ops" does. One rule suffices: "my memory will tidy that up" reads naturally in every shape.

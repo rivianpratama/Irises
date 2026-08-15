@@ -9,10 +9,12 @@ import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  listMediumActive, listMediumAll, addDirective, updateDirective, retractEntry,
+  listMediumActive, listMediumAll, listMediumPreserved, addDirective, updateDirective, retractEntry,
   retractAllForHandle, addImportantNote, upsertFact,
-  MAX_ACTIVE_DIRECTIVES, MAX_ACTIVE_NOTES,
+  MAX_ACTIVE_DIRECTIVES, MAX_ACTIVE_NOTES, CAP_EVICTED,
+  MEDIUM_ARCHIVE_MAX_BYTES, MEDIUM_ARCHIVE_KEEP,
 } from './memoryMedium.js';
+import { listArchiveFor } from './memoryArchive.js';
 import { memoriesDir } from '../stateDir.js';
 
 let seq = 0;
@@ -79,7 +81,10 @@ test('directive cap evicts the OLDEST active row by superseding it', async () =>
   assert.equal(active[0].body, 'directive number 2'); // 0 and 1 evicted (FIFO)
   const all = await listMediumAll(h);
   assert.equal(all.length, MAX_ACTIVE_DIRECTIVES + 2); // evicted rows still exist
-  assert.ok(all.filter(e => e.status === 'superseded').length === 2);
+  const evicted = all.filter(e => e.status === 'superseded');
+  assert.equal(evicted.length, 2);
+  // An aged-out row was NOT replaced by whichever entry tripped the cap — the sentinel says so.
+  for (const e of evicted) assert.equal(e.supersededBy, CAP_EVICTED);
 });
 
 test('note cap matches MAX_ACTIVE_NOTES', async () => {
@@ -152,4 +157,87 @@ test('hand-edited (unannotated) segments are preserved verbatim across rewrites'
   assert.ok(after.includes('a human scribbled this without an annotation'));
   // the hand edit is preserved but never rendered as an entry
   assert.equal((await listMediumActive(h)).length, 2);
+});
+
+test('listMediumPreserved surfaces a mangled annotation the renderers silently skip', async () => {
+  const h = freshHandle();
+  const created = await addDirective(h, 'flag anything from the county');
+  assert.equal((await listMediumPreserved(h)).length, 0);
+
+  // Corrupt the annotation the way a hand edit does (a dropped closing marker).
+  const p = path.join(memoriesDir(h), 'MEDIUM.md');
+  fs.writeFileSync(p, fs.readFileSync(p, 'utf8').replace(` id=${created!.id}`, ' id='), 'utf8');
+
+  assert.equal((await listMediumActive(h)).length, 0, 'the entry is invisible to every renderer');
+  const preserved = await listMediumPreserved(h);
+  assert.equal(preserved.length, 1);
+  assert.match(preserved[0], /flag anything from the county/);
+});
+
+// ── The archive feed: every retire path lands in memory_archive with the right source ────────
+
+test('each retire path lands the right archive source', async () => {
+  const h = freshHandle();
+  const d = await addDirective(h, 'a directive that will be edited');
+  await updateDirective(h, d!.id, 'the edited directive');            // → medium_superseded
+  const r = await addDirective(h, 'a directive they will drop');
+  await retractEntry(h, r!.id);                                       // → medium_retracted
+  await upsertFact(h, 'brokerage', 'Keller Williams');
+  await upsertFact(h, 'brokerage', 'eXp Realty');                     // → medium_superseded
+
+  const archived = await listArchiveFor(h);
+  const bySource = new Map(archived.map(a => [a.content, a.source]));
+  assert.equal(bySource.get('a directive that will be edited'), 'medium_superseded');
+  assert.equal(bySource.get('a directive they will drop'), 'medium_retracted');
+  assert.equal(bySource.get('Keller Williams'), 'medium_superseded');
+  // The fact's slot name rides along as `request` so a recall search can match on it.
+  assert.equal(archived.find(a => a.content === 'Keller Williams')?.request, 'brokerage');
+  assert.equal(archived.find(a => a.content === 'Keller Williams')?.kind, 'fact');
+});
+
+test('a cap eviction is archived as medium_cap_evicted', async () => {
+  const h = freshHandle();
+  for (let i = 0; i < MAX_ACTIVE_NOTES + 1; i++) await addImportantNote(h, `note ${i}`);
+  const archived = await listArchiveFor(h);
+  assert.equal(archived.length, 1);
+  assert.equal(archived[0].source, 'medium_cap_evicted');
+  assert.equal(archived[0].content, 'note 0');
+});
+
+test('the /forget sweep archives every retracted row', async () => {
+  const h = freshHandle();
+  await addDirective(h, 'first standing preference');
+  await addImportantNote(h, 'the gate code is 4421');
+  await retractAllForHandle(h);
+  const archived = await listArchiveFor(h);
+  assert.equal(archived.length, 2);
+  assert.ok(archived.every(a => a.source === 'medium_retracted'));
+});
+
+test('MEDIUM.archive.md rotates when it gets big; the rows survive in memory_archive', async () => {
+  const h = freshHandle();
+  const p = path.join(memoriesDir(h), 'MEDIUM.archive.md');
+  // Seed an oversized ledger of REAL entries, so the rotation has something parsable to keep.
+  await addDirective(h, 'seed');
+  const seeded = (await listMediumActive(h))[0];
+  const bulky = 'x'.repeat(500);
+  const one = `${bulky}\n<!-- mm id=${seeded.id} kind=directive source=convo created=${new Date(seeded.createdAt).toISOString()} updated=${new Date(seeded.updatedAt).toISOString()} status=superseded -->\n§\n`;
+  const copies = Math.ceil(MEDIUM_ARCHIVE_MAX_BYTES / one.length) + 5;
+  fs.mkdirSync(memoriesDir(h), { recursive: true });
+  fs.writeFileSync(p, one.repeat(copies), 'utf8');
+  assert.ok(fs.statSync(p).size > MEDIUM_ARCHIVE_MAX_BYTES);
+  assert.ok(copies > MEDIUM_ARCHIVE_KEEP, 'the ledger really is over the keep count');
+
+  // Any retire now trips the rotation (appendArchive is the single choke point).
+  const doomed = await addDirective(h, 'the newest retired entry');
+  await retractEntry(h, doomed!.id);
+
+  assert.ok(fs.statSync(p).size <= MEDIUM_ARCHIVE_MAX_BYTES, 'the file is bounded again');
+  const left = await listMediumAll(h);
+  assert.ok(left.length <= MEDIUM_ARCHIVE_KEEP + 2, `rotated down to the newest entries (${left.length})`);
+  // The retire that tripped the rotation is intact in both stores.
+  assert.ok(fs.readFileSync(p, 'utf8').includes('the newest retired entry'));
+  const archived = await listArchiveFor(h);
+  assert.equal(archived[0].content, 'the newest retired entry');
+  assert.equal(archived[0].source, 'medium_retracted');
 });

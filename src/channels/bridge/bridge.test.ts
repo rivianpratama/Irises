@@ -28,9 +28,11 @@ test('registry: eng: prefix routes to the bridge channel kind', () => {
   assert.equal(parseChannelKind('web:x'), 'web');
 });
 
-test('sendMessage dispatches through the engine channelSend; malformed/engineless throw', async () => {
-  const sent: Array<{ platform: string; chatId: string; text: string }> = [];
-  const engine: EngineBackend = {
+type Sent = { platform: string; chatId: string; text: string; opts?: { threadId?: string; replyToId?: string } };
+
+/** An engine whose channelSend records the call and reports whatever id the test wants back. */
+function stubEngine(sent: Sent[], messageId?: string): EngineBackend {
+  return {
     name: 'hermes',
     async runTask() { throw new Error('not under test'); },
     async createReminder() { throw new Error('not under test'); },
@@ -38,18 +40,59 @@ test('sendMessage dispatches through the engine channelSend; malformed/engineles
     async cancelReminder() { return false; },
     async remember() { /* noop */ },
     async probe() { return { ok: true }; },
-    async channelSend(platform, chatId, text) { sent.push({ platform, chatId, text }); },
+    async channelSend(platform, chatId, text, opts) { sent.push({ platform, chatId, text, opts }); return messageId ? { messageId } : {}; },
   };
-  resetEngineBackendCache(engine);
+}
+
+test('sendMessage dispatches through the engine channelSend; malformed/engineless throw', async () => {
+  const sent: Sent[] = [];
+  resetEngineBackendCache(stubEngine(sent));
   try {
     const res = await bridgeChannel.sendMessage('eng:whatsapp:+1555', 'hello there');
     assert.equal(sent.length, 1);
-    assert.deepEqual(sent[0], { platform: 'whatsapp', chatId: '+1555', text: 'hello there' });
+    assert.equal(sent[0].platform, 'whatsapp');
+    assert.equal(sent[0].chatId, '+1555');
+    assert.equal(sent[0].text, 'hello there');
     assert.equal(res.chat_id, 'eng:whatsapp:+1555');
 
     await assert.rejects(bridgeChannel.sendMessage('eng:broken', 'x'), /malformed/);
     resetEngineBackendCache(null);
     await assert.rejects(bridgeChannel.sendMessage('eng:whatsapp:+1555', 'x'), /no engine/);
+  } finally {
+    resetEngineBackendCache(undefined);
+  }
+});
+
+test('sendMessage: the engine message id becomes the bubble id, synthetic only as a fallback', async () => {
+  const sent: Sent[] = [];
+  resetEngineBackendCache(stubEngine(sent, '4242'));
+  try {
+    // The platform's own id is what a later tapped reply arrives with — recordSentBubble stores
+    // this, resolveTappedReply looks it up.
+    const withId = await bridgeChannel.sendMessage('eng:telegram:99', 'hi');
+    assert.equal(withId.message!.id, '4242');
+
+    resetEngineBackendCache(stubEngine(sent));
+    const noId = await bridgeChannel.sendMessage('eng:telegram:99', 'hi');
+    assert.match(noId.message!.id, /^eng-out-/, 'an engine that cannot tell us still gets a unique id');
+  } finally {
+    resetEngineBackendCache(undefined);
+  }
+});
+
+test('sendMessage: the last inbound thread rides along, and clears when the chat leaves the topic', async () => {
+  const sent: Sent[] = [];
+  resetEngineBackendCache(stubEngine(sent));
+  try {
+    noteBridgeChat('eng:telegram:-100', { isGroup: true, name: 'forum', threadId: '31' });
+    await bridgeChannel.sendMessage('eng:telegram:-100', 'in the topic', { message_id: 'm1' });
+    assert.deepEqual(sent[0].opts, { threadId: '31', replyToId: 'm1' });
+
+    // Newest inbound carries no thread → the conversation moved out of the topic. Keeping the old
+    // id would post into a thread nobody is reading.
+    noteBridgeChat('eng:telegram:-100', { isGroup: true, name: 'forum' });
+    await bridgeChannel.sendMessage('eng:telegram:-100', 'back in general');
+    assert.deepEqual(sent[1].opts, {});
   } finally {
     resetEngineBackendCache(undefined);
   }
@@ -124,6 +167,24 @@ test('inbound: token auth, validation, and the enqueue mapping', async (t) => {
   assert.equal(queued[0].from, 'eng:whatsapp:+1555');
   assert.equal(queued[0].text, 'what is the weather');
   assert.equal(queued[0].media.images.length, 1);
+});
+
+test('inbound: thread_id is recorded and rides back out on the reply', async (t) => {
+  process.env.ENGINE_PUSH_TOKEN = 'brtok';
+  t.after(() => { delete process.env.ENGINE_PUSH_TOKEN; });
+  const queued: Queued[] = [];
+  const { server, base } = await startApp(queued);
+  t.after(() => server.close());
+  const sent: Sent[] = [];
+  resetEngineBackendCache(stubEngine(sent));
+  t.after(() => resetEngineBackendCache(undefined));
+
+  // The plugin has always forwarded thread_id; the router used to drop it, which sent every reply
+  // to a Telegram forum topic back into the group's General.
+  const res = await post(base, { platform: 'telegram', chat_id: '-777', thread_id: 31, text: 'in the topic', is_group: true }, 'brtok');
+  assert.equal(res.status, 202);
+  await bridgeChannel.sendMessage('eng:telegram:-777', 'answering in the topic');
+  assert.equal(sent[0].opts?.threadId, '31', 'a numeric thread id stringifies');
 });
 
 test('inbound: media-only turns queue; empty turns reject', async (t) => {

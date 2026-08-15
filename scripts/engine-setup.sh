@@ -150,6 +150,17 @@ setup_hermes() {
   set_env ENGINE_PUSH_TOKEN "$(rand_token)"
   set_env WEB_ENABLED "true"
 
+  # 2b. The same secret on the hermes side, under the name its cron jobs reference. The reminder job
+  # prompt tells hermes to POST back with "x-engine-token: $IRISES_PUSH_TOKEN" — without that
+  # variable in hermes's environment every fired reminder is rejected 403 and the user never hears it.
+  local ptoken; ptoken="$(get_env ENGINE_PUSH_TOKEN "$ENV_FILE")"
+  if ! grep -qE '^IRISES_PUSH_TOKEN=' "$henv" 2>/dev/null; then
+    say "appending IRISES_PUSH_TOKEN to $henv (same secret as Irises's ENGINE_PUSH_TOKEN) — it is what"
+    say "lets a fired reminder post its outcome back to Irises to be voiced"
+    { echo ""; echo "# — added by Irises setup ($(date +%F)) — reminder push-back —"; echo "IRISES_PUSH_TOKEN=$ptoken"; } >> "$henv"
+    warn "restart the hermes gateway to pick this up:  hermes gateway restart"
+  fi
+
   # 3. Voice-model keys: reuse what hermes already has (never overwrite user-set values)
   local k
   for k in ANTHROPIC_API_KEY OPENROUTER_API_KEY; do

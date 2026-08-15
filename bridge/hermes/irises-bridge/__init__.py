@@ -11,6 +11,8 @@ Environment (set for the gateway process):
                          EMPTY = front nothing (default — hermes behaves normally).
     IRISES_BRIDGE_PORT   loopback listener for Irises's outbound sends (default 8655)
     IRISES_BRIDGE_FAIL   open (default: on bridge error hermes answers itself) | closed
+    IRISES_BRIDGE_WORKERS  forward worker threads / queue shards (default 2). Each chat is
+                         pinned to one shard, so a chat's messages stay in order.
 
 How it works (verified against hermes source):
   * `pre_gateway_dispatch` fires for every non-internal inbound message on EVERY platform,
@@ -20,29 +22,63 @@ How it works (verified against hermes source):
   * Outbound: a loopback HTTP listener accepts {"platform","chat_id","text"} from Irises and
     delivers via gateway.adapters[Platform].send(...) — the same in-process call hermes's own
     webhook adapter uses, uniform across every current and future platform.
+
+Testability rule for this file: every DECISION lives in a pure function (the `_`-prefixed
+helpers below, covered by bridge/hermes/test_irises_bridge.py). The threads and the HTTP
+handler are thin shells that call them.
 """
 from __future__ import annotations
 
 import asyncio
 import fnmatch
+import hashlib
 import json
 import logging
 import os
 import queue
+import sys
 import threading
+import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 log = logging.getLogger("plugins.irises_bridge")
 
-_FORWARD_Q: "queue.Queue[dict]" = queue.Queue(maxsize=1000)
-# [gateway, loop] captured on the first fronted message; the outbound listener needs both.
-_GW: list = [None, None]
-_STARTED = threading.Event()
+# Irises aborts its bridge POST at 20s (hermesBackend.ts channelSend). The handler's whole budget
+# has to fit inside that or Irises reports a failure for a send that actually landed:
+# the ≤3s gateway re-resolve poll + this wait = 17s < 20s.
+_SEND_WAIT_S = 14
+_GW_POLL_S = 3.0
+_GW_POLL_STEP_S = 0.5
+# Per-POST budget for one inbound forward, times three attempts.
+_FORWARD_TIMEOUT_S = 10
+_FORWARD_ATTEMPTS = 3
+_BACKOFF_S = (0.5, 2.0)
+_HEALTH_WINDOW_S = 60.0
+_HEALTH_PROBE_S = 15.0
 
 
 def _cfg(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
+
+
+def _num_workers() -> int:
+    try:
+        n = int(_cfg("IRISES_BRIDGE_WORKERS", "2") or "2")
+    except ValueError:
+        n = 2
+    return max(1, min(n, 16))
+
+
+# One queue per forward worker. A chat always hashes to the same shard (_shard_index), so its
+# messages reach Irises in the order they were sent; separate chats no longer queue behind each
+# other's retries.
+_QUEUES: "list[queue.Queue[dict]]" = [queue.Queue(maxsize=500) for _ in range(_num_workers())]
+# [gateway, loop] — captured by the watch thread at gateway start (and lazily on the first fronted
+# message); the outbound listener needs both.
+_GW: list = [None, None]
+_STARTED = threading.Event()
+_WATCHING = threading.Event()
 
 
 def _patterns() -> list[str]:
@@ -54,34 +90,223 @@ def _fronted(platform: str, chat_id: str) -> bool:
     return any(fnmatch.fnmatch(key, pat) for pat in _patterns())
 
 
-# ── forward worker (inbound → Irises) ────────────────────────────────────────
+# ── pure decisions ────────────────────────────────────────────────────────────
 
-def _forward_loop() -> None:
+def _auth_status(configured_token: str, header_value):
+    """None = authorized. Otherwise the (status, body) to reply with.
+
+    An unset token FAILS CLOSED (refuses every send) rather than accepting anything on loopback:
+    the listener is still bound, so the misconfiguration surfaces as a readable 403 in Irises's
+    logs instead of an ECONNREFUSED that looks like "the plugin isn't installed".
+    """
+    if not (configured_token or "").strip():
+        return 403, {"error": "IRISES_BRIDGE_TOKEN unset — refusing all sends"}
+    if header_value != configured_token:
+        return 403, {"error": "forbidden"}
+    return None
+
+
+def _shard_index(chat_id, num_shards: int) -> int:
+    """Which forward queue a chat belongs to. Stable across processes (hashlib, not hash())."""
+    if num_shards <= 1:
+        return 0
+    digest = hashlib.blake2b(str(chat_id).encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big") % num_shards
+
+
+def _backoff_s(attempt: int) -> float:
+    """Sleep before retrying a failed forward: 0.5s after the first miss, 2s after the second."""
+    idx = min(max(attempt, 1), len(_BACKOFF_S)) - 1
+    return _BACKOFF_S[idx]
+
+
+def _forward_decision(healthy: bool, fail_closed: bool) -> str:
+    """'forward' = enqueue for Irises and suppress hermes's own reply. 'let_hermes' = return None
+    from the hook so hermes answers the chat itself.
+
+    fail-open (default) is only a real fail-open if we hand the turn BACK when Irises is known
+    unreachable — enqueueing into a void while telling hermes to stay silent is silence, not
+    resilience. fail-closed keeps the old always-skip: the operator asked for silence over a
+    hermes-voiced reply.
+    """
+    if fail_closed or healthy:
+        return "forward"
+    return "let_hermes"
+
+
+def _classify_send_result(result):
+    """(status, body) for one adapter.send outcome.
+
+    adapter.send reports failure by RETURNING SendResult(success=False) — it does not raise — so a
+    plugin that only catches exceptions answers 200 for messages the platform never delivered.
+    """
+    if result is None:
+        return 502, {"error": "adapter returned no send result"}
+    if getattr(result, "success", None) is False:
+        detail = str(getattr(result, "error", None) or "adapter reported the send failed")[:300]
+        return 502, {"error": detail, "retryable": bool(getattr(result, "retryable", False))}
+    message_id = getattr(result, "message_id", None)
+    return 200, {"ok": True, "message_id": None if message_id is None else str(message_id)}
+
+
+def _healthy(last_ok_ts, now: float, window_s: float = _HEALTH_WINDOW_S) -> bool:
+    """Was Irises confirmed reachable recently? None = nothing has been tried yet, which counts
+    HEALTHY: a freshly started gateway must front its chats, not hand them all back."""
+    if last_ok_ts is None:
+        return True
+    return (now - last_ok_ts) <= window_s
+
+
+class _Health:
+    """Reachability of Irises, written by the forward workers and the /health probe."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._last_ok = None
+        self._last_fail = None
+
+    def note_ok(self, now: float = None) -> None:
+        with self._lock:
+            self._last_ok = time.monotonic() if now is None else now
+
+    def note_fail(self, now: float = None) -> None:
+        with self._lock:
+            self._last_fail = time.monotonic() if now is None else now
+
+    def is_healthy(self, now: float = None) -> bool:
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            last_ok, last_fail = self._last_ok, self._last_fail
+        # Tried and never once succeeded is KNOWN down, not unknown.
+        if last_ok is None and last_fail is not None:
+            return False
+        return _healthy(last_ok, now)
+
+
+_HEALTH = _Health()
+
+
+# ── gateway acquisition ───────────────────────────────────────────────────────
+
+def _resolve_runner():
+    """The live GatewayRunner via the module-level weakref gateway.run sets in __init__.
+
+    sys.modules, never `import gateway.run`: plugins load in CLI processes too, where importing
+    the gateway module would spin up a second copy and bind the gateway's ports out from under
+    the real process. Absent module = not a gateway process = nothing to capture.
+    """
+    mod = sys.modules.get("gateway.run")
+    if mod is None:
+        return None
+    ref = getattr(mod, "_gateway_runner_ref", None)
+    if not callable(ref):
+        return None
+    try:
+        return ref()
+    except Exception:  # noqa: BLE001 — a dead weakref must never break dispatch or a send
+        return None
+
+
+def _capture_gateway() -> bool:
+    """True once _GW holds a gateway AND a running loop. The loop is set at run start, a beat
+    after the runner exists, so a runner without one yet is "not ready", not a failure."""
+    if _GW[0] is not None and _GW[1] is not None:
+        return True
+    runner = _resolve_runner()
+    if runner is None:
+        return False
+    loop = getattr(runner, "_gateway_loop", None)
+    if loop is None:
+        return False
+    _GW[0] = runner
+    _GW[1] = loop
+    return True
+
+
+def _await_gateway(budget_s: float = _GW_POLL_S, step_s: float = _GW_POLL_STEP_S) -> bool:
+    """Bounded wait for the gateway, for a send that arrives during gateway startup."""
+    waited = 0.0
+    while True:
+        if _capture_gateway():
+            return True
+        if waited >= budget_s:
+            return False
+        time.sleep(step_s)
+        waited += step_s
+
+
+def _gateway_watch() -> None:
+    """Bind the outbound listener as soon as the gateway is up, instead of waiting for the first
+    fronted inbound message — otherwise a restart leaves Irises unable to send until someone
+    happens to text in (and its first send fails)."""
+    while True:
+        if _capture_gateway():
+            _start_workers()
+            return
+        time.sleep(1.0)
+
+
+# ── forward workers (inbound → Irises) ───────────────────────────────────────
+
+def _post_inbound(base: str, token: str, payload: dict) -> None:
+    req = urllib.request.Request(
+        f"{base}/api/bridge/inbound",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "x-bridge-token": token},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=_FORWARD_TIMEOUT_S) as res:
+        res.read()
+
+
+def _forward_loop(q: "queue.Queue[dict]") -> None:
     base = _cfg("IRISES_URL", "http://127.0.0.1:3000").rstrip("/")
     token = _cfg("IRISES_BRIDGE_TOKEN")
     while True:
-        payload = _FORWARD_Q.get()
+        payload = q.get()
+        for attempt in range(1, _FORWARD_ATTEMPTS + 1):
+            try:
+                _post_inbound(base, token, payload)
+                _HEALTH.note_ok()
+                break
+            except Exception as exc:  # noqa: BLE001 — a forward failure must not kill the worker
+                if attempt < _FORWARD_ATTEMPTS:
+                    log.warning("irises-bridge: forward attempt %d/%d failed (%s:%s): %s",
+                                attempt, _FORWARD_ATTEMPTS,
+                                payload.get("platform"), payload.get("chat_id"), exc)
+                    time.sleep(_backoff_s(attempt))
+                    continue
+                _HEALTH.note_fail()
+                # LOUD: hermes already stayed silent for this turn, so the user got nothing at all.
+                log.error("irises-bridge: forward FAILED after %d attempts — message from %s:%s is "
+                          "LOST and hermes stayed silent for it: %s",
+                          _FORWARD_ATTEMPTS, payload.get("platform"), payload.get("chat_id"), exc)
+
+
+def _probe_loop() -> None:
+    """Keep the health verdict fresh even in a quiet chat, so the first message after Irises goes
+    down is already handed to hermes instead of vanishing."""
+    base = _cfg("IRISES_URL", "http://127.0.0.1:3000").rstrip("/")
+    while True:
         try:
-            req = urllib.request.Request(
-                f"{base}/api/bridge/inbound",
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json", "x-bridge-token": token},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=15) as res:
+            with urllib.request.urlopen(f"{base}/health", timeout=5) as res:
                 res.read()
-        except Exception as exc:  # noqa: BLE001 — forwarding is best-effort; hermes already skipped
-            log.warning("irises-bridge: forward failed (message from %s:%s dropped): %s",
-                        payload.get("platform"), payload.get("chat_id"), exc)
+                if 200 <= getattr(res, "status", 200) < 300:
+                    _HEALTH.note_ok()
+                else:
+                    _HEALTH.note_fail()
+        except Exception:  # noqa: BLE001 — unreachable/500 are both "not healthy"
+            _HEALTH.note_fail()
+        time.sleep(_HEALTH_PROBE_S)
 
 
 # ── outbound listener (Irises → hermes channels) ─────────────────────────────
 
 class _SendHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler contract
-        token = _cfg("IRISES_BRIDGE_TOKEN")
-        if token and self.headers.get("x-bridge-token") != token:
-            self._reply(403, {"error": "forbidden"})
+        denied = _auth_status(_cfg("IRISES_BRIDGE_TOKEN"), self.headers.get("x-bridge-token"))
+        if denied is not None:
+            self._reply(*denied)
             return
         if self.path != "/send":
             self._reply(404, {"error": "unknown path"})
@@ -95,10 +320,10 @@ class _SendHandler(BaseHTTPRequestHandler):
         if not platform or not chat_id or not text:
             self._reply(400, {"error": "platform, chat_id, text required"})
             return
-        gateway, loop = _GW
-        if gateway is None or loop is None:
-            self._reply(503, {"error": "gateway not captured yet (no fronted message seen since start)"})
+        if not _await_gateway():
+            self._reply(503, {"error": "gateway not ready", "retryable": True})
             return
+        gateway, loop = _GW
         try:
             from gateway.platforms.base import Platform  # re-exported from gateway.config; dynamic members cover plugin platforms
             adapter = gateway.adapters.get(Platform(platform))
@@ -109,8 +334,11 @@ class _SendHandler(BaseHTTPRequestHandler):
             reply_to = str(body["reply_to_id"]) if body.get("reply_to_id") else None
             fut = asyncio.run_coroutine_threadsafe(
                 adapter.send(str(chat_id), str(text), reply_to=reply_to, metadata=metadata), loop)
-            fut.result(timeout=20)
-            self._reply(200, {"ok": True})
+            status, payload = _classify_send_result(fut.result(timeout=_SEND_WAIT_S))
+            if status != 200:
+                log.warning("irises-bridge: send to %s:%s reported failure: %s",
+                            platform, chat_id, payload.get("error"))
+            self._reply(status, payload)
         except Exception as exc:  # noqa: BLE001
             log.warning("irises-bridge: send to %s:%s failed: %s", platform, chat_id, exc)
             self._reply(502, {"error": str(exc)[:300]})
@@ -131,12 +359,14 @@ def _start_workers() -> None:
     if _STARTED.is_set():
         return
     _STARTED.set()
-    threading.Thread(target=_forward_loop, name="irises-bridge-forward", daemon=True).start()
+    for i, q in enumerate(_QUEUES):
+        threading.Thread(target=_forward_loop, args=(q,), name=f"irises-bridge-forward-{i}", daemon=True).start()
+    threading.Thread(target=_probe_loop, name="irises-bridge-probe", daemon=True).start()
     port = int(_cfg("IRISES_BRIDGE_PORT", "8655"))
     try:
         server = ThreadingHTTPServer(("127.0.0.1", port), _SendHandler)
         threading.Thread(target=server.serve_forever, name="irises-bridge-send", daemon=True).start()
-        log.info("irises-bridge: outbound listener on 127.0.0.1:%d", port)
+        log.info("irises-bridge: outbound listener on 127.0.0.1:%d (%d forward worker(s))", port, len(_QUEUES))
     except OSError as exc:
         log.error("irises-bridge: could not bind outbound listener on %d: %s", port, exc)
 
@@ -155,13 +385,19 @@ def on_inbound(event=None, gateway=None, session_store=None, **_kwargs):
         if not platform or not chat_id or not _fronted(platform, chat_id):
             return None  # not fronted → hermes handles it exactly as before
 
-        # Capture the live gateway + loop for the outbound listener (idempotent).
+        # Capture the live gateway + loop for the outbound listener (idempotent; the watch thread
+        # normally got here first — this is the belt-and-braces path).
         _GW[0] = gateway
         try:
             _GW[1] = asyncio.get_running_loop()
         except RuntimeError:
             pass
         _start_workers()
+
+        if _forward_decision(_HEALTH.is_healthy(), fail_closed) == "let_hermes":
+            log.warning("irises-bridge: Irises unreachable — letting hermes answer %s:%s itself (fail=open)",
+                        platform, chat_id)
+            return None
 
         payload = {
             "engine": "hermes",
@@ -183,7 +419,7 @@ def on_inbound(event=None, gateway=None, session_store=None, **_kwargs):
             ],
         }
         try:
-            _FORWARD_Q.put_nowait(payload)
+            _QUEUES[_shard_index(chat_id, len(_QUEUES))].put_nowait(payload)
         except queue.Full:
             log.warning("irises-bridge: forward queue full — %s", "holding silence (fail=closed)" if fail_closed else "letting hermes answer (fail=open)")
             return {"action": "skip", "reason": "irises-bridge-overflow"} if fail_closed else None
@@ -195,4 +431,7 @@ def on_inbound(event=None, gateway=None, session_store=None, **_kwargs):
 
 def register(ctx) -> None:
     ctx.register_hook("pre_gateway_dispatch", on_inbound)
+    if not _WATCHING.is_set():
+        _WATCHING.set()
+        threading.Thread(target=_gateway_watch, name="irises-bridge-gateway-watch", daemon=True).start()
     log.info("irises-bridge registered (front: %s)", ", ".join(_patterns()) or "<nothing — set IRISES_FRONT>")

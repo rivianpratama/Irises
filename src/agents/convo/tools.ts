@@ -56,11 +56,11 @@ export const DELEGATE_TO_OPS_TOOL: LlmToolDef = {
 
 export const SET_PREFERENCE_TOOL: LlmToolDef = {
   name: 'set_preference',
-  description: "Record a durable preference or onboarding fact about the user. Use for their name (key 'name'), their timezone (key 'agent_tz', IANA like 'America/Denver' — capture it whenever their timezone or location surfaces; it anchors reminders and their daily rhythm), their communication style (key 'comms_style'), how they want to be addressed (key 'address_as', e.g. value 'Chief' or 'Mr. Smith' — whatever they ask to be called). Special key 'important_note': APPENDS one fact to a permanent remember-this list instead of overwriting — use it whenever they say \"remember this\" or restate something you'd forgotten (value = the fact, self-contained, e.g. 'is planning a trip to Japan in the fall'), and for a hard personal rule stated as one (they say 'never book me sunday mornings, ever' → value 'hard rule: no meetings or calls sunday mornings'). Persisted and remembered across conversations. You usually also write a normal text reply.",
+  description: "Record a durable preference or onboarding fact about the user. Use for their name (key 'name' — this sets the name ON THEIR PROFILE, the same place remember_user writes it, so use it whenever they tell you what to call them), their timezone (key 'agent_tz', IANA like 'America/Denver' — capture it whenever their timezone or location surfaces; it anchors reminders and their daily rhythm), their communication style (key 'comms_style'), how they want to be addressed (key 'address_as', e.g. value 'Chief' or 'Mr. Smith' — whatever they ask to be called). Special key 'important_note': APPENDS one fact to a permanent remember-this list instead of overwriting — use it whenever they say \"remember this\" or restate something you'd forgotten (value = the fact, self-contained, e.g. 'is planning a trip to Japan in the fall'), and for a hard personal rule stated as one (they say 'never book me sunday mornings, ever' → value 'hard rule: no meetings or calls sunday mornings'). Persisted and remembered across conversations. You usually also write a normal text reply.",
   inputSchema: {
     type: 'object',
     properties: {
-      key: { type: 'string', description: "e.g. name, agent_tz (IANA timezone like 'America/Denver'), comms_style, address_as, important_note (appends to a permanent list), respect_quiet_hours" },
+      key: { type: 'string', description: "e.g. name (updates their profile name), agent_tz (IANA timezone like 'America/Denver'), comms_style, address_as, important_note (appends to a permanent list), respect_quiet_hours" },
       value: { description: 'The value (string, number, or boolean).' },
     },
     required: ['key', 'value'],
@@ -168,6 +168,23 @@ export const UPDATE_MEMORY_TOOL: LlmToolDef = {
       meta_prompt: { type: 'string', description: 'Precise brief for the memory pass: what to fix, their exact words if load-bearing, what good notes look like after.' },
     },
     required: ['request'],
+  },
+};
+
+export const RECALL_MEMORY_TOOL: LlmToolDef = {
+  name: 'recall_memory',
+  description: [
+    'Search YOUR OWN archived memory — older conversations, past research, notes and preferences that have since rotated out of what you carry in front of you.',
+    'Use it whenever they reference something you no longer have in context ("like i told you", "that thing with the Hendersons", "the place from last week", "what did you find out about that") — search FIRST, before you say you don\'t remember or ask them to repeat themselves.',
+    'What comes back is ARCHIVED, so treat it as historical and possibly out of date: something that superseded it may exist. Say when a detail is old if that matters, and if the search comes back with nothing useful, be honest and ask.',
+    'This is your own past, not the outside world and not their inbox — those are delegate_to_ops.',
+  ].join(' '),
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'A few focused keywords — names, places, topics — not a sentence.' },
+    },
+    required: ['query'],
   },
 };
 

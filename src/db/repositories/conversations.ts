@@ -1,5 +1,6 @@
 import { logDbError } from '../client.js';
 import { stmt } from '../sqlite.js';
+import { archiveEntries } from './memoryArchive.js';
 import type { StoredMessage } from '../types.js';
 
 export type { StoredMessage } from '../types.js';
@@ -49,13 +50,68 @@ export async function addMessage(
     stmt(
       'INSERT INTO messages (chat_id, role, content, handle, created_at) VALUES (?, ?, ?, ?, ?)'
     ).run(chatId, role, content, handle ?? null, at);
-    // Keep the chat bounded even if the retention timer dies: one indexed DELETE of
-    // this chat's rows past the window (the newest-40 cap is applied on read).
-    stmt('DELETE FROM messages WHERE chat_id = ? AND created_at <= ?').run(chatId, at - RETENTION_MS);
   } catch (error) {
     logDbError('addMessage', error);
   }
+  // Keep the chat bounded even if the retention timer dies: prune this chat's rows past the
+  // window (the newest-40 cap is applied on read). Goes through pruneMessagesBefore so the
+  // inline prune archives exactly like the daily sweep does — a bare DELETE here was silently
+  // destroying a week of conversation the archive never saw.
+  await pruneMessagesBefore(at - RETENTION_MS, chatId);
   return at;
+}
+
+/**
+ * Hard-delete messages older than `cutoffMs` (optionally in one chat), archiving each one
+ * first. Both prune paths — the daily retention sweep and addMessage's inline
+ * keep-it-bounded prune — call this, so conversation history always leaves a searchable trace.
+ * Returns the number of rows deleted; best-effort like every other repository call.
+ *
+ * NOT archived alongside it: sent_messages / inbound_messages (their content duplicates these
+ * rows — they are reply-threading indexes, not memories) and /clear (clearConversation), where
+ * the user explicitly asked for a fresh start and a cold copy would be a leak.
+ */
+export async function pruneMessagesBefore(cutoffMs: number, chatId?: string): Promise<number> {
+  try {
+    const where = chatId ? 'chat_id = ? AND created_at <= ?' : 'created_at <= ?';
+    const params: Array<string | number> = chatId ? [chatId, cutoffMs] : [cutoffMs];
+    const rows = stmt(
+      `SELECT chat_id, role, content, handle, created_at FROM messages WHERE ${where}`
+    ).all(...params) as unknown as Array<MessageRow & { chat_id: string }>;
+    if (rows.length) {
+      await archiveEntries(rows.map(r => ({
+        source: 'message_pruned' as const,
+        agentHandle: r.handle ?? undefined,
+        chatId: r.chat_id,
+        kind: 'message',
+        content: r.content,
+        meta: { role: r.role },
+        createdAt: r.created_at,
+      })));
+    }
+    return Number(stmt(`DELETE FROM messages WHERE ${where}`).run(...params).changes);
+  } catch (error) {
+    logDbError('pruneMessagesBefore', error);
+    return 0;
+  }
+}
+
+/**
+ * Has this chat EVER exchanged a message? No time window on purpose: the caller is the contact-card
+ * gate, and "we have talked before" doesn't expire the way conversation context does — a chat that
+ * went quiet for a month is still not a first hello. The in-memory turn counter it replaces reset on
+ * every restart, so a redeploy re-introduced Irises to everyone who texted next.
+ *
+ * Fails SOFT as `true` ("we've met"): a DB glitch must never spam the card into a live conversation.
+ */
+export async function hasHistory(chatId: string): Promise<boolean> {
+  try {
+    const row = stmt('SELECT 1 AS present FROM messages WHERE chat_id = ? LIMIT 1').get(chatId) as { present?: number } | undefined;
+    return row != null;
+  } catch (error) {
+    logDbError('hasHistory', error);
+    return true;
+  }
 }
 
 /**
@@ -79,6 +135,31 @@ export async function listActiveChats(sinceMs: number, limit = 20): Promise<{ ch
   }
 }
 
+/**
+ * Distinct handles that have SPOKEN in this chat (user rows carry the sender's handle), newest
+ * first. The proactive pipeline's identity resolver reads this: exactly one handle means a 1:1 chat
+ * whose personal memory is safe to load, more than one means a room that must fall back to the
+ * group pseudo-handle. `limit` is small on purpose — "one or many" is the only question asked.
+ * Returns [] on any error (same fail-soft contract as getConversation).
+ */
+export async function distinctUserHandles(chatId: string, limit = 3): Promise<string[]> {
+  try {
+    const rows = stmt(
+      `SELECT handle, MAX(created_at) AS lastAt FROM messages
+       WHERE chat_id = ? AND role = 'user' AND handle IS NOT NULL AND handle <> ''
+       GROUP BY handle
+       ORDER BY lastAt DESC
+       LIMIT ?`
+    ).all(chatId, limit) as unknown as { handle: string; lastAt: number }[];
+    return rows.map(r => r.handle);
+  } catch (error) {
+    logDbError('distinctUserHandles', error);
+    return [];
+  }
+}
+
+/** /clear — a TRUE delete, never archived: they asked for a fresh start, and a cold copy of the
+ *  thread they just wiped would hand it straight back through recall. */
 export async function clearConversation(chatId: string): Promise<void> {
   try {
     stmt('DELETE FROM messages WHERE chat_id = ?').run(chatId);

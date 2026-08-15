@@ -9,5 +9,11 @@ author: Irises
 license: MIT
 requires_env:
   - IRISES_BRIDGE_TOKEN
+optional_env:
+  - IRISES_URL             # where Irises runs (default http://127.0.0.1:3000)
+  - IRISES_FRONT           # fnmatch patterns over "<platform>:<chat_id>"; empty fronts nothing
+  - IRISES_BRIDGE_PORT     # loopback listener for Irises's outbound sends (default 8655)
+  - IRISES_BRIDGE_FAIL     # open (default) | closed
+  - IRISES_BRIDGE_WORKERS  # forward worker threads / queue shards (default 2, max 16)
 provides_hooks:
   - pre_gateway_dispatch

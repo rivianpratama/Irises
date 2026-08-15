@@ -5,7 +5,10 @@ process.env.TZ = 'UTC';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dateTimeInZone, zonedTimeToUtcMs, DEFAULT_TZ } from './zonedTime.js';
+import {
+  dateTimeInZone, zonedTimeToUtcMs, DEFAULT_TZ,
+  inQuietHours, nextQuietHoursEndMs, zoneOffsetMs, QUIET_START_HOUR, QUIET_END_HOUR,
+} from './zonedTime.js';
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
@@ -53,6 +56,59 @@ test('zonedTimeToUtcMs core handles components directly', () => {
     iso(zonedTimeToUtcMs({ year: 2026, month: 7, day: 10, hour: 17 }, 'America/Chicago')),
     '2026-07-10T22:00:00.000Z',
   );
+});
+
+// ── quiet hours (the proactive deferral window) ────────────────────────────────────────────────
+
+test('quiet hours are 9pm–8am in the USER\'s zone, not the host\'s', () => {
+  assert.equal(QUIET_START_HOUR, 21);
+  assert.equal(QUIET_END_HOUR, 8);
+  // The zone is what decides: 12:00Z is midday in UTC but 21:00 in Tokyo — quiet there, not here.
+  assert.equal(inQuietHours('Asia/Tokyo', Date.parse('2026-07-10T12:00:00Z')), true);
+  assert.equal(inQuietHours('UTC', Date.parse('2026-07-10T12:00:00Z')), false);
+  // 07:00Z is 02:00 in Chicago (CDT) — the small hours.
+  assert.equal(inQuietHours('America/Chicago', Date.parse('2026-07-10T07:00:00Z')), true);
+  // 03:00Z is 22:00 the PREVIOUS day in Chicago — the evening half of the window.
+  assert.equal(inQuietHours('America/Chicago', Date.parse('2026-07-10T03:00:00Z')), true);
+  assert.equal(inQuietHours('America/Chicago', Date.parse('2026-07-10T17:00:00Z')), false); // noon local
+});
+
+test('nextQuietHoursEndMs: a 2am arrival waits for this morning', () => {
+  const at2am = Date.parse('2026-07-10T07:00:00Z'); // 02:00 CDT
+  assert.equal(iso(nextQuietHoursEndMs('America/Chicago', at2am)), '2026-07-10T13:00:00.000Z'); // 08:00 CDT
+});
+
+test('nextQuietHoursEndMs: a 10pm arrival waits for tomorrow morning', () => {
+  const at10pm = Date.parse('2026-07-10T03:00:00Z'); // 22:00 CDT on the 9th
+  // The zone's own calendar day is the 9th, so its "tomorrow 8am" is the 10th at 13:00Z.
+  assert.equal(iso(nextQuietHoursEndMs('America/Chicago', at10pm)), '2026-07-10T13:00:00.000Z');
+});
+
+test('nextQuietHoursEndMs: outside quiet hours it returns now (deferring is a no-op)', () => {
+  const noon = Date.parse('2026-07-10T17:00:00Z');
+  assert.equal(nextQuietHoursEndMs('America/Chicago', noon), noon);
+});
+
+test('nextQuietHoursEndMs is DST-correct across the spring-forward night', () => {
+  // 01:00 CST on spring-forward day (still UTC-6); by 8am the zone is on CDT (UTC-5), so the
+  // target is 13:00Z. Adding 7 hours to "now" would land an hour late, at 14:00Z.
+  const at1am = Date.parse('2026-03-08T07:00:00Z');
+  assert.equal(iso(nextQuietHoursEndMs('America/Chicago', at1am)), '2026-03-08T13:00:00.000Z');
+  // Fall-back night: 01:00 CDT → 8am is CST (UTC-6) → 14:00Z.
+  const fall = Date.parse('2026-11-01T05:30:00Z'); // 00:30 CDT
+  assert.equal(iso(nextQuietHoursEndMs('America/Chicago', fall)), '2026-11-01T14:00:00.000Z');
+});
+
+test('nextQuietHoursEndMs: a bogus zone degrades to now instead of throwing', () => {
+  const now = Date.parse('2026-07-10T07:00:00Z');
+  assert.equal(nextQuietHoursEndMs('Not/AZone', now), now);
+});
+
+test('zoneOffsetMs reports the zone offset at an instant, DST-aware', () => {
+  assert.equal(zoneOffsetMs('UTC', Date.parse('2026-07-10T12:00:00Z')), 0);
+  assert.equal(zoneOffsetMs('America/Chicago', Date.parse('2026-07-10T12:00:00Z')), -5 * 3600_000); // CDT
+  assert.equal(zoneOffsetMs('America/Chicago', Date.parse('2026-01-10T12:00:00Z')), -6 * 3600_000); // CST
+  assert.equal(zoneOffsetMs('Asia/Kolkata', Date.parse('2026-07-10T12:00:00Z')), 5.5 * 3600_000);
 });
 
 test('regression: the old host-local parse is wrong under TZ=UTC, the helper is not', () => {

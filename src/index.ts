@@ -11,9 +11,11 @@ import { webChannel } from './channels/web/channel.js';
 import { createWebRouter } from './channels/web/routes.js';
 import type { MediaAttachment } from './channels/types.js';
 import * as convoClient from './agents/convo/client.js';
-import { getUserProfile, addMessage } from './state/conversation.js';
+import { getUserProfile, addMessage, hasHistory } from './state/conversation.js';
 import { runOpsAndFollowUp } from './agents/orchestrator.js';
 import { createEnginePushRouter } from './webhook/enginePush.js';
+import { createProactiveDelivery } from './pipeline/proactiveDelivery.js';
+import { shouldShareContactCard, shouldStartTypingEarly } from './pipeline/turnGates.js';
 import { bridgeChannel } from './channels/bridge/channel.js';
 import { createBridgeInboundRouter } from './channels/bridge/inboundRouter.js';
 import { voiceOutcome } from './agents/fallfirm/client.js';
@@ -494,6 +496,11 @@ async function sendFollowUp(chatId: string, content: SpeakContent, opts: SpeakOp
   return speak(chatId, content, opts);
 }
 
+// Every message Irises STARTS (engine reminders/mail/memos, update notes) goes through this one
+// pipeline: whose memory the chat maps to, idempotency against engine retries, quiet-hours deferral
+// as a durable row, and Composer voicing with a Fallfirm degrade underneath.
+const proactive = createProactiveDelivery({ sendFollowUp });
+
 
 // The core processing logic extracted from the webhook handler. `lateArrivals`, when given, lets
 // the turn fold in messages that arrive while it WAITS for the chat mouth (see the drain block
@@ -514,17 +521,19 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
 
   // Share Irises's own card on the very first message (name/photo instead of a bare number);
   // the every-N-messages re-share is opt-in via CONTACT_CARD_PROMO (default off — it reads
-  // as self-promo spam mid-conversation).
-  const shouldShareContact = count === 1 || (CONTACT_CARD_PROMO && count % CONTACT_CARD_INTERVAL === 0);
+  // as self-promo spam mid-conversation). `count` alone resets on restart, so it needs the durable
+  // half: a chat with stored messages has already met Irises (turnGates.ts).
+  const shouldShareContact = shouldShareContactCard(count, await hasHistory(chatId), { enabled: CONTACT_CARD_PROMO, interval: CONTACT_CARD_INTERVAL });
 
-  // Mark as read, start typing, get chat info, and fetch user profile in parallel
-  const parallelTasks: Promise<unknown>[] = [markAsRead(chatId), startTyping(chatId), getChat(chatId), getUserProfile(from)];
+  // Mark as read, get chat info, and fetch user profile in parallel. Typing is NOT in here: in a
+  // group we don't yet know whether Irises will speak at all (see below).
+  const parallelTasks: Promise<unknown>[] = [markAsRead(chatId), getChat(chatId), getUserProfile(from)];
   if (shouldShareContact) {
     console.log(`[main] Sharing contact card (message #${count})`);
     parallelTasks.push(shareContactCard(chatId));
   }
-  const [, , chatInfo, senderProfile] = await Promise.all(parallelTasks) as [void, void, Awaited<ReturnType<typeof getChat>>, Awaited<ReturnType<typeof getUserProfile>>];
-  console.log(`[timing] markAsRead+startTyping+getChat+getProfile${shouldShareContact ? '+shareContact' : ''}: ${Date.now() - start}ms`);
+  const [, chatInfo, senderProfile] = await Promise.all(parallelTasks) as [void, Awaited<ReturnType<typeof getChat>>, Awaited<ReturnType<typeof getUserProfile>>];
+  console.log(`[timing] markAsRead+getChat+getProfile${shouldShareContact ? '+shareContact' : ''}: ${Date.now() - start}ms`);
   if (senderProfile?.name) {
     console.log(`[main] Known user: ${senderProfile.name} (${senderProfile.facts.length} facts)`);
   }
@@ -535,6 +544,10 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
   const isGroupChat = typeof chatInfo.is_group === 'boolean' ? chatInfo.is_group : chatInfo.handles.length > 2;
   const participantNames = chatInfo.handles.map(h => h.handle);
 
+  // Dots only once a reply is certain: 1:1, or any media (which skips the classifier). Showing them
+  // for a group text Irises then ignores reads as it starting to answer and thinking better of it.
+  if (shouldStartTypingEarly(isGroupChat, hasMedia(media))) void startTyping(chatId);
+
   // In group chats, check if agent should respond, react, or ignore
   // Always respond to any media (image/audio/video/doc) - someone sending media is clearly communicating
   if (isGroupChat && !hasMedia(media)) {
@@ -543,6 +556,9 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
 
     if (action === 'ignore') {
       console.log(`[main] Ignoring group chat message`);
+      // Record it anyway (the react path already did): the next turn's history must show what was
+      // said in the room, or Irises answers "what did Sam just say?" having never heard it.
+      await addMessage(chatId, 'user', text, from);
       return;
     }
 
@@ -558,11 +574,17 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
         await addMessage(chatId, 'assistant', `[reacted with ${reactionDisplay}]`);
 
         console.log(`[main] Reacted to ${from} with ${reactionDisplay}`);
+      } else {
+        // Classifier said react but named no reaction: nothing gets sent, so this branch is an
+        // ignore — and it must record the message like the ignore branch does, or the room's
+        // history loses what was said ("what did Sam just say?" with no record of it).
+        await addMessage(chatId, 'user', text, from);
       }
       return;
     }
 
     console.log(`[main] Agent should respond to this group message`);
+    void startTyping(chatId); // now it's certain — the classifier said respond
   } else if (isGroupChat) {
     console.log(`[main] Responding to group media (skipping classifier)`);
   }
@@ -833,8 +855,9 @@ export type EnqueueInbound = typeof enqueueInbound;
 
 // The ENGINE owns email and every other account connection. Engine-initiated
 // proactive messages (reminders, mail nudges, background findings) arrive here instead, voiced
-// by Fallfirm in Irises's tone and delivered through the per-chat mouth like any follow-up.
-app.use(createEnginePushRouter({ sendFollowUp }));
+// by the Composer in Irises's tone (Fallfirm underneath) and delivered through the per-chat mouth
+// like any follow-up.
+app.use(createEnginePushRouter({ deliver: proactive.deliver }));
 
 // In-app prompt diagnostics dashboard (guarded by DEBUG_TOKEN / localhost).
 app.use(createDiagnosticsRouter());
@@ -873,13 +896,17 @@ app.listen(PORT, () => {
   // windows, ledger age-out, LONG revision caps) + the error/history prunes that arm
   // inside their own modules.
   startRetentionTimers();
+  // The proactive sweep: quiet-hours deferrals whose morning has come, and rows a restart stranded
+  // mid-delivery (boot + every 60s, unref'd like the retention timers).
+  proactive.start();
 
   // Update mechanism: a pidfile so `scripts/update.sh --restart` can cycle this process, a periodic
-  // check of the git remote for a newer build, and — woven through Fallfirm/Convo — a proactive
+  // check of the git remote for a newer build, and — woven through Convo, or pushed through the
+  // proactive pipeline above — a proactive
   // "upgrade available" note plus a "got my upgrades" confirmation after the operator applies it.
   writePidFileAtBoot();
   initSelfUpdate({ sendFollowUp });   // wires "update yourself" from chat → detached updater + status voice
-  const updateAnnouncer = createUpdateAnnouncer({ sendFollowUp });
+  const updateAnnouncer = createUpdateAnnouncer({ deliver: proactive.deliver });
   startUpdateChecker({ onUpdateDetected: sha => void updateAnnouncer.onUpdateDetected(sha) });
   void updateAnnouncer.announceUpgradeAppliedIfReceipt();
 

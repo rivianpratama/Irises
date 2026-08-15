@@ -37,7 +37,7 @@ moment, texts like a human, and hands the hard work to a **deep-work engine you 
 - 🔌 **Provider-neutral LLM layer** — a single `callLLM` over Anthropic and OpenRouter, either one primary per role, with automatic fallback to the other lane on transient errors. Tool-calls, structured "bubble" output, and prompt caching normalized to one shape.
 - 🕰️ **Human texting feel** — burst-batching, a per-chat send lock, and simulated-typing pacing so replies land like a person typing, not a firehose.
 - 🧵 **Layered memory** — short / medium / long tiers held locally, with durable facts forwarded to the engine's own memory so both halves remember the same person.
-- 📥 **Proactive, not needy** — the engine's cron jobs and mail triage push back through `POST /api/engine/push`, get voiced by **Fallfirm**, and land on whatever channel the chat came from.
+- 📥 **Proactive, not needy** — the engine's cron jobs and mail triage push back through `POST /api/engine/push`, get voiced by the **Composer** (which opens with why the text is arriving, and falls back to **Fallfirm** if that call fails), and land on whatever channel the chat came from. Duplicate pushes are collapsed, and a non-urgent one that arrives overnight waits for morning.
 - 🔍 **Fully observable** — `/debug` prompt traces and a `/dashboard` orchestration GUI show every hop, cost, and error.
 
 ## 🧠 How it works
@@ -68,7 +68,7 @@ flowchart LR
     CV -->|delegate_to_ops| E
     E -->|ANSWER · SOURCE · FLAGS| CMP
     CMP -->|follow-up| OUT
-    E -.->|cron · mail → POST /api/engine/push| FF
+    E -.->|cron · mail → POST /api/engine/push| CMP
     FF --> OUT
     OUT([" bubbles → same channel "])
 ```

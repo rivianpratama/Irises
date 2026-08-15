@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { getUserProfile } from '../../../db/repositories/profiles.js';
 import { getMemory } from '../../../db/repositories/memory.js';
 import { listShortTerm } from '../../../db/repositories/memoryShort.js';
-import { listMediumAll } from '../../../db/repositories/memoryMedium.js';
+import { listMediumAll, listMediumPreserved } from '../../../db/repositories/memoryMedium.js';
 import { getLongDoc, listLongRevisions } from '../../../db/repositories/memoryLong.js';
 import { authed } from '../auth.js';
 import { cached } from '../cache.js';
@@ -21,11 +21,12 @@ export function registerMemoryRoutes(router: Router): void {
       const handle = String(req.query.handle ?? '');
       if (!handle) { res.status(400).json({ error: 'handle required' }); return; }
       const payload = await cached(`memory:${handle}`, 5_000, async () => {
-        const [profile, agentMem, short, medium, longDoc, revisions] = await Promise.all([
+        const [profile, agentMem, short, medium, preserved, longDoc, revisions] = await Promise.all([
           getUserProfile(handle),
           getMemory(handle),
           listShortTerm(handle, { limit: 50 }),
           listMediumAll(handle),
+          listMediumPreserved(handle),
           getLongDoc(handle),
           listLongRevisions(handle, 10),
         ]);
@@ -40,6 +41,13 @@ export function registerMemoryRoutes(router: Router): void {
           prefs,
           short,
           medium,
+          // Segments of MEDIUM.md with no valid annotation: a hand edit, or an entry whose
+          // annotation got mangled. They survive every rewrite but are never RENDERED into a
+          // prompt, so a corrupted entry is otherwise invisible — this is where an admin sees it.
+          mediumPreserved: {
+            count: preserved.length,
+            segments: preserved.map(s => (s.length > 500 ? `${s.slice(0, 500)}…` : s)),
+          },
           long: { doc: longDoc, revisions },
         };
       });

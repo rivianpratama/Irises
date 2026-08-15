@@ -11,6 +11,9 @@ let tmpSeq = 0;
 
 // Synchronous sleep for the Windows rename retry (AV scanners briefly hold fresh
 // files). Atomics.wait is permitted on Node's main thread.
+// Deliberately BLOCKING rather than an async backoff: this is a Windows-only retry path
+// (EPERM/EACCES/EBUSY on rename) reached maybe once, and making it async would force
+// atomicWriteText — and every sync memory-tier write that calls it — to become async.
 function sleepMs(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }

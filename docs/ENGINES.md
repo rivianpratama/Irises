@@ -120,15 +120,22 @@ unless you mean it: a fronted chat talks to Irises, not to the engine.
 fronted chats itself — the user gets a reply in the engine's persona rather than silence. Set
 `IRISES_BRIDGE_FAIL=closed` in the engine's environment to prefer silence over a persona glitch.
 
+The hermes plugin decides that from a reachability verdict it keeps live: a `GET /health` probe every
+15s plus the outcome of every inbound forward (3 attempts, 0.5s/2s backoff). A confirmed-unreachable
+Irises makes the hook return the turn to hermes; anything else — including a gateway that has just
+started and tried nothing yet — fronts as normal. So the first message after Irises dies mid-forward
+can still be lost (it is logged at ERROR), and everything after it goes to hermes.
+
 ### Engine-side environment (set where the GATEWAY runs)
 
 | Key | Default | Meaning |
 |---|---|---|
 | `IRISES_FRONT` | *(empty — front nothing)* | comma-separated glob patterns choosing fronted chats |
-| `IRISES_BRIDGE_TOKEN` | — | shared secret; must equal Irises's `ENGINE_PUSH_TOKEN` |
+| `IRISES_BRIDGE_TOKEN` | — | shared secret; must equal Irises's `ENGINE_PUSH_TOKEN`. Required: unset, the hermes listener still binds but refuses every send with a 403 naming the missing variable (a misconfiguration you can read, instead of anonymous sends on loopback) |
 | `IRISES_URL` | `http://127.0.0.1:3000` | where the plugin POSTs inbound messages |
 | `IRISES_BRIDGE_FAIL` | `open` | `open` = engine answers on bridge failure; `closed` = silence |
 | `IRISES_BRIDGE_PORT` | `8655` | hermes only: loopback listener for Irises's outbound sends |
+| `IRISES_BRIDGE_WORKERS` | `2` | hermes only: forward workers / queue shards (a chat is pinned to one, so its messages stay ordered) |
 
 On the Irises side, `HERMES_BRIDGE_URL` (default `http://127.0.0.1:8655`) points at that hermes
 loopback listener; OpenClaw needs nothing extra (outbound rides the existing gateway WS client).

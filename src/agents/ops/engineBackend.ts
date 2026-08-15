@@ -25,6 +25,10 @@ export interface ReminderSpec {
   cron?: string;         // recurring: standard 5-field cron
   fireAt?: number;       // one-time: epoch ms (adapters convert; exactly one of cron/fireAt)
   title?: string;
+  // IANA zone the CRON's wall clock is expressed in (the user's zone, not the host's). Adapters
+  // whose cron runs in the engine's own zone shift the fields by the offset difference; without it
+  // "every weekday at 8am" fires at the engine's 8am. Ignored for fireAt (an absolute instant).
+  timezone?: string;
 }
 
 export interface ReminderRef {
@@ -67,20 +71,40 @@ export interface EngineBackend {
   /** Bridge mode: deliver a message THROUGH one of the engine's own channel connections
    *  (the engine keeps owning the bot/number; Irises fronts it — see docs/ENGINES.md).
    *  `platform` is the engine's channel name (telegram/whatsapp/discord/…), `chatId` the raw
-   *  platform chat id. Throws EngineUnavailableError/EngineRunError like runTask. */
-  channelSend(platform: string, chatId: string, text: string, opts?: { threadId?: string; replyToId?: string }): Promise<void>;
+   *  platform chat id. Throws EngineUnavailableError/EngineRunError like runTask.
+   *  Returns the PLATFORM's own message id when the engine reports one — the bridge channel
+   *  stores it so a later tapped reply on that bubble resolves back to what Irises said
+   *  (recordSentBubble → resolveTappedReply). `{}` when the engine can't tell us. */
+  channelSend(platform: string, chatId: string, text: string, opts?: { threadId?: string; replyToId?: string }): Promise<{ messageId?: string }>;
 }
 
 // ── dispatch ──────────────────────────────────────────────────────────────────
 
-// Per-call budget: the transport request must give up BEFORE the orchestrator's own
-// OPS_TASK_TIMEOUT_MS deadline abandons the run, so the failure is a clean mapped result
-// (not a DeadlineError synthetic) whenever the engine is merely slow to say no.
-export const ENGINE_TIMEOUT_MS = Number(process.env.ENGINE_TIMEOUT_MS)
-  || Math.max(30_000, Number(process.env.OPS_TASK_TIMEOUT_MS || 4 * 60_000) - 15_000);
+/**
+ * Per-call budget: the transport request must give up BEFORE the orchestrator's own
+ * OPS_TASK_TIMEOUT_MS deadline abandons the run, so the failure is a clean mapped result
+ * (not a DeadlineError synthetic) whenever the engine is merely slow to say no.
+ *
+ * An explicit ENGINE_TIMEOUT_MS is taken as written (the operator's word is final). Otherwise the
+ * derived value is clamped on BOTH sides: the old `max(30s, orch − 15s)` floor overshot the
+ * orchestrator whenever OPS_TASK_TIMEOUT_MS was tuned below 45s (a 20s orchestrator deadline got a
+ * 30s transport timeout — the deadline always won, and every slow engine looked like a synthetic
+ * DeadlineError instead of a mapped timeout).
+ */
+export function computeEngineTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const explicit = Number(env.ENGINE_TIMEOUT_MS);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  const orch = Number(env.OPS_TASK_TIMEOUT_MS) || 4 * 60_000;
+  return Math.min(Math.max(30_000, orch - 15_000), Math.max(5_000, orch - 5_000));
+}
 
-// FIFO semaphore across ALL engine calls — a burst of delegations must not stampede the engine
-// (hermes's API server caps concurrent runs; OpenClaw serializes per session anyway).
+export const ENGINE_TIMEOUT_MS = computeEngineTimeoutMs(process.env);
+
+// FIFO semaphore over engine AGENT RUNS — a burst of delegations must not stampede the engine
+// (hermes's API server caps concurrent runs; OpenClaw serializes per session anyway). It covers
+// runViaEngine and the fire-and-forget memory asks (withEngineSlot). Deliberately NOT covered:
+// reminder CRUD (15s REST calls, not agent runs — they must stay snappy) and channelSend (a reply
+// already composed must never queue behind two long runs).
 const MAX_CONCURRENT = Number(process.env.ENGINE_MAX_CONCURRENT) || 2;
 let active = 0;
 const waiters: Array<() => void> = [];
@@ -96,7 +120,19 @@ async function acquire(): Promise<() => void> {
   };
 }
 
+/** Run `fn` holding one engine slot — for engine calls made OUTSIDE runViaEngine that are still
+ *  full agent runs (the memory ask). Releases on throw. */
+export async function withEngineSlot<T>(fn: () => Promise<T>): Promise<T> {
+  const release = await acquire();
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
 let cached: EngineBackend | null | undefined;
+let warnedNoBackend = false;
 
 /** The configured engine, or null when OPS_BACKEND is unset/unknown (deep work is then offline —
  *  a deliberate, documented state, voiced honestly; Convo still chats). Cached for the process.
@@ -110,8 +146,15 @@ export function getEngineBackend(): EngineBackend | null {
   } else if (name === 'openclaw') {
     cached = new OpenClawBackend();
   } else {
-    if (name) console.error(`[engine] unknown OPS_BACKEND "${name}" — deep work is offline`);
-    cached = null;
+    // NOT cached: "no backend" is a reading of the environment, not a decision about it. Caching it
+    // pinned deep work offline for the whole process whenever anything asked before the env was
+    // loaded (an early import, a probe at boot) — one unlucky call order and the engine never
+    // existed. The warning is once-per-process so a hot path can't spam it.
+    if (name && !warnedNoBackend) {
+      warnedNoBackend = true;
+      console.error(`[engine] unknown OPS_BACKEND "${name}" — deep work is offline`);
+    }
+    return null;
   }
   return cached;
 }
