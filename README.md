@@ -194,16 +194,24 @@ on the persona and pipeline without an engine running.
 # 1. install both packages (server + web client)
 npm install && npm run install:web
 
-# 2. add at least one LLM key (no engine to borrow one from here)
+# 2. add a key + force offline + pin the port
 cp .env.example .env
-#   set ANTHROPIC_API_KEY and/or OPENROUTER_API_KEY (leave OPS_BACKEND unset)
+#   set ANTHROPIC_API_KEY and/or OPENROUTER_API_KEY (no engine to borrow one from here), and set:
+#     OPS_BACKEND=off      # pins debug/offline + skips engine discovery (needed if a hermes/OpenClaw
+#                          # is installed on this machine, which Irises would otherwise auto-detect)
+#     PORT=3000            # deploy/app.env defaults PORT to 8080 (the Caddy proxy); pin 3000 so the
+#                          # server and `npm run chat` (which defaults to 3000) agree
 
-# 3. run the brain  →  http://localhost:3000
+# 3. run the brain  →  http://localhost:3000   (leave this running)
 npm run dev
 
-# 4. talk to Irises — in the browser (npm run dev:web) or a second terminal:
+# 4. in a SECOND terminal, talk to Irises — browser (npm run dev:web) or the REPL:
 npm run chat
+#   if your server runs on another port (e.g. the 8080 default), point chat at it:
+#     npm run chat -- --url http://127.0.0.1:8080
 ```
+
+> One-off, without editing `.env`: `OPS_BACKEND=off PORT=3000 npm run dev`.
 
 </details>
 

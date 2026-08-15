@@ -33,12 +33,12 @@ export interface Outcome {
 export function fallfirmFloor(o: Outcome): string {
   switch (o.kind) {
     case 'confirmed':
-      return o.facts ? `done 👍\n---\n${o.facts}` : 'done 👍';
+      return o.facts ? `done, all set\n---\n${o.facts}` : 'done, all set';
     case 'nothing_found':
-      return "couldn't track that one down\n---\ni can come at it another way though";
+      return "couldnt track that one down\n---\ni can try come at it another way though";
     case 'failed':
     default:
-      return "hit a snag on that just now\n---\ngive me a nudge in a bit and i'll sort it";
+      return "hit a snag on that just now\n---\ngive me a nudge in a bit and i sort it";
   }
 }
 
@@ -69,22 +69,22 @@ export function helpText(): string {
 // lookup, same as before.
 
 const HOLDING: Partial<Record<TaskKind, readonly string[]>> = {
-  web_research: ['looking that up now', 'digging into that, one sec', 'checking on that, hang on'],
-  document_read: ['checking your inbox, one sec', 'searching your email now', 'digging through your inbox, hang on'],
-  draft: ['drafting that now', 'writing that up now', 'putting that draft together'],
+  web_research: ['looking up that one now', 'digging into it now, one sec', 'checking on that, hang on'],
+  document_read: ['checking your inbox now, one sec', 'searching your email now', 'digging through your inbox, hang on'],
+  draft: ['drafting that now', 'writing that up now', 'putting that draft together now'],
   // File read — deliberately a tiny human beat (not a "pulling records" line), matching the minimal
   // holding register for a media delegation. Fallback-only; the LLM voicer usually writes its own.
   media_read: ['one sec, looking at that', 'lemme open this up', 'taking a look at that now'],
 };
 
-const HOLDING_DEFAULT: readonly string[] = ['on it, give me a sec', 'on it, one sec', 'give me a sec on that'];
+const HOLDING_DEFAULT: readonly string[] = ['on it, give me a sec', 'on it, one sec', 'give me a sec on that one'];
 
 /** Instant holding line when the model delegated without writing one. */
 export function holdingFloor(kind: TaskKind): string {
   return pick(HOLDING[kind] ?? HOLDING_DEFAULT);
 }
 
-const STILL_ON_IT_POOL: readonly string[] = ['still on that, hang tight', 'still working on that one', 'still on it, one sec more'];
+const STILL_ON_IT_POOL: readonly string[] = ['still on that, hang tight', 'still working on that one', 'still on it, one sec more', 'still on it, almost theree'];
 
 /** Instant "still working" reassurance when a duplicate delegation was suppressed (nothing new to pull). */
 export function stillOnItText(): string {
@@ -95,18 +95,18 @@ export function stillOnItText(): string {
 // (roughly 40%) rolls that skip the hint even when one's available, so leaning on the hint never
 // becomes its own predictable pattern.
 const HEARTBEAT_GENERIC: readonly string[] = [
-  "still on it, this one's a bigger pull",
-  "still digging, this one's taking a bit longer",
-  "not done yet, there's more to this one than usual",
+  "still on it, this one is bigger pull",
+  "still digging, this one taking a bit longer",
+  "not done yet, there is more to this one than usual",
   'still working through it, hang tight',
-  "give me a bit more, this one's got some layers",
+  "give me a bit more, this one got some layers",
 ];
 
 // Hint-aware variants — used when the task names an address/deal, so the reassurance names the
 // actual thing it's stuck on instead of a generic "it".
 const HEARTBEAT_WITH_HINT: readonly ((hint: string) => string)[] = [
   hint => `still digging on ${hint}, bigger pull than usual`,
-  hint => `${hint}'s turning out to be a bigger pull`,
+  hint => `${hint} is turning out to be bigger pull`,
   hint => `still on ${hint}, taking a little longer than usual`,
   hint => `more to dig through on ${hint} than i expected`,
 ];

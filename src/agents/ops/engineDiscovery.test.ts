@@ -220,6 +220,22 @@ test('hermes model via config.yaml scan when neither CLI nor HERMES_MODEL is pre
   assert.equal(env.CONVO_MODEL_OPENROUTER, 'anthropic/claude-opus-4.6');
 });
 
+test('OPS_BACKEND=off forces the debug/offline path — no detection, creds, or model inheritance, even with an engine present', () => {
+  const env = baselineEnv({ OPS_BACKEND: 'off', OPENROUTER_API_KEY: 'or-key' });
+  const { deps, logs } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=sk\n' },       // engine IS installed…
+    cli: {
+      'hermes config get model.default': 'anthropic/claude-opus-4.6',
+      'openclaw config get gateway.auth.token': 'gw-tok',
+    },
+  });
+  applyEngineDiscovery(deps);
+  assert.equal(env.OPS_BACKEND, 'off');                    // …but we stay off
+  assert.equal(env.HERMES_API_KEY, undefined);             // no creds derived
+  assert.equal(env.CONVO_MODEL_OPENROUTER, 'openai/gpt-5.6-luna:nitro'); // model untouched
+  assert.ok(logs.some((l) => l.includes('debug/standalone')));
+});
+
 test('a null-ish CLI model value (e.g. "None") is not inherited', () => {
   const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key' });
   const { deps, warns } = mkDeps(env, {

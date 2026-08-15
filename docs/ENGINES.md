@@ -71,7 +71,8 @@ Irises is designed to ride **on top of** the engine with no `.env` of its own. O
 
 - **`OPS_BACKEND` is auto-detected.** hermes if `~/.hermes/` exists; otherwise OpenClaw if its CLI
   answers with a gateway token. If both are present, hermes wins (reminders need it). Set
-  `OPS_BACKEND` yourself to force one.
+  `OPS_BACKEND` yourself to force one — or **`OPS_BACKEND=off`** to force the debug/standalone path
+  (deep work offline, discovery skipped entirely) even on a machine that has an engine installed.
 - **The engine's credentials are reused.** hermes `HERMES_API_KEY` ← `API_SERVER_KEY` from
   `~/.hermes/.env`; OpenClaw `OPENCLAW_TOKEN` ← `openclaw config get gateway.auth.token`. Loopback
   URLs default in.

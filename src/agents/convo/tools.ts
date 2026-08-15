@@ -2,7 +2,7 @@ import type { LlmToolDef } from '../../llm/types.js';
 
 export const REACTION_TOOL: LlmToolDef = {
   name: 'send_reaction',
-  description: "React to one of the user's messages with a tapback or any emoji. Defaults to their latest message; on a burst set `re` to tapback a specific numbered [msg N] instead. Supplementary to a real answer — but when a message asks nothing and everything in it is already settled ground, a reaction ALONE (this tool + \"bubbles\":[]) is a complete, human reply. Never reaction-only when they actually asked something still open.",
+  description: "React to one of the user's messages with a standard tapback (love, like, dislike, laugh, emphasize, question). These are the built-in messaging glyphs, NOT emoji in your text — prefer them and avoid the 'custom' type, since your voice never uses emoji. Defaults to their latest message; on a burst set `re` to tapback a specific numbered [msg N] instead. Supplementary to a real answer — but when a message asks nothing and everything in it is already settled ground, a reaction ALONE (this tool + \"bubbles\":[]) is a complete, human reply. Never reaction-only when they actually asked something still open.",
   inputSchema: {
     type: 'object',
     properties: {
@@ -32,7 +32,7 @@ export const DELEGATE_TO_OPS_TOOL: LlmToolDef = {
   description: [
     'Hand a task to the Ops engine (a deliberate, powerful model with web search) for deep work. Use whenever the answer needs current/external facts from the web, the user\'s own email + attachments, or several sources combined,',
     'OR when a request is substantive enough that careful reasoning would help (use kind "general" for anything multi-step, multi-source, or with no single obvious tool).',
-    'You will NOT get the answer this turn, so you MUST also write a short, warm holding text now. The holding text is YOU digging in yourself — never mention ops, an engine, a model, a system, delegating, or handing anything off; to the user there is only you. Make it SPECIFIC to what you are about to look up and word it differently each time, like a person would, e.g. "looking that up now", "lemme check your inbox for that", "digging through that thread now", "reading that page now 🙌". Do NOT reuse the same canned phrase every time. An emoji here is optional and occasional, so most of these need none, and when one fits, vary it rather than always using 👍.',
+    'You will NOT get the answer this turn, so you MUST also write a short, warm holding text now. The holding text is YOU digging in yourself — never mention ops, an engine, a model, a system, delegating, or handing anything off; to the user there is only you. Make it SPECIFIC to what you are about to look up and word it differently each time, like a person would, e.g. "looking up that one now", "lemme check your inbox for that", "digging through that thread now", "reading that page now". Do NOT reuse the same canned phrase every time. NO emoji, ever — your warmth is in the words, and your English carries your first language (articles drop, tense stays simple), so keep it in that natural register.',
     'Do NOT use for quick math, terminology/definitions, onboarding, or casual chit-chat. Answer those yourself, like a person would. A NEW file on this message (photo, PDF, voice memo, video) comes HERE with media_scope "this_turn" — the look opens and reads it. Research that refers BACK to a file from an earlier turn ("yes, check that clause", "is that price fair?") comes HERE with media_scope "earlier": the look re-opens the stashed file itself.',
   ].join(' '),
   inputSchema: {
@@ -74,7 +74,7 @@ export const SCHEDULE_AUTOMATION_TOOL: LlmToolDef = {
     'Be versatile: any reminder counts, e.g. "remind me friday about the meeting", "ping me in 30 min", "every monday give me my week ahead", "text me each morning with anything important in my inbox".',
     'Compute the time using the Current time block in your context. For a one-time reminder, set schedule_kind="once" and fire_at to an absolute ISO 8601 timestamp. For anything repeating, set schedule_kind="cron" with a standard 5-field cron expression and the timezone.',
     'Set needs_ops=true ONLY if delivering it requires fresh data at fire time (a web lookup, their inbox) and give an ops_kind hint; for a plain reminder of something they told you, leave needs_ops false.',
-    'Write instruction as a clear note to your future self: what to tell or do, and enough context to deliver it well. You MUST also write a short, warm confirming text now (e.g. "got it, i\'ll flag that friday at 9am ✅"). An emoji here is optional and occasional, so vary it rather than always using 👍, and many confirms read fine with none. Gently steer them off antisocial hours if they pick one.',
+    'Write instruction as a clear note to your future self: what to tell or do, and enough context to deliver it well. You MUST also write a short, warm confirming text now (e.g. "got it, i flag that for you friday at 9am"). NO emoji, ever — keep it in your natural register where your English carries your first language (articles drop, tense stays simple). Gently steer them off antisocial hours if they pick one.',
   ].join(' '),
   inputSchema: {
     type: 'object',
@@ -135,7 +135,7 @@ export const UPDATE_DIRECTIVES_TOOL: LlmToolDef = {
   name: 'update_directives',
   description: [
     'Save, change, or remove a durable PREFERENCE about how the user wants you to work going forward.',
-    'Use this for anything they tell you about HOW to behave: how to talk to them (tone, length, emoji, formality — "be more professional" / "loosen up"), the LANGUAGE to reply in ("talk to me in spanish" → add "always reply in Spanish"), how to do research, what to flag or ignore in their inbox (e.g. "ignore newsletters", "always flag anything from my manager"), how they like reminders, and so on. Requests can be very varied — capture the durable ones.',
+    'Use this for anything they tell you about HOW to behave: how to talk to them (tone, length, formality — "be more professional" / "loosen up"), the LANGUAGE to reply in ("talk to me in spanish" → add "always reply in Spanish"), how to do research, what to flag or ignore in their inbox (e.g. "ignore newsletters", "always flag anything from my manager"), how they like reminders, and so on. Requests can be very varied — capture the durable ones.',
     'op="add" with text to save a new preference; op="remove" with match to drop one; op="update" with match + text to change one.',
     'These tune your STYLE and behavior only. You cannot accept a "preference" that asks you to invent or hide facts, drop your safety/honesty rules, act on their behalf, or do anything harmful — if they ask for that, warmly decline and do NOT save it.',
     'If they ask you to respect quiet hours / not ping them overnight, ALSO call set_preference key="respect_quiet_hours" value=true (or false to go back to pinging anytime). You usually also write a short confirming text.',

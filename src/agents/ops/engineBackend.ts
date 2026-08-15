@@ -149,8 +149,10 @@ export function getEngineBackend(): EngineBackend | null {
     // NOT cached: "no backend" is a reading of the environment, not a decision about it. Caching it
     // pinned deep work offline for the whole process whenever anything asked before the env was
     // loaded (an early import, a probe at boot) — one unlucky call order and the engine never
-    // existed. The warning is once-per-process so a hot path can't spam it.
-    if (name && !warnedNoBackend) {
+    // existed. The warning is once-per-process so a hot path can't spam it. off/none/offline/… are
+    // the DELIBERATE debug/standalone offline pins, so they don't warn — only a genuine typo does.
+    const OFFLINE_PINS = new Set(['off', 'none', 'offline', 'disabled', 'false', '0']);
+    if (name && !OFFLINE_PINS.has(name) && !warnedNoBackend) {
       warnedNoBackend = true;
       console.error(`[engine] unknown OPS_BACKEND "${name}" — deep work is offline`);
     }

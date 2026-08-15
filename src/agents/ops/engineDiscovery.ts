@@ -120,7 +120,15 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
 
   // ── 1. Detect the engine → OPS_BACKEND ────────────────────────────────────
   let backend = (env.OPS_BACKEND || '').trim().toLowerCase();
-  const explicitBackend = backend === 'hermes' || backend === 'openclaw';
+  const userSet = backend !== '';
+
+  // A user who pinned OPS_BACKEND to a non-engine value (off / none / offline / …) wants deep work
+  // OFF — the debug/standalone path. Respect it fully: no detection, no cred/model inheritance, even
+  // if an engine is installed on this machine.
+  if (userSet && backend !== 'hermes' && backend !== 'openclaw') {
+    deps.log(`OPS_BACKEND="${backend}" — deep work offline (debug/standalone); skipping engine discovery`);
+    return;
+  }
 
   const hermesHome = env.HERMES_HOME || path.join(deps.homedir(), '.hermes');
   const hermesEnvPath = path.join(hermesHome, '.env');
@@ -137,7 +145,7 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
     return openclawToken;
   };
 
-  if (!explicitBackend) {
+  if (!userSet) {
     if (hermesPresent) {
       backend = 'hermes'; // tie-break: prefer hermes (reminders need it) when both are present
     } else if (readOpenclawToken()) {
@@ -147,7 +155,7 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
       return;
     }
     env.OPS_BACKEND = backend;
-    deps.log(`detected ${backend} → OPS_BACKEND=${backend}`);
+    deps.log(`detected ${backend} → OPS_BACKEND=${backend} (set OPS_BACKEND=off to force the debug/offline path)`);
   }
 
   // ── model inheritance opt-out (default on) ────────────────────────────────
