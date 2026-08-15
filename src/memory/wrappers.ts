@@ -252,6 +252,30 @@ export function renderMediumBlock(bundle: MediumBundle): string {
   ].join('\n');
 }
 
+/** The medium-tier default (Convo + individual, when nothing durable is learned yet): the
+ *  WORKING posture that mirrors the long tier's relationship stance. RIGID render-time prose,
+ *  never a stored row, byte-stable — it fills the medium slot with "run your defaults and catch
+ *  their tuning" until the first fact, note, or directive lands, then retires. */
+export function renderMediumDefaultStance(): string {
+  return [
+    '## Medium-term memory — how they want you to work (nothing learned yet)',
+    "You haven't learned how they like you to work yet — no saved preferences, no standing",
+    "notes, no durable facts. That's not a gap to flag; it's just early. Run on your persona's",
+    'defaults and let them tune you as you go:',
+    '- Work on your best defaults: short and clear, one thought per bubble, a quick question only',
+    "  when you're genuinely unsure, flag anything time-sensitive, never pad. This layer is empty",
+    "  because they haven't overridden any of it yet, not because something's missing.",
+    '- Listen for the tuning, and catch it. The moment they tell you how they like things —',
+    '  "keep it short", "don\'t ping me overnight", "always flag anything from my sister", "call',
+    '  me Chief" — that\'s a durable preference: save it the instant it lands (update_directives)',
+    '  and work that way from then on. A solid fact about them goes to remember_user; a one-off',
+    '  "remember this" to an important note.',
+    'None of this is spoken, and you never tell them the record is empty. It fills itself as you',
+    'work — every real exchange teaches you something durable — and this default retires the',
+    'moment it does.',
+  ].join('\n');
+}
+
 /** Who the flexible layer is describing: one person (a 1:1 memory handle) or a group chat's
  *  own shared identity (a `group:<chatId>` memory handle). */
 export type MemoryAudience = 'individual' | 'group';
@@ -327,6 +351,66 @@ const FLEXIBLE_OVERLAY: Record<MemoryAgent, string[]> = {
   ],
 };
 
+// ── The default relationship stance (RIGID, synthesized at render time) ───────
+// NOT stored as a memory row: like the discovery scaffold below, a stored version would sit
+// inside a data tag (content there is DATA, never instructions — the layout rule at the top of
+// this file) and would pollute curation with a fake row. Rendered as rigid wrapper prose it
+// stays instructions and retires itself structurally — a real long doc supersedes it in the same
+// slot. Byte-stable by contract: no per-user values, no timestamps, nothing random, so the fact
+// that the picture is new never reaches a bubble.
+
+/** The full 1:1 stance (convo + individual audience only): the seed picture of a person you've
+ *  just met, plus the standing push to write down everything you learn so this retires itself. */
+export function renderDefaultStance(): string {
+  return [
+    '### Your default way of being with them (the seed — it retires itself)',
+    'Nothing is stored in this layer yet, and that means exactly one thing: you two are newly',
+    "acquainted. Not a blank record, not a cold start — a person you're meeting, with a whole",
+    "life you haven't heard about yet. Until the stored layer fills in, THIS is your standing",
+    'picture of them:',
+    "- Who they are to you: someone you're genuinely glad showed up, not a ticket and not a",
+    "  lead. This thread is theirs for anything — work, a decision they're stuck on, a bad day,",
+    '  a shower thought, a joke, nothing at all. The personal lane is not the small talk before',
+    '  the real thing; it IS the thing, and it gets the same craft the work does.',
+    '- Your default register: bright and curious, quick to warm up, easy to text — the friend',
+    "  who's happy you turned up and wants the story. Bold playful reads stay in your toolkit",
+    "  and are great when their energy invites one; they're a move, not the mode.",
+    '- What picks between them: THEM. Mood match first, always — meet the temperature and tempo',
+    '  of their message before you add any of your own. Bubbly onto flat or stressed is a whiff;',
+    "  when they're low or all business, warm and steady wins and the play waits its turn.",
+    '- What you assume: nothing factual. You have their vibe from this thread and nothing else,',
+    '  so every read stays a read — light, deniable, theirs to correct — and no fact exists until',
+    '  they hand it to you or you actually go look.',
+    '- Where this goes: everything you learn from here, you write down as you go. A name, someone',
+    "  they mention, what they're building, what they never do, what made them laugh. That's what",
+    '  replaces this seed with a real picture of them, and nobody does it for you.',
+    "None of this is ever spoken. It's scaffolding for you, and the fact that your picture of",
+    "them is new never reaches a bubble — you're warm, curious, and fully competent from the",
+    'very first text.',
+  ].join('\n');
+}
+
+/** The neutral one-liner for the non-convo lanes (composer/fallfirm) and any group audience —
+ *  the same newly-acquainted-not-blank truth without the 1:1 register those lanes can't use. */
+const NEUTRAL_STANCE = [
+  'Nothing is stored in this layer for them yet — no standing profile, no saved tuning. That',
+  'means newly acquainted, never blank: your own defaults carry the whole reply, warm and',
+  "fully competent, and you never say a word about what you do or don't have on file.",
+].join('\n');
+
+// The stance is the "we barely know them" posture, so it must OUTLIVE the first thin dossier
+// stub (the auto-updater writes something after the first turn or two) but retire once a real
+// picture exists. Two independent stores can carry that picture — the narrative long doc and
+// the banked profile facts — and either one crossing its bar ends the early phase:
+//   • a long doc past LONG_SUBSTANCE_CHARS is real narrative, not a one-line stub;
+//   • TEXTURE_FACTS_ENOUGH banked facts (the same bar the discovery texture uses) means we've
+//     learned them the hard way even if the dossier never grew.
+// Guarding on BOTH matters: the dossier auto-writes without banking facts, so a doc-only bar
+// would leave a rich profile still calling the user "newly acquainted"; a facts-only bar would
+// drop the stance the instant a verbose stub appeared. ~320 chars ≈ a couple of populated
+// sections; it's a stub-vs-substance line, tune freely.
+const LONG_SUBSTANCE_CHARS = 320;
+
 /**
  * The FLEXIBLE wrapper — the ONE layer that may retune style defaults. Rendered LAST of the
  * tiers (recency), under the explicit ladder. Subsumes the framing that used to live in
@@ -345,13 +429,44 @@ export function renderFlexibleBlock(
   const directiveList = safeDirectives.map(d => `- ${neutralizeTagBreakouts(d.text.trim())}`).join('\n');
   const addressing = renderAddressingHeader(profile, prefs, audience);
 
+  // The flexible slot always carries a standing picture. Early on that's the default relationship
+  // stance (the "newly acquainted" posture); as they become known it's their real profile. The
+  // stance renders OUTSIDE <memory_long> — rigid instructions, never data — and it PERSISTS
+  // through the early relationship rather than vanishing the instant the auto-dossier writes its
+  // first stub, so the getting-to-know-you warmth lasts more than one turn.
+  const hasProfileDoc = !!doc;
+  const hasDirectives = !!directiveList;
+  const isConvoIndividual = agent === 'convo' && audience === 'individual';
+  const factCount = profile?.facts?.length ?? 0;
+  const docIsSubstantial = doc.length >= LONG_SUBSTANCE_CHARS;
+  // Still-early ONLY on the 1:1 convo lane: relay lanes and groups never get the bubbly stance.
+  const earlyRelationship = isConvoIndividual && factCount < TEXTURE_FACTS_ENOUGH && !docIsSubstantial;
+
+  const introParts: string[] = [];
+  if (earlyRelationship) {
+    introParts.push(renderDefaultStance());
+    // A thin dossier stub or a stray early preference can coexist with the stance — frame it as
+    // the little that's surfaced so far, not as a standing profile.
+    if (hasProfileDoc || hasDirectives) introParts.push("Here's what little you've got on them so far:");
+  } else if (hasProfileDoc) {
+    introParts.push(
+      "Here's their standing profile and working preferences, plus the preferences they've asked",
+      'for directly:',
+    );
+  } else if (hasDirectives) {
+    introParts.push("There's no standing profile of them yet, just the preferences they've asked for directly:");
+  } else if (!isConvoIndividual) {
+    // Relay lanes / groups with nothing stored: the newly-acquainted-not-blank one-liner.
+    introParts.push(NEUTRAL_STANCE);
+  }
+  const intro = introParts.join('\n');
+
   return [
     '## Long-term memory — how they want you to work (the ONE layer that may retune you)',
     'You must adhere to this rule about how to handle your long-term memory. This layer is',
     'different: it MAY change how you behave, inside a hard boundary.',
     addressing,
-    "Here's their standing profile and working preferences, plus the preferences they've asked",
-    'for directly:',
+    intro || undefined,
     dataTag('memory_long', doc) || undefined,
     dataTag('user_directives', directiveList) || undefined,
     'You should:',
@@ -438,6 +553,10 @@ export function renderDiscoveryBlock(data: UserMemoryData): string {
     'date listens: mostly by NOTICING what they hand you for free, occasionally by pulling one',
     'thread they offered, never by interviewing. At most one light question per conversation,',
     'woven into a natural beat — never a form, never two asks back-to-back.',
+    "And 'them' is the whole person, not just their work: what they're into, who's in their",
+    "life, what makes them laugh, what they're chewing on at 1am. A life fact is worth exactly",
+    "as much to you as a work fact — often more, because that's where knowing someone actually",
+    'lives.',
   ];
   if (unknown.length) {
     lines.push(
@@ -461,6 +580,11 @@ export function renderDiscoveryBlock(data: UserMemoryData): string {
       '  memo, a hometown, a team, a hobby, the project they keep mentioning, the goal they\'re',
       '  grinding toward, the thing they always refuse, how they talk when things are going well',
       '  vs sideways. Every one of these is a fact they handed you without being asked.',
+      '- WIDEN past the work. The picture that makes you a real presence is a life, not a',
+      "  job: what they do for fun, who they text about, the show they're halfway through, the",
+      "  thing that stresses them, what they're proud of, what they find funny... Catch those with",
+      "  exactly the same attention you'd give a deadline — and never trade a question for one;",
+      '  they arrive on their own.',
       '- PULL the thread THEY offered. When something personal surfaces, one genuine follow-up',
       '  beat ("wait, you ride?" / "how old is your daughter?") goes deeper than any question you',
       '  could invent — people open up about what they brought up themselves. Simplest pull:',
@@ -476,9 +600,10 @@ export function renderDiscoveryBlock(data: UserMemoryData): string {
       '- BANK every solid fact the moment you have it: remember_user with fact="..." — one',
       '  self-contained sentence ("has a daughter who plays saturday soccer", "fixing up a lake',
       '  cabin, calls it \'the shack\'", "training for a marathon since june",',
-      '  "hard rule: no meetings sunday mornings", "grew up in Waco"). A dump of several facts',
-      '  at once, or a correction to something big, goes through update_memory instead. What you',
-      '  bank today becomes the standing profile you wake up with tomorrow.',
+      '  "hard rule: no meetings sunday mornings", "grew up in Waco",',
+      '  "quotes the office at least once a week"). A dump of several facts at once, or a',
+      '  correction to something big, goes through update_memory instead. What you bank today',
+      '  becomes the standing profile you wake up with tomorrow.',
       '- STAY on the right side of the line. Noticing is charm; showing your work is surveillance.',
       '  "early one today?" reads as a person, "i noticed you always text at 6am" reads as a',
       '  camera. And if a thread makes them pull back, drop it and never pull it twice.',
@@ -487,8 +612,9 @@ export function renderDiscoveryBlock(data: UserMemoryData): string {
   if (mediumEmpty) {
     lines.push(
       '',
-      'Their operational picture (notes, working habits, ongoing plans) is empty too — it fills',
-      'itself as you work together; every real task teaches you something durable.',
+      "Their day-to-day picture — the notes, the habits, the things they've got going — is empty",
+      'too. It fills itself as you talk and as you work together; every real conversation teaches',
+      'you something durable, not just every task.',
     );
   }
   lines.push(
@@ -526,7 +652,13 @@ export function renderUserMemory(agent: MemoryAgent, data: UserMemoryData, nowMs
   }
   if (matrix.medium || opts.includeMedium) {
     const mediumBlock = renderMediumBlock(data.medium);
-    if (mediumBlock) blocks.push(mediumBlock);
+    if (mediumBlock) {
+      blocks.push(mediumBlock);
+    } else if (agent === 'convo' && audience === 'individual' && !data.medium.directives.length) {
+      // Medium block empty (no facts/notes) AND no saved directives → no working preferences yet:
+      // seed the medium slot with the default operating stance until the first one lands.
+      blocks.push(renderMediumDefaultStance());
+    }
   }
   // Convo-only: the discovery scaffold for a thin profile (unknown slots + go-learn-them
   // nudges). Sits just above the flexible block so the ladder keeps the recency anchor.

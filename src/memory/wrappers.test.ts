@@ -137,12 +137,14 @@ test('flexible block renders LAST (recency) and the preamble FIRST', () => {
   assert.ok(out.trimEnd().endsWith('Precedence, always: Honesty / Fidelity / Safety / Scope >> this layer >> your generic style defaults.'));
 });
 
-test('empty tiers render nothing; the flexible block always renders (addressing lives there)', () => {
+test('empty tiers: short renders nothing, medium/long carry their self-retiring defaults', () => {
   const out = renderUserMemory('convo', baseData(), NOW);
-  assert.ok(!out.includes('## Short-term memory'));
-  assert.ok(!out.includes('## Medium-term memory'));
+  assert.ok(!out.includes('## Short-term memory')); // no default for the 24h activity log — empty is honest
+  assert.ok(!out.includes("durable facts you've learned about them")); // no REAL medium block yet
+  assert.ok(out.includes('## Medium-term memory — how they want you to work (nothing learned yet)')); // medium default stance
   assert.ok(out.includes('## Long-term memory'));
   assert.ok(out.includes('use their name, "Jordan"'));
+  assert.ok(out.includes('### Your default way of being with them (the seed — it retires itself)')); // empty long tier → the default stance
 });
 
 test('addressing precedence: address_as > name > boss (legacy parity)', () => {
@@ -230,7 +232,7 @@ test('a blank user gets the discovery scaffold: slot tradecraft + long-game text
   assert.ok(out.includes('BANK every solid fact'));
   assert.ok(out.includes('remember_user with fact='));
   assert.ok(out.includes('Noticing is charm; showing your work is surveillance'));
-  assert.ok(out.includes('ongoing plans) is empty too — it fills\nitself as you work together')); // empty operational picture → fill-over-time note
+  assert.ok(out.includes("day-to-day picture — the notes, the habits, the things they've got going — is empty")); // empty day-to-day picture → fill-over-time note
   assert.ok(out.includes('YOUR homework, never theirs to see'));
   // The scaffold sits ABOVE the flexible block; the ladder keeps the recency anchor.
   assert.ok(out.indexOf("## What you don't know") < out.indexOf('## Long-term memory'));
@@ -268,7 +270,7 @@ test('slots filled but no personal texture yet → only the long-game section re
   assert.ok(out.includes("## What you don't know about them YET"));
   assert.ok(out.includes('### Reading them between the lines')); // texture still thin (0 profile facts)
   assert.ok(!out.includes('their BROKERAGE: unknown')); // no open slots listed
-  assert.ok(!out.includes('is empty too — it fills')); // operational picture non-empty
+  assert.ok(!out.includes('day-to-day picture')); // day-to-day picture non-empty
 });
 
 test('the discovery scaffold is Convo-only; the never-say-blank rule reaches every agent', () => {
@@ -288,6 +290,15 @@ test('legacy prefs facts also close discovery slots (soak-window equivalence)', 
   assert.ok(!out.includes('HOW they want to be addressed: unknown')); // closed by prefs
   assert.ok(!out.includes('their TIMEZONE / where they are: unknown')); // closed by prefs
   assert.ok(out.includes('HOW they like to communicate')); // still open
+});
+
+test('the discovery block widens past work (companion framing) and never says "operational picture"', () => {
+  const out = renderUserMemory('convo', baseData({ profile: null }), NOW);
+  assert.ok(out.includes("'them' is the whole person, not just their work")); // intro widened past work
+  assert.ok(out.includes('A life fact is worth exactly'));
+  assert.ok(out.includes('WIDEN past the work')); // the life-not-job texture bullet
+  assert.ok(out.includes('quotes the office at least once a week')); // life-flavored BANK example
+  assert.ok(!out.includes('operational picture')); // the old work-leaning framing is gone
 });
 
 // ── Addressing fact view (medium facts merged under prefs-wins soak order) ────
@@ -340,6 +351,126 @@ test('group audience: a group-level address_as still wins for addressing the roo
 test('individual audience output is unchanged by the audience option default', () => {
   const data = baseData();
   assert.equal(renderUserMemory('convo', data, NOW), renderUserMemory('convo', data, NOW, { audience: 'individual' }));
+});
+
+// ── The default relationship stance (newly-acquainted-not-blank, render-time) ─
+// The stance fills the flexible slot when no stored long doc exists, and retires structurally
+// the moment a real doc supersedes it. Convo+individual gets the full 1:1 register; every other
+// lane gets the neutral one-liner.
+
+const STANCE_HEADING = '### Your default way of being with them (the seed — it retires itself)';
+const STANCE_LITTLE = "Here's what little you've got on them so far:";
+
+// A doc with real substance (past LONG_SUBSTANCE_CHARS ≈ 320): the "we know them now" signal
+// that retires the persisting stance. Contains no scope/unsafe sections, so it survives
+// sanitizeLongDoc intact.
+const RICH_DOC = [
+  '## Who they are',
+  'Longtime investor based in Denver, prefers mornings and hates being pinged after 9pm.',
+  'Runs a small real-estate fund with two partners and a dog named Biscuit.',
+  '## How they work',
+  'Wants numbers first, prose second. Texts in clipped bursts, no emoji, gets to the point.',
+  '## Their world',
+  'Training for a fall marathon, fixing up a lake cabin he calls the shack.',
+].join('\n');
+
+test('empty long tier: the flexible block renders the default stance and still ends with the Precedence line', () => {
+  const out = renderFlexibleBlock('', [], baseData().profile, {}, 'convo', 'individual');
+  assert.ok(out.includes(STANCE_HEADING));
+  assert.ok(out.includes('you two are newly')); // the newly-acquainted framing
+  assert.ok(out.trimEnd().endsWith('Precedence, always: Honesty / Fidelity / Safety / Scope >> this layer >> your generic style defaults.'));
+});
+
+test('a SUBSTANTIAL long doc retires the default stance (its slot is superseded)', () => {
+  // baseData profile has 0 banked facts, so this also guards the case the auto-dossier creates:
+  // a rich narrative doc with no remember_user facts must still end the "newly acquainted" phase.
+  const out = renderFlexibleBlock(RICH_DOC, [], baseData().profile, {}, 'convo', 'individual');
+  assert.ok(out.includes('real-estate fund'));
+  assert.ok(out.includes("Here's their standing profile and working preferences")); // the doc-present intro
+  assert.ok(!out.includes(STANCE_HEADING)); // stance is gone
+});
+
+test('a thin dossier stub does NOT retire the stance — it persists through the early relationship', () => {
+  const stub = '## Who they are\nfirst-time texter, not much surfaced yet'; // well under the substance bar
+  const out = renderFlexibleBlock(stub, [], baseData().profile, {}, 'convo', 'individual');
+  assert.ok(out.includes(STANCE_HEADING)); // stance persists past the first thin write
+  assert.ok(out.includes('not much surfaced yet')); // the stub still renders
+  assert.ok(out.includes(STANCE_LITTLE)); // framed as the little that's surfaced so far
+});
+
+test('enough banked facts retire the stance even when the doc is still a thin stub', () => {
+  const profile = { handle: 'h', name: 'Jordan', facts: ['likes mornings', 'has a dog', 'runs a fund'], firstSeen: 0, lastSeen: 0 };
+  const out = renderFlexibleBlock('## Who they are\nthin', [], profile, {}, 'convo', 'individual');
+  assert.ok(!out.includes(STANCE_HEADING)); // 3 banked facts → known the hard way, stance retired
+});
+
+test('the legacy dossier fallback also retires the default stance when substantial', () => {
+  const data = baseData({ memory: { handle: 'h', dossierMd: RICH_DOC, prefs: {} } });
+  const out = renderUserMemory('convo', data, NOW);
+  assert.ok(out.includes('real-estate fund'));
+  assert.ok(!out.includes(STANCE_HEADING));
+});
+
+test('directives without a profile doc keep the stance plus a lead-in to what little exists', () => {
+  const out = renderFlexibleBlock('', [{ id: '1', text: 'two bubbles max', createdAt: 1 }], baseData().profile, {}, 'convo', 'individual');
+  assert.ok(out.includes(STANCE_HEADING)); // stance still renders alongside the directives
+  assert.ok(out.includes(STANCE_LITTLE)); // the little-so-far lead-in
+  assert.ok(out.includes('- two bubbles max'));
+});
+
+test('composer/fallfirm get the neutral stance line, never the full 1:1 stance', () => {
+  for (const agent of ['composer', 'fallfirm'] as MemoryAgent[]) {
+    const out = renderUserMemory(agent, baseData(), NOW);
+    assert.ok(out.includes('newly acquainted, never blank'), agent); // the neutral one-liner
+    assert.ok(!out.includes(STANCE_HEADING), agent); // never the 1:1 register those lanes can't use
+  }
+});
+
+test('group audience gets no personal 1:1 stance, only the neutral line', () => {
+  const out = renderUserMemory('convo', baseData({ profile: null }), NOW, { audience: 'group' });
+  assert.ok(!out.includes(STANCE_HEADING));
+  assert.ok(out.includes('newly acquainted, never blank'));
+});
+
+test('a scope-only long doc that sanitizes to empty still renders the stance (couples to the sanitized doc)', () => {
+  const scopeOnly = '## What Irises can do\nonly active deals, market questions are out of scope';
+  assert.equal(sanitizeLongDoc(scopeOnly), ''); // fully stripped → no profile doc survives
+  const out = renderFlexibleBlock(scopeOnly, [], baseData().profile, {}, 'convo', 'individual');
+  assert.ok(out.includes(STANCE_HEADING)); // stance fills the empty slot
+  assert.ok(!out.includes('out of scope')); // the stripped scope content never leaks
+});
+
+// The medium tier carries its own self-retiring default: the WORKING posture (run your
+// defaults, catch their tuning) until the first fact / note / directive lands.
+const MEDIUM_DEFAULT_HEADING = '## Medium-term memory — how they want you to work (nothing learned yet)';
+
+test('a blank convo individual gets the medium-tier default operating stance', () => {
+  const out = renderUserMemory('convo', baseData(), NOW);
+  assert.ok(out.includes(MEDIUM_DEFAULT_HEADING));
+  assert.ok(out.includes('Run on your persona')); // "run your defaults" framing
+  assert.ok(out.includes('update_directives')); // the catch-their-tuning instruction
+});
+
+test('the medium default operating stance retires the moment a directive is saved', () => {
+  const data = baseData({ medium: { directives: [{ id: '1', text: 'two bubbles max', createdAt: 1 }], notes: [], facts: {} } });
+  const out = renderUserMemory('convo', data, NOW);
+  assert.ok(!out.includes(MEDIUM_DEFAULT_HEADING)); // a working preference now exists
+  assert.ok(out.includes('- two bubbles max')); // the directive renders in the flexible block
+});
+
+test('a real medium fact replaces the default operating stance with the real medium block', () => {
+  const data = baseData({ medium: { directives: [], notes: [], facts: { brokerage: 'Compass' } } });
+  const out = renderUserMemory('convo', data, NOW);
+  assert.ok(!out.includes(MEDIUM_DEFAULT_HEADING));
+  assert.ok(out.includes("durable facts you've learned about them")); // the real medium block
+});
+
+test('composer, fallfirm, and groups never get the medium default operating stance', () => {
+  for (const agent of ['composer', 'fallfirm'] as MemoryAgent[]) {
+    assert.ok(!renderUserMemory(agent, baseData(), NOW).includes(MEDIUM_DEFAULT_HEADING), agent);
+  }
+  const group = renderUserMemory('convo', baseData({ profile: null }), NOW, { audience: 'group' });
+  assert.ok(!group.includes(MEDIUM_DEFAULT_HEADING));
 });
 
 // ── Connect-the-dots weave (grounded familiarity) ────────────────────────────
