@@ -10,7 +10,7 @@
 // overwhelmed can emit null, and we degrade gracefully to the carried-forward mood.
 
 import {
-  type MoodCore, isMoodCore, normalizeMoodLabel, moodTexture, WILLCOX_WHEEL, CORE_VALENCE_BAND,
+  type MoodCore, MOOD_CORES, isMoodCore, normalizeMoodLabel, moodTexture, feelingWords, CORE_VALENCE_BAND,
 } from './mood.js';
 import type { CycleState } from './cycle.js';
 import type { CircadianState } from './circadian.js';
@@ -70,9 +70,16 @@ export interface AffectStatus extends EmittedStatus {
   at: number;
 }
 
-export interface MoodPoint { level: number; core: MoodCore; label: string; at: number }
+/** One point on the recent-affect trail (short memory). Carries mood PLUS the key gauges so the
+ *  trajectory the model sees — and continues from — spans more than mood alone. Gauge fields are
+ *  optional so older/hand-built points still type-check. */
+export interface MoodPoint {
+  level: number; core: MoodCore; label: string; at: number;
+  anxiety?: number; warmth?: number; social_battery?: number; rapport?: number;
+}
 
-/** What we persist per chat: the last full status + a short capped mood trail for trend reads. */
+/** What we persist per chat: the last full status + a short capped trail — the short-term affect
+ *  memory that makes each turn's status EVOLVE from the recent ones instead of resetting. */
 export interface AffectState {
   last?: AffectStatus;
   moodHistory: MoodPoint[];
@@ -170,10 +177,23 @@ export function mergeStatus(emitted: EmittedStatus, computed: ComputedState, at:
   };
 }
 
-/** Append this turn's mood to the trail, capped newest-last. */
+/** Append this turn's status to the recent-affect trail, capped newest-last. */
 export function pushMood(history: MoodPoint[], s: AffectStatus): MoodPoint[] {
-  const next = [...history, { level: s.mood_level, core: s.mood_core, label: s.mood_label, at: s.at }];
+  const next: MoodPoint[] = [...history, {
+    level: s.mood_level, core: s.mood_core, label: s.mood_label, at: s.at,
+    anxiety: s.anxiety, warmth: s.warmth, social_battery: s.social_battery, rapport: s.rapport,
+  }];
   return next.length > MOOD_HISTORY_CAP ? next.slice(next.length - MOOD_HISTORY_CAP) : next;
+}
+
+/** A one-phrase trend from the recent values of one gauge (for the injected block). */
+function trendOf(values: Array<number | undefined>, noun: string): string | null {
+  const nums = values.filter((v): v is number => typeof v === 'number');
+  if (nums.length < 2) return null;
+  const delta = nums[nums.length - 1] - nums[0];
+  if (delta >= 12) return `${noun} rising`;
+  if (delta <= -12) return `${noun} easing`;
+  return null; // steady gauges aren't worth a line
 }
 
 /** A one-word trend from the recent mood levels (for the injected block). */
@@ -198,10 +218,22 @@ export function renderStatusForPrompt(state: AffectState | undefined, computed: 
   lines.push(`- Your longer rhythm: ${computed.cycle.description}`);
 
   const last = state?.last;
+  const history = state?.moodHistory ?? [];
   if (last) {
-    const trend = moodTrend(state?.moodHistory ?? []);
-    lines.push(`- A moment ago you felt ${last.mood_label} (${last.mood_core}, ${last.mood_level}/100), ${trend}. ${moodTexture(last.mood_level)}`);
-    lines.push(`- Gauges you carried in — anxiety ${last.anxiety}, warmth ${last.warmth}, social battery ${last.social_battery}, rapport ${last.rapport}, patience ${last.patience} (all /100). Let them drift naturally from here, nudged by how this message lands and by the weather above.`);
+    lines.push(`- A moment ago you felt ${last.mood_label} (${last.mood_core}, ${last.mood_level}/100), ${moodTrend(history)}. ${moodTexture(last.mood_level)}`);
+    lines.push(`- Gauges you carried in — anxiety ${last.anxiety}, warmth ${last.warmth}, social battery ${last.social_battery}, rapport ${last.rapport}, patience ${last.patience} (all /100).`);
+    // The recent-affect trail (short memory): call out only the gauges that are actually moving, so
+    // the model sees the trajectory it's continuing — not just the single last point.
+    if (history.length >= 2) {
+      const moving = [
+        trendOf(history.map(h => h.level), 'mood'),
+        trendOf(history.map(h => h.anxiety), 'anxiety'),
+        trendOf(history.map(h => h.warmth), 'warmth'),
+        trendOf(history.map(h => h.rapport), 'rapport'),
+      ].filter((s): s is string => !!s);
+      if (moving.length) lines.push(`- Trajectory across your last ${history.length} turns: ${moving.join(', ')}.`);
+    }
+    lines.push('- Your state has MOMENTUM: this turn CONTINUES from that trajectory, it does not reset. Mood and the gauges move a handful of points per turn, not wild swings — carry them forward and let this message nudge them; only something genuinely big shifts them a lot.');
     if (last.meta_prompt) lines.push(`- Your read going into this message (from last turn): "${last.meta_prompt}"`);
   } else {
     lines.push('- First read of this person — set your mood from the weather above and how their message lands.');
@@ -211,9 +243,9 @@ export function renderStatusForPrompt(state: AffectState | undefined, computed: 
   return lines.join('\n');
 }
 
-/** The Willcox wheel words, compact, for the persona/Context teaching block. */
+/** The full feeling vocabulary (complete wheel + Irises's extra shades), compact, for teaching. */
 export function wheelReference(): string {
-  return (Object.keys(WILLCOX_WHEEL) as MoodCore[])
-    .map(core => `${core} [${CORE_VALENCE_BAND[core][0]}-${CORE_VALENCE_BAND[core][1]}]: ${WILLCOX_WHEEL[core].slice(0, 8).join(', ')}`)
+  return MOOD_CORES
+    .map(core => `${core} [${CORE_VALENCE_BAND[core][0]}-${CORE_VALENCE_BAND[core][1]}]: ${feelingWords(core).join(', ')}`)
     .join('\n');
 }
