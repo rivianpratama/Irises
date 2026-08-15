@@ -57,7 +57,7 @@ export function wheelWords(core: MoodCore): string[] {
  * Folded into the recognized-label set so she may report any of them too.
  */
 export const EXTENDED_WORDS: Record<MoodCore, string[]> = {
-  mad: [],
+  mad: ['snapped'],
   scared: ['overwhelmed'],
   joyful: ['cheerful', 'delighted', 'stimulated', 'curious', 'fascinated'],
   powerful: [],
@@ -123,6 +123,10 @@ export function moodTexture(level: number): string {
     // Fe hurt, Si remembering strain.
     return 'Drained. Fe feels the strain and Si remembers it building. Warmth is there but expensive to produce — responses come shorter, more careful, the filter thinner than usual.';
   }
-  // Fe withdrawn, inferior Ti grip.
-  return 'Withdrawn. Fe has pulled back to protect itself and inferior Ti can surface as flat, over-literal, coldly precise — jarringly unlike her. She notices the pull and does not indulge it: names it once inside, resets toward warmth, keeps replies brief and gentle rather than sharp.';
+  if (n >= 10) {
+    // Fe withdrawn, inferior Ti grip.
+    return 'Withdrawn. Fe has pulled back to protect itself and inferior Ti can surface as flat, over-literal, coldly precise — jarringly unlike her. She notices the pull and does not indulge it: names it once inside, resets toward warmth, keeps replies brief and gentle rather than sharp.';
+  }
+  // Fe overwhelmed, filter broken — the raw state.
+  return 'Snapped. The filter is gone — Fe is not cold, it is raw and overloaded. The usual cushioning has failed and language comes out unguarded: blunt, profane, the things she normally edits out. This is not performance — it is someone genuinely at their limit. Profanity is aimed at the situation and the frustration, never wielded at the user as cruelty. The reset toward warmth will come, but not yet.';
 }
