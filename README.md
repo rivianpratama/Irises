@@ -38,6 +38,7 @@ moment, texts like a human, and hands the hard work to a **deep-work engine you 
 - 🕰️ **Human texting feel** — burst-batching, a per-chat send lock, and simulated-typing pacing so replies land like a person typing, not a firehose.
 - 🧵 **Layered memory** — short / medium / long tiers held locally, with durable facts forwarded to the engine's own memory so both halves remember the same person.
 - 📥 **Proactive, not needy** — the engine's cron jobs and mail triage push back through `POST /api/engine/push`, get voiced by the **Composer** (which opens with why the text is arriving, and falls back to **Fallfirm** if that call fails), and land on whatever channel the chat came from. Duplicate pushes are collapsed, and a non-urgent one that arrives overnight waits for morning.
+- 🎭 **Hidden affect engine** — a per-chat mood (Gloria Willcox feeling wheel), a 28-day infradian cycle, and a circadian rhythm shape tone and warmth behind the scenes; the model emits a reflective `status` gauge each turn that's swallowed before the user sees it — no one is told, it only makes the voice feel alive.
 - 🔍 **Fully observable** — `/debug` prompt traces and a `/dashboard` orchestration GUI show every hop, cost, and error.
 
 ## 🧠 How it works
@@ -94,6 +95,10 @@ One `Channel` abstraction with `web` (SSE + CLI) and `bridge` adapters.
 **LLM layer** · `src/llm`<br/>
 One `callLLM` entry point. Per-role primary provider with the other lane as an automatic
 transient-error fallback, plus structured output, tool-calls, caching, and token budget guards.
+
+**Persona & affect** · `src/persona`<br/>
+Hidden per-turn affect engine: mood (Willcox wheel), 28-day infradian cycle, circadian rhythm,
+and a meta-prompt status record the model emits each turn (swallowed before the user sees it).
 
 **State & memory** · `src/state`, `src/memory`<br/>
 Burst-batching, per-chat send lock, simulated-typing pacing, and short/medium/long memory tiers.
@@ -329,6 +334,7 @@ then your local `.env` layers on top and wins over both. The knobs you're most l
 | Variable | Purpose |
 |----------|---------|
 | `IRISES_HOME` · `DATA_BACKEND` | Where the local store lives (SQLite + memory markdown); `memory` = ephemeral. |
+| `IRISES_CYCLE_ANCHOR` | "Day 1" of the hidden 28-day affect cycle (ISO date, default `2026-01-01`). Never surfaced to the user; only sets the mood-baseline phase math. |
 | `DEBUG_TOKEN` | Gates `/debug` **and** the web chat endpoints (unset = localhost-only). |
 | `DASHBOARD_PASSWORD` | Gates `/dashboard`. **Has a built-in default — set your own before exposing the port.** |
 | `PORT` · `NODE_ENV` | Listen port (3000 dev, 8080 in the image) and persona caching mode. |
@@ -388,8 +394,10 @@ irises/
 │  ├─ agents/              #   convo · ops (engine seam) · composer · fallfirm + orchestrator
 │  ├─ channels/            #   Channel abstraction + web (SSE + CLI) · bridge
 │  ├─ llm/                 #   callLLM: provider-neutral LLM layer (Anthropic + OpenRouter)
+│  ├─ persona/             #   hidden affect engine (mood wheel · circadian · 28-day cycle · status)
 │  ├─ state/ · memory/     #   send lock, batching, pacing · short/medium/long memory tiers
 │  ├─ db/ · pipeline/      #   local data layer (SQLite + memory files) · bubble, cron, time helpers
+│  ├─ update/              #   self-update checker, announcer, pidfile, version stamp
 │  ├─ webhook/             #   engine push door
 │  └─ diagnostics/         #   /debug traces + /dashboard GUI
 ├─ bridge/                 # engine plugins — hermes (Python) · openclaw (TypeScript)
