@@ -19,6 +19,11 @@ import { getActiveOps } from '../../state/opsCoordination.js';
 import { getConversation, addMessage, clearConversation, clearUserProfile } from '../../state/conversation.js';
 import { getEngineBackend } from '../ops/engineBackend.js';
 import { timestampLabel } from '../../pipeline/chatTime.js';
+import { getAffectState } from '../../db/repositories/affectState.js';
+import { computeCycle } from '../../persona/cycle.js';
+import { computeCircadian } from '../../persona/circadian.js';
+import { cycleAnchorMs } from '../../persona/config.js';
+import type { ComputedState } from '../../persona/status.js';
 import { hasMedia, type IncomingMedia } from '../../webhook/types.js';
 import { reportError } from '../../diagnostics/errorLog.js';
 import type { LlmMessage, LlmToolDef } from '../../llm/types.js';
@@ -133,6 +138,17 @@ export async function chat(
       ])
     : ['', undefined];
 
+  // Irises's hidden affect state: her persisted prior-turn mood/gauges/meta-prompt for THIS chat,
+  // plus the clock-computed cycle/circadian baseline for right now (anchored to the user's tz).
+  // Feeds the "internal weather" prompt block and is re-merged with the model's emitted status
+  // after the reply. Never user-visible.
+  const affectState = await getAffectState(chatId);
+  const nowMs = Date.now();
+  const computed: ComputedState = {
+    cycle: computeCycle(nowMs, cycleAnchorMs()),
+    circadian: computeCircadian(nowMs, agentTz || undefined),
+  };
+
   // Transcribe audio (in parallel) and fold into the text — the cheap fast path for voice memos, so
   // Convo answers them at text-model latency without a background file read.
   const transcriptionResults = await Promise.all(media.audio.map(a => transcribeAudio(a.url, a.mimeType)));
@@ -189,7 +205,7 @@ export async function chat(
 
   // Held in a variable (not inlined): recall_memory's second pass re-invokes the model with this
   // SAME system + messages, minus the recall tool (see processConvoResult).
-  const system = buildSystemPrompt(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined);
+  const system = buildSystemPrompt(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined, affectState, computed);
 
   try {
     const res = await callConvoLLM({
@@ -207,6 +223,7 @@ export async function chat(
     const result = await processConvoResult({
       res, chatId, handle, chatContext, textToSend, history, media,
       turn: { system, messages, tools },
+      computed,
     });
     // Stash this turn's media for a LATER text follow-up to recall (delegate_to_mm media_scope
     // "earlier"). Written AFTER processConvoResult so an "earlier" recall THIS turn still resolves to

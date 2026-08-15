@@ -362,7 +362,7 @@ test('buildEnvelopeSchema: name enum, flat nullable args union, truncation-safe 
     required: string[];
     properties: { tool_calls: { items: { properties: { name: { enum: string[] }; args: { required: string[]; properties: Record<string, { type: string[] }>; additionalProperties: boolean } } } } };
   };
-  assert.deepEqual(schema.required, ['confidence_level', 'tool_calls', 'bubbles']);
+  assert.deepEqual(schema.required, ['confidence_level', 'tool_calls', 'bubbles', 'status']);
   const items = schema.properties.tool_calls.items;
   assert.deepEqual(items.properties.name.enum, ['a_tool', 'b_tool']);
   const args = items.properties.args;
@@ -441,4 +441,26 @@ test('parseReply regression: an MM envelope still bridges through the shared par
   const shared = parseReply(raw);
   assert.equal(shared.wasEnvelope, true);
   assert.equal(shared.legacyText, 'one\n---\ntwo'); // bubbles key is the canonical envelope marker
+});
+
+// ── hidden status field (mood/gauges/meta-prompt) — parsed, exposed, never bridged to the user ──
+
+test('parseReply exposes the hidden status object and never leaks it into bubble text', () => {
+  const raw = '{"confidence_level":80,"tool_calls":null,"bubbles":[{"text":"hey","re":null}],"status":{"mood_core":"joyful","mood_label":"hopeful","mood_level":72}}';
+  const r = parseReply(raw);
+  assert.equal(r.wasEnvelope, true);
+  assert.equal(r.legacyText, 'hey');                 // ONLY the bubble text bridges to the user
+  assert.equal(r.statusRaw?.mood_core, 'joyful');    // status is captured for the persona layer
+  assert.equal(r.statusRaw?.mood_level, 72);
+  assert.ok(!String(r.legacyText).includes('joyful')); // never leaks into what the user sees
+});
+
+test('parseReply tolerates a null / missing status without breaking the envelope', () => {
+  const nulled = parseReply('{"confidence_level":80,"tool_calls":null,"bubbles":[{"text":"hi","re":null}],"status":null}');
+  assert.equal(nulled.legacyText, 'hi');
+  assert.equal(nulled.statusRaw, undefined);
+
+  const missing = parseReply('{"confidence_level":80,"bubbles":[{"text":"hi","re":null}]}');
+  assert.equal(missing.legacyText, 'hi');
+  assert.equal(missing.statusRaw, undefined);
 });

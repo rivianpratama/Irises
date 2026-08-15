@@ -148,7 +148,7 @@ test('jsonBubbles adds a strict json_schema response_format + require_parameters
   assert.equal(rf.type, 'json_schema');
   assert.equal(rf.json_schema.name, 'irises_reply');
   assert.equal(rf.json_schema.strict, true);
-  assert.deepEqual(rf.json_schema.schema.required, ['confidence_level', 'bubbles']);
+  assert.deepEqual(rf.json_schema.schema.required, ['confidence_level', 'bubbles', 'status']);
   assert.equal((params.provider as { require_parameters?: boolean }).require_parameters, true);
   // without toolsViaJson the tools still ride natively (the judge-style shape)
   assert.ok(Array.isArray(params.tools) && params.tools.length === 1);
@@ -186,9 +186,9 @@ test('toolsViaJson omits the native tools param and swaps in the extended envelo
   const rf = params.response_format as Any;
   assert.equal(rf.json_schema.strict, true);
   const schema = rf.json_schema.schema as Any;
-  // truncation-safe field order: confidence first, tool_calls BEFORE bubbles
-  assert.deepEqual(schema.required, ['confidence_level', 'tool_calls', 'bubbles']);
-  assert.deepEqual(Object.keys(schema.properties), ['confidence_level', 'tool_calls', 'bubbles']);
+  // truncation-safe field order: confidence first, tool_calls BEFORE bubbles, hidden status LAST
+  assert.deepEqual(schema.required, ['confidence_level', 'tool_calls', 'bubbles', 'status']);
+  assert.deepEqual(Object.keys(schema.properties), ['confidence_level', 'tool_calls', 'bubbles', 'status']);
   // name is a hard enum of exactly the offered tools
   const items = schema.properties.tool_calls.items;
   assert.deepEqual(items.properties.name.enum, ['delegate_to_ops', 'unlink_account']);
@@ -218,10 +218,10 @@ test('toolsViaJson attaches the response-healing plugin, merged with file-parser
   assert.deepEqual(merged.map(p => p.id), ['response-healing', 'file-parser']);
 });
 
-test('tool-less jsonBubbles callers (composer/fallfirm shape) are byte-identical to before', () => {
+test('tool-less jsonBubbles callers (composer/fallfirm shape) use the base schema (no tool_calls)', () => {
   const params = buildOpenRouterParams({ role: 'fallfirm', jsonBubbles: true, messages: [{ role: 'user', content: 'x' }] });
   const schema = (params.response_format as Any).json_schema.schema;
-  assert.deepEqual(schema.required, ['confidence_level', 'bubbles']);
+  assert.deepEqual(schema.required, ['confidence_level', 'bubbles', 'status']);
   assert.equal(params.tools, undefined);
   assert.equal(params.plugins, undefined);
 });

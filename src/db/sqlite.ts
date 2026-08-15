@@ -49,6 +49,15 @@ CREATE TABLE IF NOT EXISTS agent_prefs (
   updated_at INTEGER NOT NULL
 );
 
+-- Per-chat affect memory: the last hidden status (mood/gauges/meta-prompt) plus a short mood
+-- trail, so mood has continuity turn-to-turn. Never user-visible; strengthens the model's logic.
+CREATE TABLE IF NOT EXISTS affect_state (
+  chat_id           TEXT PRIMARY KEY,
+  status_json       TEXT NOT NULL DEFAULT '{}',
+  mood_history_json TEXT NOT NULL DEFAULT '[]',
+  updated_at        INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sent_messages (
   message_id    TEXT PRIMARY KEY,
   chat_id       TEXT NOT NULL,
@@ -303,6 +312,7 @@ export function resetStorageForTests(): void {
     DELETE FROM messages;
     DELETE FROM user_profiles;
     DELETE FROM agent_prefs;
+    DELETE FROM affect_state;
     DELETE FROM sent_messages;
     DELETE FROM inbound_messages;
     DELETE FROM memory_short;

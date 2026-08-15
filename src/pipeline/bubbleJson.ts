@@ -14,6 +14,7 @@
 
 import { jsonrepair } from 'jsonrepair';
 import type { LlmToolDef } from '../llm/types.js';
+import { STATUS_SCHEMA_PROP } from '../persona/status.js';
 
 /** One chat bubble. `re` (optional) is the 1-based index of the burst message this bubble answers —
  *  it renders back into the legacy `[[re:N]]` routing prefix that replyThreading.ts resolves. */
@@ -39,6 +40,9 @@ export interface ParsedReply {
   confidenceLevel?: number;
   toolCalls?: EnvelopeToolCall[];
   wasEnvelope: boolean;
+  /** The raw hidden `status` object the model emitted (mood/gauges/meta-prompt), if any. Swallowed
+   *  from the user-facing text exactly like confidence_level; the persona layer coerces it (coerceStatus). */
+  statusRaw?: Record<string, unknown>;
 }
 
 /** MM's parsed reply: bridged bubbles plus the two MM-only channels. Unlike ParsedReply there is
@@ -77,7 +81,9 @@ export const MAX_BUBBLES = 5;
 export const BUBBLE_ENVELOPE_SCHEMA: Record<string, unknown> = {
   type: 'object',
   additionalProperties: false,
-  required: ['confidence_level', 'bubbles'],
+  // `status` is LAST on purpose: it is the hidden, least-critical field, so a max_tokens
+  // truncation (tier-4 keeps the PREFIX) drops it before the user-facing bubbles.
+  required: ['confidence_level', 'bubbles', 'status'],
   properties: {
     confidence_level: { type: ['integer', 'null'], description: '0-100, how sure you are of what they mean and the answer; null if not applicable to this reply' },
     bubbles: {
@@ -93,6 +99,7 @@ export const BUBBLE_ENVELOPE_SCHEMA: Record<string, unknown> = {
         },
       },
     },
+    status: STATUS_SCHEMA_PROP,
   },
 };
 
@@ -170,7 +177,9 @@ export function buildEnvelopeSchema(tools?: LlmToolDef[]): Record<string, unknow
   return {
     type: 'object',
     additionalProperties: false,
-    required: ['confidence_level', 'tool_calls', 'bubbles'],
+    // `status` is LAST for the same truncation reason as the base schema (prefix-preserving repair
+    // drops the hidden field before tool_calls/bubbles).
+    required: ['confidence_level', 'tool_calls', 'bubbles', 'status'],
     properties: {
       // Non-nullable here (unlike the base schema): the tool-carrying roles run the confidence
       // gate on EVERY turn (<60 clarify, 60+ delegate), so "not applicable" doesn't exist — live
@@ -196,6 +205,7 @@ export function buildEnvelopeSchema(tools?: LlmToolDef[]): Record<string, unknow
         },
       },
       bubbles: base.bubbles,
+      status: STATUS_SCHEMA_PROP,
     },
   };
 }
@@ -546,10 +556,12 @@ export function parseReply(raw: string | null | undefined): ParsedReply {
     console.warn('[bubbles] reply did not parse as a JSON envelope — using the legacy splitter');
     return { legacyText: raw, wasEnvelope: false };
   }
+  const rawStatus = env.source?.status;
   return {
     legacyText: bubblesToLegacyText(env.bubbles),
     confidenceLevel: env.confidenceLevel,
     toolCalls: env.toolCalls,
     wasEnvelope: true,
+    statusRaw: rawStatus && typeof rawStatus === 'object' ? rawStatus as Record<string, unknown> : undefined,
   };
 }

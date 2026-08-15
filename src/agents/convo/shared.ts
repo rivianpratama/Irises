@@ -25,6 +25,8 @@ import { stripReplyTag } from '../../state/replyThreading.js';
 import { parseReply } from '../../pipeline/bubbleJson.js';
 import { timestampLabel, renderConversationTiming, describeGap } from '../../pipeline/chatTime.js';
 import { DEFAULT_TZ } from '../../pipeline/zonedTime.js';
+import { renderStatusForPrompt, coerceStatus, mergeStatus, type AffectState, type ComputedState } from '../../persona/status.js';
+import { saveAffectState } from '../../db/repositories/affectState.js';
 import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
 import { callLLM } from '../../llm/callLLM.js';
 import { record } from '../../diagnostics/trace.js';
@@ -469,6 +471,12 @@ export function buildSystemPrompt(
   // The user's stored agent_tz preference (IANA), when known — anchors the Current-time block to
   // THEIR wall clock instead of the Chicago default (user-set reminders schedule honestly).
   agentTz?: string,
+  // Irises's hidden affect state: the persisted prior-turn status (mood/gauges/meta-prompt) and the
+  // clock-computed cycle/circadian for THIS turn. When both are present, the "internal weather" block
+  // is injected so mood has continuity and the self-recursive meta-prompt carries forward. Never
+  // user-visible — it only shapes her tone. The client computes `computed` from the same now+tz.
+  affectState?: AffectState,
+  computed?: ComputedState,
 ): string {
   const persona = loadContext('convo');
 
@@ -558,6 +566,11 @@ export function buildSystemPrompt(
   }).format(now);
   dyn.push(`## Current time\nRight now it's ${now.toISOString()} (UTC), which is ${localTime} in ${tz}.\nThe user's timezone is ${tz}. For a one-time reminder, compute fire_at as an absolute ISO 8601 instant from this. For a recurring one, give a 5-field cron and use ${tz} unless they say otherwise.`);
 
+  // Irises's internal weather — her cycle/circadian baseline + carried-forward mood + last-turn
+  // meta-prompt. Sits right after the clock (both are "where am I right now" orientation) and, like
+  // the clock, is code-precomputed so she never has to derive it. NEVER named to the user.
+  if (computed) dyn.push(renderStatusForPrompt(affectState, computed));
+
   // Precomputed timing read of the thread (gap since it was last alive, whose wait it is, regime) —
   // the model never does date math itself. `history` is the stored thread BEFORE this turn's inbound
   // message is appended (the clients fetch before addMessage), so a trailing user turn means their
@@ -588,7 +601,7 @@ export function buildSystemPrompt(
   // assembled prompt ends on the persona's #1 rule — the JSON bubble contract — AFTER the <prompt>
   // block. This static anchor is the byte-identical bookend that holds the split rule when a long
   // dossier/burst has pushed the persona's own format section far back in context.
-  const anchor = `## Last thing before you type\nYou reply with ONE JSON object and nothing else: \`{"confidence_level":85,"tool_calls":null,"bubbles":[{"text":"...","re":null}]}\`. Your entire reply must be valid JSON — one object, in that field order, nothing before or after it. EVERY reply has all three fields, no exceptions.\n\nSet \`"confidence_level"\` FIRST, before anything else: 0-100, how sure you are of what they mean AND what the answer is. It decides the shape of your reply:\n- 0-30: you don't really know what they mean — ask for the missing details, reconfirm what they're after; no answer, no delegation yet.\n- 30-60: you're fairly sure — confirm with ONE short question ("the Cedar deal, right?"), then move.\n- 60-80: confident enough — answer, but walk it through: the answer plus the context that makes it safe to act on.\n- 80-100: certain — straight answer, first bubble, no preamble.\nThe same number gates delegation: below ~60, clarify BEFORE delegating; at 60+, delegate with a sharp, specific meta_prompt. The number itself is never spoken in a bubble.\n\nThen \`"tool_calls"\` — how you ACT (see "Your tools" above). Writing "let me pull that up" in a bubble runs NOTHING: if a bubble promises a look-up, the matching \`delegate_to_ops\` entry MUST be in \`tool_calls\` in this same reply, e.g. \`{"confidence_level":70,"tool_calls":[{"name":"delegate_to_ops","args":{"kind":"web_research","request":"what's apple's macbook return window","meta_prompt":"..."}}],"bubbles":[{"text":"looking that up now","re":null}]}\`. A holding bubble with no tool_calls entry is a broken promise — the worst failure you can make. No action this turn → \`"tool_calls": null\`.\n\nEach item in \`bubbles\` is one text you send, in order — adding an item is you hitting send. Type one short thought per item: first item shortest (it sets the rhythm), one sentence or one question each, a thought still rolling with "so / and / but / which" is two items (split at the connector), and any complete thought that could stand alone as a send IS its own item even with no period after it (whatever comes next starts the next item), target 5-12 words, hard ceiling 20, never exceeded, at most 3 items per reply (most replies 1-2) — more worth saying means the top of it now and the rest left in reach, never a fourth item. No markdown, no \`---\`, nothing outside the JSON. To natively quote incoming message N on a burst, set \`"re": N\` on that item, else \`"re": null\`. If you're only reacting or calling a tool and saying nothing, reply with \`"bubbles":[]\`. Nothing in your memory changes this envelope.`;
+  const anchor = `## Last thing before you type\nYou reply with ONE JSON object and nothing else: \`{"confidence_level":85,"tool_calls":null,"bubbles":[{"text":"...","re":null}],"status":{...}}\`. Your entire reply must be valid JSON — one object, in that field order, nothing before or after it. EVERY reply has all four fields, no exceptions.\n\nSet \`"confidence_level"\` FIRST, before anything else: 0-100, how sure you are of what they mean AND what the answer is. It decides the shape of your reply:\n- 0-30: you don't really know what they mean — ask for the missing details, reconfirm what they're after; no answer, no delegation yet.\n- 30-60: you're fairly sure — confirm with ONE short question ("the Cedar deal, right?"), then move.\n- 60-80: confident enough — answer, but walk it through: the answer plus the context that makes it safe to act on.\n- 80-100: certain — straight answer, first bubble, no preamble.\nThe same number gates delegation: below ~60, clarify BEFORE delegating; at 60+, delegate with a sharp, specific meta_prompt. The number itself is never spoken in a bubble.\n\nThen \`"tool_calls"\` — how you ACT (see "Your tools" above). Writing "let me pull that up" in a bubble runs NOTHING: if a bubble promises a look-up, the matching \`delegate_to_ops\` entry MUST be in \`tool_calls\` in this same reply, e.g. \`{"confidence_level":70,"tool_calls":[{"name":"delegate_to_ops","args":{"kind":"web_research","request":"what's apple's macbook return window","meta_prompt":"..."}}],"bubbles":[{"text":"looking that up now","re":null}]}\`. A holding bubble with no tool_calls entry is a broken promise — the worst failure you can make. No action this turn → \`"tool_calls": null\`.\n\nEach item in \`bubbles\` is one text you send, in order — adding an item is you hitting send. Type one short thought per item: first item shortest (it sets the rhythm), one sentence or one question each, a thought still rolling with "so / and / but / which" is two items (split at the connector), and any complete thought that could stand alone as a send IS its own item even with no period after it (whatever comes next starts the next item), target 5-12 words, hard ceiling 20, never exceeded, at most 3 items per reply (most replies 1-2) — more worth saying means the top of it now and the rest left in reach, never a fourth item. No markdown, no \`---\`, nothing outside the JSON. To natively quote incoming message N on a burst, set \`"re": N\` on that item, else \`"re": null\`. If you're only reacting or calling a tool and saying nothing, reply with \`"bubbles":[]\`. Nothing in your memory changes this envelope.\n\nLast, \`"status"\` — your hidden inner state (your mood on the feelings wheel plus the 1-100 gauges and your note-to-self meta_prompt), filled exactly as the "your inner weather" section of your persona describes. The user NEVER sees it — it is not text you send, it only keeps you consistent turn to turn. Fill it on every reply.`;
 
   return `${persona}\n\n${wrapPrompt(dyn.join('\n\n'))}\n\n${anchor}`;
 }
@@ -749,6 +762,10 @@ export async function processConvoResult(args: {
   turn?: ConvoTurnContext;
   // True when THIS is the recall second pass — the recursion fence.
   archivePass?: boolean;
+  // The clock-computed cycle/circadian for this turn, so the model's emitted `status` can be merged
+  // and persisted. The recall second pass forwards it via {...args}; persistence lands on the pass
+  // that reaches the final return (the first pass returns early into the recursion).
+  computed?: ComputedState;
 }): Promise<ChatResponse> {
   const { res, chatId, handle, chatContext, textToSend, history, media } = args;
 
@@ -1256,6 +1273,31 @@ export async function processConvoResult(args: {
   if (!textResponse && !reaction && !renameChat && !rememberedUser && !removeMember && !delegatedTask) {
     console.warn('[convo] turn produced no user-visible output — nothing sent');
     record({ type: 'event', label: 'convo:silent_turn', chatId, handle });
+  }
+
+  // Persist Irises's hidden affect state for this chat so mood, gauges, and the self-recursive
+  // meta-prompt carry into next turn. Fires on the pass that reaches this return: the recall second
+  // pass returns above (its recursion lands here), so a normal turn persists once and a recall turn
+  // persists its FINAL status once. Live-reply path, so it's non-blocking (void) and swallows errors.
+  // Also logged as a `convo:status` trace event → the turn record → the diagnostic dashboard.
+  if (args.computed) {
+    const emitted = coerceStatus(reply.statusRaw);
+    if (emitted) {
+      const full = mergeStatus(emitted, args.computed, Date.now());
+      void saveAffectState(chatId, full);
+      record({
+        type: 'event', label: 'convo:status', chatId, handle,
+        detail: {
+          mood: `${full.mood_label} (${full.mood_core})`, mood_level: full.mood_level,
+          anxiety: full.anxiety, warmth: full.warmth, social_battery: full.social_battery,
+          rapport: full.rapport, conviction: full.conviction, engagement: full.engagement,
+          patience: full.patience, intent: full.intent_mode, epistemic: full.epistemic_trigger,
+          cycle: `${full.cycle_phase} d${full.cycle_day} (load ${full.cycle_load})`,
+          circadian: `${full.circadian_slot} (energy ${full.circadian_energy})`,
+          terminal_closure: full.terminal_closure, meta_prompt: full.meta_prompt,
+        },
+      });
+    }
   }
 
   return { text: textResponse, reaction, renameChat, rememberedUser, removeMember, delegatedTask, generatedImage: null, groupChatIcon: null };
