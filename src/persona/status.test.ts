@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   coerceStatus, extractStatus, clampGauge, mergeStatus, pushMood, renderStatusForPrompt,
+  renderStatusForComposer,
   STATUS_SCHEMA_PROP, MOOD_HISTORY_CAP, type ComputedState, type EmittedStatus, type MoodPoint,
 } from './status.js';
 import { computeCycle } from './cycle.js';
@@ -100,4 +101,45 @@ test('renderStatusForPrompt always warns it is internal, and carries prior mood 
   const warm = renderStatusForPrompt({ last: full, moodHistory: [{ level: 72, core: 'joyful', label: 'hopeful', at: 0 }] }, COMPUTED);
   assert.match(warm, /hopeful/);
   assert.match(warm, /keep it light/); // the prior meta_prompt is re-injected
+});
+
+test('renderStatusForComposer returns "" for null/undefined and when there is no carried mood', () => {
+  assert.equal(renderStatusForComposer(undefined), '');
+  assert.equal(renderStatusForComposer(null), '');
+  assert.equal(renderStatusForComposer({ moodHistory: [] }), ''); // no .last → nothing to carry
+});
+
+test('renderStatusForComposer returns "" for a stale (>45min) state — guards the proactive path', () => {
+  const stale = mergeStatus(coerceStatus(RAW)!, COMPUTED, Date.now() - 46 * 60_000);
+  assert.equal(renderStatusForComposer({ last: stale, moodHistory: [] }), '');
+  // right at the edge but still fresh (<45min) → a block, not ''
+  const fresh = mergeStatus(coerceStatus(RAW)!, COMPUTED, Date.now() - 44 * 60_000);
+  assert.notEqual(renderStatusForComposer({ last: fresh, moodHistory: [] }), '');
+});
+
+test('renderStatusForComposer carries the mood + the leak-guard + the fidelity clause, and NOTHING excluded', () => {
+  const full = mergeStatus(coerceStatus(RAW)!, COMPUTED, Date.now());
+  const out = renderStatusForComposer({ last: full, moodHistory: [] });
+
+  // mood label + the texture for its level (72 → the "Steady and open" band)
+  assert.match(out, /hopeful/);
+  assert.match(out, /joyful/);
+  assert.match(out, /Steady and open/);
+  // the carried voice-shaping gauges
+  assert.match(out, /warmth 80/);
+  assert.match(out, /patience 75/);
+
+  // the proven leak-guard header + the added fidelity clause
+  assert.match(out, /INTERNAL weather/);
+  assert.match(out, /never say/i);
+  assert.match(out, /never adds, drops, softens, or sharpens a fact/);
+
+  // excluded fields must NOT leak into the composer block
+  assert.doesNotMatch(out, /keep it light/);          // meta_prompt
+  assert.doesNotMatch(out, /forward-looking/);         // profile_note
+  assert.doesNotMatch(out, /sharing_update/);          // intent_mode
+  assert.doesNotMatch(out, /conviction/i);             // excluded gauge
+  assert.doesNotMatch(out, /engagement/i);             // excluded gauge
+  assert.doesNotMatch(out, /re-report/i);              // no "re-report your status" instruction
+  assert.doesNotMatch(out, /body-clock|longer rhythm/); // no cycle/circadian machinery
 });

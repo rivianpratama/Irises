@@ -10,7 +10,7 @@
 // path; on OpenClaw it lands next iteration (the cron.add RPC payload shape needs verification
 // against a live gateway — see docs/ENGINES.md), so those methods fail honestly for now.
 import { EngineUnavailableError, EngineRunError, ENGINE_TIMEOUT_MS } from './engineBackend.js';
-import type { EngineBackend, EngineRunContext, ReminderSpec, ReminderRef, ProbeResult } from './engineBackend.js';
+import type { EngineBackend, EngineRunContext, ReminderSpec, ReminderRef, ProbeResult, CapabilitySummary } from './engineBackend.js';
 import type { OpsTask } from '../types.js';
 
 interface GatewayClientLike {
@@ -158,6 +158,14 @@ export class OpenClawBackend implements EngineBackend {
     } catch (err) {
       return { ok: false, detail: String((err as Error)?.message ?? err) };
     }
+  }
+
+  /** OpenClaw capability discovery is a separate future path: the gateway exposes its tool inventory
+   *  over a different RPC than hermes's REST `/v1/toolsets`, and that payload shape needs verification
+   *  against a live gateway (same status as reminders — see docs/ENGINES.md). Until it's wired, report
+   *  unknown so Convo falls back to its static doctrine rather than guessing at a capability set. */
+  getCapabilitySummary(): CapabilitySummary | null {
+    return null;
   }
 
   /** Bridge outbound: the gateway `send` RPC delivers through ANY configured OpenClaw channel

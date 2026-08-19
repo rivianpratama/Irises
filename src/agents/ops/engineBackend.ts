@@ -39,6 +39,18 @@ export interface ReminderRef {
 
 export interface ProbeResult { ok: boolean; detail?: string; }
 
+/** The closed, CODE-OWNED vocabulary of deep-work action-classes Convo reasons about. An engine's
+ *  raw capability/tool manifest is normalized ONTO this fixed set adapter-side, and NOTHING else
+ *  ever reaches a prompt — raw manifest text stays out of the model entirely (that removes both the
+ *  prompt-injection hazard and the cache-shape churn a free-form string would cause). */
+export type CapabilityClass = 'web' | 'inbox' | 'files' | 'code' | 'media' | 'scheduling';
+
+/** What the active engine can actually do THIS deployment, as the closed-vocabulary set above.
+ *  Consumed ONLY to shape Convo's per-turn brief (so it never promises what the engine lacks); it
+ *  is deliberately never fed into the engine-facing task prompt — Hermes knows its own tools, and a
+ *  stale cache must not contradict it mid-run. */
+export interface CapabilitySummary { classes: CapabilityClass[]; }
+
 /** The engine went AWAY (unreachable / unconfigured / connection refused) — distinct from "the
  *  engine ran and failed". Callers voice it as a transient snag; nothing retries automatically. */
 export class EngineUnavailableError extends Error {
@@ -68,6 +80,12 @@ export interface EngineBackend {
    *  own tiers. */
   remember(chatId: string, agentHandle: string, note: string): Promise<void>;
   probe(): Promise<ProbeResult>;
+  /** The engine's current action-classes (closed vocabulary), or null when unknown/undiscovered.
+   *  MUST be synchronous and NON-BLOCKING: return the last-known cached value immediately and never
+   *  perform (or await) a fetch on the calling path — the per-turn Convo prompt build reads this, so
+   *  any latency here lands on a user turn. The adapter refreshes the cache in the background.
+   *  Optional: a backend that hasn't wired capability discovery simply omits it. */
+  getCapabilitySummary?(): CapabilitySummary | null;
   /** Bridge mode: deliver a message THROUGH one of the engine's own channel connections
    *  (the engine keeps owning the bot/number; Irises fronts it — see docs/ENGINES.md).
    *  `platform` is the engine's channel name (telegram/whatsapp/discord/…), `chatId` the raw

@@ -6,6 +6,7 @@ export type TaskKind =
   | 'document_read'      // read/search the user's OWN connected email + attachments
   | 'draft'              // write a message/note for the user to send
   | 'media_read'         // the engine opens and reads the non-text file(s) the user texted
+  | 'compute'            // work must be DONE not just found — run code over data, crunch/convert a file, produce a table, a multi-step chain (never head-math/definitions)
   | 'general';           // substantive multi-source/multi-step reasoning
 
 export interface OpsTask {

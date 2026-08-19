@@ -25,6 +25,7 @@ const OUTPUT_CONTRACT = [
   'Reply with the final answer only — no preamble, no planning, no questions back. Format:',
   'ANSWER: <the concrete answer — every figure, date, name and address exactly as found>',
   'SOURCE: <where each hard fact came from (a page, a message, a file)>',
+  'ACTIONS: <only when you DID something beyond reading — code run over what data, an artifact produced, a follow-up you scheduled and its fire time. Omit this line entirely when there is nothing to report.>',
   'FLAGS: <caveats or uncertainty, or "none">',
   'If you found nothing usable, the ANSWER line must start with exactly "NO RESULT:" followed by one honest sentence about what you tried.',
 ].join('\n');

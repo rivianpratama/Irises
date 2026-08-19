@@ -206,6 +206,12 @@ function moodTrend(history: MoodPoint[]): string {
   return 'holding fairly steady';
 }
 
+// The PROVEN leak-guard header for every internal-weather block: the parenthetical is the line that
+// keeps this state from ever surfacing in a bubble. Shared verbatim by the Convo and Composer
+// injectors (renderStatusForPrompt / renderStatusForComposer) so the wording can never drift apart.
+const INTERNAL_WEATHER_HEADER =
+  '## Where you are right now (INTERNAL weather — never say, name, or hint any of this; it only colours your tone, warmth, and how much you hedge)';
+
 /**
  * The per-turn "internal weather" block injected into the dynamic prompt (NOT the cached persona).
  * Carries the computed cycle/circadian texture, the prior mood + trend, and last turn's meta-prompt,
@@ -213,7 +219,7 @@ function moodTrend(history: MoodPoint[]): string {
  */
 export function renderStatusForPrompt(state: AffectState | undefined, computed: ComputedState): string {
   const lines: string[] = [];
-  lines.push('## Where you are right now (INTERNAL weather — never say, name, or hint any of this; it only colours your tone, warmth, and how much you hedge)');
+  lines.push(INTERNAL_WEATHER_HEADER);
   lines.push(`- Your body-clock: ${computed.circadian.description}`);
   lines.push(`- Your longer rhythm: ${computed.cycle.description}`);
 
@@ -241,6 +247,35 @@ export function renderStatusForPrompt(state: AffectState | undefined, computed: 
 
   lines.push('- After you read them, re-report your `status` in this reply: your mood on the wheel (core + one word) and its 1-100 level, the gauges, what they are doing (intent), whether real INFORMATION moved you vs just pressure (epistemic_trigger), a one-line note-to-self for next turn (meta_prompt), and a one-line read of who they are (profile_note). None of it is ever spoken in a bubble.');
   return lines.join('\n');
+}
+
+/**
+ * The Composer's READ-ONLY internal weather. The Composer re-voices the engine's answer on every
+ * delegated turn; without this it composes in a mood vacuum, so a delegated reply lands tonally
+ * reset even though the persisted mood trail is intact. This threads the CARRIED affect in so the
+ * re-voiced reply keeps mood continuity — the Composer never re-reports or persists it (no writer
+ * racing Convo's saveAffectState).
+ *
+ * Only the voice-SHAPING fields are subset (mood + warmth/patience/social_battery/anxiety). The
+ * rest is deliberately excluded: conviction/engagement/intent_mode/epistemic_trigger are about
+ * FORMING a stance (the Composer forms none — it relays given facts), and meta_prompt/profile_note
+ * are Convo's private notes-to-self that could contradict the compose instruction. No cycle/
+ * circadian machinery and no "re-report your status" line either.
+ *
+ * Returns '' when there is no carried mood, OR when it is STALE (>45min) — the staleness gate keeps
+ * the proactive path (a delivery no one just asked for) from dressing a message in an hours-old mood.
+ */
+export function renderStatusForComposer(state: AffectState | null | undefined): string {
+  const last = state?.last;
+  if (!last) return '';
+  if (Date.now() - last.at > 45 * 60_000) return '';
+  return [
+    // The proven leak-guard wording PLUS one fidelity clause Convo doesn't need: the Composer's one
+    // job is faithful re-voicing, so tone may bend word choice but must never move a fact.
+    `${INTERNAL_WEATHER_HEADER}. It colours word choice and how much you hedge; it never adds, drops, softens, or sharpens a fact you relay.`,
+    `- A moment ago you felt ${last.mood_label} (${last.mood_core}, ${last.mood_level}/100). ${moodTexture(last.mood_level)}`,
+    `- Gauges you carry in — warmth ${last.warmth}, patience ${last.patience}, social battery ${last.social_battery}, anxiety ${last.anxiety} (all /100).`,
+  ].join('\n');
 }
 
 /** The full feeling vocabulary (complete wheel + Irises's extra shades), compact, for teaching. */

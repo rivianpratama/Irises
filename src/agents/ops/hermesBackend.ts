@@ -6,7 +6,7 @@
 import { readFile as fsReadFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { EngineUnavailableError, EngineRunError, ENGINE_TIMEOUT_MS } from './engineBackend.js';
-import type { EngineBackend, EngineRunContext, ReminderSpec, ReminderRef, ProbeResult } from './engineBackend.js';
+import type { EngineBackend, EngineRunContext, ReminderSpec, ReminderRef, ProbeResult, CapabilitySummary, CapabilityClass } from './engineBackend.js';
 import { DEFAULT_TZ, zoneOffsetMs } from '../../pipeline/zonedTime.js';
 import { dataTag } from '../../llm/promptTag.js';
 import { record } from '../../diagnostics/trace.js';
@@ -175,11 +175,105 @@ export async function inlineLocalImage(
   }
 }
 
+// ── capability normalization ──────────────────────────────────────────────────
+//
+// Stable render order for the closed vocabulary (engineBackend.ts CapabilityClass), so the summary
+// and any line built from it read the same every turn (cache-friendly).
+const CAP_ORDER: readonly CapabilityClass[] = ['web', 'inbox', 'files', 'code', 'media', 'scheduling'];
+
+// BEST-EFFORT token→class map, matched as case-insensitive substrings against whatever names an
+// engine reports (toolset names, concrete tool names, capability/feature keys). This mapping is a
+// GUESS pending live verification against a running Hermes: the live docs show `/v1/toolsets`
+// enumerates concrete tools (e.g. `read_file`, `write_file`, `web_search`, `send_email`), but the
+// full name inventory isn't published, so these keywords will need tightening once a real manifest
+// is in hand. `inbox` is checked FIRST so an "email"/"mail" token can't be swallowed by a broader
+// class. Anything matching nothing is dropped — raw tokens NEVER reach a prompt.
+const CLASS_KEYWORDS: ReadonlyArray<readonly [CapabilityClass, readonly string[]]> = [
+  ['inbox',      ['email', 'mail', 'inbox', 'gmail', 'imap', 'smtp', 'outlook']],
+  ['web',        ['web', 'search', 'browser', 'browse', 'http', 'fetch', 'url', 'internet', 'crawl', 'scrape']],
+  ['files',      ['file', 'filesystem', 'document', 'read_file', 'write_file', 'drive', 'storage', 'attachment']],
+  ['code',       ['code', 'shell', 'bash', 'terminal', 'exec', 'run_command', 'python', 'sandbox', 'repl', 'interpreter']],
+  ['media',      ['media', 'image', 'audio', 'video', 'vision', 'transcribe', 'photo', 'speech', 'ocr']],
+  ['scheduling', ['schedule', 'cron', 'reminder', 'timer', 'calendar', 'job']],
+];
+
+function classifyToken(token: string): CapabilityClass | null {
+  const t = token.toLowerCase();
+  for (const [cls, kws] of CLASS_KEYWORDS) if (kws.some(kw => t.includes(kw))) return cls;
+  return null;
+}
+
+/** Pull candidate capability tokens out of ONE unknown body shape (does not classify them). Handles
+ *  the shapes a Hermes-ish engine might answer with, in one tolerant pass:
+ *   - array of strings                       → the strings
+ *   - array of toolset objects               → each `name` + each string in its `tools[]`, but only
+ *     `{name,tools,enabled,configured}`         when NOT explicitly off (enabled:false/configured:false
+ *                                               is exactly how an unconnected integration — e.g. email
+ *                                               — shows up, so it must not count as a live capability)
+ *   - `{capabilities|tools|toolsets|skills:[…]}` → that array (strings or objects), same rules
+ *   - `{features:{name:bool}}` or a bare map → keys whose value is truthy (the real /v1/capabilities
+ *                                               shape puts its surface flags under `features`) */
+function extractCapabilityTokens(body: unknown): string[] {
+  const tokens: string[] = [];
+  const pushItem = (item: unknown): void => {
+    if (typeof item === 'string') { tokens.push(item); return; }
+    if (item && typeof item === 'object') {
+      const o = item as Record<string, unknown>;
+      if (o.enabled === false || o.configured === false) return; // present-but-off → not a live capability
+      if (typeof o.name === 'string') tokens.push(o.name);
+      if (Array.isArray(o.tools)) for (const tool of o.tools) if (typeof tool === 'string') tokens.push(tool);
+    }
+  };
+  if (Array.isArray(body)) { for (const item of body) pushItem(item); return tokens; }
+  if (body && typeof body === 'object') {
+    const o = body as Record<string, unknown>;
+    let sawList = false;
+    for (const key of ['capabilities', 'tools', 'toolsets', 'skills']) {
+      if (Array.isArray(o[key])) { sawList = true; for (const item of o[key] as unknown[]) pushItem(item); }
+    }
+    // An object map of name→bool: prefer an explicit `features` sub-map; otherwise treat the object
+    // itself as the map, but only when it wasn't already a list wrapper (so we don't re-read the
+    // wrapper's own keys). A truthy value means the capability is present.
+    const map = o.features && typeof o.features === 'object' && !Array.isArray(o.features)
+      ? o.features as Record<string, unknown>
+      : (!sawList ? o : null);
+    if (map) for (const [key, val] of Object.entries(map)) if (val === true || val === 1) tokens.push(key);
+    return tokens;
+  }
+  return tokens;
+}
+
+/**
+ * Normalize any of the tolerated capability-manifest shapes onto the closed action-class vocabulary.
+ * Returns null (FAIL-OPEN) on anything that isn't a usable object/array, or when nothing recognized
+ * survives — Convo then falls back to its static doctrine rather than acting on an empty guess (an
+ * empty set can't be told apart from "this endpoint doesn't report action-classes"). Exported for
+ * unit tests. Pure.
+ */
+export function normalizeCapabilities(body: unknown): CapabilitySummary | null {
+  if (body == null || typeof body !== 'object') return null;
+  const found = new Set<CapabilityClass>();
+  for (const token of extractCapabilityTokens(body)) {
+    const cls = classifyToken(token);
+    if (cls) found.add(cls);
+  }
+  if (!found.size) return null;
+  return { classes: CAP_ORDER.filter(c => found.has(c)) };
+}
+
 export class HermesBackend implements EngineBackend {
   readonly name = 'hermes' as const;
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly deps: HermesDeps;
+
+  // Capability cache. `getCapabilitySummary()` returns capCache SYNCHRONOUSLY (never blocks a turn)
+  // and kicks a background refresh when the value is older than the TTL. capFetchedAt stays 0 until a
+  // fetch actually answers, so the first read (on boot) triggers the first refresh and returns null.
+  private static readonly CAP_TTL_MS = 60 * 60 * 1000; // ~1h — capabilities change rarely
+  private capCache: CapabilitySummary | null = null;
+  private capFetchedAt = 0;
+  private capRefreshing = false;
 
   constructor(deps: Partial<HermesDeps> = {}) {
     this.baseUrl = (process.env.HERMES_BASE_URL || 'http://127.0.0.1:8642').replace(/\/$/, '');
@@ -367,6 +461,63 @@ export class HermesBackend implements EngineBackend {
       return { ok: true };
     } catch (err) {
       return { ok: false, detail: String((err as Error)?.message ?? err) };
+    }
+  }
+
+  /** Last-known action-classes, returned IMMEDIATELY (never awaits a fetch — this is on the per-turn
+   *  prompt path). A stale/cold cache kicks a fire-and-forget background refresh; the value updates
+   *  for the NEXT turn. Returns null until the first refresh answers. */
+  getCapabilitySummary(): CapabilitySummary | null {
+    if (!this.capRefreshing && this.deps.now() - this.capFetchedAt >= HermesBackend.CAP_TTL_MS) {
+      void this.refreshCapabilities();
+    }
+    return this.capCache;
+  }
+
+  /** GET one capability-manifest path. Returns `undefined` for a transport failure / non-2xx (so the
+   *  caller keeps the last-known cache), or the parsed body (possibly null → normalizer yields null).
+   *  Never throws — this only ever runs in the background. */
+  private async fetchCapBody(path: string): Promise<unknown | undefined> {
+    try {
+      const res = await this.request(path, { method: 'GET', headers: this.headers() }, undefined, 5_000);
+      if (!res.ok) return undefined;
+      return await res.json().catch(() => null);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Background capability refresh. Fire-and-forget: swallows everything, never blocks a turn.
+   *
+   * Consults TWO surfaces and merges what each yields onto the closed vocabulary:
+   *   - `/v1/toolsets` — the real per-deployment action-class source (live docs: an array of
+   *     `{name,enabled,configured,tools[]}`; its `configured:false` is precisely how an unconnected
+   *     integration such as email surfaces, and the normalizer drops those).
+   *   - `/v1/capabilities` — the endpoint the plan named and probe() already hits; live docs show it
+   *     reports only the API-server SURFACE (chat_completions, responses_api, …) with no action-class
+   *     tokens, so it contributes nothing today, but it's kept so an engine that DOES report classes
+   *     there still lights up. Both mappings are best-effort pending live verification.
+   *
+   * If EVERY fetch failed (engine away) the last-known cache is kept and the timestamp is left cold
+   * so the next read retries promptly; otherwise the merged result (which may be null) is cached.
+   */
+  private async refreshCapabilities(): Promise<void> {
+    if (this.capRefreshing) return; // coalesce concurrent refreshes
+    this.capRefreshing = true;
+    try {
+      const bodies = await Promise.all([this.fetchCapBody('/v1/toolsets'), this.fetchCapBody('/v1/capabilities')]);
+      if (bodies.every(b => b === undefined)) return; // total failure → keep last-known, retry next read
+      const classes = new Set<CapabilityClass>();
+      for (const body of bodies) {
+        if (body === undefined) continue;
+        const summary = normalizeCapabilities(body);
+        if (summary) for (const c of summary.classes) classes.add(c);
+      }
+      this.capCache = classes.size ? { classes: CAP_ORDER.filter(c => classes.has(c)) } : null;
+      this.capFetchedAt = this.deps.now();
+    } finally {
+      this.capRefreshing = false;
     }
   }
 

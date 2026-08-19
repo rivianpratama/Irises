@@ -40,14 +40,14 @@ export const DELEGATE_TO_OPS_TOOL: LlmToolDef = {
     properties: {
       kind: {
         type: 'string',
-        enum: ['web_research', 'document_read', 'draft', 'general', 'media_read'],
-        description: "web_research=current or external facts from the web plus reasoning (look something up, read a page, check what's true now); document_read=read or search the user's OWN email and its attachments; draft=write a message or note for them to send; media_read=the ask is ABOUT a file they texted (what's in this photo/PDF/memo); general=substantive multi-source or multi-step reasoning with no single obvious tool — Ops carries the full toolset and your meta_prompt drives it.",
+        enum: ['web_research', 'document_read', 'draft', 'general', 'media_read', 'compute'],
+        description: "web_research=current or external facts from the web plus reasoning (look something up, read a page, check what's true now); document_read=read or search the user's OWN email and its attachments; draft=write a message or note for them to send; media_read=the ask is ABOUT a file they texted (what's in this photo/PDF/memo); compute=the ask needs work DONE not just found — run code over data, crunch or convert a file's contents, produce a table, or a multi-step chain; never head-math; general=substantive multi-source or multi-step reasoning with no single obvious tool — Ops carries the full toolset and your meta_prompt drives it.",
       },
       request: { type: 'string', description: "The user's underlying ask, distilled." },
       media_scope: { type: 'string', enum: ['this_turn', 'earlier', 'none'], description: 'Which chat file(s) this look is grounded in: this_turn = the file(s) on this very message (the normal case for a new file); earlier = a file they sent BEFORE this turn that the ask refers back to; none = no file is involved (the default when this message carries none).' },
       meta_prompt: {
         type: 'string',
-        description: "Write a clear instruction to Ops, in your own words, as if briefing a sharp colleague: what the user actually needs, any relevant context you know about them, and what a great answer looks like. Name where the answer should come from — the web, the user's own inbox/attachments, or a mix — so Ops knows which source to trust. Be specific and human, not a template. REQUIRED in practice for kind 'general' — there the brief is the main steering Ops gets.",
+        description: "A clear brief for Ops in your own words, as if handing a sharp colleague the job — plain prose, never a template. Shape it as optional labeled lines, in this order, omitting any that don't apply (never fill-in-the-blank boilerplate): objective (the outcome in one sentence — what a great answer IS, not their words re-quoted, since request already carries those); context (every disambiguator you hold — aliases like \"the monster\" = their thesis, full names/roles, budget, city, timeframe); sources (where the answer lives, in priority order — if it's in something THEY sent or own, that outranks the web); actions (what Ops should DO beyond reading — parse the file, run code over the data, iterate a chain, set a follow-up check — plus the hard limits: read-only on their inbox, never send or post anything anywhere, the deliverable comes back in ANSWER); depth/eta (quick single-source check vs thorough sweep, and any ETA you already promised); success (what the answer must contain and its shape); forks (candidate readings the ask could split into, which you chose and why, and the comeback protocol — if the data contradicts it, return NO RESULT naming the candidates). Specific and human, not a template. REQUIRED in practice for kinds 'general' and 'compute' — there the brief is the main steering Ops gets.",
       },
     },
     required: ['kind', 'request'],
@@ -86,7 +86,7 @@ export const SCHEDULE_AUTOMATION_TOOL: LlmToolDef = {
       cron: { type: 'string', description: 'Standard 5-field cron expression for a recurring automation (e.g. "0 9 * * 1" = every Monday 9am).' },
       timezone: { type: 'string', description: 'IANA timezone for the schedule (default America/Chicago).' },
       needs_ops: { type: 'boolean', description: 'true if fulfilling it needs fresh data at fire time (the web, their inbox).' },
-      ops_kind: { type: 'string', enum: ['web_research', 'document_read', 'draft', 'general', 'media_read'], description: 'Hint for what kind of fresh data to pull when needs_ops is true.' },
+      ops_kind: { type: 'string', enum: ['web_research', 'document_read', 'draft', 'general', 'media_read', 'compute'], description: 'Hint for what kind of fresh data to pull when needs_ops is true.' },
     },
     required: ['instruction', 'schedule_kind'],
   },

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { loadContext } from '../loadContext.js';
 import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
+import type { CapabilitySummary, CapabilityClass } from '../ops/engineBackend.js';
 import { isValidCron } from '../../pipeline/cron.js';
 import { getPreference, setPreference } from '../../db/repositories/memory.js';
 // Directives/notes/facts are memory_medium rows now (Stage 1) — the "no error margin" tier:
@@ -115,7 +116,7 @@ const ROUTING_RECENT_TTL_MS = 45 * 60 * 1000;
 // enforce per-arg enums — see buildEnvelopeSchema). An unknown/missing kind coerces to 'general'
 // (the full-toolset catch-all) instead of poisoning the task with a bogus TaskKind.
 const OPS_KINDS: readonly TaskKind[] = [
-  'web_research', 'document_read', 'draft', 'general', 'media_read',
+  'web_research', 'document_read', 'draft', 'general', 'media_read', 'compute',
 ];
 
 function formatWhen(iso: string, tz: string): string {
@@ -283,6 +284,34 @@ async function handleUpdateDirectives(input: Record<string, unknown>, handle: st
     if (err instanceof MediumWriteError) return { note: snag('saving that preference'), acted: false };
     throw err;
   }
+}
+
+// Irises-side plain-word phrasing for each closed-vocabulary action-class. Deliberately brand-free:
+// this is the ONLY thing about the engine's manifest that ever reaches the model, and it must read
+// as Irises's own reach — never an engine, tool, or manifest name (the user-facing seam is absolute;
+// redactInternalTools is only a downstream backstop). Order follows the summary's own class order.
+const CAPABILITY_PHRASES: Record<CapabilityClass, string> = {
+  web: 'search the web',
+  inbox: 'look through their inbox',
+  files: 'read files they share',
+  code: 'run code',
+  media: 'look at photos, audio and video',
+  scheduling: 'set up reminders',
+};
+
+/**
+ * One short (~25-word), brand-free line naming what the deep look CAN do this deployment, so Convo
+ * never promises something the engine lacks. When a high-value class is MISSING it adds the guard for
+ * it — today that's the inbox: no `inbox` class → an explicit "never promise an email look". Returns
+ * '' when the summary is null OR carries no classes, so the caller injects NOTHING and the static
+ * Context.md doctrine stands. Exported for unit tests. Pure.
+ */
+export function renderCapabilityLine(summary: CapabilitySummary | null): string {
+  if (!summary?.classes.length) return '';
+  const can = summary.classes.map(c => CAPABILITY_PHRASES[c]).join(', ');
+  let line = `Your deep look can right now: ${can}.`;
+  if (!summary.classes.includes('inbox')) line += " Their inbox isn't connected right now, so never promise an email look.";
+  return line;
 }
 
 /**
@@ -477,6 +506,11 @@ export function buildSystemPrompt(
   // user-visible — it only shapes her tone. The client computes `computed` from the same now+tz.
   affectState?: AffectState,
   computed?: ComputedState,
+  // What the active engine can actually do THIS deployment (closed vocabulary), read instantly and
+  // non-blocking from the backend's cached summary at the call site. When present it seeds a short
+  // brand-free line right after the tool docs so Convo never promises what the engine lacks; null →
+  // nothing added (the static Context.md doctrine holds). Never enters the engine-facing task prompt.
+  capabilitySummary?: CapabilitySummary | null,
 ): string {
   const persona = loadContext('convo');
 
@@ -491,6 +525,12 @@ export function buildSystemPrompt(
   // tools, and it's stable within a chat (varies only with group state), so it sits ahead of
   // the genuinely per-turn sections.
   if (tools?.length) dyn.push(renderToolDocs(tools));
+
+  // Capability awareness: one brand-free line on what the deep look can do this deployment, so Convo
+  // never promises something the engine can't do (e.g. an inbox dig when email isn't connected). Sits
+  // in the stable-within-a-chat slot right after the tool docs. Null/empty summary → nothing pushed.
+  const capabilityLine = renderCapabilityLine(capabilitySummary ?? null);
+  if (capabilityLine) dyn.push(capabilityLine);
 
   // Who they are + how to address them (name / "boss" / a saved preference) now lives in the shared
   // user-context block below via buildContextBlock. Here we only add the onboarding nudge

@@ -12,6 +12,8 @@
 import { callLLM } from '../llm/callLLM.js';
 import { loadContext } from './loadContext.js';
 import { buildUserMemory } from '../memory/wrappers.js';
+import { getAffectState } from '../db/repositories/affectState.js';
+import { renderStatusForComposer } from '../persona/status.js';
 import { getConversation, type StoredMessage } from '../state/conversation.js';
 import { stripEchoedHolding } from './guardrails.js';
 import { parseReply } from '../pipeline/bubbleJson.js';
@@ -55,16 +57,24 @@ export async function composeWithComposer(args: ComposerCoreArgs): Promise<strin
   // still come ONLY from `instruction`, placed last; the persona enforces "the thread is not a fact
   // source". History (voice window) and the composer memory layer are independent reads (the latter
   // keys only on `handle`), so fetch them together off the critical path — mirrors voiceInstant.ts.
-  const [history, userCtx] = await Promise.all([
+  // The carried per-chat affect is a THIRD independent read (keys on chatId, off the critical path
+  // with the other two) — threaded in READ-ONLY so a delegated re-voice keeps the mood trail Convo
+  // built instead of composing in a tonal vacuum. The composer never writes affect back.
+  const [history, userCtx, affect] = await Promise.all([
     getConversation(chatId),
     buildUserMemory('composer', handle),
+    getAffectState(chatId),
   ]);
 
+  // The internal-weather block ('' when there's no carried mood or it's stale). PREPENDED as the
+  // head of `dynamic`: it colours voice while the FACTS from buildInstruction stay late, and the
+  // FORMAT_ANCHOR (appended below) remains the very last tokens the model reads.
+  const weather = renderStatusForComposer(affect);
   // Honor everything we durably know about the user — the wrapped memory tiers per the agent
   // matrix (flexible style layer ONLY for the composer: medium facts would compete with the
   // content it relays — a fidelity hazard). Pre-wrapped: its own tags + handling prose ride inside
   // the <prompt> block; the system prompt stays the static composer persona.
-  const dynamic = [buildInstruction(history), userCtx].filter(Boolean).join('\n\n');
+  const dynamic = [weather, buildInstruction(history), userCtx].filter(Boolean).join('\n\n');
 
   const messages: LlmMessage[] = [
     // Wall-clock timestamps on the voice window (chatTime.ts), same as every other agent's history.

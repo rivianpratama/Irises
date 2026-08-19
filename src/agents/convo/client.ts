@@ -203,9 +203,15 @@ export async function chat(
   // this reply (claimed once per chat per version — this suppresses the cold proactive push for it).
   const updateNote = claimPendingUpdateNote(chatId);
 
+  // What the active engine can actually do this deployment (closed vocabulary). Read INSTANTLY from
+  // the backend's cached summary — this returns synchronously and never triggers a blocking fetch (the
+  // adapter refreshes in the background), so it adds no latency to the turn. null when no engine, when
+  // the backend doesn't do capability discovery, or before the first refresh has answered.
+  const capabilitySummary = getEngineBackend()?.getCapabilitySummary?.() ?? null;
+
   // Held in a variable (not inlined): recall_memory's second pass re-invokes the model with this
   // SAME system + messages, minus the recall tool (see processConvoResult).
-  const system = buildSystemPrompt(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined, affectState, computed);
+  const system = buildSystemPrompt(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined, affectState, computed, capabilitySummary);
 
   try {
     const res = await callConvoLLM({

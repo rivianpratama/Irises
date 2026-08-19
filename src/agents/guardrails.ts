@@ -81,7 +81,7 @@ export function redactInternalTools(text: string | null | undefined): string {
 // Applied per line because the send path has already split the text into bubbles on newlines/---.
 
 // Whole lines that are pure back-office machinery (the "how"/where the Composer always drops).
-const OPS_DROP_LINE = /^\s*(?:SOURCE|FLAGS)\s*:/i;
+const OPS_DROP_LINE = /^\s*(?:SOURCE|FLAGS|ACTIONS)\s*:/i;
 // Labels that prefix a real value — drop the label, keep the value.
 const OPS_STRIP_LABEL = /^\s*(?:ANSWER|NO RESULT|SUMMARY|SUBJECT|SENDER)\s*:\s*/i;
 

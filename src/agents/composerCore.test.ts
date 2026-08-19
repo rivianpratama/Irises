@@ -10,6 +10,10 @@ import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { composeWithComposer, FORMAT_ANCHOR } from './composerCore.js';
 import { addMessage } from '../db/repositories/conversations.js';
+import { saveAffectState } from '../db/repositories/affectState.js';
+import { coerceStatus, mergeStatus, type ComputedState } from '../persona/status.js';
+import { computeCycle } from '../persona/cycle.js';
+import { computeCircadian } from '../persona/circadian.js';
 import { resetStorageForTests } from '../db/sqlite.js';
 import type { LlmRequest, LlmResult } from '../llm/types.js';
 
@@ -126,4 +130,66 @@ test('two empty replies throw too (an empty completion is a failure, not a messa
     composeWithComposer({ ...base, buildInstruction: () => 'x', llm: fakeLlm('') }),
     /no text/,
   );
+});
+
+// --- read-only mood continuity: the carried affect is threaded into the compose -----------------
+
+const COMPUTED: ComputedState = {
+  cycle: computeCycle(Date.UTC(2026, 0, 1), Date.UTC(2026, 0, 1)),
+  circadian: computeCircadian(Date.UTC(2026, 0, 6, 16, 0, 0), 'UTC'),
+};
+const RAW = {
+  mood_core: 'joyful', mood_label: 'hopeful', mood_level: 72,
+  anxiety: 30, warmth: 80, social_battery: 65, rapport: 55, conviction: 60,
+  engagement: 70, patience: 75, intent_mode: 'sharing_update', epistemic_trigger: 'logic_valid',
+  meta_prompt: 'keep it light and follow their lead', profile_note: 'warm, forward-looking',
+  terminal_closure: false,
+};
+
+test('a fresh carried affect state is injected — weather BEFORE the facts, anchor still last, no status asked', async () => {
+  await saveAffectState('web:a', mergeStatus(coerceStatus(RAW)!, COMPUTED, Date.now()));
+  const captured: LlmRequest[] = [];
+  await composeWithComposer({
+    ...base,
+    buildInstruction: () => 'the deadline is march 14',
+    llm: fakeLlm('{"bubbles":[{"text":"deadline\'s march 14"}]}', captured),
+  });
+  const content = String(captured[0].messages.at(-1)!.content);
+
+  const wIdx = content.indexOf('INTERNAL weather');
+  const fIdx = content.indexOf('the deadline is march 14');
+  assert.ok(wIdx >= 0, 'the internal-weather block is present');
+  assert.ok(wIdx < fIdx, 'the weather colours voice BEFORE the facts are stated');
+  assert.match(content, /hopeful/);                   // the carried mood rode in
+  assert.ok(content.endsWith(FORMAT_ANCHOR), 'FORMAT_ANCHOR is still the very last thing');
+
+  // read-only: the composer is never asked to (re-)emit a status field, and keeps its own envelope
+  assert.doesNotMatch(content, /status/i);
+  assert.equal(captured[0].envelopeSchema, undefined); // default bubbles+confidence envelope, unchanged
+  assert.equal(captured[0].jsonBubbles, true);
+});
+
+test('a stale carried affect state is NOT injected (>45min)', async () => {
+  await saveAffectState('web:a', mergeStatus(coerceStatus(RAW)!, COMPUTED, Date.now() - 46 * 60_000));
+  const captured: LlmRequest[] = [];
+  await composeWithComposer({
+    ...base,
+    buildInstruction: () => 'the deadline is march 14',
+    llm: fakeLlm('{"bubbles":[{"text":"ok"}]}', captured),
+  });
+  const content = String(captured[0].messages.at(-1)!.content);
+  assert.doesNotMatch(content, /INTERNAL weather/); // stale mood is dropped
+  assert.ok(content.endsWith(FORMAT_ANCHOR));
+});
+
+test('with no carried affect state the compose is unchanged (no weather block)', async () => {
+  const captured: LlmRequest[] = [];
+  await composeWithComposer({
+    ...base,
+    buildInstruction: () => 'the deadline is march 14',
+    llm: fakeLlm('{"bubbles":[{"text":"ok"}]}', captured),
+  });
+  const content = String(captured[0].messages.at(-1)!.content);
+  assert.doesNotMatch(content, /INTERNAL weather/);
+  assert.ok(content.endsWith(FORMAT_ANCHOR));
 });

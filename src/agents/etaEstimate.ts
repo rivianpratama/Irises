@@ -23,7 +23,7 @@ export const CROSS_ENTITY_RE = /\b(all|across|every|each|which ones|everything (
 const QUICK_KINDS: TaskKind[] = ['draft'];
 
 export function estimateOpsEta(input: { kind: TaskKind; request: string; forceGrounding?: boolean }): EtaEstimate {
-  if (CROSS_ENTITY_RE.test(input.request) || (input.kind === 'general' && input.forceGrounding)) {
+  if (CROSS_ENTITY_RE.test(input.request) || (input.kind === 'general' && input.forceGrounding) || input.kind === 'compute') {
     return { bucketMs: 210_000, phrase: 'a few minutes' };
   }
   if (QUICK_KINDS.includes(input.kind)) {

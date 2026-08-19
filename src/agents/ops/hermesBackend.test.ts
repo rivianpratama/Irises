@@ -6,7 +6,7 @@ process.env.TZ = 'UTC';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { HermesBackend, hermesSessionKey, jobPrefix, legacyJobPrefix, reminderJobPrompt, shiftCronToEngineZone, inlineLocalImage } from './hermesBackend.js';
+import { HermesBackend, hermesSessionKey, jobPrefix, legacyJobPrefix, reminderJobPrompt, shiftCronToEngineZone, inlineLocalImage, normalizeCapabilities } from './hermesBackend.js';
 import { EngineUnavailableError, EngineRunError } from './engineBackend.js';
 import { emptyMedia } from '../../webhook/types.js';
 import type { OpsTask } from '../types.js';
@@ -351,4 +351,82 @@ test('channelSend: non-OK → EngineRunError; refused → EngineUnavailableError
   const beDown = new HermesBackend({ fetchFn: (async () => { throw new TypeError('refused'); }) as typeof fetch });
   await assert.rejects(beDown.channelSend('signal', '+1', 'x'), (e: Error) =>
     e instanceof EngineUnavailableError && /irises-bridge plugin/.test(e.message));
+});
+
+// ── capability normalization (schema-tolerant → closed vocabulary) ─────────────────────────────
+// The token→class mapping is a best-effort guess pending live verification against a running Hermes.
+
+test('normalizeCapabilities: an array of strings maps recognized tokens, drops the rest', () => {
+  assert.deepEqual(normalizeCapabilities(['web_search', 'send_email', 'read_file']), { classes: ['web', 'inbox', 'files'] });
+  // Unknown tokens are dropped but the recognized one still stands.
+  assert.deepEqual(normalizeCapabilities(['quantum_flux', 'browser']), { classes: ['web'] });
+  // Every token unknown → null (fail-open; an empty set can't be told from "not reported").
+  assert.equal(normalizeCapabilities(['quantum_flux', 'teleport']), null);
+});
+
+test('normalizeCapabilities: {capabilities:[…]} and {tools:[…]} wrappers are unwrapped', () => {
+  assert.deepEqual(normalizeCapabilities({ capabilities: ['web', 'gmail'] }), { classes: ['web', 'inbox'] });
+  assert.deepEqual(normalizeCapabilities({ tools: ['shell', 'browse'] }), { classes: ['web', 'code'] });
+});
+
+test('normalizeCapabilities: an object map of name→bool counts only truthy entries', () => {
+  // The real /v1/capabilities puts its flags under `features`; a bare map is also accepted.
+  assert.deepEqual(
+    normalizeCapabilities({ features: { web_search: true, email: false, terminal: true, media_read: true } }),
+    { classes: ['web', 'code', 'media'] },
+  );
+  assert.deepEqual(normalizeCapabilities({ inbox: true, cron: true, video: false }), { classes: ['inbox', 'scheduling'] });
+});
+
+test('normalizeCapabilities: a /v1/toolsets array reads name+tools, and drops an unconfigured toolset', () => {
+  const toolsets = [
+    { name: 'core', label: 'Core', enabled: true, configured: true, tools: ['read_file', 'write_file', 'run_command'] },
+    { name: 'email', label: 'Email', enabled: true, configured: false, tools: ['send_email', 'read_inbox'] }, // NOT connected
+    { name: 'web', label: 'Web', enabled: true, configured: true, tools: ['web_search', 'fetch_url'] },
+  ];
+  // core → files+code, web → web; the unconfigured email toolset contributes NO inbox class.
+  assert.deepEqual(normalizeCapabilities(toolsets), { classes: ['web', 'files', 'code'] });
+});
+
+test('normalizeCapabilities: garbage / non-object / empty all fail open to null', () => {
+  for (const bad of [null, undefined, 42, 'a string', '<html>502</html>', true]) {
+    assert.equal(normalizeCapabilities(bad as unknown), null);
+  }
+  assert.equal(normalizeCapabilities([]), null);
+  assert.equal(normalizeCapabilities({}), null);
+  assert.equal(normalizeCapabilities({ capabilities: [] }), null);
+});
+
+// ── getCapabilitySummary: instant read + background refresh, never blocking a turn ─────────────
+
+test('getCapabilitySummary: returns null instantly, then the merged classes after a background refresh', async () => {
+  const json200 = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  const pathAware = (async (url: RequestInfo | URL) => {
+    const u = String(url);
+    if (u.endsWith('/v1/toolsets')) {
+      return json200([
+        { name: 'core', enabled: true, configured: true, tools: ['read_file', 'run_command'] },
+        { name: 'email', enabled: true, configured: false, tools: ['send_email', 'read_inbox'] }, // unconnected
+        { name: 'web', enabled: true, configured: true, tools: ['web_search'] },
+      ]);
+    }
+    // The real /v1/capabilities surface — API-server features only, no action-class tokens.
+    return json200({ object: 'hermes.api_server.capabilities', features: { chat_completions: true, run_submission: true } });
+  }) as typeof fetch;
+
+  const be = new HermesBackend({ fetchFn: pathAware });
+  assert.equal(be.getCapabilitySummary(), null, 'a cold cache returns null synchronously (no blocking fetch)');
+
+  // The first read kicked a fire-and-forget refresh; wait for it to land.
+  const start = Date.now();
+  while (be.getCapabilitySummary() === null && Date.now() - start < 500) await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(be.getCapabilitySummary(), { classes: ['web', 'files', 'code'] },
+    'toolsets tools mapped; the unconfigured email toolset gives NO inbox; capabilities features drop out');
+});
+
+test('getCapabilitySummary: a total fetch failure keeps returning null and never throws', async () => {
+  const be = new HermesBackend({ fetchFn: (async () => { throw new TypeError('ECONNREFUSED'); }) as typeof fetch });
+  assert.equal(be.getCapabilitySummary(), null);
+  await new Promise(r => setTimeout(r, 20)); // let the swallowed background refresh settle
+  assert.equal(be.getCapabilitySummary(), null, 'engine away → stays null, no throw');
 });

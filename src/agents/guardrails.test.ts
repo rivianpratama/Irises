@@ -63,10 +63,12 @@ test('passthrough on missing holding text or empty reply', () => {
 // fallback relayed Ops' raw ANSWER:/SOURCE:/FLAGS: block, split into bubbles. stripOpsScaffolding is
 // the deterministic tripwire in the single send path that keeps that scaffolding off the phone.
 
-test('drops SOURCE:/FLAGS: machinery lines entirely', () => {
+test('drops SOURCE:/FLAGS:/ACTIONS: machinery lines entirely', () => {
   assert.equal(stripOpsScaffolding('SOURCE: Email (sample@example.com inbox)'), '');
   assert.equal(stripOpsScaffolding('FLAGS: Worth a look'), '');
+  assert.equal(stripOpsScaffolding('ACTIONS: ran a script over the CSV, produced a summary table'), '');
   assert.equal(stripOpsScaffolding('  source: public records  '), ''); // case + whitespace tolerant
+  assert.equal(stripOpsScaffolding('  actions: scheduled a follow-up for thursday 9am  '), ''); // case + whitespace tolerant
 });
 
 test('strips label prefixes but keeps the value', () => {
@@ -84,17 +86,19 @@ test('handles the full multi-line raw Ops block (the production leak)', () => {
     'Sender: Google <no-reply@accounts.google.com>',
     'Summary: Google says a third-party app was granted access.',
     'SOURCE: Email (sample@example.com inbox)',
+    'ACTIONS: flagged the message, scheduled a follow-up check',
     'FLAGS: Worth a look',
   ].join('\n');
   const out = stripOpsScaffolding(raw);
   // No structural labels survive.
-  assert.doesNotMatch(out, /^\s*(ANSWER|SOURCE|FLAGS|SUMMARY|SUBJECT|SENDER|NO RESULT)\s*:/im);
+  assert.doesNotMatch(out, /^\s*(ANSWER|SOURCE|FLAGS|ACTIONS|SUMMARY|SUBJECT|SENDER|NO RESULT)\s*:/im);
   // The values do survive.
   assert.match(out, /Most recent email in the user's inbox/);
   assert.match(out, /"Security alert"/);
   assert.match(out, /Google says a third-party app was granted access/);
-  // SOURCE/FLAGS lines are gone completely.
+  // SOURCE/ACTIONS/FLAGS lines are gone completely.
   assert.doesNotMatch(out, /Email \(sample@example/);
+  assert.doesNotMatch(out, /scheduled a follow-up check/);
   assert.doesNotMatch(out, /Worth a look/);
 });
 
