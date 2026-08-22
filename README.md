@@ -138,9 +138,13 @@ Fronting is **opt-in per chat**: the engine-side `IRISES_FRONT` glob list (match
 the engine keeps handling itself, and blanking `IRISES_FRONT` turns the plugin inert instantly. If the
 hook errors, the default `IRISES_BRIDGE_FAIL=open` lets the engine answer rather than go silent.
 
+On OpenClaw, Irises also teaches the engine its **engine-mode discipline automatically, once, at
+boot** — one chat message the agent saves to its own instructions, nothing for you to run by hand.
+
 > **v1 gap:** scheduling reminders through Irises requires the **hermes** engine (it uses hermes's
-> cron REST API). On OpenClaw everything else works, but reminder creation fails honestly until the
-> gateway's cron wiring lands.
+> cron REST API). On OpenClaw the reminder tools aren't offered at all — so Irises never promises a
+> reminder that can't fire — while everything else runs full-reach there: real code, the engine's
+> own skills, parallel subagents, artifacts.
 
 Full guide, diagrams, and security notes: **[docs/ENGINES.md](docs/ENGINES.md)**.
 
@@ -319,6 +323,8 @@ then your local `.env` layers on top and wins over both. The knobs you're most l
 | `ENGINE_MODEL_INHERIT` | `off` to stop Irises's voice roles inheriting the engine's model and keep its own shipped models (default: on). |
 | `HERMES_BASE_URL` · `HERMES_API_KEY` | hermes API server (default `http://127.0.0.1:8642`) and its `API_SERVER_KEY` (auto-derived from `~/.hermes/.env` when unset). |
 | `OPENCLAW_URL` · `OPENCLAW_TOKEN` · `OPENCLAW_AGENT_ID` | Gateway WS (default `ws://127.0.0.1:18789`), auth token, agent (default `main`). |
+| `HERMES_CAPABILITIES` · `OPENCLAW_CAPABILITIES` | Optional comma list from `web,inbox,files,code,media,scheduling` — what the operator declares the engine can do, so Irises never promises more. On hermes, live `/v1/toolsets` discovery overrides it; on OpenClaw it is the only source. Unset = unknown. |
+| `ENGINE_ONBOARDING` | `off` disables the one-time engine-mode onboarding sent at boot (both engines). |
 | `ENGINE_PUSH_TOKEN` | Shared secret for `POST /api/engine/push` (`x-engine-token`) **and** `POST /api/bridge/inbound` (`x-bridge-token`). Unset = loopback-only. |
 | `ENGINE_TIMEOUT_MS` · `ENGINE_MAX_CONCURRENT` | Per-call budget (default `OPS_TASK_TIMEOUT_MS − 15s`) and the engine-call semaphore (default 2). |
 | `HERMES_BRIDGE_URL` · `IRISES_PUSH_URL` | Where Irises sends bridge replies (default `http://127.0.0.1:8655`) and the push URL embedded in engine cron jobs. |

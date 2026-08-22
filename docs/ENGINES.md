@@ -102,6 +102,49 @@ rejected). Transcription is never inherited (it needs an audio-capable model). T
 off with `ENGINE_MODEL_INHERIT=off`; override any single role with `<ROLE>_MODEL` /
 `<ROLE>_MODEL_OPENROUTER` / `<ROLE>_PROVIDER`.
 
+## Engine onboarding (the standing discipline)
+
+Deep work only lands right if the engine knows it is *in* engine mode. Irises teaches it once, as a
+chat message the engine folds into its OWN durable instructions by its own hand — Irises never edits
+engine files. What the discipline installs:
+
+- **Engine-mode recognition** — which requests it governs (the `<prompt>` wrapper, the `task kind:`
+  line, the brief, the output contract) and, just as important, which it doesn't: operator chats,
+  slash commands, and the engine's own channels keep its normal self.
+- **The output contract** — `ANSWER` / `SOURCE` / optional `ACTIONS` / `FLAGS`, nothing before or
+  after, no questions back, `NO RESULT:` + one useful sentence when empty-handed, and the fidelity
+  rules (figures verbatim, every `~` survives, certainty graded in FLAGS rather than hedged prose).
+- **The full-reach invitation, with hard limits** — run real code, use its skills/tools/MCP servers,
+  produce artifacts (and, on OpenClaw only, spawn parallel subagents — the hermes lane deliberately
+  withholds that phrasing, because Convo's hermes briefs never ask for it). Inbox and accounts stay
+  read-only, it never sends or publishes anything, and it **never messages the user directly** on any
+  channel it can see: Irises is the only voice the user ever hears. That last one is a live hazard,
+  not a formality, on hermes especially — the bridge plugin puts hermes's own channel adapters in the
+  same process the engine runs in.
+
+| Engine | How it arrives |
+|---|---|
+| hermes | **Automatic, at boot.** Irises sends it over the API server whenever `OPS_BACKEND=hermes`, on its own session key. Hermes appends the section to its own SOUL.md itself. Manual fallback + mechanism: `bridge/hermes/engine-onboarding-message.md`. |
+| OpenClaw | **Automatic, at boot.** Irises sends it over the gateway `agent` RPC whenever `OPS_BACKEND=openclaw`. Mirror + full mechanism: `bridge/openclaw/engine-onboarding-message.md`. |
+
+Each send is keyed to a **content hash** of that engine's message — `HERMES_ONBOARDING_MESSAGE` in
+`src/agents/ops/hermesDoctrine.ts` and `OPENCLAW_ONBOARDING_MESSAGE` in
+`src/agents/ops/openclawDoctrine.ts` are the canonical texts. Delivery state lives in
+`~/.irises/engine-onboarding.json`, keyed by engine name, so an unchanged message never sends twice
+and editing one word re-sends on the next boot. A failed send retries at 30s / 2min / 10min and then
+waits for the next boot. `ENGINE_ONBOARDING=off` disables the send entirely (for operators curating
+the engine's instructions by hand); to send or read one by hand,
+`npx tsx scripts/print-engine-doctrine.ts hermes|openclaw`. To remove the discipline, tell the agent
+by chat to delete the section — same door out as in.
+
+Duplicate protection differs by transport: OpenClaw's `agent` RPC takes a version-keyed
+`idempotencyKey`, while the hermes API server has none — so the hermes message itself asks the engine
+to **replace** any section with the same heading rather than append a second one.
+
+**None of it is load-bearing.** Both adapters prepend a compact engine-mode header to *every*
+delegated task — the invitation, the hard limits, the reply shape — so an engine that never got
+onboarded, or forgot, still gets the essentials on every single run. Degraded, not broken.
+
 ## Bridge mode — Irises on EVERY engine channel
 
 The engine already speaks WhatsApp, Signal, Discord, Slack, LINE, email, … Bridge mode puts
@@ -237,8 +280,11 @@ fires, the engine does any work needed and POSTs to Irises, which voices it to y
   (hermes: its email skills + a cron job that ends with the same POST) — see the prompt templates
   the script prints, or write your own; the body contract is
   `{"chatId": "...", "kind": "reminder"|"email"|"memo", "text": "..."}`.
-- **v1 gap:** reminders require the hermes engine; the OpenClaw cron wiring is pending (its
-  `cron.add` RPC payload needs live verification). Everything else works on OpenClaw.
+- **v1 gap:** reminders require the hermes engine — the OpenClaw cron wiring is pending (its
+  `cron.add` RPC payload needs live verification). On the OpenClaw lane the three reminder tools
+  are **not offered to the model at all**, so Irises never confirms a reminder that can't fire; ask
+  for one and she says honestly that it isn't hers to set yet. Everything else works on OpenClaw —
+  deep work there runs **full-reach**: real code, its own skills, parallel subagents, artifacts.
 
 ## Memory boundary (Irises ↔ engine)
 
@@ -270,9 +316,12 @@ above) — set one only to override it.
 | `ENGINE_MODEL_INHERIT` | both | `off` to stop Irises's voice inheriting the engine's model (default on) |
 | `HERMES_BASE_URL` | hermes | default `http://127.0.0.1:8642` |
 | `HERMES_API_KEY` | hermes | the `API_SERVER_KEY` from `~/.hermes/.env` — auto-reused |
+| `HERMES_CAPABILITIES` | hermes | optional comma list from `web,inbox,files,code,media,scheduling` — the operator's declaration of what this engine can do. Live discovery (`/v1/toolsets`) **overrides** it; the declaration covers the cold cache at boot and an engine that is down. Unset = unknown |
 | `OPENCLAW_URL` | openclaw | default `ws://127.0.0.1:18789` |
 | `OPENCLAW_TOKEN` | openclaw | `gateway.auth.token` from the OpenClaw config — auto-reused |
 | `OPENCLAW_AGENT_ID` | openclaw | default `main` (also picks which agent's model is inherited) |
+| `OPENCLAW_CAPABILITIES` | openclaw | same closed vocabulary as `HERMES_CAPABILITIES`. OpenClaw has no discovery path yet, so this is the ONLY source there. Unset = unknown |
+| `ENGINE_ONBOARDING` | openclaw, hermes | `off` disables the boot onboarding send (see *Engine onboarding* above) |
 | `ENGINE_PUSH_TOKEN` | both | guards `POST /api/engine/push` AND `POST /api/bridge/inbound` (generated by setup) |
 | `HERMES_BRIDGE_URL` | hermes | bridge mode outbound: the plugin's loopback listener (default `http://127.0.0.1:8655`) |
 | `ENGINE_TIMEOUT_MS` | both | per-engine-call budget (default: `OPS_TASK_TIMEOUT_MS` − 15s) |
@@ -289,7 +338,9 @@ above) — set one only to override it.
   engine prompts. If people other than you can reach a fronted chat, consider your engine's
   sandboxing options and keep `IRISES_FRONT` tight.
 - **Engine memory scope:** hermes scopes per-chat memory via session keys. OpenClaw's curated
-  memory files are per-agent — all Irises chats share one engine-side user model there.
+  memory files are per-agent — all Irises chats share one engine-side user model there. The
+  onboarding leans into that rather than fighting it: it instructs OpenClaw to keep a SINGLE
+  per-agent model of the user, because Irises fronts one person.
 - The engine can only make Irises SPEAK via the push endpoint with the right token; it can never
   read Irises state or act as a user.
 
@@ -301,6 +352,18 @@ above) — set one only to override it.
   OpenClaw: is the gateway up (`openclaw gateway status`)? Is `@openclaw/gateway-client` installed?
 - *Reminders never fire* — hermes engine only (v1); check `GET /api/jobs` on the hermes API for
   the job, and that `ENGINE_PUSH_TOKEN` in the job's environment matches Irises's `.env`.
+- *The engine ignores the output contract / narrates its process* — check the onboarding actually
+  landed: the `engine:openclaw:onboarded` / `engine:hermes:onboarded` trace event in `/debug`, and a
+  record under that engine's key in `~/.irises/engine-onboarding.json`. Re-send by deleting that file
+  and rebooting Irises. On hermes you can also confirm by hand: grep its SOUL.md for
+  `## Engine mode`, and re-send with
+  `npx tsx scripts/print-engine-doctrine.ts hermes` (the curl is in
+  `bridge/hermes/engine-onboarding-message.md`).
+- *Irises says it can't look at their email, or won't take a file* — read the capability line it is
+  working from. hermes discovery reads `GET /v1/toolsets`; a stock hermes has **no email tool at
+  all**, so `inbox` can only come from a plugin toolset or from an explicit `HERMES_CAPABILITIES`
+  declaration. Check `curl -H "Authorization: Bearer $HERMES_API_KEY" http://127.0.0.1:8642/v1/toolsets`
+  and confirm the toolset you expect is `enabled` **and** `configured`.
 - *Deep answers time out* — engines can take minutes on hard tasks. Raise `OPS_TASK_TIMEOUT_MS`
   (and `ENGINE_TIMEOUT_MS` follows it) if your engine's typical runs exceed 4 minutes.
 - *Bridge mode: engine still answers a chat I fronted* — pattern mismatch (check the gateway log:

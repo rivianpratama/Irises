@@ -35,6 +35,7 @@ import { looksUnsafe, sanitizeDirectives } from './preferences.js';
 import { stripScopeSections } from './userContext.js';
 import { isGroupHandle } from './identity.js';
 import { dataTag } from '../llm/promptTag.js';
+import { getEngineBackend } from '../agents/ops/engineBackend.js';
 import type { UserProfile } from '../db/types.js';
 import type { Directive } from '../db/repositories/memory.js';
 
@@ -173,10 +174,22 @@ export function renderMemoryPreamble(): string {
   ].join('\n');
 }
 
-/** Short-term wrapper (Convo's 24h view). */
+/** Short-term wrapper (Convo's 24h view).
+ *
+ *  `engine` is the ONE engine-conditional seam in this module, and it exists because the last
+ *  bullet used to name `schedule_automation` unconditionally: the reminder tools are gated OFF on
+ *  the OpenClaw lane (see convo/client.ts — OpenClaw's cron wiring is unverified), so naming that
+ *  tool there points the model at something it was never offered. The OpenClaw variant keeps the
+ *  bullet's real instruction (the ENTRY is the fact channel) and drops the tool name.
+ *
+ *  Byte-stability is unaffected: the engine is a per-DEPLOYMENT constant, not a per-turn or
+ *  per-user value, so the prose is still identical on every turn of a given install — and the
+ *  hermes lane (like "no engine at all") renders exactly the bytes it always did. Defaulted from
+ *  getEngineBackend() the same way convo/client.ts reads it, so no caller has to thread it. */
 export function renderShortBlock(
   entries: ShortTermEntry[],
   nowMs: number = Date.now(),
+  engine: 'hermes' | 'openclaw' | null = getEngineBackend()?.name ?? null,
 ): string {
   const visible = entries
     .filter(e => e.expiresAt > nowMs)
@@ -185,6 +198,16 @@ export function renderShortBlock(
   const payload = visible
     .map(e => formatShortEntry({ ...e, content: e.content.slice(0, SHORT_ENTRY_CHARS) }, nowMs))
     .join('\n');
+
+  const reminderBullet = engine === 'openclaw'
+    ? [
+        '- when they want a reminder about a flagged email, the deadline/subject come from that',
+        '  entry — the entry is the fact channel, not the chat',
+      ]
+    : [
+        '- when they want a reminder about a flagged email, set it with schedule_automation using',
+        '  the deadline/subject from that entry — the entry is the fact channel, not the chat',
+      ];
 
   const should = [
         'You should:',
@@ -197,8 +220,7 @@ export function renderShortBlock(
         '  most relevant still-live item rides along, and a stale or resolved entry is dropped',
         '  completely, never re-raised unless THEY bring it back',
         '- re-check anything that could have changed since the stamp (live prices, deadlines, their inbox)',
-        '- when they want a reminder about a flagged email, set it with schedule_automation using',
-        '  the deadline/subject from that entry — the entry is the fact channel, not the chat',
+        ...reminderBullet,
       ];
 
   return [

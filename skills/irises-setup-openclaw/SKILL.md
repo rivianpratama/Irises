@@ -41,7 +41,7 @@ making it. Walk the user through these stages, running the script for the mechan
    - offers OPTIONAL bridge mode (front chosen OpenClaw channels — WhatsApp, Discord, any of them —
      with Irises, via a plugin installed with `openclaw plugins install`; opt-in per chat via
      `IRISES_FRONT` patterns, off by default — see `docs/ENGINES.md` § Bridge mode),
-   - installs dependencies, builds, starts Irises, and runs a health + engine round-trip check.
+   - installs dependencies, builds, starts Irises, and runs a health check (`curl /health`).
 4. Tell the user where to talk to Irises: the web chat URL the script prints, `npm run chat` in the
    clone for a terminal session, or — if they enabled bridge mode — the engine's own channels they
    chose to front.
@@ -49,8 +49,15 @@ making it. Walk the user through these stages, running the script for the mechan
 ## Notes
 
 - Details, security notes, and troubleshooting live in `docs/ENGINES.md` inside the clone.
+- On its first boot, Irises sends this OpenClaw a one-time **engine-mode onboarding** over the
+  gateway: how to recognize a delegated request, the reply contract, the full-reach invitation and
+  its hard limits. The agent saves it to its own instructions by its own hand (nothing in OpenClaw
+  is edited). To remove it later, tell the agent by chat to delete that section; to skip the send
+  entirely, set `ENGINE_ONBOARDING=off` in the Irises `.env`.
 - Known v1 gap: reminders scheduled through Irises require the hermes engine for now (OpenClaw
-  cron wiring is pending) — everything else works on OpenClaw.
+  cron wiring is pending), so the reminder tools aren't offered on OpenClaw at all and Irises never
+  promises a reminder that can't fire. Everything else runs full-reach here: real code, this
+  agent's own skills, parallel subagents, artifacts.
 - The user keeps using OpenClaw directly exactly as before; Irises is an additional,
   differently-voiced front door that uses it as an engine.
 - To undo bridge mode: `bash scripts/engine-setup.sh --engine openclaw --revert`.

@@ -17,7 +17,7 @@ import { getLongDoc, saveLongDoc } from '../../db/repositories/memoryLong.js';
 import { buildContextBlock } from '../../memory/dossier.js';
 import { getActiveOps } from '../../state/opsCoordination.js';
 import { getConversation, addMessage, clearConversation, clearUserProfile } from '../../state/conversation.js';
-import { getEngineBackend } from '../ops/engineBackend.js';
+import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
 import { timestampLabel } from '../../pipeline/chatTime.js';
 import { getAffectState } from '../../db/repositories/affectState.js';
 import { computeCycle } from '../../persona/cycle.js';
@@ -104,11 +104,14 @@ export async function chat(
       // The engine holds its own user model for this chat's session — ASK it to forget too
       // (same request channel as update_memory; the engine owns the decision). Fire-and-forget:
       // an engine hiccup must not block the local wipe that already happened.
+      // Through the engine slot, like the update_memory ask in shared.ts: remember() is a full agent
+      // run on the engine, so an unmetered one issued while two delegations are in flight can trip
+      // the engine's concurrent-run cap and 429 work the user is actually waiting on.
       const engine = getEngineBackend();
       if (engine) {
-        void engine.remember(chatId, h,
+        void withEngineSlot(() => engine.remember(chatId, h,
           'The user asked to be forgotten. Please remove or disregard everything you hold in memory about this user.',
-        ).catch(err => console.warn('[convo] /forget engine forget-ask failed', err));
+        )).catch(err => console.warn('[convo] /forget engine forget-ask failed', err));
       }
       const summary = isGroupHandle(h)
         ? "this group's shared memory with you is reset — a fresh start for the whole chat (everyone's personal 1:1 memory is untouched)"

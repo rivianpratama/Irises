@@ -10,8 +10,10 @@
 // path; on OpenClaw it lands next iteration (the cron.add RPC payload shape needs verification
 // against a live gateway — see docs/ENGINES.md), so those methods fail honestly for now.
 import { EngineUnavailableError, EngineRunError, ENGINE_TIMEOUT_MS } from './engineBackend.js';
-import type { EngineBackend, EngineRunContext, ReminderSpec, ReminderRef, ProbeResult, CapabilitySummary, CapabilityClass } from './engineBackend.js';
+import type { EngineBackend, EngineRunContext, ReminderSpec, ReminderRef, ProbeResult, CapabilitySummary } from './engineBackend.js';
 import { OPENCLAW_TASK_HEADER } from './openclawDoctrine.js';
+import { parseDeclaredCapabilities } from './capabilityDeclaration.js';
+import { renderAttachmentBlock } from './attachments.js';
 import { hash8 } from './sessionHash.js';
 import { dataTag } from '../../llm/promptTag.js';
 import type { OpsTask } from '../types.js';
@@ -49,21 +51,6 @@ export function openclawSessionKey(chatId: string): string {
   const sanitized = chatId.replace(/[^a-zA-Z0-9_-]/g, '-');
   const tail = sanitized.length <= 48 ? sanitized : `${sanitized.slice(0, 39)}-${hash8(chatId)}`;
   return `agent:${agentId}:irises-${tail}`;
-}
-
-// Stable render order for the closed vocabulary (engineBackend.ts CapabilityClass) — the same
-// canonical order the hermes adapter renders in, so a summary reads identically whichever engine
-// produced it (cache-friendly for the prompt line built from it).
-const CAP_ORDER: readonly CapabilityClass[] = ['web', 'inbox', 'files', 'code', 'media', 'scheduling'];
-
-/** OPENCLAW_CAPABILITIES → the closed vocabulary. Comma-separated operator declaration, filtered to
- *  known classes (anything else is dropped — raw tokens NEVER reach a prompt), deduped and rendered
- *  in canonical order. null when unset/empty/nothing recognized, which reads downstream as "unknown"
- *  rather than "nothing" — an empty set can't be told apart from an undeclared one. */
-function parseDeclaredCapabilities(raw: string | undefined): CapabilitySummary | null {
-  const declared = new Set((raw ?? '').split(',').map(t => t.trim().toLowerCase()).filter(Boolean));
-  const classes = CAP_ORDER.filter(c => declared.has(c));
-  return classes.length ? { classes } : null;
 }
 
 async function defaultCreateClient(): Promise<GatewayClientLike> {
@@ -131,11 +118,10 @@ export class OpenClawBackend implements EngineBackend {
     // Header FIRST, prompt untouched below it: the engine's standing doctrine lives in its own
     // instructions (openclawDoctrine.ts), and this restates the essentials on every run so an engine
     // that never got onboarded still gets the limits and the reply shape.
-    let message = `${OPENCLAW_TASK_HEADER}\n\n${prompt}`;
-    if (all.length) {
-      message += `\n\nAttached file URLs (fetch and read them with your tools):\n${all
-        .map(m => `- ${m.filename ?? 'file'} (${m.mimeType}): ${m.url}`).join('\n')}`;
-    }
+    // The attachment list is FENCED (attachments.ts): filenames/URLs are sender-chosen strings and
+    // they land after the output contract, so bare interpolation put user text in the prompt's most
+    // obeyed position.
+    const message = `${OPENCLAW_TASK_HEADER}\n\n${prompt}${renderAttachmentBlock(all)}`;
     const client = await this.ensureClient();
     if (ctx.signal?.aborted) throw new EngineRunError('cancelled before dispatch', 'cancelled');
     let raw: unknown;
@@ -209,14 +195,15 @@ export class OpenClawBackend implements EngineBackend {
   /** OpenClaw capability discovery is a separate future path: the gateway exposes its tool inventory
    *  over a different RPC than hermes's REST `/v1/toolsets`, and that payload shape needs verification
    *  against a live gateway (same status as reminders — see docs/ENGINES.md). Until it's wired the
-   *  only source is the operator's own OPENCLAW_CAPABILITIES declaration, which overrides nothing and
-   *  fills the gap; with none, report unknown so Convo falls back to its static doctrine rather than
-   *  guessing at a capability set. */
+   *  only source is the operator's own OPENCLAW_CAPABILITIES declaration (parsed by the shared
+   *  capabilityDeclaration helper, so the two engines read the same vocabulary the same way), which
+   *  overrides nothing and fills the gap; with none, report unknown so Convo falls back to its static
+   *  doctrine rather than guessing at a capability set. */
   getCapabilitySummary(): CapabilitySummary | null {
     return this.declaredCapabilities;
   }
 
-  /** One-time doctrine delivery (openclawOnboarding.ts owns the when). Its OWN session key keeps the
+  /** One-time doctrine delivery (engineOnboarding.ts owns the when). Its OWN session key keeps the
    *  standing text out of every chat's continuity, and the version-keyed idempotencyKey means a
    *  re-send after a lost state file is a no-op gateway-side rather than a duplicate append. */
   async sendOnboarding(text: string, version: string): Promise<string> {

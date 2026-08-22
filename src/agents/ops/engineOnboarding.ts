@@ -1,15 +1,16 @@
-// One-time engine-mode onboarding. The standing doctrine (openclawDoctrine.ts) is delivered to the
-// engine ONCE per content version, as a chat message the engine appends to its own persistent
-// instructions by its own hand — Irises never edits engine files. Only OpenClaw has an automatic
-// path: the gateway's `agent` RPC gives a reply we can wait on ("OK when it's saved"), where hermes's
-// send stays the documented manual step (bridge/hermes/engine-onboarding-message.md).
+// One-time engine-mode onboarding, for whichever engine is configured. The standing doctrine
+// (openclawDoctrine.ts / hermesDoctrine.ts) is delivered ONCE per content version, as a chat message
+// the engine appends to its own persistent instructions by its own hand — Irises never edits engine
+// files. Both adapters implement sendOnboarding today; an adapter that doesn't is simply skipped.
 //
 //   $IRISES_HOME/engine-onboarding.json
-//   { openclaw: { version, sentAt, reply } }
+//   { openclaw?: { version, sentAt, reply }, hermes?: { … } }
 //
-// The stored version IS the guard, and it is the doctrine's content hash: editing one word re-onboards
-// on the next boot, an unchanged doctrine never sends twice, and a lost file costs one duplicate
-// message (the adapter's version-keyed idempotencyKey usually absorbs even that).
+// Keyed by ENGINE NAME (the `openclaw` key predates the hermes lane and is read unchanged, so an
+// existing install never re-onboards). The stored version IS the guard, and it is the doctrine's
+// content hash: editing one word re-onboards on the next boot, an unchanged doctrine never sends
+// twice, and a lost file costs one duplicate message — absorbed on OpenClaw by the version-keyed
+// idempotencyKey, and on hermes by the doctrine's own replace-by-heading ask.
 
 import fs from 'node:fs';
 import { join } from 'node:path';
@@ -20,6 +21,7 @@ import { reportError } from '../../diagnostics/errorLog.js';
 import { getEngineBackend, withEngineSlot } from './engineBackend.js';
 import type { EngineBackend } from './engineBackend.js';
 import { OPENCLAW_ONBOARDING_MESSAGE, onboardingVersion } from './openclawDoctrine.js';
+import { HERMES_ONBOARDING_MESSAGE, hermesOnboardingVersion } from './hermesDoctrine.js';
 
 export interface OnboardingRecord {
   version: string;
@@ -28,9 +30,18 @@ export interface OnboardingRecord {
   reply?: string;
 }
 
-export interface OnboardingState {
-  openclaw?: OnboardingRecord;
-}
+export type EngineName = EngineBackend['name'];
+
+export type OnboardingState = Partial<Record<EngineName, OnboardingRecord>>;
+
+/** The doctrine each engine gets. An engine absent from this map never onboards, whatever its
+ *  adapter implements — one table, so adding an engine can't half-land. */
+const DOCTRINES: Record<EngineName, { message: string; version: () => string }> = {
+  openclaw: { message: OPENCLAW_ONBOARDING_MESSAGE, version: onboardingVersion },
+  hermes: { message: HERMES_ONBOARDING_MESSAGE, version: hermesOnboardingVersion },
+};
+
+const ENGINE_NAMES: readonly EngineName[] = ['openclaw', 'hermes'];
 
 /** Injectable impure edges — the repo's DI testing convention (no module mocks). */
 export interface OnboardingDeps {
@@ -54,15 +65,24 @@ function statePath(): string {
   return join(irisesHome(), 'engine-onboarding.json');
 }
 
-/** Lenient load — a missing or corrupt file yields an empty state, never a throw. */
+/** Lenient load — a missing or corrupt file yields an empty state, never a throw. Every engine's
+ *  record is read independently, so one malformed entry can't erase the other engine's flag. */
 export function loadOnboardingState(): OnboardingState {
   try {
     const raw = readTextIfExists(statePath());
     if (!raw) return {};
     const o = JSON.parse(raw) as OnboardingState;
-    const rec = o?.openclaw;
-    if (!rec || typeof rec.version !== 'string') return {};
-    return { openclaw: { version: rec.version, sentAt: typeof rec.sentAt === 'number' ? rec.sentAt : 0, reply: typeof rec.reply === 'string' ? rec.reply : undefined } };
+    const out: OnboardingState = {};
+    for (const name of ENGINE_NAMES) {
+      const rec = o?.[name];
+      if (!rec || typeof rec.version !== 'string') continue;
+      out[name] = {
+        version: rec.version,
+        sentAt: typeof rec.sentAt === 'number' ? rec.sentAt : 0,
+        reply: typeof rec.reply === 'string' ? rec.reply : undefined,
+      };
+    }
+    return out;
   } catch {
     return {};
   }
@@ -81,40 +101,45 @@ export function saveOnboardingState(s: OnboardingState): void {
  * One send. Success writes the flag and ends the chain; failure arms the next rung and returns. Never
  * rejects — this runs fire-and-forget from boot, so a snag here must not become an unhandled rejection.
  */
-async function attempt(engine: EngineBackend, version: string, deps: OnboardingDeps, rung: number): Promise<void> {
+async function attempt(engine: EngineBackend, message: string, version: string, deps: OnboardingDeps, rung: number): Promise<void> {
   try {
     // The doctrine is a full agent run, so it queues behind the same semaphore as delegated work: a
     // boot-time send must never take a slot a waiting user turn needs.
-    const reply = await withEngineSlot(() => engine.sendOnboarding!(OPENCLAW_ONBOARDING_MESSAGE, version));
-    saveOnboardingState({ openclaw: { version, sentAt: deps.now(), reply: reply.slice(0, 200) } });
-    record({ type: 'event', label: 'engine:openclaw:onboarded', detail: { version, attempt: rung + 1, reply: reply.slice(0, 200) } });
+    const reply = await withEngineSlot(() => engine.sendOnboarding!(message, version));
+    // Merged, not replaced: an operator who switched engines keeps the other engine's flag, so
+    // switching back doesn't re-send a doctrine that engine already holds.
+    saveOnboardingState({ ...loadOnboardingState(), [engine.name]: { version, sentAt: deps.now(), reply: reply.slice(0, 200) } });
+    record({ type: 'event', label: `engine:${engine.name}:onboarded`, detail: { version, attempt: rung + 1, reply: reply.slice(0, 200) } });
   } catch (err) {
     const next = RETRY_DELAYS_MS[rung];
     reportError({
       source: 'ops', category: 'engine_onboarding', severity: 'warn', err,
-      detail: { version, attempt: rung + 1, retryInMs: next ?? null },
+      detail: { engine: engine.name, version, attempt: rung + 1, retryInMs: next ?? null },
     });
     if (next === undefined) return; // ladder spent — the next boot tries again
-    const timer = deps.setTimer(() => { void attempt(engine, version, deps, rung + 1); }, next);
+    const timer = deps.setTimer(() => { void attempt(engine, message, version, deps, rung + 1); }, next);
     timer.unref?.();               // onboarding never keeps the process alive
   }
 }
 
 /**
  * Send the doctrine if this engine needs it. Called once at boot, fire-and-forget: it never rejects,
- * and every gate below is a plain no-op (an unconfigured engine, hermes, an already-current version,
- * ENGINE_ONBOARDING=off for an operator who curates the engine's instructions by hand).
+ * and every gate below is a plain no-op (an unconfigured engine, an adapter with no onboarding path,
+ * an already-current version, ENGINE_ONBOARDING=off for an operator who curates the engine's
+ * instructions by hand).
  */
 export async function ensureEngineOnboarded(deps: Partial<OnboardingDeps> = {}): Promise<void> {
   const d = { ...realDeps, ...deps };
   if ((process.env.ENGINE_ONBOARDING || '').toLowerCase() === 'off') return;
   if (chainStarted) return;
   const engine = d.getEngine();
-  if (engine?.name !== 'openclaw' || !engine.sendOnboarding) return;
-  const version = onboardingVersion();
-  if (loadOnboardingState().openclaw?.version === version) return;
+  if (!engine?.sendOnboarding) return;
+  const doctrine = DOCTRINES[engine.name];
+  if (!doctrine) return;
+  const version = doctrine.version();
+  if (loadOnboardingState()[engine.name]?.version === version) return;
   chainStarted = true;
-  await attempt(engine, version, d, 0);
+  await attempt(engine, doctrine.message, version, d, 0);
 }
 
 /** Exported for unit tests — back to a never-onboarded install (no state file at all). */

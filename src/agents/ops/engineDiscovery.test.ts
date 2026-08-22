@@ -247,6 +247,26 @@ test('a null-ish CLI model value (e.g. "None") is not inherited', () => {
   assert.ok(warns.some((w) => w.includes('could not read the engine model')));
 });
 
+test('a CLI that prints "undefined" for an unset key does NOT short-circuit the fallback chain', () => {
+  const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key' });
+  const { deps } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=sk\nHERMES_MODEL=anthropic/claude-opus-4.6\n' },
+    // A truthy null-ish literal at rung 1 used to stop the `||` chain dead, so the .env fallback
+    // (and the config.yaml scan below it) were never reached — the real model was right there.
+    cli: { 'hermes config get model.default': 'undefined' },
+  });
+  applyEngineDiscovery(deps);
+  assert.equal(env.CONVO_MODEL_OPENROUTER, 'anthropic/claude-opus-4.6');
+});
+
+test('an "undefined" openclaw token is not a token — detection falls through to "no engine"', () => {
+  const env = baselineEnv();
+  const { deps, logs } = mkDeps(env, { cli: { 'openclaw config get gateway.auth.token': 'null' } });
+  applyEngineDiscovery(deps);
+  assert.equal(env.OPS_BACKEND, undefined);
+  assert.ok(logs.some((l) => l.includes('no engine detected')));
+});
+
 // ── pure helpers ────────────────────────────────────────────────────────────
 
 test('envFileValue: quotes, export prefix, last-assignment-wins', () => {
@@ -255,6 +275,18 @@ test('envFileValue: quotes, export prefix, last-assignment-wins', () => {
   assert.equal(envFileValue(text, 'OPENROUTER_API_KEY'), 'or2');
   assert.equal(envFileValue(text, 'EMPTY'), null);
   assert.equal(envFileValue(text, 'MISSING'), null);
+});
+
+test('envFileValue: a trailing inline comment is stripped from an unquoted value, kept inside quotes', () => {
+  // Unstripped, this shipped as `Authorization: Bearer sk-abc # hermes api server` — a well-formed
+  // header, so no throw, just a permanent 401 pointing the operator at HERMES_API_KEY.
+  assert.equal(envFileValue('API_SERVER_KEY=sk-abc123 # hermes api server\n', 'API_SERVER_KEY'), 'sk-abc123');
+  assert.equal(envFileValue('API_SERVER_KEY=sk-abc123\t# note\n', 'API_SERVER_KEY'), 'sk-abc123');
+  // A `#` with no leading whitespace is part of the value (dotenv's own rule), and a quoted value is
+  // taken whole — some keys legitimately contain one.
+  assert.equal(envFileValue('K=abc#123\n', 'K'), 'abc#123');
+  assert.equal(envFileValue('K="abc # still mine"\n', 'K'), 'abc # still mine');
+  assert.equal(envFileValue('K= # only a comment\n', 'K'), null);
 });
 
 test('scanYamlModel: inline and nested block forms, ignores unrelated top-level model-ish keys', () => {

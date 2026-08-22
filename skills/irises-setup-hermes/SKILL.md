@@ -51,6 +51,12 @@ making it. Walk the user through these stages, running the script for the mechan
 ## Notes
 
 - Details, security notes, and troubleshooting live in `docs/ENGINES.md` inside the clone.
+- On its first boot, Irises sends this hermes a one-time **engine-mode onboarding** over the API
+  server: how to recognize a delegated request, the reply contract, the full-reach invitation and
+  its hard limits (including never messaging the user on any channel itself). Hermes appends it to
+  its own SOUL.md by its own hand — nothing in hermes is edited by Irises. To remove it later, tell
+  hermes by chat to delete that section; to skip the send entirely, set `ENGINE_ONBOARDING=off` in
+  the Irises `.env`. Manual fallback: `bridge/hermes/engine-onboarding-message.md`.
 - The user keeps talking to hermes directly exactly as before (`hermes` in a terminal); Irises is
   an additional, differently-voiced front door that uses hermes as its engine.
 - To undo bridge mode: `bash scripts/engine-setup.sh --engine hermes --revert`.

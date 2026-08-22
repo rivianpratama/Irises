@@ -70,6 +70,17 @@ def _num_workers() -> int:
     return max(1, min(n, 16))
 
 
+def _port() -> int:
+    """The loopback listener's port. Guarded like _num_workers above: an unguarded int() here threw
+    ValueError (not OSError, so no except caught it) BEFORE the bind, killing the watch thread
+    silently while _STARTED was already set — outbound dead for the life of the process."""
+    try:
+        return int(_cfg("IRISES_BRIDGE_PORT", "8655") or "8655")
+    except ValueError:
+        log.warning("irises-bridge: IRISES_BRIDGE_PORT is not a number — using 8655")
+        return 8655
+
+
 # One queue per forward worker. A chat always hashes to the same shard (_shard_index), so its
 # messages reach Irises in the order they were sent; separate chats no longer queue behind each
 # other's retries.
@@ -78,6 +89,10 @@ _QUEUES: "list[queue.Queue[dict]]" = [queue.Queue(maxsize=500) for _ in range(_n
 # message); the outbound listener needs both.
 _GW: list = [None, None]
 _STARTED = threading.Event()
+# Separate from _STARTED on purpose: the forward workers starting is NOT the listener binding, and a
+# failed bind must stay retryable instead of leaving inbound alive with outbound permanently dead.
+_LISTENING = threading.Event()
+_LISTEN_RETRY_S = 30.0
 _WATCHING = threading.Event()
 
 
@@ -238,12 +253,14 @@ def _await_gateway(budget_s: float = _GW_POLL_S, step_s: float = _GW_POLL_STEP_S
 def _gateway_watch() -> None:
     """Bind the outbound listener as soon as the gateway is up, instead of waiting for the first
     fronted inbound message — otherwise a restart leaves Irises unable to send until someone
-    happens to text in (and its first send fails)."""
-    while True:
-        if _capture_gateway():
-            _start_workers()
-            return
+    happens to text in (and its first send fails). A port that is momentarily occupied (a stale
+    process still shutting down) is retried rather than being fatal for the process's lifetime."""
+    while not _capture_gateway():
         time.sleep(1.0)
+    _start_workers()
+    while not _LISTENING.is_set():
+        time.sleep(_LISTEN_RETRY_S)
+        _start_listener()
 
 
 # ── forward workers (inbound → Irises) ───────────────────────────────────────
@@ -326,7 +343,15 @@ class _SendHandler(BaseHTTPRequestHandler):
         gateway, loop = _GW
         try:
             from gateway.platforms.base import Platform  # re-exported from gateway.config; dynamic members cover plugin platforms
-            adapter = gateway.adapters.get(Platform(platform))
+            try:
+                resolved = Platform(platform)
+            except ValueError:
+                # An unknown NAME is a configuration problem, not a transport one. Constructing the
+                # enum before this check turned it into a generic 502, which Irises reads as "the
+                # bridge is broken" rather than "that platform name isn't a thing here".
+                self._reply(400, {"error": f"platform '{platform}' is not a platform this hermes knows"})
+                return
+            adapter = gateway.adapters.get(resolved)
             if adapter is None:
                 self._reply(400, {"error": f"platform '{platform}' is not connected on this hermes"})
                 return
@@ -355,20 +380,35 @@ class _SendHandler(BaseHTTPRequestHandler):
         pass
 
 
-def _start_workers() -> None:
-    if _STARTED.is_set():
-        return
-    _STARTED.set()
-    for i, q in enumerate(_QUEUES):
-        threading.Thread(target=_forward_loop, args=(q,), name=f"irises-bridge-forward-{i}", daemon=True).start()
-    threading.Thread(target=_probe_loop, name="irises-bridge-probe", daemon=True).start()
-    port = int(_cfg("IRISES_BRIDGE_PORT", "8655"))
+def _start_listener() -> bool:
+    """Bind the outbound listener. True once it is up (or already was).
+
+    Kept apart from _start_workers because the two failure modes are not the same. Inbound forwarding
+    surviving a failed bind means hermes keeps being told to skip fronted chats while Irises's replies
+    hit ECONNREFUSED — every fronted chat silent, indefinitely, explained by one startup log line. So
+    a bind failure is a WARNING and stays retryable (see _gateway_watch)."""
+    if _LISTENING.is_set():
+        return True
+    port = _port()
     try:
         server = ThreadingHTTPServer(("127.0.0.1", port), _SendHandler)
-        threading.Thread(target=server.serve_forever, name="irises-bridge-send", daemon=True).start()
-        log.info("irises-bridge: outbound listener on 127.0.0.1:%d (%d forward worker(s))", port, len(_QUEUES))
     except OSError as exc:
-        log.error("irises-bridge: could not bind outbound listener on %d: %s", port, exc)
+        log.warning("irises-bridge: could not bind outbound listener on %d (%s) — will retry; "
+                    "set IRISES_BRIDGE_PORT (and Irises's HERMES_BRIDGE_URL) to move it", port, exc)
+        return False
+    _LISTENING.set()
+    threading.Thread(target=server.serve_forever, name="irises-bridge-send", daemon=True).start()
+    log.info("irises-bridge: outbound listener on 127.0.0.1:%d (%d forward worker(s))", port, len(_QUEUES))
+    return True
+
+
+def _start_workers() -> None:
+    if not _STARTED.is_set():
+        _STARTED.set()
+        for i, q in enumerate(_QUEUES):
+            threading.Thread(target=_forward_loop, args=(q,), name=f"irises-bridge-forward-{i}", daemon=True).start()
+        threading.Thread(target=_probe_loop, name="irises-bridge-probe", daemon=True).start()
+    _start_listener()
 
 
 # ── the hook ──────────────────────────────────────────────────────────────────
@@ -385,9 +425,12 @@ def on_inbound(event=None, gateway=None, session_store=None, **_kwargs):
         if not platform or not chat_id or not _fronted(platform, chat_id):
             return None  # not fronted → hermes handles it exactly as before
 
-        # Capture the live gateway + loop for the outbound listener (idempotent; the watch thread
-        # normally got here first — this is the belt-and-braces path).
-        _GW[0] = gateway
+        # Capture the live gateway + loop for the outbound listener (the watch thread normally got
+        # here first — this is the belt-and-braces path). GUARDED: the kwarg defaults to None, and an
+        # unconditional write nulled out a working capture on the first fronted message, after which
+        # every send answered 503 "gateway not ready".
+        if gateway is not None:
+            _GW[0] = gateway
         try:
             _GW[1] = asyncio.get_running_loop()
         except RuntimeError:

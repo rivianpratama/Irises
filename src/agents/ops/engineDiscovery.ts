@@ -53,9 +53,19 @@ export function envFileValue(text: string, key: string): string | null {
   let found: string | null = null;
   for (const raw of text.split('\n')) {
     const line = raw.replace(/\r$/, '');
-    const m = line.match(/^\s*(?:export\s+)?([A-Za-z0-9_]+)\s*=\s*(.*)$/);
+    // The capture keeps any whitespace after `=` (it is trimmed below): it is what tells
+    // `K= # comment` — a value that is only a comment — apart from `K=#abc`, a value containing one.
+    const m = line.match(/^\s*(?:export\s+)?([A-Za-z0-9_]+)\s*=(.*)$/);
     if (!m || m[1] !== key) continue;
-    let v = m[2].trim();
+    let v = m[2];
+    // dotenv strips a whitespace-preceded `# comment` from an UNQUOTED value, and these files
+    // routinely carry one. Without this, `API_SERVER_KEY=sk-abc # hermes api server` shipped the
+    // comment inside the Authorization header — a well-formed request, so no throw, just a permanent
+    // 401 blaming HERMES_API_KEY. Stripped BEFORE trimming so a value that is nothing but a comment
+    // reduces to empty; `abc#123` (no space) stays whole, as dotenv also keeps it.
+    // (scanYamlModel below already did this; envFileValue was the omission.)
+    if (!v.trim().startsWith('"') && !v.trim().startsWith("'")) v = v.replace(/\s+#.*$/, '');
+    v = v.trim();
     if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
       v = v.slice(1, -1);
     }
@@ -100,6 +110,12 @@ export function scanYamlModel(text: string | null): string | null {
   return null;
 }
 
+/** A CLI `config get` on an unset key can print a null-ish literal instead of failing — never treat
+ *  one as a real value. Module-level so both the CLI reader and applyModel can use it. */
+function nullish(v: string | null): boolean {
+  return ['', 'none', 'null', 'undefined', 'nil', 'not set'].includes((v || '').trim().toLowerCase());
+}
+
 /** Core discovery — pure over its injected deps. Mutates `deps.env` in place. */
 export function applyEngineDiscovery(deps: DiscoveryDeps): void {
   const { env, protectedKeys } = deps;
@@ -135,12 +151,20 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
   const hermesConfigPath = path.join(hermesHome, 'config.yaml');
   const hermesPresent = deps.fileExists(hermesEnvPath) || deps.fileExists(hermesConfigPath);
 
+  /** runCli, with null-ish literals filtered AT THE SOURCE. The model lookups below chain with `||`,
+   *  so a CLI that prints the literal `undefined` for an unset key returned a TRUTHY string and stopped
+   *  the chain at rung 1 — the .env fallback and the config.yaml scan were never reached, and the
+   *  real model was unreachable even though it was right there. */
+  const cliValue = (cmd: string, args: string[]): string | null => {
+    const v = deps.runCli(cmd, args);
+    return nullish(v) ? null : v;
+  };
+
   // cached so we read the OpenClaw token at most once
   let openclawToken: string | null | undefined;
   const readOpenclawToken = (): string | null => {
     if (openclawToken === undefined) {
-      const t = deps.runCli('openclaw', ['config', 'get', 'gateway.auth.token']);
-      openclawToken = t && t !== 'undefined' ? t : null;
+      openclawToken = cliValue('openclaw', ['config', 'get', 'gateway.auth.token']);
     }
     return openclawToken;
   };
@@ -161,11 +185,6 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
   // ── model inheritance opt-out (default on) ────────────────────────────────
   const inheritRaw = (env.ENGINE_MODEL_INHERIT || '').trim().toLowerCase();
   const inheritEnabled = !['off', 'false', '0', 'no'].includes(inheritRaw);
-
-  // A CLI `config get` on an unset key can print a null-ish literal instead of failing — never
-  // inherit those as a model.
-  const nullish = (v: string | null): boolean =>
-    ['', 'none', 'null', 'undefined', 'nil', 'not set'].includes((v || '').trim().toLowerCase());
 
   // Map the engine's `provider/model` slug onto Irises's two lanes, for ALL voice roles.
   const applyModel = (slug: string | null): void => {
@@ -212,9 +231,9 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
     }
     // `hermes config get model.default` resolves aliases + the HERMES_MODEL env fallback correctly;
     // fall back to the .env var, then a crude config.yaml scan, if the CLI isn't on PATH.
-    const slug = deps.runCli('hermes', ['config', 'get', 'model.default'])
-      || deps.runCli('hermes', ['config', 'get', 'model.model'])
-      || deps.runCli('hermes', ['config', 'get', 'model.name'])
+    const slug = cliValue('hermes', ['config', 'get', 'model.default'])
+      || cliValue('hermes', ['config', 'get', 'model.model'])
+      || cliValue('hermes', ['config', 'get', 'model.name'])
       || (hermesEnv ? envFileValue(hermesEnv, 'HERMES_MODEL') : null)
       || scanYamlModel(deps.readFileText(hermesConfigPath));
     applyModel(slug);
@@ -226,9 +245,9 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
     fill('OPENCLAW_TOKEN', readOpenclawToken(), 'from openclaw config');
     const agentId = env.OPENCLAW_AGENT_ID || 'main';
     // Prefer the model bound to the agent Irises delegates to, else the global default.
-    const slug = deps.runCli('openclaw', ['config', 'get', `agents.entries.${agentId}.model`])
-      || deps.runCli('openclaw', ['config', 'get', 'agents.defaults.model.primary'])
-      || deps.runCli('openclaw', ['config', 'get', 'agents.defaults.model']);
+    const slug = cliValue('openclaw', ['config', 'get', `agents.entries.${agentId}.model`])
+      || cliValue('openclaw', ['config', 'get', 'agents.defaults.model.primary'])
+      || cliValue('openclaw', ['config', 'get', 'agents.defaults.model']);
     applyModel(slug);
     if (!has('OPENROUTER_API_KEY') && !has('ANTHROPIC_API_KEY')) {
       deps.warn('no ANTHROPIC_API_KEY or OPENROUTER_API_KEY found — add one so Irises\'s own voice can call an LLM');

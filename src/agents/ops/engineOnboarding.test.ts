@@ -1,12 +1,14 @@
 // Run with: npm test   (DATA_BACKEND=memory → $IRISES_HOME is a throwaway temp dir)
-// The gates that matter here are all "never send twice, never wedge a boot": the engine-name gate,
-// the content-version gate, the retry ladder, and the operator's off switch.
+// The gates that matter here are all "never send twice, never wedge a boot": the per-engine doctrine
+// pick, the content-version gate (keyed by engine name), the retry ladder, and the operator's off
+// switch.
 import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import fs from 'node:fs';
-import { ensureEngineOnboarded, loadOnboardingState, saveOnboardingState, _resetOnboardingForTests, type OnboardingDeps } from './openclawOnboarding.js';
+import { ensureEngineOnboarded, loadOnboardingState, saveOnboardingState, _resetOnboardingForTests, type OnboardingDeps } from './engineOnboarding.js';
 import { onboardingVersion } from './openclawDoctrine.js';
+import { hermesOnboardingVersion } from './hermesDoctrine.js';
 import { irisesHome } from '../../db/stateDir.js';
 import type { EngineBackend } from './engineBackend.js';
 
@@ -16,8 +18,7 @@ function statePath(): string {
   return join(irisesHome(), 'engine-onboarding.json');
 }
 
-/** An engine stub that records its onboarding sends. `sendOnboarding` is present even on the hermes
- *  stub, so the name gate is what's actually under test there. */
+/** An engine stub that records its onboarding sends. */
 function fakeEngine(name: 'hermes' | 'openclaw', opts: { fail?: boolean } = {}) {
   const sends: Array<{ text: string; version: string }> = [];
   const engine: EngineBackend = {
@@ -52,13 +53,46 @@ function fakeTimers() {
 /** Let a timer-fired attempt (started with `void attempt(…)`) run to completion. */
 const settle = () => new Promise(r => setTimeout(r, 0));
 
-test('a hermes engine is never onboarded automatically — its send is a documented manual step', async () => {
+test('hermes onboards automatically too, with ITS doctrine and ITS own version key', async () => {
   const { engine, sends } = fakeEngine('hermes');
   const { timers, setTimer } = fakeTimers();
-  await ensureEngineOnboarded({ getEngine: () => engine, now: () => 1, setTimer });
+
+  await ensureEngineOnboarded({ getEngine: () => engine, now: () => 1_700_000, setTimer });
+
+  assert.equal(sends.length, 1);
+  assert.equal(sends[0].version, hermesOnboardingVersion());
+  assert.notEqual(hermesOnboardingVersion(), onboardingVersion(), 'the two doctrines are distinct texts');
+  assert.match(sends[0].text, /## Engine mode \(requests from the Irises front line\)/);
+  assert.match(sends[0].text, /append the entire section below to your SOUL\.md/, 'the hermes doctrine, not OpenClaw\'s');
+  assert.match(sends[0].text, /Hard limits, no exceptions/, 'the limit that was missing entirely on this lane');
+  assert.equal(loadOnboardingState().hermes?.version, hermesOnboardingVersion());
+  assert.equal(loadOnboardingState().openclaw, undefined, 'the other engine\'s slot is untouched');
+  assert.equal(timers.length, 0);
+});
+
+test('an adapter with no onboarding path is a plain no-op', async () => {
+  const { engine, sends } = fakeEngine('hermes');
+  const { timers, setTimer } = fakeTimers();
+  const noPath: EngineBackend = { ...engine, sendOnboarding: undefined };
+
+  await ensureEngineOnboarded({ getEngine: () => noPath, now: () => 1, setTimer });
+
   assert.equal(sends.length, 0);
   assert.equal(timers.length, 0);
   assert.equal(fs.existsSync(statePath()), false, 'no state file for an engine that never onboards');
+});
+
+test('one engine\'s record never clobbers the other\'s', async () => {
+  const { engine, sends } = fakeEngine('hermes');
+  const { setTimer } = fakeTimers();
+  saveOnboardingState({ openclaw: { version: 'openclaw-v1', sentAt: 5, reply: 'OK' } });
+
+  await ensureEngineOnboarded({ getEngine: () => engine, now: () => 9, setTimer });
+
+  assert.equal(sends.length, 1);
+  const state = loadOnboardingState();
+  assert.equal(state.hermes?.version, hermesOnboardingVersion());
+  assert.equal(state.openclaw?.version, 'openclaw-v1', 'switching engines must not re-onboard the other one later');
 });
 
 test('no engine configured at boot is a plain no-op', async () => {

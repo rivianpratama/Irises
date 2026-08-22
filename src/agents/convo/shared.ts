@@ -302,15 +302,26 @@ const CAPABILITY_PHRASES: Record<CapabilityClass, string> = {
 /**
  * One short (~25-word), brand-free line naming what the deep look CAN do this deployment, so Convo
  * never promises something the engine lacks. When a high-value class is MISSING it adds the guard for
- * it — today that's the inbox: no `inbox` class → an explicit "never promise an email look". Returns
- * '' when the summary is null OR carries no classes, so the caller injects NOTHING and the static
- * Context.md doctrine stands. Exported for unit tests. Pure.
+ * it — today that's the inbox.
+ *
+ * The guard comes in two strengths, because absence only PROVES absence when the whole manifest was
+ * understood. A complete summary (an operator declaration, or a manifest every token of which
+ * classified) states the fact: their inbox isn't connected. An incomplete one (`complete: false` —
+ * tokens the adapter didn't recognize) keeps the same prohibition without the claim, so a keyword
+ * miss can never make Irises tell someone their email is disconnected when it isn't.
+ *
+ * Returns '' when the summary is null OR carries no classes, so the caller injects NOTHING and the
+ * static Context.md doctrine stands. Exported for unit tests. Pure.
  */
 export function renderCapabilityLine(summary: CapabilitySummary | null): string {
   if (!summary?.classes.length) return '';
   const can = summary.classes.map(c => CAPABILITY_PHRASES[c]).join(', ');
   let line = `Your deep look can right now: ${can}.`;
-  if (!summary.classes.includes('inbox')) line += " Their inbox isn't connected right now, so never promise an email look.";
+  if (!summary.classes.includes('inbox')) {
+    line += summary.complete === false
+      ? " An email look is not among them, so never promise one."
+      : " Their inbox isn't connected right now, so never promise an email look.";
+  }
   return line;
 }
 

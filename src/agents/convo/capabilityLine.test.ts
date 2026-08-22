@@ -32,6 +32,17 @@ test('renderCapabilityLine: without inbox, adds the explicit "inbox isn\'t conne
   assert.match(line, /never promise an email look/);
 });
 
+test('renderCapabilityLine: an INCOMPLETE manifest keeps the prohibition but drops the claim', () => {
+  // The adapter understood some tokens and not others, so a missing class is a gap in the map, not a
+  // fact about the deployment. Telling someone their inbox isn't connected on that basis is a lie
+  // Irises has no way to walk back.
+  const line = renderCapabilityLine({ classes: ['web', 'files'], complete: false });
+  assert.match(line, /never promise/, 'the guard still fires — this is the safety half');
+  assert.ok(!line.includes("inbox isn't connected"), 'but it asserts nothing about their account');
+  // A complete summary keeps the stronger wording.
+  assert.match(renderCapabilityLine({ classes: ['web', 'files'], complete: true }), /inbox isn't connected right now/);
+});
+
 test('renderCapabilityLine: null summary and an empty class set both render nothing', () => {
   assert.equal(renderCapabilityLine(null), '');
   assert.equal(renderCapabilityLine({ classes: [] }), '');
@@ -40,6 +51,8 @@ test('renderCapabilityLine: null summary and an empty class set both render noth
 test('renderCapabilityLine: stays brand-free — never names an engine, tool, or manifest', () => {
   const line = renderCapabilityLine({ classes: ['web', 'inbox', 'files', 'code', 'media', 'scheduling'] });
   assert.doesNotMatch(line, /hermes|openclaw|engine|toolset|manifest|capabilit/i);
+  // …including on the incomplete-manifest branch, which is the one a live engine actually hits.
+  assert.doesNotMatch(renderCapabilityLine({ classes: ['web'], complete: false }), /hermes|openclaw|engine|toolset|manifest|capabilit/i);
 });
 
 test('buildSystemPrompt: a summary WITH inbox injects the capability line mentioning the inbox look', () => {

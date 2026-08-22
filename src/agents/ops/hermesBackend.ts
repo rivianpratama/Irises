@@ -4,8 +4,11 @@
 // modified. Per-chat continuity + engine-side memory scoping ride the X-Hermes-Session-Id/Key
 // headers, so hermes builds its own deepening model of each chat.
 import { readFile as fsReadFile } from 'node:fs/promises';
-import { EngineUnavailableError, EngineRunError, ENGINE_TIMEOUT_MS } from './engineBackend.js';
+import { EngineUnavailableError, EngineRunError, ENGINE_TIMEOUT_MS, CAP_ORDER } from './engineBackend.js';
 import type { EngineBackend, EngineRunContext, ReminderSpec, ReminderRef, ProbeResult, CapabilitySummary, CapabilityClass } from './engineBackend.js';
+import { HERMES_TASK_HEADER } from './hermesDoctrine.js';
+import { parseDeclaredCapabilities } from './capabilityDeclaration.js';
+import { renderAttachmentBlock } from './attachments.js';
 import { hash8 } from './sessionHash.js';
 import { DEFAULT_TZ, zoneOffsetMs } from '../../pipeline/zonedTime.js';
 import { dataTag } from '../../llm/promptTag.js';
@@ -23,6 +26,9 @@ const realDeps: HermesDeps = { fetchFn: (...a) => fetch(...a), now: () => Date.n
 interface ChatCompletionResponse {
   choices?: Array<{ message?: { content?: string | null } }>;
 }
+
+/** One completed engine response: status plus the FULLY-READ body (see requestText). */
+interface HermesResponse { status: number; ok: boolean; text: string }
 
 /**
  * Session key for a chat: stable, header-safe, ≤64 chars (hermes's header cap is 256; this stays
@@ -171,23 +177,34 @@ export async function inlineLocalImage(
 
 // ── capability normalization ──────────────────────────────────────────────────
 //
-// Stable render order for the closed vocabulary (engineBackend.ts CapabilityClass), so the summary
-// and any line built from it read the same every turn (cache-friendly).
-const CAP_ORDER: readonly CapabilityClass[] = ['web', 'inbox', 'files', 'code', 'media', 'scheduling'];
-
-// BEST-EFFORT token→class map, matched as case-insensitive substrings against whatever names an
-// engine reports (toolset names, concrete tool names, capability/feature keys). This mapping is a
-// GUESS pending live verification against a running Hermes: the live docs show `/v1/toolsets`
-// enumerates concrete tools (e.g. `read_file`, `write_file`, `web_search`, `send_email`), but the
-// full name inventory isn't published, so these keywords will need tightening once a real manifest
-// is in hand. `inbox` is checked FIRST so an "email"/"mail" token can't be swallowed by a broader
-// class. Anything matching nothing is dropped — raw tokens NEVER reach a prompt.
+// Token→class map, matched as case-insensitive substrings against whatever names an engine reports
+// (toolset names, concrete tool names, capability/feature keys).
+//
+// VERIFIED against hermes-agent's own source rather than its docs: the `name` of every /v1/toolsets
+// element is a key of CONFIGURABLE_TOOLSETS (hermes_cli/tools_config.py) — web, browser, terminal,
+// file, code_execution, vision, video, image_gen, video_gen, bfl, x_search, tts, stt, skills, todo,
+// memory, context_engine, session_search, clarify, delegation, cronjob, homeassistant, spotify,
+// discord, discord_admin, yuanbao, computer_use — plus any plugin-supplied keys. Three corrections
+// came out of that pass:
+//   - a bare `search` keyword mis-classified `session_search` (searches PAST CONVERSATIONS, not the
+//     web) and `search_files` as web, so Irises could promise an internet look on a box with the web
+//     toolset off. The web row now carries anchored names instead.
+//   - bfl / tts / stt / computer_use matched nothing; stt in particular ships no tool schemas at all,
+//     so its NAME is the only token that will ever appear and voice transcription was invisible.
+//   - `inbox` cannot light up on a stock hermes: there is no email tool anywhere in the registry
+//     (the `hermes-email` toolset is a channel ADAPTER — users mail hermes — and platform toolsets
+//     are not even reachable from /v1/toolsets). The row stays because a third-party plugin toolset
+//     can introduce one, and because the map is shared vocabulary, not a hermes inventory.
+//
+// `inbox` is checked FIRST so an "email"/"mail" token can't be swallowed by a broader class.
+// Anything matching nothing is dropped — raw tokens NEVER reach a prompt — but the count of dropped
+// tokens is what makes a summary `complete: false` (see normalizeCapabilities).
 const CLASS_KEYWORDS: ReadonlyArray<readonly [CapabilityClass, readonly string[]]> = [
   ['inbox',      ['email', 'mail', 'inbox', 'gmail', 'imap', 'smtp', 'outlook']],
-  ['web',        ['web', 'search', 'browser', 'browse', 'http', 'fetch', 'url', 'internet', 'crawl', 'scrape']],
-  ['files',      ['file', 'filesystem', 'document', 'read_file', 'write_file', 'drive', 'storage', 'attachment']],
-  ['code',       ['code', 'shell', 'bash', 'terminal', 'exec', 'run_command', 'python', 'sandbox', 'repl', 'interpreter']],
-  ['media',      ['media', 'image', 'audio', 'video', 'vision', 'transcribe', 'photo', 'speech', 'ocr']],
+  ['web',        ['web', 'browser', 'browse', 'x_search', 'http', 'fetch', 'url', 'internet', 'crawl', 'scrape']],
+  ['files',      ['file', 'filesystem', 'document', 'drive', 'storage', 'attachment']],
+  ['code',       ['code', 'shell', 'bash', 'terminal', 'exec', 'run_command', 'python', 'sandbox', 'repl', 'interpreter', 'computer_use']],
+  ['media',      ['media', 'image', 'audio', 'video', 'vision', 'transcribe', 'photo', 'speech', 'ocr', 'bfl', 'tts', 'stt']],
   ['scheduling', ['schedule', 'cron', 'reminder', 'timer', 'calendar', 'job']],
 ];
 
@@ -204,7 +221,11 @@ function classifyToken(token: string): CapabilityClass | null {
  *     `{name,tools,enabled,configured}`         when NOT explicitly off (enabled:false/configured:false
  *                                               is exactly how an unconnected integration — e.g. email
  *                                               — shows up, so it must not count as a live capability)
- *   - `{capabilities|tools|toolsets|skills:[…]}` → that array (strings or objects), same rules
+ *   - `{data|capabilities|tools|toolsets|skills:[…]}` → that array (strings or objects), same rules.
+ *     `data` is the one that matters on a real hermes: /v1/toolsets answers
+ *     `{"object":"list","platform":"api_server","data":[…]}` (gateway/platforms/api_server.py), NOT
+ *     the bare array its published docs example shows. Without this key every token dropped out and
+ *     capability discovery silently returned null forever.
  *   - `{features:{name:bool}}` or a bare map → keys whose value is truthy (the real /v1/capabilities
  *                                               shape puts its surface flags under `features`) */
 function extractCapabilityTokens(body: unknown): string[] {
@@ -222,7 +243,7 @@ function extractCapabilityTokens(body: unknown): string[] {
   if (body && typeof body === 'object') {
     const o = body as Record<string, unknown>;
     let sawList = false;
-    for (const key of ['capabilities', 'tools', 'toolsets', 'skills']) {
+    for (const key of ['data', 'capabilities', 'tools', 'toolsets', 'skills']) {
       if (Array.isArray(o[key])) { sawList = true; for (const item of o[key] as unknown[]) pushItem(item); }
     }
     // An object map of name→bool: prefer an explicit `features` sub-map; otherwise treat the object
@@ -241,18 +262,27 @@ function extractCapabilityTokens(body: unknown): string[] {
  * Normalize any of the tolerated capability-manifest shapes onto the closed action-class vocabulary.
  * Returns null (FAIL-OPEN) on anything that isn't a usable object/array, or when nothing recognized
  * survives — Convo then falls back to its static doctrine rather than acting on an empty guess (an
- * empty set can't be told apart from "this endpoint doesn't report action-classes"). Exported for
- * unit tests. Pure.
+ * empty set can't be told apart from "this endpoint doesn't report action-classes").
+ *
+ * `complete: false` rides along when ANY token went unclassified. The summary used to fail open only
+ * at the whole-summary level, so "recognized nothing" and "recognized one thing, understood none of
+ * the rest" were indistinguishable — and downstream (convo/shared.ts renderCapabilityLine) read a
+ * missing class as a positive fact about the deployment. A partially-understood manifest can now say
+ * "these classes are present" without also asserting that everything absent is genuinely absent.
+ *
+ * Exported for unit tests. Pure.
  */
 export function normalizeCapabilities(body: unknown): CapabilitySummary | null {
   if (body == null || typeof body !== 'object') return null;
   const found = new Set<CapabilityClass>();
+  let unclassified = 0;
   for (const token of extractCapabilityTokens(body)) {
     const cls = classifyToken(token);
     if (cls) found.add(cls);
+    else unclassified += 1;
   }
   if (!found.size) return null;
-  return { classes: CAP_ORDER.filter(c => found.has(c)) };
+  return { classes: CAP_ORDER.filter(c => found.has(c)), ...(unclassified ? { complete: false } : {}) };
 }
 
 export class HermesBackend implements EngineBackend {
@@ -265,14 +295,23 @@ export class HermesBackend implements EngineBackend {
   // and kicks a background refresh when the value is older than the TTL. capFetchedAt stays 0 until a
   // fetch actually answers, so the first read (on boot) triggers the first refresh and returns null.
   private static readonly CAP_TTL_MS = 60 * 60 * 1000; // ~1h — capabilities change rarely
+  // A refresh where only SOME endpoints answered gets a much shorter TTL: the cached value is a merge
+  // of fresh and stale, so it must not be pinned for an hour, but it must not re-dial a dead endpoint
+  // on every single turn either.
+  private static readonly CAP_PARTIAL_TTL_MS = 5 * 60 * 1000;
   private capCache: CapabilitySummary | null = null;
   private capFetchedAt = 0;
+  private capPartial = false;
   private capRefreshing = false;
+  // Read ONCE at construction: getCapabilitySummary() sits on the per-turn prompt path, so it must
+  // not re-parse (or re-read the environment) per turn.
+  private readonly declaredCapabilities: CapabilitySummary | null;
 
   constructor(deps: Partial<HermesDeps> = {}) {
     this.baseUrl = (process.env.HERMES_BASE_URL || 'http://127.0.0.1:8642').replace(/\/$/, '');
     this.apiKey = process.env.HERMES_API_KEY || '';
     this.deps = { ...realDeps, ...deps };
+    this.declaredCapabilities = parseDeclaredCapabilities(process.env.HERMES_CAPABILITIES);
   }
 
   private headers(chatId?: string): Record<string, string> {
@@ -289,8 +328,18 @@ export class HermesBackend implements EngineBackend {
     return h;
   }
 
-  /** fetch with the engine-call timeout AND the caller's abort signal, mapped to seam errors. */
-  private async request(path: string, init: RequestInit, signal?: AbortSignal, timeoutMs = ENGINE_TIMEOUT_MS): Promise<Response> {
+  /**
+   * fetch with the engine-call timeout AND the caller's abort signal, mapped to seam errors — and the
+   * response BODY read inside the same guarded window.
+   *
+   * That last part is the whole reason this returns text rather than a Response: fetch resolves as
+   * soon as HEADERS arrive, so releasing the timer (and the caller's abort listener) around the fetch
+   * alone left every body read unguarded. An engine that sends headers and then stalls the body used
+   * to hang past ENGINE_TIMEOUT_MS, uncancellable, breaking the invariant engineBackend.ts documents
+   * — and while runTask is backstopped by the orchestrator's withDeadline, the reminder/memory calls
+   * are awaited inline inside a Convo turn with no deadline at all.
+   */
+  private async requestText(path: string, init: RequestInit, signal?: AbortSignal, timeoutMs = ENGINE_TIMEOUT_MS): Promise<HermesResponse> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const onCallerAbort = () => controller.abort();
@@ -299,7 +348,11 @@ export class HermesBackend implements EngineBackend {
       else signal.addEventListener('abort', onCallerAbort, { once: true });
     }
     try {
-      return await this.deps.fetchFn(`${this.baseUrl}${path}`, { ...init, signal: controller.signal });
+      const res = await this.deps.fetchFn(`${this.baseUrl}${path}`, { ...init, signal: controller.signal });
+      // Always drained, on every path — an early return on a 404/non-2xx used to leave the socket
+      // holding an unread body (an undici connection-reuse nit).
+      const text = await res.text();
+      return { status: res.status, ok: res.ok, text };
     } catch (err) {
       // fetch throws TypeError on connection-level failures (refused/reset/DNS) — the engine is AWAY.
       if ((err as Error)?.name === 'AbortError') throw err;
@@ -310,27 +363,25 @@ export class HermesBackend implements EngineBackend {
     }
   }
 
-  private async throwForStatus(res: Response, what: string): Promise<void> {
+  private throwForStatus(res: HermesResponse, what: string): void {
     if (res.ok) return;
-    const body = await res.text().catch(() => '');
     if (res.status === 401 || res.status === 403) {
       throw new EngineRunError(`hermes rejected the API key (${res.status}) — check HERMES_API_KEY`, 'needs_auth', res.status);
     }
     if (res.status === 429) {
       throw new EngineRunError('hermes is at its concurrent-run cap (429)', 'rate_limited', res.status);
     }
-    throw new EngineRunError(`hermes ${what} failed: ${res.status} ${body.slice(0, 300)}`, 'llm_error', res.status);
+    throw new EngineRunError(`hermes ${what} failed: ${res.status} ${res.text.slice(0, 300)}`, 'llm_error', res.status);
   }
 
   /** A 200 is not a promise of JSON: a reverse proxy or a tunnel in front of hermes answers 200
-   *  with an HTML error page, and res.json() then throws a bare SyntaxError that reads as an Irises
+   *  with an HTML error page, and JSON.parse then throws a bare SyntaxError that reads as an Irises
    *  bug. Same failure, named — with the first of the body so the operator sees WHAT answered. */
-  private async parseJson<T>(res: Response, what: string): Promise<T> {
-    const body = await res.text().catch(() => '');
+  private parseJson<T>(res: HermesResponse, what: string): T {
     try {
-      return JSON.parse(body) as T;
+      return JSON.parse(res.text) as T;
     } catch {
-      throw new EngineRunError(`hermes ${what} returned non-JSON: ${body.slice(0, 200)}`, 'llm_error', res.status);
+      throw new EngineRunError(`hermes ${what} returned non-JSON: ${res.text.slice(0, 200)}`, 'llm_error', res.status);
     }
   }
 
@@ -342,11 +393,14 @@ export class HermesBackend implements EngineBackend {
     const media = task.media;
     const images = media?.images ?? [];
     const others = [...(media?.audio ?? []), ...(media?.video ?? []), ...(media?.docs ?? [])];
-    let text = prompt;
-    if (others.length) {
-      text += `\n\nAttached non-image file URLs (fetch and read them with your tools):\n${others
-        .map(m => `- ${m.filename ?? 'file'} (${m.mimeType}): ${m.url}`).join('\n')}`;
-    }
+    // Header FIRST, prompt untouched below it: the engine's standing doctrine lives in its own
+    // SOUL.md (hermesDoctrine.ts), and this restates the essentials on every run so an engine that
+    // never got onboarded still gets the limits and the reply shape. Media notes go after the prompt,
+    // so the header stays the first thing the engine reads.
+    let text = `${HERMES_TASK_HEADER}\n\n${prompt}`;
+    // Fenced (attachments.ts): filenames/mime/URLs are sender-chosen strings landing after the output
+    // contract, i.e. the prompt's most obeyed position.
+    text += renderAttachmentBlock(others);
     const inlined = await Promise.all(images.map(m => inlineLocalImage(m, this.deps.readFile)));
     const blocks = inlined.filter((r): r is { url: string } => 'url' in r)
       .map(r => ({ type: 'image_url', image_url: { url: r.url } }));
@@ -354,16 +408,37 @@ export class HermesBackend implements EngineBackend {
     if (notes.length) text += `\n\n${notes.join('\n')}`;
     const content: unknown = blocks.length ? [{ type: 'text', text }, ...blocks] : text;
 
-    const res = await this.request('/v1/chat/completions', {
+    const res = await this.requestText('/v1/chat/completions', {
       method: 'POST',
       headers: this.headers(task.chatId),
       body: JSON.stringify({ model: 'hermes-agent', messages: [{ role: 'user', content }], stream: false }),
     }, ctx.signal);
-    await this.throwForStatus(res, 'chat completion');
-    const data = await this.parseJson<ChatCompletionResponse>(res, 'chat completion');
+    this.throwForStatus(res, 'chat completion');
+    const data = this.parseJson<ChatCompletionResponse>(res, 'chat completion');
     const out = data.choices?.[0]?.message?.content;
     if (typeof out !== 'string') throw new EngineRunError('hermes returned no message content', 'llm_error', res.status);
     return out;
+  }
+
+  /** One-time doctrine delivery (engineOnboarding.ts owns the when). It rides its OWN session key, so
+   *  the standing text stays out of every chat's continuity and out of every chat's engine-side
+   *  memory scope. The API carries no idempotency key, so the guard against a duplicate append is the
+   *  message's own replace-by-heading ask (hermesDoctrine.ts) — `version` is accepted for the shared
+   *  interface and deliberately unused here. The budget is generous: the engine is being asked to
+   *  edit its own SOUL.md, which is a real tool run. */
+  async sendOnboarding(text: string, _version: string): Promise<string> {
+    const res = await this.requestText('/v1/chat/completions', {
+      method: 'POST',
+      headers: this.headers('onboarding'),
+      body: JSON.stringify({ model: 'hermes-agent', messages: [{ role: 'user', content: text }], stream: false }),
+    }, undefined, 120_000);
+    this.throwForStatus(res, 'onboarding');
+    const data = this.parseJson<ChatCompletionResponse>(res, 'onboarding');
+    const reply = data.choices?.[0]?.message?.content;
+    if (typeof reply !== 'string' || !reply.trim()) {
+      throw new EngineRunError('hermes onboarding returned no message content', 'llm_error', res.status);
+    }
+    return reply.trim();
   }
 
   async createReminder(spec: ReminderSpec): Promise<ReminderRef> {
@@ -393,20 +468,20 @@ export class HermesBackend implements EngineBackend {
       throw new EngineRunError('reminder needs cron or fireAt', 'tool_errors');
     }
     const name = `${jobPrefix(spec.chatId)}${(spec.title || spec.instruction).slice(0, 40)}`;
-    const res = await this.request('/api/jobs', {
+    const res = await this.requestText('/api/jobs', {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify({ name, schedule, prompt: reminderJobPrompt(spec, pushUrl), deliver: 'local', ...(repeat ? { repeat } : {}) }),
     }, undefined, 15_000);
-    await this.throwForStatus(res, 'job create');
-    const data = await this.parseJson<{ job?: { id?: string | number; name?: string; schedule?: string } }>(res, 'job create');
+    this.throwForStatus(res, 'job create');
+    const data = this.parseJson<{ job?: { id?: string | number; name?: string; schedule?: string } }>(res, 'job create');
     return { id: String(data.job?.id ?? name), title: data.job?.name ?? name, schedule: data.job?.schedule ?? schedule };
   }
 
   async listReminders(chatId: string): Promise<ReminderRef[]> {
-    const res = await this.request('/api/jobs', { method: 'GET', headers: this.headers() }, undefined, 15_000);
-    await this.throwForStatus(res, 'job list');
-    const data = await this.parseJson<{ jobs?: Array<{ id?: string | number; name?: string; schedule?: string }> }>(res, 'job list');
+    const res = await this.requestText('/api/jobs', { method: 'GET', headers: this.headers() }, undefined, 15_000);
+    this.throwForStatus(res, 'job list');
+    const data = this.parseJson<{ jobs?: Array<{ id?: string | number; name?: string; schedule?: string }> }>(res, 'job list');
     const prefix = jobPrefix(chatId);
     const legacy = legacyJobPrefix(chatId);
     return (data.jobs ?? [])
@@ -417,13 +492,18 @@ export class HermesBackend implements EngineBackend {
         const matched = name.startsWith(prefix) ? prefix : name.startsWith(legacy) ? legacy : null;
         return matched === null ? null : { id: String(j.id ?? ''), title: name.slice(matched.length), schedule: j.schedule ?? '' };
       })
-      .filter((r): r is ReminderRef => r !== null);
+      // An id-less job row must never surface: its ref would carry id '' and a later cancel would
+      // DELETE /api/jobs/ — the collection route, which some servers treat as delete-everything.
+      .filter((r): r is ReminderRef => r !== null && r.id !== '');
   }
 
   async cancelReminder(id: string): Promise<boolean> {
-    const res = await this.request(`/api/jobs/${encodeURIComponent(id)}`, { method: 'DELETE', headers: this.headers() }, undefined, 15_000);
+    // Belt to listReminders' braces: an empty id would DELETE /api/jobs/ — the collection route.
+    // "Not found" is the honest read of a job with no id.
+    if (!id) return false;
+    const res = await this.requestText(`/api/jobs/${encodeURIComponent(id)}`, { method: 'DELETE', headers: this.headers() }, undefined, 15_000);
     if (res.status === 404) return false;
-    await this.throwForStatus(res, 'job delete');
+    this.throwForStatus(res, 'job delete');
     return true;
   }
 
@@ -431,7 +511,7 @@ export class HermesBackend implements EngineBackend {
     // Ride the chat's own engine session: hermes's memory loop persists what lands in-session.
     // Phrased as a REQUEST — the engine owns its memory and decides how (and whether) to fold
     // this in; Irises never writes engine storage directly.
-    const res = await this.request('/v1/chat/completions', {
+    const res = await this.requestText('/v1/chat/completions', {
       method: 'POST',
       headers: this.headers(chatId),
       body: JSON.stringify({
@@ -445,12 +525,12 @@ export class HermesBackend implements EngineBackend {
         ].join('\n') }],
       }),
     }, undefined, 60_000);
-    await this.throwForStatus(res, 'memory note');
+    this.throwForStatus(res, 'memory note');
   }
 
   async probe(): Promise<ProbeResult> {
     try {
-      const res = await this.request('/v1/capabilities', { method: 'GET', headers: this.headers() }, undefined, 5_000);
+      const res = await this.requestText('/v1/capabilities', { method: 'GET', headers: this.headers() }, undefined, 5_000);
       if (!res.ok) return { ok: false, detail: `capabilities returned ${res.status} — check HERMES_API_KEY` };
       return { ok: true };
     } catch (err) {
@@ -460,22 +540,29 @@ export class HermesBackend implements EngineBackend {
 
   /** Last-known action-classes, returned IMMEDIATELY (never awaits a fetch — this is on the per-turn
    *  prompt path). A stale/cold cache kicks a fire-and-forget background refresh; the value updates
-   *  for the NEXT turn. Returns null until the first refresh answers. */
+   *  for the NEXT turn.
+   *
+   *  Discovery WINS when it has answered. The operator's HERMES_CAPABILITIES declaration is the
+   *  fallback that covers the two gaps discovery can't: the cold cache on boot (the first turns of a
+   *  fresh process) and an engine that is down or not reporting toolsets at all. Null when neither
+   *  has anything, so Convo falls back to its static doctrine. */
   getCapabilitySummary(): CapabilitySummary | null {
-    if (!this.capRefreshing && this.deps.now() - this.capFetchedAt >= HermesBackend.CAP_TTL_MS) {
+    const ttl = this.capPartial ? HermesBackend.CAP_PARTIAL_TTL_MS : HermesBackend.CAP_TTL_MS;
+    if (!this.capRefreshing && this.deps.now() - this.capFetchedAt >= ttl) {
       void this.refreshCapabilities();
     }
-    return this.capCache;
+    return this.capCache ?? this.declaredCapabilities;
   }
 
-  /** GET one capability-manifest path. Returns `undefined` for a transport failure / non-2xx (so the
-   *  caller keeps the last-known cache), or the parsed body (possibly null → normalizer yields null).
-   *  Never throws — this only ever runs in the background. */
+  /** GET one capability-manifest path. Returns `undefined` for a transport failure, a non-2xx, OR a
+   *  body that won't parse (an HTML error page answered at 200 by a proxy is a FAILED read, not an
+   *  empty manifest — treating it as a usable body used to wipe a good cache). Never throws — this
+   *  only ever runs in the background. */
   private async fetchCapBody(path: string): Promise<unknown | undefined> {
     try {
-      const res = await this.request(path, { method: 'GET', headers: this.headers() }, undefined, 5_000);
+      const res = await this.requestText(path, { method: 'GET', headers: this.headers() }, undefined, 5_000);
       if (!res.ok) return undefined;
-      return await res.json().catch(() => null);
+      return JSON.parse(res.text) as unknown;
     } catch {
       return undefined;
     }
@@ -485,30 +572,53 @@ export class HermesBackend implements EngineBackend {
    * Background capability refresh. Fire-and-forget: swallows everything, never blocks a turn.
    *
    * Consults TWO surfaces and merges what each yields onto the closed vocabulary:
-   *   - `/v1/toolsets` — the real per-deployment action-class source (live docs: an array of
-   *     `{name,enabled,configured,tools[]}`; its `configured:false` is precisely how an unconnected
-   *     integration such as email surfaces, and the normalizer drops those).
-   *   - `/v1/capabilities` — the endpoint the plan named and probe() already hits; live docs show it
-   *     reports only the API-server SURFACE (chat_completions, responses_api, …) with no action-class
-   *     tokens, so it contributes nothing today, but it's kept so an engine that DOES report classes
-   *     there still lights up. Both mappings are best-effort pending live verification.
+   *   - `/v1/toolsets` — the real per-deployment action-class source. VERIFIED shape (api_server.py):
+   *     `{"object":"list","platform":"api_server","data":[{name,label,enabled,configured,tools[]},…]}`
+   *     — the wrapper, not the bare array the published docs example shows. `configured:false` is how
+   *     an unconnected integration surfaces, and the normalizer drops those.
+   *   - `/v1/capabilities` — the endpoint the plan named and probe() already hits; it reports only the
+   *     API-server SURFACE (chat_completions, responses_api, …) with no action-class tokens, so it
+   *     contributes nothing on a stock hermes, but it's kept so an engine that DOES report classes
+   *     there still lights up.
    *
-   * If EVERY fetch failed (engine away) the last-known cache is kept and the timestamp is left cold
-   * so the next read retries promptly; otherwise the merged result (which may be null) is cached.
+   * Failure handling is per-ENDPOINT, not all-or-nothing. `/v1/toolsets` is the only real class
+   * source; `/v1/capabilities` normalizes to null on a stock hermes. So the common partial failure —
+   * toolsets 500s or times out while capabilities answers 200 — used to fall straight through the
+   * old "every fetch failed" guard: the class set came back empty, a previously-good summary was
+   * overwritten with null, and that null was pinned for the full hour. Now a partial answer MERGES
+   * with the last-known cache and takes a short TTL, and only a fully-successful refresh replaces the
+   * cache outright. A total failure keeps the cache and leaves the timestamp cold.
    */
   private async refreshCapabilities(): Promise<void> {
     if (this.capRefreshing) return; // coalesce concurrent refreshes
     this.capRefreshing = true;
     try {
       const bodies = await Promise.all([this.fetchCapBody('/v1/toolsets'), this.fetchCapBody('/v1/capabilities')]);
-      if (bodies.every(b => b === undefined)) return; // total failure → keep last-known, retry next read
+      const answered = bodies.filter(b => b !== undefined);
+      if (!answered.length) return; // total failure → keep last-known, retry next read
+      const partial = answered.length < bodies.length;
+
       const classes = new Set<CapabilityClass>();
-      for (const body of bodies) {
-        if (body === undefined) continue;
+      let complete = true;
+      for (const body of answered) {
         const summary = normalizeCapabilities(body);
-        if (summary) for (const c of summary.classes) classes.add(c);
+        if (!summary) continue;
+        for (const c of summary.classes) classes.add(c);
+        if (summary.complete === false) complete = false;
       }
-      this.capCache = classes.size ? { classes: CAP_ORDER.filter(c => classes.has(c)) } : null;
+      if (partial && this.capCache) {
+        // A degraded read must never SUBTRACT: fold the last-known classes back in, and mark the
+        // result incomplete because part of the manifest simply wasn't seen this time.
+        for (const c of this.capCache.classes) classes.add(c);
+        complete = false;
+      }
+
+      if (classes.size) {
+        this.capCache = { classes: CAP_ORDER.filter(c => classes.has(c)), ...(complete ? {} : { complete: false }) };
+      } else if (!partial) {
+        this.capCache = null; // a clean read that recognized nothing → honestly unknown
+      }
+      this.capPartial = partial;
       this.capFetchedAt = this.deps.now();
     } finally {
       this.capRefreshing = false;

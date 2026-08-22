@@ -113,8 +113,17 @@ class OnInbound(unittest.TestCase):
             self.assertEqual(self.q.get_nowait()["is_group"], expect, chat_type)
 
     def test_gateway_captured_for_outbound_listener(self):
-        bridge.on_inbound(event=_event(), gateway="THE-GATEWAY")
-        self.assertEqual(bridge._GW[0], "THE-GATEWAY")
+        with mock.patch.object(bridge, "_GW", [None, None]):
+            bridge.on_inbound(event=_event(), gateway="THE-GATEWAY")
+            self.assertEqual(bridge._GW[0], "THE-GATEWAY")
+
+    def test_a_none_gateway_never_clobbers_a_live_capture(self):
+        # hermes may call the hook without the kwarg (it defaults to None). An unconditional write
+        # nulled out the watch thread's capture on the first fronted message, and every outbound send
+        # then answered 503 "gateway not ready" — silence on a chat hermes was told to skip.
+        with mock.patch.object(bridge, "_GW", ["THE-GATEWAY", "THE-LOOP"]):
+            bridge.on_inbound(event=_event(), gateway=None)
+            self.assertEqual(bridge._GW[0], "THE-GATEWAY")
 
     def test_hook_error_fails_open_by_default(self):
         # An event whose .source access blows up exercises the outer try/except.
@@ -173,6 +182,46 @@ class AuthStatus(unittest.TestCase):
 
     def test_exact_match_authorizes(self):
         self.assertIsNone(bridge._auth_status("secret", "secret"))
+
+
+class ListenerStartup(unittest.TestCase):
+    """The listener is what carries Irises's REPLIES. A failure to bind it must never be permanent,
+    and must never take the forward workers (or the hook) down with it."""
+
+    def test_port_parse_never_raises(self):
+        for raw, expect in (("8655", 8655), ("9001", 9001), ("", 8655), ("eight-six-five-five", 8655)):
+            with mock.patch.dict("os.environ", {"IRISES_BRIDGE_PORT": raw}):
+                self.assertEqual(bridge._port(), expect, raw)
+
+    def test_a_failed_bind_leaves_the_listener_retryable(self):
+        listening = __import__("threading").Event()
+        with mock.patch.object(bridge, "_LISTENING", listening), \
+             mock.patch.object(bridge, "ThreadingHTTPServer", side_effect=OSError("address in use")):
+            self.assertFalse(bridge._start_listener())
+            self.assertFalse(listening.is_set(), "a failed bind must not mark the listener up")
+
+        # The port frees up; the next attempt lands and the flag sticks.
+        started = []
+        fake_thread = mock.Mock(start=lambda: started.append(1))
+        with mock.patch.object(bridge, "_LISTENING", listening), \
+             mock.patch.object(bridge, "ThreadingHTTPServer", return_value=mock.Mock()), \
+             mock.patch.object(bridge.threading, "Thread", return_value=fake_thread):
+            self.assertTrue(bridge._start_listener())
+            self.assertTrue(listening.is_set())
+            self.assertTrue(bridge._start_listener(), "already bound is a cheap no-op")
+            self.assertEqual(len(started), 1, "and does not bind or spawn twice")
+
+    def test_workers_start_once_but_the_bind_is_reattempted(self):
+        started = __import__("threading").Event()
+        listening = __import__("threading").Event()
+        binds = []
+        with mock.patch.object(bridge, "_STARTED", started), \
+             mock.patch.object(bridge, "_LISTENING", listening), \
+             mock.patch.object(bridge, "_start_listener", lambda: binds.append(1) or False), \
+             mock.patch.object(bridge.threading, "Thread", return_value=mock.Mock(start=lambda: None)):
+            bridge._start_workers()
+            bridge._start_workers()
+        self.assertEqual(len(binds), 2, "_STARTED gates the threads, not the bind")
 
 
 class ShardIndex(unittest.TestCase):

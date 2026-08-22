@@ -45,11 +45,24 @@ export interface ProbeResult { ok: boolean; detail?: string; }
  *  prompt-injection hazard and the cache-shape churn a free-form string would cause). */
 export type CapabilityClass = 'web' | 'inbox' | 'files' | 'code' | 'media' | 'scheduling';
 
+/** Canonical render order for the closed vocabulary. Declared ONCE here because its whole job is
+ *  cross-file identity: a summary must read identically whichever adapter produced it (cache-friendly
+ *  for the per-turn prompt line built from it), and a seventh class added to a per-adapter copy would
+ *  type-check while silently leaving the other adapter's order wrong. */
+export const CAP_ORDER: readonly CapabilityClass[] = ['web', 'inbox', 'files', 'code', 'media', 'scheduling'];
+
 /** What the active engine can actually do THIS deployment, as the closed-vocabulary set above.
  *  Consumed ONLY to shape Convo's per-turn brief (so it never promises what the engine lacks); it
  *  is deliberately never fed into the engine-facing task prompt — Hermes knows its own tools, and a
  *  stale cache must not contradict it mid-run. */
-export interface CapabilitySummary { classes: CapabilityClass[]; }
+export interface CapabilitySummary {
+  classes: CapabilityClass[];
+  /** `false` when the manifest carried tokens the adapter could not classify — i.e. the class list is
+   *  a floor, not an inventory. Absent means fully understood (an operator declaration always is).
+   *  The distinction is load-bearing downstream: only a fully-understood manifest may turn a MISSING
+   *  class into a positive claim about the deployment ("their inbox isn't connected"). */
+  complete?: boolean;
+}
 
 /** The engine went AWAY (unreachable / unconfigured / connection refused) — distinct from "the
  *  engine ran and failed". Callers voice it as a transient snag; nothing retries automatically. */
@@ -89,8 +102,9 @@ export interface EngineBackend {
   /** Deliver the engine-mode doctrine ONCE, as a chat message the engine folds into its own durable
    *  instructions by its own hand (Irises never edits engine files). `version` is the doctrine's
    *  content hash, so the adapter can key its idempotency on it; returns the engine's reply text.
-   *  Optional: only engines with an automatic onboarding path implement it — hermes's send stays a
-   *  documented manual step (bridge/hermes/engine-onboarding-message.md). */
+   *  Optional in the type, implemented by BOTH adapters today — engineOnboarding.ts only runs for an
+   *  engine that has it. Where the transport carries no idempotency key (hermes), the doctrine text's
+   *  own replace-by-heading ask is the guard against a duplicate append. */
   sendOnboarding?(text: string, version: string): Promise<string>;
   /** Bridge mode: deliver a message THROUGH one of the engine's own channel connections
    *  (the engine keeps owning the bot/number; Irises fronts it — see docs/ENGINES.md).
@@ -133,7 +147,11 @@ const MAX_CONCURRENT = Number(process.env.ENGINE_MAX_CONCURRENT) || 2;
 let active = 0;
 const waiters: Array<() => void> = [];
 async function acquire(): Promise<() => void> {
-  if (active >= MAX_CONCURRENT) await new Promise<void>(r => waiters.push(r));
+  // A LOOP, not a single await: release() only schedules the waiter's continuation, so between the
+  // wake-up and that microtask running, another already-queued acquire() can barge in and take the
+  // free slot. A woken waiter that incremented unconditionally then pushed `active` one past the cap
+  // with no waiter left to correct it — one extra run against the engine's concurrent-run limit.
+  while (active >= MAX_CONCURRENT) await new Promise<void>(r => waiters.push(r));
   active++;
   let released = false;
   return () => {
