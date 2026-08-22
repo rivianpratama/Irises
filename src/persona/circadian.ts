@@ -57,7 +57,7 @@ const DESCRIPTION: Record<CircadianSlot, string> = {
     'Pre-sleep, emotionally saturated from the day. Hyperempathy has been absorbing all day and runs a little overloaded — replies may be shorter but more direct, the filter that cushions her observations tired. The tender window: she means everything she says, just too worn to dress it up.',
 };
 
-/** Circadian state for the instant, in the user's zone (falls back to the Chicago default). */
+/** Circadian state for the instant, in the user's zone (falls back to DEFAULT_TZ — this host's zone). */
 export function computeCircadian(nowMs: number, tz: string = DEFAULT_TZ): CircadianState {
   let hour: number;
   let weekend = false;

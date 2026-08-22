@@ -509,7 +509,7 @@ export function buildSystemPrompt(
   // This turn's inbound user text — feeds the reply-order line (which of Irises's bubbles it lands on).
   incomingText?: string,
   // The user's stored agent_tz preference (IANA), when known — anchors the Current-time block to
-  // THEIR wall clock instead of the Chicago default (user-set reminders schedule honestly).
+  // THEIR wall clock instead of DEFAULT_TZ, the host's own zone (user-set reminders schedule honestly).
   agentTz?: string,
   // Irises's hidden affect state: the persisted prior-turn status (mood/gauges/meta-prompt) and the
   // clock-computed cycle/circadian for THIS turn. When both are present, the "internal weather" block
@@ -609,7 +609,7 @@ export function buildSystemPrompt(
 
   // Current time — so schedule_automation can turn "tomorrow 9am" / "in 30 min"
   // into an absolute fire_at, and pick the right timezone for recurring crons.
-  // Anchored to the user's stored agent_tz when known (fallback: the Chicago default).
+  // Anchored to the user's stored agent_tz when known (fallback: DEFAULT_TZ — this host's own zone).
   const tz = agentTz || DEFAULT_TZ;
   const now = new Date();
   const localTime = new Intl.DateTimeFormat('en-US', {
@@ -813,6 +813,8 @@ export async function processConvoResult(args: {
   turn?: ConvoTurnContext;
   // True when THIS is the recall second pass — the recursion fence.
   archivePass?: boolean;
+  // True when THIS pass IS the silent-turn retry — the fence that caps recovery at one extra call.
+  silentRetry?: boolean;
   // The clock-computed cycle/circadian for this turn, so the model's emitted `status` can be merged
   // and persisted. The recall second pass forwards it via {...args}; persistence lands on the pass
   // that reaches the final return (the first pass returns early into the recursion).
@@ -1278,6 +1280,59 @@ export async function processConvoResult(args: {
       if (facts.length) textResponse = `${textResponse}\n---\n${facts.join('\n---\n')}`;
     }
   }
+
+  // ── Silent-turn floor ───────────────────────────────────────────────────────────────────────
+  // A REAL inbound message answered with nothing at all — no bubble, no reaction, no tool call, no
+  // action — is the worst failure a texting assistant has: the user is left on read with no signal
+  // anything happened. It is a live, observed weak-model failure (an empty `bubbles` array and a null
+  // `tool_calls`), not a theoretical one, so the tripwire below is not enough on its own.
+  //
+  // The recovery is the same ladder callConvoLLM already uses for a non-envelope reply: ONE retry of
+  // the identical input (the temperature roll alone usually fixes it), then the Fallfirm voicer — and
+  // under that, fallfirmFloor's hardcoded copy if Fallfirm's own call dies. Loop-proof: the retry
+  // recurses with `silentRetry` set, which fences a second attempt, so at most one extra model call.
+  //
+  // Deliberately narrow — `!res.toolCalls.length` is the whole guard for legitimate silence. The
+  // persona allows empty bubbles ONLY next to a send_reaction (a tapback IS the reply), and that turn
+  // carries a tool call, so it can never reach here; nor can a tool-only turn whose own
+  // acknowledgment floor above (schedule/note/directive/delegation) already spoke.
+  // Placed BEFORE the history write and the dossier refresh below, so a retried turn persists once.
+  if (!textResponse && !reaction && !renameChat && !rememberedUser && !removeMember && !delegatedTask
+      && !res.toolCalls.length && textToSend.trim()) {
+    const turn = args.silentRetry ? undefined : args.turn;   // the fence: a retry never retries
+    console.warn(`[convo] silent turn on a real message — ${turn ? 'retrying once' : 'voicing the floor'}`);
+    record({ type: 'event', label: 'convo:silent_turn', chatId, handle, detail: { recovery: turn ? 'retry' : 'floor' } });
+    if (turn) {
+      try {
+        const retry = await (turn.call ?? callConvoLLM)({
+          role: 'convo',
+          system: turn.system,
+          systemCachePrefixLen: convoPersonaChars(),
+          tools: turn.tools,
+          jsonBubbles: true,
+          toolsViaJson: true,
+          messages: turn.messages,
+          trace: { chatId, handle, label: 'convo:silent_retry' },
+        });
+        // Same input, so the whole turn re-processes: a retry that DOES call a tool gets it
+        // dispatched exactly as a first pass would. Nothing was persisted or sent above (a silent
+        // turn writes no history), so there are no double effects.
+        return await processConvoResult({ ...args, res: retry, silentRetry: true });
+      } catch (err) {
+        console.error('[convo] silent-turn retry failed — voicing the floor', err);
+        reportError({ source: 'convo', category: 'silent_turn', severity: 'warn', err, chatId, handle });
+      }
+    }
+    // The retry is spent (or unavailable): say SOMETHING honest in Irises's own voice rather than
+    // leave them on read. Framed as a failure so Fallfirm hands the next move back to them.
+    textResponse = await voiceOutcome({
+      kind: 'failed',
+      summary: 'their last message glitched on your end and you never actually answered it',
+      nextStep: 'ask them to say that again',
+      originalRequest: textToSend,
+    }, chatId, handle);
+  }
+
   // Guardrail: scrub internal tool/agent names before this text is recorded to history or
   // returned, so the transcript the model reads next turn stays clean too. The meta-prompt to
   // Ops is a separate field and is intentionally NOT scrubbed.
@@ -1318,9 +1373,10 @@ export async function processConvoResult(args: {
   }
 
   // Tripwire: a turn that produced NOTHING the user or the thread can see — no bubble, no reaction,
-  // no action — is the silent-turn failure mode. Legal code paths can still reach it (a tool-only
-  // envelope whose tool has no acknowledgment floor was the original bug). Leave a diagnostic event
-  // so the dashboard surfaces the next variant instead of it vanishing without a trace.
+  // no action — is the silent-turn failure mode. The floor above now RECOVERS the no-tool-call
+  // variant, so what still reaches here is the tool-bearing one (a tool-only envelope whose tool has
+  // no acknowledgment floor was the original bug) — plus any turn with no inbound text of its own.
+  // Leave a diagnostic event so the dashboard surfaces the next variant instead of it vanishing.
   if (!textResponse && !reaction && !renameChat && !rememberedUser && !removeMember && !delegatedTask) {
     console.warn('[convo] turn produced no user-visible output — nothing sent');
     record({ type: 'event', label: 'convo:silent_turn', chatId, handle });

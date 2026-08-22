@@ -52,6 +52,53 @@ test('a URL flips even an otherwise-definitional message to grounded', () => {
   assert.equal(needsGrounding('what does this page say? https://example.com/article'), 'yes');
 });
 
+// ── The local-path regression (2026-08-22 live test, weak model) ────────────────────────────────
+// Three real messages, one run. The LTS one matched the gate and came back perfect; the two that
+// named a real path did NOT — and with nothing forcing them through the engine, the weak model
+// emitted a SILENT turn for one and falsely refused the other ("no can do from here, that path is
+// local to your machine") even though the engine runs on that machine and has the file tools.
+
+test('a named filesystem path in a request is engine work, never recall', () => {
+  for (const q of [
+    'can you peek at what skill folders exist in my ~/.hermes/skills and name like 5 of them?',
+    'seriously tho, can you actually check ~/.hermes/skills and tell me some folder names in there?',
+    'whats the latest nodejs LTS version right now? can you look it up for me', // already passed; pinned
+    'check ~/.hermes/skills',            // imperative, no question mark
+    'ls ~/.hermes/skills',
+    'peek at ./src and tell me whats there',
+    'whats in /var/log/nginx?',
+    'tail /var/log/foo please',
+  ]) {
+    assert.equal(needsGrounding(q), 'yes', `expected yes for: ${q}`);
+  }
+});
+
+test('an inspection verb aimed at files/folders is engine work too', () => {
+  for (const q of ['look in my downloads folder', 'list the files in there', 'peek at what folders are on disk']) {
+    assert.equal(needsGrounding(q), 'yes', `expected yes for: ${q}`);
+  }
+});
+
+test('the path screen keeps its precision: slashes in prose are not paths', () => {
+  for (const q of [
+    'either/or is fine with me',
+    'read/write access is all i need',
+    'lets do 50/50 on that',
+    '8/22 works for me',
+    'she said the km/h thing was wrong',
+    "i'll check back later",
+    'look, i already told them',
+    // A path with no ask around it is someone narrating, not asking for a read.
+    'i dropped it in ~/Documents yesterday',
+    // Singular "file" is the attachment they just sent — that turn is delegate_to_ops WITH the
+    // media, not a forced file-less delegation, so the gate must keep its hands off it.
+    'can you read this file i sent?',
+    'have a look at this file',
+  ]) {
+    assert.equal(needsGrounding(q), 'no', `expected no for: ${q}`);
+  }
+});
+
 test("a forced delegation keeps the draft's human holding opener, drops the fabricated tail", () => {
   // The Martinez incident, as bubbles: two genuine holding lines, then an invented result + re-aim.
   const draft = [

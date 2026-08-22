@@ -11,11 +11,29 @@ export type GroundingNeed = 'yes' | 'no' | 'maybe';
 // general knowledge) — the domain-neutral analogue of the old street-address short-circuit.
 const URL_RE = /\bhttps?:\/\/\S+|\bwww\.\S+\.\S+/i;
 
+// The inspection verbs, shared by the two path/file screens below. A weak Convo model aimed at one
+// of these either guesses at what it would have found or falsely refuses ("that's local to your
+// machine") — the engine runs ON that machine and has the file tools, so both are wrong answers.
+const INSPECT = String.raw`(?:check|peek|look|list|read|show|open|browse|inspect|scan|ls)`;
+// The window between the verb and its target: up to four plain words. Nothing may intervene but
+// words — punctuation straight after the verb ends the match, which is what keeps "look, i already
+// told them" and "check, that's fine" out.
+const NEAR = String.raw`(?:\s+\S+){0,4}\s+`;
+
 // Data-lookup phrasings that need a real source (the user's own email/records, or the live web)
 // rather than the model's general knowledge — the fabrication surface the gate exists to close.
 const STRONG: RegExp[] = [
   // Explicit retrieval verbs — "look it up", "find X", "search for", "pull up", "check my …".
   /\b(look\s+(?:it|this|that|them|up)|look up|pull up|pull the|search (?:for|up|my|the|through)|find (?:me |the |my |an? )?\S|check (?:my|the|on)|dig up|track down)\b/i,
+  // An inspection verb aimed at a concrete PATH — "check ~/.hermes/skills", "peek at ./src",
+  // "ls /var/log/nginx". Imperative, so it needs no question mark to count.
+  new RegExp(String.raw`\b${INSPECT}\b${NEAR}(?:~\/|\.{1,2}\/|\/[\w.-]+\/)`, 'i'),
+  // …or at files/folders on disk — "peek at what skill folders exist", "look in my downloads
+  // folder", "list the files in there". Reading a directory is engine work, never recall.
+  // Plural "files" only: a SINGULAR "read this file" is almost always the attachment they just sent,
+  // and that turn belongs to delegate_to_ops with the media riding along — not to a forced,
+  // file-less general delegation. ("check my files" is already caught by the retrieval verbs above.)
+  new RegExp(String.raw`\b${INSPECT}\b${NEAR}(?:files|filenames?|folders?|subfolders?|directory|directories|dirs?)\b`, 'i'),
   // References to the user's OWN connected data (their inbox / email / messages / calendar /
   // account). "gmail" stays: it's the user's own vocabulary for their inbox, still a correct
   // delegation trigger even though the engine owns the account access.
@@ -33,6 +51,18 @@ const STRONG: RegExp[] = [
 // doesn't trip it, which keeps definitional "What is recursion?" out).
 const QUESTION_WORD = /\b(who|whose|where|which|when|what)\b/i;
 const PROPER_NOUN = /\w\s([A-Z][a-z]{2,})/;
+
+// A concrete filesystem path the user NAMED — "~/.hermes/skills", "/var/log/nginx", "./src". The
+// domain-neutral analogue of the URL rule: someone who types a real path wants it READ, and only the
+// engine (which runs on that machine, with the file tools) can read it. Two signals AND'd, same
+// shape as the named-entity screen above, so a path mentioned in passing ("i dropped it in
+// ~/Documents yesterday") stays local.
+// Precision: the token must START a word (whitespace / quote / bracket / message start), so
+// "and/or", "read/write", "8/22" and "50/50" can't look like paths; an absolute path needs TWO
+// segments, so a stray "/" or a slash-command ("/help", "/clear") isn't one.
+const PATH_TOKEN = /(?:^|[\s"'`([])(?:~\/[\w.-]+|\.{1,2}\/[\w.-]+|\/[\w.-]+\/[\w.-]+)/;
+// The ask wrapped around that path: a question, a "can you", a please, or an inspection/naming verb.
+const PATH_ASK = new RegExp(String.raw`\?|\b(?:can|could|would|will|do) (?:you|u|ya)\b|\bplease\b|\b(?:${INSPECT}|cat|name|tell me|what|which|where|any)\b`, 'i');
 
 // Leading conversational acks must not shield a data question from the gate: "ok What/when did I
 // sell the Martinezes" is a lookup with a throat-clear in front, not a greeting. Stripped (possibly
@@ -53,6 +83,7 @@ export function needsGrounding(text: string): GroundingNeed {
   if (NEGATIVE.test(core)) return 'no';             // terminology/math/greeting
   for (const re of STRONG) if (re.test(core)) return 'yes';
   if (QUESTION_WORD.test(core) && PROPER_NOUN.test(core)) return 'yes'; // "who is X at <Named>?"
+  if (PATH_TOKEN.test(core) && PATH_ASK.test(core)) return 'yes';       // "what's in ~/.hermes/skills?"
   return 'no';
 }
 

@@ -2,14 +2,52 @@
 // LLM extraction gives us a calendar date (YYYY-MM-DD) and we anchor a fixed
 // wall-clock time (e.g. 5pm) to it. Naively doing `Date.parse(`${date}T17:00:00`)`
 // parses in the HOST's local timezone, so on a UTC-deployed server "5pm" becomes
-// 17:00 UTC (~noon in America/Chicago) and every derived reminder fires hours off.
+// 17:00 UTC (~noon in the US Central zone) and every derived reminder fires hours off.
 //
 // This computes the correct UTC instant for a wall-clock time in a real IANA zone,
 // handling DST, using Intl.DateTimeFormat offset arithmetic (no extra dependency) —
 // the same tz-aware approach already used by cron.ts and the quiet-hours rule.
 
-/** Default IANA timezone for scheduling until a per-agent tz is stored (mirrors the runner/convo client). */
-export const DEFAULT_TZ = 'America/Chicago';
+// ── The default zone ────────────────────────────────────────────────────────────────────────────
+// This used to be the literal 'America/Chicago'. Irises is single-user software the owner runs on
+// their own box, so a hardcoded city is wrong for everyone who doesn't live in it — and it is not a
+// quiet kind of wrong: DEFAULT_TZ is what stamps the wall clock into Convo's prompt and drives the
+// circadian slot, so a user in Asia/Jakarta at 22:28 was told it was 10:37 in the morning. The model
+// then reasoned correctly from a false clock: it talked about "before noon energy" and refused a
+// "22:40, three minutes from now" reminder as impossible. Same resolution ladder hermesBackend's
+// engineZone() already uses for cron, so the two halves of a reminder agree on what time it is:
+// an explicit override, else the HOST's own zone, else UTC.
+
+/** True when Intl accepts `tz` as an IANA zone — a typo'd override must not poison every date. */
+function isValidZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The ladder itself, exported so a test can exercise it without reloading the module. */
+export function resolveDefaultTz(): string {
+  const explicit = (process.env.IRISES_TZ ?? '').trim();
+  if (explicit) {
+    if (isValidZone(explicit)) return explicit;
+    console.warn(`[time] IRISES_TZ="${explicit}" is not a valid IANA zone — falling back to this host's zone`);
+  }
+  try {
+    const host = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (host && isValidZone(host)) return host;
+  } catch { /* no Intl data — UTC below */ }
+  return 'UTC';
+}
+
+/**
+ * Default IANA timezone for scheduling, prompt clocks, and quiet hours, until a per-agent tz is
+ * stored (`agent_tz`, which still wins everywhere it's set). Resolved ONCE at load:
+ * `IRISES_TZ` → the host's own zone → 'UTC'.
+ */
+export const DEFAULT_TZ = resolveDefaultTz();
 
 /** The quiet-hours window in wall-clock hours of the user's zone: 9pm through 8am. */
 export const QUIET_START_HOUR = 21;

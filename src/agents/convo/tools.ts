@@ -121,7 +121,7 @@ export const SCHEDULE_AUTOMATION_TOOL: LlmToolDef = {
       schedule_kind: { type: 'string', enum: ['once', 'cron'], description: 'once=single fire; cron=recurring.' },
       fire_at: { type: 'string', description: 'Absolute ISO 8601 timestamp for a one-time reminder (compute from the Current time block).' },
       cron: { type: 'string', description: 'Standard 5-field cron expression for a recurring automation (e.g. "0 9 * * 1" = every Monday 9am).' },
-      timezone: { type: 'string', description: 'IANA timezone for the schedule (default America/Chicago).' },
+      timezone: { type: 'string', description: 'IANA timezone for the schedule. Omit it to use their own zone (the one the Current time block is in).' },
       needs_ops: { type: 'boolean', description: 'true if fulfilling it needs fresh data at fire time (the web, their inbox).' },
       ops_kind: { type: 'string', enum: ['web_research', 'document_read', 'draft', 'general', 'media_read', 'compute'], description: 'Hint for what kind of fresh data to pull when needs_ops is true.' },
     },
