@@ -4,9 +4,9 @@
 // modified. Per-chat continuity + engine-side memory scoping ride the X-Hermes-Session-Id/Key
 // headers, so hermes builds its own deepening model of each chat.
 import { readFile as fsReadFile } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
 import { EngineUnavailableError, EngineRunError, ENGINE_TIMEOUT_MS } from './engineBackend.js';
 import type { EngineBackend, EngineRunContext, ReminderSpec, ReminderRef, ProbeResult, CapabilitySummary, CapabilityClass } from './engineBackend.js';
+import { hash8 } from './sessionHash.js';
 import { DEFAULT_TZ, zoneOffsetMs } from '../../pipeline/zonedTime.js';
 import { dataTag } from '../../llm/promptTag.js';
 import { record } from '../../diagnostics/trace.js';
@@ -22,12 +22,6 @@ const realDeps: HermesDeps = { fetchFn: (...a) => fetch(...a), now: () => Date.n
 
 interface ChatCompletionResponse {
   choices?: Array<{ message?: { content?: string | null } }>;
-}
-
-/** 8 hex of sha256 over the RAW chat id — enough to separate ids that share a truncated head, and
- *  computed BEFORE sanitizing so two ids differing only in punctuation stay distinct too. */
-function hash8(rawChatId: string): string {
-  return createHash('sha256').update(rawChatId).digest('hex').slice(0, 8);
 }
 
 /**

@@ -54,6 +54,43 @@ export const DELEGATE_TO_OPS_TOOL: LlmToolDef = {
   },
 };
 
+const DELEGATE_OPS_PROPS = DELEGATE_TO_OPS_TOOL.inputSchema.properties as Record<string, Record<string, unknown> & { description: string }>;
+
+// The OpenClaw lane's delegate tool: same name, args, enums and required list — only two
+// description strings widen, so Convo briefs an engine that really can run code and fan out. Built
+// by spread + targeted replace so the shared prose lives in ONE place and the canonical object
+// above is never mutated: its exact bytes are the Hermes lane's contract.
+const DELEGATE_TO_OPS_TOOL_OPENCLAW: LlmToolDef = {
+  ...DELEGATE_TO_OPS_TOOL,
+  inputSchema: {
+    ...DELEGATE_TO_OPS_TOOL.inputSchema,
+    properties: {
+      ...DELEGATE_OPS_PROPS,
+      kind: {
+        ...DELEGATE_OPS_PROPS.kind,
+        description: DELEGATE_OPS_PROPS.kind.description.replace(
+          'never head-math;',
+          'never head-math; on this deployment Ops can also fan a big job across parallel workers, so a wide sweep over many pages or files is fair game;',
+        ),
+      },
+      meta_prompt: {
+        ...DELEGATE_OPS_PROPS.meta_prompt,
+        description: DELEGATE_OPS_PROPS.meta_prompt.description.replace(
+          'actions (what Ops should DO beyond reading — parse the file, run code over the data, iterate a chain, set a follow-up check — plus the hard limits: read-only on their inbox, never send or post anything anywhere, the deliverable comes back in ANSWER)',
+          'actions (what Ops should DO beyond reading — Ops on this deployment can run real code, use its own skills and tools, split the work across parallel workers, produce artifacts like tables and files, and set itself a follow-up check, so name the work you want done — plus the hard limits, unchanged: read-only on their inbox, never send or post anything anywhere, the deliverable comes back in ANSWER)',
+        ),
+      },
+    },
+  },
+};
+
+/** The delegate tool for the engine actually running this deployment: the OpenClaw variant invites
+ *  that engine's wider surface (its own code, skills, parallel workers, artifacts), while hermes —
+ *  and no engine at all — gets the canonical object above, unchanged. */
+export function delegateToOpsTool(engine: 'hermes' | 'openclaw' | null): LlmToolDef {
+  return engine === 'openclaw' ? DELEGATE_TO_OPS_TOOL_OPENCLAW : DELEGATE_TO_OPS_TOOL;
+}
+
 export const SET_PREFERENCE_TOOL: LlmToolDef = {
   name: 'set_preference',
   description: "Record a durable preference or onboarding fact about the user. Use for their name (key 'name' — this sets the name ON THEIR PROFILE, the same place remember_user writes it, so use it whenever they tell you what to call them), their timezone (key 'agent_tz', IANA like 'America/Denver' — capture it whenever their timezone or location surfaces; it anchors reminders and their daily rhythm), their communication style (key 'comms_style'), how they want to be addressed (key 'address_as', e.g. value 'Chief' or 'Mr. Smith' — whatever they ask to be called). Special key 'important_note': APPENDS one fact to a permanent remember-this list instead of overwriting — use it whenever they say \"remember this\" or restate something you'd forgotten (value = the fact, self-contained, e.g. 'is planning a trip to Japan in the fall'), and for a hard personal rule stated as one (they say 'never book me sunday mornings, ever' → value 'hard rule: no meetings or calls sunday mornings'). Persisted and remembered across conversations. You usually also write a normal text reply.",

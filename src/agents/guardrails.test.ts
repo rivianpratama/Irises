@@ -171,6 +171,58 @@ test('never false-positives on Claude the client or gemini the zodiac sign', () 
   assert.equal(redactInternalTools(showing), showing);
 });
 
+test('redacts "openclaw" leaks — first-person where there is a shape to keep, plain "AI" otherwise', () => {
+  assert.equal(redactInternalTools('openclaw is pulling that up'), "i'm pulling that up");
+  assert.equal(redactInternalTools('openclaw came back with the deadline'), 'i came back with the deadline');
+  assert.equal(redactInternalTools('my openclaw engine is slow'), "i'm slow");
+  assert.equal(redactInternalTools('handed that off to openclaw, one sec'), 'handed that, one sec');
+  // No shape left to keep → the brand flattens like a model name, never to "i run on i".
+  assert.equal(redactInternalTools('i run on openclaw'), 'i run on AI');
+  assert.equal(redactInternalTools("openclaw's run finished"), 'AI run finished');
+  // The arcade machine is two words and never a leak.
+  const arcade = 'the open claw machine at the arcade';
+  assert.equal(redactInternalTools(arcade), arcade);
+});
+
+test('redacts "hermes" ONLY in self-referential tech shapes', () => {
+  assert.equal(redactInternalTools('built on hermes'), 'built on AI');
+  assert.equal(redactInternalTools("it's hermes under the hood"), "it's AI under the hood");
+  assert.equal(redactInternalTools('my hermes engine is slow'), "i'm slow");
+  assert.equal(redactInternalTools('checking with my hermes side now'), 'checking with me now');
+});
+
+test('never false-positives on hermes the god, the handbag, or the courier', () => {
+  const courier = 'hermes says the package lands tuesday';
+  assert.equal(redactInternalTools(courier), courier);
+  const bag = 'she wants a hermes bag for her birthday';
+  assert.equal(redactInternalTools(bag), bag);
+  const god = 'hermes was the messenger god, fitting';
+  assert.equal(redactInternalTools(god), god);
+});
+
+test('redacts "claude code" as a bare bigram, but never claude the client doing the coding', () => {
+  assert.equal(redactInternalTools('claude code does my deep digging'), 'AI does my deep digging');
+  assert.equal(redactInternalTools("claude code's run finished"), 'AI run finished');
+  const coded = 'claude coded the fix himself';
+  assert.equal(redactInternalTools(coded), coded);
+});
+
+test('redacts mcp tool talk, but never the mcp line on a form', () => {
+  assert.equal(redactInternalTools('i used an mcp tool for that'), 'i used a tool for that');
+  assert.equal(redactInternalTools('my mcp servers are all connected'), 'my tools are all connected');
+  const fee = 'the mcp on that form is the monthly cost';
+  assert.equal(redactInternalTools(fee), fee);
+});
+
+test('redacts a subagent spawn, but never a real-estate subagent', () => {
+  assert.equal(redactInternalTools('i spun up 4 parallel subagents'), 'i worked a few angles');
+  assert.equal(redactInternalTools('spawned a few sub-agents to check the comps'), 'worked a few angles to check the comps');
+  const showing = 'my subagent showed the house today';
+  assert.equal(redactInternalTools(showing), showing);
+  const commission = 'the subagent gets half the commission';
+  assert.equal(redactInternalTools(commission), commission);
+});
+
 test('never false-positives on real words containing "ops"', () => {
   const coops = 'a few co-ops on that block allow subletting';
   assert.equal(redactInternalTools(coops), coops);
@@ -189,4 +241,7 @@ test('composes with redactInternalTools the way sendBubbles applies them', () =>
   const answer = 'ANSWER: ops found the owner is the Delgado trust';
   // "ops found" → first person ("i found"), then the ANSWER: label is stripped.
   assert.equal(stripOpsScaffolding(redactInternalTools(answer)), 'i found the owner is the Delgado trust');
+  // Same for a leaked engine name in the same block.
+  const engine = 'ANSWER: openclaw came back with the deadline';
+  assert.equal(stripOpsScaffolding(redactInternalTools(engine)), 'i came back with the deadline');
 });

@@ -1,7 +1,7 @@
 import { callLLM } from '../../llm/callLLM.js';
 import { transcribeAudio } from '../../llm/transcribe.js';
 import {
-  REACTION_TOOL, REMEMBER_USER_TOOL, DELEGATE_TO_OPS_TOOL,
+  REACTION_TOOL, REMEMBER_USER_TOOL, delegateToOpsTool,
   RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL, SET_PREFERENCE_TOOL,
   SCHEDULE_AUTOMATION_TOOL, LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL, CANCEL_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL,
   UPDATE_MEMORY_TOOL, UPDATE_SELF_TOOL, RECALL_MEMORY_TOOL,
@@ -176,9 +176,22 @@ export async function chat(
 
   if (textToSend) await addMessage(chatId, 'user', textToSend, chatContext?.senderHandle);
 
+  // ONE engine read for the turn: it picks the delegate tool's lane, gates the reminder tools, and
+  // feeds the capability summary further down — all three must agree on the same engine.
+  const engine = getEngineBackend();
+  const engineName = engine?.name ?? null;
+  // Order is load-bearing and must stay exactly as it is on the hermes lane: it drives the tool-docs
+  // section and the JSON envelope's name enum + flat args union (first tool's description wins), so
+  // the reminder tools are gated IN PLACE rather than appended.
   const tools: LlmToolDef[] = [
-    REACTION_TOOL, REMEMBER_USER_TOOL, DELEGATE_TO_OPS_TOOL, SET_PREFERENCE_TOOL,
-    SCHEDULE_AUTOMATION_TOOL, LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL, CANCEL_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL,
+    REACTION_TOOL, REMEMBER_USER_TOOL, delegateToOpsTool(engineName), SET_PREFERENCE_TOOL,
+    // Reminders live entirely on the engine (see shared.ts: all three tools route to
+    // createReminder/listReminders/cancelReminder, with no local scheduler behind them). OpenClaw's
+    // aren't wired — create and cancel throw, list is always empty — so offering them there buys the
+    // user a confirmed reminder that never fires. Gated as a set: listing and canceling mean nothing
+    // when nothing can be created.
+    ...(engineName === 'openclaw' ? [] : [SCHEDULE_AUTOMATION_TOOL, LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL]),
+    CANCEL_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL,
     UPDATE_MEMORY_TOOL, RECALL_MEMORY_TOOL,
   ];
   if (chatContext?.isGroupChat) tools.push(RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL);
@@ -207,7 +220,7 @@ export async function chat(
   // the backend's cached summary — this returns synchronously and never triggers a blocking fetch (the
   // adapter refreshes in the background), so it adds no latency to the turn. null when no engine, when
   // the backend doesn't do capability discovery, or before the first refresh has answered.
-  const capabilitySummary = getEngineBackend()?.getCapabilitySummary?.() ?? null;
+  const capabilitySummary = engine?.getCapabilitySummary?.() ?? null;
 
   // Held in a variable (not inlined): recall_memory's second pass re-invokes the model with this
   // SAME system + messages, minus the recall tool (see processConvoResult).

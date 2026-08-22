@@ -13,6 +13,7 @@ import type { MediaAttachment } from './channels/types.js';
 import * as convoClient from './agents/convo/client.js';
 import { getUserProfile, addMessage, hasHistory } from './state/conversation.js';
 import { runOpsAndFollowUp } from './agents/orchestrator.js';
+import { ensureEngineOnboarded } from './agents/ops/openclawOnboarding.js';
 import { createEnginePushRouter } from './webhook/enginePush.js';
 import { createProactiveDelivery } from './pipeline/proactiveDelivery.js';
 import { shouldShareContactCard, shouldStartTypingEarly } from './pipeline/turnGates.js';
@@ -909,6 +910,10 @@ app.listen(PORT, () => {
   const updateAnnouncer = createUpdateAnnouncer({ deliver: proactive.deliver });
   startUpdateChecker({ onUpdateDetected: sha => void updateAnnouncer.onUpdateDetected(sha) });
   void updateAnnouncer.announceUpgradeAppliedIfReceipt();
+
+  // Engine-mode doctrine: sent once per content version to an engine that has an automatic path
+  // (OpenClaw), so it saves the standing section into its own instructions by its own hand.
+  void ensureEngineOnboarded();
 
   console.log(`
   Irises — a general, casual, do-anything assistant

@@ -8,13 +8,19 @@
 // This is a TRIPWIRE, not the primary defense. The persona prompts are the primary defense;
 // every warning logged below means one of them slipped and needs reinforcing (§10.1, §13).
 //
-// Policy: the user must never see the name of an internal agent/role or the underlying model.
-// Irises presents as ONE entity; the back-line roles ("Ops", "Reflexion") and the model/provider
-// names are internal machinery. Irises's data sources — the web and the user's own email — are
-// ordinary and fine to name, so there is no external data-vendor brand to scrub here. The agents
-// may name their internal roles freely to EACH OTHER; this only rewrites text on its way to the
-// user, so a model slip — or the composer-failure path that relays Ops's raw summary with no
-// model in the loop — can never crack the single-entity seam.
+// Policy: the user must never see the name of an internal agent/role, of the deep-work engine, or
+// of the underlying model. Irises presents as ONE entity; the back-line roles ("Ops", "Reflexion"),
+// the engines ("Hermes", "OpenClaw", "Claude Code"), the working vocabulary those engines narrate
+// themselves in ("MCP tools", "subagents") and the model/provider names are all internal machinery.
+// Irises's data sources — the web and the user's own email — are ordinary and fine to name, so there
+// is no external data-vendor brand to scrub here. The agents may name their internal roles freely to
+// EACH OTHER; this only rewrites text on its way to the user, so a model slip — or the
+// composer-failure path that relays Ops's raw summary with no model in the loop — can never crack
+// the single-entity seam.
+//
+// Deliberately NOT scrubbed: "gateway". It is too ordinary a word (a gateway community, the gateway
+// listing) and a real leak always co-occurs with "openclaw", which IS scrubbed — so gating it would
+// buy nothing and cost false positives.
 
 interface RedactionRule {
   pattern: RegExp;
@@ -34,21 +40,47 @@ const INTERNAL_TOOL_REDACTIONS: RedactionRule[] = [
   // Model/provider names — the "what model are you" leak ("i run on deepseek"). To the user Irises
   // is one entity, not a stack; admitting to being an AI is fine (persona rule), naming the model
   // never is. Two tiers: tokens with NO innocent chat meaning are scrubbed bare; "claude" (a
-  // client's name) and "gemini" (a zodiac sign) are scrubbed ONLY in self-referential tech shapes,
-  // so "claude is coming by at 3" and "she's a gemini" pass untouched.
+  // client's name), "gemini" (a zodiac sign) and "hermes" (the god, the handbag, the parcel courier)
+  // are scrubbed ONLY in self-referential tech shapes, so "claude is coming by at 3", "she's a
+  // gemini" and "hermes says the package lands tuesday" pass untouched.
   { pattern: /\b(?:deepseek|chatgpt|openai|openrouter|anthropic|gpt[-\s]?\d[\w.-]*|gpt)(?:['’]s)?\b/gi, replacement: 'AI' },
-  { pattern: /\b((?:built|powered|running|based|trained)\s+(?:on|by)\s+)(?:claude|gemini)\b/gi, replacement: '$1AI' },
-  { pattern: /\b(?:claude|gemini)(?:['’]s)?\s+(under\s+the\s+hood|behind\s+the\s+scenes)\b/gi, replacement: 'AI $1' },
-  // "Ops" is the second banned name — the back-line agent. To the user there is only Irises, so a
-  // leaked "ops is pulling that up" cracks the single-entity seam the same way a brand does. The
-  // rules are ordered most-specific-first and grammar-aware, so the common leak shapes degrade to
-  // first-person Irises instead of garbled text. Bare "ops" is guarded against "co-ops"
-  // (cooperatives) by the hyphen lookbehind; "oops"/"stops"/"workshops" never match \bops\b at all.
-  { pattern: /\b(?:(?:my|the|our)\s+)?ops(?:\s+(?:engine|agent|team|side|system))?\s+is\b/gi, replacement: "i'm" },
-  { pattern: /\b(?:(?:my|the|our)\s+)?ops(?:\s+(?:engine|agent|team|side|system))?\s+(came back|found|pulled|says|said|has|got)\b/gi, replacement: 'i $1' },
-  { pattern: /\s+(?:off\s+)?to\s+(?:(?:my|the|our)\s+)?ops(?:\s+(?:engine|agent|team|side|system))?\b/gi, replacement: '' },
-  { pattern: /\b(?:(?:my|the|our)\s+)?ops\s+(?:engine|agent|team|side|system)\b/gi, replacement: 'me' },
+  // "Claude Code" is the deep-work engine's product name — a bigram with no innocent chat meaning of
+  // its own, so it gets the bare tier, and it must sit ABOVE the gated "claude" rules so the bigram
+  // wins before the client-name gate can decline. Accepted rare edge: a client named Claude standing
+  // right in front of the word "code" ("claude code the lockbox for me") flattens to "AI" — cheap
+  // next to the leak. "claude coded the fix" is safe: the \b after "code" refuses the "d".
+  { pattern: /\bclaude[\s-]?code(?:['’]s)?\b/gi, replacement: 'AI' },
+  { pattern: /\b((?:built|powered|running|based|trained)\s+(?:on|by)\s+)(?:claude|gemini|hermes)\b/gi, replacement: '$1AI' },
+  { pattern: /\b(?:claude|gemini|hermes)(?:['’]s)?\s+(under\s+the\s+hood|behind\s+the\s+scenes)\b/gi, replacement: 'AI $1' },
+  // "Ops" is the second banned name — the back-line agent — and "OpenClaw"/"Hermes", the deep-work
+  // engines, crack the same seam in the same grammar ("ops is pulling that up", "openclaw came back
+  // with the deadline"): to the user there is only Irises doing the work. The rules are ordered
+  // most-specific-first and grammar-aware, so the common leak shapes degrade to first-person Irises
+  // instead of garbled text. "openclaw" rides along in every shape (one token, no innocent meaning);
+  // "hermes" only joins where a role noun makes the machinery reading unambiguous, so the courier and
+  // the god keep their sentences. Bare "ops" is guarded against "co-ops" (cooperatives) by the hyphen
+  // lookbehind; "oops"/"stops"/"workshops" never match \bops\b at all.
+  { pattern: /\b(?:(?:my|the|our)\s+)?(?:(?:ops|openclaw)(?:\s+(?:engine|agent|team|side|system))?|hermes\s+(?:engine|agent|team|side|system))\s+is\b/gi, replacement: "i'm" },
+  { pattern: /\b(?:(?:my|the|our)\s+)?(?:(?:ops|openclaw)(?:\s+(?:engine|agent|team|side|system))?|hermes\s+(?:engine|agent|team|side|system))\s+(came back|found|pulled|says|said|has|got)\b/gi, replacement: 'i $1' },
+  { pattern: /\s+(?:off\s+)?to\s+(?:(?:my|the|our)\s+)?(?:ops|openclaw)(?:\s+(?:engine|agent|team|side|system))?\b/gi, replacement: '' },
+  { pattern: /\b(?:(?:my|the|our)\s+)?(?:ops|openclaw|hermes)\s+(?:engine|agent|team|side|system)\b/gi, replacement: 'me' },
   { pattern: /(?<!-)\bops\b/gi, replacement: 'i' },
+  // Whatever "openclaw" the grammar rules above didn't reshape is a leftover brand mention with no
+  // sentence shape worth keeping ("i run on openclaw", "openclaw's run finished"), so it flattens to
+  // "AI" like the model names. It sits BELOW those rules so the first-person degrade always wins, and
+  // it is deliberately NOT folded into the bare ops→"i" rule: that would say "i run on i".
+  { pattern: /\bopenclaw(?:['’]s)?\b/gi, replacement: 'AI' },
+  // The engines also narrate their own plumbing in Claude-Code vocabulary ("i used an mcp tool",
+  // "i spun up 3 subagents"); to the user, that is just Irises doing things. Both are context-gated,
+  // because both words are ordinary here: bare "mcp" is a line item on a co-op form (monthly common
+  // charges) and "subagent" is real-estate vocabulary in this deployment's own domain. The article
+  // comes along on the singular so the rewrite reads like a person ("an mcp tool" → "a tool", never
+  // "an my tools").
+  { pattern: /\b(?:(?:an?|the|my|our)\s+)?mcp\s+(?:tool|server|integration|connector)\b/gi, replacement: 'a tool' },
+  { pattern: /\b(?:(?:the|my|our)\s+)?mcp\s+(?:tools|servers|integrations|connectors)\b/gi, replacement: 'my tools' },
+  // Verb-gated hard: only the spawn shapes are machinery. "my subagent showed the house" and "the
+  // subagent gets half the commission" are ordinary co-broke talk and must pass through untouched.
+  { pattern: /\b(?:spawned|spun\s+up|kicked\s+off)\s+(?:a\s+few\s+|\d+\s+|some\s+|several\s+)?(?:parallel\s+)?sub-?agents?\b/gi, replacement: 'worked a few angles' },
 ];
 
 /**

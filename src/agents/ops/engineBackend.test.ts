@@ -188,6 +188,23 @@ test('buildTaskPrompt: pins the clock, the NO RESULT contract, and the media not
   assert.match(p, /<user_request>/, 'the raw ask rides in a data tag');
 });
 
+test('buildTaskPrompt is engine-agnostic: same bytes whatever OPS_BACKEND says, and no engine header', () => {
+  const task = mkTask({ metaPrompt: 'brief text' });
+  const at = { now: Date.parse('2026-08-12T00:00:00Z'), tz: 'UTC' };
+  const prev = process.env.OPS_BACKEND;
+  try {
+    delete process.env.OPS_BACKEND;
+    const bare = buildTaskPrompt(task, at);
+    process.env.OPS_BACKEND = 'hermes';
+    // Adapter-side additions (the OpenClaw doctrine header) must never leak into the shared prompt:
+    // hermes's bytes have to stay exactly what they were.
+    assert.equal(buildTaskPrompt(task, at), bare);
+    assert.doesNotMatch(bare, /Engine-mode request/);
+  } finally {
+    if (prev === undefined) delete process.env.OPS_BACKEND; else process.env.OPS_BACKEND = prev;
+  }
+});
+
 test('seedCorpus folds prior findings into the prompt', async () => {
   let seen = '';
   resetEngineBackendCache(stub(async (prompt) => { seen = prompt; return 'ok'; }));

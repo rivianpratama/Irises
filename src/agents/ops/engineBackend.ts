@@ -86,6 +86,12 @@ export interface EngineBackend {
    *  any latency here lands on a user turn. The adapter refreshes the cache in the background.
    *  Optional: a backend that hasn't wired capability discovery simply omits it. */
   getCapabilitySummary?(): CapabilitySummary | null;
+  /** Deliver the engine-mode doctrine ONCE, as a chat message the engine folds into its own durable
+   *  instructions by its own hand (Irises never edits engine files). `version` is the doctrine's
+   *  content hash, so the adapter can key its idempotency on it; returns the engine's reply text.
+   *  Optional: only engines with an automatic onboarding path implement it — hermes's send stays a
+   *  documented manual step (bridge/hermes/engine-onboarding-message.md). */
+  sendOnboarding?(text: string, version: string): Promise<string>;
   /** Bridge mode: deliver a message THROUGH one of the engine's own channel connections
    *  (the engine keeps owning the bot/number; Irises fronts it — see docs/ENGINES.md).
    *  `platform` is the engine's channel name (telegram/whatsapp/discord/…), `chatId` the raw
