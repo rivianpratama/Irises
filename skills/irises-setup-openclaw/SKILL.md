@@ -30,7 +30,7 @@ making it. Walk the user through these stages, running the script for the mechan
 
 1. Confirm prerequisites: Node 22.13+ (Irises's local store uses the builtin `node:sqlite`), git, and a running OpenClaw gateway (`openclaw gateway status`).
 2. Clone `https://github.com/rivianpratama/irises` into a folder the user picks (default `~/irises`).
-3. From the clone, run: `bash scripts/engine-setup.sh --engine openclaw`
+3. From the clone, run: `bash ./scripts/engine-setup.sh --engine openclaw --yes`
    The script (read it first if the user wants — it is short and commented):
    - reads the existing gateway URL + token via `openclaw config get` (no OpenClaw config changes),
    - installs the `@openclaw/gateway-client` package into the Irises clone,
@@ -38,13 +38,20 @@ making it. Walk the user through these stages, running the script for the mechan
      generated `ENGINE_PUSH_TOKEN` (no database needed — Irises persists to `~/.irises` on its own),
    - asks for an `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` for Irises's own small voice models
      (reusing one from the OpenClaw config/environment when present),
-   - offers OPTIONAL bridge mode (front chosen OpenClaw channels — WhatsApp, Discord, any of them —
-     with Irises, via a plugin installed with `openclaw plugins install`; opt-in per chat via
-     `IRISES_FRONT` patterns, off by default — see `docs/ENGINES.md` § Bridge mode),
-   - installs dependencies, builds, starts Irises, and runs a health check (`curl /health`).
-4. Tell the user where to talk to Irises: the web chat URL the script prints, `npm run chat` in the
-   clone for a terminal session, or — if they enabled bridge mode — the engine's own channels they
-   chose to front.
+   - sets up OPTIONAL bridge mode only when asked with `--bridge` (front chosen OpenClaw channels —
+     WhatsApp, Discord, any of them — with Irises, via a plugin installed with
+     `openclaw plugins install`; opt-in per chat via `IRISES_FRONT` patterns, off by default — see
+     `docs/ENGINES.md` § Bridge mode). `--yes` takes every default and never prompts; without a
+     terminal the default is no bridge either way.
+   - installs dependencies, builds the server and the web client, pins `PORT=3000` in the Irises
+     `.env` (the committed `deploy/app.env` baseline `8080` is the Docker image's port), then starts
+     Irises **detached** — it outlives the shell that ran the script — and health-checks it with
+     retries. It **leaves Irises running** and prints the web chat URL (`http://127.0.0.1:3000`),
+     `npm run chat`, and how to stop it; a re-run against a healthy Irises on that port reports
+     "already running" and skips the start.
+4. Tell the user where to talk to Irises — it is already up, nothing left to start: the web chat URL
+   the script prints, `npm run chat` in the clone for a terminal session, or — if they enabled
+   bridge mode — the engine's own channels they chose to front.
 
 ## Notes
 
@@ -60,6 +67,6 @@ making it. Walk the user through these stages, running the script for the mechan
   agent's own skills, parallel subagents, artifacts.
 - The user keeps using OpenClaw directly exactly as before; Irises is an additional,
   differently-voiced front door that uses it as an engine.
-- To undo bridge mode: `bash scripts/engine-setup.sh --engine openclaw --revert`.
-- To update later: `bash scripts/update.sh` from the clone (pull + rebuild, then restart). Irises
+- To undo bridge mode: `bash ./scripts/engine-setup.sh --engine openclaw --revert`.
+- To update later: `bash ./scripts/update.sh` from the clone (pull + rebuild, then restart). Irises
   also checks for new versions itself and mentions them in chat.

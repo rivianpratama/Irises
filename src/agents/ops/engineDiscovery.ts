@@ -3,10 +3,13 @@
 // deploy/app.env baseline load and the local .env override) and front-fills process.env from the
 // detected engine:
 //   • OPS_BACKEND        — auto-detected from which engine is installed (explicit value wins)
-//   • engine creds       — HERMES_API_KEY / OPENCLAW_TOKEN + loopback URLs (filled only when unset)
+//   • engine creds       — HERMES_API_KEY / OPENCLAW_TOKEN + the engine's own bind address (filled
+//                          only when unset)
 //   • the LLM key        — reuse the engine's ANTHROPIC/OPENROUTER key (filled only when unset)
 //   • the voice model     — ALL of Irises's own roles (convo/classify/fallfirm) inherit the engine's
-//                          model so "the model used for Irises" == the model the engine uses.
+//                          model so "the model used for Irises" == the model the engine uses — but
+//                          only when the engine's model AND provider together say which of Irises's
+//                          lanes can actually call it (see applyModel).
 //
 // Precedence (why this runs between the two dotenv loads): deploy/app.env SETS the model vars, so a
 // plain "set if unset" could never make the engine's model the default. Model inheritance therefore
@@ -45,8 +48,19 @@ export interface DiscoveryDeps {
  *  already; `transcribe` needs an audio model, so both are excluded. */
 const VOICE_ROLES = ['CONVO', 'CLASSIFY', 'FALLFIRM'] as const;
 
-const HERMES_DEFAULT_URL = 'http://127.0.0.1:8642';
+const HERMES_DEFAULT_HOST = '127.0.0.1';
+const HERMES_DEFAULT_PORT = '8642';
 const OPENCLAW_DEFAULT_URL = 'ws://127.0.0.1:18789';
+
+/** Where the hermes API server listens, from its OWN bind settings in ~/.hermes/.env (the multi-
+ *  profile docs tell users to move the port, and the gateway reads these two keys from that same
+ *  file). A wildcard bind is not a dialable address, so it maps back to loopback. */
+function hermesBaseUrl(host: string | null, port: string | null): string {
+  let h = (host || '').trim() || HERMES_DEFAULT_HOST;
+  if (h === '0.0.0.0' || h === '::' || h === '[::]') h = HERMES_DEFAULT_HOST;
+  if (h.includes(':') && !h.startsWith('[')) h = `[${h}]`; // a bare IPv6 literal needs brackets in a URL
+  return `http://${h}:${(port || '').trim() || HERMES_DEFAULT_PORT}`;
+}
 
 /** Read a KEY=VALUE from dotenv-style text (last assignment wins, quotes stripped, `export ` ok). */
 export function envFileValue(text: string, key: string): string | null {
@@ -74,11 +88,13 @@ export function envFileValue(text: string, key: string): string | null {
   return found;
 }
 
-/** Last-resort, dependency-free scan of ~/.hermes/config.yaml for the model — used only when the
- *  `hermes` CLI is unavailable. Handles both `model: "slug"` and a `model:` block with a nested
- *  `default:`/`model:`/`name:`. Not a full YAML parser; the CLI is the authoritative path. */
-export function scanYamlModel(text: string | null): string | null {
+/** Last-resort, dependency-free scan of ~/.hermes/config.yaml's top-level `model:` block for the
+ *  first of `keys` — used only when the `hermes` CLI is unavailable. `takeInline` claims the scalar
+ *  form (`model: "slug"`), which IS the model and can never be a sibling key like `provider:`. Not a
+ *  full YAML parser; the CLI is the authoritative path. */
+function scanModelBlock(text: string | null, keys: readonly string[], takeInline: boolean): string | null {
   if (!text) return null;
+  const kvRe = new RegExp(`^\\s*(?:${keys.join('|')}):\\s*(.+)$`);
   const strip = (s: string): string => {
     let v = s.trim();
     // drop trailing inline comment on unquoted scalars
@@ -96,18 +112,29 @@ export function scanYamlModel(text: string | null): string | null {
     const top = line.match(/^model:\s*(.*)$/);
     if (top) {
       const inline = strip(top[1]);
-      if (inline) return inline; // `model: "anthropic/claude-opus-4.6"`
+      if (inline) return takeInline ? inline : null; // `model: "anthropic/claude-opus-4.6"`
       inModel = true;
       continue;
     }
     if (inModel) {
       const indent = line.match(/^(\s*)/)![1].length;
       if (indent === 0) { inModel = false; continue; } // dedented back to a top-level key
-      const kv = line.match(/^\s*(default|model|name):\s*(.+)$/);
-      if (kv) { const v = strip(kv[2]); if (v) return v; }
+      const kv = line.match(kvRe);
+      if (kv) { const v = strip(kv[1]); if (v) return v; }
     }
   }
   return null;
+}
+
+/** The engine's model id: the inline `model: "slug"` form, or `default:`/`model:`/`name:` in the block. */
+export function scanYamlModel(text: string | null): string | null {
+  return scanModelBlock(text, ['default', 'model', 'name'], true);
+}
+
+/** The engine's provider slug — hermes keeps `provider:` as a SIBLING of `default:` in that block,
+ *  and the id alone cannot say which API it is native to. */
+export function scanYamlProvider(text: string | null): string | null {
+  return scanModelBlock(text, ['provider'], false);
 }
 
 /** A CLI `config get` on an unset key can print a null-ish literal instead of failing — never treat
@@ -186,44 +213,85 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
   const inheritRaw = (env.ENGINE_MODEL_INHERIT || '').trim().toLowerCase();
   const inheritEnabled = !['off', 'false', '0', 'no'].includes(inheritRaw);
 
-  // Map the engine's `provider/model` slug onto Irises's two lanes, for ALL voice roles.
-  const applyModel = (slug: string | null): void => {
+  // Map the engine's model onto one of Irises's two voice lanes, for ALL voice roles.
+  //
+  // The id alone is NOT enough to pick the lane: hermes stores a PROVIDER-NATIVE id in `model.default`
+  // plus the provider in `model.provider` (`vendor/model` is only the aggregator shape), so an
+  // Anthropic-direct hermes reads `claude-sonnet-4-5-20250929`, an Azure one `gpt-4o`, and a MoA one a
+  // local preset name. Sent to the OpenRouter lane those 400 on every turn — auto-detection breaking
+  // an install that worked before it ran. So: inherit only when the (id, provider) pair is
+  // conclusive, otherwise leave the shipped defaults alone and say why.
+  const applyModel = (slug: string | null, provider: string | null): void => {
     if (!inheritEnabled) return;
     if (nullish(slug)) {
       deps.warn('could not read the engine model — keeping Irises\'s own model defaults');
       return;
     }
     const s = slug!.trim();
-    const hasOR = has('OPENROUTER_API_KEY');
-    const hasAnthropic = has('ANTHROPIC_API_KEY');
-    if (hasOR || !hasAnthropic) {
-      // OpenRouter lane. Both engines emit `provider/model`, which the OpenRouter lane consumes
-      // verbatim — an exact model match. Also the fall-through when no key is present yet.
+    // `auto` is hermes's "not pinned to a provider" sentinel (logout resets it, pointing base_url back
+    // at OpenRouter) — unknown, not a provider of its own.
+    const raw = nullish(provider) ? '' : provider!.trim().toLowerCase();
+    const p = raw === 'auto' ? '' : raw;
+
+    const toOpenRouter = (): void => {
       for (const r of VOICE_ROLES) {
         override(`${r}_MODEL_OPENROUTER`, s);
         override(`${r}_PROVIDER`, 'openrouter');
       }
       deps.log(`inheriting engine model "${s}" on all voice roles (OpenRouter lane)`);
-      if (!hasOR) deps.warn(`inherited "${s}" but no OPENROUTER_API_KEY is set — add one so Irises's voice can use it`);
-    } else if (s.startsWith('anthropic/')) {
-      // Anthropic-only deployment: strip the vendor prefix for the Anthropic lane (best-effort —
-      // the version format may differ from a valid Anthropic API id).
-      const bare = s.slice('anthropic/'.length);
+      if (!has('OPENROUTER_API_KEY')) deps.warn(`inherited "${s}" but no OPENROUTER_API_KEY is set — add one so Irises's voice can use it`);
+    };
+    const toAnthropic = (): void => {
+      // hermes's Anthropic-direct ids are bare; the aggregator-shaped `anthropic/<id>` also occurs
+      // (hermes's own example config), and the Anthropic lane needs it without the vendor prefix.
+      const bare = s.startsWith('anthropic/') ? s.slice('anthropic/'.length) : s;
       for (const r of VOICE_ROLES) {
         override(`${r}_MODEL`, bare);
         override(`${r}_PROVIDER`, 'anthropic');
       }
       deps.log(`inheriting engine model "${bare}" on all voice roles (Anthropic lane)`);
       deps.warn(`applied "${bare}" to the Anthropic lane as-is; if the API rejects it, set <ROLE>_MODEL to override`);
-    } else {
-      deps.warn(`engine model "${s}" needs OpenRouter but no OPENROUTER_API_KEY is set — keeping Irises defaults`);
+    };
+
+    if (p === 'openrouter') { toOpenRouter(); return; }
+    if (p === 'anthropic') { toAnthropic(); return; }
+    if (p) {
+      // azure-foundry / moa / copilot / openai-codex / bedrock / nous / custom / … — the id is native
+      // to an API neither of Irises's voice lanes can call (a MoA preset name means nothing at all
+      // outside that box), so inheriting it would only take a working baseline offline.
+      deps.log(`engine model "${s}" runs on provider "${p}", which Irises's voice lanes (OpenRouter, Anthropic) cannot reach — keeping Irises's own model defaults`);
+      return;
     }
+    // No readable provider. A `/` is the de-facto aggregator slug shape, which the OpenRouter lane
+    // consumes verbatim; a bare id is provider-native and unattributable — guessing there is the bug.
+    if (!s.includes('/')) {
+      deps.log(`engine model "${s}" is a bare provider-native id and no model.provider was readable, so its lane is unknown — keeping Irises's own model defaults`);
+      return;
+    }
+    const hasOR = has('OPENROUTER_API_KEY');
+    const hasAnthropic = has('ANTHROPIC_API_KEY');
+    if (hasOR || !hasAnthropic) { toOpenRouter(); return; }
+    if (s.startsWith('anthropic/')) { toAnthropic(); return; }
+    deps.warn(`engine model "${s}" needs OpenRouter but no OPENROUTER_API_KEY is set — keeping Irises defaults`);
   };
 
   // ── 2/3/4. per-backend creds, LLM key, and model ──────────────────────────
   if (backend === 'hermes') {
-    fill('HERMES_BASE_URL', HERMES_DEFAULT_URL, 'hermes default');
     const hermesEnv = deps.readFileText(hermesEnvPath);
+    // cached: the yaml is the last rung of BOTH the model and the provider fallback chains
+    let hermesYaml: string | null | undefined;
+    const readHermesYaml = (): string | null => {
+      if (hermesYaml === undefined) hermesYaml = deps.readFileText(hermesConfigPath);
+      return hermesYaml;
+    };
+    fill(
+      'HERMES_BASE_URL',
+      hermesBaseUrl(
+        hermesEnv && envFileValue(hermesEnv, 'API_SERVER_HOST'),
+        hermesEnv && envFileValue(hermesEnv, 'API_SERVER_PORT'),
+      ),
+      'hermes default',
+    );
     if (hermesEnv) {
       fill('HERMES_API_KEY', envFileValue(hermesEnv, 'API_SERVER_KEY'), 'from ~/.hermes/.env');
       fill('OPENROUTER_API_KEY', envFileValue(hermesEnv, 'OPENROUTER_API_KEY'), 'reused from hermes');
@@ -235,8 +303,8 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
       || cliValue('hermes', ['config', 'get', 'model.model'])
       || cliValue('hermes', ['config', 'get', 'model.name'])
       || (hermesEnv ? envFileValue(hermesEnv, 'HERMES_MODEL') : null)
-      || scanYamlModel(deps.readFileText(hermesConfigPath));
-    applyModel(slug);
+      || scanYamlModel(readHermesYaml());
+    applyModel(slug, cliValue('hermes', ['config', 'get', 'model.provider']) || scanYamlProvider(readHermesYaml()));
     if (!has('OPENROUTER_API_KEY') && !has('ANTHROPIC_API_KEY')) {
       deps.warn('no ANTHROPIC_API_KEY or OPENROUTER_API_KEY found — add one so Irises\'s own voice can call an LLM');
     }
@@ -248,7 +316,8 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
     const slug = cliValue('openclaw', ['config', 'get', `agents.entries.${agentId}.model`])
       || cliValue('openclaw', ['config', 'get', 'agents.defaults.model.primary'])
       || cliValue('openclaw', ['config', 'get', 'agents.defaults.model']);
-    applyModel(slug);
+    // OpenClaw binds models as `provider/model` slugs — there is no separate provider key to read.
+    applyModel(slug, null);
     if (!has('OPENROUTER_API_KEY') && !has('ANTHROPIC_API_KEY')) {
       deps.warn('no ANTHROPIC_API_KEY or OPENROUTER_API_KEY found — add one so Irises\'s own voice can call an LLM');
     }

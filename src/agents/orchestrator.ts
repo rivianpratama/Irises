@@ -285,7 +285,16 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
             staleIfSpokenSince: voicedAt,
           }).catch(() => { /* progress is best-effort */ });
         },
-      );
+      )
+        // TERMINAL catch — the one that makes the floated calls below safe. Every caller of
+        // voiceAndPing floats it (`void …`), and one of them fires from inside a setTimeout where
+        // there is no caller at all. An unhandled rejection is FATAL in this process
+        // (diagnostics/errorLog.ts installs a handler that exits(1)), so an unguarded ping could
+        // kill the VM mid-delegation: the in-flight run's promise chain, its deadline timer and the
+        // whole in-memory trace ring die with it, and under any supervisor the restart makes the
+        // delegation look like it hung forever — no engine:*:start, no ops:timeout, no snag line.
+        // A reassurance is never worth that.
+        .catch(err => { console.error('[orchestrator] progress ping failed (ignored)', err); });
     return { gate, voiceAndPing };
   };
   const pingStops: Array<() => void> = [];

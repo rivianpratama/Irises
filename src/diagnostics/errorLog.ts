@@ -310,6 +310,12 @@ let exiting = false;   // re-entrancy latch: a crash DURING the shutdown flush m
 function onFatal(err: unknown, origin: string): void {
   if (exiting) { console.error(`[errlog] ${origin} while already exiting`, err); return; }
   exiting = true;
+  // STDOUT FIRST, before anything that can itself fail or be lost. This handler EXITS the process,
+  // and an exit with nothing printed is indistinguishable from a hang: whatever was in flight —
+  // a delegated engine run, its deadline timer, the whole in-memory trace ring — vanishes, and
+  // under a supervisor the restart just looks like "the task stopped and nothing ever came back".
+  // The durable row below is for later; this line is what makes the death visible AS a death.
+  console.error(`[fatal] ${origin} — exiting(1). in-flight work is being abandoned. cause:`, err);
   reportError({ severity: 'fatal', source: 'process', category: 'process_crash', err, detail: { origin }, trace: false });
   // exit(1) preserves the container restart signal; the flush is what makes the crash visible
   // in the table afterwards.

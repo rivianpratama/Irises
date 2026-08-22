@@ -1,3 +1,4 @@
+import { isLaneConfigured } from './laneKeys.js';
 import type { LlmRole, LlmProvider } from './types.js';
 
 // Role -> the model slug on each provider. EVERY slot is overridable from .env so models
@@ -177,11 +178,16 @@ export const PROVIDERS: Record<LlmRole, LlmProvider> = {
 export const OPS_RETRY_ENABLED = parseBoolEnv(process.env.OPS_RETRY_ENABLED, true);
 
 // Loud-but-harmless heads-up: a role pinned to OpenRouter with no key just falls back to
-// Anthropic at call time, which can mask a config typo. Warn once at boot.
-if (!process.env.OPENROUTER_API_KEY) {
+// Anthropic at call time, which can mask a config typo. Warn once at boot. A key that is SET BUT
+// BLANK counts as unset here (isLaneConfigured) — that is the exact shape this warning is for.
+if (!isLaneConfigured('openrouter')) {
   const orphaned = (Object.keys(PROVIDERS) as LlmRole[]).filter(r => PROVIDERS[r] === 'openrouter');
   if (orphaned.length) {
-    console.warn(`[llm] ${orphaned.join(', ')} set to provider=openrouter but OPENROUTER_API_KEY is unset — these will fall back to Anthropic`);
+    // With no Anthropic key either there is nothing to fall back TO: callLLM fails these roles fast
+    // (naming both vars) rather than half-working, so don't promise a lane that isn't there.
+    console.warn(isLaneConfigured('anthropic')
+      ? `[llm] ${orphaned.join(', ')} set to provider=openrouter but OPENROUTER_API_KEY is unset — these will fall back to Anthropic`
+      : `[llm] ${orphaned.join(', ')} set to provider=openrouter but neither OPENROUTER_API_KEY nor ANTHROPIC_API_KEY is set — these roles cannot call an LLM at all`);
   }
 }
 

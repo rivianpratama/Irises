@@ -45,6 +45,9 @@ hermes skills install https://raw.githubusercontent.com/rivianpratama/irises/mai
 # then, in any hermes chat:   /irises-setup-hermes
 ```
 
+(The one-liner fetches over plain HTTPS with no credentials, so the repo has to be public — or
+otherwise reachable to you anonymously — for it to resolve.)
+
 **OpenClaw users:**
 
 ```bash
@@ -56,12 +59,28 @@ openclaw skills install git:rivianpratama/irises
 
 ```bash
 git clone https://github.com/rivianpratama/irises && cd irises
-bash scripts/engine-setup.sh --engine hermes     # or: --engine openclaw
+bash ./scripts/engine-setup.sh --engine hermes     # or: --engine openclaw
 ```
 
 The script is idempotent, prints every change before making it, and never edits engine code. For
 hermes it appends two lines to `~/.hermes/.env` (`API_SERVER_ENABLED`, `API_SERVER_KEY`) — the
 documented way to enable its API server; for OpenClaw it only *reads* the existing gateway token.
+
+Flags: `--yes` runs non-interactively (assume every default, never prompt — which is also what a run
+with no terminal on stdin does by itself), `--bridge` / `--no-bridge` choose bridge mode outright
+(no bridge is the default without a terminal), `--revert` undoes bridge mode.
+
+What it leaves behind: `PORT=3000` pinned in the Irises `.env` — the committed `deploy/app.env`
+baseline of `8080` is the Docker image's port behind Caddy, so pinning 3000 keeps the server, the
+printed URL, `npm run chat` and the bridge plugin's `IRISES_URL` default all pointing at one place.
+It builds both halves (the server and the web client), starts Irises **detached** so it outlives the
+shell that ran the script, health-checks it with retries, and — on hermes, when the gateway is up —
+runs a real engine round-trip (`GET /v1/capabilities` on the API server with the key). Then it
+**leaves Irises running** and prints the web chat URL (`http://127.0.0.1:3000`), `npm run chat`, and
+how to stop it. If the hermes gateway isn't running it prints the exact command to bring it up
+(`hermes gateway restart`, or `hermes gateway install` when it was never installed as a service) and
+notes that Irises reconnects on its own once it is — nothing to re-run. Run the script again on a box
+where a healthy Irises already serves that port and it reports "already running" and skips the start.
 
 ## Zero-config discovery (what happens at boot)
 
@@ -245,9 +264,10 @@ loopback listener; OpenClaw needs nothing extra (outbound rides the existing gat
 
 ### Install / remove
 
-`bash scripts/engine-setup.sh --engine hermes|openclaw` offers bridge mode interactively (it
-copies the plugin via `~/.hermes/plugins/` or `openclaw plugins install`, wires the token, and
-prints every change). Remove: blank `IRISES_FRONT` (instant), or disable the plugin
+`bash ./scripts/engine-setup.sh --engine hermes|openclaw --bridge` sets bridge mode up (it copies
+the plugin via `~/.hermes/plugins/` or `openclaw plugins install`, wires the token, and prints every
+change); an interactive run without the flag offers it, and a non-interactive one skips it. Remove:
+blank `IRISES_FRONT` (instant), or disable the plugin
 (`hermes plugins disable irises-bridge` / `openclaw plugins disable irises-bridge`) and restart
 the gateway; `--revert` prints the same steps.
 

@@ -103,7 +103,7 @@ hermes skills install https://raw.githubusercontent.com/rivianpratama/irises/mai
 openclaw skills install git:rivianpratama/irises
 
 # anyone, manually:
-git clone https://github.com/rivianpratama/irises && cd irises && bash scripts/engine-setup.sh --engine hermes
+git clone https://github.com/rivianpratama/irises && cd irises && bash ./scripts/engine-setup.sh --engine hermes
 ```
 
 Fronting is **opt-in per chat**: the engine-side `IRISES_FRONT` glob list (matched against `<platform>:<chat_id>`, empty by default) decides which conversations Irises answers. Everything else the engine keeps handling itself, and blanking `IRISES_FRONT` turns the plugin inert instantly. If the hook errors, the default `IRISES_BRIDGE_FAIL=open` lets the engine answer rather than go silent — I'd rather you get a boring reply than no reply.
@@ -116,7 +116,7 @@ Full guide, diagrams, and security notes: **[docs/ENGINES.md](docs/ENGINES.md)**
 
 ## Quick start
 
-Since Irises is meant to sit on top of the engine you already run, the default install is simply to **let that engine set it up** — no npm, no config files. Ask your hermes or OpenClaw, and it clones Irises, wires it in, and starts it from one command in its own CLI:
+Since Irises is meant to sit on top of the engine you already run, the default install is simply to **let that engine set it up** — no npm, no config files. Ask your hermes or OpenClaw, and it clones Irises, wires it in, and starts it from one command in its own CLI — and leaves it running at `http://127.0.0.1:3000`:
 
 ```bash
 # hermes — let your own agent install + set it up:
@@ -139,10 +139,10 @@ That is honestly the whole setup. On boot Irises **auto-detects your engine** (`
 
 ```bash
 git clone https://github.com/rivianpratama/irises && cd irises
-bash scripts/engine-setup.sh --engine hermes     # or: --engine openclaw
+bash ./scripts/engine-setup.sh --engine hermes     # or: --engine openclaw
 ```
 
-The script is idempotent and prints every change before making it: it enables the engine's API surface if needed, generates the push token, and derives everything else at boot. See [docs/ENGINES.md](docs/ENGINES.md).
+The script is idempotent and prints every change before making it: it enables the engine's API surface if needed, generates the push token, pins `PORT=3000` in your `.env` (the committed `deploy/app.env` baseline `8080` is the Docker image's port), builds the server and the web client, then starts Irises detached — surviving the shell you ran it from — and leaves it running at `http://127.0.0.1:3000` after a health and engine round-trip check. Everything else is derived at boot. Add `--yes` for a fully non-interactive run, `--bridge` / `--no-bridge` to choose bridge mode outright. See [docs/ENGINES.md](docs/ENGINES.md).
 
 </details>
 
@@ -208,7 +208,7 @@ npm run chat
 Prefer the terminal? A git-clone install also updates with one command from the clone:
 
 ```bash
-bash scripts/update.sh
+bash ./scripts/update.sh
 ```
 
 It fast-forward `git pull`s, reinstalls deps and rebuilds (`npm ci && npm run build`, plus the web client when it's installed), refreshes the engine bridge plugin **only if `bridge/` changed** (and reminds you to restart the gateway), and writes an update receipt. Then **restart the server** to run the new build. It's careful by design: fast-forward only (it never auto-merges divergent local commits), refuses a dirty working tree, and never touches your data under `$IRISES_HOME`.

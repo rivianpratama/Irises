@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { reportError } from '../diagnostics/errorLog.js';
+import { envKey } from './laneKeys.js';
 
 // Voice-memo transcription via OpenRouter's multimodal audio input (no OpenAI/Whisper).
 // Voice memos arrive as audio media parts (audio/mp4 = m4a).
@@ -17,9 +18,10 @@ const TRANSCRIBE_MAX_TOKENS = Number(process.env.TRANSCRIBE_MAX_TOKENS) || 4096;
  *  know the memo continues past this point. A marked partial beats a dropped memo. */
 const CUTOFF_NOTE = '\n[voice memo transcript cut off — memo longer than the transcription limit]';
 
-const client = process.env.OPENROUTER_API_KEY
-  ? new OpenAI({ apiKey: process.env.OPENROUTER_API_KEY, baseURL: 'https://openrouter.ai/api/v1' })
-  : null;
+// A blank OPENROUTER_API_KEY (`OPENROUTER_API_KEY=` in .env) is NO key: envKey trims it away, so
+// this lane reports itself unconfigured instead of building a client that 401s on every memo.
+const orKey = envKey('OPENROUTER_API_KEY');
+const client = orKey ? new OpenAI({ apiKey: orKey, baseURL: 'https://openrouter.ai/api/v1' }) : null;
 
 /** Map an audio MIME type to the OpenRouter `format` string. Shared with the media inliner. */
 export function formatFromMime(mime: string): string {

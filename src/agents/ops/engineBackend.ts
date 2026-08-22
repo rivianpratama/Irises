@@ -138,6 +138,25 @@ export function computeEngineTimeoutMs(env: NodeJS.ProcessEnv): number {
 
 export const ENGINE_TIMEOUT_MS = computeEngineTimeoutMs(process.env);
 
+/**
+ * How long a run may sit in the engine-slot queue below before it gives up and fails honestly.
+ *
+ * This bound is load-bearing, not a nicety. A QUEUED run is completely invisible: it has not
+ * contacted the engine, emitted no `engine:*:start`, opened no socket. An unbounded wait here is
+ * therefore a SILENT hang — the delegation logs "Delegating …" and then nothing observable ever
+ * happens, which is exactly the failure this bound converts into a mapped 'timeout' the
+ * orchestrator's triage can voice.
+ *
+ * Half the per-call transport budget by default: a run that has already burned that long waiting
+ * for a slot is behind a pathologically slow (or leaked) run, and still needs time to actually
+ * execute before the orchestrator's own OPS_TASK_TIMEOUT_MS abandons it.
+ */
+export function computeEngineQueueWaitMs(env: NodeJS.ProcessEnv): number {
+  const explicit = Number(env.ENGINE_QUEUE_WAIT_MS);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  return Math.max(5_000, Math.round(computeEngineTimeoutMs(env) / 2));
+}
+
 // FIFO semaphore over engine AGENT RUNS — a burst of delegations must not stampede the engine
 // (hermes's API server caps concurrent runs; OpenClaw serializes per session anyway). It covers
 // runViaEngine and the fire-and-forget memory asks (withEngineSlot). Deliberately NOT covered:
@@ -146,26 +165,101 @@ export const ENGINE_TIMEOUT_MS = computeEngineTimeoutMs(process.env);
 const MAX_CONCURRENT = Number(process.env.ENGINE_MAX_CONCURRENT) || 2;
 let active = 0;
 const waiters: Array<() => void> = [];
-async function acquire(): Promise<() => void> {
-  // A LOOP, not a single await: release() only schedules the waiter's continuation, so between the
-  // wake-up and that microtask running, another already-queued acquire() can barge in and take the
-  // free slot. A woken waiter that incremented unconditionally then pushed `active` one past the cap
-  // with no waiter left to correct it — one extra run against the engine's concurrent-run limit.
-  while (active >= MAX_CONCURRENT) await new Promise<void>(r => waiters.push(r));
+
+/** Snapshot of the slot pool — for the `engine:*:queued` trace and for tests. */
+export function engineSlotState(): { active: number; waiting: number; cap: number } {
+  return { active, waiting: waiters.length, cap: MAX_CONCURRENT };
+}
+
+/**
+ * Wake EVERY waiter and let each re-check the cap. A broadcast (rather than shifting one waiter)
+ * is what makes this deadlock-proof: `shift()?.()` handed the wake-up to a single waiter, and a
+ * waiter that had meanwhile given up (abort / queue timeout) swallowed it — the freed slot then sat
+ * idle with live waiters still parked, forever. Losers simply re-queue, preserving arrival order.
+ */
+function wakeAll(): void {
+  for (const w of waiters.splice(0, waiters.length)) w();
+}
+
+/** Park until a slot MIGHT be free, the caller aborts, or `timeoutMs` elapses. Always resolves —
+ *  the acquire loop is the single place that decides what a wake-up means. Self-removes from
+ *  `waiters` on give-up so a dead waiter can never absorb a wake-up. */
+function waitForSlot(signal: AbortSignal | undefined, timeoutMs: number): Promise<void> {
+  return new Promise<void>(resolve => {
+    let settled = false;
+    const finish = (dropSelf: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (dropSelf) {
+        const i = waiters.indexOf(waiter);
+        if (i >= 0) waiters.splice(i, 1);
+      }
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    };
+    const waiter = () => finish(false);      // woken by wakeAll: already spliced out
+    const onAbort = () => finish(true);
+    waiters.push(waiter);
+    // Deliberately NOT unref'd, unlike most timers here. This one exists solely to guarantee the
+    // wait TERMINATES; an unref'd timer is skipped entirely whenever the loop has nothing else
+    // holding it, which is precisely the situation where a queued run would otherwise never come
+    // back. It is cleared the moment a slot frees or the caller aborts, so the longest it can hold
+    // the loop is one queue-wait window — and only while a run is genuinely stuck.
+    const timer = setTimeout(() => finish(true), timeoutMs);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+export interface AcquireOpts {
+  /** Caller's abort signal — a cancelled task must not keep a place in the queue. */
+  signal?: AbortSignal;
+  /** Give-up bound for the QUEUE WAIT only (not the run). Defaults to computeEngineQueueWaitMs,
+   *  read at CALL time (not module load) so an operator's ENGINE_QUEUE_WAIT_MS applies without a
+   *  restart — and so a test can pin it without import-order gymnastics. */
+  timeoutMs?: number;
+  /** Called once, only if the caller actually has to wait — the hook the `engine:*:queued` trace
+   *  hangs off, so a stall in this queue is never again invisible. */
+  onQueued?: () => void;
+}
+
+/** Take one engine slot. Throws EngineRunError('cancelled') on abort and EngineRunError('timeout')
+ *  when no slot frees in time; on either the caller never held a slot, so there is nothing to
+ *  release. */
+async function acquire(opts: AcquireOpts = {}): Promise<() => void> {
+  const { signal, timeoutMs = computeEngineQueueWaitMs(process.env) } = opts;
+  if (signal?.aborted) throw new EngineRunError('cancelled before an engine slot was taken', 'cancelled');
+  if (active >= MAX_CONCURRENT) {
+    opts.onQueued?.();
+    const deadline = Date.now() + timeoutMs;
+    // A LOOP, not a single await: a wake-up only means "a slot MAY be free" — another already-queued
+    // acquire() can barge in and take it first, so a woken waiter must re-check the cap rather than
+    // increment unconditionally (which pushed `active` one past the engine's concurrent-run limit).
+    while (active >= MAX_CONCURRENT) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new EngineRunError(
+          `no engine slot free after ${timeoutMs}ms (${MAX_CONCURRENT} runs already in flight)`, 'timeout',
+        );
+      }
+      await waitForSlot(signal, remaining);
+      if (signal?.aborted) throw new EngineRunError('cancelled while queued for an engine slot', 'cancelled');
+    }
+  }
   active++;
   let released = false;
   return () => {
     if (released) return;
     released = true;
     active--;
-    waiters.shift()?.();
+    wakeAll();
   };
 }
 
 /** Run `fn` holding one engine slot — for engine calls made OUTSIDE runViaEngine that are still
  *  full agent runs (the memory ask). Releases on throw. */
-export async function withEngineSlot<T>(fn: () => Promise<T>): Promise<T> {
-  const release = await acquire();
+export async function withEngineSlot<T>(fn: () => Promise<T>, opts: AcquireOpts = {}): Promise<T> {
+  const release = await acquire(opts);
   try {
     return await fn();
   } finally {
@@ -226,14 +320,26 @@ export async function runViaEngine(
   ctx: EngineRunContext,
   debrief: OpsDebrief,
 ): Promise<OpsResult> {
-  const release = await acquire();
   const t0 = Date.now();
-  ctx.onProgress?.('engine');
-  record({
-    type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
-    label: `engine:${engine.name}:start`, detail: { kind: task.kind, promptChars: prompt.length },
-  });
+  // The slot is taken INSIDE the try and released in `finally`, and nothing runs between the two.
+  // Previously `acquire()` sat above the try with `ctx.onProgress?.()` and `record()` in the gap:
+  // a throw from either leaked one of the (2) slots for the life of the process, and two such leaks
+  // wedge EVERY later delegation in acquire() forever — a hang with no trace, no socket and no
+  // engine ever contacted. A throw from acquire() itself is safe: it never took a slot.
+  let release: (() => void) | undefined;
   try {
+    release = await acquire({
+      signal: ctx.signal,
+      onQueued: () => record({
+        type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
+        label: `engine:${engine.name}:queued`, detail: { kind: task.kind, ...engineSlotState() },
+      }),
+    });
+    ctx.onProgress?.('engine');
+    record({
+      type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
+      label: `engine:${engine.name}:start`, detail: { kind: task.kind, promptChars: prompt.length, queuedMs: Date.now() - t0 },
+    });
     const text = (await engine.runTask(prompt, task, ctx)).trim();
     debrief.steps += 1;
     debrief.toolsRun.push({ name: `engine:${engine.name}`, argsSummary: task.kind, ok: true, resultPreview: text.slice(0, 200), durationMs: Date.now() - t0 });
@@ -265,6 +371,6 @@ export async function runViaEngine(
     });
     return { ...mapped.result, debrief };
   } finally {
-    release();
+    release?.();
   }
 }

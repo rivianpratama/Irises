@@ -5,7 +5,7 @@ process.env.TZ = 'UTC';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEngineDiscovery, envFileValue, scanYamlModel, type DiscoveryDeps } from './engineDiscovery.js';
+import { applyEngineDiscovery, envFileValue, scanYamlModel, scanYamlProvider, type DiscoveryDeps } from './engineDiscovery.js';
 
 const HERMES_ENV = '/home/user/.hermes/.env';
 const HERMES_YAML = '/home/user/.hermes/config.yaml';
@@ -172,6 +172,149 @@ test('Anthropic-only + non-anthropic slug → cannot map, keeps defaults + warns
   assert.ok(warns.some((w) => w.includes('needs OpenRouter')));
 });
 
+// ── provider-aware lane routing ─────────────────────────────────────────────
+// hermes stores a PROVIDER-NATIVE id in model.default plus the provider in model.provider, so the id
+// alone cannot say which lane can call it. Guessing from whichever API key happened to be present put
+// e.g. `claude-sonnet-4-5-20250929` or `gpt-4o` on the OpenRouter lane, which 400s every voice turn —
+// auto-detection breaking an install that worked before it ran.
+
+test('provider openrouter → OpenRouter lane verbatim, even with an Anthropic key and an anthropic/ slug', () => {
+  const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key', ANTHROPIC_API_KEY: 'ak' });
+  const { deps } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: {
+      'hermes config get model.default': 'anthropic/claude-opus-4.6',
+      'hermes config get model.provider': 'openrouter',
+    },
+  });
+  applyEngineDiscovery(deps);
+  for (const r of ['CONVO', 'CLASSIFY', 'FALLFIRM']) {
+    assert.equal(env[`${r}_MODEL_OPENROUTER`], 'anthropic/claude-opus-4.6', `${r} openrouter slot`);
+    assert.equal(env[`${r}_PROVIDER`], 'openrouter', `${r} provider`);
+  }
+});
+
+test('provider anthropic + a bare provider-native id → Anthropic lane unchanged, NOT OpenRouter', () => {
+  // The reported break: an OPENROUTER_API_KEY is present (hermes's headline aggregator), so the old
+  // key-guess shipped this bare Anthropic id to OpenRouter.
+  const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key', ANTHROPIC_API_KEY: 'ak' });
+  const { deps } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: {
+      'hermes config get model.default': 'claude-sonnet-4-5-20250929',
+      'hermes config get model.provider': 'anthropic',
+    },
+  });
+  applyEngineDiscovery(deps);
+  for (const r of ['CONVO', 'CLASSIFY', 'FALLFIRM']) {
+    assert.equal(env[`${r}_MODEL`], 'claude-sonnet-4-5-20250929', `${r} anthropic slot`);
+    assert.equal(env[`${r}_PROVIDER`], 'anthropic', `${r} provider`);
+  }
+  assert.equal(env.CONVO_MODEL_OPENROUTER, 'openai/gpt-5.6-luna:nitro'); // OpenRouter slot untouched
+});
+
+test('provider anthropic + an anthropic/-prefixed slug → prefix stripped for the Anthropic lane', () => {
+  const env = baselineEnv({ ANTHROPIC_API_KEY: 'ak' });
+  const { deps } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: {
+      'hermes config get model.default': 'anthropic/claude-opus-4.6',
+      'hermes config get model.provider': 'anthropic',
+    },
+  });
+  applyEngineDiscovery(deps);
+  assert.equal(env.CONVO_MODEL, 'claude-opus-4.6');
+  assert.equal(env.CONVO_PROVIDER, 'anthropic');
+});
+
+for (const [provider, model] of [['azure-foundry', 'gpt-4o'], ['moa', 'default'], ['copilot', 'claude-sonnet-4.6']]) {
+  test(`provider ${provider} → no inheritance, shipped defaults kept, one log line naming both`, () => {
+    const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key' });
+    const { deps, logs } = mkDeps(env, {
+      files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+      cli: {
+        'hermes config get model.default': model,
+        'hermes config get model.provider': provider,
+      },
+    });
+    applyEngineDiscovery(deps);
+    assert.equal(env.OPS_BACKEND, 'hermes');          // detection/creds still happen
+    assert.equal(env.HERMES_API_KEY, 'k');
+    for (const r of ['CONVO', 'CLASSIFY', 'FALLFIRM']) {
+      assert.equal(env[`${r}_MODEL_OPENROUTER`], 'openai/gpt-5.6-luna:nitro', `${r} openrouter slot`);
+      assert.equal(env[`${r}_MODEL`], baselineEnv()[`${r}_MODEL`], `${r} anthropic slot`);
+      assert.equal(env[`${r}_PROVIDER`], 'openrouter', `${r} provider`);
+    }
+    const line = logs.find((l) => l.includes(model) && l.includes(provider));
+    assert.ok(line, `a log line names the model and the provider: ${JSON.stringify(logs)}`);
+    assert.ok(line!.includes('keeping Irises'), 'and says the defaults were kept');
+  });
+}
+
+test('a bare un-slashed id with no readable provider → no inheritance, defaults kept', () => {
+  const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key' });
+  const { deps, logs } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: { 'hermes config get model.default': 'gpt-4o' }, // no model.provider anywhere
+  });
+  applyEngineDiscovery(deps);
+  assert.equal(env.CONVO_MODEL_OPENROUTER, 'openai/gpt-5.6-luna:nitro');
+  assert.equal(env.CONVO_MODEL, 'claude-sonnet-5');
+  assert.ok(logs.some((l) => l.includes('gpt-4o') && l.includes('lane is unknown')));
+});
+
+test('the provider comes from the config.yaml sibling key when the CLI is unavailable', () => {
+  const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key', ANTHROPIC_API_KEY: 'ak' });
+  const { deps } = mkDeps(env, {
+    files: {
+      [HERMES_ENV]: 'API_SERVER_KEY=k\n',
+      [HERMES_YAML]: 'terminal:\n  backend: tmux\nmodel:\n  provider: anthropic\n  default: claude-sonnet-5\n',
+    },
+    cli: {},
+  });
+  applyEngineDiscovery(deps);
+  assert.equal(env.CONVO_MODEL, 'claude-sonnet-5');
+  assert.equal(env.CONVO_PROVIDER, 'anthropic');
+  assert.equal(env.CONVO_MODEL_OPENROUTER, 'openai/gpt-5.6-luna:nitro');
+});
+
+// ── HERMES_BASE_URL from the engine's own bind settings ─────────────────────
+
+test('HERMES_BASE_URL follows API_SERVER_PORT/HOST from ~/.hermes/.env', () => {
+  const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key' });
+  const { deps } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\nAPI_SERVER_HOST=192.168.1.9\nAPI_SERVER_PORT=9642\n' },
+  });
+  applyEngineDiscovery(deps);
+  assert.equal(env.HERMES_BASE_URL, 'http://192.168.1.9:9642');
+});
+
+test('HERMES_BASE_URL: a wildcard bind dials loopback, a bare port keeps the default host', () => {
+  const wild = baselineEnv();
+  const { deps: d1 } = mkDeps(wild, { files: { [HERMES_ENV]: 'API_SERVER_HOST=0.0.0.0\nAPI_SERVER_PORT=9000\n' } });
+  applyEngineDiscovery(d1);
+  assert.equal(wild.HERMES_BASE_URL, 'http://127.0.0.1:9000');
+
+  const portOnly = baselineEnv();
+  const { deps: d2 } = mkDeps(portOnly, { files: { [HERMES_ENV]: 'API_SERVER_PORT=9000\n' } });
+  applyEngineDiscovery(d2);
+  assert.equal(portOnly.HERMES_BASE_URL, 'http://127.0.0.1:9000');
+
+  const stock = baselineEnv();
+  const { deps: d3 } = mkDeps(stock, { files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' } });
+  applyEngineDiscovery(d3);
+  assert.equal(stock.HERMES_BASE_URL, 'http://127.0.0.1:8642');
+});
+
+test('an explicit HERMES_BASE_URL still wins over the engine\'s bind settings', () => {
+  const env = baselineEnv({ HERMES_BASE_URL: 'http://hermes.local:7000' });
+  const { deps } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\nAPI_SERVER_PORT=9642\n' },
+  });
+  applyEngineDiscovery(deps);
+  assert.equal(env.HERMES_BASE_URL, 'http://hermes.local:7000');
+});
+
 test('engine detected but model unreadable → warns, keeps model defaults, still sets backend/creds', () => {
   const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key' });
   const { deps, warns } = mkDeps(env, {
@@ -295,4 +438,13 @@ test('scanYamlModel: inline and nested block forms, ignores unrelated top-level 
   assert.equal(scanYamlModel('model:\n  name: openai/gpt-5.6-sol # comment\n'), 'openai/gpt-5.6-sol');
   assert.equal(scanYamlModel('other:\n  model: nested/should-not-leak\n'), null);
   assert.equal(scanYamlModel(null), null);
+});
+
+test('scanYamlProvider: the provider sibling, and nothing from the inline scalar form', () => {
+  assert.equal(scanYamlProvider('model:\n  provider: azure-foundry\n  default: gpt-4o\n'), 'azure-foundry');
+  assert.equal(scanYamlProvider('model:\n  default: gpt-4o\n  provider: moa # local preset\n'), 'moa');
+  assert.equal(scanYamlProvider('model:\n  provider: "anthropic"\n'), 'anthropic');
+  assert.equal(scanYamlProvider('model: "anthropic/claude-opus-4.6"'), null); // a scalar has no sibling
+  assert.equal(scanYamlProvider('other:\n  provider: nested-should-not-leak\n'), null);
+  assert.equal(scanYamlProvider(null), null);
 });

@@ -56,6 +56,9 @@ _FORWARD_ATTEMPTS = 3
 _BACKOFF_S = (0.5, 2.0)
 _HEALTH_WINDOW_S = 60.0
 _HEALTH_PROBE_S = 15.0
+# Forward statuses that are CONFIGURATION, not transport: the shared secret doesn't match, or the
+# inbound route isn't mounted at all. No amount of retrying fixes either.
+_CONFIG_ERROR_STATUSES = (401, 403, 404)
 
 
 def _cfg(name: str, default: str = "") -> str:
@@ -135,6 +138,28 @@ def _backoff_s(attempt: int) -> float:
     return _BACKOFF_S[idx]
 
 
+def _forward_status(exc):
+    """The HTTP status a failed forward came back with, or None when it never got a response at all
+    (connection refused, timeout, DNS). urlopen raises HTTPError — which carries .code — for non-2xx."""
+    code = getattr(exc, "code", None)
+    return code if isinstance(code, int) else None
+
+
+def _is_config_error(status) -> bool:
+    """True for the statuses that will never succeed on retry (see _CONFIG_ERROR_STATUSES)."""
+    return status in _CONFIG_ERROR_STATUSES
+
+
+def _config_error_hint(status) -> str:
+    """Why a forward came back 401/403/404, in the operator's own vocabulary — these are the only two
+    ways to get here, and neither is visible from hermes's side without being named."""
+    if status == 404:
+        return ("Irises has no /api/bridge/inbound route — it is running with OPS_BACKEND unset, so the "
+                "bridge router was never mounted (or IRISES_URL points at something that isn't Irises)")
+    return ("IRISES_BRIDGE_TOKEN here does not match Irises's ENGINE_PUSH_TOKEN "
+            "(re-cloning or regenerating Irises's .env leaves this side holding the stale secret)")
+
+
 def _forward_decision(healthy: bool, fail_closed: bool) -> str:
     """'forward' = enqueue for Irises and suppress hermes's own reply. 'let_hermes' = return None
     from the hook so hermes answers the chat itself.
@@ -192,8 +217,13 @@ class _Health:
         now = time.monotonic() if now is None else now
         with self._lock:
             last_ok, last_fail = self._last_ok, self._last_fail
-        # Tried and never once succeeded is KNOWN down, not unknown.
-        if last_ok is None and last_fail is not None:
+        # A failure NEWER than the last success IS the verdict, however fresh that success is. The
+        # /health probe is unauthenticated and independent of the bridge router, so it keeps answering
+        # 200 straight through a token mismatch, an unmounted inbound route or a 500 storm — and while
+        # a fresh last_ok could mask it, every note_fail() the forward workers wrote was inert and each
+        # fronted message was silently lost with hermes already told to stay quiet. The window below
+        # still covers genuine reachability (a probe that stops answering at all).
+        if last_fail is not None and (last_ok is None or last_fail >= last_ok):
             return False
         return _healthy(last_ok, now)
 
@@ -287,6 +317,18 @@ def _forward_loop(q: "queue.Queue[dict]") -> None:
                 _HEALTH.note_ok()
                 break
             except Exception as exc:  # noqa: BLE001 — a forward failure must not kill the worker
+                status = _forward_status(exc)
+                if _is_config_error(status):
+                    _HEALTH.note_fail()
+                    # LOUD and NOT retried: retrying a misconfiguration only burns the backoff. The
+                    # note_fail above is now authoritative, so the NEXT fronted turn goes to hermes
+                    # instead of vanishing the same way.
+                    log.error("irises-bridge: forward REJECTED with HTTP %s — %s. The message from "
+                              "%s:%s is LOST and hermes stayed silent for it; handing the chat back to "
+                              "hermes until this is fixed: %s",
+                              status, _config_error_hint(status),
+                              payload.get("platform"), payload.get("chat_id"), exc)
+                    break
                 if attempt < _FORWARD_ATTEMPTS:
                     log.warning("irises-bridge: forward attempt %d/%d failed (%s:%s): %s",
                                 attempt, _FORWARD_ATTEMPTS,

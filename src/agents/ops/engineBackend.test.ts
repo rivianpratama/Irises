@@ -5,10 +5,11 @@ process.env.TZ = 'UTC';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resetEngineBackendCache, getEngineBackend, withEngineSlot, computeEngineTimeoutMs, EngineRunError, EngineUnavailableError, type EngineBackend } from './engineBackend.js';
+import { resetEngineBackendCache, getEngineBackend, withEngineSlot, engineSlotState, runViaEngine, computeEngineTimeoutMs, computeEngineQueueWaitMs, EngineRunError, EngineUnavailableError, type EngineBackend } from './engineBackend.js';
+import { getTraces, clearTraces } from '../../diagnostics/trace.js';
 import { runTask, buildTaskPrompt, looksLikeMiss } from './client.js';
 import { emptyMedia } from '../../webhook/types.js';
-import type { OpsTask, OpsDebriefSink } from '../types.js';
+import type { OpsTask, OpsDebrief, OpsDebriefSink } from '../types.js';
 
 function mkTask(over: Partial<OpsTask> = {}): OpsTask {
   return {
@@ -214,5 +215,125 @@ test('seedCorpus folds prior findings into the prompt', async () => {
     assert.match(seen, /earlier finding A/);
   } finally {
     resetEngineBackendCache(undefined);
+  }
+});
+
+// ── the engine-slot queue ─────────────────────────────────────────────────────────────────────
+// This wait is the ONLY await between "[main] Delegating …" and the engine:*:start record: a run
+// parked here has opened no socket, contacted no engine and emitted no start trace. Unbounded and
+// untraced (as it was), it is indistinguishable from a hang — and one leaked slot per pinned run
+// makes it permanent. These tests pin every slot and assert the wait is bounded, abortable,
+// visible, and impossible to wedge.
+
+const settle = (ms = 0) => new Promise<void>(r => setTimeout(r, ms));
+
+/** Hold every engine slot, each behind its own gate so a test can free exactly one. */
+async function pinEverySlot(): Promise<{ freeOne: () => void; freeAll: () => Promise<void> }> {
+  const gates: Array<{ promise: Promise<void>; resolve: () => void }> = [];
+  const held: Array<Promise<unknown>> = [];
+  for (let i = 0; i < engineSlotState().cap; i++) {
+    const g = deferred();
+    gates.push(g);
+    held.push(withEngineSlot(() => g.promise));
+  }
+  await settle();
+  assert.equal(engineSlotState().active, engineSlotState().cap, 'every slot is held');
+  return {
+    freeOne: () => gates[0].resolve(),
+    freeAll: async () => { for (const g of gates) g.resolve(); await Promise.all(held); },
+  };
+}
+
+function mkDebrief(): OpsDebrief {
+  return { steps: 0, toolsRun: [], corpus: [], startedAt: Date.now(), endedAt: 0 };
+}
+
+test('computeEngineQueueWaitMs: explicit wins, and the derived wait leaves room to actually run', () => {
+  assert.equal(computeEngineQueueWaitMs({ ENGINE_QUEUE_WAIT_MS: '1234' } as NodeJS.ProcessEnv), 1234);
+  const env = { OPS_TASK_TIMEOUT_MS: '240000' } as NodeJS.ProcessEnv;
+  assert.ok(
+    computeEngineQueueWaitMs(env) < computeEngineTimeoutMs(env),
+    'a run that waited its whole budget in the queue would never get to run',
+  );
+  assert.ok(computeEngineQueueWaitMs({} as NodeJS.ProcessEnv) >= 5_000, 'never a hair-trigger give-up');
+});
+
+test('engine slot queue: with every slot taken the wait GIVES UP instead of hanging forever', async () => {
+  const pins = await pinEverySlot();
+  try {
+    let ran = false;
+    await assert.rejects(
+      withEngineSlot(async () => { ran = true; }, { timeoutMs: 30 }),
+      (err: unknown) => err instanceof EngineRunError && err.failureCause === 'timeout',
+    );
+    assert.equal(ran, false, 'the work never started, so there is no slot to release');
+    assert.equal(engineSlotState().waiting, 0, 'the abandoned waiter left the queue behind it');
+  } finally {
+    await pins.freeAll();
+  }
+});
+
+test('engine slot queue: a cancelled task stops holding its place', async () => {
+  const pins = await pinEverySlot();
+  const ac = new AbortController();
+  try {
+    const queued = withEngineSlot(async () => 'never', { signal: ac.signal, timeoutMs: 60_000 });
+    await settle(5);
+    ac.abort();
+    await assert.rejects(queued, (err: unknown) => err instanceof EngineRunError && err.failureCause === 'cancelled');
+    assert.equal(engineSlotState().waiting, 0);
+  } finally {
+    await pins.freeAll();
+  }
+});
+
+test('engine slot queue: a waiter that gave up cannot swallow a live waiter\'s slot', async () => {
+  // The permanent-wedge regression. The old release() handed the wake-up to ONE shifted waiter; if
+  // that waiter had already given up, the freed slot sat idle with live waiters still parked — and
+  // every later delegation hung in acquire() with no trace, no socket and no engine contacted.
+  const pins = await pinEverySlot();
+  const gaveUp = withEngineSlot(async () => 'a', { timeoutMs: 10 }).then(() => 'ran', () => 'gave-up');
+  const live = withEngineSlot(async () => 'b', { timeoutMs: 5_000 });
+  await settle(40);
+  assert.equal(await gaveUp, 'gave-up');
+  pins.freeOne();                                   // exactly ONE slot comes back
+  assert.equal(await live, 'b', 'the freed slot reached the waiter that was still waiting');
+  await pins.freeAll();
+});
+
+test('runViaEngine: a throwing onProgress can never leak an engine slot', async () => {
+  // onProgress and the start record used to run in the gap between acquire() and the try/finally.
+  // A throw there pinned a slot for the life of the process; two of them wedge every delegation.
+  const before = engineSlotState().active;
+  const debrief = mkDebrief();
+  const r = await runViaEngine(
+    stub(async () => 'answer'), 'prompt', mkTask(),
+    { onProgress: () => { throw new Error('ping machinery blew up'); } }, debrief,
+  );
+  assert.equal(r.status, 'error');
+  assert.equal(engineSlotState().active, before, 'the slot came back');
+});
+
+test('runViaEngine: a queued run is TRACED and bounded — never silence before engine:*:start', async () => {
+  const prev = process.env.ENGINE_QUEUE_WAIT_MS;
+  process.env.ENGINE_QUEUE_WAIT_MS = '40';
+  const pins = await pinEverySlot();
+  try {
+    clearTraces();
+    let contacted = false;
+    const debrief = mkDebrief();
+    const r = await runViaEngine(
+      stub(async () => { contacted = true; return 'answer'; }), 'prompt', mkTask(), {}, debrief,
+    );
+    assert.equal(contacted, false, 'the engine was never reached — the run never left the queue');
+    assert.equal(debrief.failure?.cause, 'timeout', 'an honest mapped timeout triage can voice');
+    assert.equal(r.status, 'error');
+    const labels = getTraces().map(e => e.label);
+    assert.ok(labels.includes('engine:hermes:queued'), 'the queue wait is on the record');
+    assert.ok(labels.includes('engine:hermes:error'), 'and so is how it ended');
+    assert.ok(!labels.includes('engine:hermes:start'), 'the run never started');
+  } finally {
+    await pins.freeAll();
+    if (prev === undefined) delete process.env.ENGINE_QUEUE_WAIT_MS; else process.env.ENGINE_QUEUE_WAIT_MS = prev;
   }
 });

@@ -5,9 +5,10 @@ Run from the repo root:
 
 Covers every piece with real logic: the IRISES_FRONT pattern matcher, the pure
 decision helpers (auth, sharding, backoff, forward/let-hermes, send-result
-classification, health window) and the on_inbound hook (fronting decision,
-payload shaping, fail-open/closed). The gateway-facing halves (hook registration,
-adapter send, the loopback listener) are exercised by the live smoke test in
+classification, health window, config-error statuses), the forward worker's
+handling of a rejected POST, and the on_inbound hook (fronting decision, payload
+shaping, fail-open/closed). The gateway-facing halves (hook registration, adapter
+send, the loopback listener) are exercised by the live smoke test in
 docs/ENGINES.md — they are thin shells over the helpers tested here.
 """
 from __future__ import annotations
@@ -17,6 +18,7 @@ import pathlib
 import queue
 import types
 import unittest
+import urllib.error
 from unittest import mock
 
 _PLUGIN = pathlib.Path(__file__).resolve().parent / "irises-bridge" / "__init__.py"
@@ -282,6 +284,97 @@ class ClassifySendResult(unittest.TestCase):
         self.assertIn("no send result", body["error"])
 
 
+class ConfigErrorStatuses(unittest.TestCase):
+    """401/403/404 are the two misconfigurations the bridge can hit, and neither self-heals."""
+
+    def test_status_is_read_off_an_http_error_and_absent_from_a_transport_one(self):
+        http = urllib.error.HTTPError("http://irises/api/bridge/inbound", 403, "Forbidden", {}, None)
+        self.assertEqual(bridge._forward_status(http), 403)
+        self.assertIsNone(bridge._forward_status(urllib.error.URLError("connection refused")))
+        self.assertIsNone(bridge._forward_status(TimeoutError()))
+
+    def test_only_401_403_404_count_as_configuration(self):
+        for status in (401, 403, 404):
+            self.assertTrue(bridge._is_config_error(status), status)
+        for status in (None, 200, 429, 500, 502, 503):
+            self.assertFalse(bridge._is_config_error(status), status)
+
+    def test_the_hint_names_the_actual_cause(self):
+        for status in (401, 403):
+            hint = bridge._config_error_hint(status)
+            self.assertIn("IRISES_BRIDGE_TOKEN", hint)
+            self.assertIn("ENGINE_PUSH_TOKEN", hint)
+        self.assertIn("OPS_BACKEND", bridge._config_error_hint(404))
+
+
+class ForwardLoop(unittest.TestCase):
+    """What a failed forward writes to _HEALTH decides whether the NEXT fronted turn reaches Irises
+    or goes back to hermes — this message is already lost either way (hermes was told to skip)."""
+
+    class _Stop(Exception):
+        """Ends the worker's `while True` once the queued payloads are drained."""
+
+    class _Queue:
+        def __init__(self, items, stop):
+            self._items, self._stop = list(items), stop
+
+        def get(self):
+            if self._items:
+                return self._items.pop(0)
+            raise self._stop
+
+    def _run(self, exc):
+        """Drive one payload through _forward_loop with every POST failing as `exc`."""
+        posts = []
+
+        def boom(base, token, payload):
+            posts.append(payload)
+            raise exc
+
+        health = bridge._Health()
+        q = self._Queue([{"platform": "telegram", "chat_id": "42"}], self._Stop)
+        with mock.patch.object(bridge, "_post_inbound", boom), \
+             mock.patch.object(bridge, "_HEALTH", health), \
+             mock.patch.object(bridge, "_backoff_s", lambda _a: 0), \
+             self.assertLogs(bridge.log, level="ERROR") as logged, \
+             self.assertRaises(self._Stop):
+            bridge._forward_loop(q)
+        return health, len(posts), "\n".join(logged.output)
+
+    def test_a_403_is_loud_final_and_hands_the_chat_back_to_hermes(self):
+        health, posts, logged = self._run(
+            urllib.error.HTTPError("http://irises/api/bridge/inbound", 403, "Forbidden", {}, None))
+        self.assertEqual(posts, 1, "a token mismatch is never retried")
+        self.assertIn("HTTP 403", logged)
+        self.assertIn("IRISES_BRIDGE_TOKEN", logged)
+        self.assertIn("ENGINE_PUSH_TOKEN", logged)
+        self.assertFalse(health.is_healthy(), "the verdict flips even though /health still answers")
+        # …and the flipped verdict is what actually returns the chat to hermes.
+        with mock.patch.object(bridge, "_HEALTH", health), \
+             mock.patch.object(bridge, "_QUEUES", [queue.Queue(maxsize=10)]), \
+             mock.patch.object(bridge, "_start_workers", lambda: None), \
+             mock.patch.dict("os.environ", {"IRISES_FRONT": "telegram:*"}, clear=False):
+            self.assertIsNone(bridge.on_inbound(event=_event(), gateway=None))
+
+    def test_a_404_names_the_unmounted_route(self):
+        _health, posts, logged = self._run(
+            urllib.error.HTTPError("http://irises/api/bridge/inbound", 404, "Not Found", {}, None))
+        self.assertEqual(posts, 1)
+        self.assertIn("HTTP 404", logged)
+        self.assertIn("OPS_BACKEND", logged)
+
+    def test_a_transport_failure_still_gets_all_three_attempts(self):
+        health, posts, logged = self._run(urllib.error.URLError("connection refused"))
+        self.assertEqual(posts, bridge._FORWARD_ATTEMPTS, "a restart deserves its retries")
+        self.assertIn("LOST", logged)
+        self.assertFalse(health.is_healthy())
+
+    def test_a_500_is_transport_shaped_and_is_retried(self):
+        _health, posts, _logged = self._run(
+            urllib.error.HTTPError("http://irises/api/bridge/inbound", 500, "Server Error", {}, None))
+        self.assertEqual(posts, bridge._FORWARD_ATTEMPTS)
+
+
 class Healthy(unittest.TestCase):
     def test_unknown_counts_healthy(self):
         self.assertTrue(bridge._healthy(None, 1000.0))
@@ -299,6 +392,18 @@ class Healthy(unittest.TestCase):
         h.note_ok(now=200.0)
         self.assertTrue(h.is_healthy(now=250.0))
         self.assertFalse(h.is_healthy(now=400.0), "a stale OK falls out of the window")
+
+    def test_a_fail_newer_than_the_last_ok_beats_a_fresh_probe(self):
+        # The 15s /health probe is unauthenticated and route-independent, so it kept answering 200
+        # through a 403 storm and every note_fail() from the forward path was inert — each fronted
+        # message lost with hermes already told to stay silent.
+        h = bridge._Health()
+        h.note_ok(now=100.0)
+        self.assertTrue(h.is_healthy(now=101.0))
+        h.note_fail(now=102.0)
+        self.assertFalse(h.is_healthy(now=103.0), "a forward failure is not masked by a fresh probe")
+        h.note_ok(now=104.0)
+        self.assertTrue(h.is_healthy(now=105.0), "and a later success clears it again")
 
 
 if __name__ == "__main__":

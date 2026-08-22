@@ -89,8 +89,11 @@ export class ProgressGate {
  *   4. send(text).
  * Extracted from the orchestrator so this exact ordering is unit-testable (a future edit that voices
  * before gating, or forgets the post-voice re-check, fails a test instead of shipping a stale ping).
- * `voice` is expected never to reject (it falls to its own floor); a rejection is swallowed so a
- * best-effort ping can never surface as an unhandled rejection.
+ * NEITHER `voice` NOR `send` may take the run down with it. Callers float this promise (`void
+ * voiceAndPing(...)`, one of them from inside a setTimeout with no caller at all), and an unhandled
+ * rejection is FATAL in this process — diagnostics/errorLog.ts turns it into process.exit(1). A
+ * reassurance that failed to voice or failed to hand off is worth exactly nothing; it must never be
+ * worth the whole delegation, so both halves are swallowed here.
  */
 export async function runPingCycle(
   gate: ProgressGate,
@@ -106,5 +109,11 @@ export async function runPingCycle(
     return; // voice should self-floor; a hard throw just means no ping this cycle
   }
   if (gate.isStopped) return;
-  send(text);
+  try {
+    send(text);
+  } catch {
+    // `send` is a hand-off to the mouth (itself fire-and-forget). A synchronous throw here used to
+    // escape as an unhandled rejection on a floated ping — i.e. a best-effort "still on it" could
+    // kill the process mid-delegation, which reads downstream as the task silently hanging forever.
+  }
 }

@@ -192,3 +192,23 @@ test('runPingCycle: a throwing voice never surfaces as a rejection and never sen
   await runPingCycle(gate, 'heartbeat', async () => { throw new Error('provider down'); }, () => { sent++; });
   assert.equal(sent, 0, 'a hard voice failure just means no ping this cycle');
 });
+
+test('runPingCycle: a throwing send is swallowed — a floated ping can never take the run down', async () => {
+  // Called exactly the way the orchestrator calls it: floated, and (for the heartbeat) from inside a
+  // setTimeout with no caller at all. An unhandled rejection is FATAL in the real process
+  // (diagnostics/errorLog.ts exits(1) on one), so an unguarded send-throw killed the VM mid-run —
+  // taking the in-flight delegation, its deadline timer and the whole trace ring with it, which
+  // reads downstream as the task hanging forever with nothing ever logged again.
+  const c = clock();
+  const gate = new ProgressGate({ quietMs: 0, gapMs: 0, now: c.now });
+  const unhandled: unknown[] = [];
+  const onUnhandled = (e: unknown) => unhandled.push(e);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    void runPingCycle(gate, 'heartbeat', async () => 'still on it', () => { throw new Error('mouth exploded'); });
+    await new Promise<void>(r => setTimeout(r, 20));
+    assert.equal(unhandled.length, 0, 'a best-effort reassurance must never surface as an unhandled rejection');
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});

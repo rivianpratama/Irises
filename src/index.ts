@@ -6,6 +6,7 @@ import { installProcessErrorHandlers, reportError } from './diagnostics/errorLog
 installProcessErrorHandlers();
 import express from 'express';
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import { resolveChannel, registerChannel } from './channels/registry.js';
 import { webChannel } from './channels/web/channel.js';
 import { createWebRouter } from './channels/web/routes.js';
@@ -887,7 +888,44 @@ if (process.env.OPS_BACKEND) {
 // Serve the web debug client's static build (web/out from `npm run build:web`) at `/`, LAST so it
 // never shadows the API/webhook routes above. Same-origin as /api/web/* → no CORS for the SSE stream.
 // Missing in dev (use `npm run dev:web` on its own port instead) — express.static just 404s then.
-app.use(express.static(path.resolve(process.cwd(), 'web/out')));
+const WEB_OUT = path.resolve(process.cwd(), 'web/out');
+app.use(express.static(WEB_OUT));
+
+// …and `/` is the URL the setup script and the engine skills tell people to open, so an unbuilt web
+// client must not answer it with express's bare `Cannot GET /`. Checked per request (not at boot) so
+// a build that lands while the server is up is picked up without a restart.
+const WEB_NOT_BUILT_PAGE = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Irises · web client not built</title>
+<style>
+:root{--bg:#0f1115;--card:#181b22;--mut:#8b93a7;--acc:#6ea8fe;--ok:#5bd6a0;--line:#262b36}
+*{box-sizing:border-box}body{margin:0;padding:2rem 1rem;font:15px/1.6 -apple-system,system-ui,sans-serif;background:var(--bg);color:#e7eaf0}
+main{max-width:44rem;margin:0 auto}
+h1{font-size:1.15rem;margin:0 0 .2rem}
+.ok{color:var(--ok);font-weight:600}
+p{color:var(--mut)}
+code{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:.1rem .35rem;color:#e7eaf0}
+pre{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.7rem .9rem;overflow:auto;margin:.5rem 0}
+a{color:var(--acc)}
+ul{padding-left:1.1rem}
+li{margin:.35rem 0}
+</style></head><body><main>
+<h1><span class="ok">Irises is running.</span> The web chat UI just isn't built yet.</h1>
+<p>The server is up and answering on this port — only the browser client's static build
+(<code>web/out</code>) is missing, so there is nothing to show at <code>/</code>.</p>
+<p>To build it, from the Irises install folder:</p>
+<pre>npm run install:web &amp;&amp; npm run build:web</pre>
+<p>Then restart Irises and reload this page.</p>
+<p>In the meantime:</p>
+<ul>
+  <li><code>npm run chat</code> — talk to Irises in the terminal, from the same install folder. No build needed.</li>
+  <li><a href="/health">/health</a> — live right now, if you want to confirm the server and which build is running.</li>
+</ul>
+</main></body></html>`;
+app.get('/', (_req, res) => {
+  const index = path.join(WEB_OUT, 'index.html');
+  if (existsSync(index)) { res.sendFile(index); return; }
+  res.status(200).set('Content-Type', 'text/html').send(WEB_NOT_BUILT_PAGE);
+});
 
 // Start server
 app.listen(PORT, () => {
