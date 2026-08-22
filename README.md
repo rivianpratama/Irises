@@ -4,11 +4,7 @@
 
 # Irises
 
-**A warm, do-anything assistant you text like a person.**
-
-Irises is the **voice and the nerves** of an assistant — a fast front-line agent that replies in the
-moment, texts like a human, and hands the hard work to a **deep-work engine you already run**
-(hermes-agent or OpenClaw), then re-voices the result in its own words. To you, there's only ever Irises.
+**A warm assistant you text like a person. The heavy work goes to the engine you already run.**
 
 <br/>
 
@@ -17,11 +13,11 @@ moment, texts like a human, and hands the hard work to a **deep-work engine you 
 [![Node](https://img.shields.io/badge/Node-22-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Next.js](https://img.shields.io/badge/Next.js-16-000000?style=flat-square&logo=next.js&logoColor=white)](https://nextjs.org/)
 [![Powered by Claude](https://img.shields.io/badge/powered%20by-Claude-D97757?style=flat-square)](https://www.anthropic.com/)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](#-contributing)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](#contributing)
 
 <sub>
 
-[Highlights](#-highlights) • [How it works](#-how-it-works) • [Engines](#-already-running-hermes-agent-or-openclaw) • [Quick start](#-quick-start) • [Updating](#-updating) • [Channels](#-channels) • [Configuration](#-configuration) • [Models](#-models) • [API](#-http-api) • [Deploy](#-deployment)
+[Why I built this](#why-i-built-this) • [How it works](#how-it-works) • [Engines](#already-running-hermes-agent-or-openclaw) • [Quick start](#quick-start) • [Updating](#updating) • [Channels](#channels) • [Configuration](#configuration) • [Models](#models) • [API](#http-api) • [Deploy](#deployment)
 
 </sub>
 
@@ -29,36 +25,46 @@ moment, texts like a human, and hands the hard work to a **deep-work engine you 
 
 ---
 
-## ✨ Highlights
+## Why I built this
 
-- 🗣️ **A voice, not another brain** — **Convo** answers in the moment and delegates every piece of deep work through one seam; a **Composer** re-voices whatever comes back so the hand-off never shows.
-- 🔩 **Sits in front of the engine you already run** — hermes-agent or OpenClaw does the research, files, mail, reminders and memory, completely unmodified (reminders need the hermes engine in v1 — the OpenClaw cron wiring is still pending). One command wires it up.
-- 💬 **One voice, many channels** — a **web debug chat**, a **terminal REPL** (`npm run chat`), and — in bridge mode — **every channel your engine already speaks** (Telegram, WhatsApp, Signal, Discord, Slack, LINE, …).
-- 🔌 **Provider-neutral LLM layer** — a single `callLLM` over Anthropic and OpenRouter, either one primary per role, with automatic fallback to the other lane on transient errors. Tool-calls, structured "bubble" output, and prompt caching normalized to one shape.
-- 🕰️ **Human texting feel** — burst-batching, a per-chat send lock, and simulated-typing pacing so replies land like a person typing, not a firehose.
-- 🧵 **Layered memory** — short / medium / long tiers held locally, with durable facts forwarded to the engine's own memory so both halves remember the same person.
-- 📥 **Proactive, not needy** — the engine's cron jobs and mail triage push back through `POST /api/engine/push`, get voiced by the **Composer** (which opens with why the text is arriving, and falls back to **Fallfirm** if that call fails), and land on whatever channel the chat came from. Duplicate pushes are collapsed, and a non-urgent one that arrives overnight waits for morning.
-- 🎭 **Hidden affect engine** — a per-chat mood (Gloria Willcox feeling wheel), a 28-day infradian cycle, and a circadian rhythm shape tone and warmth behind the scenes; the model emits a reflective `status` gauge each turn that's swallowed before the user sees it — no one is told, it only makes the voice feel alive.
-- 🔍 **Fully observable** — `/debug` prompt traces and a `/dashboard` orchestration GUI show every hop, cost, and error.
+I got tired of choosing between two kinds of assistant. The fast ones answer like a search box — instant, but shallow, and they forget you the moment you close the tab. The deep ones (hermes-agent, OpenClaw) are honestly amazing at real work, but talking to them feels like reading a report. Nobody texts like that.
 
-## 🧠 How it works
+So I split the problem in two.
+
+**Irises is the voice.** It replies in the moment, texts like a human — short bubbles, a small typing pause, sometimes a "give me a sec" — and when you ask for something heavy (research, files, mail, a reminder), it quietly hands the job to the deep-work engine you already have installed, then tells you the result in its own words. You never see the seam. To you, there is only Irises.
+
+The engine stays completely unmodified. One command wires it up. That's the whole idea.
+
+## What makes it feel different
+
+- **A voice, not another brain.** The front-line agent (**Convo**) answers right away and delegates every piece of deep work through one seam. A **Composer** re-voices whatever comes back, so the hand-off never shows.
+- **It sits in front of what you already run.** hermes-agent or OpenClaw does the research, files, mail, reminders and memory, untouched. (Reminders need the hermes engine in v1 — the OpenClaw cron wiring is still pending.)
+- **One voice, many channels.** A web debug chat, a terminal REPL (`npm run chat`), and — in bridge mode — every channel your engine already speaks: Telegram, WhatsApp, Signal, Discord, Slack, LINE, and so on.
+- **It texts like a person.** Messages get batched into bursts, each chat has a send lock, and replies are paced like real typing. No firehose of ten bubbles in one second.
+- **It remembers you, in layers.** Short, medium and long memory tiers are kept locally, and the durable facts get forwarded to the engine's own memory too, so both halves remember the same person.
+- **It reaches out first, but politely.** The engine's cron jobs and mail triage push back through `POST /api/engine/push`, get voiced by the Composer (which opens with *why* the text is arriving), and land on whatever channel the chat came from. Duplicates are collapsed, and a non-urgent push that arrives overnight waits for morning. This part I'm quite proud of.
+- **A hidden mood.** There is a small affect engine behind the scenes — a per-chat mood based on the Gloria Willcox feeling wheel, a 28-day cycle, a circadian rhythm. Nobody is told about it, and its status output is swallowed before you see it. It only makes the voice feel a bit more alive.
+- **Provider-neutral LLM layer.** One `callLLM` over Anthropic and OpenRouter — a primary lane per role, automatic fallback to the other on transient errors, and tool-calls, structured "bubble" output and prompt caching normalized to one shape.
+- **Nothing is a black box.** `/debug` shows every prompt trace, and `/dashboard` shows every hop, cost, and error.
+
+## How it works
 
 ```mermaid
 flowchart LR
-    subgraph CH["📨 Channels"]
+    subgraph CH["Channels"]
         direction TB
-        W["🌐 Web chat (SSE) · terminal REPL"]
-        B["🌉 Bridge — Telegram · WhatsApp · Signal · Discord · …"]
+        W["Web chat (SSE) · terminal REPL"]
+        B["Bridge — Telegram · WhatsApp · Signal · Discord · …"]
     end
 
-    subgraph BRAIN["🧠 Irises — the voice"]
+    subgraph BRAIN["Irises — the voice"]
         direction TB
-        CV["🗣️ Convo — fast front line"]
-        CMP["✍️ Composer — re-voices"]
-        FF["🛟 Fallfirm — holds & recovers"]
+        CV["Convo — fast front line"]
+        CMP["Composer — re-voices"]
+        FF["Fallfirm — holds & recovers"]
     end
 
-    subgraph ENG["⚙️ Your engine — unmodified"]
+    subgraph ENG["Your engine — unmodified"]
         E["hermes-agent · OpenClaw<br/>research · files · mail · cron · memory"]
     end
 
@@ -74,53 +80,20 @@ flowchart LR
     OUT([" bubbles → same channel "])
 ```
 
-<table>
-<tr><td width="50%" valign="top">
+A quick map of the code, if you want to read along:
 
-**Agents** · `src/agents`<br/>
-`convo` (front line) · `ops` (the engine seam) · `composer` (re-voices results) · `fallfirm`
-(holding beats and failure recovery) — each with a persona in its `Context.md`.
+- **Agents** (`src/agents`) — `convo` (front line), `ops` (the engine seam), `composer` (re-voices results), `fallfirm` (holding beats and failure recovery). Each one carries a persona in its `Context.md`.
+- **The engine seam** (`src/agents/ops`) — `OPS_BACKEND` picks `hermes` (OpenAI-compatible API + cron REST) or `openclaw` (gateway WebSocket). Unset means deep work is honestly offline — Convo still chats. See [docs/ENGINES.md](docs/ENGINES.md).
+- **Channels** (`src/channels`) — one `Channel` abstraction with `web` (SSE + CLI) and `bridge` adapters. See [docs/CHANNELS.md](docs/CHANNELS.md).
+- **LLM layer** (`src/llm`) — one `callLLM` entry point, per-role primary provider, automatic fallback lane, token budget guards.
+- **Persona & affect** (`src/persona`) — the hidden per-turn affect engine described above.
+- **State & memory** (`src/state`, `src/memory`) — burst-batching, per-chat send lock, typing pacing, and the short/medium/long memory tiers.
+- **Data** (`src/db`) — a local store under `IRISES_HOME` (default `~/.irises`): SQLite (builtin `node:sqlite`) for machine data, plus per-user markdown for the curated memory tiers. `DATA_BACKEND=memory` runs the same code but ephemeral, nothing persists.
+- **Diagnostics** (`src/diagnostics`) — `/debug` prompt traces and the `/dashboard` GUI with cost, error and memory views.
 
-**The engine seam** · `src/agents/ops`<br/>
-`OPS_BACKEND` picks `hermes` (OpenAI-compatible API + cron REST) or `openclaw` (gateway
-WebSocket). Unset means deep work is honestly offline — Convo still chats.
-→ [docs/ENGINES.md](docs/ENGINES.md)
+## Already running hermes-agent or OpenClaw?
 
-**Channels** · `src/channels`<br/>
-One `Channel` abstraction with `web` (SSE + CLI) and `bridge` adapters.
-→ [docs/CHANNELS.md](docs/CHANNELS.md)
-
-</td><td width="50%" valign="top">
-
-**LLM layer** · `src/llm`<br/>
-One `callLLM` entry point. Per-role primary provider with the other lane as an automatic
-transient-error fallback, plus structured output, tool-calls, caching, and token budget guards.
-
-**Persona & affect** · `src/persona`<br/>
-Hidden per-turn affect engine: mood (Willcox wheel), 28-day infradian cycle, circadian rhythm,
-and a meta-prompt status record the model emits each turn (swallowed before the user sees it).
-
-**State & memory** · `src/state`, `src/memory`<br/>
-Burst-batching, per-chat send lock, simulated-typing pacing, and short/medium/long memory tiers.
-
-**Data** · `src/db`<br/>
-Local Hermes/OpenClaw-style store under `IRISES_HOME` (default `~/.irises`): SQLite
-(builtin `node:sqlite`) for machine data + per-user markdown for the curated memory
-tiers. `DATA_BACKEND=memory` = the same code, ephemeral (nothing persists).
-
-**Diagnostics** · `src/diagnostics`<br/>
-`/debug` prompt traces and a `/dashboard` GUI with cost, error, and memory views.
-
-</td></tr>
-</table>
-
-## 🔩 Already running hermes-agent or OpenClaw?
-
-Irises is built to sit **in front of the engine you already have** — and it can appear on **every
-channel your engine already speaks**. Your hermes or OpenClaw does all the deep work and keeps
-owning every bot and number, completely unmodified: a tiny bridge plugin — installed through the
-engine's own plugin system — hands chosen chats to Irises's voice and leaves the rest alone. One
-command wires it up:
+Then you are the person I built this for. Irises sits **in front of the engine you already have**, and it can appear on **every channel your engine already speaks**. Your hermes or OpenClaw keeps doing all the deep work and keeps owning every bot and number — a tiny bridge plugin, installed through the engine's own plugin system, hands the chats you choose to Irises's voice and leaves the rest alone. One command wires it up:
 
 ```bash
 # hermes users — let your own agent set it up:
@@ -133,26 +106,17 @@ openclaw skills install git:rivianpratama/irises
 git clone https://github.com/rivianpratama/irises && cd irises && bash scripts/engine-setup.sh --engine hermes
 ```
 
-Fronting is **opt-in per chat**: the engine-side `IRISES_FRONT` glob list (matched against
-`<platform>:<chat_id>`, empty by default) decides which conversations Irises answers. Everything else
-the engine keeps handling itself, and blanking `IRISES_FRONT` turns the plugin inert instantly. If the
-hook errors, the default `IRISES_BRIDGE_FAIL=open` lets the engine answer rather than go silent.
+Fronting is **opt-in per chat**: the engine-side `IRISES_FRONT` glob list (matched against `<platform>:<chat_id>`, empty by default) decides which conversations Irises answers. Everything else the engine keeps handling itself, and blanking `IRISES_FRONT` turns the plugin inert instantly. If the hook errors, the default `IRISES_BRIDGE_FAIL=open` lets the engine answer rather than go silent — I'd rather you get a boring reply than no reply.
 
-On OpenClaw, Irises also teaches the engine its **engine-mode discipline automatically, once, at
-boot** — one chat message the agent saves to its own instructions, nothing for you to run by hand.
+On OpenClaw, Irises also teaches the engine its **engine-mode discipline automatically, once, at boot** — one chat message the agent saves to its own instructions. Nothing for you to run by hand.
 
-> **v1 gap:** scheduling reminders through Irises requires the **hermes** engine (it uses hermes's
-> cron REST API). On OpenClaw the reminder tools aren't offered at all — so Irises never promises a
-> reminder that can't fire — while everything else runs full-reach there: real code, the engine's
-> own skills, parallel subagents, artifacts.
+> **v1 gap:** scheduling reminders through Irises requires the **hermes** engine (it uses hermes's cron REST API). On OpenClaw the reminder tools are not offered at all — so Irises never promises a reminder that can't fire — while everything else runs full-reach there: real code, the engine's own skills, parallel subagents, artifacts.
 
 Full guide, diagrams, and security notes: **[docs/ENGINES.md](docs/ENGINES.md)**.
 
-## 🚀 Quick start
+## Quick start
 
-Irises is meant to sit **on top of the engine you already run**, so the default way to install it is
-to **let that engine set it up** — no npm, no config files. Ask your hermes or OpenClaw, and it clones
-Irises, wires it in, and starts it from one command in its own CLI:
+Since Irises is meant to sit on top of the engine you already run, the default install is simply to **let that engine set it up** — no npm, no config files. Ask your hermes or OpenClaw, and it clones Irises, wires it in, and starts it from one command in its own CLI:
 
 ```bash
 # hermes — let your own agent install + set it up:
@@ -164,15 +128,9 @@ openclaw skills install git:rivianpratama/irises
 #   then ask OpenClaw to run the  irises-setup-openclaw  skill
 ```
 
-That's the whole setup. On boot Irises **auto-detects your engine** (`OPS_BACKEND` is set for you),
-**reuses the engine's API key**, and makes its own voice **inherit the engine's model** — so *the model
-Irises speaks with is the model your engine uses*. **There is no `.env` to write** (you still can — see
-[Configuration](#-configuration) — anything you set wins). Full guide, bridge mode, and security notes:
-**[docs/ENGINES.md](docs/ENGINES.md)**.
+That is honestly the whole setup. On boot Irises **auto-detects your engine** (`OPS_BACKEND` is set for you), **reuses the engine's API key**, and makes its own voice **inherit the engine's model** — so the model Irises speaks with is the model your engine uses. **There is no `.env` to write.** (You still can — see [Configuration](#configuration) — anything you set wins.) Full guide, bridge mode, and security notes: **[docs/ENGINES.md](docs/ENGINES.md)**.
 
-> **Prerequisites:** Node 22.13+ (the local store uses the builtin `node:sqlite`). No database, and —
-> when you install onto an engine — no keys or config of your own: Irises reuses what the engine
-> already has.
+> **Prerequisites:** Node 22.13+ (the local store uses the builtin `node:sqlite`). No database, and — when you install onto an engine — no keys or config of your own: Irises reuses what the engine already has.
 
 <details>
 <summary><b>Prefer to wire it up by hand? (still on top of your engine)</b></summary>
@@ -184,20 +142,16 @@ git clone https://github.com/rivianpratama/irises && cd irises
 bash scripts/engine-setup.sh --engine hermes     # or: --engine openclaw
 ```
 
-The script is idempotent and prints every change before making it: it enables the engine's API
-surface if needed, generates the push token, and derives everything else at boot. See
-[docs/ENGINES.md](docs/ENGINES.md).
+The script is idempotent and prints every change before making it: it enables the engine's API surface if needed, generates the push token, and derives everything else at boot. See [docs/ENGINES.md](docs/ENGINES.md).
 
 </details>
 
 <details>
-<summary><b>🐛 Debug: run standalone, with no engine at all</b></summary>
+<summary><b>Debug: run standalone, with no engine at all</b></summary>
 
 <br/>
 
-This is the **debug path** — Irises with no deep-work engine behind it. Convo still chats, but every
-research/email/files/reminders request answers honestly that its deep half is offline. Use it to hack
-on the persona and pipeline without an engine running.
+This is the **debug path** — Irises with no deep-work engine behind it. Convo still chats, but every research/email/files/reminders request answers honestly that its deep half is offline. I use this to hack on the persona and pipeline without an engine running.
 
 ```bash
 # 1. install both packages (server + web client)
@@ -241,20 +195,15 @@ npm run chat
 | `npm test` | Unit tests for `src/` and `scripts/` (Node test runner via `tsx --test`, TZ pinned to UTC, ephemeral `DATA_BACKEND=memory`) |
 | `npm run install:web` | Install the web client's dependencies |
 
-> The build **must** copy the persona files — the loader fails fast on the first turn that needs a
-> missing `Context.md` rather than serving a persona-less agent.
+> The build **must** copy the persona files — the loader fails fast on the first turn that needs a missing `Context.md` rather than serving a persona-less agent.
 
-`npm run chat` also takes `-- --url http://host:8080 --token <DEBUG_TOKEN> --client-id mylane` for
-pointing at a remote instance.
+`npm run chat` also takes `-- --url http://host:8080 --token <DEBUG_TOKEN> --client-id mylane` for pointing at a remote instance.
 
 </details>
 
-## 🔄 Updating
+## Updating
 
-**Just tell Irises in chat: "update yourself."** It pulls the latest code, rebuilds, restarts itself,
-and confirms when it's back — no terminal needed. If there's nothing new (or something can't apply) it
-says so. This is single-user by design; if you use bridge mode to front *other people's* chats, set
-`UPDATE_SELF_ENABLED=false` so a fronted contact can't trigger a rebuild.
+**Just tell Irises in chat: "update yourself."** It pulls the latest code, rebuilds, restarts itself, and confirms when it's back — no terminal needed. If there is nothing new, or something can't apply, it says so. This is single-user by design; if you use bridge mode to front *other people's* chats, set `UPDATE_SELF_ENABLED=false` so a fronted contact can't trigger a rebuild.
 
 Prefer the terminal? A git-clone install also updates with one command from the clone:
 
@@ -262,43 +211,26 @@ Prefer the terminal? A git-clone install also updates with one command from the 
 bash scripts/update.sh
 ```
 
-It fast-forwards `git pull`s, reinstalls deps and rebuilds (`npm ci && npm run build`, plus the web
-client when it's installed), refreshes the engine bridge plugin **only if `bridge/` changed** (and
-reminds you to restart the gateway), and writes an update receipt. Then **restart the server** to run
-the new build. It's safe by design: fast-forward only (never auto-merges divergent local commits),
-refuses a dirty working tree, and never touches your data under `$IRISES_HOME`.
+It fast-forward `git pull`s, reinstalls deps and rebuilds (`npm ci && npm run build`, plus the web client when it's installed), refreshes the engine bridge plugin **only if `bridge/` changed** (and reminds you to restart the gateway), and writes an update receipt. Then **restart the server** to run the new build. It's careful by design: fast-forward only (it never auto-merges divergent local commits), refuses a dirty working tree, and never touches your data under `$IRISES_HOME`.
 
-Flags: `--check` (report only — exit `10` if an update is available, `0` if not), `--yes` (skip the
-prompt), `--restart` (also stop + relaunch via the pidfile), `--no-restart`.
+Flags: `--check` (report only — exit `10` if an update is available, `0` if not), `--yes` (skip the prompt), `--restart` (also stop + relaunch via the pidfile), `--no-restart`.
 
-**Irises notices on its own, too.** The running server periodically checks the remote for a newer
-build and surfaces it — on `/health` (`version` + `update` fields), on the `/dashboard` overview
-card, and in chat: it mentions the waiting upgrade once to recently-active chats, woven naturally
-into the conversation, and voices a brief "got my upgrades" after you apply it and restart. Tune or
-silence this with the `UPDATE_*` env vars (see [Configuration](#-configuration)); set
-`UPDATE_ANNOUNCE_ENABLED=false` to keep it quiet, `UPDATE_CHECK_ENABLED=false` to stop checking.
+**Irises notices on its own, too.** The running server periodically checks the remote for a newer build and surfaces it — on `/health` (`version` + `update` fields), on the `/dashboard` overview card, and in chat: it mentions the waiting upgrade once to recently-active chats, woven naturally into the conversation, and voices a brief "got my upgrades" after you apply it and restart. Tune or silence this with the `UPDATE_*` env vars (see [Configuration](#configuration)); set `UPDATE_ANNOUNCE_ENABLED=false` to keep it quiet, `UPDATE_CHECK_ENABLED=false` to stop checking.
 
 Docker/VM installs update by rebuilding the image instead — see [docs/DEPLOY.md](docs/DEPLOY.md) § 5.
 
-## 📡 Channels
+## Channels
 
 | Channel | How to reach Irises | Enable |
 |---------|-------------------|--------|
-| 🌐 **Web (debug)** | Browser chat over SSE (`web/`, served at `/`) or `npm run chat` in a terminal | On by default (`WEB_ENABLED`); gated by `DEBUG_TOKEN` like `/debug` |
-| 🌉 **Bridge** | Chats your engine already owns (Telegram, WhatsApp, Signal, Discord, …) → `POST /api/bridge/inbound` | Set `OPS_BACKEND`, install the bridge plugin, list chats in `IRISES_FRONT` |
+| **Web (debug)** | Browser chat over SSE (`web/`, served at `/`) or `npm run chat` in a terminal | On by default (`WEB_ENABLED`); gated by `DEBUG_TOKEN` like `/debug` |
+| **Bridge** | Chats your engine already owns (Telegram, WhatsApp, Signal, Discord, …) → `POST /api/bridge/inbound` | Set `OPS_BACKEND`, install the bridge plugin, list chats in `IRISES_FRONT` |
 
-Outbound routes by `chatId` prefix — `web:` → web / CLI, `eng:<platform>:<chat>` → bridge, anything
-else is **unroutable and throws** — so async follow-ups and engine-driven reminders always return on
-the channel they came from, even across a restart. See **[docs/CHANNELS.md](docs/CHANNELS.md)** for
-the routing model and a guide to adding your own.
+Outbound routes by `chatId` prefix — `web:` → web / CLI, `eng:<platform>:<chat>` → bridge, anything else is **unroutable and throws** — so async follow-ups and engine-driven reminders always return on the channel they came from, even across a restart. See **[docs/CHANNELS.md](docs/CHANNELS.md)** for the routing model and a guide to adding your own.
 
-## ⚙️ Configuration
+## Configuration
 
-**On top of an engine you normally set none of this** — Irises auto-detects the backend, reuses the
-engine's key, and inherits its model (see [Models](#-models)). Everything here is optional override.
-Config is environment variables, layered lowest → highest: `deploy/app.env` (committed, non-secret
-baseline) loads first, then **engine auto-discovery** fills in / updates what it can from your engine,
-then your local `.env` layers on top and wins over both. The knobs you're most likely to touch:
+**On top of an engine you normally set none of this** — Irises auto-detects the backend, reuses the engine's key, and inherits its model (see [Models](#models)). Everything here is optional override. Config is environment variables, layered lowest → highest: `deploy/app.env` (committed, non-secret baseline) loads first, then **engine auto-discovery** fills in / updates what it can from your engine, then your local `.env` layers on top and wins over both. The knobs you're most likely to touch:
 
 | Variable | Purpose |
 |----------|---------|
@@ -355,20 +287,13 @@ then your local `.env` layers on top and wins over both. The knobs you're most l
 
 </details>
 
-## 🤖 Models
+## Models
 
-**By default, Irises speaks with your engine's model.** Deep work already runs on the engine; on top
-of that, at boot Irises reads the model your hermes/OpenClaw is configured with and uses it for its own
-three voice roles too — so there's *one* model, not two. Both engines express their model as a
-`provider/model` slug, which Irises's OpenRouter lane consumes verbatim (an exact match), reusing the
-engine's key. Nothing to configure.
+**By default, Irises speaks with your engine's model.** Deep work already runs on the engine; on top of that, at boot Irises reads the model your hermes/OpenClaw is configured with and uses it for its own three voice roles too — so there is *one* model, not two. Both engines express their model as a `provider/model` slug, which Irises's OpenRouter lane consumes verbatim (an exact match), reusing the engine's key. Nothing to configure.
 
-Override any role independently whenever you want (say, a cheaper/faster voice): set `<ROLE>_MODEL` /
-`<ROLE>_MODEL_OPENROUTER` / `<ROLE>_PROVIDER` — anything you set wins over what's inherited. To stop
-inheriting and keep Irises's own shipped models instead, set `ENGINE_MODEL_INHERIT=off`.
+Want a cheaper or faster voice? Override any role independently: set `<ROLE>_MODEL` / `<ROLE>_MODEL_OPENROUTER` / `<ROLE>_PROVIDER` — anything you set wins over what's inherited. To stop inheriting completely and keep Irises's own shipped models, set `ENGINE_MODEL_INHERIT=off`.
 
-With **no engine** (the debug/standalone path) Irises falls back to its own shipped models — three
-roles, OpenRouter-primary with an Anthropic fallback lane:
+With **no engine** (the debug/standalone path) Irises falls back to its own shipped models — three roles, OpenRouter-primary with an Anthropic fallback lane:
 
 | Role | Standalone default | Anthropic fallback |
 |------|-----------------|--------------------|
@@ -377,10 +302,9 @@ roles, OpenRouter-primary with an Anthropic fallback lane:
 | **Fallfirm** — holding beats + recovery voice | `openai/gpt-5.6-luna:nitro` | `claude-sonnet-4-6` |
 | **Transcribe** — voice memos *(never inherited — needs an audio model)* | `google/gemini-3.5-flash-lite:nitro` | *(OpenRouter only)* |
 
-`<ROLE>_PROVIDER` picks the primary lane per role; the other becomes the automatic fallback on 5xx /
-429 / network errors.
+`<ROLE>_PROVIDER` picks the primary lane per role; the other becomes the automatic fallback on 5xx / 429 / network errors.
 
-## 🔌 HTTP API
+## HTTP API
 
 | Method & path | Purpose | Auth |
 |---------------|---------|------|
@@ -391,7 +315,7 @@ roles, OpenRouter-primary with an Anthropic fallback lane:
 | `GET /dashboard` | Admin orchestration GUI | `DASHBOARD_PASSWORD` |
 | `GET /health` | Health check + running-persona fingerprint | none |
 
-## 🗂️ Project layout
+## Project layout
 
 ```text
 irises/
@@ -416,19 +340,15 @@ irises/
 
 The server (root) and the web client (`web/`) are **two independent npm packages**.
 
-## ☁️ Deployment
+## Deployment
 
-Irises ships as a single Docker image (server `dist/` **and** the static web client `web/out/`, served
-together at `/`) running on any small VM with Docker behind **Caddy** for automatic HTTPS. Secrets and
-per-VM values (`IMAGE`, `SITE_ADDRESS`, API keys) live in `/opt/irises/.env`, layered *under* the
-committed `deploy/app.env` — which sets `PORT=8080` and wins on any overlapping key.
+Irises ships as a single Docker image (server `dist/` **and** the static web client `web/out/`, served together at `/`) running on any small VM with Docker behind **Caddy** for automatic HTTPS. Secrets and per-VM values (`IMAGE`, `SITE_ADDRESS`, API keys) live in `/opt/irises/.env`, layered *under* the committed `deploy/app.env` — which sets `PORT=8080` and wins on any overlapping key.
 
-Deploys are **manual** — build the image, push it to a registry the VM can pull from (or `docker save`
-/ `docker load` it across), and `docker compose up` on the VM.
+Deploys are **manual** — build the image, push it to a registry the VM can pull from (or `docker save` / `docker load` it across), and `docker compose up` on the VM.
 
-📖 Full runbook: **[docs/DEPLOY.md](docs/DEPLOY.md)**
+Full runbook: **[docs/DEPLOY.md](docs/DEPLOY.md)**
 
-## ✅ Verification
+## Verification
 
 ```bash
 npm run build                    # tsc + persona/asset copy
@@ -437,19 +357,16 @@ npm run build:web                # static web client
 npm --prefix web run typecheck   # web type safety
 ```
 
-The web package also carries its own suites: `npm --prefix web run test` (Vitest) and
-`npm --prefix web run test:e2e` (Playwright, which builds and serves the app on `:4173`).
+The web package also carries its own suites: `npm --prefix web run test` (Vitest) and `npm --prefix web run test:e2e` (Playwright, which builds and serves the app on `:4173`).
 
-## 🤝 Contributing
+## Contributing
 
-Issues and PRs are welcome. Before opening a PR, please run the [verification](#-verification) commands
-and keep the machinery that makes Irises feel like one person (the JSON bubble envelope, the
-delegation seam, and the grounding rules) intact — see
-[docs/PROMPTING_CHARTER.md](docs/PROMPTING_CHARTER.md) for the principles behind the prompts, bearing
-in mind it's an inherited document that predates the engine split.
+Issues and PRs are very welcome — even a small one. If you found the docs confusing somewhere, that is a bug too; please open an issue and tell me where you got lost.
 
-## 📄 License
+Before opening a PR, please run the [verification](#verification) commands, and keep the machinery that makes Irises feel like one person intact: the JSON bubble envelope, the delegation seam, and the grounding rules. [docs/PROMPTING_CHARTER.md](docs/PROMPTING_CHARTER.md) explains the principles behind the prompts — bear in mind it's an inherited document that predates the engine split.
+
+## License
 
 Released under the [MIT License](LICENSE).
 
-<div align="center"><sub>Built with 🧠 and a lot of small text bubbles.</sub></div>
+<div align="center"><sub>Built with care and a lot of small text bubbles.</sub></div>
