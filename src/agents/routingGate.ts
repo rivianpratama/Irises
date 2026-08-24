@@ -5,6 +5,10 @@
 // messages which MUST run through Ops. 'maybe' is reserved for a future bounded-classify tier; the
 // first cut only forces on a confident 'yes' (over-delegation costs a round-trip, so we stay strict).
 
+// Type-only (erased at runtime): this module stays dependency-free so the gate's regexes can be
+// unit-tested without dragging the engine adapters into the process.
+import type { CapabilityClass } from './ops/engineBackend.js';
+
 export type GroundingNeed = 'yes' | 'no' | 'maybe';
 
 // A URL anywhere is a strong signal the message wants something read/looked up (not answered from
@@ -145,4 +149,118 @@ export function salvageHoldingText(legacyText: string | null, ground?: string): 
     kept.push(bubble);
   }
   return hasHolding && kept.length ? kept.join('\n---\n') : null;
+}
+
+// ── False-capability-refusal screen ─────────────────────────────────────────────────────────────
+// The other half of the same live failure the gate above catches. `needsGrounding` reads the USER's
+// message; these two read the MODEL's DRAFT. A weak Convo model, handed a request it could have
+// delegated, sometimes writes a flat "no can do from here, that path is local to your machine"
+// instead — while an engine WITH the file tools is attached, running on that very machine. Nothing
+// else in the pipeline inspects reply text for refusal language: a gate-'yes' turn can't refuse (the
+// gate discards the draft), but every phrasing the gate's regexes don't reach ships the refusal.
+//
+// The two functions split cleanly: `refusalLike` asks "is this an ABILITY refusal at all?" and
+// `refusedCapabilities` asks "refusing WHAT, in the engine's own vocabulary?". Only the intersection
+// with what the engine can actually do is a false refusal — an honest one (no engine, no inbox
+// connected) must survive untouched, so the subject map is the precision half of the pair.
+
+// Ability negations only. A POLICY refusal ("i won't", "i shouldn't", "i'd rather not") is a choice
+// Irises is allowed to make and is deliberately excluded — this floor exists for claims of
+// IMPOSSIBILITY, which are the ones that are factually wrong when the engine has the tool.
+const NO_ABILITY = String.raw`(?:can'?t|cannot|can\s+not|unable to|not able to|no way (?:for me )?to|(?:don'?t|do not) have (?:a |any )?way to|there'?s no way (?:for me )?to)`;
+
+// The closed access-verb list — the verbs that name REACHING something (a file, a mailbox, the web,
+// a photo). Kept closed on purpose: an open "can't <verb>" would swallow every ordinary inability
+// ("can't promise", "can't tell you why") and turn the floor into an over-delegation machine.
+const ACCESS_VERB = String.raw`(?:get (?:to|at|into)|see|view|reach(?: into)?|access|open|read|check|browse|look (?:at|into|in|through)|list|peek|pull up|dig (?:into|through|around)|go through|run|scan|inspect|fetch|retrieve)`;
+
+// Words that must never sit between the negation and an access verb: they turn a refusal shape into
+// an idiom with the opposite meaning ("can't WAIT to see the photos", "can't BELIEVE what i'm
+// seeing", "can't GO wrong"). Screened at every position in the window, so "can't really wait to
+// see" is caught as well as the bare form.
+const NOT_REFUSAL_WORD = String.raw`(?:wait|believe|be|go|help|stand|imagine|thank|argue|deny|stop|resist|hardly)`;
+// Up to three plain words between the negation and its verb ("can't actually get to", "cannot
+// directly access"). Zero words is the common case ("can't see"). Punctuation ends the window, which
+// is what keeps "i can't. see, the thing is…" out.
+const ABILITY_GAP = String.raw`(?:\s+(?!${NOT_REFUSAL_WORD}\b)[\w']+){0,3}\s+`;
+
+// Access-refusal shapes. Anchored on ability (never policy) and, where a verb is involved, on the
+// closed list above. Every one of these was either observed live or is a one-word variant of a
+// phrasing that was.
+const REFUSAL_LIKE: RegExp[] = [
+  // The observed opener, verbatim. On its own it says nothing about WHAT is refused — that is
+  // refusedCapabilities' job, which is why "no can do, i'm slammed today" scores zero classes.
+  /\bno can do\b/i,
+  // "can't do that from here" / "…from my end" — a refusal that names the boundary rather than a verb.
+  new RegExp(String.raw`\b${NO_ABILITY}\s+do (?:that|this|it|any of that|much (?:here|there))\b[^.!?\n]{0,24}?\bfrom (?:here|my end|my side|this end|where i (?:am|sit))\b`, 'i'),
+  // "that path is local to your machine" — the observed justification, which is FALSE for an engine
+  // that runs on that machine.
+  /\b(?:local|localized|only) to your (?:machine|computer|end|side|box|laptop|system|device|filesystem)\b/i,
+  // Negated ability aimed at an access verb: "can't get to your downloads", "unable to read that file".
+  new RegExp(String.raw`\b${NO_ABILITY}\b${ABILITY_GAP}\b${ACCESS_VERB}\b`, 'i'),
+  // The same claim in noun form: "that's not something i can open", "nothing i can reach from here".
+  new RegExp(String.raw`\b(?:not something|nothing) i can\b${ABILITY_GAP}\b${ACCESS_VERB}\b`, 'i'),
+  // Flat claims of blindness. "eyes"/"visibility" are the persona-shaped variants a chatty model
+  // reaches for when it doesn't want to say "access".
+  /\b(?:don'?t|do not) have (?:any |direct |the )?(?:access|eyes|visibility|a view|the ability to (?:see|read|reach|access|open))\b/i,
+  /\bno access to\b/i,
+  // "that's outside my reach", "beyond what i can reach".
+  /\b(?:outside|beyond)(?: of)? (?:my reach|what i can (?:reach|see|access|get to))\b/i,
+];
+
+/**
+ * Does this draft claim an INABILITY to reach something? The screen, not the verdict — a true refusal
+ * of something the engine genuinely can't do also matches here, and is filtered out downstream by
+ * intersecting `refusedCapabilities` with the engine's real capability summary. Pure.
+ */
+export function refusalLike(text: string | null | undefined): boolean {
+  const t = (text || '').trim();
+  if (!t) return false;
+  return REFUSAL_LIKE.some(re => re.test(t));
+}
+
+// The subject vocabulary: the words a refusal uses for each capability class. Deliberately narrow —
+// a class named here that the engine HAS forces a delegation, so a sloppy map over-delegates, while a
+// gap only means the refusal ships as written (the pre-floor status quo). MUST stay in CAP_ORDER
+// order (web, inbox, files, code, media, scheduling): this array IS the canonical ordering for the
+// returned list, kept local so the module needs no runtime import of the engine seam.
+const SUBJECT_VOCAB: ReadonlyArray<readonly [CapabilityClass, RegExp]> = [
+  ['web', /\b(?:the web|the internet|online|a website|websites?|web ?pages?|urls?|links?|browse the web|search the web|google(?: it)?|look(?:ing)? (?:it |that )?up online)\b/i],
+  ['inbox', /\b(?:inbox|e-?mails?|mailbox|gmail|outlook|mail account|your mail)\b/i],
+  ['files', /\b(?:files?|filenames?|folders?|subfolders?|directory|directories|dirs?|disk|filesystem|file system|drive|downloads|desktop|documents|paths?|repo|repository|codebase|machine|computer|laptop|locally|local)\b/i],
+  ['code', /\b(?:run (?:code|a script|commands?)|execute|scripts?|the terminal|a terminal|shell|bash|command line)\b/i],
+  ['media', /\b(?:photos?|pictures?|images?|videos?|audio|voice ?memos?|recordings?|screenshots?|pdfs?|attachments?)\b/i],
+  ['scheduling', /\b(?:reminders?|remind you|an alarm|schedule (?:that|it|a)|automations?)\b/i],
+];
+// A named filesystem path in the refusal is 'files' on its own — "no can do, ~/.hermes/skills is
+// local to your machine" carries the class in the token, not in a noun.
+const PATH_SHAPE = /(?:^|[\s"'`([])(?:~\/|\.{1,2}\/[\w.-]|\/[\w.-]+\/[\w.-])/;
+
+/**
+ * WHICH capabilities a draft refuses, in the engine's own closed vocabulary — `[]` when the draft
+ * isn't an ability refusal at all, or when it refuses nothing this system has a name for.
+ *
+ * Subject resolution is draft-first, ask-second: the refusal usually names its own subject ("that
+ * path is local to your machine" → files), but a bare "no can do" carries none, and then the user's
+ * message supplies it ("what's in my downloads folder" → files). A refusal with no subject in EITHER
+ * — the social "no can do, i'm slammed today" — returns `[]` and is left completely alone, which is
+ * the single most important negative case here: Irises is allowed to decline things.
+ *
+ * Pure. The caller intersects the result with what the engine can actually do; a refusal of something
+ * genuinely unavailable (no engine, inbox not connected) survives that intersection as honest.
+ */
+export function refusedCapabilities(draft: string | null | undefined, inbound?: string | null): CapabilityClass[] {
+  if (!refusalLike(draft)) return [];
+  const fromDraft = subjectClasses(draft || '');
+  // The ask is the fallback ONLY — a draft that names its own subject is never widened by the
+  // user's wording, so "no can do, your inbox isn't connected" can't pick up 'files' from an
+  // unrelated sentence in the ask.
+  return fromDraft.length ? fromDraft : subjectClasses(inbound || '');
+}
+
+function subjectClasses(text: string): CapabilityClass[] {
+  const path = PATH_SHAPE.test(text);
+  return SUBJECT_VOCAB
+    .filter(([cls, re]) => re.test(text) || (cls === 'files' && path))
+    .map(([cls]) => cls);
 }

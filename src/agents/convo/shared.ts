@@ -19,7 +19,7 @@ import { updateDossier, PENDING_CLARIFICATION_TTL_MS } from '../../memory/dossie
 import { isGroupHandle } from '../../memory/identity.js';
 import { isDuplicateDelegation, getActiveOps, hasInFlightRequest, requestOpsCancel, type ActiveOps } from '../../state/opsCoordination.js';
 import { etaStatus } from '../etaEstimate.js';
-import { needsGrounding, salvageHoldingText } from '../routingGate.js';
+import { needsGrounding, salvageHoldingText, refusedCapabilities } from '../routingGate.js';
 import { addMessage, setUserName, addUserFact, UserProfile, StoredMessage } from '../../state/conversation.js';
 import { redactInternalTools } from '../guardrails.js';
 import { stripReplyTag } from '../../state/replyThreading.js';
@@ -293,7 +293,10 @@ async function handleUpdateDirectives(input: Record<string, unknown>, handle: st
 const CAPABILITY_PHRASES: Record<CapabilityClass, string> = {
   web: 'search the web',
   inbox: 'look through their inbox',
-  files: 'read files they share',
+  // "share" alone was the root cause of a live false refusal: it promises only what they hand over,
+  // so a NAMED path ("what's in ~/.hermes/skills?") read as out of reach and the model refused. The
+  // deep look runs on their machine — say so.
+  files: 'read files they share or any file or folder path they name',
   code: 'run code',
   media: 'look at photos, audio and video',
   scheduling: 'set up reminders',
@@ -794,6 +797,40 @@ export interface ConvoTurnContext {
 }
 
 /**
+ * The task a FLOOR pushes in — a delegation the model itself never asked for. Two floors build one:
+ * the routing gate (a data question Convo answered from general knowledge) and the false-refusal
+ * floor (a draft that claimed it couldn't reach something the engine can). Their triggers differ but
+ * the task must not: same 'general' kind, same forced grounding backstop, same shape — so one
+ * constructor owns it and the two can never drift apart. Only `metaPrompt` differs, because only the
+ * REASON differs. Pure.
+ */
+function buildForcedTask(opts: {
+  chatId: string;
+  agentHandle: string;
+  request: string;
+  metaPrompt: string;
+  replyToMessageId?: string;
+  originConfidence?: number;
+}): OpsTask {
+  return {
+    id: randomUUID(),
+    chatId: opts.chatId,
+    agentHandle: opts.agentHandle,
+    kind: 'general',
+    request: opts.request,
+    // forceGrounding keeps the fidelity backstop ON for a pushed-in DATA question. Web search
+    // stays ON too (Ops seeds server-side results into the grounding corpus), so the question
+    // can reach the open web and still be held to grounded facts.
+    forceGrounding: true,
+    metaPrompt: opts.metaPrompt,
+    replyToMessageId: opts.replyToMessageId,
+    attempt: 1,
+    originConfidence: opts.originConfidence,
+    createdAt: Date.now(),
+  };
+}
+
+/**
  * Process an LLM result into a ChatResponse: fold text, run every tool call (reactions,
  * remember_user, delegate_to_ops, scheduling, directives), apply the never-go-silent fallbacks,
  * and persist history + refresh the dossier. `media` is this turn's attachments — the delegate
@@ -1210,18 +1247,12 @@ export async function processConvoResult(args: {
         freshCache = !!(rr && typeof rr.at === 'number' && Date.now() - rr.at <= ROUTING_RECENT_TTL_MS);
       }
       if (!freshCache) {
-        delegatedTask = {
-          id: randomUUID(), chatId, agentHandle: chatContext.senderHandle,
-          kind: 'general', request: lastUser,
-          // forceGrounding keeps the fidelity backstop ON for a pushed-in DATA question. Web search
-          // stays ON too (Ops seeds server-side results into the grounding corpus), so the question
-          // can reach the open web and still be held to grounded facts.
-          forceGrounding: true,
+        delegatedTask = buildForcedTask({
+          chatId, agentHandle: chatContext.senderHandle, request: lastUser,
           metaPrompt: `The user asked: "${lastUser}". This needs real, grounded data (the web, their own email, or their own past chats) — do NOT answer from general knowledge. Use the right tools and return only grounded facts; if you can't find it, say so.`,
-          replyToMessageId: chatContext?.incomingMessageId, attempt: 1,
+          replyToMessageId: chatContext?.incomingMessageId,
           originConfidence: reply.confidenceLevel,
-          createdAt: Date.now(),
-        };
+        });
         // Keep Irises's own words wherever they're safe: the draft's leading holding-style bubbles
         // ("lemme check your records for martinez", "give me one sec") survive as the holding text —
         // only the un-grounded tail (claimed results) is discarded. When the draft has no safe
@@ -1230,7 +1261,58 @@ export async function processConvoResult(args: {
         const salvaged = salvageHoldingText(normalizedText, lastUser);
         textParts.length = 0;
         if (salvaged) textParts.push(salvaged);
-        console.log(`[convo] routing gate forced delegation for a grounded query${salvaged ? ' (kept the draft’s own holding opener)' : ''}`);
+        // chatId rides along so a live round can attribute this line to the chat it fired on — the
+        // battery harness reads it back per-chat when the trace buffer isn't reachable.
+        console.log(`[convo] routing gate forced delegation for a grounded query (chat ${chatId})${salvaged ? ' (kept the draft’s own holding opener)' : ''}`);
+        record({ type: 'event', label: 'convo:routing_gate', chatId, handle, detail: { salvaged: !!salvaged } });
+      }
+    }
+  }
+
+  // ── False-capability-refusal floor ──────────────────────────────────────────────────────────────
+  // The gate above reads the USER's message; this reads the MODEL's DRAFT. Observed live: with a
+  // hermes engine and its file tools attached, the Convo model answered a path question with "no can
+  // do from here, that path is local to your machine" — a flat, false claim of impossibility about a
+  // machine the engine is literally running on. Nothing else in this pipeline inspects reply text for
+  // refusal language, so every phrasing the gate's regexes don't reach ships the refusal as-is.
+  //
+  // The remedy is the gate's, deterministically: force the same 'general' delegation, salvage only
+  // what's safe in the draft, and let the engine answer for real. Zero extra LLM calls, and
+  // loop-proof by construction — setting `delegatedTask` is exactly what makes the silent-turn floor
+  // below skip, and a gate-converted turn already carries one so it can never re-enter here.
+  //
+  // The predicate is the gate's, minus two things and plus one:
+  //   • NO needsGrounding gating — the refusal draft IS the classifier. A model that says it can't
+  //     reach something has told us the turn needed reaching, whatever shape the question took.
+  //   • NO fresh-cache skip — a refusal proves the cache did not answer the question.
+  //   • PLUS the capability intersection: only classes the engine can ACTUALLY do. An honest refusal
+  //     (engine off, inbox genuinely not connected, null summary) survives untouched — this floor
+  //     exists to stop lies, never to force a promise the deployment can't keep.
+  if (process.env.REFUSAL_FLOOR !== 'off' && !delegatedTask && !suppressedDuplicate
+      && !scheduleConfirmation && !noteConfirmation && outcomeParts.length === 0
+      && !args.archivePass
+      && handle && chatContext?.senderHandle) {
+    const ask = textToSend ?? '';
+    const refused = refusedCapabilities(normalizedText, ask);
+    if (refused.length) {
+      const engineClasses = getEngineBackend()?.getCapabilitySummary?.()?.classes ?? [];
+      const falsely = refused.filter(c => engineClasses.includes(c));
+      // Same kind-agnostic dedup pair as the gate: never stack a forced task on a run already going.
+      if (falsely.length && !hasInFlightRequest(chatId, ask)
+          && isDuplicateDelegation(chatId, 'general', ask) !== 'in_flight') {
+        delegatedTask = buildForcedTask({
+          chatId, agentHandle: chatContext.senderHandle, request: ask,
+          metaPrompt: `The user asked: "${ask}". A draft reply wrongly told them this was impossible from here — it is not: you are running on their machine with the tools for it. Actually carry the request out with the right tool and report only what you really found. If a tool genuinely fails, say precisely what failed; never claim the request itself can't be done.`,
+          replyToMessageId: chatContext?.incomingMessageId,
+          originConfidence: reply.confidenceLevel,
+        });
+        // A PURE refusal bubble salvages nothing (it neither holds the line nor acks), so the voiced
+        // holding path below takes over — which is the common case here and the intended one.
+        const salvaged = salvageHoldingText(normalizedText, ask);
+        textParts.length = 0;
+        if (salvaged) textParts.push(salvaged);
+        console.warn(`[convo] false-refusal floor forced delegation (chat ${chatId}) — refused ${falsely.join(',')}${salvaged ? '; kept the draft’s own holding opener' : ''}`);
+        record({ type: 'event', label: 'convo:false_refusal', chatId, handle, detail: { classes: falsely, salvaged: !!salvaged } });
       }
     }
   }
@@ -1300,7 +1382,9 @@ export async function processConvoResult(args: {
   if (!textResponse && !reaction && !renameChat && !rememberedUser && !removeMember && !delegatedTask
       && !res.toolCalls.length && textToSend.trim()) {
     const turn = args.silentRetry ? undefined : args.turn;   // the fence: a retry never retries
-    console.warn(`[convo] silent turn on a real message — ${turn ? 'retrying once' : 'voicing the floor'}`);
+    // chatId in the line, not just the trace event: a live convergence round attributes the failure
+    // per-chat from the instance log when the trace buffer isn't reachable.
+    console.warn(`[convo] silent turn on a real message (chat ${chatId}) — ${turn ? 'retrying once' : 'voicing the floor'}`);
     record({ type: 'event', label: 'convo:silent_turn', chatId, handle, detail: { recovery: turn ? 'retry' : 'floor' } });
     if (turn) {
       try {

@@ -800,7 +800,9 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
   if (delegatedTask) {
     opsCancel = new AbortController();
     markOpsStart(chatId, delegatedTask.id, { kind: delegatedTask.kind, request: delegatedTask.request, estimate: estimateOpsEta({ kind: delegatedTask.kind, request: delegatedTask.request, forceGrounding: delegatedTask.forceGrounding }) }, opsCancel);
-    console.log(`[main] Delegating ${delegatedTask.kind} task to the engine`);
+    // chatId in the line: this is the only observable marker that a turn delegated, and without it a
+    // log-only diagnosis (trace buffer full or unreachable) can't tell WHICH chat delegated.
+    console.log(`[main] Delegating ${delegatedTask.kind} task to the engine (chat ${chatId})`);
     void runOpsAndFollowUp(delegatedTask, sendFollowUp, opsCancel.signal);
   }
   })); // end withChatLock — think + speak went out as one ordered, uninterleaved unit

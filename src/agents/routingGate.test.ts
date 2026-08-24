@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { needsGrounding, salvageHoldingText } from './routingGate.js';
+import { needsGrounding, salvageHoldingText, refusalLike, refusedCapabilities } from './routingGate.js';
 
 test('data-lookup questions require grounding (route to Ops)', () => {
   for (const q of [
@@ -169,4 +169,99 @@ test('a lowercase assertion cannot sneak in as an ack opener', () => {
 test('an ack opener followed by a real holding bubble survives (pleasantry no longer lost)', () => {
   const draft = ["you're welcome!", 'pulling comps on 55 Birch now'].join('\n---\n');
   assert.equal(salvageHoldingText(draft, 'pull comps on 55 Birch'), draft);
+});
+
+// ── The false-capability-refusal regression (2026-08-23, E2E retest, weak model) ─────────────────
+// The second never-event the retest surfaced. With a hermes engine and its FILE tools attached, the
+// Convo model answered a named-path question with "no can do from here, that path is local to your
+// machine" — a flat claim of impossibility about the machine the engine runs on. needsGrounding reads
+// the user's message and could not see it; nothing anywhere read the model's own draft. refusalLike
+// is the screen ("is this an ability refusal?") and refusedCapabilities the subject map ("of WHAT,
+// in the engine's vocabulary?"), so the floor can force a delegation only where the engine really
+// can deliver — an honest refusal must survive both.
+
+test('refusalLike: the live phrasings, and the one-word variants around them', () => {
+  for (const draft of [
+    'no can do from here, that path is local to your machine',
+    "can't do that from here, sorry",
+    "i can't get to your downloads folder from my end",
+    "sorry, i don't have access to your inbox",
+    "that's not something i can open from my end",
+    "i'm unable to read files on your machine",
+    'that one is outside my reach',
+    "there's no way for me to list what's in there",
+    "i cannot directly access anything on your laptop",
+    "i don't have eyes on your filesystem",
+  ]) {
+    assert.equal(refusalLike(draft), true, `expected a refusal: ${draft}`);
+  }
+});
+
+test('refusalLike: precision — idioms, policy declines, and ordinary inabilities are not refusals', () => {
+  for (const draft of [
+    // The idiom screen: these read as "can't <access verb>" to a naive regex and mean the opposite.
+    "can't believe how hot it is today",
+    "can't wait to see the photos you sent",
+    "can't really wait to read it",
+    "you can't go wrong with either one",
+    "i can't be serious for five minutes",
+    // Policy, not ability — declining is Irises's right and this floor must never touch it.
+    "i won't check your email without you asking me to",
+    "i shouldn't open that without your say-so",
+    "i'd rather not go through your messages",
+    // Ordinary inabilities that name no access verb at all.
+    "i can't tell you how much that helps",
+    "there's no way to know for sure until it lands",
+    "i can't promise it'll be done tonight",
+    // Not a refusal in any direction.
+    'look, i just think we should sit on it',
+    'on it, one sec',
+    '',
+    null,
+  ]) {
+    assert.equal(refusalLike(draft), false, `expected NOT a refusal: ${draft}`);
+  }
+});
+
+test('refusedCapabilities: the refusal names its own subject, mapped to the engine vocabulary', () => {
+  // The live incident, verbatim: "path" and "machine" both say files.
+  assert.deepEqual(refusedCapabilities('no can do from here, that path is local to your machine', 'peek in ~/.hermes/skills'), ['files']);
+  assert.deepEqual(refusedCapabilities("i can't get to your downloads folder", 'whats in my downloads'), ['files']);
+  assert.deepEqual(refusedCapabilities("sorry, i don't have access to your inbox", 'any mail from the bank?'), ['inbox']);
+  assert.deepEqual(refusedCapabilities("i can't browse the web from here", 'whats the latest node LTS'), ['web']);
+  assert.deepEqual(refusedCapabilities("i'm unable to open that pdf", 'read the attached'), ['media']);
+  // Multiple subjects come back in the canonical class order, never the order they were written.
+  assert.deepEqual(
+    refusedCapabilities("i can't reach your inbox or any files on that machine", 'check my mail and my downloads'),
+    ['inbox', 'files'],
+  );
+});
+
+test('refusedCapabilities: a subject-free refusal borrows the ASK, and a social one borrows nothing', () => {
+  // A bare "no can do" carries no subject of its own — the user's message supplies it.
+  assert.deepEqual(refusedCapabilities('no can do', 'can you cat the readme in ~/irises?'), ['files']);
+  assert.deepEqual(refusedCapabilities('no can do', 'anything new in my inbox this morning?'), ['inbox']);
+  // …but a refusal with NO subject anywhere is Irises declining something, and stays completely
+  // alone. This is the most important negative in the file: she is allowed to say no.
+  assert.deepEqual(refusedCapabilities("no can do, i'm slammed today", 'wanna grab lunch later'), []);
+  assert.deepEqual(refusedCapabilities("no can do, that's above my pay grade", 'should i sell the house'), []);
+  // A draft that DOES name its subject is never widened by the ask — the honest inbox refusal can't
+  // pick up 'files' from an unrelated clause and get force-delegated on the wrong class.
+  assert.deepEqual(refusedCapabilities("i can't get into your inbox, it isn't hooked up", 'check my inbox, the files are attached'), ['inbox']);
+});
+
+test('refusedCapabilities: a non-refusal draft is never classified, whatever it talks about', () => {
+  for (const draft of [
+    'pulling your inbox now, one sec',
+    "here's what's in that folder: src, dist, and node_modules",
+    "can't wait to see the photos from your trip",
+    'i went through your downloads and found three invoices',
+  ]) {
+    assert.deepEqual(refusedCapabilities(draft, 'check my downloads folder'), [], `expected no classes for: ${draft}`);
+  }
+});
+
+test('refusedCapabilities: a NAMED path in the refusal is files on its own, with no file noun', () => {
+  assert.deepEqual(refusedCapabilities("no can do — ~/.hermes/skills isn't something i can reach", 'name 5 skill folders'), ['files']);
+  assert.deepEqual(refusedCapabilities("i can't read /var/log/nginx from here", 'tail the nginx log'), ['files']);
 });

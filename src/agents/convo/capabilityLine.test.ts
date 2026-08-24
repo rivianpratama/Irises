@@ -43,6 +43,18 @@ test('renderCapabilityLine: an INCOMPLETE manifest keeps the prohibition but dro
   assert.match(renderCapabilityLine({ classes: ['web', 'files'], complete: true }), /inbox isn't connected right now/);
 });
 
+// ── The named-path regression (2026-08-23, E2E retest) ──────────────────────────────────────────
+// The files phrase used to read "read files they SHARE" — a promise about what the user hands over
+// and nothing about a path they type. Handed "what's in ~/.hermes/skills?", the model read its own
+// injected capability line as covering neither, and refused ("that path is local to your machine")
+// while the engine sat on that very machine with the file tools. The line has to name both.
+test('renderCapabilityLine: the files phrase covers a path they NAME, not just a file they send', () => {
+  const line = renderCapabilityLine({ classes: ['files'] });
+  assert.match(line, /read files they share or any file or folder path they name/);
+  // Still brand-free, and still Irises's own reach — no engine or filesystem jargon leaked in.
+  assert.doesNotMatch(line, /hermes|openclaw|engine|tool|manifest|filesystem/i);
+});
+
 test('renderCapabilityLine: null summary and an empty class set both render nothing', () => {
   assert.equal(renderCapabilityLine(null), '');
   assert.equal(renderCapabilityLine({ classes: [] }), '');
