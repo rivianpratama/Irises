@@ -1,0 +1,10 @@
+{
+  "model": "hermes-agent",
+  "messages": [
+    {
+      "role": "user",
+      "content": "hey, can you install Irises for me? use your irises-setup-hermes skill. important: I already run an Irises at ~/irises on port 3000 for something else — leave that checkout and that process completely alone. this is a fresh separate install: clone into ~/irises-sandbox and make it listen on port 3105 (export PORT=3105 in the shell before you run the setup script, so it pins that port). no bridge mode. when you are done, tell me: the health check result, the exact web chat url, and anything you could not finish."
+    }
+  ],
+  "stream": false
+}

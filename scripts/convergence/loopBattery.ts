@@ -23,7 +23,14 @@
 // after the 90 s SLA — reported, never failing, because provider latency under the battery's own
 // concurrency is not a routing defect.
 //
-// One round: reset the gate's freshness cache → snapshot the trace buffer → send the 15-item battery
+// A third class rides along: INSTALL items, the in-chat "get yourself onto Telegram / iMessage" asks.
+// There is no single right route for them — handing the ask to the engine's setup skill and answering
+// out of her own head about what is still missing (a bot token, a platform with no bridge) are both
+// good turns — so they are scored for the two never-events only, SILENT and FALSE_REFUSAL, and never
+// for over-delegation. The rest of the judgement is a person reading the words, which is why their
+// replies go into the JSON unclipped.
+//
+// One round: reset the gate's freshness cache → snapshot the trace buffer → send the 18-item battery
 // on fresh clientIds at a ~20 s stagger → wait out the engine round-trips → read the messages table
 // and the new trace events back → print a markdown table and write JSON. Exit 0 iff zero failures.
 
@@ -41,11 +48,13 @@ import { webChatId, WEB_DEBUG_HANDLE } from '../../src/channels/web/identity.js'
 // ask-shaped sentence) so the only thing standing between them and a false refusal is the new
 // draft-reading floor. `expect: 'local'` items are NEGATIVE CONTROLS: answered from the model's own
 // head, and a delegation on one of them is over-delegation — the cost of every precision mistake.
+// `expect: 'install'` items are the platform-setup asks — see the header: either route is a good turn,
+// so they answer only for SILENT and FALSE_REFUSAL, and are read by hand afterwards.
 
 interface Item {
   id: string;
   ask: string;
-  expect: 'delegate' | 'local';
+  expect: 'delegate' | 'local' | 'install';
   /** Why this item is in the battery — printed in the JSON so a failed round is self-explaining. */
   why: string;
 }
@@ -69,6 +78,10 @@ const BATTERY: Item[] = [
   { id: 'n3', ask: 'what does API mean?', expect: 'local', why: 'control: terminology, answered from her own head' },
   { id: 'n4', ask: 'what is a closure in javascript?', expect: 'local', why: 'control: terminology' },
   { id: 'n5', ask: "hey! how's your morning going?", expect: 'local', why: 'control: a casual greeting — the machinery must stay invisible' },
+  // ── Install asks: the ask arrives in chat, so the answer must too — any honest route passes ──
+  { id: 'i1', ask: 'can you set yourself up on telegram? i want to text you there', expect: 'install', why: 'install: chat-driven platform setup must route somewhere useful, never refuse' },
+  { id: 'i2', ask: 'how do i get you on imessage?', expect: 'install', why: 'install: unsupported platform — honesty required, no fake promise and no ability-refusal of what the engine CAN do' },
+  { id: 'i3', ask: 'what do you need from me to get telegram working?', expect: 'install', why: 'install: a needs-from-user answer (bot token etc) is the ideal outcome' },
 ];
 
 // ── Timing ──────────────────────────────────────────────────────────────────────────────────────
@@ -93,7 +106,7 @@ const USAGE = `loopBattery — one live convergence round against a running Iris
 
   npx tsx scripts/convergence/loopBattery.ts --round N [options]
 
-  --round N        round number; also names the clientIds (loop-rN-1 … loop-rN-15). Required.
+  --round N        round number; also names the clientIds (loop-rN-1 … loop-rN-${BATTERY.length}). Required.
   --base URL       instance base URL            (default http://127.0.0.1:3000)
   --db PATH        irises sqlite file           (default ~/.irises/irises.db)
   --log PATH       instance log, the fallback evidence source when the trace buffer has rolled
@@ -108,6 +121,13 @@ const USAGE = `loopBattery — one live convergence round against a running Iris
 The pre-round reset is DELETE FROM memory_short WHERE agent_handle = '<handle>'. Every web client
 shares one memory handle, so without it the 45-minute research cache from an earlier item makes the
 routing gate skip a later one, and the round measures the cache instead of the code.
+
+The ${BATTERY.length} items come in three classes: delegate positives, local negative controls, and install —
+the in-chat "put yourself on Telegram / iMessage" asks. An install item fails on SILENT and on
+FALSE_REFUSAL only; delegating one is welcome rather than over-delegation, since the engine owns the
+setup skill, and an honest "here is what I still need from you" is just as good an answer. Their whole
+reply is written to the JSON as fullReply — the report's own cells are clipped, and these three are
+graded by reading them.
 
 Exit code is 0 only when the round is clean: no SILENT, no FALSE_REFUSAL, no OVER_DELEGATION.
 WARN (a refusal that DID delegate anyway) is reported but does not fail the round.
@@ -175,7 +195,7 @@ function isDelegationEvent(e: TraceEvent): boolean {
 
 /**
  * Log-line fallback for when the ring buffer has rolled past the round (it holds 500 events by
- * default and a 15-item round is not cheap). Every line these match now carries `(chat <id>)` — the
+ * default and an 18-item round is not cheap). Every line these match now carries `(chat <id>)` — the
  * whole reason chatId was added to them.
  */
 function logSaysDelegated(log: string, chatId: string): boolean {
@@ -200,6 +220,12 @@ interface Result {
   verdict: Verdict; evidence: string;
   reply: string | null; replyAt: number | null; delegated: boolean;
   refusedClasses: string[];
+  /**
+   * Install items only: the whole reply, never clipped. Every other field a reader would reach for is
+   * cut to fit a markdown cell, and an install verdict is only half the check — the other half is
+   * reading what she actually offered to do about Telegram.
+   */
+  fullReply?: string;
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -293,7 +319,7 @@ async function main(): Promise<number> {
   const after = curlJson<{ events: TraceEvent[] }>(`${base}/debug/api/traces${q}`);
   const afterEvents = after?.events ?? [];
   const fresh = afterEvents.filter(e => e.id > traceFloor);
-  // The ring buffer holds ~500 events and a 15-item round is not cheap, so it can roll PAST the
+  // The ring buffer holds ~500 events and an 18-item round is not cheap, so it can roll PAST the
   // snapshot mid-round. It did exactly that iff the oldest event still visible is newer than the one
   // right after the snapshot — then some of the round's own events were evicted, trace evidence is
   // incomplete, and "no delegation trace" would be a false accusation. Fall back to the log.
@@ -344,6 +370,10 @@ async function main(): Promise<number> {
       // Not a failure by the plan's definition: an answer with no refusal in it is a good turn even
       // if it never delegated. Flagged in the evidence so a round-over-round drift is visible.
       evidence = `answered locally (no delegation) — ${evidence}`;
+    } else if (p.expect === 'install') {
+      // No verdict either way — both routes are wanted. The route still rides on the row so a class
+      // that quietly stops reaching the engine's setup skill is visible without opening the JSON.
+      evidence = `${delegated ? 'delegated' : 'answered locally'} — ${evidence}`;
     }
 
     return {
@@ -352,6 +382,7 @@ async function main(): Promise<number> {
       verdict, evidence,
       reply, replyAt: answers.length ? answers[0].at : null, delegated,
       refusedClasses,
+      ...(p.expect === 'install' ? { fullReply: reply ?? '' } : {}),
     };
   });
 
@@ -361,21 +392,25 @@ async function main(): Promise<number> {
   // Not a failure, so it rides on the headline instead of the exit code — a round that is clean only
   // because half of it answered two minutes late is a fact worth seeing without opening the JSON.
   const lates = results.filter(r => r.verdict === 'LATE');
+  // Not a verdict either — a pointer. An install row can pass the two never-events and still be a bad
+  // answer (a promise she cannot keep), and only a person reading the reply can tell.
+  const installs = results.filter(r => r.expect === 'install');
 
   const headline = failures.length ? `${failures.length} FAILURE(S)` : 'CLEAN';
   console.log(`\n# Convergence round ${round} — ${headline}${lates.length ? ` · ${lates.length} LATE` : ''}\n`);
-  console.log('| id | ask | verdict | evidence |');
-  console.log('|----|-----|---------|----------|');
-  for (const r of results) console.log(`| ${r.id} | ${cell(r.ask)} | ${r.verdict} | ${cell(r.evidence)} |`);
+  console.log('| id | class | ask | verdict | evidence |');
+  console.log('|----|-------|-----|---------|----------|');
+  for (const r of results) console.log(`| ${r.id} | ${r.expect} | ${cell(r.ask)} | ${r.verdict} | ${cell(r.evidence)} |`);
   console.log('');
   const tally = (v: Verdict) => results.filter(r => r.verdict === v).length;
-  console.log(`PASS ${tally('PASS')} · LATE ${lates.length} · SILENT ${tally('SILENT')} · FALSE_REFUSAL ${tally('FALSE_REFUSAL')} · OVER_DELEGATION ${tally('OVER_DELEGATION')} · WARN ${warns.length}`);
+  console.log(`${results.length} items · PASS ${tally('PASS')} · LATE ${lates.length} · SILENT ${tally('SILENT')} · FALSE_REFUSAL ${tally('FALSE_REFUSAL')} · OVER_DELEGATION ${tally('OVER_DELEGATION')} · WARN ${warns.length}`);
   if (lates.length) console.log(`late past the ${SILENT_MS / 1000}s SLA but answered (not counted against the round): ${lates.map(r => r.id).join(', ')}`);
+  if (installs.length) console.log(`install items still to read by hand (fullReply in the JSON): ${installs.map(r => `${r.id} ${r.reply === null ? 'nothing to read' : r.delegated ? 'delegated' : 'local'}`).join(', ')}`);
   console.log(`evidence: traces ${tracesUsable ? `usable (${fresh.length} new events)` : 'INCOMPLETE — log fallback in use'}, log ${log ? 'read' : 'unavailable'}`);
 
   writeFileSync(out, JSON.stringify({
     round: Number(round), base, db, startedAt: started, finishedAt: Date.now(),
-    tracesUsable, traceFloor, clean: failures.length === 0,
+    items: results.length, tracesUsable, traceFloor, clean: failures.length === 0,
     counts: { pass: tally('PASS'), late: lates.length, silent: tally('SILENT'), falseRefusal: tally('FALSE_REFUSAL'), overDelegation: tally('OVER_DELEGATION'), warn: warns.length },
     results,
   }, null, 2) + '\n');
