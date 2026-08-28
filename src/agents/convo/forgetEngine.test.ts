@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { chat } from './client.js';
 import { emptyMedia } from '../../webhook/types.js';
 import { resetEngineBackendCache, type EngineBackend } from '../ops/engineBackend.js';
-import { addDirective, listMediumActive } from '../../db/repositories/memoryMedium.js';
+import { addDirective, addImportantNote, listMediumActive, listMediumAll } from '../../db/repositories/memoryMedium.js';
 import { archiveEntries, listArchiveFor, searchArchive } from '../../db/repositories/memoryArchive.js';
 import { addShortTerm } from '../../db/repositories/memoryShort.js';
 import { saveDossier, getForgetEpoch, getMemory } from '../../db/repositories/memory.js';
@@ -82,6 +82,60 @@ test('/forget me purges the cold archive + short tier and bumps the forget epoch
     assert.equal(getForgetEpoch(h), epochBefore + 1, 'a dossier merge in flight is now fenced');
 
     assert.equal((await listArchiveFor(other)).length, 1, "another user's archive is untouched");
+  } finally {
+    resetEngineBackendCache(undefined);
+  }
+});
+
+// REGRESSION: the retract-vs-purge ordering. Retraction ARCHIVES what it retracts, and the purge
+// is what removes those rows — run concurrently, the purge's synchronous DELETE landed FIRST and
+// the retraction's INSERT after it, so every medium row that was ACTIVE at forget time survived in
+// the searchable archive and came straight back through recall_memory.
+test('/forget me with ACTIVE medium rows leaves ZERO archive rows', async () => {
+  resetEngineBackendCache(null);
+  const h = '+15550006666';
+  const ctx: ChatContext = { ...CTX, senderHandle: h };
+  try {
+    await addDirective(h, 'always confirm before sending');
+    await addImportantNote(h, 'the gate code is 4421');
+    await archiveEntries([{ source: 'message_pruned', agentHandle: h, chatId: 'chat-forget-4', content: 'an older pruned line' }]);
+
+    const res = await chat('chat-forget-4', '/forget me', emptyMedia(), ctx);
+    assert.ok(res.text.length > 0);
+
+    assert.equal((await listArchiveFor(h)).length, 0, 'nothing survived the purge');
+    assert.deepEqual(await searchArchive({ query: 'gate code', handle: h, chatId: 'chat-forget-4' }), [],
+      'and the forgotten note is unreachable by recall');
+
+    // The insert used to land a microtask LATE — after the purge had already run and after the
+    // assertions above. Give it that beat and re-check.
+    await new Promise(r => setTimeout(r, 25));
+    assert.equal((await listArchiveFor(h)).length, 0, 'still zero once every deferred write has landed');
+
+    assert.equal((await listMediumActive(h)).length, 0, 'the medium tier is wiped');
+    assert.equal((await listMediumAll(h)).length, 2,
+      'the ledger lineage survives — the leak was NOT fixed by skipping the retraction');
+  } finally {
+    resetEngineBackendCache(undefined);
+  }
+});
+
+test('/forget me does not archive another handle\'s rows', async () => {
+  resetEngineBackendCache(null);
+  const h = '+15550005555';
+  const sibling = '+15550004444';
+  const ctx: ChatContext = { ...CTX, senderHandle: h };
+  try {
+    await addImportantNote(h, 'their own note about the shed');
+    await addDirective(sibling, 'keep it short');
+    await archiveEntries([{ source: 'message_pruned', agentHandle: sibling, chatId: 'chat-sibling', content: "the sibling's pruned line" }]);
+
+    await chat('chat-forget-5', '/forget me', emptyMedia(), ctx);
+    await new Promise(r => setTimeout(r, 25));
+
+    assert.equal((await listArchiveFor(h)).length, 0);
+    assert.equal((await listArchiveFor(sibling)).length, 1, "the sibling's archive is untouched");
+    assert.equal((await listMediumActive(sibling)).length, 1, "and so is their medium tier");
   } finally {
     resetEngineBackendCache(undefined);
   }

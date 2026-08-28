@@ -92,15 +92,22 @@ export async function chat(
       // The short tier is deleted, NOT expired: an expiry would leave the rows to be swept 48h
       // later, and the sweep ARCHIVES what it sweeps — a forget that reappears in recall two days
       // on. Same reason the archive is purged for both the handle and this chat.
+      //
+      // ORDER IS LOAD-BEARING. Retraction ARCHIVES what it retracts (appendArchive), and the purge
+      // below is what removes those rows. Run concurrently, the purge's synchronous DELETE lands
+      // first and the retraction's INSERT lands after it — the forgotten notes survive in the
+      // searchable archive and come straight back through recall_memory.
+      await retractAllForHandle(h).catch(err => console.error('[convo] /forget medium retract failed', err));
       await Promise.all([
-        retractAllForHandle(h).catch(err => console.error('[convo] /forget medium retract failed', err)),
         deleteShortTermForHandle(h).catch(err => console.error('[convo] /forget short delete failed', err)),
-        purgeArchiveFor({ handle: h, chatId }).catch(err => console.error('[convo] /forget archive purge failed', err)),
         (async () => {
           const cur = await getLongDoc(h);
           if (cur?.docMd) await saveLongDoc(h, '', cur.version, 'forget');
         })().catch(err => console.error('[convo] /forget long clear failed', err)),
       ]);
+      // LAST: nothing may archive after this. (The medium retraction above is the only archive
+      // writer on this path; the short tier hard-DELETEs and the long doc writes a revision.)
+      await purgeArchiveFor({ handle: h, chatId }).catch(err => console.error('[convo] /forget archive purge failed', err));
       // The engine holds its own user model for this chat's session — ASK it to forget too
       // (same request channel as update_memory; the engine owns the decision). Fire-and-forget:
       // an engine hiccup must not block the local wipe that already happened.
