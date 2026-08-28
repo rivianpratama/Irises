@@ -16,6 +16,7 @@ import { searchArchive, archiveSearchBackend, type ArchiveHit } from '../../db/r
 import { validateDirective } from '../../memory/preferences.js';
 import { FACT_KEYS } from '../../memory/mediumTerm.js';
 import { updateDossier, PENDING_CLARIFICATION_TTL_MS } from '../../memory/dossier.js';
+import { updateRelationshipClimate } from '../../memory/climateDrift.js';
 import { groomNotes } from '../../memory/noteGroomer.js';
 import { expandRecallQuery, recallExpansionEnabled } from '../../memory/recallExpansion.js';
 import { isGroupHandle } from '../../memory/identity.js';
@@ -1493,6 +1494,11 @@ export async function processConvoResult(args: {
     if (textToSend) recent.push({ role: 'user', content: textToSend, handle });
     if (cleanForRecord) recent.push({ role: 'assistant', content: cleanForRecord });
     void updateDossier(handle, recent);
+    // And the weeks-scale standing register, off the SAME assembled window (throttled to one eval
+    // per 22h from the persisted row; never blocks, never surfaces). It rides this group skip for
+    // its own reason, on top of the transcript one: the eval prompt is single-relationship, and in a
+    // room one member could move a dial that colours her voice for everyone else in it.
+    void updateRelationshipClimate(handle, recent, { chatId });
   }
 
   // Fold near-duplicate saved notes (throttled 6h per handle; never blocks, never surfaces).

@@ -106,6 +106,10 @@ export async function chat(
           const cur = await getLongDoc(h);
           if (cur?.docMd) await saveLongDoc(h, '', cur.version, 'forget');
         })().catch(err => console.error('[convo] /forget long clear failed', err)),
+        // Climate is cleared deliberately: the standing register is an accreted read of THIS person,
+        // so it is exactly the kind of thing a forget means. (affect_state surviving /forget is a
+        // known, separate quirk of its chat keying — do not "fix" it here.)
+        clearRelationshipClimate(h).catch(err => console.error('[convo] /forget climate clear failed', err)),
       ]);
       // LAST: nothing may archive after this. (The medium retraction above is the only archive
       // writer on this path; the short tier hard-DELETEs and the long doc writes a revision.)

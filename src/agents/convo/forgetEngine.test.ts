@@ -15,6 +15,8 @@ import { addDirective, addImportantNote, listMediumActive, listMediumAll } from 
 import { archiveEntries, listArchiveFor, searchArchive } from '../../db/repositories/memoryArchive.js';
 import { addShortTerm } from '../../db/repositories/memoryShort.js';
 import { saveDossier, getForgetEpoch, getMemory } from '../../db/repositories/memory.js';
+import { getRelationshipClimate, saveRelationshipClimate } from '../../db/repositories/relationshipClimate.js';
+import { defaultClimate } from '../../persona/climate.js';
 import { stmt } from '../../db/sqlite.js';
 import type { ChatContext } from './shared.js';
 
@@ -136,6 +138,34 @@ test('/forget me does not archive another handle\'s rows', async () => {
     assert.equal((await listArchiveFor(h)).length, 0);
     assert.equal((await listArchiveFor(sibling)).length, 1, "the sibling's archive is untouched");
     assert.equal((await listMediumActive(sibling)).length, 1, "and so is their medium tier");
+  } finally {
+    resetEngineBackendCache(undefined);
+  }
+});
+
+// The standing register is an accreted read of THIS person, so a forget takes it too. (affect_state
+// surviving /forget is a known, separate quirk of its chat keying — not this test's business.)
+test('/forget me resets the relationship climate to defaults', async () => {
+  resetEngineBackendCache(null);
+  const h = '+15550003333';
+  const ctx: ChatContext = { ...CTX, senderHandle: h };
+  try {
+    await saveRelationshipClimate(h, {
+      dials: { ease: 62, candor: 70, playfulness: 44 },
+      moves: [{ at: Date.now(), k: 'ease', d: 1 }],
+      lastEvalAt: Date.now(),
+      evalCount: 19,
+    });
+    assert.equal((await getRelationshipClimate(h)).dials.ease, 62);
+
+    const res = await chat('chat-forget-6', '/forget me', emptyMedia(), ctx);
+    assert.ok(res.text.length > 0);
+    await new Promise(r => setTimeout(r, 25)); // the fire-and-forget beat, as elsewhere on this path
+
+    const after = await getRelationshipClimate(h);
+    assert.deepEqual(after, defaultClimate());
+    assert.deepEqual(after.moves, [], 'the rolling-window ledger goes with it');
+    assert.equal(after.evalCount, 0, 'and so does the eval history');
   } finally {
     resetEngineBackendCache(undefined);
   }

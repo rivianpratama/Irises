@@ -9,6 +9,7 @@ import { buildSystemPrompt, type ChatContext } from './shared.js';
 import { coerceStatus, mergeStatus, type AffectState, type ComputedState } from '../../persona/status.js';
 import { computeCycle } from '../../persona/cycle.js';
 import { computeCircadian } from '../../persona/circadian.js';
+import { defaultClimate, type RelationshipClimate } from '../../persona/climate.js';
 
 const ctx: ChatContext = { isGroupChat: false, participantNames: [], chatName: null, senderHandle: '+15550001111' };
 
@@ -45,4 +46,41 @@ test('a prior mood + meta-prompt carry forward into the block', () => {
 test('no computed state → no internal-weather block (legacy path unchanged)', () => {
   const prompt = buildSystemPrompt(ctx, '', [], undefined, undefined, [], 'hey', undefined);
   assert.ok(!prompt.includes('INTERNAL weather'));
+});
+
+// The weeks-scale standing register (persona/climate.ts) rides the SAME block — one header, ever.
+function movedClimate(): RelationshipClimate {
+  return { ...defaultClimate(), dials: { ease: 70, candor: 80, playfulness: 60 }, evalCount: 30 };
+}
+
+test('a moved climate reaches the assembled prompt as prose, with no dial values leaked', () => {
+  const prompt = buildSystemPrompt(ctx, '', [], undefined, undefined, [], 'hey', undefined, affect(), COMPUTED, null, movedClimate());
+  assert.equal(prompt.split('INTERNAL weather').length - 1, 1, 'still exactly one weather header');
+  assert.match(prompt, /standing register you've settled into/);
+  assert.match(prompt, /drop straight in mid-thought/);
+  assert.match(prompt, /in-jokes and shorthand/);
+  assert.match(prompt, /never changes a fact/);
+
+  // A dial VALUE in the prompt is a thing to optimize; a band is a thing to speak in.
+  const from = prompt.indexOf('standing register');
+  const to = prompt.indexOf('re-report your `status`');
+  assert.ok(from !== -1 && to > from);
+  assert.doesNotMatch(prompt.slice(from, to), /\d/);
+});
+
+// The no-regression pin at the assembly level: until a relationship has actually moved, the feature
+// costs the prompt nothing at all.
+test('a default climate leaves buildSystemPrompt byte-identical', () => {
+  // The assembled prompt carries a millisecond-precision "Current time" instant, so two calls a
+  // tick apart differ there and nowhere else. Blank just that instant; everything else is compared
+  // byte for byte.
+  const build = (climate?: RelationshipClimate) =>
+    buildSystemPrompt(ctx, '', [], undefined, undefined, [], 'hey', undefined, affect(), COMPUTED, null, climate)
+      .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/g, '<now>');
+
+  const bare = build();
+  assert.equal(build(defaultClimate()), bare);
+  assert.equal(build(undefined), bare);
+  // …and the comparison has teeth: a moved climate is NOT byte-identical.
+  assert.notEqual(build(movedClimate()), bare);
 });
