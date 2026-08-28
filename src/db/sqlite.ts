@@ -58,6 +58,18 @@ CREATE TABLE IF NOT EXISTS affect_state (
   updated_at        INTEGER NOT NULL
 );
 
+-- Relationship climate: weeks-scale standing register, the slow counterpart to affect_state's
+-- per-turn weather. Keyed by the MEMORY handle (group-aware pseudo-handle), not chat_id —
+-- affect_state's chat keying is the historical outlier, not the pattern.
+CREATE TABLE IF NOT EXISTS relationship_climate (
+  handle       TEXT PRIMARY KEY,
+  dials_json   TEXT    NOT NULL DEFAULT '{}',
+  moves_json   TEXT    NOT NULL DEFAULT '[]',
+  last_eval_at INTEGER NOT NULL DEFAULT 0,
+  eval_count   INTEGER NOT NULL DEFAULT 0,
+  updated_at   INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sent_messages (
   message_id    TEXT PRIMARY KEY,
   chat_id       TEXT NOT NULL,
@@ -326,6 +338,7 @@ export function resetStorageForTests(): void {
     DELETE FROM user_profiles;
     DELETE FROM agent_prefs;
     DELETE FROM affect_state;
+    DELETE FROM relationship_climate;
     DELETE FROM sent_messages;
     DELETE FROM inbound_messages;
     DELETE FROM memory_short;
