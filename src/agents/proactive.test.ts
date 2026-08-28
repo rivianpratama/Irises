@@ -5,17 +5,21 @@
 // still carries the substance.
 process.env.TZ = 'UTC';
 
-import test, { beforeEach } from 'node:test';
+import test, { beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { PROACTIVE_MARK, fallfirmOutcomeFor, voiceProactive, _internal, type ProactiveKind } from './proactive.js';
+import { PROACTIVE_MARK, fallfirmOutcomeFor, voiceProactive, _internal, type ProactiveKind, type ProactiveContinuity } from './proactive.js';
 import { fallfirmFloor } from './fallfirm/floor.js';
 import { resetStorageForTests } from '../db/sqlite.js';
+import { saveThreadInventory } from '../db/repositories/threadInventory.js';
+import { defaultThreadInventory, type ThreadTheme } from '../persona/threads.js';
+import { groupHandle } from '../memory/identity.js';
 
-const KINDS: ProactiveKind[] = ['reminder', 'email', 'memo', 'update'];
+const KINDS: ProactiveKind[] = ['reminder', 'email', 'memo', 'update', 'callback'];
 
 beforeEach(() => resetStorageForTests());
+afterEach(() => { delete process.env.CONVO_THREADING_ENABLED; });
 
 test('the persona branch trigger is byte-identical to PROACTIVE_MARK', () => {
   const persona = readFileSync(join(__dirname, 'composer', 'Context.md'), 'utf8');
@@ -54,12 +58,162 @@ test('each kind is pointed at its own moment, and none of them names machinery',
   }
 });
 
+// The callback is the odd one out: every other kind hands something OVER, this one asks. The framing
+// has to buy that exception without buying an invented answer along with it.
+test('the callback framing asks, once, and claims to know nothing', () => {
+  const instruction = _internal.buildProactiveInstruction({
+    kind: 'callback', text: '"the interview" — the thing on thursday she was dreading',
+  });
+  assert.match(instruction, /just you asking how it's going/);
+  assert.match(instruction, /the question itself, once, light, easy to wave off/);
+  assert.match(instruction, /you don't know how it went; that is exactly why you're asking/);
+  // The kind-specific fidelity line rides between the generic clause and the payload.
+  const genericAt = instruction.indexOf('the line below is the only place your facts come from');
+  const specificAt = instruction.indexOf('the line below is the thread itself');
+  const payloadAt = instruction.indexOf("what you're delivering:");
+  assert.ok(genericAt > 0 && specificAt > genericAt && payloadAt > specificAt,
+    'generic fidelity, then the thread-specific one, then the facts');
+  assert.match(instruction, /nothing gets guessed, assumed, or hoped into a fact/);
+});
+
+// It is kind-SPECIFIC on purpose: telling the model it holds no news about news it is literally
+// carrying is how a reminder or a mail flag gets hedged into uselessness.
+test('the no-outcome line belongs to the callback alone', () => {
+  for (const kind of KINDS) {
+    const instruction = _internal.buildProactiveInstruction({ kind, text: 'x' });
+    const present = instruction.includes('the line below is the thread itself');
+    assert.equal(present, kind === 'callback', `${kind}: fidelity line presence`);
+  }
+});
+
+// Byte-pins on the two instructions with the tightest fidelity contract in the engine — the user's
+// own setups. Adding a fifth kind must not have moved a word of either.
+test('the reminder and email instructions are untouched by the new kind', () => {
+  assert.equal(
+    _internal.buildProactiveInstruction({ kind: 'reminder', text: 'pick up the dry cleaning by 6' }),
+    [
+      PROACTIVE_MARK,
+      'a reminder they set with you earlier just came due — orient them first (one short beat that ties this text to what they asked you to flag), then deliver it, warm and brief, like you remembered on your own',
+      'the line below is the only place your facts come from. the thread above is there for voice, register and continuity ONLY — never for content, never as a second source. if the thread and this line disagree, this line wins, silently, with no mention of the difference. nothing here gets rounded, filled in, or guessed at: if a detail is not below, it does not exist.',
+      'what you\'re delivering:\n"pick up the dry cleaning by 6"',
+    ].join('\n\n'),
+  );
+  assert.match(
+    _internal.buildProactiveInstruction({ kind: 'email', text: 'karen sent the lease back' }),
+    /^\(no one texted you — this one starts with you\)\n\nsomething just landed in their email/,
+  );
+});
+
+// ── Continuity colouring (phase G) ───────────────────────────────────────────────────
+// A standing thread may TINT a proactive turn. It is the loosest thing in a file whose whole
+// subject is fidelity, so every test below is really about where it is NOT allowed to go.
+
+const CONTINUITY = /a standing thread you and they share, for voice only/;
+const THREAD: ProactiveContinuity = { label: 'speed vs craft', note: 'she keeps trading one for the other and minding it' };
+const CH = '+15551230042';
+
+/** A theme that has earned standing — taggable, seen this week. `topStandingThread` asks for
+ *  nothing else. */
+function theme(patch: Partial<ThreadTheme> = {}): ThreadTheme {
+  const now = Date.now();
+  return {
+    id: 't1', label: THREAD.label, kind: 'tension', note: THREAD.note,
+    evidenceDays: [1, 2], evidenceCount: 2, status: 'taggable', confidence: 55,
+    firstSeenAt: now - 20 * 86400000, lastSeenAt: now - 86400000,
+    lastOfferedAt: 0, lastTaggedAt: 0, lastOutcome: null, soreAt: 0,
+    uptakes: 0, passes: 0, pushbacks: 0, mintedDistressed: false,
+    ...patch,
+  };
+}
+
+test('the colour rides the three kinds she shapes, never the two the user set up', () => {
+  for (const kind of KINDS) {
+    // A callback whose payload is a DIFFERENT thread — the redundancy case has its own test.
+    const instruction = _internal.buildProactiveInstruction({ kind, text: '"the interview" — thursday' }, THREAD);
+    const expected = kind === 'memo' || kind === 'update' || kind === 'callback';
+    assert.equal(CONTINUITY.test(instruction), expected, `${kind}: continuity presence`);
+  }
+  // And with no candidate, nothing is inserted anywhere.
+  for (const kind of KINDS) {
+    assert.doesNotMatch(_internal.buildProactiveInstruction({ kind, text: 'x' }, null), CONTINUITY, `${kind}: null candidate`);
+    assert.doesNotMatch(_internal.buildProactiveInstruction({ kind, text: 'x' }), CONTINUITY, `${kind}: absent candidate`);
+  }
+});
+
+test('the colour carries the thread verbatim, above the fidelity clause and below the framing', () => {
+  const instruction = _internal.buildProactiveInstruction(
+    { kind: 'memo', text: 'the lease comparison came back', framing: 'you finished it just now' },
+    THREAD,
+  );
+  assert.ok(instruction.includes(
+    'a standing thread you and they share, for voice only — "speed vs craft": she keeps trading one for the other and minding it. '
+    + 'if what you are delivering naturally touches it, one light phrase may nod to it; it adds no fact, changes no fact, '
+    + 'and is dropped without a trace when it does not fit.',
+  ), 'the line is pinned word for word');
+  const framingAt = instruction.indexOf('you finished it just now');
+  const colourAt = instruction.search(CONTINUITY);
+  const fidelityAt = instruction.indexOf('the line below is the only place your facts come from');
+  const factsAt = instruction.indexOf("what you're delivering:");
+  assert.ok(framingAt > 0 && colourAt > framingAt && fidelityAt > colourAt && factsAt > fidelityAt,
+    'framing, colour, fidelity, facts — the payload still reads last');
+  assert.ok(instruction.trimEnd().endsWith('"the lease comparison came back"'));
+});
+
+// A callback's payload IS a thread. Handing the model the same one twice is noise at best and a
+// second source at worst, so the colour steps aside when the labels match.
+test('a callback never nods to the thread it is already about', () => {
+  const same = _internal.buildProactiveInstruction(
+    { kind: 'callback', text: `"${THREAD.label}" — the thing she keeps circling` }, THREAD,
+  );
+  assert.doesNotMatch(same, CONTINUITY, 'same label → no second copy of the thread');
+  // Whitespace and case are not a difference; a genuinely different loop is.
+  assert.doesNotMatch(
+    _internal.buildProactiveInstruction({ kind: 'callback', text: '"  Speed   vs Craft " — same thing, typed loosely' }, THREAD),
+    CONTINUITY,
+  );
+  assert.match(
+    _internal.buildProactiveInstruction({ kind: 'callback', text: '"the interview" — the thing on thursday' }, THREAD),
+    CONTINUITY,
+    'a different loop still gets the colour',
+  );
+});
+
+test('the pre-read finds a standing thread, and degrades to nothing everywhere else', async () => {
+  assert.equal(await _internal.readContinuity(CH), null, 'no inventory at all → no colour');
+
+  await saveThreadInventory(CH, { ...defaultThreadInventory(), themes: [theme()] });
+  assert.deepEqual(await _internal.readContinuity(CH), THREAD);
+
+  // The flag gates this read as it gates the reply path: off means byte-identical to no feature.
+  process.env.CONVO_THREADING_ENABLED = 'false';
+  assert.equal(await _internal.readContinuity(CH), null, 'flag off → no colour');
+  delete process.env.CONVO_THREADING_ENABLED;
+
+  // No identity resolved (a cold push), and rooms — no personal theme is ever read into a group.
+  assert.equal(await _internal.readContinuity(''), null);
+  const room = groupHandle('web:room');
+  await saveThreadInventory(room, { ...defaultThreadInventory(), themes: [theme()] });
+  assert.equal(await _internal.readContinuity(room), null, 'group handle → no colour');
+
+  // An inventory with themes but none STANDING (still open, never twice-evidenced) is empty here.
+  await saveThreadInventory(CH, { ...defaultThreadInventory(), themes: [theme({ status: 'open' })] });
+  assert.equal(await _internal.readContinuity(CH), null, 'nothing has earned standing yet');
+});
+
 test('the Fallfirm degrade carries the substance in facts, the framing in summary', () => {
   const outcome = fallfirmOutcomeFor({ kind: 'email', text: 'karen sent the lease back', framing: 'it looked urgent' });
   assert.equal(outcome.kind, 'confirmed');
   assert.equal(outcome.facts, 'karen sent the lease back');
   assert.match(outcome.summary, /their email/);
   assert.match(outcome.summary, /it looked urgent/);
+});
+
+// Even at the floor the callback stays a question, not an announcement about a thing she knows.
+test('the callback degrades to a check-in, never to a delivery', () => {
+  const outcome = fallfirmOutcomeFor({ kind: 'callback', text: '"the interview" — thursday' });
+  assert.match(outcome.summary, /checking in on something you two keep coming back to/);
+  assert.match(outcome.summary, /one light question, easy to wave off/);
+  assert.equal(outcome.facts, '"the interview" — thursday');
 });
 
 test('with no voice model configured, the floor still lands with the substance', async (t) => {

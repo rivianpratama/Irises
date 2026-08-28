@@ -24,6 +24,7 @@ import { voiceOutcome } from './agents/fallfirm/client.js';
 import { ensureChatId } from './db/repositories/memory.js';
 import { startRetentionTimers } from './db/retention.js';
 import { initSemanticRecall } from './memory/semanticRecall.js';
+import { initThreadPings } from './memory/threadPings.js';
 import { getVersion } from './update/version.js';
 import { getUpdateStatus, startUpdateChecker } from './update/checker.js';
 import { createUpdateAnnouncer } from './update/announce.js';
@@ -946,6 +947,9 @@ app.listen(PORT, () => {
   // The proactive sweep: quiet-hours deferrals whose morning has come, and rows a restart stranded
   // mid-delivery (boot + every 60s, unref'd like the retention timers).
   proactive.start();
+  // Thread-revisit pings: the hourly sweep that asks how a thing they left hanging went. Off unless
+  // THREADING_PINGS_ENABLED says otherwise — the one memory surface that texts a phone unprompted.
+  initThreadPings({ deliver: proactive.deliver });
 
   // Update mechanism: a pidfile so `scripts/update.sh --restart` can cycle this process, a periodic
   // check of the git remote for a newer build, and — woven through Convo, or pushed through the
