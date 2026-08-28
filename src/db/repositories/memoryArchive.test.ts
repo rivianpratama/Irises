@@ -1,9 +1,14 @@
 // Run with: npm test   (TZ=UTC tsx --test — runner pins DATA_BACKEND=memory)
 // The cold archive (tier 0): insert/search round-trip, the handle-vs-chat scope that keeps one
 // user's past out of another's, ranking, the content cap, the per-handle row cap, purge, and
-// BOTH search backends — FTS5 as the build provides it, plus a forced LIKE pass, since the
-// fallback must answer the same question the same way.
+// ALL THREE search backends — FTS5 as the build provides it, a forced LIKE pass (the fallback
+// must answer the same question the same way), and the hybrid vector path, which must answer it
+// the same way TOO and only then add the paraphrases the other two structurally cannot reach.
 process.env.TZ = 'UTC';
+process.env.DATA_BACKEND = 'memory';
+// Pin the store's notion of "current" so the fake embedder's 64-dim vectors ARE the current ones.
+process.env.EMBEDDINGS_MODEL = 'test/fake-embed';
+process.env.EMBEDDINGS_DIMENSIONS = '64';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -11,7 +16,12 @@ import {
   archiveEntries, searchArchive, purgeArchiveFor, sweepArchiveCaps, listArchiveFor,
   archiveSearchBackend, __setArchiveBackendForTests,
   ARCHIVE_CONTENT_MAX_CHARS, ARCHIVE_MAX_ROWS_PER_HANDLE,
+  type ArchiveInput, type ArchiveSearchBackend,
 } from './memoryArchive.js';
+import {
+  setArchiveEmbedder, archiveEmbedder, backfillArchiveEmbeddings, encodeVector, l2Normalize,
+  type Embedder,
+} from './memoryArchiveVectors.js';
 import { stmt } from '../sqlite.js';
 
 let seq = 0;
@@ -19,18 +29,66 @@ function freshHandle(): string {
   return `+1555200${(seq++).toString().padStart(4, '0')}`;
 }
 
-/** Every assertion below is run once per backend — the LIKE path is the degraded-build contract. */
-const BACKENDS: Array<'fts5' | 'like'> = ['fts5', 'like'];
+// ── The fake embedder ───────────────────────────────────────────────────────
+// A fixture map keyed by EXACT text (for the cases that need a specific cosine) over a
+// deterministic hashed bag-of-words fallback at 64 dims. No network, no provider, no SDK.
 
-function withBackend(backend: 'fts5' | 'like', fn: () => Promise<void>): () => Promise<void> {
+const DIMS = 64;
+
+function basis(i: number): Float32Array {
+  const v = new Float32Array(DIMS);
+  v[i] = 1;
+  return v;
+}
+
+/** A unit vector at cosine `wa` from `a` (given a ⟂ b, both unit). */
+function mix(a: Float32Array, b: Float32Array, wa: number): Float32Array {
+  const wb = Math.sqrt(1 - wa * wa);
+  const v = new Float32Array(DIMS);
+  for (let i = 0; i < DIMS; i++) v[i] = a[i] * wa + b[i] * wb;
+  return l2Normalize(v);
+}
+
+function bagOfWords(text: string): Float32Array {
+  const v = new Float32Array(DIMS);
+  for (const t of text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)) {
+    let h = 0;
+    for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) >>> 0;
+    v[h % DIMS] += 1;
+  }
+  return l2Normalize(v);
+}
+
+const FIXTURES = new Map<string, Float32Array>();
+let embedCalls = 0;
+
+const fakeEmbedder: Embedder = async (texts) => {
+  embedCalls++;
+  return texts.map(t => FIXTURES.get(t) ?? bagOfWords(t));
+};
+
+/** Every assertion below is run once per backend — the LIKE path is the degraded-build contract,
+ *  and the vector path must not change ANY of their answers. */
+const BACKENDS: ArchiveSearchBackend[] = ['fts5', 'like', 'vector'];
+
+function withBackend(backend: ArchiveSearchBackend, fn: () => Promise<void>): () => Promise<void> {
   return async () => {
     __setArchiveBackendForTests(backend);
+    if (backend === 'vector') setArchiveEmbedder(fakeEmbedder);
     try {
       await fn();
     } finally {
       __setArchiveBackendForTests(null);
+      setArchiveEmbedder(null);
     }
   };
+}
+
+/** Archive rows and, when an embedder is registered, embed them: the hybrid path is only hybrid
+ *  if the rows actually have vectors (production gets them from the background backfill). */
+async function archive(entries: ArchiveInput[]): Promise<void> {
+  await archiveEntries(entries);
+  if (archiveEmbedder()) await backfillArchiveEmbeddings({ batchSize: 50, maxBatches: 4 });
 }
 
 test('this build has fts5 (the LIKE path is a fallback, not the norm)', () => {
@@ -40,7 +98,7 @@ test('this build has fts5 (the LIKE path is a fallback, not the norm)', () => {
 for (const backend of BACKENDS) {
   test(`[${backend}] archive round-trip: an entry is searchable by a word in its content`, withBackend(backend, async () => {
     const h = freshHandle();
-    await archiveEntries([{
+    await archive([{
       source: 'medium_superseded', agentHandle: h, kind: 'fact', request: 'brokerage',
       content: 'works at Keller Williams in the Cedar Park office', createdAt: Date.now() - 86_400_000,
     }]);
@@ -54,7 +112,7 @@ for (const backend of BACKENDS) {
   test(`[${backend}] scoping: another handle's archive is invisible`, withBackend(backend, async () => {
     const mine = freshHandle();
     const theirs = freshHandle();
-    await archiveEntries([
+    await archive([
       { source: 'message_pruned', agentHandle: mine, chatId: `chat-mine-${backend}`, content: 'my lake cabin is called the shack' },
       { source: 'message_pruned', agentHandle: theirs, chatId: `chat-theirs-${backend}`, content: 'their lake cabin is called the barn' },
     ]);
@@ -68,7 +126,7 @@ for (const backend of BACKENDS) {
 
   test(`[${backend}] scoping: a chat's rows are reachable without the handle`, withBackend(backend, async () => {
     const h = freshHandle();
-    await archiveEntries([
+    await archive([
       { source: 'message_pruned', chatId: `chat-shared-${backend}`, content: 'the juniper closing moved to friday' },
     ]);
     assert.equal((await searchArchive({ query: 'juniper', chatId: `chat-shared-${backend}` })).length, 1);
@@ -77,7 +135,7 @@ for (const backend of BACKENDS) {
 
   test(`[${backend}] ranking: a two-term match outranks a one-term match`, withBackend(backend, async () => {
     const h = freshHandle();
-    await archiveEntries([
+    await archive([
       { source: 'short_expired', agentHandle: h, content: 'notes about the marathon' },
       { source: 'short_expired', agentHandle: h, content: 'the boston marathon training plan, week nine' },
     ]);
@@ -89,18 +147,183 @@ for (const backend of BACKENDS) {
 
   test(`[${backend}] a query of pure punctuation finds nothing (and never throws)`, withBackend(backend, async () => {
     const h = freshHandle();
-    await archiveEntries([{ source: 'short_expired', agentHandle: h, content: 'anything at all' }]);
+    await archive([{ source: 'short_expired', agentHandle: h, content: 'anything at all' }]);
+    embedCalls = 0;
     assert.deepEqual(await searchArchive({ query: '   *** ', handle: h }), []);
+    // The no-tokens early return sits BEFORE the embedding call: a query that can't match
+    // anything must not cost a provider round-trip.
+    assert.equal(embedCalls, 0);
   }));
 
   test(`[${backend}] FTS operators in a user query are data, not syntax`, withBackend(backend, async () => {
     const h = freshHandle();
-    await archiveEntries([{ source: 'short_expired', agentHandle: h, content: 'the hendersons want a fence quote' }]);
+    await archive([{ source: 'short_expired', agentHandle: h, content: 'the hendersons want a fence quote' }]);
     // Would be a syntax error (or a wildly different query) if the tokens reached MATCH raw.
     const hits = await searchArchive({ query: 'hendersons NEAR("x" OR *', handle: h });
     assert.equal(hits.length, 1);
   }));
 }
+
+// ── Hybrid-only behaviour ───────────────────────────────────────────────────
+// What the vector leg ADDS, and — more importantly — what it is not allowed to take away.
+
+function withVector(embedder: Embedder, fn: () => Promise<void>): () => Promise<void> {
+  return async () => {
+    __setArchiveBackendForTests('vector');
+    setArchiveEmbedder(embedder);
+    try {
+      await fn();
+    } finally {
+      __setArchiveBackendForTests(null);
+      setArchiveEmbedder(null);
+    }
+  };
+}
+
+function archiveIdFor(handle: string): number {
+  return Number((stmt('SELECT id FROM memory_archive WHERE agent_handle = ? ORDER BY id DESC LIMIT 1')
+    .get(handle) as { id: number }).id);
+}
+
+// The paraphrase pair: no token in common, cosine 0.99 apart.
+const LAKE = basis(3);
+FIXTURES.set('my lake cabin is called the shack', LAKE);
+FIXTURES.set('vacation house near open water', mix(LAKE, basis(11), 0.99));
+// The weak-match trio: a lexical hit orthogonal to the query, and a semantic near-miss at 0.20.
+const GATE = basis(20);
+FIXTURES.set('gate code', GATE);
+FIXTURES.set('the gate code for the ranch is 4421', basis(22));
+FIXTURES.set('unrelated musings about breakfast cereal', mix(GATE, basis(21), 0.20));
+// A row both legs find.
+const SEPTIC = basis(30);
+FIXTURES.set('septic pump', SEPTIC);
+FIXTURES.set('the septic pump was serviced in march', mix(SEPTIC, basis(31), 0.95));
+
+test('[vector] a paraphrase with NO shared tokens is recalled', withVector(fakeEmbedder, async () => {
+  const h = freshHandle();
+  await archive([{ source: 'message_pruned', agentHandle: h, content: 'my lake cabin is called the shack' }]);
+
+  const hits = await searchArchive({ query: 'vacation house near open water', handle: h });
+  assert.equal(hits.length, 1, 'the semantic leg found what shares no word with the query');
+  assert.match(hits[0].entry.content, /the shack/);
+  assert.ok(hits[0].snippet.length > 0);
+
+  // The same query on either lexical backend reaches nothing at all — this is the whole gap.
+  for (const lexical of ['fts5', 'like'] as const) {
+    __setArchiveBackendForTests(lexical);
+    assert.deepEqual(await searchArchive({ query: 'vacation house near open water', handle: h }), [], lexical);
+  }
+  __setArchiveBackendForTests('vector');
+  await purgeArchiveFor({ handle: h });
+}));
+
+test('[vector] a weak semantic match below the min-score floor cannot displace a lexical hit', withVector(fakeEmbedder, async () => {
+  const h = freshHandle();
+  await archive([
+    { source: 'short_expired', agentHandle: h, content: 'the gate code for the ranch is 4421' },
+    { source: 'short_expired', agentHandle: h, content: 'unrelated musings about breakfast cereal' },
+  ]);
+
+  const hits = await searchArchive({ query: 'gate code', handle: h });
+  assert.equal(hits.length, 1);
+  assert.match(hits[0].entry.content, /4421/);
+
+  // Drop the floor under it and the same row DOES surface — proving the floor is what excluded
+  // it, not the fixture being unreachable.
+  const floor = process.env.MEMORY_SEMANTIC_MIN_SCORE;
+  process.env.MEMORY_SEMANTIC_MIN_SCORE = '0.1';
+  try {
+    const loosened = await searchArchive({ query: 'gate code', handle: h });
+    assert.ok(loosened.some(x => /breakfast cereal/.test(x.entry.content)), 'the 0.20 match is real, just too weak');
+  } finally {
+    if (floor === undefined) delete process.env.MEMORY_SEMANTIC_MIN_SCORE;
+    else process.env.MEMORY_SEMANTIC_MIN_SCORE = floor;
+  }
+  await purgeArchiveFor({ handle: h });
+}));
+
+test('[vector] fusion dedups by archive id', withVector(fakeEmbedder, async () => {
+  const h = freshHandle();
+  await archive([{ source: 'short_expired', agentHandle: h, content: 'the septic pump was serviced in march' }]);
+  const hits = await searchArchive({ query: 'septic pump', handle: h });
+  assert.equal(hits.length, 1, 'one row found twice is one hit');
+  // Both legs ranked it first: 1/(60+1) twice.
+  assert.ok(Math.abs(hits[0].score - 2 / 61) < 1e-9, `score ${hits[0].score} is the summed reciprocal rank`);
+  await purgeArchiveFor({ handle: h });
+}));
+
+test('[vector] a null embedder result degrades to the lexical result, identically', async () => {
+  const h = freshHandle();
+  const nullEmbedder: Embedder = async () => null;
+  __setArchiveBackendForTests('vector');
+  setArchiveEmbedder(nullEmbedder);
+  try {
+    await archive([
+      { source: 'short_expired', agentHandle: h, content: 'the boston marathon training plan, week nine' },
+      { source: 'short_expired', agentHandle: h, content: 'notes about the marathon' },
+      { source: 'short_expired', agentHandle: h, content: 'a marathon of meetings on tuesday' },
+    ]);
+    const degraded = await searchArchive({ query: 'boston marathon', handle: h });
+    __setArchiveBackendForTests('fts5');
+    const lexical = await searchArchive({ query: 'boston marathon', handle: h });
+    assert.equal(degraded.length, 3);
+    assert.deepEqual(degraded, lexical, 'not merely similar — the same result');
+  } finally {
+    __setArchiveBackendForTests(null);
+    setArchiveEmbedder(null);
+  }
+  await purgeArchiveFor({ handle: h });
+});
+
+test('[vector] hit contract unchanged: ≤limit hits, snippet ≤300 chars, deterministic order', withVector(fakeEmbedder, async () => {
+  const h = freshHandle();
+  const filler = 'and then a great deal of surrounding narration that pads this entry well past the snippet window. ';
+  const rows: ArchiveInput[] = [];
+  const anchor = basis(40);
+  for (let i = 0; i < 10; i++) {
+    const content = `${filler.repeat(3)} the quarterly report for unit ${i} landed. ${filler.repeat(3)}`;
+    FIXTURES.set(content, mix(anchor, basis(41 + i), 0.99 - i * 0.01));
+    rows.push({ source: 'message_pruned', agentHandle: h, content });
+  }
+  FIXTURES.set('quarterly report', anchor);
+  await archive(rows);
+
+  const hits = await searchArchive({ query: 'quarterly report', handle: h });
+  assert.equal(hits.length, 6, 'capped at the default limit');
+  for (const hit of hits) assert.ok(hit.snippet.length <= 300, `snippet ${hit.snippet.length} chars`);
+  const again = await searchArchive({ query: 'quarterly report', handle: h });
+  assert.deepEqual(again.map(x => x.entry.id), hits.map(x => x.entry.id), 'same query, same order');
+  assert.equal(new Set(hits.map(x => x.entry.id)).size, 6, 'no id appears twice');
+  await purgeArchiveFor({ handle: h });
+}));
+
+test('[vector] vectors with mismatched model/dims are ignored, not mis-compared', withVector(fakeEmbedder, async () => {
+  const h = freshHandle();
+  const content = 'my dinghy is moored at the pier';
+  FIXTURES.set(content, mix(LAKE, basis(12), 0.99));
+  await archiveEntries([{ source: 'message_pruned', agentHandle: h, content }]);
+  const id = archiveIdFor(h);
+  const vec = FIXTURES.get(content)!;
+
+  // A vector written by a model this build no longer uses: semantically close, but in another
+  // space entirely. Comparing it would be worse than not having it.
+  const write = (model: string, dims: number, blob: Buffer) => stmt(
+    `INSERT OR REPLACE INTO memory_archive_embeddings (archive_id, vector, dims, model, created_at)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run(id, blob, dims, model, Date.now());
+
+  write('test/other-embed', DIMS, encodeVector(vec));
+  assert.deepEqual(await searchArchive({ query: 'vacation house near open water', handle: h }), [], 'wrong model');
+
+  write('test/fake-embed', 32, encodeVector(vec.subarray(0, 32)));
+  assert.deepEqual(await searchArchive({ query: 'vacation house near open water', handle: h }), [], 'wrong dims');
+
+  // Written under THIS build's model and width, the very same vector is found — the exclusions
+  // above were about the label, not the data.
+  write('test/fake-embed', DIMS, encodeVector(vec));
+  assert.equal((await searchArchive({ query: 'vacation house near open water', handle: h })).length, 1);
+  await purgeArchiveFor({ handle: h });
+}));
 
 test('content is sliced to ARCHIVE_CONTENT_MAX_CHARS', async () => {
   const h = freshHandle();

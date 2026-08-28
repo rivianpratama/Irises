@@ -11,12 +11,22 @@
 // scan with JS ranking otherwise (see sqlite.ts ftsAvailable). Both paths take the SAME token
 // list, so a query behaves the same either way — only the ranking quality differs.
 //
+// When an embedder is registered (semantic recall on — see src/memory/semanticRecall.ts) the
+// search becomes HYBRID: the lexical leg above plus a vector leg over the same rows, fused by
+// reciprocal rank. Lexical alone misses a paraphrase that shares no tokens with what was written
+// down; vectors alone drift onto the merely-adjacent. Off, or with no embedder, this file
+// behaves exactly as it did before — byte for byte.
+//
 // The one thing that is NOT archived is a user's explicit wipe: /forget purges this table for
 // the handle (purgeArchiveFor), and /clear hard-deletes. A forget that left cold copies behind
 // would be a forget leak.
 
 import { logDbError } from '../client.js';
 import { stmt, ftsAvailable } from '../sqlite.js';
+import {
+  archiveEmbedder, vectorCandidates, deleteVectorsForScope, l2Normalize,
+  embeddingsModel, embeddingsDims,
+} from './memoryArchiveVectors.js';
 
 /** Where an archived row came from. Validated here (the column has no CHECK) so a typo'd
  *  feed shows up as a rejected insert instead of an unsearchable mystery source. */
@@ -61,7 +71,9 @@ export interface ArchiveInput {
 
 export interface ArchiveHit {
   entry: ArchiveEntry;
-  /** Higher is better. FTS: -bm25 (bm25 is negative-better). LIKE: distinct-term hit weight. */
+  /** Higher is better, but the SCALE differs by backend and is only ever meaningful WITHIN one
+   *  result set. FTS: -bm25 (bm25 is negative-better). LIKE: distinct-term hit weight. Hybrid:
+   *  the reciprocal-rank fusion sum, so at most 2/(60+1) ≈ 0.033 — never compare across runs. */
   score: number;
   snippet: string;
 }
@@ -76,6 +88,27 @@ const SNIPPET_CHARS = 300;
 /** LIKE-path candidate window: ranked in JS, so the SQL scan stays bounded. */
 const LIKE_CANDIDATES = 200;
 const MAX_QUERY_TOKENS = 8;
+/** RRF's damping constant, the standard 60: it flattens the head of each list so a rank-1 hit
+ *  can't win on its own, which is the whole point of fusing two rankings that disagree. */
+const RRF_K = 60;
+/** Vector hits considered for fusion. Deeper than `limit` (the fusion re-ranks them) but shallow
+ *  enough that semantic near-misses can't crowd out the lexical leg. */
+const VECTOR_TOP_K = 24;
+
+/** Vectors scanned per query (env: MEMORY_VECTOR_CANDIDATES). The scan is brute-force, so this is
+ *  the ceiling on its cost — 2000 × 512 floats is a couple of ms. */
+function vectorCandidateLimit(): number {
+  const n = Number(process.env.MEMORY_VECTOR_CANDIDATES);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 2000;
+}
+
+/** Cosine floor a vector hit must clear to enter the fusion at all (env: MEMORY_SEMANTIC_MIN_SCORE).
+ *  Applied BEFORE fusion on purpose: below it, "semantically nearest" means nothing more than
+ *  "least unrelated", and such a hit must never displace a real lexical match. */
+function semanticMinScore(): number {
+  const n = Number(process.env.MEMORY_SEMANTIC_MIN_SCORE);
+  return Number.isFinite(n) ? n : 0.25;
+}
 
 interface ArchiveRow {
   id: number;
@@ -107,11 +140,14 @@ function fromRow(r: ArchiveRow): ArchiveEntry {
   };
 }
 
-let backendOverride: 'fts5' | 'like' | null = null;
+/** 'vector' is HYBRID — the vector leg plus whichever lexical backend this build has, never
+ *  vectors alone. The two lexical values name a build capability; 'vector' names a feature. */
+export type ArchiveSearchBackend = 'fts5' | 'like' | 'vector';
 
-/** Which backend searchArchive will use (diagnostics + the backend-parity tests). */
-export function archiveSearchBackend(): 'fts5' | 'like' {
-  if (backendOverride) return backendOverride;
+let backendOverride: ArchiveSearchBackend | null = null;
+
+/** Whichever lexical backend this build actually has — the leg that runs under every mode. */
+function lexicalBackend(): 'fts5' | 'like' {
   try {
     return ftsAvailable() ? 'fts5' : 'like';
   } catch {
@@ -119,9 +155,19 @@ export function archiveSearchBackend(): 'fts5' | 'like' {
   }
 }
 
-/** Test seam: pin the search backend so BOTH paths are exercised on one build (they must
- *  answer the same query the same way — only ranking quality may differ). null = auto. */
-export function __setArchiveBackendForTests(backend: 'fts5' | 'like' | null): void {
+/** Which backend searchArchive will use (diagnostics + the backend-parity tests). Resolves to
+ *  'vector' only when an embedder is registered: with the feature off there is nothing to fuse,
+ *  and the answer must be the pre-hybrid one. */
+export function archiveSearchBackend(): ArchiveSearchBackend {
+  if (backendOverride === 'fts5' || backendOverride === 'like') return backendOverride;
+  return archiveEmbedder() ? 'vector' : lexicalBackend();
+}
+
+/** Test seam: pin the search backend so EVERY path is exercised on one build (the lexical two
+ *  must answer the same query the same way — only ranking quality may differ). Pinning a lexical
+ *  backend also suppresses the vector leg, which is how a test compares hybrid against lexical
+ *  with one embedder registered. null = auto. */
+export function __setArchiveBackendForTests(backend: ArchiveSearchBackend | null): void {
   backendOverride = backend;
 }
 
@@ -230,6 +276,10 @@ export async function sweepArchiveCaps(): Promise<number> {
 /** Hard-delete a handle's and/or a chat's archive (the /forget path). Returns rows removed. */
 export async function purgeArchiveFor(scope: { handle?: string; chatId?: string }): Promise<number> {
   try {
+    // Vectors FIRST, explicitly, even though ON DELETE CASCADE would take them: a forget must not
+    // rest on a pragma staying on. Belt and braces — the failure it guards against (a vector
+    // outliving its wiped row, still semantically recallable) is the worst bug this feature has.
+    deleteVectorsForScope(scope);
     let removed = 0;
     if (scope.handle) {
       removed += Number(stmt('DELETE FROM memory_archive WHERE agent_handle = ?').run(scope.handle).changes);
@@ -296,11 +346,24 @@ export async function searchArchive(opts: {
   if (!scopeParts.length) return [];
   const scopeSql = `(${scopeParts.join(' OR ')})`;
 
-  if (archiveSearchBackend() === 'fts5') {
+  const backend = archiveSearchBackend();
+  if (backend !== 'vector') return searchLexical(backend, tokens, scopeSql, scopeParams, limit);
+  return searchHybrid(opts.query, tokens, scopeSql, scopeParams, limit, opts.handle);
+}
+
+/** The lexical leg, whichever backend this build has. FTS5 first when asked for; a malformed
+ *  MATCH or a half-built index falls through to LIKE rather than losing the search. */
+function searchLexical(
+  backend: 'fts5' | 'like',
+  tokens: string[],
+  scopeSql: string,
+  scopeParams: string[],
+  limit: number,
+): ArchiveHit[] {
+  if (backend === 'fts5') {
     try {
       return searchFts(tokens, scopeSql, scopeParams, limit);
     } catch (error) {
-      // A malformed MATCH or a half-built index shouldn't lose the search — fall through to LIKE.
       logDbError('searchArchive (fts5)', error);
     }
   }
@@ -310,6 +373,101 @@ export async function searchArchive(opts: {
     logDbError('searchArchive (like)', error);
     return [];
   }
+}
+
+/**
+ * Hybrid: the lexical leg run DEEPER than the caller asked for, plus a vector leg over the same
+ * rows, fused by reciprocal rank (1/(60+rank), summed). RRF rather than a weighted score blend
+ * because the two legs' scores are on incomparable scales (bm25 vs cosine) — ranks are the only
+ * thing they share.
+ *
+ * Everything that can go missing degrades to the lexical result unchanged: no embedder, a null
+ * embedder result, a failed scan, nothing above the score floor.
+ */
+async function searchHybrid(
+  query: string,
+  tokens: string[],
+  scopeSql: string,
+  scopeParams: string[],
+  limit: number,
+  handle: string | undefined,
+): Promise<ArchiveHit[]> {
+  // Deeper than `limit`: the fusion re-ranks, so a row the lexical leg put 10th can still make
+  // the final six once the vector leg agrees with it.
+  const lexical = searchLexical(lexicalBackend(), tokens, scopeSql, scopeParams, Math.max(limit * 4, 24));
+
+  const embed = archiveEmbedder();
+  let vectors: Array<{ id: number; score: number }> = [];
+  if (embed) {
+    let queryVec: Float32Array | null = null;
+    try {
+      // The RAW query, not the tokens: the paraphrase this leg exists to catch lives in the
+      // phrasing, and stopwords carry meaning to an embedding model that they don't to bm25.
+      const embedded = await embed([query], { label: 'archive_recall', handle });
+      queryVec = embedded?.[0] ?? null;
+    } catch (error) {
+      logDbError('searchArchive (embed)', error);
+    }
+    if (queryVec) {
+      // INVARIANT: the vector leg is handed the SAME scopeSql and the SAME params the lexical
+      // legs were built with — one clause, one binding, so the two legs are structurally
+      // incapable of being scoped differently. A semantic leg that scoped even slightly wider
+      // would be a cross-user memory leak that no lexical test could catch.
+      vectors = vectorCandidates(l2Normalize(queryVec), scopeSql, scopeParams, {
+        candidates: vectorCandidateLimit(),
+        topK: VECTOR_TOP_K,
+        minScore: semanticMinScore(),
+        model: embeddingsModel(),
+        dims: embeddingsDims(),
+      });
+    }
+  }
+  // Nothing semantic to add: this must be EXACTLY the pre-hybrid answer, so return the lexical
+  // hits untouched rather than round-tripping them through the fusion.
+  if (!vectors.length) return lexical.slice(0, limit);
+
+  const fused = new Map<number, { entry: ArchiveEntry; snippet: string; score: number }>();
+  lexical.forEach((hit, i) => {
+    fused.set(hit.entry.id, { entry: hit.entry, snippet: hit.snippet, score: 1 / (RRF_K + i + 1) });
+  });
+  // Vector-only hits need their rows read; one query for all of them.
+  const missing = vectors.filter(v => !fused.has(v.id)).map(v => v.id);
+  const entries = loadArchiveEntries(missing);
+  vectors.forEach((v, i) => {
+    const term = 1 / (RRF_K + i + 1);
+    const seen = fused.get(v.id);
+    if (seen) { seen.score += term; return; }
+    const entry = entries.get(v.id);
+    if (!entry) return;   // deleted between the scan and the read — a forget, most likely
+    fused.set(v.id, { entry, snippet: makeSnippet(entry.content, tokens), score: term });
+  });
+
+  // Deterministic to the last field: the tests (and a user asking twice) must get the same order.
+  const ranked = [...fused.values()].sort((a, b) =>
+    b.score - a.score
+    || b.entry.archivedAt - a.entry.archivedAt
+    || b.entry.id - a.entry.id);
+  return ranked.slice(0, limit).map(f => ({
+    entry: f.entry,
+    score: f.score,
+    snippet: f.snippet.slice(0, SNIPPET_CHARS),
+  }));
+}
+
+/** Archive rows by id, for the vector-only side of a fusion. */
+function loadArchiveEntries(ids: number[]): Map<number, ArchiveEntry> {
+  const out = new Map<number, ArchiveEntry>();
+  if (!ids.length) return out;
+  try {
+    // json_each keeps one statement shape regardless of how many ids arrive.
+    const rows = stmt(
+      'SELECT * FROM memory_archive WHERE id IN (SELECT value FROM json_each(?))'
+    ).all(JSON.stringify(ids)) as unknown as ArchiveRow[];
+    for (const r of rows) out.set(r.id, fromRow(r));
+  } catch (error) {
+    logDbError('searchArchive (vector rows)', error);
+  }
+  return out;
 }
 
 function searchFts(tokens: string[], scopeSql: string, scopeParams: string[], limit: number): ArchiveHit[] {
