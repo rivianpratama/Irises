@@ -10,11 +10,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   listMediumActive, listMediumAll, listMediumPreserved, addDirective, updateDirective, retractEntry,
-  retractAllForHandle, addImportantNote, upsertFact,
-  MAX_ACTIVE_DIRECTIVES, MAX_ACTIVE_NOTES, CAP_EVICTED,
+  retractAllForHandle, addImportantNote, upsertFact, mergeNotes,
+  MAX_ACTIVE_DIRECTIVES, MAX_ACTIVE_NOTES, CAP_EVICTED, MERGED_NOTE_MAX_CHARS,
   MEDIUM_ARCHIVE_MAX_BYTES, MEDIUM_ARCHIVE_KEEP,
 } from './memoryMedium.js';
 import { listArchiveFor } from './memoryArchive.js';
+import { getForgetEpoch, bumpForgetEpoch } from './memory.js';
 import { memoriesDir } from '../stateDir.js';
 
 let seq = 0;
@@ -240,4 +241,160 @@ test('MEDIUM.archive.md rotates when it gets big; the rows survive in memory_arc
   const archived = await listArchiveFor(h);
   assert.equal(archived[0].content, 'the newest retired entry');
   assert.equal(archived[0].source, 'medium_retracted');
+});
+
+// ── mergeNotes: the groomer's write primitive (supersede N, insert 1) ─────────────────────────
+// Near-duplicate notes crowd out older distinct ones at MAX_ACTIVE_NOTES, so the groomer folds
+// them. Every rejection here has to be a clean no-op: the tier is the no-error-margin store, and a
+// half-applied merge would drop a note's content on the floor with nothing saying so.
+
+async function seedNotes(h: string, bodies: string[]) {
+  for (const b of bodies) await addImportantNote(h, b);
+  return listMediumActive(h, ['important_note']);
+}
+
+test('mergeNotes folds N active notes into one synthesized note', async () => {
+  const h = freshHandle();
+  const notes = await seedNotes(h, ['gate code is 4421', 'the gate code for the house is 4421', 'dog is called Pepper']);
+  const before = Date.now();
+
+  const merged = await mergeNotes(h, [notes[0].id, notes[1].id], 'the gate code for the house is 4421');
+  assert.ok(merged);
+  assert.equal(merged!.kind, 'important_note');
+  assert.equal(merged!.source, 'groomer');
+  assert.ok(![notes[0].id, notes[1].id].includes(merged!.id), 'the replacement is a NEW row, not a rewritten source');
+  assert.ok(merged!.createdAt >= before, 'the merge is fresh, not backdated to its oldest source');
+
+  const active = await listMediumActive(h, ['important_note']);
+  assert.deepEqual(active.map(n => n.body), ['dog is called Pepper', 'the gate code for the house is 4421']);
+});
+
+test('mergeNotes supersedes every source with a forward pointer', async () => {
+  const h = freshHandle();
+  const notes = await seedNotes(h, ['lockbox 1180', 'the lockbox code is 1180']);
+  const merged = await mergeNotes(h, [notes[0].id, notes[1].id], 'the lockbox code is 1180');
+  assert.ok(merged);
+
+  const all = await listMediumAll(h);
+  assert.equal(all.length, 3, 'nothing deleted — both sources retired, plus the replacement');
+  for (const id of [notes[0].id, notes[1].id]) {
+    const row = all.find(e => e.id === id)!;
+    assert.equal(row.status, 'superseded');
+    assert.equal(row.supersededBy, merged!.id, 'the chain points forward at the merge');
+  }
+  const target = all.find(e => e.id === merged!.id)!;
+  assert.equal(target.status, 'active');
+  assert.deepEqual(target.mergedFrom, [notes[0].id, notes[1].id], 'and back at its sources');
+});
+
+test('merged_from survives a full file rewrite', async () => {
+  const h = freshHandle();
+  const notes = await seedNotes(h, ['bin day is thursday', 'the bins go out on thursday']);
+  const merged = await mergeNotes(h, [notes[0].id, notes[1].id], 'the bins go out on thursday');
+  assert.ok(merged);
+
+  const p = path.join(memoriesDir(h), 'MEDIUM.md');
+  const attr = `merged_from=${notes[0].id},${notes[1].id}`;
+  assert.ok(fs.readFileSync(p, 'utf8').includes(attr), 'rendered into the annotation');
+
+  await addImportantNote(h, 'a brand new unrelated note'); // forces a full rewrite of MEDIUM.md
+  assert.ok(fs.readFileSync(p, 'utf8').includes(attr), 'and re-rendered identically after the rewrite');
+  const reread = (await listMediumActive(h, ['important_note'])).find(n => n.id === merged!.id)!;
+  assert.deepEqual(reread.mergedFrom, [notes[0].id, notes[1].id], 'and parses back symmetrically');
+});
+
+test('a merged note is FIFO-fresh: it outlives its sources at the cap', async () => {
+  const h = freshHandle();
+  const bodies = Array.from({ length: MAX_ACTIVE_NOTES }, (_, i) => `note ${i}`);
+  const notes = await seedNotes(h, bodies);
+  const merged = await mergeNotes(h, [notes[0].id, notes[1].id], 'note 0 and note 1 are the same thing');
+  assert.ok(merged);
+
+  let active = await listMediumActive(h, ['important_note']);
+  assert.equal(active.length, MAX_ACTIVE_NOTES - 1);
+  assert.equal(active[active.length - 1].id, merged!.id, 'the merge sorts LAST — it is the newest note');
+
+  await addImportantNote(h, 'filler to reach the cap');
+  await addImportantNote(h, 'the note that trips the cap');
+  active = await listMediumActive(h, ['important_note']);
+  assert.equal(active.length, MAX_ACTIVE_NOTES);
+  assert.ok(active.some(n => n.id === merged!.id), 'the merge survived');
+  assert.ok(!active.some(n => n.body === 'note 2'), 'an older DISTINCT note aged out instead');
+});
+
+test('mergeNotes archives every source as medium_merged', async () => {
+  const h = freshHandle();
+  const notes = await seedNotes(h, ['wifi password is hunter2', 'the wifi password is hunter2']);
+  const merged = await mergeNotes(h, [notes[0].id, notes[1].id], 'the wifi password is hunter2');
+  assert.ok(merged);
+
+  const archived = await listArchiveFor(h);
+  assert.equal(archived.length, 2);
+  for (const row of archived) {
+    assert.equal(row.source, 'medium_merged');
+    assert.equal(row.kind, 'important_note');
+    assert.equal(row.meta.mergedInto, merged!.id, 'the cold copy names what replaced it');
+  }
+});
+
+test('REGRESSION: mergeNotes AWAITS its archive write', async () => {
+  // appendArchive used to fire-and-forget the table copy, so the row landed a microtask after the
+  // mutator resolved — long enough for a /forget purge to run in between and miss it.
+  const h = freshHandle();
+  const notes = await seedNotes(h, ['spare key under the pot', 'the spare key is under the blue pot']);
+  await mergeNotes(h, [notes[0].id, notes[1].id], 'the spare key is under the blue pot');
+  assert.equal((await listArchiveFor(h)).length, 2, 'already there — no setTimeout beat needed');
+});
+
+test('mergeNotes is a no-op on illegal inputs', async () => {
+  const h = freshHandle();
+  const notes = await seedNotes(h, ['note one', 'note two', 'note three']);
+  const directive = await addDirective(h, 'a directive, not a note');
+  await updateDirective(h, notes[2].id, 'note three, edited'); // retires notes[2]
+
+  const snapshot = async () => JSON.stringify([await listMediumActive(h), await listArchiveFor(h)]);
+  const before = await snapshot();
+
+  const cases: Array<[string, string[]]> = [
+    ['an id that does not exist', [notes[0].id, 'no-such-id']],
+    ['a superseded id', [notes[0].id, notes[2].id]],
+    ['a directive id', [notes[0].id, directive!.id]],
+    ['a single id', [notes[0].id]],
+    ['duplicate ids collapsing to one', [notes[0].id, notes[0].id]],
+  ];
+  for (const [label, ids] of cases) {
+    assert.equal(await mergeNotes(h, ids, 'a perfectly good synthesis'), null, label);
+    assert.equal(await snapshot(), before, `${label} left the tier byte-identical`);
+  }
+});
+
+test('mergeNotes rejects a body over MERGED_NOTE_MAX_CHARS (never truncates it)', async () => {
+  const h = freshHandle();
+  const notes = await seedNotes(h, ['short one', 'short two']);
+  const before = JSON.stringify([await listMediumActive(h), await listArchiveFor(h)]);
+
+  assert.equal(await mergeNotes(h, [notes[0].id, notes[1].id], 'x'.repeat(MERGED_NOTE_MAX_CHARS + 1)), null);
+  assert.equal(await mergeNotes(h, [notes[0].id, notes[1].id], '   '), null);
+  assert.equal(JSON.stringify([await listMediumActive(h), await listArchiveFor(h)]), before);
+});
+
+test('mergeNotes aborts when a /forget lands mid-groom', async () => {
+  const h = freshHandle();
+  const notes = await seedNotes(h, ['pin is 9080', 'the door pin is 9080']);
+  const epoch0 = getForgetEpoch(h);
+  bumpForgetEpoch(h); // the user asked to be forgotten while the model was synthesizing
+
+  assert.equal(await mergeNotes(h, [notes[0].id, notes[1].id], 'the door pin is 9080', 'groomer', { ifForgetEpoch: epoch0 }), null);
+  assert.equal((await listMediumActive(h, ['important_note'])).length, 2, 'the sources are untouched');
+  assert.equal((await listArchiveFor(h)).length, 0, 'and nothing leaked into the cold archive');
+});
+
+test('mergeNotes with a matching forget epoch writes normally', async () => {
+  const h = freshHandle();
+  const notes = await seedNotes(h, ['bus is the 42', 'the bus to town is the 42']);
+  const merged = await mergeNotes(h, [notes[0].id, notes[1].id], 'the bus to town is the 42', 'groomer', {
+    ifForgetEpoch: getForgetEpoch(h),
+  });
+  assert.ok(merged);
+  assert.deepEqual((await listMediumActive(h, ['important_note'])).map(n => n.body), ['the bus to town is the 42']);
 });

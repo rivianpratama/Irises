@@ -24,12 +24,13 @@ export type ArchiveSource =
   | 'medium_superseded'
   | 'medium_retracted'
   | 'medium_cap_evicted'
+  | 'medium_merged'
   | 'short_expired'
   | 'message_pruned'
   | 'profile_fact_evicted';
 
 const ARCHIVE_SOURCES: ReadonlySet<string> = new Set<ArchiveSource>([
-  'medium_superseded', 'medium_retracted', 'medium_cap_evicted',
+  'medium_superseded', 'medium_retracted', 'medium_cap_evicted', 'medium_merged',
   'short_expired', 'message_pruned', 'profile_fact_evicted',
 ]);
 

@@ -31,7 +31,7 @@ import path from 'node:path';
 import { logDbError } from '../client.js';
 import { memoriesDir } from '../stateDir.js';
 import { atomicWriteText, readTextIfExists, appendText } from '../files.js';
-import { withHandleLock } from './memory.js';
+import { withHandleLock, getForgetEpoch } from './memory.js';
 import { archiveEntries, type ArchiveSource } from './memoryArchive.js';
 
 export type MediumKind = 'fact' | 'directive' | 'important_note';
@@ -48,6 +48,9 @@ export interface MediumEntry {
   source: string;
   createdAt: number; // epoch ms
   updatedAt: number; // epoch ms
+  /** The ids this entry was synthesized FROM (mergeNotes). The reverse edge of the sources'
+   *  supersededBy, so the lineage reads both ways. Optional — only merge targets carry it. */
+  mergedFrom?: string[];
 }
 
 /** Thrown when a durable medium-tier write fails. Callers turn this into a user-visible
@@ -64,6 +67,10 @@ export class MediumWriteError extends Error {
 // by superseding the oldest active entry after an insert lands — never by refusing the new one.
 export const MAX_ACTIVE_DIRECTIVES = 40;
 export const MAX_ACTIVE_NOTES = 20;
+
+/** Max chars for a synthesized merge. Notes render VERBATIM into every turn
+ *  (renderMediumBlock has no render-time cap) — a merge must shrink the tier, never grow it. */
+export const MERGED_NOTE_MAX_CHARS = 600;
 
 /** supersededBy sentinel for a cap eviction. The old code pointed the evicted row at whichever
  *  entry happened to trip the cap, which reads as "replaced by that" in the lineage — it wasn't;
@@ -103,6 +110,9 @@ function renderEntry(e: MediumEntry): string {
     attrs.push(`status=${e.status}`);
     if (e.supersededBy) attrs.push(`superseded_by=${enc(e.supersededBy)}`);
   }
+  // Each id encoded, comma-joined. UUIDs carry no '%' or ',', so the parser's per-value decode
+  // round-trips them exactly (see parseSegment).
+  if (e.mergedFrom?.length) attrs.push(`merged_from=${e.mergedFrom.map(enc).join(',')}`);
   return `${e.body}\n<!-- mm ${attrs.join(' ')} -->`;
 }
 
@@ -128,6 +138,10 @@ function parseSegment(segment: string, handle: string): MediumEntry | null {
   if (!id || !kind || !KINDS.has(kind) || Number.isNaN(created) || Number.isNaN(updated)) return null;
   const status = attrs.get('status') ?? 'active';
   if (!STATUSES.has(status)) return null;
+  const mergedFromRaw = attrs.get('merged_from');
+  const mergedFrom = mergedFromRaw
+    ? mergedFromRaw.split(',').map(decodePart).filter(Boolean)
+    : undefined;
   return {
     id,
     agentHandle: handle,
@@ -139,7 +153,14 @@ function parseSegment(segment: string, handle: string): MediumEntry | null {
     source: attrs.get('source') ?? 'convo',
     createdAt: created,
     updatedAt: updated,
+    ...(mergedFrom?.length ? { mergedFrom } : {}),
   };
+}
+
+/** One comma-separated member of a list-valued attribute. A member that won't decode degrades to
+ *  its raw text — a mangled lineage pointer must not unseat the whole entry. */
+function decodePart(part: string): string {
+  try { return decodeURIComponent(part); } catch { return part; }
 }
 
 const warnedPreserved = new Set<string>();
@@ -197,22 +218,39 @@ function retireSource(e: MediumEntry): ArchiveSource {
  * Each append ends with the delimiter, so a torn tail is skipped by the tolerant parser instead
  * of corrupting the next entry. Callers already hold the handle lock and run inside durably(),
  * so the rotation below is safe to do in place.
+ *
+ * RETURNS the table-copy promise rather than voiding it. durably()'s callback stays synchronous,
+ * so every mutator captures this in a closure variable and awaits it once durably returns, still
+ * inside the locked section — otherwise the insert lands a microtask AFTER the mutator resolves,
+ * and a caller that retires rows and then purges the archive (the /forget path) purges BEFORE the
+ * insert it was meant to remove. archiveEntries never rejects, so awaiting it cannot turn a
+ * lineage hiccup into a mutator failure.
+ *
+ * `source` overrides the per-row retireSource() when the CALLER knows why the rows left (a merge
+ * looks like a supersede from the row alone).
  */
-function appendArchive(handle: string, retired: MediumEntry[]): void {
-  if (!retired.length) return;
-  // Table copy FIRST and fire-and-forget: archiveEntries never throws or rejects (it is the
-  // lineage bonus, not the job), so a DB hiccup must not stop the ledger append below.
-  void archiveEntries(retired.map(e => ({
-    source: retireSource(e),
-    agentHandle: handle,
-    kind: e.kind,
-    request: e.key,
-    content: e.body,
-    meta: { mediumId: e.id, status: e.status, source: e.source, supersededBy: e.supersededBy },
-    createdAt: e.createdAt,
-  })));
+function appendArchive(handle: string, retired: MediumEntry[], source?: ArchiveSource): Promise<void> {
+  if (!retired.length) return Promise.resolve();
+  // Table copy FIRST: archiveEntries never throws or rejects (it is the lineage bonus, not the
+  // job), so a DB hiccup must not stop the ledger append below.
+  const copied = archiveEntries(retired.map(e => {
+    const src = source ?? retireSource(e);
+    return {
+      source: src,
+      agentHandle: handle,
+      kind: e.kind,
+      request: e.key,
+      content: e.body,
+      meta: {
+        mediumId: e.id, status: e.status, source: e.source, supersededBy: e.supersededBy,
+        ...(src === 'medium_merged' ? { mergedInto: e.supersededBy } : {}),
+      },
+      createdAt: e.createdAt,
+    };
+  }));
   appendText(archivePath(handle), retired.map(e => renderEntry(e) + DELIM).join(''));
   rotateArchiveIfLarge(handle);
+  return copied;
 }
 
 /** Trim MEDIUM.archive.md back to its newest entries once it passes the size cap. Unparsable
@@ -332,26 +370,29 @@ function enforceCap(file: ActiveFile, kind: MediumKind, cap: number, retired: Me
 export async function addDirective(handle: string, text: string, source = 'convo'): Promise<MediumEntry | null> {
   const clean = text.trim();
   if (!clean) return null;
-  return withHandleLock(handle, async () =>
-    durably('addDirective', () => {
+  return withHandleLock(handle, async () => {
+    let archived: Promise<void> = Promise.resolve();
+    const entry = durably('addDirective', () => {
       const file = loadActive(handle);
       const dup = file.entries.find(
         e => e.status === 'active' && e.kind === 'directive' && e.body.trim().toLowerCase() === clean.toLowerCase(),
       );
       if (dup) return null;
       const now = Date.now();
-      const entry: MediumEntry = {
+      const created: MediumEntry = {
         id: randomUUID(), agentHandle: handle, kind: 'directive', body: clean,
         status: 'active', source, createdAt: now, updatedAt: now,
       };
-      file.entries.push(entry);
+      file.entries.push(created);
       const retired: MediumEntry[] = [];
       enforceCap(file, 'directive', MAX_ACTIVE_DIRECTIVES, retired);
-      appendArchive(handle, retired);
+      archived = appendArchive(handle, retired);
       writeActive(handle, file);
-      return entry;
-    }),
-  );
+      return created;
+    });
+    await archived; // still inside the lock — the lineage insert lands before this call resolves
+    return entry;
+  });
 }
 
 /** Replace the text of an active directive/note by id (supersede + insert, one rewrite).
@@ -359,8 +400,9 @@ export async function addDirective(handle: string, text: string, source = 'convo
 export async function updateDirective(handle: string, id: string, text: string, source = 'convo'): Promise<boolean> {
   const clean = text.trim();
   if (!clean) return false;
-  return withHandleLock(handle, async () =>
-    durably('updateDirective', () => {
+  return withHandleLock(handle, async () => {
+    let archived: Promise<void> = Promise.resolve();
+    const ok = durably('updateDirective', () => {
       const file = loadActive(handle);
       const old = file.entries.find(e => e.id === id && e.status === 'active');
       if (!old) return false;
@@ -374,33 +416,113 @@ export async function updateDirective(handle: string, id: string, text: string, 
       old.updatedAt = now;
       file.entries = file.entries.filter(e => e.id !== old.id);
       file.entries.push(replacement);
-      appendArchive(handle, [old]);
+      archived = appendArchive(handle, [old]);
       writeActive(handle, file);
       return true;
-    }),
-  );
+    });
+    await archived;
+    return ok;
+  });
+}
+
+/**
+ * Fold N near-duplicate active notes into ONE synthesized replacement — updateDirective's
+ * supersede-then-insert widened from 1:1 to N sources and one target. Each source retires
+ * pointing FORWARD at the replacement (supersededBy); the replacement records the reverse edge
+ * (mergedFrom), so the lineage reads in both directions from either end.
+ *
+ * All-or-nothing, and every rejection is a NULL rather than a throw (only durably's
+ * MediumWriteError escapes): the caller is the background groomer (src/memory/noteGroomer.ts),
+ * and a groom that can't merge safely must leave the tier byte-identical to how it found it.
+ *
+ * The /forget epoch fence lives HERE, inside the lock — NOT in the groomer. withHandleLock is not
+ * re-entrant, so the groomer must read getForgetEpoch before it calls and pass the value in; it
+ * can never take the lock itself to check.
+ */
+export async function mergeNotes(
+  handle: string,
+  ids: string[],
+  mergedBody: string,
+  source = 'groomer',
+  opts?: { ifForgetEpoch?: number },
+): Promise<MediumEntry | null> {
+  const body = mergedBody.trim();
+  return withHandleLock(handle, async () => {
+    // FIRST, before any read: clearDossier's bump rides this same per-handle queue, so this is
+    // the point where "did a /forget land while the model was synthesizing?" has a definite
+    // answer. Writing past it would resurrect notes the user just wiped.
+    if (opts?.ifForgetEpoch != null && getForgetEpoch(handle) !== opts.ifForgetEpoch) {
+      console.warn(`[memory-medium] note merge aborted for ${handle} — /forget landed mid-groom`);
+      return null;
+    }
+    const unique = [...new Set(ids.map(i => i.trim()).filter(Boolean))];
+    if (unique.length < 2 || unique.length > MAX_ACTIVE_NOTES) return null;
+    // Rejected, never truncated: a clipped synthesis severs a fact mid-sentence, and these notes
+    // render verbatim into every turn.
+    if (!body || body.length > MERGED_NOTE_MAX_CHARS) return null;
+
+    let archived: Promise<void> = Promise.resolve();
+    const merged = durably('mergeNotes', () => {
+      const file = loadActive(handle);
+      const sources = unique
+        .map(id => file.entries.find(e => e.id === id && e.status === 'active' && e.kind === 'important_note'))
+        .filter((e): e is MediumEntry => !!e);
+      if (sources.length !== unique.length) {
+        console.warn(`[memory-medium] note merge skipped for ${handle}: only ${sources.length} of ${unique.length} ids are active notes`);
+        return null;
+      }
+      const now = Date.now();
+      const replacement: MediumEntry = {
+        id: randomUUID(), agentHandle: handle, kind: 'important_note', body,
+        // Fresh timestamps: cap-FIFO treats the merge as the NEWEST note, deliberately — it
+        // carries the current version of the fact, so it should outlive its own sources' age.
+        status: 'active', source, createdAt: now, updatedAt: now, mergedFrom: unique,
+      };
+      const retired: MediumEntry[] = [];
+      for (const row of sources) {
+        row.status = 'superseded';
+        row.supersededBy = replacement.id;
+        row.updatedAt = now;
+        file.entries = file.entries.filter(e => e.id !== row.id);
+        retired.push(row);
+      }
+      file.entries.push(replacement);
+      // Kept for uniformity with the other inserts; a merge only ever shrinks the tier, so this
+      // cannot actually trip.
+      enforceCap(file, 'important_note', MAX_ACTIVE_NOTES, retired);
+      archived = appendArchive(handle, retired, 'medium_merged');
+      writeActive(handle, file);
+      return replacement;
+    });
+    await archived;
+    return merged;
+  });
 }
 
 /** Soft-remove an active entry by id (user asked to drop a preference/note). */
 export async function retractEntry(handle: string, id: string): Promise<boolean> {
-  return withHandleLock(handle, async () =>
-    durably('retire:retracted', () => {
+  return withHandleLock(handle, async () => {
+    let archived: Promise<void> = Promise.resolve();
+    const ok = durably('retire:retracted', () => {
       const file = loadActive(handle);
       const row = file.entries.find(e => e.id === id && e.status === 'active');
       if (!row) return false;
       row.status = 'retracted';
       row.updatedAt = Date.now();
       file.entries = file.entries.filter(e => e.id !== row.id);
-      appendArchive(handle, [row]);
+      archived = appendArchive(handle, [row]);
       writeActive(handle, file);
       return true;
-    }),
-  );
+    });
+    await archived;
+    return ok;
+  });
 }
 
 /** Retract every active entry for a handle (the /forget path's medium-tier sweep). */
 export async function retractAllForHandle(handle: string): Promise<void> {
-  await withHandleLock(handle, async () =>
+  await withHandleLock(handle, async () => {
+    let archived: Promise<void> = Promise.resolve();
     durably('retractAllForHandle', () => {
       const file = loadActive(handle);
       const retired: MediumEntry[] = [];
@@ -414,10 +536,13 @@ export async function retractAllForHandle(handle: string): Promise<void> {
       }
       if (!retired.length) return;
       file.entries = file.entries.filter(e => !retired.includes(e));
-      appendArchive(handle, retired);
+      archived = appendArchive(handle, retired);
       writeActive(handle, file);
-    }),
-  );
+    });
+    // Load-bearing for /forget: the caller purges the archive right after this resolves, and an
+    // un-awaited insert would land after that purge (see convo/client.ts).
+    await archived;
+  });
 }
 
 /** Append an important note (deduped case-insensitively, FIFO-capped like the legacy
@@ -426,8 +551,9 @@ export async function retractAllForHandle(handle: string): Promise<void> {
 export async function addImportantNote(handle: string, note: string, source = 'convo'): Promise<string | null> {
   const clean = note.trim();
   if (!clean) return null;
-  return withHandleLock(handle, async () =>
-    durably('addImportantNote', () => {
+  return withHandleLock(handle, async () => {
+    let archived: Promise<void> = Promise.resolve();
+    const stored = durably('addImportantNote', () => {
       const file = loadActive(handle);
       const dup = file.entries.find(
         e => e.status === 'active' && e.kind === 'important_note' && e.body.trim().toLowerCase() === clean.toLowerCase(),
@@ -441,11 +567,13 @@ export async function addImportantNote(handle: string, note: string, source = 'c
       file.entries.push(entry);
       const retired: MediumEntry[] = [];
       enforceCap(file, 'important_note', MAX_ACTIVE_NOTES, retired);
-      appendArchive(handle, retired);
+      archived = appendArchive(handle, retired);
       writeActive(handle, file);
       return clean;
-    }),
-  );
+    });
+    await archived;
+    return stored;
+  });
 }
 
 /** Set a structured fact slot (supersede-then-insert in one rewrite). No-op when the
@@ -453,7 +581,8 @@ export async function addImportantNote(handle: string, note: string, source = 'c
 export async function upsertFact(handle: string, key: string, body: string, source = 'convo'): Promise<void> {
   const clean = body.trim();
   if (!clean) return;
-  return withHandleLock(handle, async () =>
+  return withHandleLock(handle, async () => {
+    let archived: Promise<void> = Promise.resolve();
     durably('upsertFact', () => {
       const file = loadActive(handle);
       const existing = file.entries.find(e => e.status === 'active' && e.kind === 'fact' && e.key === key);
@@ -472,8 +601,9 @@ export async function upsertFact(handle: string, key: string, body: string, sour
         retired.push(existing);
       }
       file.entries.push(entry);
-      appendArchive(handle, retired);
+      archived = appendArchive(handle, retired);
       writeActive(handle, file);
-    }),
-  );
+    });
+    await archived;
+  });
 }
