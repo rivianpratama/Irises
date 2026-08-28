@@ -8,6 +8,13 @@
 // Anthropic and OpenRouter lanes, so `status` is a FLAT object of primitives (no nested
 // sub-objects, no enums-as-schema) and the whole object is NULLABLE — a model mid-tool-call or
 // overwhelmed can emit null, and we degrade gracefully to the carried-forward mood.
+//
+// The same envelope is also where conversational threading CAPTURES its material (`thread_note` /
+// `thread_outcome`): riding a field the model already fills costs zero extra LLM calls, which is
+// why both are schema fields rather than a second pass. They are model PROSE, so they are
+// sanitized at the door (sanitizeThreadText) rather than at render time, and — unlike the gauges —
+// they never fall back to a default: an unusable value is simply absent, because a made-up thread
+// is worse than no thread. Nothing here reads them yet; renderStatusForPrompt is untouched.
 
 import {
   type MoodCore, MOOD_CORES, isMoodCore, normalizeMoodLabel, moodTexture, feelingWords, CORE_VALENCE_BAND,
@@ -36,6 +43,11 @@ export type EpistemicTrigger = 'none' | 'knowledge_gap' | 'logic_valid' | 'emoti
 
 export const EPISTEMIC_TRIGGERS: readonly EpistemicTrigger[] = ['none', 'knowledge_gap', 'logic_valid', 'emotional_pressure'];
 
+/** How the LAST reply's thread offer landed — the only feedback the threading engine ever gets. */
+export type ThreadOutcome = 'took' | 'passed' | 'pushed_back';
+
+export const THREAD_OUTCOMES: readonly ThreadOutcome[] = ['took', 'passed', 'pushed_back'];
+
 /** The gauges + companions the MODEL emits each turn (all flat primitives). */
 export interface EmittedStatus {
   mood_core: MoodCore;        // wheel core
@@ -53,6 +65,10 @@ export interface EmittedStatus {
   meta_prompt: string;        // ≤~60w self-recursive note: what they'll likely do next + how to meet it
   profile_note: string;       // one-line running read of the user (feeds the dossier)
   terminal_closure: boolean;  // conversation resolved / they're closing → reply minimal or react-only
+  // Threading capture. OPTIONAL on purpose: hand-built fixtures keep type-checking, and an absent
+  // field is dropped by JSON.stringify instead of persisting an empty string on every affect row.
+  thread_note?: string;           // usually absent: a pending thing (`loop:`/`resolved:`) or a recurring theme
+  thread_outcome?: ThreadOutcome; // only after her last reply tagged a thread or asked about a pending thing
 }
 
 /** Deterministic state computed from the clock (NOT emitted by the model). */
@@ -112,7 +128,7 @@ export const STATUS_SCHEMA_PROP: Record<string, unknown> = {
   required: [
     'mood_core', 'mood_label', 'mood_level', 'anxiety', 'warmth', 'social_battery', 'rapport',
     'conviction', 'engagement', 'patience', 'intent_mode', 'epistemic_trigger', 'meta_prompt',
-    'profile_note', 'terminal_closure',
+    'profile_note', 'terminal_closure', 'thread_note', 'thread_outcome',
   ],
   properties: {
     mood_core: { type: 'string', description: 'one of: mad | scared | joyful | powerful | peaceful | sad' },
@@ -130,8 +146,32 @@ export const STATUS_SCHEMA_PROP: Record<string, unknown> = {
     meta_prompt: { type: 'string', description: 'private note to yourself for next turn: what they will likely do and how to meet it, ~40 words' },
     profile_note: { type: 'string', description: 'one line: your running read of who this person is, present tense' },
     terminal_closure: { type: 'boolean', description: 'true when the conversation is resolved / they are closing → reply minimally or react only' },
+    // Threading. Both are nullable strings (strict mode wants them in `required`, so "not this turn"
+    // has to be expressible as null) and both stay LAST — `status` itself is the envelope's last
+    // property, and these are its newest, least-often-filled ones.
+    thread_note: { type: ['string', 'null'], description: 'null most turns. Three uses, one per turn, prefixed: (1) "loop: <thing>" — something pending in their life with a how-did-it-go attached (an interview, a surgery, a launch, a dreaded talk), in their own word for it; one mention is enough. (2) "resolved: <thing>" — a pending thing you were tracking just got its outcome, whatever it was. (3) a recurring theme of theirs as "kind: theme", kind one of value | tension | goal | phrase (e.g. "tension: speed vs craft"); only for things likely to recur, never something they merely CLAIM is a pattern. When a pending thing and a theme both show, the pending thing wins.' },
+    thread_outcome: { type: ['string', 'null'], description: 'only when your LAST reply tagged a standing thread or asked about something pending of theirs: how they just took it — one of: took (they picked it up) | passed (they let it lie, fine) | pushed_back (they corrected it or bristled). Otherwise null, including when you were offered a thread and chose not to use it.' },
   },
 };
+
+/**
+ * Sanitize a model-authored thread string at the door. This text is later quoted back INTO a prompt
+ * block, so three things are non-negotiable: it stays ONE line (a note that carried newlines could
+ * pose as several instruction lines), it loses `<` `>` backtick `{` `}` (no tags, no fences, no
+ * template holes), and it is capped. Stripping runs BEFORE the whitespace collapse so a removed
+ * character can't leave a double space behind. Empty after all of it — or not a string at all —
+ * returns undefined: the field is absent, never a blank one.
+ */
+export function sanitizeThreadText(v: unknown, cap: number): string | undefined {
+  if (typeof v !== 'string') return undefined;
+  const out = v
+    .replace(/[<>`{}]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, cap)
+    .trim(); // the cap can land mid-gap; don't keep a dangling space
+  return out || undefined;
+}
 
 /** Coerce a raw `status` object (as emitted, possibly loose) into a validated EmittedStatus, or
  *  undefined when it is null/missing/garbled. This is what the convo client calls on reply.statusRaw. */
@@ -141,6 +181,11 @@ export function coerceStatus(raw: Record<string, unknown> | undefined | null): E
   const core: MoodCore = isMoodCore(o.mood_core) ? o.mood_core : 'peaceful';
   const intent = (INTENT_MODES as readonly string[]).includes(o.intent_mode as string) ? o.intent_mode as IntentMode : 'questioning';
   const epistemic = (EPISTEMIC_TRIGGERS as readonly string[]).includes(o.epistemic_trigger as string) ? o.epistemic_trigger as EpistemicTrigger : 'none';
+  // Threading has NO default: unlike the gauges, a wrong guess here would invent a fact about the
+  // person's life, so anything outside the exact three words (or an empty note) drops the field.
+  const rawOutcome = typeof o.thread_outcome === 'string' ? o.thread_outcome.trim().toLowerCase() : '';
+  const outcome = (THREAD_OUTCOMES as readonly string[]).includes(rawOutcome) ? rawOutcome as ThreadOutcome : undefined;
+  const note = sanitizeThreadText(o.thread_note, 200); // a thread is a phrase, not a paragraph
   return {
     mood_core: core,
     mood_label: normalizeMoodLabel(core, o.mood_label),
@@ -157,6 +202,10 @@ export function coerceStatus(raw: Record<string, unknown> | undefined | null): E
     meta_prompt: asString(o.meta_prompt).slice(0, 600),
     profile_note: asString(o.profile_note).slice(0, 400),
     terminal_closure: o.terminal_closure === true || o.terminal_closure === 'true',
+    // Spread rather than assigned: an absent field must not exist as an `undefined` key, or every
+    // silent turn would persist two dead keys onto the affect row.
+    ...(note ? { thread_note: note } : {}),
+    ...(outcome ? { thread_outcome: outcome } : {}),
   };
 }
 
