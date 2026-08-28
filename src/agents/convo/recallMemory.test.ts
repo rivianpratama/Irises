@@ -12,6 +12,10 @@ process.env.EMBEDDINGS_DIMENSIONS = '64';
 // The hybrid path needs the flag as well as a registered embedder (the backend is resolved from
 // both, at call time). No key is set and only the fake embedder below is ever registered.
 process.env.MEMORY_SEMANTIC_RECALL = 'on';
+// Query expansion defaults ON in production, and it dispatches a REAL classify call when nothing is
+// injected. Pinned off for the file so no test here can reach a provider on a machine that happens
+// to have keys exported; the expansion section at the bottom turns it on around its own fake lane.
+process.env.MEMORY_RECALL_EXPANSION = 'off';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -24,6 +28,7 @@ import { archiveEntries, purgeArchiveFor, searchArchive } from '../../db/reposit
 import {
   setArchiveEmbedder, backfillArchiveEmbeddings, l2Normalize, type Embedder,
 } from '../../db/repositories/memoryArchiveVectors.js';
+import { __setRecallExpansionLlmForTests } from '../../memory/recallExpansion.js';
 import type { LlmRequest, LlmResult, LlmToolCall } from '../../llm/types.js';
 
 function makeResult(bubbles: string[], toolCalls: LlmToolCall[]): LlmResult {
@@ -322,6 +327,131 @@ test('semantic on: a paraphrased reference is answered from a hit lexical search
     await searchArchive({ query: 'who put up that boundary railing', handle: a.handle, chatId: a.chatId }),
     [],
   );
+  await purgeArchiveFor({ handle: a.handle });
+});
+
+// ── No embeddings lane: the query-expansion fallback ────────────────────────
+// The install this exists for: an Anthropic-only setup where semantic recall can never arm because
+// there is no embeddings endpoint to point it at. The ladder degrades to one tiny classify call that
+// widens the query, and from there to today's plain keyword search.
+//
+// The expansion LANE is faked through the module's test seam (the flow gives no argument to inject
+// through), so everything else — the backend gate, the post-processing, the concatenation, the
+// tokenizer's cap — is the real thing.
+
+let expansionCalls = 0;
+
+/** Run `fn` with the expansion lane armed and faked. `text` is what the model "says"; a function
+ *  throws instead, which is how every real failure (no lane, budget, provider) arrives. */
+async function withExpansion(text: string | (() => never), fn: () => Promise<void>): Promise<void> {
+  expansionCalls = 0;
+  process.env.MEMORY_RECALL_EXPANSION = 'on';
+  __setRecallExpansionLlmForTests((async () => {
+    expansionCalls++;
+    if (typeof text === 'function') text();
+    return {
+      text: text as string, toolCalls: [], stopReason: 'end_turn', truncated: false,
+      provider: 'anthropic' as const, model: 'test',
+    };
+  }) as never);
+  try {
+    await fn();
+  } finally {
+    __setRecallExpansionLlmForTests(null);
+    process.env.MEMORY_RECALL_EXPANSION = 'off';
+  }
+}
+
+/** Drive one recall turn and return what the second pass was shown. */
+async function recallPassText(a: ReturnType<typeof args>, query: string): Promise<string> {
+  const seen: LlmRequest[] = [];
+  await processConvoResult({
+    ...a,
+    res: makeResult(['one sec'], [recall(query)]),
+    turn: turnCtx(async req => {
+      seen.push(req);
+      return makeResult(['ruiz fencing did it'], []);
+    }),
+  });
+  assert.equal(seen.length, 1, 'still exactly one second pass');
+  return String(seen[0].messages[seen[0].messages.length - 1].content);
+}
+
+test('no embedder: the expanded query finds a row the words the user typed cannot reach', async () => {
+  const a = args();
+  await seedArchive(a.handle, a.chatId);
+
+  let text = '';
+  // Not one word of the query is in the memory; 'fence'/'fencing' are.
+  await withExpansion('fence fencing contractor', async () => {
+    text = await recallPassText(a, 'who put up that boundary railing');
+  });
+
+  assert.equal(expansionCalls, 1, 'one call, on whichever lane this install already has');
+  assert.match(text, /<memory_archive_results>/, 'the pass got DATA, not the honest-miss prompt');
+  assert.match(text, /Ruiz Fencing/);
+  // The MODEL is still shown the user's own question — the widening is a search detail, not
+  // something to answer about.
+  assert.match(text, /"who put up that boundary railing"/);
+
+  // The control: unexpanded, that query reaches nothing at all.
+  assert.deepEqual(
+    await searchArchive({ query: 'who put up that boundary railing', handle: a.handle, chatId: a.chatId }),
+    [],
+  );
+  await purgeArchiveFor({ handle: a.handle });
+});
+
+test('embedder registered: the expansion call is NEVER made', async () => {
+  const a = args();
+  await withExpansion('fence fencing contractor', async () => {
+    await withSemanticRecall(async () => {
+      await seedArchive(a.handle, a.chatId);
+      await backfillArchiveEmbeddings({ batchSize: 20, maxBatches: 2 });
+      const text = await recallPassText(a, 'who put up that boundary railing');
+      assert.match(text, /Ruiz Fencing/, 'the vector leg answered it');
+    });
+  });
+  // The whole point of the gate: the hybrid search already covers the paraphrase, so spending a
+  // model call on synonyms would be paying twice for one thing — on the reply path, at that.
+  assert.equal(expansionCalls, 0);
+  await purgeArchiveFor({ handle: a.handle });
+});
+
+test('an expansion that fails leaves the search byte-identical to an unexpanded one', async () => {
+  const a = args();
+  await seedArchive(a.handle, a.chatId);
+
+  let failed = '';
+  await withExpansion(() => { throw new Error('provider down'); }, async () => {
+    failed = await recallPassText(a, 'fence guy');
+  });
+  assert.equal(expansionCalls, 1, 'it did try');
+
+  // The flag is back off after withExpansion, so this run makes no expansion call whatsoever —
+  // exactly the pre-feature code path.
+  const plain = await recallPassText(a, 'fence guy');
+  assert.equal(failed, plain, 'a failed expansion is not a different search, it is the same search');
+  await purgeArchiveFor({ handle: a.handle });
+});
+
+test('the user’s own terms keep priority: expansion only fills leftover token slots', async () => {
+  const a = args();
+  await seedArchive(a.handle, a.chatId);
+
+  // searchArchive's tokenize() takes tokens IN ORDER and slices to MAX_QUERY_TOKENS (8), and the
+  // recall site puts the query first — so an eight-token query leaves no room and the expansion is
+  // inert, while the same question one word shorter lets exactly one synonym in.
+  let atCap = '';
+  let underCap = '';
+  await withExpansion('fence fencing contractor', async () => {
+    atCap = await recallPassText(a, 'who exactly put up that boundary railing yesterday'); // 8 tokens
+    underCap = await recallPassText(a, 'who exactly put up that boundary railing');        // 7 tokens
+  });
+
+  assert.match(atCap, /Nothing in your archive matched/, 'a synonym never displaces a word the user typed');
+  assert.ok(!atCap.includes('Ruiz Fencing'));
+  assert.match(underCap, /Ruiz Fencing/, 'one free slot, one synonym, one hit');
   await purgeArchiveFor({ handle: a.handle });
 });
 

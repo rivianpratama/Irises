@@ -12,11 +12,12 @@ import {
   listMediumActive, upsertFact, MediumWriteError,
 } from '../../db/repositories/memoryMedium.js';
 import { latestShortTerm } from '../../db/repositories/memoryShort.js';
-import { searchArchive, type ArchiveHit } from '../../db/repositories/memoryArchive.js';
+import { searchArchive, archiveSearchBackend, type ArchiveHit } from '../../db/repositories/memoryArchive.js';
 import { validateDirective } from '../../memory/preferences.js';
 import { FACT_KEYS } from '../../memory/mediumTerm.js';
 import { updateDossier, PENDING_CLARIFICATION_TTL_MS } from '../../memory/dossier.js';
 import { groomNotes } from '../../memory/noteGroomer.js';
+import { expandRecallQuery, recallExpansionEnabled } from '../../memory/recallExpansion.js';
 import { isGroupHandle } from '../../memory/identity.js';
 import { isDuplicateDelegation, getActiveOps, hasInFlightRequest, requestOpsCancel, type ActiveOps } from '../../state/opsCoordination.js';
 import { etaStatus } from '../etaEstimate.js';
@@ -1129,13 +1130,39 @@ export async function processConvoResult(args: {
   // DELEGATION WINS on conflict: if the model also delegated, the composer is already coming back
   // with grounded facts and a second draft here would race it onto the user's screen.
   if (recallQuery && !args.archivePass && !delegatedTask && !suppressedDuplicate) {
-    const hits = await searchArchive({ query: recallQuery, handle, chatId, limit: ARCHIVE_RECALL_LIMIT });
+    // ── The paraphrase ladder branches HERE ─────────────────────────────────────────────────
+    // 'vector' means searchArchive is about to fuse an embedding leg over the same rows, which is a
+    // BETTER answer to "they didn't use the words they wrote it down with" than synonyms are — so
+    // expansion must not run: it would spend a model call, on the reply path, to buy something the
+    // search already has. Anything else (no OpenRouter key, the flag off, no embedder registered —
+    // the ordinary Hermes/Anthropic-only install) means the search is purely lexical, and one tiny
+    // classify call is the only paraphrase tolerance available. `archiveSearchBackend()` is the
+    // SAME resolution searchArchive performs internally, read at call time, so the branch here and
+    // the leg that actually runs can never disagree.
+    const expansion = archiveSearchBackend() !== 'vector' && recallExpansionEnabled()
+      ? await expandRecallQuery(recallQuery)
+      : '';
+    // ORDER IS LOAD-BEARING. memoryArchive's tokenize() takes tokens in order and slices to
+    // MAX_QUERY_TOKENS (8), so putting the user's words FIRST makes the expansion strictly
+    // additive: it can only fill slots the query left over, and a query already at 8 tokens is
+    // expanded by exactly nothing. Never reverse this, and never widen the cap to "make room" —
+    // a synonym that displaces a term the user actually typed is a worse search, not a wider one.
+    const searchQuery = expansion ? `${recallQuery} ${expansion}` : recallQuery;
+    const hits = await searchArchive({ query: searchQuery, handle, chatId, limit: ARCHIVE_RECALL_LIMIT });
     record({
       type: 'event',
       label: 'memory:archive_recall',
       chatId,
       handle,
-      detail: { query: recallQuery, hits: hits.length, top: hits[0]?.entry.source },
+      detail: {
+        query: recallQuery,
+        hits: hits.length,
+        top: hits[0]?.entry.source,
+        expanded: !!expansion,
+        // Only when there is one: a null `expansion` on every hybrid-backend recall would be noise
+        // in the trace, and `expanded` already carries the fact.
+        ...(expansion ? { expansion } : {}),
+      },
     });
     const turn = args.turn;
     // An action-bearing first pass keeps its own assembly: recursing would discard the
