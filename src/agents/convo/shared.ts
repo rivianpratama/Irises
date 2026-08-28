@@ -16,6 +16,7 @@ import { searchArchive, type ArchiveHit } from '../../db/repositories/memoryArch
 import { validateDirective } from '../../memory/preferences.js';
 import { FACT_KEYS } from '../../memory/mediumTerm.js';
 import { updateDossier, PENDING_CLARIFICATION_TTL_MS } from '../../memory/dossier.js';
+import { groomNotes } from '../../memory/noteGroomer.js';
 import { isGroupHandle } from '../../memory/identity.js';
 import { isDuplicateDelegation, getActiveOps, hasInFlightRequest, requestOpsCancel, type ActiveOps } from '../../state/opsCoordination.js';
 import { etaStatus } from '../etaEstimate.js';
@@ -890,6 +891,8 @@ export async function processConvoResult(args: {
   let scheduleConfirmation: Outcome | null = null;
   // And for "remember this": a saved important note must never be met with silence.
   let noteConfirmation: Outcome | null = null;
+  // A note actually landed this turn — the groomer's trigger (see the post-reply block).
+  let noteSaved = false;
   // A directive/preference that saved silently (no failure note) — the turn must still acknowledge it
   // (a tapback, or a voiced line on SMS) so a tool-only reply never leaves the user hanging.
   let directiveActed = false;
@@ -945,7 +948,10 @@ export async function processConvoResult(args: {
       if (String(input.key) === 'important_note' && input.value != null) {
         try {
           const saved = await addImportantNote(handle, String(input.value));
-          if (saved) noteConfirmation = { kind: 'confirmed', summary: "their note is saved — you'll keep it in mind" };
+          if (saved) {
+            noteConfirmation = { kind: 'confirmed', summary: "their note is saved — you'll keep it in mind" };
+            noteSaved = true;
+          }
         } catch (err) {
           if (!(err instanceof MediumWriteError)) throw err;
           // The old path silently mirrored a failed write and confirmed anyway; the medium tier
@@ -1455,6 +1461,13 @@ export async function processConvoResult(args: {
     if (cleanForRecord) recent.push({ role: 'assistant', content: cleanForRecord });
     void updateDossier(handle, recent);
   }
+
+  // Fold near-duplicate saved notes (throttled 6h per handle; never blocks, never surfaces).
+  // Runs for GROUP identities too, deliberately unlike the dossier skip above: that skip guards
+  // against harvesting a multi-party TRANSCRIPT into one person's memory, and the groomer never
+  // reads a transcript — it only ever rewrites the handle's own explicitly-saved notes, so nothing
+  // can cross a handle boundary. A group's notes crowd each other out exactly like a person's.
+  if (handle && noteSaved) void groomNotes(handle);
 
   // Tripwire: a turn that produced NOTHING the user or the thread can see — no bubble, no reaction,
   // no action — is the silent-turn failure mode. The floor above now RECOVERS the no-tool-call
