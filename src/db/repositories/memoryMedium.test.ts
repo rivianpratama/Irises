@@ -14,7 +14,7 @@ import {
   MAX_ACTIVE_DIRECTIVES, MAX_ACTIVE_NOTES, CAP_EVICTED, MERGED_NOTE_MAX_CHARS,
   MEDIUM_ARCHIVE_MAX_BYTES, MEDIUM_ARCHIVE_KEEP,
 } from './memoryMedium.js';
-import { listArchiveFor } from './memoryArchive.js';
+import { listArchiveFor, __setArchiveEntriesDelayForTests } from './memoryArchive.js';
 import { getForgetEpoch, bumpForgetEpoch } from './memory.js';
 import { memoriesDir } from '../stateDir.js';
 
@@ -338,12 +338,24 @@ test('mergeNotes archives every source as medium_merged', async () => {
 });
 
 test('REGRESSION: mergeNotes AWAITS its archive write', async () => {
-  // appendArchive used to fire-and-forget the table copy, so the row landed a microtask after the
-  // mutator resolved — long enough for a /forget purge to run in between and miss it.
+  // appendArchive used to fire-and-forget the table copy, so the row landed after the mutator
+  // resolved — long enough for a /forget purge to run in between and miss it.
+  //
+  // The delay seam is what gives this test teeth: archiveEntries' body is synchronous, so without
+  // it the rows are visible whether or not anyone awaited the promise. With a real suspension in
+  // front of the INSERT, only an awaited archive is on disk when mergeNotes resolves — reverting
+  // `await archived` to `void` fails the assertion below.
   const h = freshHandle();
   const notes = await seedNotes(h, ['spare key under the pot', 'the spare key is under the blue pot']);
-  await mergeNotes(h, [notes[0].id, notes[1].id], 'the spare key is under the blue pot');
-  assert.equal((await listArchiveFor(h)).length, 2, 'already there — no setTimeout beat needed');
+  __setArchiveEntriesDelayForTests(10);
+  try {
+    await mergeNotes(h, [notes[0].id, notes[1].id], 'the spare key is under the blue pot');
+    // No await-a-timer beat here on purpose: listArchiveFor resolves on a MICROtask, which cannot
+    // outlast the 10ms timer above.
+    assert.equal((await listArchiveFor(h)).length, 2, 'the cold copies landed before mergeNotes resolved');
+  } finally {
+    __setArchiveEntriesDelayForTests(null);
+  }
 });
 
 test('mergeNotes is a no-op on illegal inputs', async () => {

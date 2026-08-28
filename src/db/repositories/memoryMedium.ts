@@ -139,6 +139,8 @@ function parseSegment(segment: string, handle: string): MediumEntry | null {
   const status = attrs.get('status') ?? 'active';
   if (!STATUSES.has(status)) return null;
   const mergedFromRaw = attrs.get('merged_from');
+  // Decoded TWICE (once with every attr above, then once per member): exact for randomUUID() ids,
+  // which carry no percent-escape — an id that did would drift on the next rewrite.
   const mergedFrom = mergedFromRaw
     ? mergedFromRaw.split(',').map(decodePart).filter(Boolean)
     : undefined;
@@ -478,19 +480,26 @@ export async function mergeNotes(
         // carries the current version of the fact, so it should outlive its own sources' age.
         status: 'active', source, createdAt: now, updatedAt: now, mergedFrom: unique,
       };
-      const retired: MediumEntry[] = [];
+      const mergedAway: MediumEntry[] = [];
       for (const row of sources) {
         row.status = 'superseded';
         row.supersededBy = replacement.id;
         row.updatedAt = now;
         file.entries = file.entries.filter(e => e.id !== row.id);
-        retired.push(row);
+        mergedAway.push(row);
       }
       file.entries.push(replacement);
       // Kept for uniformity with the other inserts; a merge only ever shrinks the tier, so this
-      // cannot actually trip.
-      enforceCap(file, 'important_note', MAX_ACTIVE_NOTES, retired);
-      archived = appendArchive(handle, retired, 'medium_merged');
+      // cannot actually trip — except on a hand-edited MEDIUM.md already over the cap. Its rows
+      // get their OWN array: they aged out, they were not merged, and archiving them as
+      // medium_merged would file a cap eviction under a merge with mergedInto pointing at the
+      // CAP_EVICTED sentinel. The default retireSource() labels them honestly.
+      const capEvicted: MediumEntry[] = [];
+      enforceCap(file, 'important_note', MAX_ACTIVE_NOTES, capEvicted);
+      archived = Promise.all([
+        appendArchive(handle, mergedAway, 'medium_merged'),
+        appendArchive(handle, capEvicted),
+      ]).then(() => undefined);
       writeActive(handle, file);
       return replacement;
     });

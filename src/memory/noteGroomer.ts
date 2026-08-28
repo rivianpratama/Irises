@@ -49,6 +49,10 @@ export const MAX_CLUSTERS_PER_RUN = 3;
 export const MAX_CLUSTER_SIZE = 5;
 /** The plan is a small JSON object; this is generous for three clusters of merged text. */
 const MERGE_MAX_TOKENS = 800;
+/** Wall clock for the one model call, same bound Ops triage puts on its classify (triage.ts).
+ *  Nothing awaits this groom, but a lane that never answers would pin the notes it read forever
+ *  and merge them against a tier that has moved on. A timeout is just another 'llm_failed'. */
+const MERGE_TIMEOUT_MS = 15_000;
 
 /** Kill switch, read at CALL time so flipping it doesn't need a restart. Default ON. */
 function noteGroomEnabled(): boolean {
@@ -60,8 +64,13 @@ function noteGroomEnabled(): boolean {
 export interface GroomResult {
   merged: number;      // notes retired into merges
   clusters: number;    // merges applied
+  // 'none'         — the model looked and found no duplicates ({"merges":[]}), the HEALTHY answer
+  // 'rejected'     — it proposed merges and every one of them failed validation here or at the tier
+  // 'write_failed' — the tier itself couldn't write (MediumWriteError); nothing about the plan
+  // 'llm_failed'   — no lane, no budget, a throw, or the call timed out
   skipped: null | 'disabled' | 'throttled' | 'too_few' | 'no_candidates'
-         | 'llm_failed' | 'truncated' | 'unparsable' | 'rejected' | 'forgotten';
+         | 'llm_failed' | 'truncated' | 'unparsable' | 'none' | 'rejected' | 'write_failed'
+         | 'forgotten';
 }
 
 export interface MergeCluster {
@@ -212,6 +221,16 @@ function acceptClusters(plan: MergePlan, candidates: MediumEntry[]): MergeCluste
   return accepted;
 }
 
+/** Reject `work` after `ms`. Same shape as Ops triage's own bound (agents/ops/triage.ts) —
+ *  unref'd so a pending groom can never hold the process open. */
+async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('note groom timeout')), ms);
+    (timer as { unref?: () => void }).unref?.();
+    work.then(v => { clearTimeout(timer); resolve(v); }, e => { clearTimeout(timer); reject(e); });
+  });
+}
+
 /** Test seam: clear the per-handle throttle so a test can run two grooms back to back. */
 export function __resetGroomThrottleForTests(): void {
   lastGroom.clear();
@@ -248,24 +267,33 @@ export async function groomNotes(
     // number) wins" is true of the list the model actually sees.
     const numbered = candidates.map((n, i) => `${i + 1}. ${n.body}`).join('\n');
 
-    const res = await llm({
-      role: 'classify',
-      maxTokens: MERGE_MAX_TOKENS,
-      system: NOTE_MERGE_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: wrapPrompt(`${dataTag('active_notes', numbered)}\n\n${MERGE_INSTRUCTIONS}`) }],
-      trace: { handle, label: 'memory:note_merge' },
-    });
+    // Bounded: a hung lane rejects into the catch below, which is a silent, non-mutating no-op.
+    const res = await withTimeout(
+      llm({
+        role: 'classify',
+        maxTokens: MERGE_MAX_TOKENS,
+        system: NOTE_MERGE_SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: wrapPrompt(`${dataTag('active_notes', numbered)}\n\n${MERGE_INSTRUCTIONS}`) }],
+        trace: { handle, label: 'memory:note_merge' },
+      }),
+      MERGE_TIMEOUT_MS,
+    );
     // Same doctrine as the dossier rewrite: a cut-off JSON plan is MANGLED, not shorter — its last
     // cluster is a fragment of a synthesis that would retire real notes behind it.
     if (res.truncated) return nothing('truncated');
 
     const plan = parseMergePlan(res.text);
     if (!plan) return nothing('unparsable');
+    // "It looked and found nothing" is the normal answer, and NOT the same event as "it proposed
+    // merges and every one was thrown out" — conflating them hides a model that keeps failing
+    // validation behind a reason that reads as healthy.
+    if (!plan.merges.length) return nothing('none');
     const accepted = acceptClusters(plan, candidates);
-    if (!accepted.length) return nothing('rejected'); // includes the normal {"merges":[]} answer
+    if (!accepted.length) return nothing('rejected');
 
     let clusters = 0;
     let merged = 0;
+    let writeFailed = false;
     // Sequential, not Promise.all: they serialize on the handle lock anyway, and one at a time
     // means a failure is attributable to a specific cluster.
     for (const cluster of accepted) {
@@ -277,6 +305,7 @@ export async function groomNotes(
         // A MediumWriteError is the tier failing to write at all, not this cluster being bad —
         // stop rather than retry the same failing write two more times.
         console.warn(`[memory] note merge write failed for ${handle} — stopping this groom`, err);
+        writeFailed = true;
         break;
       }
       if (!entry) {
@@ -286,7 +315,11 @@ export async function groomNotes(
       clusters++;
       merged += ids.length;
     }
-    if (!clusters) return nothing(getForgetEpoch(handle) !== epoch0 ? 'forgotten' : 'rejected');
+    if (!clusters) {
+      // The tier failing to write says nothing about the plan — keep it out of 'rejected'.
+      if (writeFailed) return nothing('write_failed');
+      return nothing(getForgetEpoch(handle) !== epoch0 ? 'forgotten' : 'rejected');
+    }
 
     record({ type: 'event', label: 'memory:notes_merged', handle, detail: { clusters, merged } });
     return { merged, clusters, skipped: null };

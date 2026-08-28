@@ -125,6 +125,17 @@ export function __setArchiveBackendForTests(backend: 'fts5' | 'like' | null): vo
   backendOverride = backend;
 }
 
+let insertDelayForTests: number | null = null;
+
+/** Test seam: make archiveEntries actually SUSPEND before it inserts. The body below is async in
+ *  signature but synchronous in fact, so a caller that drops its archive promise on the floor still
+ *  sees the rows — which makes an "it was awaited" assertion vacuous. With a delay set, the rows
+ *  only exist once the promise resolves, so the regression tests bite. null = off (production
+ *  shape: unset, nothing is awaited, not one timer is created). */
+export function __setArchiveEntriesDelayForTests(ms: number | null): void {
+  insertDelayForTests = ms;
+}
+
 /**
  * Archive retired rows. NEVER throws and never rejects: every caller is a retire/sweep path
  * whose real work must land regardless (a lineage copy is strictly a bonus). Content is sliced
@@ -133,6 +144,8 @@ export function __setArchiveBackendForTests(backend: 'fts5' | 'like' | null): vo
  */
 export async function archiveEntries(entries: ArchiveInput[]): Promise<void> {
   if (!entries.length) return;
+  const delay = insertDelayForTests;
+  if (delay != null) await new Promise(r => setTimeout(r, delay));
   const now = Date.now();
   const touched = new Set<string>();
   for (const e of entries) {

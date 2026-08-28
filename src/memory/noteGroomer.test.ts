@@ -275,7 +275,9 @@ test('ANTI-LOOP: a groomer-made note is frozen out of the next run', async () =>
 test('the per-handle throttle blocks a second run', async () => {
   const h = await seed(NEAR_DUP_SET);
   const { llm, calls } = stubLlm('{"merges":[]}');
-  assert.equal((await groomNotes(h, { llm })).skipped, 'rejected'); // nothing to merge, but it ran
+  // 'none', not 'rejected': the model looked and found no duplicates — the healthy answer, and a
+  // different event from a plan whose every cluster failed validation.
+  assert.equal((await groomNotes(h, { llm })).skipped, 'none');
   assert.deepEqual(await groomNotes(h, { llm }), { merged: 0, clusters: 0, skipped: 'throttled' });
   assert.equal(calls.length, 1, 'exactly one model call for the window');
 });
