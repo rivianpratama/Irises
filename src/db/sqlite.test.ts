@@ -47,6 +47,25 @@ test('resetStorageForTests drops rows but keeps the schema', () => {
   assert.equal(usage.n, 0);
 });
 
+test('memory_archive_embeddings cascades when its archive row is deleted', () => {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO memory_archive (agent_handle, source, content, meta_json, created_at, archived_at)
+     VALUES ('+15550009999', 'message_pruned', 'a memory with a vector', '{}', ?, ?)`
+  ).run(Date.now(), Date.now());
+  const id = Number((db.prepare('SELECT id FROM memory_archive ORDER BY id DESC LIMIT 1').get() as { id: number }).id);
+  db.prepare(
+    `INSERT INTO memory_archive_embeddings (archive_id, vector, dims, model, created_at)
+     VALUES (?, ?, 4, 'test/embed', ?)`
+  ).run(id, Buffer.alloc(16), Date.now());
+
+  // The pragma is on (getDb sets it), and this is the guard that makes a forget a forget: a
+  // vector outliving its row would be a deleted memory still semantically reachable.
+  db.prepare('DELETE FROM memory_archive WHERE id = ?').run(id);
+  const n = db.prepare('SELECT count(*) AS n FROM memory_archive_embeddings WHERE archive_id = ?').get(id) as { n: number };
+  assert.equal(n.n, 0);
+});
+
 test('closeDb resets the singleton — next getDb reopens (fresh DB on :memory:)', () => {
   getDb().prepare(
     "INSERT INTO messages (chat_id, role, content, created_at) VALUES ('c2', 'user', 'bye', ?)"

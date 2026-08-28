@@ -6,6 +6,9 @@
 // Runs end-to-end against the ephemeral DB backend with the LLM injected (repo DI convention).
 
 process.env.DATA_BACKEND = 'memory';
+// Pin the vector store's notion of "current" so the fake embedder below writes current vectors.
+process.env.EMBEDDINGS_MODEL = 'test/fake-embed';
+process.env.EMBEDDINGS_DIMENSIONS = '64';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,7 +17,10 @@ import { processConvoResult, renderArchiveRecallPass, type ChatContext, type Con
 import { RECALL_MEMORY_TOOL, DELEGATE_TO_OPS_TOOL, REACTION_TOOL } from './tools.js';
 import { emptyMedia } from '../../webhook/types.js';
 import { __resetOpsCoordination } from '../../state/opsCoordination.js';
-import { archiveEntries, purgeArchiveFor } from '../../db/repositories/memoryArchive.js';
+import { archiveEntries, purgeArchiveFor, searchArchive } from '../../db/repositories/memoryArchive.js';
+import {
+  setArchiveEmbedder, backfillArchiveEmbeddings, l2Normalize, type Embedder,
+} from '../../db/repositories/memoryArchiveVectors.js';
 import type { LlmRequest, LlmResult, LlmToolCall } from '../../llm/types.js';
 
 function makeResult(bubbles: string[], toolCalls: LlmToolCall[]): LlmResult {
@@ -209,6 +215,110 @@ test('an action-bearing turn keeps its own assembly (the confirmation is not dis
   });
   assert.equal(calls, 0, 'no recursion — the action outcome would have been dropped');
   assert.ok(out.text);
+  await purgeArchiveFor({ handle: a.handle });
+});
+
+// ── Semantic recall on ──────────────────────────────────────────────────────
+// The tool's contract must not shift when the search underneath it gains a vector leg: same one
+// second pass, same stripped tool, same data tag. What DOES change is what the search can find.
+//
+// The fake embedder is duplicated here rather than imported from the repository's own tests: a
+// shared test fixture is a coupling between two suites that must be free to diverge.
+
+const DIMS = 64;
+const FIXTURES = new Map<string, Float32Array>();
+
+function basis(i: number): Float32Array {
+  const v = new Float32Array(DIMS);
+  v[i] = 1;
+  return v;
+}
+/** A unit vector at cosine `wa` from `a` (given a ⟂ b, both unit). */
+function mix(a: Float32Array, b: Float32Array, wa: number): Float32Array {
+  const v = new Float32Array(DIMS);
+  const wb = Math.sqrt(1 - wa * wa);
+  for (let i = 0; i < DIMS; i++) v[i] = a[i] * wa + b[i] * wb;
+  return l2Normalize(v);
+}
+function bagOfWords(text: string): Float32Array {
+  const v = new Float32Array(DIMS);
+  for (const t of text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)) {
+    let h = 0;
+    for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) >>> 0;
+    v[h % DIMS] += 1;
+  }
+  return l2Normalize(v);
+}
+const fakeEmbedder: Embedder = async (texts) => texts.map(t => FIXTURES.get(t) ?? bagOfWords(t));
+
+const FENCE = 'the fence guy was Ruiz Fencing, quoted 3200 for the back run';
+FIXTURES.set(FENCE, basis(5));
+// A question about the same thing, sharing not one word with it.
+FIXTURES.set('who put up that boundary railing', mix(basis(5), basis(9), 0.99));
+
+async function withSemanticRecall(fn: () => Promise<void>): Promise<void> {
+  setArchiveEmbedder(fakeEmbedder);
+  try {
+    await fn();
+  } finally {
+    setArchiveEmbedder(null);
+  }
+}
+
+test('semantic on: the second-pass contract is unchanged', async () => {
+  const a = args();
+  await withSemanticRecall(async () => {
+    await seedArchive(a.handle, a.chatId);
+    await backfillArchiveEmbeddings({ batchSize: 20, maxBatches: 2 });
+
+    const seen: LlmRequest[] = [];
+    const out = await processConvoResult({
+      ...a,
+      res: makeResult(['hmm, let me think'], [recall('fence guy')]),
+      turn: turnCtx(async req => {
+        seen.push(req);
+        return makeResult(['ruiz fencing, 3200 for the back run'], []);
+      }),
+    });
+
+    assert.equal(seen.length, 1, 'still exactly one second pass');
+    const second = seen[0];
+    assert.ok(!second.tools?.some(t => t.name === 'recall_memory'), 'recall_memory is still STRIPPED');
+    const text = String(second.messages[second.messages.length - 1].content);
+    assert.match(text, /<memory_archive_results>/);
+    assert.match(text, /Ruiz Fencing/);
+    assert.equal(out.text, 'ruiz fencing, 3200 for the back run', 'the first draft is still discarded');
+  });
+  await purgeArchiveFor({ handle: a.handle });
+});
+
+test('semantic on: a paraphrased reference is answered from a hit lexical search would miss', async () => {
+  const a = args();
+  await withSemanticRecall(async () => {
+    await seedArchive(a.handle, a.chatId);
+    await backfillArchiveEmbeddings({ batchSize: 20, maxBatches: 2 });
+
+    const seen: LlmRequest[] = [];
+    const out = await processConvoResult({
+      ...a,
+      res: makeResult(['one sec'], [recall('who put up that boundary railing')]),
+      turn: turnCtx(async req => {
+        seen.push(req);
+        return makeResult(['ruiz fencing did it'], []);
+      }),
+    });
+    assert.equal(seen.length, 1);
+    const text = String(seen[0].messages[seen[0].messages.length - 1].content);
+    assert.match(text, /<memory_archive_results>/, 'the pass got DATA, not the honest-miss prompt');
+    assert.match(text, /Ruiz Fencing/);
+    assert.equal(out.text, 'ruiz fencing did it');
+  });
+
+  // With no embedder, the very same query reaches nothing: not one of its words is in the memory.
+  assert.deepEqual(
+    await searchArchive({ query: 'who put up that boundary railing', handle: a.handle, chatId: a.chatId }),
+    [],
+  );
   await purgeArchiveFor({ handle: a.handle });
 });
 
