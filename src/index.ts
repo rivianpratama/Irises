@@ -23,6 +23,7 @@ import { createBridgeInboundRouter } from './channels/bridge/inboundRouter.js';
 import { voiceOutcome } from './agents/fallfirm/client.js';
 import { ensureChatId } from './db/repositories/memory.js';
 import { startRetentionTimers } from './db/retention.js';
+import { initSemanticRecall } from './memory/semanticRecall.js';
 import { getVersion } from './update/version.js';
 import { getUpdateStatus, startUpdateChecker } from './update/checker.js';
 import { createUpdateAnnouncer } from './update/announce.js';
@@ -937,6 +938,11 @@ app.listen(PORT, () => {
   // windows, ledger age-out, LONG revision caps) + the error/history prunes that arm
   // inside their own modules.
   startRetentionTimers();
+  // Semantic recall over the cold archive: registers the real embedder and arms the background
+  // vector backfill. A no-op unless MEMORY_SEMANTIC_RECALL is on and the OpenRouter lane has a
+  // key — and this is the ONLY importer of that module, which is what keeps the test suite
+  // structurally unable to reach an embeddings provider.
+  initSemanticRecall();
   // The proactive sweep: quiet-hours deferrals whose morning has come, and rows a restart stranded
   // mid-delivery (boot + every 60s, unref'd like the retention timers).
   proactive.start();
