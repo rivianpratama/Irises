@@ -418,6 +418,25 @@ test('embedder registered: the expansion call is NEVER made', async () => {
   await purgeArchiveFor({ handle: a.handle });
 });
 
+// M-9: 'vector' means an embedder is REGISTERED, not that there is anything for it to search. All
+// through the backfill window — a fresh install, a model or width change — the flag is on and this
+// scope holds no vectors at all, the hybrid search skips its own vector leg for exactly that reason,
+// and gating expansion on the backend alone would leave recall with no paraphrase tolerance
+// whatsoever: the one state where the fallback is most needed is the one it used to sit out.
+test('semantic on but NO vectors yet: the expansion runs rather than sitting out the backfill window', async () => {
+  const a = args();
+  await withExpansion('fence fencing contractor', async () => {
+    await withSemanticRecall(async () => {
+      await seedArchive(a.handle, a.chatId);
+      // Deliberately NO backfill: the archive row exists, its vector does not.
+      const text = await recallPassText(a, 'who put up that boundary railing');
+      assert.equal(expansionCalls, 1, 'the empty vector leg is not a reason to skip the fallback');
+      assert.match(text, /Ruiz Fencing/, 'and the expanded lexical search found it');
+    });
+  });
+  await purgeArchiveFor({ handle: a.handle });
+});
+
 test('an expansion that fails leaves the search byte-identical to an unexpanded one', async () => {
   const a = args();
   await seedArchive(a.handle, a.chatId);

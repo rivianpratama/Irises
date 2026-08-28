@@ -14,8 +14,9 @@ import { loadContext } from './loadContext.js';
 import { buildUserMemory } from '../memory/wrappers.js';
 import { getAffectState } from '../db/repositories/affectState.js';
 import { renderStatusForComposer } from '../persona/status.js';
-import { getRelationshipClimate } from '../db/repositories/relationshipClimate.js';
+import { getRelationshipClimate, relationshipClimateEnabled } from '../db/repositories/relationshipClimate.js';
 import { defaultClimate } from '../persona/climate.js';
+import { isGroupHandle } from '../memory/identity.js';
 import { getConversation, type StoredMessage } from '../state/conversation.js';
 import { stripEchoedHolding } from './guardrails.js';
 import { parseReply } from '../pipeline/bubbleJson.js';
@@ -70,7 +71,11 @@ export async function composeWithComposer(args: ComposerCoreArgs): Promise<strin
     getConversation(chatId),
     buildUserMemory('composer', handle),
     getAffectState(chatId),
-    handle ? getRelationshipClimate(handle) : Promise.resolve(defaultClimate()),
+    // Same two structural gates as the Convo read site (agents/convo/client.ts): the feature flag,
+    // and a group identity — both resolve to the default register, which renders nothing at all.
+    handle && relationshipClimateEnabled() && !isGroupHandle(handle)
+      ? getRelationshipClimate(handle)
+      : Promise.resolve(defaultClimate()),
   ]);
 
   // The internal-weather block ('' when there's no carried mood or it's stale AND the climate is at

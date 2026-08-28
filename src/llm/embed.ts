@@ -99,7 +99,12 @@ function recordEmbedFailure(
   start: number,
 ): void {
   reportError({
-    source: 'memory', category: 'embedding_error', err,
+    // WARN, not error: a failed embedding is a DEGRADE by design — the caller gets null and recall
+    // falls back to the lexical search it had before this feature existed. Nothing the user asked
+    // for is lost or refused. The same reading the other two semantic-recall reporters take
+    // (memory/semanticRecall.ts's halt, memory/climateDrift.ts's eval), so a lane going down does
+    // not paint the Errors tab red for a search that still works.
+    source: 'memory', category: 'embedding_error', severity: 'warn', err,
     handle: ctx.handle,
     detail: { provider: 'openrouter', model, label: ctx.label },
   });

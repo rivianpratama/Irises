@@ -356,7 +356,9 @@ export interface BackfillResult {
  * content it just deleted.
  */
 export async function backfillArchiveEmbeddings(
-  opts?: { batchSize?: number; maxBatches?: number; now?: () => number },
+  // `now` used to be accepted here to stamp the run's own log line; that line moved to the sweep
+  // (memory/semanticRecall.ts) and the option went with it — nothing in this function reads a clock.
+  opts?: { batchSize?: number; maxBatches?: number },
 ): Promise<BackfillResult> {
   const embed = archiveEmbedder();
   if (!embed) return { embedded: 0, batches: 0, skipped: 0, widthRefused: 0, remaining: countMissingVectors() };
@@ -429,12 +431,9 @@ export async function backfillArchiveEmbeddings(
     }
   }
 
-  // `now` is accepted (and read) so a caller can pin the clock; the write timestamps come from
-  // upsertArchiveVector, so it only shapes the log line.
-  const at = opts?.now?.() ?? Date.now();
+  // The run SUMMARY is not logged here. The caller (memory/semanticRecall.ts) logs the same three
+  // numbers off this very result, and two lines per sweep saying the same thing is one line of
+  // noise: this layer returns the counts, the sweep that owns the schedule reports them.
   const remaining = countMissingVectors();
-  if (embedded > 0) {
-    console.log(`[memory-vectors] backfill: ${embedded} embedded, ${skipped} skipped, ${remaining} remaining (${new Date(at).toISOString()})`);
-  }
   return { embedded, batches, skipped, widthRefused, remaining };
 }

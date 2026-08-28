@@ -331,6 +331,59 @@ test('the failure backoff is process-local, and a fresh process retries at once'
   assert.equal(back.calls.length, 1);
 });
 
+// A save that comes back FALSE never threw — the /forget fence refusing the write, or a DB write
+// that logged and gave up. Either way `lastEvalAt` was not persisted, so the 22h cooldown (whose
+// source of truth is the row) cannot hold this handle back and the next reply evaluates again. That
+// is the same shape as a broken lane and it needs the same backoff: without it, a write that keeps
+// failing bills one classify call per reply, forever, with the whole path silent by design.
+test('a save that returns FALSE backs off too — the next reply inside the window costs nothing', async () => {
+  const calls: LlmRequest[] = [];
+  // The wipe lands WHILE the model is thinking, so the call, the parse and applyDrift all succeed
+  // and the ONLY thing that fails is the write.
+  const llm = (async (req: LlmRequest) => {
+    calls.push(req);
+    bumpForgetEpoch(H);
+    return {
+      text: ALL_UP, toolCalls: [], stopReason: 'end_turn',
+      truncated: false, provider: 'anthropic' as const, model: 'test',
+    };
+  }) as typeof callLLM;
+
+  await updateRelationshipClimate(H, window(T0), { llm, now: T0 });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(await getRelationshipClimate(H), defaultClimate(), 'nothing was written');
+  assert.equal(__climateBackoffAtForTests(H), T0 + CLIMATE_FAILURE_BACKOFF_MS, 'the failed write backed off');
+
+  // Two more substantive replies inside the hour, on a handle whose row still says "never
+  // evaluated": neither may reach the lane.
+  await updateRelationshipClimate(H, window(T0 + 60_000), { llm, now: T0 + 60_000 });
+  await updateRelationshipClimate(H, window(T0 + 30 * 60_000), { llm, now: T0 + 30 * 60_000 });
+  assert.equal(calls.length, 1, 'a write that keeps failing must not bill a call per reply');
+});
+
+// ── The kill switch ──────────────────────────────────────────────────────────
+
+// RELATIONSHIP_CLIMATE_ENABLED is the FIRST gate, before the group skip and before any DB read: an
+// install that turned the feature off must not pay for it. (The read half of the same flag is
+// pinned in agents/composerCore.test.ts — off there means the prompt is byte-identical to an
+// install that never had a register.)
+test('the kill switch stops the eval before a single call is spent', async () => {
+  process.env.RELATIONSHIP_CLIMATE_ENABLED = 'false';
+  try {
+    const { llm, calls } = stubLlm(ALL_UP);
+    await updateRelationshipClimate(H, window(T0), { llm, now: T0 });
+    assert.equal(calls.length, 0, 'nothing is billed');
+    assert.deepEqual(await getRelationshipClimate(H), defaultClimate(), 'and nothing is written');
+  } finally {
+    delete process.env.RELATIONSHIP_CLIMATE_ENABLED;
+  }
+  // Unset means ON: an install that never heard of the flag keeps the feature it already had.
+  const on = stubLlm(EASE_UP);
+  await updateRelationshipClimate(H, window(T0), { llm: on.llm, now: T0 });
+  assert.equal(on.calls.length, 1);
+  assert.equal((await getRelationshipClimate(H)).dials.ease, 36);
+});
+
 // ── The /forget race ─────────────────────────────────────────────────────────
 
 test('a /forget that lands mid-eval fences the save', async () => {

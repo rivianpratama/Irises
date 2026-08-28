@@ -33,6 +33,22 @@ type Row = {
 
 const VALID_KEYS: ReadonlySet<string> = new Set<DialKey>(['ease', 'candor', 'playfulness']);
 
+/** The feature gate (env: RELATIONSHIP_CLIMATE_ENABLED). Default ON, read at CALL time so flipping
+ *  it needs no restart — the same parse shape as the sibling memory flags (semanticRecallEnabled,
+ *  recallExpansionEnabled, noteGroomEnabled).
+ *
+ *  It gates BOTH ends, and it has to. Off at the EVAL (climateDrift.ts) stops the daily classify
+ *  call; off at the READS (agents/convo/client.ts, agents/composerCore.ts, which fall back to
+ *  defaultClimate()) is what actually turns the feature off in her voice — otherwise an already
+ *  drifted register would stay frozen in every prompt, still colouring the reply, with nothing left
+ *  running to move it back. Nothing is deleted: the row survives, so flipping the flag on again
+ *  restores exactly the register that was earned. */
+export function relationshipClimateEnabled(): boolean {
+  const v = (process.env.RELATIONSHIP_CLIMATE_ENABLED || '').trim().toLowerCase();
+  if (v === '') return true;
+  return ['true', '1', 'on', 'yes'].includes(v);
+}
+
 /** Stored ledger → moves. Row-by-row: one malformed entry is dropped, not the whole ledger.
  *  Anything that isn't an array at all yields [] (an empty budget history, never a throw). */
 function coerceMoves(raw: unknown): ClimateMove[] {

@@ -14,6 +14,9 @@ import { saveAffectState } from '../db/repositories/affectState.js';
 import { coerceStatus, mergeStatus, type ComputedState } from '../persona/status.js';
 import { computeCycle } from '../persona/cycle.js';
 import { computeCircadian } from '../persona/circadian.js';
+import { saveRelationshipClimate } from '../db/repositories/relationshipClimate.js';
+import { defaultClimate, type RelationshipClimate } from '../persona/climate.js';
+import { groupHandle } from '../memory/identity.js';
 import { resetStorageForTests } from '../db/sqlite.js';
 import type { LlmRequest, LlmResult } from '../llm/types.js';
 
@@ -192,4 +195,54 @@ test('with no carried affect state the compose is unchanged (no weather block)',
   const content = String(captured[0].messages.at(-1)!.content);
   assert.doesNotMatch(content, /INTERNAL weather/);
   assert.ok(content.endsWith(FORMAT_ANCHOR));
+});
+
+// --- the relationship-climate read: the kill switch and the group guard -------------------------
+// This is the READ half of RELATIONSHIP_CLIMATE_ENABLED (the eval half is pinned in
+// memory/climateDrift.test.ts). It has to be gated here too: with only the eval switched off, a
+// register that had already drifted would stay frozen in every prompt, still colouring her voice,
+// with nothing left running to move it back.
+
+const MOVED: RelationshipClimate = {
+  ...defaultClimate(), dials: { ease: 70, candor: 80, playfulness: 60 }, evalCount: 30,
+};
+
+/** Compose one message for `handle` and return what the model was shown. */
+async function composedFor(handle: string): Promise<string> {
+  const captured: LlmRequest[] = [];
+  await composeWithComposer({
+    ...base,
+    handle,
+    trace: { chatId: 'web:a', handle, label: 'composer-test' },
+    buildInstruction: () => 'the deadline is march 14',
+    llm: fakeLlm('{"bubbles":[{"text":"ok"}]}', captured),
+  });
+  return String(captured[0].messages.at(-1)!.content);
+}
+
+test('a moved climate colours the compose — and the kill switch takes it back to nothing', async () => {
+  const h = '+15550002222';
+  await saveRelationshipClimate(h, MOVED);
+  assert.match(await composedFor(h), /standing register/, 'the register rides in when the flag is on');
+
+  process.env.RELATIONSHIP_CLIMATE_ENABLED = 'off';
+  try {
+    const off = await composedFor(h);
+    assert.doesNotMatch(off, /standing register/);
+    // Byte-identical to a handle that never had a register at all: off means the feature costs the
+    // prompt nothing, not that it renders something smaller. The row itself is left alone.
+    assert.equal(off, await composedFor('+15550003333'));
+  } finally {
+    delete process.env.RELATIONSHIP_CLIMATE_ENABLED;
+  }
+  assert.match(await composedFor(h), /standing register/, 'flipping it back restores what was earned');
+});
+
+// The eval never runs for a group, so a group row can only be legacy or hand-written data — but
+// "one member's rough afternoon must not set the register for everyone in the room" is too load
+// bearing to rest on what the writer happens to skip. The read refuses it structurally.
+test('a group identity never renders a register, even with a moved row stored under it', async () => {
+  const g = groupHandle('web:a');
+  await saveRelationshipClimate(g, MOVED);
+  assert.doesNotMatch(await composedFor(g), /standing register/);
 });

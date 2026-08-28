@@ -24,6 +24,7 @@
 
 import { callLLM } from '../llm/callLLM.js';
 import { wrapPrompt, dataTag } from '../llm/promptTag.js';
+import { reportError } from '../diagnostics/errorLog.js';
 
 /** Words the expansion may contribute. Six is the model's instruction and the hard cap here, and it
  *  is deliberately smaller than the archive tokenizer's 8-token query budget: the user's own words
@@ -138,7 +139,21 @@ export async function expandRecallQuery(
     // Every lane failure lands here — noLaneConfiguredError on an install with no classify lane at
     // all, BudgetExceededError on a spent day, a provider throw, the timeout above. All of them mean
     // the same thing to the caller: search with what the user typed.
+    //
+    // Reported as well as logged, same category/severity as the other two background classify passes
+    // (memory/climateDrift.ts, memory/noteGroomer.ts): the degrade is deliberately invisible to the
+    // user, so a recall that has quietly lost its paraphrase tolerance for a week would otherwise
+    // show up only as "she doesn't remember things as well as she used to". The query itself never
+    // rides along — it is user-authored text, and the error log is not a memory store. Fingerprint
+    // folding bounds the volume of an install with no classify lane at all.
     console.warn('[memory] recall expansion failed — searching on the query alone', err);
+    reportError({
+      source: 'memory',
+      category: 'classifier_failure',
+      severity: 'warn',
+      message: 'recall query expansion failed — searching on the query alone',
+      err,
+    });
     return '';
   }
 }

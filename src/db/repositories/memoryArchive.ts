@@ -331,6 +331,34 @@ function makeSnippet(content: string, tokens: string[]): string {
   return `${start > 0 ? '… ' : ''}${content.slice(start, end)}${end < content.length ? ' …' : ''}`;
 }
 
+/** Scope: the handle's own rows OR this chat's rows. An unscoped call (null) returns nothing
+ *  rather than reaching into another user's memories. Built in ONE place so every leg — and the
+ *  readiness probe below — is scoped by the same clause and the same bindings. */
+function scopeClause(opts: { handle?: string; chatId?: string }): { sql: string; params: string[] } | null {
+  const parts: string[] = [];
+  const params: string[] = [];
+  if (opts.handle) { parts.push('a.agent_handle = ?'); params.push(opts.handle); }
+  if (opts.chatId) { parts.push('a.chat_id = ?'); params.push(opts.chatId); }
+  if (!parts.length) return null;
+  return { sql: `(${parts.join(' OR ')})`, params };
+}
+
+/**
+ * Does the slice of the archive a search over this scope would read hold even ONE vector at the
+ * current model/width? The same question searchHybrid asks itself before paying for a query
+ * embedding, exposed for callers that must decide something BEFORE the search runs — the recall
+ * site's expansion gate (agents/convo/shared.ts), which would otherwise skip the lexical
+ * paraphrase fallback all through the backfill window, when the vector leg is structurally empty
+ * and can contribute exactly nothing.
+ *
+ * Says nothing about whether the backend is even hybrid — ask archiveSearchBackend() for that.
+ */
+export function archiveScopeHasVectors(opts: { handle?: string; chatId?: string }): boolean {
+  const scope = scopeClause(opts);
+  if (!scope) return false;
+  return hasVectorsInScope(scope.sql, scope.params, { model: embeddingsModel(), dims: embeddingsDims() });
+}
+
 /**
  * Search the archive, scoped to a handle and/or a chat. `limit` is small by design — the hits
  * go into a prompt, and six archived snippets is already a lot of possibly-stale context.
@@ -345,14 +373,9 @@ export async function searchArchive(opts: {
   const tokens = tokenize(opts.query);
   const limit = opts.limit ?? 6;
   if (!tokens.length) return [];
-  // Scope: the handle's own rows OR this chat's rows. An unscoped call returns nothing rather
-  // than reaching into another user's memories.
-  const scopeParts: string[] = [];
-  const scopeParams: string[] = [];
-  if (opts.handle) { scopeParts.push('a.agent_handle = ?'); scopeParams.push(opts.handle); }
-  if (opts.chatId) { scopeParts.push('a.chat_id = ?'); scopeParams.push(opts.chatId); }
-  if (!scopeParts.length) return [];
-  const scopeSql = `(${scopeParts.join(' OR ')})`;
+  const scope = scopeClause(opts);
+  if (!scope) return [];
+  const { sql: scopeSql, params: scopeParams } = scope;
 
   const backend = archiveSearchBackend();
   if (backend !== 'vector') return searchLexical(backend, tokens, scopeSql, scopeParams, limit);
@@ -487,6 +510,9 @@ function loadArchiveEntries(ids: number[]): Map<number, ArchiveEntry> {
 
 function searchFts(tokens: string[], scopeSql: string, scopeParams: string[], limit: number): ArchiveHit[] {
   // Each token double-quoted (a phrase) and OR-joined: any-term matching, operators neutralized.
+  // The order is bm25 first, then newest-first with the id as the final discriminator: two rows on
+  // the same rank (two archived copies of one message, say) must not swap places between runs —
+  // the LIKE leg and the fusion are both deterministic to the last field, and this leg is too.
   const match = tokens.map(t => `"${t.replace(/"/g, '')}"`).join(' OR ');
   const rows = stmt(
     `SELECT a.*, bm25(memory_archive_fts) AS rank,
@@ -494,7 +520,7 @@ function searchFts(tokens: string[], scopeSql: string, scopeParams: string[], li
      FROM memory_archive a
      JOIN memory_archive_fts f ON a.id = f.rowid
      WHERE memory_archive_fts MATCH ? AND ${scopeSql}
-     ORDER BY rank
+     ORDER BY rank, a.archived_at DESC, a.id DESC
      LIMIT ?`
   ).all(match, ...scopeParams, limit) as unknown as Array<ArchiveRow & { rank: number; snip: string }>;
   return rows.map(r => ({

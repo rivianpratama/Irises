@@ -25,10 +25,20 @@ import { wrapPrompt, dataTag } from '../llm/promptTag.js';
 import { getForgetEpoch } from '../db/repositories/memory.js';
 import { listMediumActive, mergeNotes, MERGED_NOTE_MAX_CHARS, type MediumEntry } from '../db/repositories/memoryMedium.js';
 import { record } from '../diagnostics/trace.js';
+import { reportError } from '../diagnostics/errorLog.js';
 
 /** At most one groom per handle per this window. Same shape as the dossier's throttle: the check
  *  and the stamp happen together, so a burst of saved notes still costs one pass. */
 export const GROOM_THROTTLE_MS = 6 * 60 * 60 * 1000;
+
+/** The window actually enforced (env: NOTE_GROOM_THROTTLE_MS), read at CALL time like every other
+ *  memory knob. A non-numeric or non-positive value falls back to the default above rather than to
+ *  "no throttle": a typo in this one must never put a classify call behind every saved note. */
+function groomThrottleMs(): number {
+  const n = Number(process.env.NOTE_GROOM_THROTTLE_MS);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : GROOM_THROTTLE_MS;
+}
+
 const lastGroom = new Map<string, number>();
 
 /** Below this many candidate notes the cap isn't under pressure and a merge is pure risk — the
@@ -251,7 +261,7 @@ export async function groomNotes(
   try {
     if (!noteGroomEnabled()) return nothing('disabled');
     const startedAt = now();
-    if (startedAt - (lastGroom.get(handle) ?? 0) < GROOM_THROTTLE_MS) return nothing('throttled');
+    if (startedAt - (lastGroom.get(handle) ?? 0) < groomThrottleMs()) return nothing('throttled');
     lastGroom.set(handle, startedAt);
 
     const notes = await listMediumActive(handle, ['important_note']); // oldest first
@@ -325,8 +335,20 @@ export async function groomNotes(
     return { merged, clusters, skipped: null };
   } catch (err) {
     // No lane configured, budget exhausted, a timeout, a parse blowup — all the same to the user,
-    // who never sees this run at all.
+    // who never sees this run at all. Which is exactly why it is REPORTED as well as logged: a
+    // silent background pass that has been failing for a week looks identical, from the outside, to
+    // one that keeps finding nothing to merge. Same category and severity the climate eval uses
+    // (memory/climateDrift.ts) so the two background classify passes read alike on the Errors tab,
+    // and errorLog's fingerprint folding keeps a persistently dead lane at one row.
     console.warn(`[memory] note groom failed for ${handle}`, err);
+    reportError({
+      source: 'memory',
+      category: 'classifier_failure',
+      severity: 'warn',
+      message: 'note groom failed — no notes merged',
+      err,
+      handle,
+    });
     return nothing('llm_failed');
   }
 }

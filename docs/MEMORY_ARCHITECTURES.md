@@ -1,5 +1,7 @@
 # Agent memory architectures: vector, graph, episodic, hybrid — and where Irises sits
 
+*Everything from here down to the Addendum is a **pre-upgrade snapshot** — Irises as it stood the day this was compiled. Its claims about what Irises lacks (no embeddings anywhere, keyword-only recall, no similarity-based merging of free-text notes) were true then and are not now: the Addendum at the end records what shipped in response. Read the body as the argument, the Addendum as the current state.*
+
 > Research note, compiled **2026-08-28**. Sources: [mark-agent](https://github.com/Mazees/mark-agent) (GitHub repo — read from source, not the README), [Agent Memory Architectures: Vector, Graph, Episodic](https://www.digitalapplied.com/blog/agent-memory-architectures-vector-graph-episodic) (Digital Applied blog), [Vector vs Graph vs Episodic: A Tour](https://www.ratkonikolic.com/p/vector-vs-graph-vs-episodic-a-tour) (Rat Konikolic blog). Load-bearing claims in both blogs were traced to primary sources (Mem0's and Zep's own papers) and checked; both held up. Irises' own memory system was read directly from `src/memory/` and `src/db/repositories/` — every claim below carries a file:line citation.
 
 ## TL;DR
@@ -119,7 +121,11 @@ There *is* now a persisted, slowly-drifting relationship trait vector analogous 
 
 ## Addendum (2026-08-28): what shipped
 
-The "narrow yes" from the vector row of the table above is now implemented, and only that. `recall_memory` searches the cold archive with **two legs fused by reciprocal rank**: the existing lexical one (FTS5/bm25, or `LIKE` on a build without FTS5) and a new embedding one over a companion `memory_archive_embeddings` table. `score = 1/(60+lexRank) + 1/(60+vecRank)` — ranks, not scores, because bm25 and cosine are not on comparable scales.
+Three of the table's recommendations are now implemented, and only those three: semantic recall (the vector row's "narrow yes"), a paraphrase fallback for installs that cannot run it, and the similarity-based note merge from the hybrid row. The relationship-climate register, the hybrid row's other "yes", is described at the end of §5 above.
+
+### Semantic recall (the vector row's "narrow yes")
+
+`recall_memory` searches the cold archive with **two legs fused by reciprocal rank**: the existing lexical one (FTS5/bm25, or `LIKE` on a build without FTS5) and a new embedding one over a companion `memory_archive_embeddings` table. `score = 1/(60+lexRank) + 1/(60+vecRank)` — ranks, not scores, because bm25 and cosine are not on comparable scales.
 
 What it deliberately is **not**:
 
@@ -134,3 +140,17 @@ Two design points worth recording, both about forgetting rather than recall:
 2. **The backfill is fenced by the forget epoch**, the same mechanism the dossier rewrite uses: the epoch is read before the (slow, awaited) embedding call and re-read before writing, so a `/forget` landing mid-flight cannot have its wipe undone by vectors computed from the content it just deleted.
 
 Relevant source: `src/db/repositories/memoryArchiveVectors.ts` (storage + backfill), `src/db/repositories/memoryArchive.ts` (fusion), `src/llm/embed.ts` (the provider call), `src/memory/semanticRecall.ts` (wiring).
+
+### Query expansion — the same tolerance without an embeddings endpoint
+
+The embeddings above need an OpenRouter key, and a typical install runs Anthropic alone, where no embeddings endpoint exists to point them at. For those installs the paraphrase gap is closed with the lane the install already has: before the keyword search runs, one small `classify` call turns the query into at most six extra search words, appended **after** the user's own terms so the archive tokenizer's 8-token cap keeps them subordinate — a synonym can only ever fill a slot the query itself left empty. The ladder is: embeddings active → hybrid, nothing here runs; embeddings absent → expand, then search; expansion failed → plain keyword search, byte for byte what it was before. Every failure path (no lane, a spent budget, a hung provider, a truncated or prose reply) resolves to the empty string, because this call sits on the reply path with a user waiting.
+
+One boundary the first cut got wrong and this one gets right: "embeddings active" is not the same question as "the vector leg can contribute". All through the backfill window — a fresh install, a model or width change — the flag is on and the vector table for that user is still empty, so the gate also asks whether the scope holds any usable vectors and expands when it does not. `MEMORY_RECALL_EXPANSION=on` by default; costs one tiny call per `recall_memory` use and nothing otherwise.
+
+Relevant source: `src/memory/recallExpansion.ts` (the call + the word filter), `src/agents/convo/shared.ts` (the gate and the concatenation order).
+
+### The note groomer — the hybrid row's first "yes"
+
+Saved "remember this" notes are capped at 20, evicted oldest-first, and rendered verbatim into every turn, so a user who restates one fact three times over a month spends three slots on it and ages out three older, distinct ones. mark-agent's "Hippocampus" pass was the model for the fix, and the implementation keeps its shape while taking Irises' own doctrine on everything else: a pure Jaccard/containment check decides whether a model is called at all (most turns never reach one), the LLM is a **suggester** whose every proposed cluster is re-validated locally — same fact only, disjoint clusters, high confidence only, literals preserved character-for-character, and the replacement strictly shorter than what it replaces — and the retired notes land in the cold archive like every other supersession. Throttled to one pass per handle per 6h (`NOTE_GROOM_THROTTLE_MS`), off with `NOTE_GROOM_ENABLED=false`, fenced against a mid-pass `/forget` by the same epoch mechanism, and a total no-op on any failure.
+
+Relevant source: `src/memory/noteGroomer.ts` (the gate, the prompt, the validation), `src/db/repositories/memoryMedium.ts` (`mergeNotes`, which does the writing under the handle lock).

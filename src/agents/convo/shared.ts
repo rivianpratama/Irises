@@ -12,7 +12,9 @@ import {
   listMediumActive, upsertFact, MediumWriteError,
 } from '../../db/repositories/memoryMedium.js';
 import { latestShortTerm } from '../../db/repositories/memoryShort.js';
-import { searchArchive, archiveSearchBackend, type ArchiveHit } from '../../db/repositories/memoryArchive.js';
+import {
+  searchArchive, archiveSearchBackend, archiveScopeHasVectors, type ArchiveHit,
+} from '../../db/repositories/memoryArchive.js';
 import { validateDirective } from '../../memory/preferences.js';
 import { FACT_KEYS } from '../../memory/mediumTerm.js';
 import { updateDossier, PENDING_CLARIFICATION_TTL_MS } from '../../memory/dossier.js';
@@ -1146,7 +1148,21 @@ export async function processConvoResult(args: {
     // classify call is the only paraphrase tolerance available. `archiveSearchBackend()` is the
     // SAME resolution searchArchive performs internally, read at call time, so the branch here and
     // the leg that actually runs can never disagree.
-    const expansion = archiveSearchBackend() !== 'vector' && recallExpansionEnabled()
+    //
+    // The backend alone is NOT enough, though: 'vector' says an embedder is registered, not that
+    // there is anything for it to search. Through the whole backfill window — a fresh install, a
+    // model or width change, a handle whose rows are all newer than the last sweep — this scope
+    // holds no usable vectors, the hybrid search asks the same question and skips its own vector
+    // leg, and recall would silently have NO paraphrase tolerance at all. So the gate widens:
+    // expand unless the vector leg can actually contribute. `archiveScopeHasVectors` is the same
+    // probe, over the same scope, that searchHybrid runs internally.
+    // NOT covered, and unknowable here: an embed call that FAILS at query time. That is only
+    // discoverable after the round trip, by which point the expansion's own call would be a second
+    // latency hit on a turn the user is already waiting through — so that case degrades to plain
+    // lexical, as it did before.
+    const backend = archiveSearchBackend();
+    const vectorLegUsable = backend === 'vector' && archiveScopeHasVectors({ handle, chatId });
+    const expansion = !vectorLegUsable && recallExpansionEnabled()
       ? await expandRecallQuery(recallQuery)
       : '';
     // ORDER IS LOAD-BEARING. memoryArchive's tokenize() takes tokens in order and slices to
@@ -1166,6 +1182,13 @@ export async function processConvoResult(args: {
         hits: hits.length,
         top: hits[0]?.entry.source,
         expanded: !!expansion,
+        // WHICH of the three recall modes ran. Without these, a lexical search, a hybrid one, and a
+        // hybrid one whose vector table is still filling are one indistinguishable event — and they
+        // answer the same query differently. `backend` is the resolution searchArchive itself used;
+        // `vectorLeg` is whether that leg had anything to search (false all through the backfill
+        // window, which is exactly when a thin recall is worth explaining).
+        backend,
+        ...(backend === 'vector' ? { vectorLeg: vectorLegUsable } : {}),
         // Only when there is one: a null `expansion` on every hybrid-backend recall would be noise
         // in the trace, and `expanded` already carries the fact.
         ...(expansion ? { expansion } : {}),

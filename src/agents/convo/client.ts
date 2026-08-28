@@ -20,7 +20,9 @@ import { getConversation, addMessage, clearConversation, clearUserProfile } from
 import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
 import { timestampLabel } from '../../pipeline/chatTime.js';
 import { getAffectState } from '../../db/repositories/affectState.js';
-import { getRelationshipClimate, clearRelationshipClimate } from '../../db/repositories/relationshipClimate.js';
+import {
+  getRelationshipClimate, clearRelationshipClimate, relationshipClimateEnabled,
+} from '../../db/repositories/relationshipClimate.js';
 import { defaultClimate } from '../../persona/climate.js';
 import { computeCycle } from '../../persona/cycle.js';
 import { computeCircadian } from '../../persona/circadian.js';
@@ -154,7 +156,13 @@ export async function chat(
         // The weeks-scale standing register with THIS identity (climate.ts). Handle-keyed like the
         // memory tiers beside it, unlike the chat-keyed affect read below. Defaults when there's no
         // identity to key on, and a default climate renders nothing at all.
-        getRelationshipClimate(handle),
+        // Two structural gates, both resolving to the default register (i.e. to nothing rendered):
+        // the feature flag, and a GROUP identity — the eval never runs for a group, so a group row
+        // can only exist as legacy or hand-written data, and "a group has no standing register" is
+        // a property worth stating here rather than inheriting from what the writer happens to skip.
+        relationshipClimateEnabled() && !isGroupHandle(handle)
+          ? getRelationshipClimate(handle)
+          : Promise.resolve(defaultClimate()),
       ])
     : ['', undefined, defaultClimate()];
 

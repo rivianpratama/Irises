@@ -12,7 +12,8 @@ const CATEGORIES = [
   'llm_error', 'truncation', 'timeout', 'tool_failure', 'send_failure', 'db_error',
   'process_crash', 'voicing_failure', 'surfacing_failure', 'classifier_failure',
   'transcription_failure', 'automation_failure', 'turn_failure', 'retry_exhausted',
-  'llm_fallback', 'degraded', 'budget', 'floor_engaged', 'push_dropped', 'other',
+  'llm_fallback', 'degraded', 'embedding_error', 'embedding_config',
+  'budget', 'floor_engaged', 'push_dropped', 'other',
 ];
 const options = (values: string[], anyLabel: string): string =>
   `<option value="">${anyLabel}</option>` + values.map(v => `<option value="${v}">${v}</option>`).join('');

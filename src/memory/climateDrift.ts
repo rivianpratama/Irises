@@ -23,7 +23,9 @@ import { callLLM } from '../llm/callLLM.js';
 import { wrapPrompt, dataTag } from '../llm/promptTag.js';
 import { getForgetEpoch } from '../db/repositories/memory.js';
 import { getUserProfile } from '../db/repositories/profiles.js';
-import { getRelationshipClimate, saveRelationshipClimate } from '../db/repositories/relationshipClimate.js';
+import {
+  getRelationshipClimate, saveRelationshipClimate, relationshipClimateEnabled,
+} from '../db/repositories/relationshipClimate.js';
 import { applyDrift, type DialKey } from '../persona/climate.js';
 import { formatDaySpan } from './dossier.js';
 import { scopeHistoryToUser } from './transcript.js';
@@ -205,6 +207,8 @@ export function parseClimateSuggestion(text: string | null): ClimateSuggestion |
  * path (`void updateRelationshipClimate(...)`); never awaited, never surfaced, never throws.
  *
  * The gate order is binding, and it is ordered so a thin turn cannot burn the day's evaluation:
+ *   0. the feature flag    → skip. FIRST, before everything: an install that turned this off must
+ *      not pay one classify call, and the read sites are gated by the same flag so nothing renders.
  *   1. group identity      → skip (see the header)
  *   2. already in flight   → skip
  *   2.5 backed off after a FAILED eval → skip. Unlike every other gate this one is process-local
@@ -222,6 +226,7 @@ export async function updateRelationshipClimate(
   recent: StoredMessage[],
   opts: { chatId?: string; llm?: typeof callLLM; now?: number } = {},
 ): Promise<void> {
+  if (!relationshipClimateEnabled()) return;
   if (!handle || isGroupHandle(handle)) return;
   if (inFlight.has(handle)) return;
 
@@ -279,8 +284,13 @@ export async function updateRelationshipClimate(
     const { next, changed, capped, atBound, shortened } = applyDrift(climate, suggestion, now);
     const saved = await saveRelationshipClimate(handle, next, { ifForgetEpoch: epoch0 });
 
-    // The eval ran end to end, so whatever was wrong before is over.
-    nextRetryAt.delete(handle);
+    // A save that returns FALSE is a failure that never threw — a DB write that logged and gave up,
+    // or the /forget fence refusing the write. Either way `lastEvalAt` was not persisted, so the
+    // cooldown cannot hold this handle back and the next reply evaluates again: without the backoff
+    // a broken write bills one classify call per reply, forever, exactly like a broken lane. Only a
+    // save that LANDED means whatever was wrong before is over.
+    if (saved) nextRetryAt.delete(handle);
+    else nextRetryAt.set(handle, now + CLIMATE_FAILURE_BACKOFF_MS);
 
     // Every eval that RAN is traced, including the healthy all-zeros one — an eval that keeps
     // finding nothing and an eval that stopped happening look identical without this. `reason` and
