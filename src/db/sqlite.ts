@@ -126,6 +126,19 @@ CREATE TABLE IF NOT EXISTS memory_archive (
 CREATE INDEX IF NOT EXISTS idx_memory_archive_handle ON memory_archive(agent_handle, archived_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memory_archive_chat ON memory_archive(chat_id, archived_at DESC);
 
+-- Semantic recall's companion vectors. A SEPARATE table, not a column: the archive's DDL is
+-- CREATE IF NOT EXISTS and a new column would be this schema's first real migration.
+-- ON DELETE CASCADE is live (PRAGMA foreign_keys=ON above) and is the forget-leak guard —
+-- a vector that outlived its archive row is a forgotten memory still semantically reachable.
+CREATE TABLE IF NOT EXISTS memory_archive_embeddings (
+  archive_id INTEGER PRIMARY KEY REFERENCES memory_archive(id) ON DELETE CASCADE,
+  vector     BLOB    NOT NULL,   -- float32, L2-normalized (cosine == dot product)
+  dims       INTEGER NOT NULL,
+  model      TEXT    NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_archive_emb_model ON memory_archive_embeddings(model);
+
 CREATE TABLE IF NOT EXISTS forget_epochs (
   agent_handle TEXT PRIMARY KEY,
   epoch INTEGER NOT NULL DEFAULT 0,
@@ -322,6 +335,7 @@ export function resetStorageForTests(): void {
     DELETE FROM error_log;
     DELETE FROM diagnostic_turns;
     DELETE FROM diagnostic_turn_history;
+    DELETE FROM memory_archive_embeddings;
   `);
   // Its own statement, and tolerant: the delete goes through the BASE table so the FTS delete
   // trigger keeps the index in sync, but a DB carrying triggers without the virtual table
