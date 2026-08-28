@@ -9,6 +9,11 @@ process.env.DATA_BACKEND = 'memory';
 // Pin the store's notion of "current" so the fake embedder's 64-dim vectors ARE the current ones.
 process.env.EMBEDDINGS_MODEL = 'test/fake-embed';
 process.env.EMBEDDINGS_DIMENSIONS = '64';
+// The hybrid path needs BOTH the flag and a registered embedder (archiveSearchBackend reads the
+// flag at call time, so a runtime flip can't leave diagnostics claiming a search that isn't
+// happening). No key is set and no real embedder is ever registered here — this only unlocks the
+// fake below.
+process.env.MEMORY_SEMANTIC_RECALL = 'on';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -268,6 +273,35 @@ test('[vector] a null embedder result degrades to the lexical result, identicall
     const lexical = await searchArchive({ query: 'boston marathon', handle: h });
     assert.equal(degraded.length, 3);
     assert.deepEqual(degraded, lexical, 'not merely similar — the same result');
+  } finally {
+    __setArchiveBackendForTests(null);
+    setArchiveEmbedder(null);
+  }
+  await purgeArchiveFor({ handle: h });
+});
+
+test('[vector] with no vectors in scope the embedder is never called at all', async () => {
+  const h = freshHandle();
+  let calls = 0;
+  const countingEmbedder: Embedder = async (texts) => { calls++; return texts.map(bagOfWords); };
+  __setArchiveBackendForTests('vector');
+  setArchiveEmbedder(countingEmbedder);
+  try {
+    // Archived but NOT backfilled: exactly the state a fresh install (or a just-changed model) is
+    // in. A scan over zero vectors can't answer, so the query round trip must not happen.
+    await archiveEntries([
+      { source: 'short_expired', agentHandle: h, content: 'the cistern was drained in april' },
+    ]);
+    const hits = await searchArchive({ query: 'cistern', handle: h });
+    assert.equal(calls, 0, 'no vectors in scope ⇒ no query embedding');
+    assert.equal(hits.length, 1, 'and the lexical leg still answers');
+
+    // Once a vector exists for this scope, the leg comes back — proving the skip was about the
+    // empty table, not about the embedder being unreachable.
+    await backfillArchiveEmbeddings({ batchSize: 10, maxBatches: 1 });
+    const before = calls;
+    await searchArchive({ query: 'cistern', handle: h });
+    assert.equal(calls, before + 1, 'with vectors present the query IS embedded');
   } finally {
     __setArchiveBackendForTests(null);
     setArchiveEmbedder(null);

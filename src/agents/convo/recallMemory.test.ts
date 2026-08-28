@@ -9,6 +9,9 @@ process.env.DATA_BACKEND = 'memory';
 // Pin the vector store's notion of "current" so the fake embedder below writes current vectors.
 process.env.EMBEDDINGS_MODEL = 'test/fake-embed';
 process.env.EMBEDDINGS_DIMENSIONS = '64';
+// The hybrid path needs the flag as well as a registered embedder (the backend is resolved from
+// both, at call time). No key is set and only the fake embedder below is ever registered.
+process.env.MEMORY_SEMANTIC_RECALL = 'on';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

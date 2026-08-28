@@ -50,10 +50,24 @@ export const EMBEDDINGS_DIMS_DEFAULT = 512;
 /** What text-embedding-3-* returns when no `dimensions` param is sent. */
 export const EMBEDDINGS_PROVIDER_DIMS = 1536;
 
+/** The feature gate (env: MEMORY_SEMANTIC_RECALL). Default OFF. Lives HERE, beside the model and
+ *  width, for the same reason they do: the storage layer must be able to answer "is the semantic
+ *  leg on?" at call time without importing src/llm. src/llm/embed.ts re-exports it, and reads the
+ *  SAME function — a runtime flip cannot leave the two disagreeing about whether to embed. */
+export function semanticRecallEnabled(): boolean {
+  const v = (process.env.MEMORY_SEMANTIC_RECALL || '').trim().toLowerCase();
+  return ['true', '1', 'on', 'yes'].includes(v);
+}
+
 /** The embedding model vectors are written under (env: EMBEDDINGS_MODEL). */
 export function embeddingsModel(): string {
   return process.env.EMBEDDINGS_MODEL?.trim() || 'openai/text-embedding-3-small';
 }
+
+// The dims typo is a boot-time misconfiguration, and this function is called on EVERY embed and
+// every scan — warning each time would bury the log it is trying to be. Once per process is
+// enough to find it, and there is nothing new to learn on the second occurrence.
+let warnedDimsTypo = false;
 
 /** The `dimensions` value to SEND, or null to send none (0/blank = take the provider default).
  *  Blank-vs-unset matters here the same way it does for keys: `EMBEDDINGS_DIMENSIONS=` is a
@@ -65,7 +79,10 @@ export function embeddingsDimsParam(): number | null {
   if (v === '') return null;
   const n = Number(v);
   if (!Number.isFinite(n)) {
-    console.warn(`[memory-vectors] EMBEDDINGS_DIMENSIONS="${raw}" is not a number — using ${EMBEDDINGS_DIMS_DEFAULT}`);
+    if (!warnedDimsTypo) {
+      warnedDimsTypo = true;
+      console.warn(`[memory-vectors] EMBEDDINGS_DIMENSIONS="${raw}" is not a number — using ${EMBEDDINGS_DIMS_DEFAULT} (warned once)`);
+    }
     return EMBEDDINGS_DIMS_DEFAULT;
   }
   if (n <= 0) return null;
@@ -136,7 +153,13 @@ export function dot(a: Float32Array, b: Float32Array): number {
  */
 export function upsertArchiveVector(archiveId: number, vec: Float32Array, model: string, dims: number): boolean {
   try {
-    if (vec.length !== dims) return false;
+    if (vec.length !== dims) {
+      // Logged, not silent: the OTHER false below is a /forget landing mid-flight, which is
+      // routine. A width refusal is a dims misconfiguration (a provider ignoring `dimensions`),
+      // and reading it as that routine race is how a store that never fills in looks normal.
+      logDbError('upsertArchiveVector (width)', new Error(`vector width ${vec.length} ≠ configured ${dims} — vector not stored`));
+      return false;
+    }
     const normalized = l2Normalize(vec);
     const res = stmt(
       `INSERT OR REPLACE INTO memory_archive_embeddings (archive_id, vector, dims, model, created_at)
@@ -222,6 +245,37 @@ export function vectorCandidates(
   }
 }
 
+/**
+ * Does the caller's scoped slice hold even ONE vector under the current model/width? Asked before
+ * the query is embedded, because a scan over zero rows cannot answer anything — and paying a
+ * provider round trip (and its latency, on a user-facing turn) for a leg that is structurally
+ * empty is the one avoidable cost on this path. True during the backfill window is the normal
+ * state of a fresh install: recall stays lexical-fast until there is something to search.
+ *
+ * `scopeSql`/`scopeParams` are the caller's own clause, verbatim — same scope as the real scan.
+ */
+export function hasVectorsInScope(
+  scopeSql: string,
+  scopeParams: string[],
+  opts: { model: string; dims: number },
+): boolean {
+  try {
+    const row = stmt(
+      `SELECT 1 AS present FROM memory_archive_embeddings e
+       JOIN memory_archive a ON a.id = e.archive_id
+       WHERE ${scopeSql} AND e.model = ? AND e.dims = ?
+       LIMIT 1`
+    ).get(...scopeParams, opts.model, opts.dims) as { present: number } | undefined;
+    return row !== undefined;
+  } catch (error) {
+    logDbError('hasVectorsInScope', error);
+    // On a broken read, claim vectors exist: the scan below is the thing that decides, and it
+    // already degrades to [] on failure. Skipping the leg on a read error would silently downgrade
+    // recall for a reason that has nothing to do with whether vectors are there.
+    return true;
+  }
+}
+
 /** Archive rows that have no current vector — the backfill's remaining work. */
 export function countMissingVectors(): number {
   try {
@@ -279,6 +333,17 @@ function pendingRows(model: string, dims: number, limit: number, cursor: { archi
   ).all(model, dims, cursor.archivedAt, cursor.archivedAt, cursor.id, limit) as unknown as PendingRow[];
 }
 
+export interface BackfillResult {
+  embedded: number;
+  batches: number;
+  skipped: number;
+  /** Groups whose vectors came back at a width the store cannot use. Reported (rather than folded
+   *  into `skipped`) because it is the ONE failure a retry can never clear: a provider that ignores
+   *  `dimensions` will answer the next run the same way. The caller's circuit breaker reads this. */
+  widthRefused: number;
+  remaining: number;
+}
+
 /**
  * Embed the archive rows that have no current vector, newest-first and bounded by
  * batchSize × maxBatches. Runs on a background timer, NEVER on the per-turn path: archiveEntries
@@ -292,9 +357,9 @@ function pendingRows(model: string, dims: number, limit: number, cursor: { archi
  */
 export async function backfillArchiveEmbeddings(
   opts?: { batchSize?: number; maxBatches?: number; now?: () => number },
-): Promise<{ embedded: number; batches: number; skipped: number; remaining: number }> {
+): Promise<BackfillResult> {
   const embed = archiveEmbedder();
-  if (!embed) return { embedded: 0, batches: 0, skipped: 0, remaining: countMissingVectors() };
+  if (!embed) return { embedded: 0, batches: 0, skipped: 0, widthRefused: 0, remaining: countMissingVectors() };
 
   const model = embeddingsModel();
   const dims = embeddingsDims();
@@ -303,6 +368,7 @@ export async function backfillArchiveEmbeddings(
   let embedded = 0;
   let batches = 0;
   let skipped = 0;
+  let widthRefused = 0;
   let cursor: { archivedAt: number; id: number } | null = null;
 
   for (let b = 0; b < maxBatches; b++) {
@@ -343,6 +409,14 @@ export async function backfillArchiveEmbeddings(
         skipped += group.length;
         continue;
       }
+      // A width the store cannot use — the `dimensions`-ignoring provider. Refused as ONE group
+      // rather than as `group.length` identical upsert warnings, and counted separately so a run
+      // that only ever hits this can be told apart from a run that merely found nothing.
+      if (vectors.some(v => v.length !== dims)) {
+        widthRefused++;
+        skipped += group.length;
+        continue;
+      }
       // Re-read AFTER the await: this is the window a /forget lands in.
       if (handle && getForgetEpoch(handle) !== epoch0) {
         skipped += group.length;
@@ -362,5 +436,5 @@ export async function backfillArchiveEmbeddings(
   if (embedded > 0) {
     console.log(`[memory-vectors] backfill: ${embedded} embedded, ${skipped} skipped, ${remaining} remaining (${new Date(at).toISOString()})`);
   }
-  return { embedded, batches, skipped, remaining };
+  return { embedded, batches, skipped, widthRefused, remaining };
 }

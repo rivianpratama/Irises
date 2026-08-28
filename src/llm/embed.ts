@@ -4,7 +4,7 @@ import { recordTokenUsage } from '../db/repositories/tokenUsage.js';
 import { checkDailyBudget } from './budget.js';
 import { laneKey } from './laneKeys.js';
 import {
-  embeddingsModel, embeddingsDims, embeddingsDimsParam, l2Normalize,
+  embeddingsModel, embeddingsDims, embeddingsDimsParam, l2Normalize, semanticRecallEnabled,
 } from '../db/repositories/memoryArchiveVectors.js';
 
 // Text → vectors, through OpenRouter's OpenAI-shaped /embeddings endpoint on the key the rest of
@@ -23,17 +23,12 @@ import {
 export type EmbeddingCreateParams = OpenAI.Embeddings.EmbeddingCreateParams;
 export type EmbeddingResponse = OpenAI.Embeddings.CreateEmbeddingResponse;
 
-/** Which model/width vectors are written under. Defined in the storage layer (it owns the
- *  "is this vector current" question and cannot import this file); re-exported here so the LLM
- *  side reads as one API. */
-export { embeddingsModel, embeddingsDims };
-
-/** The feature gate (env: MEMORY_SEMANTIC_RECALL). Default OFF — unset, no client is ever built
- *  and recall behaves exactly as it did before this feature existed. */
-export function semanticRecallEnabled(): boolean {
-  const v = (process.env.MEMORY_SEMANTIC_RECALL || '').trim().toLowerCase();
-  return ['true', '1', 'on', 'yes'].includes(v);
-}
+/** Which model/width vectors are written under, and whether the feature is on at all (env:
+ *  MEMORY_SEMANTIC_RECALL, default OFF — unset, no client is ever built and recall behaves exactly
+ *  as it did before this feature existed). All three are defined in the storage layer (it owns the
+ *  "is this vector current" and "is the semantic leg on" questions and cannot import this file);
+ *  re-exported here so the LLM side reads as one API. */
+export { embeddingsModel, embeddingsDims, semanticRecallEnabled };
 
 /** Flag on AND the lane has a usable key. Blank counts as unset (see laneKeys.ts): the single-key
  *  setup leaves `OPENROUTER_API_KEY=` in .env, and a client built on that only fails from deep
@@ -44,14 +39,55 @@ export function embeddingsConfigured(): boolean {
 
 // Lazily built, rebuilt when the key changes — the callLLM lane pattern, keyed at CALL time so a
 // .env edit between runs is honoured.
+//
+// maxRetries: 0 — the SDK's own default (2 retries with backoff, on a 10-minute per-request
+// timeout) is the wrong policy for BOTH callers. The recall leg is optional and inside a turn the
+// user is waiting through: a retried failure just costs more of their wait for the same lexical
+// answer. The backfill runs hourly, so a failed batch is retried in an hour by the next sweep,
+// which is a better backoff than any the SDK can do. The bound below is the only budget.
 let lane: { key: string; client: OpenAI } | null = null;
 function embeddingsClient(): OpenAI | null {
   const key = laneKey('openrouter');
   if (!key) return null;
   if (lane?.key !== key.value) {
-    lane = { key: key.value, client: new OpenAI({ apiKey: key.value, baseURL: 'https://openrouter.ai/api/v1' }) };
+    lane = {
+      key: key.value,
+      client: new OpenAI({ apiKey: key.value, baseURL: 'https://openrouter.ai/api/v1', maxRetries: 0 }),
+    };
   }
   return lane.client;
+}
+
+/** How long a call gets, by what it is for. Recall sits INSIDE a user-facing turn: past ~3s the
+ *  semantic leg has already cost more than the paraphrase it might have found is worth, and the
+ *  lexical answer is sitting there ready. The backfill is a background sweep with nobody waiting,
+ *  and a batch of 96 texts legitimately takes tens of seconds. */
+const TIMEOUT_MS: Record<'archive_recall' | 'archive_backfill', number> = {
+  archive_recall: 3_000,
+  archive_backfill: 60_000,
+};
+
+/** Reject `work` after `ms`. Same shape as Ops triage's and the note groomer's own bounds
+ *  (agents/ops/triage.ts, memory/noteGroomer.ts) — unref'd so a hung provider can never hold the
+ *  process open. */
+async function withTimeout<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`embeddings timeout after ${ms}ms (${label})`)), ms);
+    (timer as { unref?: () => void }).unref?.();
+    work.then(v => { clearTimeout(timer); resolve(v); }, e => { clearTimeout(timer); reject(e); });
+  });
+}
+
+// Batches refused because the provider answered at a width we did not ask for. Monotonic for the
+// life of the process.
+let widthRefusals = 0;
+
+/** How many batches have been refused for width so far. The ONE failure here that no retry can
+ *  clear (a provider that ignores `dimensions` will answer the next call identically), and the
+ *  only way a caller can distinguish it: every failure returns the same `null`. The backfill's
+ *  circuit breaker samples this around a run — see src/memory/semanticRecall.ts. */
+export function embeddingsWidthRefusals(): number {
+  return widthRefusals;
 }
 
 /** Both durable trails a failed embedding leaves: the cross-agent error log, and a status='error'
@@ -81,13 +117,20 @@ function recordEmbedFailure(
  * unconfigured, budget tripped, HTTP error, a short response, a wrong-width vector. Null is not
  * an error condition for callers: it means "no semantic leg this time".
  *
- * `deps.create` is injectable for unit tests ONLY (the repo's DI convention) — production callers
- * pass nothing and get the OpenRouter client above.
+ * Every call is BOUNDED (see TIMEOUT_MS): a hung provider must not hold a user-facing turn open,
+ * and a timeout is just another way to arrive at null — same ledger row, same degrade to lexical.
+ * The bound lives here rather than at the call site so no caller can forget it.
+ *
+ * `deps.create` (and `deps.timeoutMs`) are injectable for unit tests ONLY (the repo's DI
+ * convention) — production callers pass nothing and get the OpenRouter client above.
  */
 export async function embedTexts(
   texts: string[],
   ctx: { label: 'archive_backfill' | 'archive_recall'; handle?: string },
-  deps?: { create?: (params: EmbeddingCreateParams) => Promise<EmbeddingResponse> },
+  deps?: {
+    create?: (params: EmbeddingCreateParams) => Promise<EmbeddingResponse>;
+    timeoutMs?: number;
+  },
 ): Promise<Float32Array[] | null> {
   if (!texts.length) return [];
   if (!semanticRecallEnabled()) return null;
@@ -130,7 +173,7 @@ export async function embedTexts(
       if (!client) throw new Error('OPENROUTER_API_KEY not configured (embeddings lane unavailable)');
       return client.embeddings.create(p);
     });
-    resp = await create(params);
+    resp = await withTimeout(create(params), deps?.timeoutMs ?? TIMEOUT_MS[ctx.label], ctx.label);
   } catch (err) {
     recordEmbedFailure(ctx, model, err, start);
     return null;
@@ -148,6 +191,10 @@ export async function embedTexts(
   for (const item of ordered) {
     const values = item?.embedding;
     if (!Array.isArray(values) || values.length !== dims) {
+      // Counted as well as reported: the caller only ever sees `null` here, which is the same
+      // thing a 502 looks like — and the backfill's circuit breaker has to be able to tell the
+      // unfixable failure from the transient one. See embeddingsWidthRefusals().
+      widthRefusals++;
       recordEmbedFailure(
         ctx, model,
         new Error(`embedding width ${Array.isArray(values) ? values.length : 'none'} ≠ requested ${dims} — dimensions param ignored?`),

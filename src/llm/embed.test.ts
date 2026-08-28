@@ -123,8 +123,33 @@ test('an API error is null plus a status=error ledger row — never a throw', as
   assert.match(rows[0].error ?? '', /502/);
 });
 
-test('a wrong vector count or a wrong width is refused, not stored', async () => {
+test('a hung provider is abandoned on the timeout: null, an error row, no waiting', async () => {
   const { embedTexts } = await import('./embed.js');
+  clearUsage();
+  let dispatched = false;
+  // The bound's own timer is unref'd (it must never hold the process open), and a test process
+  // waiting on a promise that will never settle has nothing else on its loop — so hold it open
+  // ourselves for the duration. Production always has the webhook server doing this.
+  const keepAlive = setTimeout(() => { /* the loop needs one ref'd handle */ }, 5_000);
+  // A call that never comes back — the SDK's own default here would be 10 minutes and two retries,
+  // inside a turn the user is waiting through. (The real budget is 3s for recall and 60s for the
+  // backfill; the injected one keeps the test instant.)
+  const out = await embedTexts(['what did I say about the lake'], { label: 'archive_recall' }, {
+    create: () => { dispatched = true; return new Promise<never>(() => { /* never settles */ }); },
+    timeoutMs: 20,
+  });
+  clearTimeout(keepAlive);
+  assert.equal(dispatched, true, 'it really was dispatched, then abandoned');
+  assert.equal(out, null, 'the recall leg degrades to lexical rather than hanging the turn');
+  const rows = usageRows();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].status, 'error');
+  assert.match(rows[0].error ?? '', /timeout/);
+});
+
+test('a wrong vector count or a wrong width is refused, not stored', async () => {
+  const { embedTexts, embeddingsWidthRefusals } = await import('./embed.js');
+  const refusalsBefore = embeddingsWidthRefusals();
 
   clearUsage();
   const short = await embedTexts(['a', 'b'], { label: 'archive_backfill' }, {
@@ -141,6 +166,10 @@ test('a wrong vector count or a wrong width is refused, not stored', async () =>
   });
   assert.equal(wide, null, 'the dimensions param was ignored');
   assert.match(usageRows()[0]?.error ?? '', /width 1536/);
+  // Counted, not just logged: from the caller's side this null looks exactly like a 502, and the
+  // backfill's circuit breaker has to know which one it was. The short-response case above must
+  // NOT count — a retry can clear that one.
+  assert.equal(embeddingsWidthRefusals(), refusalsBefore + 1, 'only the width refusal is counted');
 });
 
 test('returned vectors are L2-normalized and in index order', async () => {

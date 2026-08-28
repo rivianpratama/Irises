@@ -25,7 +25,7 @@ import { logDbError } from '../client.js';
 import { stmt, ftsAvailable } from '../sqlite.js';
 import {
   archiveEmbedder, vectorCandidates, deleteVectorsForScope, l2Normalize,
-  embeddingsModel, embeddingsDims,
+  embeddingsModel, embeddingsDims, hasVectorsInScope, semanticRecallEnabled,
 } from './memoryArchiveVectors.js';
 
 /** Where an archived row came from. Validated here (the column has no CHECK) so a typo'd
@@ -96,10 +96,13 @@ const RRF_K = 60;
 const VECTOR_TOP_K = 24;
 
 /** Vectors scanned per query (env: MEMORY_VECTOR_CANDIDATES). The scan is brute-force, so this is
- *  the ceiling on its cost — 2000 × 512 floats is a couple of ms. */
+ *  the ceiling on its cost — 10k × 512 floats is 10-25ms. Defaulted to ARCHIVE_MAX_ROWS_PER_HANDLE
+ *  DELIBERATELY: the scan takes candidates newest-first, so anything lower silently truncates the
+ *  semantic leg by recency, and "you said something months ago" is the case this feature exists
+ *  for. Lower it only to buy latency back, knowing that is what you are selling. */
 function vectorCandidateLimit(): number {
   const n = Number(process.env.MEMORY_VECTOR_CANDIDATES);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 2000;
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : ARCHIVE_MAX_ROWS_PER_HANDLE;
 }
 
 /** Cosine floor a vector hit must clear to enter the fusion at all (env: MEMORY_SEMANTIC_MIN_SCORE).
@@ -156,11 +159,16 @@ function lexicalBackend(): 'fts5' | 'like' {
 }
 
 /** Which backend searchArchive will use (diagnostics + the backend-parity tests). Resolves to
- *  'vector' only when an embedder is registered: with the feature off there is nothing to fuse,
- *  and the answer must be the pre-hybrid one. */
+ *  'vector' only when the flag is on AND an embedder is registered: with the feature off there is
+ *  nothing to fuse, and the answer must be the pre-hybrid one.
+ *
+ *  Both halves are read at CALL time, and the flag is read from the same function embedTexts
+ *  consults. A registered embedder outlives a runtime `MEMORY_SEMANTIC_RECALL=off` (nothing
+ *  un-registers it), and without the flag here this would keep reporting 'vector' while every
+ *  embed call refused — diagnostics describing a hybrid search that isn't happening. */
 export function archiveSearchBackend(): ArchiveSearchBackend {
   if (backendOverride === 'fts5' || backendOverride === 'like') return backendOverride;
-  return archiveEmbedder() ? 'vector' : lexicalBackend();
+  return semanticRecallEnabled() && archiveEmbedder() ? 'vector' : lexicalBackend();
 }
 
 /** Test seam: pin the search backend so EVERY path is exercised on one build (the lexical two
@@ -396,9 +404,16 @@ async function searchHybrid(
   // the final six once the vector leg agrees with it.
   const lexical = searchLexical(lexicalBackend(), tokens, scopeSql, scopeParams, Math.max(limit * 4, 24));
 
+  const model = embeddingsModel();
+  const dims = embeddingsDims();
   const embed = archiveEmbedder();
+  // Nothing to scan ⇒ nothing to embed. During the backfill window (a fresh install, a model
+  // change, a handle whose rows are all newer than the last sweep) the vector table for this scope
+  // is empty, and a scan over it cannot return a hit no matter what the query means. One indexed
+  // EXISTS is cheaper than the provider round trip it saves — and that round trip is latency on a
+  // turn the user is waiting through.
   let vectors: Array<{ id: number; score: number }> = [];
-  if (embed) {
+  if (embed && hasVectorsInScope(scopeSql, scopeParams, { model, dims })) {
     let queryVec: Float32Array | null = null;
     try {
       // The RAW query, not the tokens: the paraphrase this leg exists to catch lives in the
@@ -417,8 +432,8 @@ async function searchHybrid(
         candidates: vectorCandidateLimit(),
         topK: VECTOR_TOP_K,
         minScore: semanticMinScore(),
-        model: embeddingsModel(),
-        dims: embeddingsDims(),
+        model,
+        dims,
       });
     }
   }
