@@ -14,6 +14,7 @@ import {
 } from './mood.js';
 import type { CycleState } from './cycle.js';
 import type { CircadianState } from './circadian.js';
+import { climateLines, climateLinesForComposer, type RelationshipClimate } from './climate.js';
 
 export type { MoodCore } from './mood.js';
 export type { CyclePhase } from './cycle.js';
@@ -214,10 +215,21 @@ const INTERNAL_WEATHER_HEADER =
 
 /**
  * The per-turn "internal weather" block injected into the dynamic prompt (NOT the cached persona).
- * Carries the computed cycle/circadian texture, the prior mood + trend, and last turn's meta-prompt,
- * then reminds the model to re-report its `status`. Everything here is internal and never spoken.
+ * Carries the computed cycle/circadian texture, the prior mood + trend, last turn's meta-prompt, and
+ * — underneath all of it — the weeks-scale standing register (climate.ts), then reminds the model to
+ * re-report its `status`. Everything here is internal and never spoken.
+ *
+ * The climate lines splice in AFTER the momentum/meta-prompt lines and BEFORE the re-report tail:
+ * the weather is what she carries into THIS turn, the climate is the ground it sits on, and the tail
+ * has to stay last (it is the instruction the reply obeys). ONE header for the whole block, ever.
+ * With `climate` undefined or at its defaults, climateLines returns [] and this output is
+ * byte-identical to what it was before the feature existed (pinned in status.test.ts).
  */
-export function renderStatusForPrompt(state: AffectState | undefined, computed: ComputedState): string {
+export function renderStatusForPrompt(
+  state: AffectState | undefined,
+  computed: ComputedState,
+  climate?: RelationshipClimate,
+): string {
   const lines: string[] = [];
   lines.push(INTERNAL_WEATHER_HEADER);
   lines.push(`- Your body-clock: ${computed.circadian.description}`);
@@ -245,6 +257,10 @@ export function renderStatusForPrompt(state: AffectState | undefined, computed: 
     lines.push('- First read of this person — set your mood from the weather above and how their message lands.');
   }
 
+  // The standing register underneath the moment. Empty at defaults, so nothing changes until a
+  // relationship has actually moved.
+  lines.push(...climateLines(climate));
+
   lines.push('- After you read them, re-report your `status` in this reply: your mood on the wheel (core + one word) and its 1-100 level, the gauges, what they are doing (intent), whether real INFORMATION moved you vs just pressure (epistemic_trigger), a one-line note-to-self for next turn (meta_prompt), and a one-line read of who they are (profile_note). None of it is ever spoken in a bubble.');
   return lines.join('\n');
 }
@@ -262,19 +278,35 @@ export function renderStatusForPrompt(state: AffectState | undefined, computed: 
  * are Convo's private notes-to-self that could contradict the compose instruction. No cycle/
  * circadian machinery and no "re-report your status" line either.
  *
- * Returns '' when there is no carried mood, OR when it is STALE (>45min) — the staleness gate keeps
- * the proactive path (a delivery no one just asked for) from dressing a message in an hours-old mood.
+ * TWO INDEPENDENT PARTS, and this is the point of the split. The MOOD part keeps its staleness gate
+ * (>45min): the proactive path is a delivery no one just asked for, and dressing it in an hours-old
+ * mood is exactly the failure that gate exists for. The CLIMATE part has NO staleness gate, because
+ * a weeks-scale register cannot go stale in 45 minutes — that's the whole difference between weather
+ * and climate. So a stale mood plus a moved climate now yields a climate-only block, where it used
+ * to yield nothing. Only `candor` is withheld here (see climateLinesForComposer).
+ *
+ * Returns '' only when BOTH parts are empty — no fresh mood AND a climate still at its defaults,
+ * which is byte-for-byte the old behaviour for every caller that passes no climate.
  */
-export function renderStatusForComposer(state: AffectState | null | undefined): string {
+export function renderStatusForComposer(
+  state: AffectState | null | undefined,
+  climate?: RelationshipClimate,
+): string {
   const last = state?.last;
-  if (!last) return '';
-  if (Date.now() - last.at > 45 * 60_000) return '';
+  const moodPart = last && Date.now() - last.at <= 45 * 60_000
+    ? [
+        `- A moment ago you felt ${last.mood_label} (${last.mood_core}, ${last.mood_level}/100). ${moodTexture(last.mood_level)}`,
+        `- Gauges you carry in — warmth ${last.warmth}, patience ${last.patience}, social battery ${last.social_battery}, anxiety ${last.anxiety} (all /100).`,
+      ]
+    : [];
+  const climatePart = climateLinesForComposer(climate);
+  if (!moodPart.length && !climatePart.length) return '';
   return [
     // The proven leak-guard wording PLUS one fidelity clause Convo doesn't need: the Composer's one
     // job is faithful re-voicing, so tone may bend word choice but must never move a fact.
     `${INTERNAL_WEATHER_HEADER}. It colours word choice and how much you hedge; it never adds, drops, softens, or sharpens a fact you relay.`,
-    `- A moment ago you felt ${last.mood_label} (${last.mood_core}, ${last.mood_level}/100). ${moodTexture(last.mood_level)}`,
-    `- Gauges you carry in — warmth ${last.warmth}, patience ${last.patience}, social battery ${last.social_battery}, anxiety ${last.anxiety} (all /100).`,
+    ...moodPart,
+    ...climatePart,
   ].join('\n');
 }
 

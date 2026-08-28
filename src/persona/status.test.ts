@@ -7,6 +7,7 @@ import {
 } from './status.js';
 import { computeCycle } from './cycle.js';
 import { computeCircadian } from './circadian.js';
+import { defaultClimate, type RelationshipClimate } from './climate.js';
 
 const RAW = {
   mood_core: 'joyful', mood_label: 'hopeful', mood_level: 72,
@@ -142,4 +143,71 @@ test('renderStatusForComposer carries the mood + the leak-guard + the fidelity c
   assert.doesNotMatch(out, /engagement/i);             // excluded gauge
   assert.doesNotMatch(out, /re-report/i);              // no "re-report your status" instruction
   assert.doesNotMatch(out, /body-clock|longer rhythm/); // no cycle/circadian machinery
+});
+
+// ── Relationship climate spliced into the same block ─────────────────────────
+
+/** A climate that has actually moved on every dial, well past the silent ±3 band. */
+function movedClimate(): RelationshipClimate {
+  return { ...defaultClimate(), dials: { ease: 70, candor: 80, playfulness: 60 }, evalCount: 30 };
+}
+
+test('a moved climate rides ONE weather block, after the momentum lines and before the re-report tail', () => {
+  const full = mergeStatus(coerceStatus(RAW)!, COMPUTED, 0);
+  const out = renderStatusForPrompt({ last: full, moodHistory: [{ level: 72, core: 'joyful', label: 'hopeful', at: 0 }] }, COMPUTED, movedClimate());
+
+  // Exactly one header — a second one would read as a second, competing block.
+  assert.equal(out.split('INTERNAL weather').length - 1, 1);
+
+  const momentum = out.indexOf('Your state has MOMENTUM');
+  const meta = out.indexOf('Your read going into this message');
+  const leadIn = out.indexOf('standing register');
+  const reReport = out.indexOf('re-report your `status`');
+  assert.ok(momentum !== -1 && meta !== -1 && leadIn !== -1 && reReport !== -1);
+  assert.ok(leadIn > momentum, 'climate must sit after the momentum line');
+  assert.ok(leadIn > meta, 'climate must sit after the carried meta-prompt');
+  assert.ok(leadIn < reReport, 'the re-report instruction stays last');
+
+  // Bands, never numbers — and the clamp that keeps a warmer register from touching the substance.
+  assert.match(out, /polite runway|drop straight in mid-thought/);
+  assert.match(out, /never changes a fact/);
+  assert.doesNotMatch(out.slice(leadIn, reReport), /\d/);
+});
+
+// THE no-regression pin: the feature is inert until a relationship has moved.
+test('a default climate leaves renderStatusForPrompt byte-identical to no climate at all', () => {
+  const full = mergeStatus(coerceStatus(RAW)!, COMPUTED, 0);
+  const state = { last: full, moodHistory: [{ level: 72, core: 'joyful' as const, label: 'hopeful', at: 0 }] };
+  assert.equal(renderStatusForPrompt(state, COMPUTED, defaultClimate()), renderStatusForPrompt(state, COMPUTED));
+  assert.equal(renderStatusForPrompt(state, COMPUTED, undefined), renderStatusForPrompt(state, COMPUTED));
+  // Cold start too (no carried mood at all).
+  assert.equal(renderStatusForPrompt(undefined, COMPUTED, defaultClimate()), renderStatusForPrompt(undefined, COMPUTED));
+});
+
+// The intended behaviour CHANGE: climate has no staleness gate, because a weeks-scale register
+// cannot go stale in 45 minutes. A proactive delivery hours later still speaks in the right register.
+test('composer: a stale mood plus a moved climate yields a climate-ONLY block', () => {
+  const stale = mergeStatus(coerceStatus(RAW)!, COMPUTED, Date.now() - 5 * 60 * 60_000);
+  const out = renderStatusForComposer({ last: stale, moodHistory: [] }, movedClimate());
+
+  assert.match(out, /INTERNAL weather/);
+  assert.match(out, /standing register/);
+  assert.match(out, /teasing|in-jokes/);
+  // The stale mood is gone — its gate still holds.
+  assert.doesNotMatch(out, /hopeful/);
+  assert.doesNotMatch(out, /Gauges you carry in/);
+  // And candor never reaches the Composer, which relays a decided answer.
+  assert.doesNotMatch(out, /straight answer|unwelcome read/i);
+});
+
+test('composer: a stale mood plus a DEFAULT climate is still "" (both halves empty)', () => {
+  const stale = mergeStatus(coerceStatus(RAW)!, COMPUTED, Date.now() - 5 * 60 * 60_000);
+  assert.equal(renderStatusForComposer({ last: stale, moodHistory: [] }, defaultClimate()), '');
+  assert.equal(renderStatusForComposer({ last: stale, moodHistory: [] }), '');
+  assert.equal(renderStatusForComposer(undefined, defaultClimate()), '');
+
+  // And a FRESH mood with a default climate is byte-identical to the pre-climate output.
+  const fresh = mergeStatus(coerceStatus(RAW)!, COMPUTED, Date.now());
+  const state = { last: fresh, moodHistory: [] };
+  assert.equal(renderStatusForComposer(state, defaultClimate()), renderStatusForComposer(state));
 });
