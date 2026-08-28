@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # Irises engine setup — wire this clone to an UNMODIFIED hermes-agent or OpenClaw engine.
 #
-#   bash ./scripts/engine-setup.sh --engine hermes             # or: openclaw
+#   bash ./scripts/engine-setup.sh --engine hermes             # or: openclaw (bridge mode is ON by default)
 #   bash ./scripts/engine-setup.sh --engine hermes --yes        # never prompt, take every default
-#   bash ./scripts/engine-setup.sh --engine hermes --bridge     # also install the bridge plugin
+#   bash ./scripts/engine-setup.sh --engine hermes --no-bridge  # opt OUT: leave the engine fronting its own channels
 #   bash ./scripts/engine-setup.sh --engine hermes --revert     # undo bridge mode (unfront / uninstall plugin)
 #
 # NON-INTERACTIVE BY DEFAULT when nobody is watching: if stdin is not a terminal — an agent running
 # this for you — the script behaves as if --yes was passed, takes every default, and never blocks on
-# (or dies at) a prompt. Bridge mode's default answer is NO; ask for it with --bridge.
+# (or dies at) a prompt. Bridge mode is ON by default (Irises fronts the engine's channels); opt out
+# with --no-bridge.
 #
 # NOTE: Irises ALSO auto-detects the engine at boot (src/agents/ops/engineDiscovery.ts) — it sets
 # OPS_BACKEND, reuses the engine's API key, and inherits its model with no .env. This script does the
 # parts discovery can't: enabling the engine's API surface, generating the push token, pinning the
-# port, building, and (optionally) installing the bridge plugin. The .env values it writes are just
+# port, building, and installing + enabling the bridge plugin (default) so Irises fronts the engine's
+# channels out of the box. The .env values it writes are just
 # made explicit — harmless and overrideable. So it's the "fuller wiring" path; plain boot-time
 # discovery covers the basics alone.
 #
@@ -29,7 +31,7 @@ set -euo pipefail
 ENGINE=""
 REVERT=0
 ASSUME_YES=0
-BRIDGE=-1              # -1 = ask (interactively only), 0 = --no-bridge, 1 = --bridge
+BRIDGE=1               # DEFAULT ON: 1 = bridge (front the engine's channels with Irises), 0 = --no-bridge
 BRIDGE_TOKEN_SYNCED=0  # so the bridge secret is never re-reported when it was already put in step
 
 usage() {
@@ -38,12 +40,12 @@ usage: bash ./scripts/engine-setup.sh --engine hermes|openclaw [options]
 
   --engine hermes|openclaw   which engine this clone talks to (required)
   --yes, -y                  non-interactive: assume defaults, never prompt
-  --bridge                   install the bridge plugin (front the engine's channels with Irises)
-  --no-bridge                skip bridge mode without asking (the default when non-interactive)
+  --bridge                   install + enable the bridge plugin (default; front the engine with Irises)
+  --no-bridge                opt out: leave the engine answering its own channels
   --revert                   print how to undo bridge mode, then exit
   -h, --help                 this help
 
-Stdin not a terminal implies --yes. Bridge mode defaults to NO either way.
+Stdin not a terminal implies --yes. Bridge mode is ON by default (opt out with --no-bridge).
 EOF
 }
 
@@ -192,6 +194,16 @@ HERMES_HOME_DIR="${HERMES_HOME:-$HOME/.hermes}"
 HERMES_CONFIG="$HERMES_HOME_DIR/config.yaml"
 HERMES_ENV="$HERMES_HOME_DIR/.env"
 
+# Resolve the hermes CLI for the actions this script now takes for you (enable plugin, restart
+# gateway). PATH first (an interactive shell has it), then the standard venv wrapper, then the module
+# form — an agent-driven run often has none of hermes on PATH. Prints empty if it truly can't be found.
+_hermes_cli() {
+  if command -v hermes >/dev/null 2>&1; then printf 'hermes'; return 0; fi
+  if [ -x "$HERMES_HOME_DIR/hermes-agent/hermes" ]; then printf '%s' "$HERMES_HOME_DIR/hermes-agent/hermes"; return 0; fi
+  if [ -x "$HERMES_HOME_DIR/hermes-agent/venv/bin/python" ]; then printf '%s -m hermes_cli.main' "$HERMES_HOME_DIR/hermes-agent/venv/bin/python"; return 0; fi
+  return 0
+}
+
 bridge_revert() {
   say "reverting bridge mode:"
   say "to stop fronting instantly, blank IRISES_FRONT in the engine's environment and restart its"
@@ -215,7 +227,8 @@ if [ "$REVERT" = "1" ]; then bridge_revert; fi
 # chat/platform via IRISES_FRONT patterns; with it unset the plugin is inert and the engine
 # answers everything itself, exactly as before.
 
-# Decide once: --bridge / --no-bridge win outright, otherwise ask (default no, never blocking).
+# Decide once: bridge is ON by default (BRIDGE=1); --no-bridge opts out. The ask branch below only
+# runs if BRIDGE is set to -1 elsewhere — kept for anyone who wants the old interactive prompt.
 want_bridge() { # $1=engine label for the question
   case "$BRIDGE" in
     1) return 0 ;;
@@ -247,14 +260,31 @@ bridge_offer_hermes() {
   elif [ "$iurl" != "http://127.0.0.1:$PORT_PINNED" ]; then
     warn "leaving your IRISES_URL ($iurl) alone — but Irises listens on :$PORT_PINNED, so make sure it points there"
   fi
-  warn "manual steps (hermes config is yours — this script never edits config.yaml):"
-  warn "  1. enable the plugin:  hermes plugins enable irises-bridge"
-  warn "     (equivalent config.yaml form:  plugins:  /  enabled: [irises-bridge])"
-  warn "  2. choose WHAT Irises fronts — append to $henv, e.g.:"
-  warn "       IRISES_FRONT=telegram:*,whatsapp:+1555*     # patterns over <platform>:<chat_id>"
-  warn "     unset/empty = front NOTHING (hermes behaves exactly as before)"
-  warn "  3. restart:  hermes gateway restart"
+  # Enable the plugin through hermes's OWN CLI (the supported way to flip plugins.enabled — this
+  # script still never hand-edits config.yaml).
+  local hcli; hcli="$(_hermes_cli)"
+  if [ -n "$hcli" ]; then
+    say "enabling the irises-bridge plugin (hermes plugins enable irises-bridge)"
+    $hcli plugins enable irises-bridge >/dev/null 2>&1 \
+      || warn "could not enable irises-bridge via CLI — enable it yourself: hermes plugins enable irises-bridge"
+  else
+    warn "hermes CLI not found — enable the plugin yourself: hermes plugins enable irises-bridge"
+  fi
+
+  # Front EVERYTHING by default so Irises actually takes over out of the box. This is the crux of a
+  # seamless install: with IRISES_FRONT empty the plugin is INERT and hermes keeps answering (the #1
+  # "why is the engine still replying?" gotcha). Narrow it later by editing this one line, e.g.
+  # IRISES_FRONT=telegram:*,whatsapp:+1555*  — patterns are fnmatch globs over <platform>:<chat_id>.
+  local ifront; ifront="$(get_env IRISES_FRONT "$henv")"
+  if [ -z "$ifront" ]; then
+    say "setting IRISES_FRONT=*:* in $henv — Irises fronts every chat on every platform (edit to narrow)"
+    ensure_trailing_newline "$henv"
+    { echo ""; echo "# — added by Irises setup ($(date +%F)) — front scope (edit to narrow, e.g. telegram:*) —"; echo "IRISES_FRONT=*:*"; } >> "$henv"
+  else
+    say "keeping your existing IRISES_FRONT ($ifront) — leaving it alone"
+  fi
   say "fail policy: if Irises is down, hermes answers fronted chats itself (set IRISES_BRIDGE_FAIL=closed for silence instead)"
+  say "the gateway restart at the end of this script loads the plugin + IRISES_FRONT (they are read at start)"
 }
 
 bridge_offer_openclaw() {
@@ -507,6 +537,26 @@ if health_ok; then
 else
   warn "Irises is not answering on :$PORT_PINNED — start it by hand once the log tells you why:"
   warn "  cd $ROOT && npm start"
+fi
+
+# ══ load the bridge (restart the engine gateway) ═════════════════════════════
+# The plugin, IRISES_FRONT, and API_SERVER_* are only read when the gateway STARTS, so a fresh install
+# won't front anything until the gateway is bounced. Do it here so the experience is seamless — you
+# shouldn't have to restart by hand. Best-effort and time-boxed; the printed command is the fallback.
+# NOTE: if an AGENT running INSIDE the gateway invokes this script, this restart ends that agent's turn
+# mid-reply (it is restarting the very process it runs in). Prefer running installs from a shell.
+if [ "$ENGINE" = "hermes" ] && [ "$BRIDGE" != "0" ]; then
+  hcli_r="$(_hermes_cli)"
+  if [ -n "$hcli_r" ]; then
+    say "restarting the hermes gateway to load the bridge (irises-bridge + IRISES_FRONT)"
+    if timeout 90 $hcli_r gateway restart >/dev/null 2>&1; then
+      say "hermes gateway restarted — bridge is live; message the engine's channels and Irises answers"
+    else
+      warn "could not restart the gateway automatically — do it yourself:  hermes gateway restart"
+    fi
+  else
+    warn "restart the hermes gateway to load the bridge:  hermes gateway restart"
+  fi
 fi
 
 say "done. Full docs: docs/ENGINES.md (security notes, bridge mode, troubleshooting)."
