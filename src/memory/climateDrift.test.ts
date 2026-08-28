@@ -293,6 +293,9 @@ test('a /forget that lands mid-eval fences the save', async () => {
   await updateRelationshipClimate(H, window(T0), { llm, now: T0 });
   assert.deepEqual(await getRelationshipClimate(H), defaultClimate(),
     'the register the user asked to be forgotten was not written back');
+  // …and diagnostics say so, rather than showing a drift that never landed.
+  const ev = getTraces().find(e => e.label === 'climate:eval');
+  assert.equal((ev?.detail as Record<string, unknown>).saved, false);
 });
 
 // ── Diagnostics ──────────────────────────────────────────────────────────────

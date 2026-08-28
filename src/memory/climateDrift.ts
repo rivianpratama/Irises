@@ -247,7 +247,7 @@ export async function updateRelationshipClimate(
     if (!suggestion) throw new Error('climate eval reply unparsable');
 
     const { next, changed, capped } = applyDrift(climate, suggestion, now);
-    await saveRelationshipClimate(handle, next, { ifForgetEpoch: epoch0 });
+    const saved = await saveRelationshipClimate(handle, next, { ifForgetEpoch: epoch0 });
 
     // Every eval that RAN is traced, including the healthy all-zeros one — an eval that keeps
     // finding nothing and an eval that stopped happening look identical without this. `reason` and
@@ -262,6 +262,9 @@ export async function updateRelationshipClimate(
         dials: next.dials,
         changed,
         capped,
+        // False when the /forget fence refused the write — without this a wiped register would
+        // show in diagnostics as an applied drift.
+        saved,
         suggestion: { ease: suggestion.ease, candor: suggestion.candor, playfulness: suggestion.playfulness },
         reason: suggestion.reason,
         evalCount: next.evalCount,
