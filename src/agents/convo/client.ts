@@ -20,6 +20,8 @@ import { getConversation, addMessage, clearConversation, clearUserProfile } from
 import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
 import { timestampLabel } from '../../pipeline/chatTime.js';
 import { getAffectState } from '../../db/repositories/affectState.js';
+import { getRelationshipClimate, clearRelationshipClimate } from '../../db/repositories/relationshipClimate.js';
+import { defaultClimate } from '../../persona/climate.js';
 import { computeCycle } from '../../persona/cycle.js';
 import { computeCircadian } from '../../persona/circadian.js';
 import { cycleAnchorMs } from '../../persona/config.js';
@@ -141,12 +143,16 @@ export async function chat(
     // must not repoint it, or a member's private delivery lands in the room.
     void ensureChatId(handle, chatId); // so engine-initiated pushes can reach them
   }
-  const [contextBlock, agentTz] = handle
+  const [contextBlock, agentTz, climate] = handle
     ? await Promise.all([
         buildContextBlock(handle),
         getPreference<string>(handle, 'agent_tz'),
+        // The weeks-scale standing register with THIS identity (climate.ts). Handle-keyed like the
+        // memory tiers beside it, unlike the chat-keyed affect read below. Defaults when there's no
+        // identity to key on, and a default climate renders nothing at all.
+        getRelationshipClimate(handle),
       ])
-    : ['', undefined];
+    : ['', undefined, defaultClimate()];
 
   // Irises's hidden affect state: her persisted prior-turn mood/gauges/meta-prompt for THIS chat,
   // plus the clock-computed cycle/circadian baseline for right now (anchored to the user's tz).
@@ -234,7 +240,7 @@ export async function chat(
 
   // Held in a variable (not inlined): recall_memory's second pass re-invokes the model with this
   // SAME system + messages, minus the recall tool (see processConvoResult).
-  const system = buildSystemPrompt(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined, affectState, computed, capabilitySummary);
+  const system = buildSystemPrompt(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined, affectState, computed, capabilitySummary, climate);
 
   try {
     const res = await callConvoLLM({

@@ -14,6 +14,8 @@ import { loadContext } from './loadContext.js';
 import { buildUserMemory } from '../memory/wrappers.js';
 import { getAffectState } from '../db/repositories/affectState.js';
 import { renderStatusForComposer } from '../persona/status.js';
+import { getRelationshipClimate } from '../db/repositories/relationshipClimate.js';
+import { defaultClimate } from '../persona/climate.js';
 import { getConversation, type StoredMessage } from '../state/conversation.js';
 import { stripEchoedHolding } from './guardrails.js';
 import { parseReply } from '../pipeline/bubbleJson.js';
@@ -60,16 +62,22 @@ export async function composeWithComposer(args: ComposerCoreArgs): Promise<strin
   // The carried per-chat affect is a THIRD independent read (keys on chatId, off the critical path
   // with the other two) — threaded in READ-ONLY so a delegated re-voice keeps the mood trail Convo
   // built instead of composing in a tonal vacuum. The composer never writes affect back.
-  const [history, userCtx, affect] = await Promise.all([
+  // A FOURTH independent read rides along: the weeks-scale standing register with this identity
+  // (persona/climate.ts), handle-keyed like the memory layer rather than chat-keyed like the affect.
+  // Unlike the mood it has no staleness gate — a register built over weeks is still true on a
+  // delivery hours later — so it is exactly what keeps a proactive push in the right voice.
+  const [history, userCtx, affect, climate] = await Promise.all([
     getConversation(chatId),
     buildUserMemory('composer', handle),
     getAffectState(chatId),
+    handle ? getRelationshipClimate(handle) : Promise.resolve(defaultClimate()),
   ]);
 
-  // The internal-weather block ('' when there's no carried mood or it's stale). PREPENDED as the
-  // head of `dynamic`: it colours voice while the FACTS from buildInstruction stay late, and the
-  // FORMAT_ANCHOR (appended below) remains the very last tokens the model reads.
-  const weather = renderStatusForComposer(affect);
+  // The internal-weather block ('' when there's no carried mood or it's stale AND the climate is at
+  // its defaults). PREPENDED as the head of `dynamic`: it colours voice while the FACTS from
+  // buildInstruction stay late, and the FORMAT_ANCHOR (appended below) remains the very last tokens
+  // the model reads.
+  const weather = renderStatusForComposer(affect, climate);
   // Honor everything we durably know about the user — the wrapped memory tiers per the agent
   // matrix (flexible style layer ONLY for the composer: medium facts would compete with the
   // content it relays — a fidelity hazard). Pre-wrapped: its own tags + handling prose ride inside

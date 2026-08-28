@@ -30,6 +30,7 @@ import { timestampLabel, renderConversationTiming, describeGap } from '../../pip
 import { DEFAULT_TZ } from '../../pipeline/zonedTime.js';
 import { renderStatusForPrompt, coerceStatus, mergeStatus, type AffectState, type ComputedState } from '../../persona/status.js';
 import { saveAffectState } from '../../db/repositories/affectState.js';
+import type { RelationshipClimate } from '../../persona/climate.js';
 import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
 import { callLLM } from '../../llm/callLLM.js';
 import { record } from '../../diagnostics/trace.js';
@@ -527,6 +528,11 @@ export function buildSystemPrompt(
   // brand-free line right after the tool docs so Convo never promises what the engine lacks; null →
   // nothing added (the static Context.md doctrine holds). Never enters the engine-facing task prompt.
   capabilitySummary?: CapabilitySummary | null,
+  // The weeks-scale standing register with this memory identity (persona/climate.ts) — how much
+  // polite runway they still need, how plainly a hard answer lands, whether teasing is welcome. It
+  // rides INSIDE the same internal-weather block as the affect state (one header, ever), and renders
+  // to nothing at all until a relationship has actually moved off its defaults.
+  climate?: RelationshipClimate,
 ): string {
   const persona = loadContext('convo');
 
@@ -625,7 +631,7 @@ export function buildSystemPrompt(
   // Irises's internal weather — her cycle/circadian baseline + carried-forward mood + last-turn
   // meta-prompt. Sits right after the clock (both are "where am I right now" orientation) and, like
   // the clock, is code-precomputed so she never has to derive it. NEVER named to the user.
-  if (computed) dyn.push(renderStatusForPrompt(affectState, computed));
+  if (computed) dyn.push(renderStatusForPrompt(affectState, computed, climate));
 
   // Precomputed timing read of the thread (gap since it was last alive, whose wait it is, regime) —
   // the model never does date math itself. `history` is the stored thread BEFORE this turn's inbound
