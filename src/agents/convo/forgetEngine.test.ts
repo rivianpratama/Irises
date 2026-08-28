@@ -16,7 +16,9 @@ import { archiveEntries, listArchiveFor, searchArchive } from '../../db/reposito
 import { addShortTerm } from '../../db/repositories/memoryShort.js';
 import { saveDossier, getForgetEpoch, getMemory } from '../../db/repositories/memory.js';
 import { getRelationshipClimate, saveRelationshipClimate } from '../../db/repositories/relationshipClimate.js';
+import { getThreadInventory, saveThreadInventory } from '../../db/repositories/threadInventory.js';
 import { defaultClimate } from '../../persona/climate.js';
+import { defaultThreadInventory } from '../../persona/threads.js';
 import { stmt } from '../../db/sqlite.js';
 import type { ChatContext } from './shared.js';
 
@@ -166,6 +168,47 @@ test('/forget me resets the relationship climate to defaults', async () => {
     assert.deepEqual(after, defaultClimate());
     assert.deepEqual(after.moves, [], 'the rolling-window ledger goes with it');
     assert.equal(after.evalCount, 0, 'and so does the eval history');
+  } finally {
+    resetEngineBackendCache(undefined);
+  }
+});
+
+// Same reasoning as the climate above: the themes she holds about someone and the loops she is
+// still waiting to ask about are an accreted read of THIS person, so a forget takes them too — and
+// the ping budget stamp goes with the row, so a wiped handle starts the week fresh.
+test('/forget me resets the thread inventory to defaults', async () => {
+  resetEngineBackendCache(null);
+  const h = '+15550002222';
+  const ctx: ChatContext = { ...CTX, senderHandle: h };
+  const now = Date.now();
+  try {
+    await saveThreadInventory(h, {
+      themes: [{
+        id: 'th-1', label: 'speed vs craft', kind: 'tension', note: 'ships fast, then hates the seams',
+        evidenceDays: [Date.UTC(2026, 0, 1), Date.UTC(2026, 0, 4)], evidenceCount: 2,
+        status: 'taggable', confidence: 55, firstSeenAt: now - 5000, lastSeenAt: now,
+        lastOfferedAt: now - 1000, lastTaggedAt: 0, lastOutcome: null, soreAt: 0,
+        uptakes: 1, passes: 0, pushbacks: 0, mintedDistressed: false,
+      }],
+      loops: [{
+        id: 'lp-1', label: 'the interview', note: 'thursday', status: 'open',
+        capturedAt: now - 5000, lastSeenAt: now, offeredAt: 0, askedAt: 0, resolvedAt: 0, passes: 0,
+      }],
+      offers: [{ at: now - 1000, themeId: 'th-1', material: 'theme' }],
+      pending: { themeId: 'th-1', at: now - 1000, phase: 'awaiting', material: 'theme' },
+      turnsSinceOffer: 1, lastHarvestAt: now, harvestCount: 42, lastPingAt: now - 2000,
+    });
+    assert.equal((await getThreadInventory(h)).themes.length, 1);
+
+    const res = await chat('chat-forget-7', '/forget me', emptyMedia(), ctx);
+    assert.ok(res.text.length > 0);
+    await new Promise(r => setTimeout(r, 25)); // the fire-and-forget beat, as elsewhere on this path
+
+    const after = await getThreadInventory(h);
+    assert.deepEqual(after, defaultThreadInventory());
+    assert.deepEqual(after.loops, [], 'the questions she was still holding go with it');
+    assert.equal(after.pending, null, 'and nothing is left in flight to be answered');
+    assert.equal(after.harvestCount, 0, 'the tenure the rung ceiling reads is reset too');
   } finally {
     resetEngineBackendCache(undefined);
   }

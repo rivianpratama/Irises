@@ -70,6 +70,33 @@ CREATE TABLE IF NOT EXISTS relationship_climate (
   updated_at   INTEGER NOT NULL
 );
 
+-- Conversational threading: what recurs in a person's life (themes — values, tensions, goals, the
+-- phrases they coin) and what they left hanging (loops — a pending outcome with a how-did-it-go
+-- attached), plus the offer ledger that bills every time one of them is surfaced.
+--
+-- Keyed by the MEMORY handle, like relationship_climate and every other memory tier above it. What
+-- someone keeps circling back to is a property of the PERSON, not of a chat window, and a group's
+-- shared identity gets its own row for free under the same key. (affect_state's chat keying is the
+-- historical outlier — do not copy it here.)
+--
+-- Nothing in this table costs an LLM call to fill. Capture piggybacks the hidden status envelope
+-- the convo model already emits on every reply, and selection is pure code reading this one row
+-- before the turn. So the inventory only ever grows on turns that were already paid for, and an
+-- empty table is the honest resting state — a handle with no row reads back as the default
+-- inventory, which renders nothing at all.
+CREATE TABLE IF NOT EXISTS thread_inventory (
+  handle            TEXT PRIMARY KEY,
+  themes_json       TEXT    NOT NULL DEFAULT '[]',
+  loops_json        TEXT    NOT NULL DEFAULT '[]',
+  offers_json       TEXT    NOT NULL DEFAULT '[]',
+  pending_json      TEXT    NOT NULL DEFAULT 'null',
+  turns_since_offer INTEGER NOT NULL DEFAULT 0,
+  last_harvest_at   INTEGER NOT NULL DEFAULT 0,
+  harvest_count     INTEGER NOT NULL DEFAULT 0,
+  last_ping_at      INTEGER NOT NULL DEFAULT 0,
+  updated_at        INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sent_messages (
   message_id    TEXT PRIMARY KEY,
   chat_id       TEXT NOT NULL,
@@ -339,6 +366,7 @@ export function resetStorageForTests(): void {
     DELETE FROM agent_prefs;
     DELETE FROM affect_state;
     DELETE FROM relationship_climate;
+    DELETE FROM thread_inventory;
     DELETE FROM sent_messages;
     DELETE FROM inbound_messages;
     DELETE FROM memory_short;

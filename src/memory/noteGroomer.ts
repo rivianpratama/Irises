@@ -26,6 +26,7 @@ import { getForgetEpoch } from '../db/repositories/memory.js';
 import { listMediumActive, mergeNotes, MERGED_NOTE_MAX_CHARS, type MediumEntry } from '../db/repositories/memoryMedium.js';
 import { record } from '../diagnostics/trace.js';
 import { reportError } from '../diagnostics/errorLog.js';
+import { tokenSet, simScore } from './textSim.js';
 
 /** At most one groom per handle per this window. Same shape as the dossier's throttle: the check
  *  and the stamp happen together, so a burst of saved notes still costs one pass. */
@@ -110,39 +111,24 @@ Rules:
 
 const MERGE_INSTRUCTIONS = 'Return the merge plan for the notes above as strict JSON, using the note numbers exactly as shown. {"merges":[]} when no two of them record the same fact.';
 
-// Small and deliberately incomplete: these words carry no facts, so leaving them in makes every
-// pair of English sentences look alike. Anything domain-bearing stays.
-const STOPWORDS: ReadonlySet<string> = new Set([
-  'a', 'an', 'the', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 'be', 'been', 'to', 'of', 'for',
-  'in', 'on', 'at', 'it', 'its', 'this', 'that', 'with', 'my', 'me', 'i', 'you', 'your', 'they',
-  'them', 'their', 'we', 'us', 'our', 'as', 'by', 'from', 'so', 'if', 'do', 'does', 'did',
-]);
-
-function tokenSet(body: string): Set<string> {
-  return new Set(
-    body.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(t => t !== '' && !STOPWORDS.has(t)),
-  );
-}
-
 /**
  * Which note pairs are plausibly the same fact — the cheap gate that decides whether an LLM call
  * happens at all. Pure, O(n²) over ≤ MAX_ACTIVE_NOTES tiny token sets. Deliberately LOOSE: a false
  * positive costs one model call that answers {"merges":[]}, a false negative costs a wasted slot
  * forever.
+ *
+ * The tokenizing and the two scores live in textSim.ts, shared with the thread inventory; the
+ * THRESHOLDS stay here, because "same fact, safe to merge away" is a much stricter question than
+ * "same thing they keep circling back to" and the two must be free to move apart. A pair with no
+ * shared content words scores 0/0 there and so fails both floors here, exactly as it did when this
+ * function skipped it explicitly.
  */
 export function similarityPairs(bodies: string[]): Array<[number, number]> {
   const sets = bodies.map(tokenSet);
   const pairs: Array<[number, number]> = [];
   for (let i = 0; i < sets.length; i++) {
     for (let j = i + 1; j < sets.length; j++) {
-      const a = sets[i];
-      const b = sets[j];
-      if (!a.size || !b.size) continue;
-      let intersection = 0;
-      for (const t of a) if (b.has(t)) intersection++;
-      if (!intersection) continue;
-      const jaccard = intersection / (a.size + b.size - intersection);
-      const containment = intersection / Math.min(a.size, b.size);
+      const { jaccard, containment } = simScore(sets[i], sets[j]);
       if (jaccard >= GROOM_SIM_MIN || containment >= GROOM_CONTAINMENT_MIN) pairs.push([i, j]);
     }
   }

@@ -19,6 +19,7 @@ import { validateDirective } from '../../memory/preferences.js';
 import { FACT_KEYS } from '../../memory/mediumTerm.js';
 import { updateDossier, PENDING_CLARIFICATION_TTL_MS } from '../../memory/dossier.js';
 import { updateRelationshipClimate } from '../../memory/climateDrift.js';
+import { updateThreadInventory, type ThreadTurn } from '../../memory/threadHarvest.js';
 import { groomNotes } from '../../memory/noteGroomer.js';
 import { expandRecallQuery, recallExpansionEnabled } from '../../memory/recallExpansion.js';
 import { isGroupHandle } from '../../memory/identity.js';
@@ -32,6 +33,7 @@ import { parseReply } from '../../pipeline/bubbleJson.js';
 import { timestampLabel, renderConversationTiming, describeGap } from '../../pipeline/chatTime.js';
 import { DEFAULT_TZ } from '../../pipeline/zonedTime.js';
 import { renderStatusForPrompt, coerceStatus, mergeStatus, type AffectState, type ComputedState } from '../../persona/status.js';
+import { renderThreadForPrompt } from '../../persona/threads.js';
 import { saveAffectState } from '../../db/repositories/affectState.js';
 import type { RelationshipClimate } from '../../persona/climate.js';
 import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
@@ -536,6 +538,12 @@ export function buildSystemPrompt(
   // rides INSIDE the same internal-weather block as the affect state (one header, ever), and renders
   // to nothing at all until a relationship has actually moved off its defaults.
   climate?: RelationshipClimate,
+  // At most ONE standing thread of theirs to (maybe) offer this turn, plus the bookkeeping ask for
+  // whatever was offered last turn — both already chosen, budgeted and billed by the pre-turn read
+  // (memory/threadHarvest.ts). Nothing here decides anything: it renders what it was handed, and
+  // `{offer:null, outcomeAsk:null}` (or an absent param) renders to nothing at all, so an install
+  // with no inventory — or the flag off — builds a byte-identical prompt.
+  thread?: ThreadTurn,
 ): string {
   const persona = loadContext('convo');
 
@@ -635,6 +643,15 @@ export function buildSystemPrompt(
   // meta-prompt. Sits right after the clock (both are "where am I right now" orientation) and, like
   // the clock, is code-precomputed so she never has to derive it. NEVER named to the user.
   if (computed) dyn.push(renderStatusForPrompt(affectState, computed, climate));
+
+  // The one standing thread of theirs she may pick up this turn. Its OWN dyn entry, deliberately
+  // adjacent to the weather block rather than inside it: the weather block ends on a pinned re-report
+  // tail, and threading must never touch those bytes. Sits here because it is the same class of
+  // orientation — what she is carrying into this turn — and it is read BEFORE the conversation-timing
+  // block below, whose gap arithmetic is what qualified a loop for an opening in the first place.
+  // Renders to '' whenever there is nothing to offer and nothing to report back, which is most turns.
+  const threadBlock = renderThreadForPrompt(thread?.offer ?? null, thread?.outcomeAsk ?? null);
+  if (threadBlock) dyn.push(threadBlock);
 
   // Precomputed timing read of the thread (gap since it was last alive, whose wait it is, regime) —
   // the model never does date math itself. `history` is the stored thread BEFORE this turn's inbound
@@ -1505,6 +1522,14 @@ export async function processConvoResult(args: {
     await addMessage(chatId, 'assistant', `[reacted with ${d}]`);
   }
 
+  // The model's hidden status for this turn, coerced ONCE. Two readers below need it — the thread
+  // harvest (which runs for every 1:1 turn) and the affect persist (which only runs when the clock
+  // state came along) — and coercing it twice would let the two disagree about what she emitted after
+  // a schema change. Hoisted here rather than into either block: this is the pass that reaches the
+  // final return (the recall second pass returns into its own recursion), so everything below runs
+  // exactly once per user-visible turn, same as updateDossier.
+  const emitted = coerceStatus(reply.statusRaw);
+
   // Refresh the durable memory dossier in the background (throttled; never blocks).
   // Reuse the already-loaded history plus this turn's messages instead of re-querying
   // the DB on the hot path (updateDossier only reads the last ~12 messages).
@@ -1526,6 +1551,13 @@ export async function processConvoResult(args: {
     // its own reason, on top of the transcript one: the eval prompt is single-relationship, and in a
     // room one member could move a dial that colours her voice for everyone else in it.
     void updateRelationshipClimate(handle, recent, { chatId });
+    // And fold this turn's threading material — at most one short note and one outcome word, both
+    // riding the status envelope she already emits, so this costs no call at all — into the stored
+    // inventory. Rides the same group skip for the same reason as the two above, plus one of its
+    // own: what a person keeps circling back to, and what they left hanging, are properties of a
+    // PERSON, and a room has no such thing. Runs on EVERY turn, note or not: the tick that ages
+    // loops and paces her budgets has to see every turn selection could have run on.
+    void updateThreadInventory(handle, emitted, { chatId });
   }
 
   // Fold near-duplicate saved notes (throttled 6h per handle; never blocks, never surfaces).
@@ -1551,7 +1583,6 @@ export async function processConvoResult(args: {
   // persists its FINAL status once. Live-reply path, so it's non-blocking (void) and swallows errors.
   // Also logged as a `convo:status` trace event → the turn record → the diagnostic dashboard.
   if (args.computed) {
-    const emitted = coerceStatus(reply.statusRaw);
     if (emitted) {
       const full = mergeStatus(emitted, args.computed, Date.now());
       void saveAffectState(chatId, full);
@@ -1565,6 +1596,10 @@ export async function processConvoResult(args: {
           cycle: `${full.cycle_phase} d${full.cycle_day} (load ${full.cycle_load})`,
           circadian: `${full.circadian_slot} (energy ${full.circadian_energy})`,
           terminal_closure: full.terminal_closure, meta_prompt: full.meta_prompt,
+          // The threading capture, as EMITTED — usually both absent. This is the per-turn view of
+          // what she noticed; where it LANDED (minted, evidence, same-day, dropped) is the separate
+          // `threads:harvest` receipt, which only fires when something actually moved.
+          thread_note: full.thread_note, thread_outcome: full.thread_outcome,
         },
       });
     }

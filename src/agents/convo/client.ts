@@ -23,6 +23,8 @@ import { getAffectState } from '../../db/repositories/affectState.js';
 import {
   getRelationshipClimate, clearRelationshipClimate, relationshipClimateEnabled,
 } from '../../db/repositories/relationshipClimate.js';
+import { clearThreadInventory } from '../../db/repositories/threadInventory.js';
+import { pickThreadForTurn } from '../../memory/threadHarvest.js';
 import { defaultClimate } from '../../persona/climate.js';
 import { computeCycle } from '../../persona/cycle.js';
 import { computeCircadian } from '../../persona/circadian.js';
@@ -112,6 +114,11 @@ export async function chat(
         // so it is exactly the kind of thing a forget means. (affect_state surviving /forget is a
         // known, separate quirk of its chat keying — do not "fix" it here.)
         clearRelationshipClimate(h).catch(err => console.error('[convo] /forget climate clear failed', err)),
+        // Same reasoning for the thread inventory: the themes and open loops are an accreted read of
+        // THIS person — what they keep circling back to and what they left hanging — which is
+        // exactly the kind of thing a forget means. It also takes the ping budget stamp with it,
+        // so a wiped handle starts the week fresh.
+        clearThreadInventory(h).catch(err => console.error('[convo] /forget threads clear failed', err)),
       ]);
       // LAST: nothing may archive after this. (The medium retraction above is the only archive
       // writer on this path; the short tier hard-DELETEs and the long doc writes a revision.)
@@ -250,9 +257,28 @@ export async function chat(
   // the backend doesn't do capability discovery, or before the first refresh has answered.
   const capabilitySummary = engine?.getCapabilitySummary?.() ?? null;
 
+  // At most ONE standing thread of theirs to put in front of her this turn — an open loop worth a
+  // plain "how did it go", or a theme that has earned a light tag — chosen, budgeted and billed by
+  // pure code (memory/threadHarvest.ts → persona/threads.ts). Awaited: it is a single indexed row
+  // read, and its output shapes the system prompt built on the next line.
+  //
+  // `gapMs` is the real opening before this message — the loop stage's hard gate, because the one
+  // sanctioned reopening callback belongs at the START of a conversation, never mid-list-working.
+  // The stored rows carry `at`, but the type allows it to be absent (older rows, hand-built fixtures),
+  // and an absent or non-finite stamp must read as "no idea how long it's been" — which is Infinity,
+  // the value that makes the gate PASS. That is the right direction here: a loop still has to clear
+  // quiet-since-capture, the cooldown, the present-topic check and the turn/day budgets, and treating
+  // an undated thread as mid-conversation would silently disable the callback on any install whose
+  // history predates the stamps.
+  const lastAt = history.length ? history[history.length - 1].at : undefined;
+  const gapMs = typeof lastAt === 'number' && Number.isFinite(lastAt) ? nowMs - lastAt : Infinity;
+  const thread = handle && !isGroupHandle(handle)
+    ? await pickThreadForTurn(handle, affectState, { incomingText: textToSend, gapMs, chatId })
+    : { offer: null, outcomeAsk: null };
+
   // Held in a variable (not inlined): recall_memory's second pass re-invokes the model with this
   // SAME system + messages, minus the recall tool (see processConvoResult).
-  const system = buildSystemPrompt(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined, affectState, computed, capabilitySummary, climate);
+  const system = buildSystemPrompt(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined, affectState, computed, capabilitySummary, climate, thread);
 
   try {
     const res = await callConvoLLM({
