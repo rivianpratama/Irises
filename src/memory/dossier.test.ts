@@ -10,9 +10,32 @@ process.env.TZ = 'UTC';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DOSSIER_SYSTEM_PROMPT, buildDossierTranscript, dossierUpdateUsable, persistDossierMerge } from './dossier.js';
+import { DOSSIER_SYSTEM_PROMPT, buildDossierTranscript, dossierUpdateUsable, persistDossierMerge, formatDaySpan } from './dossier.js';
 import { saveDossier, clearDossier, getMemory, getForgetEpoch } from '../db/repositories/memory.js';
 import { getLongDoc, saveLongDoc } from '../db/repositories/memoryLong.js';
+
+// The coarse ladder shared by "last seen ~3 weeks ago" here and the climate eval's tenure label
+// (climateDrift.ts). It was copied once and both copies carried the same year-boundary hole.
+test('formatDaySpan: the day/week/month/year ladder, with no gap at the year boundary', () => {
+  assert.equal(formatDaySpan(0), '0 days');
+  assert.equal(formatDaySpan(1), '1 day');
+  assert.equal(formatDaySpan(6), '6 days');
+  assert.equal(formatDaySpan(7), '~1 week');
+  assert.equal(formatDaySpan(20), '~2 weeks');
+  assert.equal(formatDaySpan(34), '~4 weeks');
+  assert.equal(formatDaySpan(35), '~1 month');
+  assert.equal(formatDaySpan(359), '~11 months');
+  // REGRESSION: 360-364 days fell between the month branch (mo < 12) and floor(days/365) === 0,
+  // and rendered as "~0 years" — a full year of knowing someone, reported as none.
+  assert.equal(formatDaySpan(360), '~1 year');
+  assert.equal(formatDaySpan(364), '~1 year');
+  assert.equal(formatDaySpan(365), '~1 year');
+  assert.equal(formatDaySpan(800), '~2 years');
+  // Nothing in the ladder can ever say zero of a unit.
+  for (let d = 0; d <= 1500; d++) {
+    assert.doesNotMatch(formatDaySpan(d), /~0 /, `${d} days rendered as none of a unit`);
+  }
+});
 
 test('dossier prompt harvests both fact families', () => {
   assert.ok(DOSSIER_SYSTEM_PROMPT.includes('OPERATIONAL:'));

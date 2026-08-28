@@ -128,6 +128,16 @@ function spentInWindow(moves: ClimateMove[], key: DialKey, now: number): number 
  * Then the applied delta is appended, moves older than the window are pruned, and the array is
  * defensively capped.
  *
+ * Every dial the model asked to move is accounted for in exactly one of the four reports, so a
+ * suggestion that vanished can always be explained:
+ *   • `changed`   — it moved (by `shortened[key]` points if the budget cut the step down)
+ *   • `capped`    — the rolling budget left nothing; the dial CAN move, but not this week
+ *   • `atBound`   — the dial is parked at its floor/ceiling, so the step had nowhere to go. This
+ *                   is a permanent condition, not a passing one, and it reads identically to
+ *                   "the model stopped suggesting anything" unless it is reported.
+ *   • `shortened` — dial → the smaller magnitude actually applied, when the budget shortened but
+ *                   did not erase the step (a +2 candor step landing as +1 with 5 points spent).
+ *
  * PURE: `current` is never mutated, and the same (current, suggestion, now) always yields the same
  * result. `next.lastEvalAt`/`next.evalCount` are stamped from `now` — reaching this function IS the
  * eval having run, including the healthy all-zeros case.
@@ -136,11 +146,19 @@ export function applyDrift(
   current: RelationshipClimate,
   suggestion: Partial<Record<DialKey, unknown>>,
   now: number,
-): { next: RelationshipClimate; changed: DialKey[]; capped: DialKey[] } {
+): {
+  next: RelationshipClimate;
+  changed: DialKey[];
+  capped: DialKey[];
+  atBound: DialKey[];
+  shortened: Partial<Record<DialKey, number>>;
+} {
   const dials = { ...current.dials };
   const moves = [...current.moves];
   const changed: DialKey[] = [];
   const capped: DialKey[] = [];
+  const atBound: DialKey[] = [];
+  const shortened: Partial<Record<DialKey, number>> = {};
 
   for (const spec of DIALS) {
     const sign = signOf(suggestion[spec.key]);
@@ -151,7 +169,13 @@ export function applyDrift(
     // Clamp FIRST, so a dial already parked at its ceiling asks the window for nothing and spends
     // none of its budget standing still.
     const wanted = clampToSpec(cur + step, spec) - cur;
-    if (wanted === 0) continue;
+    // A dial sitting on its floor/ceiling swallows the whole step. Reported, not silently dropped:
+    // otherwise a relationship that has been pinned at a bound for months looks in diagnostics
+    // exactly like one the model has stopped suggesting anything for.
+    if (wanted === 0) {
+      atBound.push(spec.key);
+      continue;
+    }
 
     const remaining = Math.max(0, CLIMATE_WINDOW_CAP - spentInWindow(current.moves, spec.key, now));
     const applied = Math.sign(wanted) * Math.min(Math.abs(wanted), remaining);
@@ -159,6 +183,7 @@ export function applyDrift(
       capped.push(spec.key);
       continue;
     }
+    if (applied !== wanted) shortened[spec.key] = applied;
 
     dials[spec.key] = cur + applied;
     moves.push({ at: now, k: spec.key, d: applied });
@@ -176,6 +201,8 @@ export function applyDrift(
     },
     changed,
     capped,
+    atBound,
+    shortened,
   };
 }
 

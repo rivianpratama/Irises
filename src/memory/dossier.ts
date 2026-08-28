@@ -44,6 +44,26 @@ interface PendingEmailContext {
   suggestReminder?: boolean; surfacedAt?: number;
 }
 
+/**
+ * The coarse day → week → month → year ladder, with no "ago" on it. THE one place this arithmetic
+ * lives: formatAgo below wears it as "~3 weeks ago", and the climate eval's tenure label wears the
+ * same string as "you have known this person: ~3 weeks" (climateDrift.ts). They were two copies and
+ * they carried the same bug — `Math.floor(days / 365)` reads 0 for days 360-364, which the month
+ * branch has already stopped covering, so a year-old relationship rendered "~0 years". The years
+ * branch is only ever reached past 360 days, so its smallest honest answer is one.
+ *
+ * `days` is whole days elapsed, >= 0. Pure.
+ */
+export function formatDaySpan(days: number): string {
+  if (days < 7) return `${days} day${days === 1 ? '' : 's'}`;
+  const wk = Math.floor(days / 7);
+  if (wk < 5) return `~${wk} week${wk === 1 ? '' : 's'}`;
+  const mo = Math.floor(days / 30);
+  if (mo < 12) return `~${mo} month${mo === 1 ? '' : 's'}`;
+  const yr = Math.max(1, Math.floor(days / 365));
+  return `~${yr} year${yr === 1 ? '' : 's'}`;
+}
+
 /** Coarse "how long ago" from an epoch-seconds timestamp, for relationship warmth (not facts). */
 function formatAgo(epochSeconds: number | undefined): string | null {
   if (!epochSeconds || !Number.isFinite(epochSeconds)) return null;
@@ -55,13 +75,7 @@ function formatAgo(epochSeconds: number | undefined): string | null {
   if (hr < 24) return `${hr} hour${hr === 1 ? '' : 's'} ago`;
   const day = Math.floor(hr / 24);
   if (day === 1) return 'yesterday';
-  if (day < 7) return `${day} days ago`;
-  const wk = Math.floor(day / 7);
-  if (wk < 5) return `~${wk} week${wk === 1 ? '' : 's'} ago`;
-  const mo = Math.floor(day / 30);
-  if (mo < 12) return `~${mo} month${mo === 1 ? '' : 's'} ago`;
-  const yr = Math.floor(day / 365);
-  return `~${yr} year${yr === 1 ? '' : 's'} ago`;
+  return `${formatDaySpan(day)} ago`;
 }
 
 /**

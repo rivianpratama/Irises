@@ -71,11 +71,14 @@ test('a moved climate reaches the assembled prompt as prose, with no dial values
 // The no-regression pin at the assembly level: until a relationship has actually moved, the feature
 // costs the prompt nothing at all.
 test('a default climate leaves buildSystemPrompt byte-identical', () => {
-  // The assembled prompt carries a millisecond-precision "Current time" instant, so two calls a
-  // tick apart differ there and nowhere else. Blank just that instant; everything else is compared
-  // byte for byte.
+  // The assembled prompt carries a clock line — a millisecond-precision instant AND a
+  // minute-resolution local time — so two calls differ there and nowhere else. Blanking only the
+  // ISO instant left the local time live, and two builds straddling a minute boundary would then
+  // fail this on the clock rather than on the climate. Blank the whole clock line (it stops at the
+  // newline, so the timezone sentence after it is still compared); everything else is byte for byte.
   const build = (climate?: RelationshipClimate) =>
     buildSystemPrompt(ctx, '', [], undefined, undefined, [], 'hey', undefined, affect(), COMPUTED, null, climate)
+      .replace(/^Right now it's .*$/m, "Right now it's <now>")
       .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/g, '<now>');
 
   const bare = build();

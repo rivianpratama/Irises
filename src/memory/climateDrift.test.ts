@@ -9,8 +9,9 @@ import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   updateRelationshipClimate, buildClimateWindow, parseClimateSuggestion,
-  __resetClimateInFlightForTests,
+  __resetClimateInFlightForTests, __resetClimateBackoffForTests, __climateBackoffAtForTests,
   CLIMATE_EVAL_SYSTEM_PROMPT, CLIMATE_COOLDOWN_MS, CLIMATE_MIN_USER_LINES,
+  CLIMATE_FAILURE_BACKOFF_MS,
 } from './climateDrift.js';
 import { groupHandle } from './identity.js';
 import { resetStorageForTests, stmt } from '../db/sqlite.js';
@@ -30,6 +31,7 @@ const H = '+15551230001';
 beforeEach(() => {
   resetStorageForTests();
   __resetClimateInFlightForTests();
+  __resetClimateBackoffForTests();
   clearTraces();
 });
 
@@ -189,13 +191,19 @@ test('the window starts strictly after the last eval — an exchange is never co
     { role: 'user', content: 'ALREADY COUNTED LINE', handle: H, at: cut - 1000 },
     { role: 'assistant', content: 'ALREADY COUNTED REPLY', at: cut - 999 },
     ...window(cut + 1000),
-    // The reply path appends this turn's own messages unstamped — by definition newer than any eval.
-    { role: 'user', content: 'this turn, unstamped', handle: H },
+    // This turn's own two messages, stamped by the reply path as it appends them (shared.ts).
+    { role: 'user', content: 'this turn', handle: H, at: cut + 9000 },
   ];
   // Pure-function half.
   const w = buildClimateWindow(H, straddling, cut);
   assert.ok(!w.some(m => m.content.includes('ALREADY COUNTED')));
-  assert.ok(w.some(m => m.content === 'this turn, unstamped'));
+  assert.ok(w.some(m => m.content === 'this turn'));
+
+  // The cut is UNCONDITIONAL: a row with no `at` at all cannot slip past it by being undated. The
+  // ratchet is what makes this matter — a step is permanent, so a row counted twice drifts a dial
+  // twice off one exchange.
+  assert.ok(!buildClimateWindow(H, [{ role: 'user', content: 'undated', handle: H }], cut).length);
+  assert.ok(!buildClimateWindow(H, [{ role: 'user', content: 'undated', handle: H }], 0).length);
 
   // …and end to end.
   seedRow(H, cut);
@@ -204,7 +212,7 @@ test('the window starts strictly after the last eval — an exchange is never co
   await updateRelationshipClimate(H, straddling, { llm, now });
   assert.equal(calls.length, 1);
   assert.doesNotMatch(userContent(calls[0]), /ALREADY COUNTED/);
-  assert.match(userContent(calls[0]), /this turn, unstamped/);
+  assert.match(userContent(calls[0]), /this turn/);
 });
 
 // ── The manipulation regression ──────────────────────────────────────────────
@@ -250,6 +258,7 @@ test('REGRESSION: five days of "be warmer / trust me more" cannot outrun the cla
 test('a malformed reply is a total no-op', async () => {
   for (const bad of ['i think they seem nice today', '', null, '{{{{']) {
     resetStorageForTests();
+    __resetClimateBackoffForTests();   // each of these IS a failure, and failures now back off
     const { llm, calls } = stubLlm(bad);
     await updateRelationshipClimate(H, window(T0), { llm, now: T0 });
     assert.equal(calls.length, 1, 'the call happened');
@@ -257,6 +266,7 @@ test('a malformed reply is a total no-op', async () => {
   }
   // A truncated object is MANGLED, not shorter — jsonrepair would rescue a sign out of it.
   resetStorageForTests();
+  __resetClimateBackoffForTests();
   const cut = stubLlm('{"ease":1,"candor":', { truncated: true });
   await updateRelationshipClimate(H, window(T0), { llm: cut.llm, now: T0 });
   assert.deepEqual(await getRelationshipClimate(H), defaultClimate());
@@ -276,6 +286,49 @@ test('a thrown lane is a no-op and reports a classifier_failure', async () => {
   assert.equal(errs.length, 1);
   assert.equal(errs[0].handle, H);
   assert.equal(errs[0].severity, 'warn');
+});
+
+// The failures this eval hits are the STICKY kind — a dead lane, an open budget breaker, a model
+// that keeps truncating — and the failure path is a silent no-op, so without a backoff a broken
+// lane bills one classify call per reply, forever, with nobody watching.
+test('a failed eval backs off — the next reply costs nothing, and the window is not eaten', async () => {
+  errorLogTest.reset();
+  const first = stubLlm(null, { throws: true });
+  await updateRelationshipClimate(H, window(T0), { llm: first.llm, now: T0 });
+  assert.equal(first.calls.length, 1);
+  // The cooldown is untouched: a failure must never spend a real eval window.
+  assert.equal((await getRelationshipClimate(H)).lastEvalAt, 0);
+  assert.equal((await getRelationshipClimate(H)).evalCount, 0);
+
+  // Two more substantive replies inside the hour: the lane is still down, so neither is billed.
+  const soon = stubLlm(ALL_UP);
+  await updateRelationshipClimate(H, window(T0 + 60_000), { llm: soon.llm, now: T0 + 60_000 });
+  await updateRelationshipClimate(H, window(T0 + 30 * 60_000), { llm: soon.llm, now: T0 + 30 * 60_000 });
+  assert.equal(soon.calls.length, 0, 'a broken lane must not bill a call per reply');
+
+  // Past the backoff it tries again — and because nothing was stamped, the window it was owed is
+  // still there to evaluate.
+  const after = T0 + CLIMATE_FAILURE_BACKOFF_MS + 1000;
+  const retry = stubLlm(EASE_UP);
+  await updateRelationshipClimate(H, window(after), { llm: retry.llm, now: after });
+  assert.equal(retry.calls.length, 1, 'the retry happens on its own, without a restart');
+  assert.equal((await getRelationshipClimate(H)).dials.ease, 36);
+  // …and the success clears the backoff rather than leaving a stale entry behind.
+  assert.equal(__climateBackoffAtForTests(H), undefined);
+});
+
+// A restart is exactly when a stuck lane is most likely to have been fixed, so the backoff is
+// deliberately the one throttle here that does NOT survive one (the 22h cooldown does).
+test('the failure backoff is process-local, and a fresh process retries at once', async () => {
+  const boom = stubLlm(null, { throws: true });
+  await updateRelationshipClimate(H, window(T0), { llm: boom.llm, now: T0 });
+  assert.equal(__climateBackoffAtForTests(H), T0 + CLIMATE_FAILURE_BACKOFF_MS);
+  assert.ok(CLIMATE_FAILURE_BACKOFF_MS < CLIMATE_COOLDOWN_MS, 'a blip must cost at most one window');
+
+  __resetClimateBackoffForTests();   // ← the restart
+  const back = stubLlm(EASE_UP);
+  await updateRelationshipClimate(H, window(T0 + 60_000), { llm: back.llm, now: T0 + 60_000 });
+  assert.equal(back.calls.length, 1);
 });
 
 // ── The /forget race ─────────────────────────────────────────────────────────
@@ -311,6 +364,8 @@ test('the climate:eval trace carries the movement and NO user text', async () =>
   const d = ev.detail as Record<string, unknown>;
   assert.deepEqual(d.changed, ['ease']);
   assert.deepEqual(d.capped, []);
+  assert.deepEqual(d.atBound, []);
+  assert.deepEqual(d.shortened, {});
   assert.deepEqual(d.dials, { ease: 36, candor: 45, playfulness: 25 });
   assert.equal(d.evalCount, 1);
   assert.equal(d.windowUserLines, CLIMATE_MIN_USER_LINES);
@@ -324,6 +379,23 @@ test('the climate:eval trace carries the movement and NO user text', async () =>
   assert.match(String(d.reason), /nobody stood on ceremony/);
   const stored = await getRelationshipClimate(H);
   assert.ok(!JSON.stringify(stored).includes('ceremony'));
+});
+
+// A dial pinned to its bound swallows every step in that direction FOREVER, so an eval that keeps
+// suggesting one looks — in the trace — exactly like an eval that suggests nothing. It doesn't.
+test('a suggestion that a bound swallowed is traced as atBound, not silently dropped', async () => {
+  const ceiling = DIALS.find(d => d.key === 'ease')!.ceiling;
+  await saveRelationshipClimate(H, {
+    ...defaultClimate(), dials: { ...defaultClimate().dials, ease: ceiling },
+  });
+  const { llm } = stubLlm(EASE_UP);
+  await updateRelationshipClimate(H, window(T0), { llm, now: T0 });
+
+  const d = getTraces().find(e => e.label === 'climate:eval')?.detail as Record<string, unknown>;
+  assert.deepEqual(d.atBound, ['ease']);
+  assert.deepEqual(d.changed, []);
+  assert.deepEqual(d.capped, []);
+  assert.equal((await getRelationshipClimate(H)).dials.ease, ceiling);
 });
 
 // A zero-movement eval must still be visible: "it keeps finding nothing" and "it stopped running"

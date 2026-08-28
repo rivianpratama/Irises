@@ -1490,9 +1490,13 @@ export async function processConvoResult(args: {
   // against — the group identity is tuned via explicit tools (set_preference, directives,
   // update_memory) only, where every write is deliberate and attributable.
   if (handle && !isGroupHandle(handle)) {
+    // Stamped like the rows getConversation hands back, so this window is uniformly timestamped:
+    // the climate eval cuts it at `at > lastEvalAt` and a row that arrived without an `at` would
+    // dodge that cut and be counted a second time by tomorrow's pass (climateDrift.ts).
+    const turnAt = Date.now();
     const recent: StoredMessage[] = [...history];
-    if (textToSend) recent.push({ role: 'user', content: textToSend, handle });
-    if (cleanForRecord) recent.push({ role: 'assistant', content: cleanForRecord });
+    if (textToSend) recent.push({ role: 'user', content: textToSend, handle, at: turnAt });
+    if (cleanForRecord) recent.push({ role: 'assistant', content: cleanForRecord, at: turnAt });
     void updateDossier(handle, recent);
     // And the weeks-scale standing register, off the SAME assembled window (throttled to one eval
     // per 22h from the persisted row; never blocks, never surfaces). It rides this group skip for

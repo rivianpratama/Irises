@@ -143,6 +143,47 @@ test('the rolling window caps total movement per dial: candor lands 3 steps, the
   assert.equal(fourth.next.moves.length, c.moves.length, 'and nothing is written to the ledger');
 });
 
+// A dial parked on a bound is the third way a suggestion can vanish, and the only PERMANENT one:
+// it will swallow every step in that direction for as long as it sits there. Reported separately
+// from `capped` (which frees up as the week rolls) so diagnostics can tell "this relationship is
+// pinned" from "the model has gone quiet".
+test('a dial at its ceiling reports atBound — not changed, not capped', () => {
+  const spec = DIALS.find(d => d.key === 'ease')!;
+  const r = applyDrift(at({ ease: spec.ceiling }), { ease: 1 }, T0);
+  assert.deepEqual(r.atBound, ['ease']);
+  assert.deepEqual(r.changed, []);
+  assert.deepEqual(r.capped, []);
+  assert.equal(r.next.dials.ease, spec.ceiling, 'and it did not move');
+  assert.deepEqual(r.next.moves, [], 'a step that never happened is not in the ledger');
+
+  // The floor is the same story in the other direction, and a bound only swallows the step pointed
+  // AT it — the other way still moves.
+  const play = DIALS.find(d => d.key === 'playfulness')!;
+  const floored = applyDrift(at({ playfulness: play.floor }), { playfulness: -1 }, T0);
+  assert.deepEqual(floored.atBound, ['playfulness']);
+  const away = applyDrift(at({ ease: spec.ceiling }), { ease: -1 }, T0);
+  assert.deepEqual(away.atBound, []);
+  assert.deepEqual(away.changed, ['ease']);
+});
+
+// When the weekly budget shortens a step without erasing it, the dial lands in `changed` like any
+// other — `shortened` is what says it landed smaller than the table's step.
+test('a step the budget shortens is reported with the magnitude that actually landed', () => {
+  // Spend 5 of candor's 6 points: +2, +2, then a -1.
+  let c = defaultClimate();
+  let now = T0;
+  for (const s of [1, 1, -1]) { now += 60_000; c = applyDrift(c, { candor: s }, now).next; }
+
+  const r = applyDrift(c, { candor: 1 }, now + 60_000);
+  assert.deepEqual(r.changed, ['candor'], 'one point was still available, so it moved');
+  assert.deepEqual(r.capped, []);
+  assert.deepEqual(r.shortened, { candor: 1 }, 'a +2 step that landed as +1');
+  assert.equal(r.next.dials.candor - c.dials.candor, 1);
+
+  // A full step reports nothing.
+  assert.deepEqual(applyDrift(defaultClimate(), { candor: 1 }, T0).shortened, {});
+});
+
 test('moves that age out of the window free the budget again', () => {
   let c = defaultClimate();
   let now = T0;

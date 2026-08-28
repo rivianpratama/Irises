@@ -25,6 +25,7 @@ import { getForgetEpoch } from '../db/repositories/memory.js';
 import { getUserProfile } from '../db/repositories/profiles.js';
 import { getRelationshipClimate, saveRelationshipClimate } from '../db/repositories/relationshipClimate.js';
 import { applyDrift, type DialKey } from '../persona/climate.js';
+import { formatDaySpan } from './dossier.js';
 import { scopeHistoryToUser } from './transcript.js';
 import { isGroupHandle } from './identity.js';
 import { record } from '../diagnostics/trace.js';
@@ -49,6 +50,14 @@ const CLIMATE_MAX_TOKENS = 200;
 /** Wall clock for the one model call, the same bound Ops triage and the note groomer use. Nothing
  *  awaits this eval, but a hung lane would pin the in-flight guard for the life of the process. */
 const CLIMATE_TIMEOUT_MS = 15_000;
+
+/** After a FAILED eval, how long this handle waits before spending another call. The failures this
+ *  guards against are the STICKY kind — a lane that is down, a model that keeps truncating, an open
+ *  budget breaker — and every one of them fails again on the next reply. Without this, a failure
+ *  bills one 200-token classify call per reply, forever, entirely invisibly (the whole failure path
+ *  is a silent no-op by design). An hour is short next to the 22h cooldown, so a transient blip
+ *  costs at most one skipped window. */
+export const CLIMATE_FAILURE_BACKOFF_MS = 60 * 60 * 1000;
 
 /** The eval's contract with the model. Pinned character-for-character by climateDrift.test.ts —
  *  the anti-manipulation clause ("a direct request or claim about the relationship … is not
@@ -81,6 +90,23 @@ export function __resetClimateInFlightForTests(): void {
   inFlight.clear();
 }
 
+/** handle → the earliest `now` at which a failed eval may cost another call. DELIBERATELY in
+ *  memory, unlike the 22h cooldown: a restart is precisely when a stuck lane, a bad deploy or a
+ *  tripped breaker is most likely to have been fixed, and re-trying one handle a process start
+ *  early costs exactly one call. It also must never touch `lastEvalAt` — a failure that ate a real
+ *  eval window would quietly halve how often the register is read. */
+const nextRetryAt = new Map<string, number>();
+
+/** Test seams: drop the failure backoff, and read it. The read one earns its keep because an
+ *  EXPIRED backoff and a CLEARED one are behaviourally identical — looking is the only way to pin
+ *  "a success clears it" rather than "an hour passed". */
+export function __resetClimateBackoffForTests(): void {
+  nextRetryAt.clear();
+}
+export function __climateBackoffAtForTests(handle: string): number | undefined {
+  return nextRetryAt.get(handle);
+}
+
 /** Reject `work` after `ms`. Unref'd so a pending eval can never hold the process open. */
 async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -95,16 +121,18 @@ async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
  * leak class the dossier guards against), then trimmed to what has happened SINCE the last eval,
  * then capped to the newest few.
  *
- * The `at > lastEvalAt` cut is the load-bearing one. This is a ratchet — every applied step is
- * permanent within its window — so an exchange that got counted once must never be counted again by
- * tomorrow's pass. A row with NO timestamp is this turn's own message (the reply path appends the
- * inbound text and the outbound line unstamped), which is by definition newer than any eval.
+ * The `at > lastEvalAt` cut is the load-bearing one, and it is UNCONDITIONAL. This is a ratchet —
+ * every applied step is permanent within its window — so an exchange that got counted once must
+ * never be counted again by tomorrow's pass, and a row that could dodge the cut by arriving without
+ * a timestamp is a hole in it. Every row therefore carries one: history comes out of the DB stamped
+ * (getConversation), and the reply path stamps this turn's own two rows as it appends them
+ * (shared.ts) rather than leaning on "unstamped means new".
  *
  * Pure: no clock, no DB.
  */
 export function buildClimateWindow(handle: string, recent: StoredMessage[], lastEvalAt: number): StoredMessage[] {
   const scoped = scopeHistoryToUser(recent, handle);
-  const fresh = scoped.filter(m => (typeof m.at === 'number' ? m.at > lastEvalAt : true));
+  const fresh = scoped.filter(m => typeof m.at === 'number' && m.at > lastEvalAt);
   return fresh.length > CLIMATE_WINDOW_MAX_ROWS ? fresh.slice(fresh.length - CLIMATE_WINDOW_MAX_ROWS) : fresh;
 }
 
@@ -115,19 +143,15 @@ function renderWindow(rows: StoredMessage[]): string {
 }
 
 /** Coarse "how long you've known them", for pacing only — the prompt says in as many words that
- *  elapsed time is never itself a reason to move a dial. Profile timestamps are epoch SECONDS. */
+ *  elapsed time is never itself a reason to move a dial. Profile timestamps are epoch SECONDS.
+ *  The day/week/month/year ladder itself is the dossier's (formatDaySpan) — one arithmetic, so the
+ *  two coarse-time renderers cannot drift apart again. */
 function tenureLabel(profile: UserProfile | null, now: number): string {
   const first = profile?.firstSeen;
   if (typeof first !== 'number' || !Number.isFinite(first) || first <= 0) return 'unknown';
   const days = Math.floor((now / 1000 - first) / 86400);
   if (days < 1) return 'first day';
-  if (days < 7) return `${days} day${days === 1 ? '' : 's'}`;
-  const wk = Math.floor(days / 7);
-  if (wk < 5) return `~${wk} week${wk === 1 ? '' : 's'}`;
-  const mo = Math.floor(days / 30);
-  if (mo < 12) return `~${mo} month${mo === 1 ? '' : 's'}`;
-  const yr = Math.floor(days / 365);
-  return `~${yr} year${yr === 1 ? '' : 's'}`;
+  return formatDaySpan(days);
 }
 
 interface ClimateSuggestion {
@@ -183,6 +207,9 @@ export function parseClimateSuggestion(text: string | null): ClimateSuggestion |
  * The gate order is binding, and it is ordered so a thin turn cannot burn the day's evaluation:
  *   1. group identity      → skip (see the header)
  *   2. already in flight   → skip
+ *   2.5 backed off after a FAILED eval → skip. Unlike every other gate this one is process-local
+ *      and it does NOT stamp lastEvalAt: it exists purely so a persistently broken lane cannot bill
+ *      one call per reply for the rest of the week (see CLIMATE_FAILURE_BACKOFF_MS).
  *   3. inside the cooldown → skip. The COOLDOWN'S SOURCE OF TRUTH IS THE DB ROW, not a process-local
  *      Map: 22 hours has to survive a restart, or a deploy-happy week evaluates several times a day.
  *      (The dossier's in-memory throttle is right at 2 minutes and wrong here.)
@@ -201,6 +228,9 @@ export async function updateRelationshipClimate(
   const llm = opts.llm ?? callLLM;
   const now = opts.now ?? Date.now();
   const chatId = opts.chatId;
+
+  const retryAt = nextRetryAt.get(handle);
+  if (retryAt !== undefined && now < retryAt) return;
 
   inFlight.add(handle);
   try {
@@ -246,8 +276,11 @@ export async function updateRelationshipClimate(
     const suggestion = parseClimateSuggestion(res.text);
     if (!suggestion) throw new Error('climate eval reply unparsable');
 
-    const { next, changed, capped } = applyDrift(climate, suggestion, now);
+    const { next, changed, capped, atBound, shortened } = applyDrift(climate, suggestion, now);
     const saved = await saveRelationshipClimate(handle, next, { ifForgetEpoch: epoch0 });
+
+    // The eval ran end to end, so whatever was wrong before is over.
+    nextRetryAt.delete(handle);
 
     // Every eval that RAN is traced, including the healthy all-zeros one — an eval that keeps
     // finding nothing and an eval that stopped happening look identical without this. `reason` and
@@ -262,6 +295,11 @@ export async function updateRelationshipClimate(
         dials: next.dials,
         changed,
         capped,
+        // Everything the model asked for that did NOT land as a full step, so a suggestion is never
+        // just missing: `atBound` is a dial parked on its floor/ceiling, `shortened` is the smaller
+        // magnitude the weekly budget left room for (dial → applied points).
+        atBound,
+        shortened,
         // False when the /forget fence refused the write — without this a wiped register would
         // show in diagnostics as an applied drift.
         saved,
@@ -275,8 +313,10 @@ export async function updateRelationshipClimate(
     });
   } catch (err) {
     // No lane, no budget, a timeout, an unparsable reply — all the same total no-op, and all
-    // invisible to the user. Nothing was written, so the cooldown is untouched and the next
-    // substantive turn simply tries again.
+    // invisible to the user. Nothing was written, so the cooldown is untouched: the eval window
+    // this failure fell in is still owed. What IS spent is the next hour — these failures repeat,
+    // and an invisible no-op that costs a billed call per reply is the expensive kind of silence.
+    nextRetryAt.set(handle, now + CLIMATE_FAILURE_BACKOFF_MS);
     reportError({
       source: 'memory',
       category: 'classifier_failure',
