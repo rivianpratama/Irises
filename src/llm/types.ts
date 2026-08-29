@@ -1,7 +1,12 @@
 // Provider-neutral LLM shapes so agents never import SDK types directly.
 
 export type LlmRole = 'convo' | 'ops' | 'classify' | 'fallfirm';
-export type LlmProvider = 'anthropic' | 'openrouter';
+// Three lanes. `anthropic` is the native SDK; `openrouter` and `openai` are BOTH the OpenAI SDK —
+// openrouter points at openrouter.ai (with its proprietary body extras), `openai` is the generic
+// OpenAI-compatible lane whose base URL is env-configurable (OPENAI_BASE_URL), so a host engine on
+// any OpenAI-shaped API (OpenAI/Azure/vLLM/LiteLLM/Groq/Together/deepseek-direct/ollama/…) is
+// reachable by Irises's own voice. See openrouterRequest.buildOpenAIParams vs buildOpenRouterParams.
+export type LlmProvider = 'anthropic' | 'openrouter' | 'openai';
 
 export interface LlmTextBlock { type: 'text'; text: string }
 export interface LlmImageBlock { type: 'image'; url: string; mimeType?: string }

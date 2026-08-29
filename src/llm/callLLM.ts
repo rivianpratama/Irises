@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { MODELS, MAX_TOKENS, PROVIDERS, THINKING, EFFORT, CACHE_SYSTEM, TEMPERATURE } from './models.js';
 import { BUBBLE_ENVELOPE_SCHEMA, buildEnvelopeSchema, parseReply } from '../pipeline/bubbleJson.js';
-import { buildOpenRouterParams, hasDocument, hasNativeMedia, isLengthStarved } from './openrouterRequest.js';
+import { buildOpenRouterParams, buildOpenAIParams, hasDocument, hasNativeMedia, isLengthStarved } from './openrouterRequest.js';
 import { renderTimestamps } from './timedMessages.js';
 import { inlineImageBlocks } from './inlineImages.js';
 import { inlineMediaBlocks } from './inlineMedia.js';
@@ -13,7 +13,7 @@ import { shouldFallback } from './fallbackPolicy.js';
 import { isTruncatedStop, starvedError, isStarvedError, bumpStarvedBudget } from './truncation.js';
 import { reportError } from '../diagnostics/errorLog.js';
 import { checkCallBudgets, reportTaskUsage } from './budget.js';
-import { isLaneConfigured, laneEnvVar, laneKey, laneUnconfiguredError, noLaneConfiguredError } from './laneKeys.js';
+import { isLaneConfigured, laneEnvVar, laneKey, laneBaseUrl, laneUnconfiguredError, noLaneConfiguredError } from './laneKeys.js';
 import type { LlmRequest, LlmResult, LlmContentBlock, LlmProvider } from './types.js';
 
 // Clients are built LAZILY and rebuilt when the key changes. A lane whose key is unset or BLANK
@@ -36,14 +36,29 @@ function anthropicClient(): Anthropic | null {
   return anthropicLane.client;
 }
 
-let openrouterLane: { key: string; client: OpenAI } | null = null;
+// Both OpenAI-compatible lanes take an env-configurable base URL (laneBaseUrl, read at CALL time so a
+// .env edit between runs is honoured). The lane cache keys on key AND base URL, so repointing
+// OPENAI_BASE_URL (or the key) rebuilds the client rather than reusing a stale connection.
+let openrouterLane: { key: string; baseURL: string; client: OpenAI } | null = null;
 function openrouterClient(): OpenAI | null {
   const key = laneKey('openrouter');
   if (!key) return null;
-  if (openrouterLane?.key !== key.value) {
-    openrouterLane = { key: key.value, client: new OpenAI({ apiKey: key.value, baseURL: 'https://openrouter.ai/api/v1' }) };
+  const baseURL = laneBaseUrl('openrouter');
+  if (openrouterLane?.key !== key.value || openrouterLane?.baseURL !== baseURL) {
+    openrouterLane = { key: key.value, baseURL, client: new OpenAI({ apiKey: key.value, baseURL }) };
   }
   return openrouterLane.client;
+}
+
+let openaiLane: { key: string; baseURL: string; client: OpenAI } | null = null;
+function openaiClient(): OpenAI | null {
+  const key = laneKey('openai');
+  if (!key) return null;
+  const baseURL = laneBaseUrl('openai');
+  if (openaiLane?.key !== key.value || openaiLane?.baseURL !== baseURL) {
+    openaiLane = { key: key.value, baseURL, client: new OpenAI({ apiKey: key.value, baseURL }) };
+  }
+  return openaiLane.client;
 }
 
 // --- Anthropic ------------------------------------------------------------
@@ -303,16 +318,18 @@ async function callAnthropic(req: LlmRequest): Promise<LlmResult> {
   };
 }
 
-// --- OpenRouter (OpenAI-compatible) --------------------------------------
-// Request shaping (content/tool mapping, web_search server tool, PDF file-parser plugin) lives in
-// the pure, unit-tested ./openrouterRequest module. Here we only make the call + parse the reply.
-async function callOpenRouter(req: LlmRequest): Promise<LlmResult> {
-  const client = openrouterClient();
-  if (!client) throw laneUnconfiguredError('openrouter');
-  // Inline remote media as base64 first — OpenRouter providers (esp. Google/Gemini) can't reliably
-  // fetch remote image/audio/video URLs, and messaging-CDN links are often not publicly retrievable.
-  // Each inliner only touches its own block types, so the order is irrelevant.
-  const params = buildOpenRouterParams(await inlineMediaBlocks(await inlineImageBlocks(req)));
+// --- OpenAI-compatible lanes (openrouter + openai) ------------------------
+// Request shaping lives in the pure, unit-tested ./openrouterRequest module: buildOpenRouterParams
+// (openrouter.ai + proprietary extras) vs buildOpenAIParams (generic body, any OpenAI-compatible
+// base URL). Here we only make the call + parse the reply. Both lanes are the same OpenAI SDK.
+async function callOpenAICompatible(req: LlmRequest, provider: 'openrouter' | 'openai'): Promise<LlmResult> {
+  const client = provider === 'openrouter' ? openrouterClient() : openaiClient();
+  if (!client) throw laneUnconfiguredError(provider);
+  // Inline remote media as base64 first — providers (esp. Google/Gemini) can't reliably fetch remote
+  // image/audio/video URLs, and messaging-CDN links are often not publicly retrievable. Each inliner
+  // only touches its own block types, so the order is irrelevant.
+  const prepared = await inlineMediaBlocks(await inlineImageBlocks(req));
+  const params = provider === 'openrouter' ? buildOpenRouterParams(prepared) : buildOpenAIParams(prepared);
   const model = params.model;
 
   // signal: cancel the in-flight HTTP request, not just the loop around it (see LlmRequest.signal).
@@ -323,12 +340,12 @@ async function callOpenRouter(req: LlmRequest): Promise<LlmResult> {
   // Reasoning starvation: the whole max_tokens budget went to chain-of-thought and the reply carries
   // no content/tool call at all. Returning it as a normal result would look like an "empty reply"
   // downstream and callers would retry with identical params (starving identically). Throw instead —
-  // a status-less error is retryable per shouldFallback, so callLLM salvages the turn on the
-  // Anthropic fallback lane, and the message lands in traces via the ERROR record path.
-  // starvedError also MARKS the error, which is how callLLM knows to retry with a BIGGER budget
-  // rather than re-sending the same cap to a second model that would starve on it too.
+  // a status-less error is retryable per shouldFallback, so callLLM salvages the turn on a fallback
+  // lane, and the message lands in traces via the ERROR record path. starvedError also MARKS the
+  // error, which is how callLLM knows to retry with a BIGGER budget rather than re-sending the same
+  // cap to a second model that would starve on it too.
   if (isLengthStarved(choice)) {
-    throw starvedError('openrouter', model, params.max_tokens ?? MAX_TOKENS[req.role]);
+    throw starvedError(provider, model, params.max_tokens ?? MAX_TOKENS[req.role]);
   }
   const toolCalls: LlmResult['toolCalls'] = [];
   for (const tc of choice.message.tool_calls ?? []) {
@@ -339,13 +356,15 @@ async function callOpenRouter(req: LlmRequest): Promise<LlmResult> {
     }
   }
   const u = resp.usage;
+  // Server-tool text is an OpenRouter concept; a generic OpenAI endpoint returns none, so this is a
+  // harmless no-op on the openai lane.
   const serverToolText = fromOpenRouterMessage(choice.message);
   return {
     text: choice.message.content || null,
     toolCalls,
     stopReason: choice.finish_reason ?? null,
     truncated: isTruncatedStop(choice.finish_reason),
-    provider: 'openrouter',
+    provider,
     model,
     usage: u
       ? { inputTokens: u.prompt_tokens ?? 0, outputTokens: u.completion_tokens ?? 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }
@@ -356,7 +375,8 @@ async function callOpenRouter(req: LlmRequest): Promise<LlmResult> {
 }
 
 function runOn(provider: LlmProvider, req: LlmRequest): Promise<LlmResult> {
-  return provider === 'openrouter' ? callOpenRouter(req) : callAnthropic(req);
+  if (provider === 'anthropic') return callAnthropic(req);
+  return callOpenAICompatible(req, provider);
 }
 
 /** Which lane actually runs a request. Injectable into callLLM ONLY so the lane policy (is the
@@ -397,22 +417,32 @@ function recordLlmError(req: LlmRequest, provider: LlmProvider, err: unknown, st
   }).catch(() => { /* swallow: never surface analytics failures */ });
 }
 
+// Preferred fallback lane order per primary — the FIRST CONFIGURED one is used (a single fallback
+// attempt, as before; now selected from three lanes instead of the old binary flip). Anthropic leads
+// the OpenAI-compatible lanes' lists because it is first-party billing with hand-picked same-tier
+// slugs — the only safe salvage target for the 402/bad-model exceptions in fallbackPolicy.
+const FALLBACK_ORDER: Record<LlmProvider, readonly LlmProvider[]> = {
+  openrouter: ['anthropic', 'openai'],
+  openai: ['anthropic', 'openrouter'],
+  anthropic: ['openrouter', 'openai'],
+};
+
 /**
  * Single entry point used by every agent. Each role has a PRIMARY provider (its <ROLE>_PROVIDER,
- * default Anthropic); on a transient failure it falls back to the OTHER provider when that one is
- * usable. Usable means CONFIGURED — a lane whose key is unset or blank is never attempted, on
- * either side (see laneKeys.ts; neither provider is "always available", not even Anthropic).
+ * default Anthropic); on a transient failure it falls back to the first CONFIGURED other lane
+ * (FALLBACK_ORDER). Usable means CONFIGURED — a lane whose key is unset or blank is never attempted,
+ * on either side (see laneKeys.ts; no provider is "always available", not even Anthropic).
  * `run` is the lane dispatcher, injectable for unit tests only — production callers pass nothing.
  */
 export async function callLLM(req: LlmRequest, run: LaneRunner = runOn): Promise<LlmResult> {
   const start = Date.now();
   const primary: LlmProvider = req.providerOverride ?? PROVIDERS[req.role];
-  const fallback: LlmProvider = primary === 'openrouter' ? 'anthropic' : 'openrouter';
+  const fallback: LlmProvider | undefined = FALLBACK_ORDER[primary].find(p => isLaneConfigured(p));
   // No lane at all for this role: fail fast, before the budget gate and before any dispatch, with
   // both env vars named. Config precedes cost — and dispatching either lane could only produce an
   // SDK auth error from deep inside a request, which reads as provider trouble rather than as the
   // missing key it is.
-  if (!isLaneConfigured(primary) && !isLaneConfigured(fallback)) {
+  if (!isLaneConfigured(primary) && !fallback) {
     const err = noLaneConfiguredError(req.role);
     recordLlmError(req, primary, err, start);
     throw err;
@@ -446,7 +476,7 @@ export async function callLLM(req: LlmRequest, run: LaneRunner = runOn): Promise
   const fallbackBlocked: 'document' | 'media' | 'unconfigured' | null =
     hasDocument(req) && !req.allowDocumentFallback ? 'document'
       : hasNativeMedia(req) ? 'media'
-        : !isLaneConfigured(fallback) ? 'unconfigured'
+        : !fallback ? 'unconfigured'
           : null;
 
   let result: LlmResult;
@@ -461,7 +491,7 @@ export async function callLLM(req: LlmRequest, run: LaneRunner = runOn): Promise
       recordLlmError(req, primary, err, start);
       throw err;
     }
-    if (!fallbackBlocked && shouldFallback(err, fallback)) {
+    if (!fallbackBlocked && fallback && shouldFallback(err, fallback)) {
       const status = (err as { status?: number })?.status ?? 'network';
       console.warn(`[llm] ${primary} call failed (${status}), falling back to ${fallback}`);
       // A starved primary must NOT be retried on the same budget: the whole cap went to reasoning,
@@ -509,18 +539,21 @@ export async function callLLM(req: LlmRequest, run: LaneRunner = runOn): Promise
         throw fbErr;
       }
     } else {
-      // The fallback lane WOULD have salvaged this failure but has no key — the single-key setup,
-      // where one OpenRouter key serves everything and ANTHROPIC_API_KEY sits blank in .env. It
-      // used to be attempted anyway, and the SDK's "Could not resolve authentication method" from
-      // that leg replaced THIS error — the one carrying the status the floor acts on. One warn line
-      // (trace:false — recordLlmError below is this turn's error event) so a permanently keyless
-      // fallback still reads as a pattern in the error log.
-      if (fallbackBlocked === 'unconfigured' && shouldFallback(err, fallback)) {
+      // No configured fallback lane, but the failure WOULD have salvaged — the single-key setup,
+      // where one lane serves everything and the others sit blank in .env. It used to be attempted
+      // anyway, and the SDK's "Could not resolve authentication method" from that leg replaced THIS
+      // error — the one carrying the status the floor acts on. One warn line (trace:false —
+      // recordLlmError below is this turn's error event) so a permanently keyless fallback still
+      // reads as a pattern in the error log. Judged against the PREFERRED lane, even though it is
+      // unconfigured, so the directional 402/bad-model salvage still gates the message correctly.
+      const preferred = FALLBACK_ORDER[primary][0];
+      if (fallbackBlocked === 'unconfigured' && shouldFallback(err, preferred)) {
         const status = (err as { status?: number })?.status ?? 'network';
+        const missing = FALLBACK_ORDER[primary].map(laneEnvVar).join(' or ');
         reportError({
           source: req.role, category: 'llm_fallback', severity: 'warn',
-          message: `${primary} lane failed (${status}) — ${fallback} fallback skipped: ${laneEnvVar(fallback)} not configured`,
-          detail: { from: primary, to: fallback, status, reason: 'fallback_unconfigured', envVar: laneEnvVar(fallback) },
+          message: `${primary} lane failed (${status}) — no fallback lane configured (set ${missing})`,
+          detail: { from: primary, to: null, status, reason: 'fallback_unconfigured', missing },
           chatId: req.trace?.chatId, handle: req.trace?.handle, taskId: req.trace?.taskId,
           trace: false,
         });

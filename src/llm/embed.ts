@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 import { reportError } from '../diagnostics/errorLog.js';
 import { recordTokenUsage } from '../db/repositories/tokenUsage.js';
 import { checkDailyBudget } from './budget.js';
-import { laneKey } from './laneKeys.js';
+import { laneKey, laneBaseUrl } from './laneKeys.js';
 import {
   embeddingsModel, embeddingsDims, embeddingsDimsParam, l2Normalize, semanticRecallEnabled,
 } from '../db/repositories/memoryArchiveVectors.js';
@@ -30,29 +30,44 @@ export type EmbeddingResponse = OpenAI.Embeddings.CreateEmbeddingResponse;
  *  re-exported here so the LLM side reads as one API. */
 export { embeddingsModel, embeddingsDims, semanticRecallEnabled };
 
-/** Flag on AND the lane has a usable key. Blank counts as unset (see laneKeys.ts): the single-key
- *  setup leaves `OPENROUTER_API_KEY=` in .env, and a client built on that only fails from deep
- *  inside the first request. */
-export function embeddingsConfigured(): boolean {
-  return semanticRecallEnabled() && laneKey('openrouter') !== undefined;
+/** The embeddings lane: OpenRouter preferred (its aggregator carries the small embedding models),
+ *  else the generic OpenAI lane (at OPENAI_BASE_URL). CAVEAT: the default EMBEDDINGS_MODEL is an
+ *  OpenRouter-style slug (`openai/text-embedding-3-small`); on a genuine OpenAI endpoint set
+ *  EMBEDDINGS_MODEL to the unprefixed id (`text-embedding-3-small`) or the request 404s and recall
+ *  silently stays lexical. (The model id is also the vector-store key, so don't switch it casually.)
+ *  null when neither lane is configured (blank counts as unset, see laneKeys.ts). There is no
+ *  Anthropic embeddings API, so those are the two. */
+type EmbedProvider = 'openrouter' | 'openai';
+function embeddingsLane(): { provider: EmbedProvider; key: string; baseURL: string } | null {
+  const or = laneKey('openrouter');
+  if (or) return { provider: 'openrouter', key: or.value, baseURL: laneBaseUrl('openrouter') };
+  const oa = laneKey('openai');
+  if (oa) return { provider: 'openai', key: oa.value, baseURL: laneBaseUrl('openai') };
+  return null;
 }
 
-// Lazily built, rebuilt when the key changes — the callLLM lane pattern, keyed at CALL time so a
-// .env edit between runs is honoured.
+/** Flag on AND some embeddings lane has a usable key. */
+export function embeddingsConfigured(): boolean {
+  return semanticRecallEnabled() && embeddingsLane() !== null;
+}
+
+// Lazily built, rebuilt when the key OR base URL changes — the callLLM lane pattern, keyed at CALL
+// time so a .env edit between runs is honoured.
 //
 // maxRetries: 0 — the SDK's own default (2 retries with backoff, on a 10-minute per-request
 // timeout) is the wrong policy for BOTH callers. The recall leg is optional and inside a turn the
 // user is waiting through: a retried failure just costs more of their wait for the same lexical
 // answer. The backfill runs hourly, so a failed batch is retried in an hour by the next sweep,
 // which is a better backoff than any the SDK can do. The bound below is the only budget.
-let lane: { key: string; client: OpenAI } | null = null;
+let lane: { key: string; baseURL: string; client: OpenAI } | null = null;
 function embeddingsClient(): OpenAI | null {
-  const key = laneKey('openrouter');
-  if (!key) return null;
-  if (lane?.key !== key.value) {
+  const chosen = embeddingsLane();
+  if (!chosen) return null;
+  if (lane?.key !== chosen.key || lane?.baseURL !== chosen.baseURL) {
     lane = {
-      key: key.value,
-      client: new OpenAI({ apiKey: key.value, baseURL: 'https://openrouter.ai/api/v1', maxRetries: 0 }),
+      key: chosen.key,
+      baseURL: chosen.baseURL,
+      client: new OpenAI({ apiKey: chosen.key, baseURL: chosen.baseURL, maxRetries: 0 }),
     };
   }
   return lane.client;
@@ -97,6 +112,7 @@ function recordEmbedFailure(
   model: string,
   err: unknown,
   start: number,
+  provider: EmbedProvider = 'openrouter',
 ): void {
   reportError({
     // WARN, not error: a failed embedding is a DEGRADE by design — the caller gets null and recall
@@ -106,12 +122,12 @@ function recordEmbedFailure(
     // not paint the Errors tab red for a search that still works.
     source: 'memory', category: 'embedding_error', severity: 'warn', err,
     handle: ctx.handle,
-    detail: { provider: 'openrouter', model, label: ctx.label },
+    detail: { provider, model, label: ctx.label },
   });
   void recordTokenUsage({
     handle: ctx.handle,
     role: 'embed', label: ctx.label,
-    provider: 'openrouter', model,
+    provider, model,
     latencyMs: Date.now() - start,
     status: 'error', error: String((err as Error)?.message ?? err),
   }).catch(() => { /* swallow: never surface analytics failures */ });
@@ -139,16 +155,18 @@ export async function embedTexts(
 ): Promise<Float32Array[] | null> {
   if (!texts.length) return [];
   if (!semanticRecallEnabled()) return null;
-  if (!laneKey('openrouter')) {
+  const chosen = embeddingsLane();
+  if (!chosen) {
     // Flag on, no key: a misconfiguration rather than a decision, and otherwise invisible —
     // recall would just quietly stay lexical forever. Folded by fingerprint, so it costs one row.
     reportError({
       source: 'memory', category: 'embedding_error', severity: 'warn',
-      message: 'MEMORY_SEMANTIC_RECALL is on but OPENROUTER_API_KEY is unset or blank — recall stays lexical',
+      message: 'MEMORY_SEMANTIC_RECALL is on but neither OPENROUTER_API_KEY nor OPENAI_API_KEY is set — recall stays lexical',
       detail: { label: ctx.label },
     });
     return null;
   }
+  const provider = chosen.provider;
 
   const model = embeddingsModel();
   const dims = embeddingsDims();
@@ -158,7 +176,7 @@ export async function embedTexts(
   try {
     await checkDailyBudget('embed');
   } catch (err) {
-    recordEmbedFailure(ctx, model, err, start);
+    recordEmbedFailure(ctx, model, err, start, provider);
     return null;
   }
 
@@ -175,18 +193,18 @@ export async function embedTexts(
   try {
     const create = deps?.create ?? (async (p: EmbeddingCreateParams) => {
       const client = embeddingsClient();
-      if (!client) throw new Error('OPENROUTER_API_KEY not configured (embeddings lane unavailable)');
+      if (!client) throw new Error('no embeddings lane configured (set OPENROUTER_API_KEY or OPENAI_API_KEY)');
       return client.embeddings.create(p);
     });
     resp = await withTimeout(create(params), deps?.timeoutMs ?? TIMEOUT_MS[ctx.label], ctx.label);
   } catch (err) {
-    recordEmbedFailure(ctx, model, err, start);
+    recordEmbedFailure(ctx, model, err, start, provider);
     return null;
   }
 
   const data = resp?.data ?? [];
   if (data.length !== texts.length) {
-    recordEmbedFailure(ctx, model, new Error(`embeddings returned ${data.length} vectors for ${texts.length} inputs`), start);
+    recordEmbedFailure(ctx, model, new Error(`embeddings returned ${data.length} vectors for ${texts.length} inputs`), start, provider);
     return null;
   }
   // By `index`, not by array position: the contract is index-keyed, and a caller lines these up
@@ -203,7 +221,7 @@ export async function embedTexts(
       recordEmbedFailure(
         ctx, model,
         new Error(`embedding width ${Array.isArray(values) ? values.length : 'none'} ≠ requested ${dims} — dimensions param ignored?`),
-        start,
+        start, provider,
       );
       return null;
     }
@@ -215,7 +233,7 @@ export async function embedTexts(
   void recordTokenUsage({
     handle: ctx.handle,
     role: 'embed', label: ctx.label,
-    provider: 'openrouter', model,
+    provider, model,
     usage: {
       inputTokens: resp.usage?.prompt_tokens ?? 0,
       outputTokens: 0,

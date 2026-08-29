@@ -27,6 +27,7 @@ import { startRetentionTimers } from './db/retention.js';
 import { initSemanticRecall } from './memory/semanticRecall.js';
 import { initThreadPings } from './memory/threadPings.js';
 import { getVersion } from './update/version.js';
+import { getModelMap } from './llm/modelMap.js';
 import { getUpdateStatus, startUpdateChecker } from './update/checker.js';
 import { createUpdateAnnouncer } from './update/announce.js';
 import { writePidFileAtBoot } from './update/pidfile.js';
@@ -89,6 +90,9 @@ app.get('/health', (_req, res) => {
     // Which BUILD is live (git sha/branch), and whether the checker has seen a newer one upstream.
     version: getVersion(),
     update: { available: u.updateAvailable, remoteSha: u.remoteSha, lastCheckAt: u.lastCheckAt, lastCheckOk: u.lastCheckOk },
+    // The model map: which model Irises's voice runs on vs. the engine's deep-work model (zero-auth
+    // diagnostics; the dashboard renders the same data as a card).
+    models: getModelMap(),
     persona: {
       convo: personaFingerprint(loadContext('convo')),
       composer: personaFingerprint(loadContext('composer')),

@@ -8,6 +8,7 @@ import { authed } from '../auth.js';
 import { cached } from '../cache.js';
 import { getVersion } from '../../../update/version.js';
 import { getUpdateStatus } from '../../../update/checker.js';
+import { getModelMap } from '../../../llm/modelMap.js';
 
 // System-health landing view: process state, since-boot counters, 24h LLM
 // totals, and the global events that never reach the turn store.
@@ -47,6 +48,8 @@ export function registerOverviewRoutes(router: Router): void {
           bufferEvents: getTraces().length,
           liveKeys: getTurnKeys().length,
         },
+        // Which model Irises's voice runs on vs. the engine's deep-work model (rendered as a card).
+        models: getModelMap(),
         counters,
         ...payload,
         globalEvents,

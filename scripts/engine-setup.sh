@@ -375,14 +375,16 @@ setup_hermes() {
     BRIDGE_TOKEN_SYNCED=1
   fi
 
-  # 3. Voice-model keys: reuse what hermes already has (never overwrite user-set values)
+  # 3. Voice-model keys + endpoint: reuse what hermes already has (never overwrite user-set values).
+  # OPENAI_* covers the generic OpenAI-compatible lane, so a hermes on OpenAI/Azure/vLLM/deepseek/etc.
+  # gives Irises's voice a working key (boot discovery also reads model.base_url/api_key from config).
   local k
-  for k in ANTHROPIC_API_KEY OPENROUTER_API_KEY; do
+  for k in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY OPENAI_BASE_URL; do
     local v; v="$(get_env "$k" "$henv")"
     [ -n "$v" ] && set_env "$k" "$v"
   done
-  if [ -z "$(get_env ANTHROPIC_API_KEY "$ENV_FILE")" ] && [ -z "$(get_env OPENROUTER_API_KEY "$ENV_FILE")" ]; then
-    warn "no ANTHROPIC_API_KEY or OPENROUTER_API_KEY found to reuse — add one to .env before starting"
+  if [ -z "$(get_env ANTHROPIC_API_KEY "$ENV_FILE")" ] && [ -z "$(get_env OPENROUTER_API_KEY "$ENV_FILE")" ] && [ -z "$(get_env OPENAI_API_KEY "$ENV_FILE")" ]; then
+    warn "no ANTHROPIC_API_KEY, OPENROUTER_API_KEY, or OPENAI_API_KEY found to reuse — add one to .env before starting"
     warn "(Irises's own voice models need it; the engine key only covers deep work)"
   fi
 
@@ -405,9 +407,10 @@ setup_openclaw() {
   # @openclaw/gateway-client is installed AFTER the build — `npm ci` deletes anything that isn't in
   # the lockfile, so installing it here (as this script used to) quietly wiped it again.
 
-  if [ -z "$(get_env ANTHROPIC_API_KEY "$ENV_FILE")" ] && [ -z "$(get_env OPENROUTER_API_KEY "$ENV_FILE")" ]; then
-    warn "add an ANTHROPIC_API_KEY or OPENROUTER_API_KEY to .env before starting"
+  if [ -z "$(get_env ANTHROPIC_API_KEY "$ENV_FILE")" ] && [ -z "$(get_env OPENROUTER_API_KEY "$ENV_FILE")" ] && [ -z "$(get_env OPENAI_API_KEY "$ENV_FILE")" ]; then
+    warn "add an ANTHROPIC_API_KEY, OPENROUTER_API_KEY, or OPENAI_API_KEY to .env before starting"
     warn "(Irises's own voice models need it; the gateway token only covers deep work)"
+    warn "(on an OpenAI-compatible API also set OPENAI_BASE_URL + <ROLE>_PROVIDER=openai)"
   fi
   warn "note: reminders via Irises are hermes-only for now (OpenClaw cron wiring pending — docs/ENGINES.md)"
 

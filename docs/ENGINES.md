@@ -105,21 +105,44 @@ no dotenv files) discovery finds nothing and the compose-injected env stands.
 
 ### Model inheritance
 
-Deep work already runs on the engine's model. On top of that, discovery reads the model the engine is
-configured with and applies it to **all three of Irises's own voice roles** (`convo`, `classify`,
-`fallfirm`), so *the model Irises speaks with is the model your engine uses*:
+Deep work already runs on the engine's model. On top of that, discovery reads the engine's configured
+**provider + endpoint + key** and points Irises's own voice roles (`convo`, `classify`, `fallfirm`) at
+the *same API the engine uses* — so Irises's voice works no matter what the engine runs on, including
+an "obscure" (non-OpenRouter, non-Anthropic) API.
 
-| Engine | Where the model is read | Example value |
+| Engine | Where it's read | Keys read |
 |---|---|---|
-| hermes | `hermes config get model.default` (env fallback `HERMES_MODEL`, else a `~/.hermes/config.yaml` scan) | `anthropic/claude-opus-4.6` |
-| OpenClaw | `openclaw config get agents.entries.<agent>.model`, else `agents.defaults.model.primary` | `anthropic/claude-opus-5` |
+| hermes | `hermes config get model.default / model.provider / model.base_url / model.api_key / model.api_mode` (env/`~/.hermes/config.yaml` fallbacks) | reuses `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` from `~/.hermes/.env` |
+| OpenClaw | `openclaw config get agents.entries.<agent>.model`, else `agents.defaults.model.primary` | reuses the engine token |
 
-Both engines emit a `provider/model` slug, which Irises's OpenRouter lane consumes verbatim (an exact
-match) using the reused OpenRouter key. On an Anthropic-only engine the `anthropic/…` prefix is
-stripped onto the Anthropic lane (best-effort — override `<ROLE>_MODEL` if the version format is
-rejected). Transcription is never inherited (it needs an audio-capable model). Turn the whole thing
-off with `ENGINE_MODEL_INHERIT=off`; override any single role with `<ROLE>_MODEL` /
-`<ROLE>_MODEL_OPENROUTER` / `<ROLE>_PROVIDER`.
+**Which model Irises's voice defaults to** (all three voice roles, overridable):
+
+| Engine provider | Irises voice lane | Default voice model |
+|---|---|---|
+| `openrouter` | openrouter | `deepseek/deepseek-v4-flash:nitro` (curated cheap) |
+| `openai` | openai (api.openai.com) | `gpt-5.6-luna` (curated cheap) |
+| `anthropic` | anthropic | `claude-sonnet-5` (curated cheap) |
+| any other OpenAI-compatible (azure, deepseek-direct, vLLM, groq, custom, …) | openai @ the engine's `base_url` | the engine's own model |
+| foreign auth/protocol (bedrock, vertex, gemini-native, codex/nous/xai-OAuth) | *not reachable directly* → keeps a working fallback lane + warns | — |
+
+The chat voice deliberately keeps a **cheap, fast** model even when the engine runs a big deep-work
+model, so replies stay snappy; a curated slug is used for the three named providers, and the engine's
+own model for any other reachable OpenAI-compatible host. Deep work always uses the engine's real
+model regardless.
+
+Transcription and embeddings are never inherited as chat models but do follow the OpenRouter→OpenAI
+lane (they degrade to lexical recall / disabled voice-memo transcription, with a note in the model
+map, if neither key is present). Turn inheritance off with `ENGINE_MODEL_INHERIT=off`; override any
+role with `<ROLE>_MODEL` / `<ROLE>_MODEL_OPENROUTER` / `<ROLE>_MODEL_OPENAI` / `<ROLE>_PROVIDER`, and
+point the openai lane anywhere with `OPENAI_BASE_URL`.
+
+**Seeing what's live:** the model map (Irises's voice model vs. the engine's deep-work model) shows in
+`/health`, on the `/dashboard` overview, and via `npx tsx scripts/print-model-map.ts`. Irises will
+also tell you her models in chat if you ask.
+
+> **Note:** the auto openai-lane inheritance (reading `base_url`/`api_key`) is implemented for **hermes**.
+> On OpenClaw the `provider/model` slug still routes via the existing heuristic; an OpenClaw user on an
+> obscure API can point the voice manually with `<ROLE>_PROVIDER=openai` + `OPENAI_BASE_URL` + `OPENAI_API_KEY`.
 
 ## Engine onboarding (the standing discipline)
 

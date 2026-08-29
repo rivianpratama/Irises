@@ -16,6 +16,8 @@ export const OVERVIEW_CSS = `
 export const OVERVIEW_HTML = `
 <h2 class="vh">System health</h2>
 <div class="cards" id="ov-top"></div>
+<h3 class="sh">Model map <span style="text-transform:none;letter-spacing:0">(Irises's voice vs. the engine's deep work)</span></h3>
+<div class="cardbox" id="ov-models"></div>
 <h3 class="sh">Activity since boot</h3>
 <div class="cards" id="ov-counters"></div>
 <div class="cards" style="margin-top:.8rem">
@@ -39,7 +41,7 @@ export const OVERVIEW_JS = `
     var l = j.llm24h||{calls:0,errors:0,fallbacks:0,totalTokens:0};
     var ver = j.version||{};
     var upd = j.update||{};
-    var fpSrc = JSON.stringify([d, l, j.counters, j.driver, ver.sha, upd, (j.globalEvents||[]).length ? j.globalEvents[j.globalEvents.length-1].id : 0]);
+    var fpSrc = JSON.stringify([d, l, j.counters, j.driver, ver.sha, upd, j.models, (j.globalEvents||[]).length ? j.globalEvents[j.globalEvents.length-1].id : 0]);
     M.renderIf('ov:all', fpSrc, function(){
       var vhead = ver.shortSha ? M.esc(ver.shortSha) : (ver.source==='unknown' ? '<span style="color:var(--mut)">unknown</span>' : '—');
       var vsub;
@@ -52,6 +54,27 @@ export const OVERVIEW_JS = `
         + card('version', vhead, vsub)
         + card('diagnostics', d.enabled?'on':'<span style="color:var(--err)">OFF</span>', (d.bufferEvents||0)+' buffered events \\u00B7 '+(d.liveKeys||0)+' live chats')
         + card('LLM (24h)', M.fmtNum(l.calls)+' calls', M.fmtNum(l.totalTokens)+' tokens \\u00B7 '+l.errors+' errors \\u00B7 '+l.fallbacks+' fallbacks');
+
+      var mm = j.models||{voice:[],engine:{},sideLanes:{}};
+      var voiceRows = (mm.voice||[]).map(function(v){
+        return '<div class="brow"><span class="blabel">'+M.esc(v.role)+'</span>'
+          + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+          + M.esc(v.provider)+'/'+M.esc(v.model)
+          + ' <span style="color:var(--mut)">@ '+M.esc(v.endpoint)+'</span>'
+          + (v.configured?'':' <span style="color:var(--err)">no key</span>')
+          + '</span></div>';
+      }).join('');
+      var eng = mm.engine||{};
+      var engLine = eng.backend
+        ? M.esc(eng.backend)+': '+M.esc(eng.model||'?')+(eng.provider?' <span style="color:var(--mut)">('+M.esc(eng.provider)+')</span>':'')
+        : '<span style="color:var(--mut)">none (standalone / OPS_BACKEND=off)</span>';
+      var sl = mm.sideLanes||{embeddings:{},transcription:{}};
+      var emb = sl.embeddings||{};
+      document.getElementById('ov-models').innerHTML =
+        '<div class="ct">Irises voice (own conversational models)</div>'+(voiceRows||'<div class="empty">—</div>')
+        + '<div class="ct" style="margin-top:.55rem">Engine deep work</div><div class="cv" style="font-size:.92rem">'+engLine+'</div>'
+        + '<div class="cs" style="margin-top:.4rem">embeddings: '+(emb.enabled?(emb.configured?'on':'<span style="color:var(--warn)">on but no key — recall stays lexical</span>'):'off')
+        + ' \\u00B7 transcription: '+((sl.transcription&&sl.transcription.configured)?'available':'<span style="color:var(--warn)">unavailable</span>')+'</div>';
 
       var c = j.counters||{};
       document.getElementById('ov-counters').innerHTML =

@@ -8,7 +8,7 @@ import type { LlmProvider, LlmRequest, LlmResult } from './types.js';
 // The lane policy end to end: callLLM's real dispatch, with the provider call itself replaced (the
 // `run` seam) so a keyless lane, a 400 and a fallback can all be exercised without a network.
 
-const KEYS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENROUTER_API_KEY'] as const;
+const KEYS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY'] as const;
 
 /** Set exactly these lane keys for one test; everything else is unset. */
 function setKeys(keys: Partial<Record<(typeof KEYS)[number], string>>): void {
@@ -59,11 +59,11 @@ test('a keyless fallback lane is NOT attempted — the primary error is what the
     },
   );
   assert.deepEqual(lanes, ['openrouter'], 'the keyless anthropic lane was never dispatched');
-  // One warn line saying why the fallback was skipped, naming the missing var.
+  // One warn line saying no fallback lane is configured, naming the missing vars.
   const warns = getRecentErrors().filter(e => e.category === 'llm_fallback');
   assert.equal(warns.length, 1);
   assert.equal(warns[0].severity, 'warn');
-  assert.match(warns[0].message, /fallback skipped: ANTHROPIC_API_KEY not configured/);
+  assert.match(warns[0].message, /no fallback lane configured \(set ANTHROPIC_API_KEY or OPENAI_API_KEY\)/);
   // …and the primary failure itself still leaves its own error trail.
   assert.equal(getRecentErrors().filter(e => e.category === 'llm_error').length, 1);
 });
@@ -138,6 +138,27 @@ test('with NO lane configured the role fails fast, naming itself and both env va
     },
   );
   assert.equal(dispatched, 0, 'neither lane was dispatched — the config error precedes any call');
+});
+
+test('provider openai primary → dispatched on the generic OpenAI lane', async () => {
+  setKeys({ OPENAI_API_KEY: 'sk-openai' });
+  const lanes: LlmProvider[] = [];
+  const result = await callLLM(req({ providerOverride: 'openai' }), async provider => { lanes.push(provider); return ok(provider); });
+  assert.deepEqual(lanes, ['openai']);
+  assert.equal(result.provider, 'openai');
+});
+
+test('three-lane fallback: openrouter primary, anthropic unconfigured, openai configured → falls back to openai', async () => {
+  setKeys({ OPENROUTER_API_KEY: 'sk-or', OPENAI_API_KEY: 'sk-openai' }); // no anthropic key
+  const lanes: LlmProvider[] = [];
+  const result = await callLLM(req({ providerOverride: 'openrouter' }), async provider => {
+    lanes.push(provider);
+    if (provider === 'openrouter') throw withStatus(503, 'upstream unavailable');
+    return ok(provider);
+  });
+  // FALLBACK_ORDER['openrouter'] = ['anthropic','openai']; anthropic unconfigured, so openai wins.
+  assert.deepEqual(lanes, ['openrouter', 'openai']);
+  assert.equal(result.provider, 'openai');
 });
 
 test('a keyless fallback does not add a skip warn when the error was never fallbackable', async () => {

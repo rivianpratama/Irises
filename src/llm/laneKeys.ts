@@ -21,11 +21,24 @@ import type { LlmProvider, LlmRole } from './types.js';
 const LANE_KEY_ENV: Record<LlmProvider, readonly string[]> = {
   anthropic: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
   openrouter: ['OPENROUTER_API_KEY'],
+  // The generic OpenAI-compatible lane. A host engine on a non-OpenRouter OpenAI-shaped API has its
+  // key reused here by engineDiscovery (fill 'OPENAI_API_KEY'); a user can also set it by hand.
+  openai: ['OPENAI_API_KEY'],
 };
 
 /** The env var a lane's messages name. */
 export function laneEnvVar(provider: LlmProvider): string {
   return LANE_KEY_ENV[provider][0];
+}
+
+/** The base URL for an OpenAI-compatible lane, env-overridable and read at call time so a .env edit
+ *  between runs is honoured. openrouter defaults to openrouter.ai; the generic `openai` lane defaults
+ *  to api.openai.com but is repointed at a host engine's endpoint by engineDiscovery. (Anthropic's
+ *  base URL comes from its own SDK env, ANTHROPIC_BASE_URL, so it isn't handled here.) */
+export function laneBaseUrl(provider: 'openrouter' | 'openai'): string {
+  return provider === 'openai'
+    ? (process.env.OPENAI_BASE_URL?.trim() || 'https://api.openai.com/v1')
+    : (process.env.OPENROUTER_BASE_URL?.trim() || 'https://openrouter.ai/api/v1');
 }
 
 /** A trimmed env value, or undefined when the variable is unset OR blank (`KEY=`, `KEY="   "`). */

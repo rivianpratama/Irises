@@ -106,15 +106,19 @@ function toOpenRouterEffort(effort: EffortLevel | null): 'low' | 'medium' | 'hig
   return effort === 'low' ? 'low' : effort === 'medium' ? 'medium' : 'high';
 }
 
-export function buildOpenRouterParams(req: LlmRequest): OpenRouterParams {
+/**
+ * The GENERIC OpenAI Chat Completions body, shared by both OpenAI-compatible lanes (`openrouter`
+ * and `openai`). Nothing OpenRouter-proprietary here — no cache_control, no `openrouter:web_search`
+ * server tool, no `reasoning`/`provider`/`plugins`/`max_tool_calls`. A stock OpenAI-compatible
+ * endpoint (OpenAI, Azure, vLLM, LiteLLM, Groq, …) accepts every field this emits. `model` is passed
+ * in because it is lane-specific (MODELS[role].openrouter vs .openai). Exported for unit tests.
+ */
+export function buildBaseParams(
+  req: LlmRequest,
+  model: string,
+): OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming {
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
-  if (req.system) {
-    // Cache the stable system prefix for opted-in roles via Anthropic-through-OpenRouter cache_control
-    // passthrough (harmlessly ignored by non-Anthropic experiment models). Others send a plain string.
-    messages.push(CACHE_SYSTEM[req.role]
-      ? { role: 'system', content: [{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }] } as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam
-      : { role: 'system', content: req.system });
-  }
+  if (req.system) messages.push({ role: 'system', content: req.system });
   // Structured message timestamps become in-band content here (the API rejects unknown keys).
   for (const m of renderTimestamps(req.messages)) {
     messages.push({ role: m.role, content: toOpenRouterContent(m.content) } as OpenAI.Chat.Completions.ChatCompletionMessageParam);
@@ -124,53 +128,85 @@ export function buildOpenRouterParams(req: LlmRequest): OpenRouterParams {
   // schema (tool_calls field) + the system prompt's tool docs instead. Sending both channels at
   // once is the one way to get double-dispatch of the same action, so this is strictly either/or.
   const tools = !req.toolsViaJson && req.tools?.length ? toOpenRouterTools(req.tools) : [];
-  // OpenRouter runs web_search server-side and folds the results into the reply (no client
-  // round-trip) — the cross-provider analogue of Anthropic's native web_search. The SDK doesn't
-  // type this server-tool entry, hence the cast.
-  // https://openrouter.ai/docs/guides/features/server-tools/web-search
-  // max_uses MUST be set: uncapped, a deep-research model browses freely and every fetched page is
-  // billed as prompt tokens. Mirrors the Anthropic lane's web_search max_uses so both lanes obey
-  // the same OPS_WEB_SEARCH_MAX_USES ceiling.
-  if (req.enableWebSearch) {
-    tools.push({
-      type: 'openrouter:web_search',
-      parameters: { max_uses: req.webSearchMaxUses ?? 3 },
-    } as unknown as OpenAI.Chat.Completions.ChatCompletionTool);
-  }
 
-  const params: OpenRouterParams = {
-    model: req.modelOverride || MODELS[req.role].openrouter,
+  const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
+    model,
     max_tokens: req.maxTokens ?? MAX_TOKENS[req.role],
     messages,
   };
   const temp = req.temperature ?? TEMPERATURE[req.role] ?? undefined;
   if (temp !== undefined) params.temperature = temp;
-  // Reasoning (adaptive thinking / effort) for opted-in roles. OpenRouter is the experiment lane, so
-  // send it whenever configured and let the chosen model honor it (effort capped to 'high' above).
-  const orEffort = toOpenRouterEffort(EFFORT[req.role]);
-  if (THINKING[req.role] || orEffort) {
-    params.reasoning = { enabled: true, ...(orEffort ? { effort: orEffort } : {}) };
-  }
   if (tools.length) params.tools = tools;
-  // Request-level ceiling on server-tool invocations (OpenRouter's default is 30 — far too loose for
-  // a cost-bounded agent, and it applies even with NO web_search tool: a deep-research model browses
-  // server-side regardless). Web search ON → the web-search cap wins (belt to max_uses' suspenders);
-  // OFF → the always-on default (see MAX_TOOL_CALLS_DEFAULT above; 0 disables the field).
-  if (req.enableWebSearch) params.max_tool_calls = req.webSearchMaxUses ?? 3;
-  else if (MAX_TOOL_CALLS_DEFAULT > 0) params.max_tool_calls = MAX_TOOL_CALLS_DEFAULT;
-  // Force schema-valid bubble JSON at the API (OpenRouter structured outputs). NOTE: native tools +
-  // response_format coexistence proved provider-DEPENDENT in practice — several deepseek-v4-flash
-  // providers (incl. DeepSeek first-party) accept response_format but lack structured_outputs, so
-  // the schema was silently dropped and prose slipped out. Roles that need tools alongside the
-  // envelope now use toolsViaJson (tool calls written INTO the schema'd reply, no native tools
-  // param), making response_format the single output channel. require_parameters routes only to a
-  // provider that supports every param we send (fail loud rather than silently drop the constraint).
+  // Force schema-valid bubble JSON at the API (OpenAI structured outputs). This IS generic — OpenAI,
+  // Azure OpenAI and most gateways support json_schema; an endpoint that lacks it fails loud and
+  // callLLM salvages the turn on another lane (there is no silent-drop retry on this path).
   if (req.jsonBubbles) {
     const schema = req.envelopeSchema ?? (req.toolsViaJson ? buildEnvelopeSchema(req.tools) : BUBBLE_ENVELOPE_SCHEMA);
     params.response_format = {
       type: 'json_schema',
       json_schema: { name: 'irises_reply', strict: true, schema },
     } as OpenAI.Chat.Completions.ChatCompletionCreateParams['response_format'];
+  }
+  return params;
+}
+
+/** The generic `openai` lane params — the base body with its own model slug and NO OpenRouter
+ *  extras. This is what lets Irises's voice reach any OpenAI-compatible endpoint via OPENAI_BASE_URL. */
+export function buildOpenAIParams(req: LlmRequest): OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming {
+  return buildBaseParams(req, req.modelOverride || MODELS[req.role].openai);
+}
+
+/** The `openrouter` lane params: the generic base PLUS OpenRouter-proprietary extras (cache_control
+ *  passthrough, the openrouter:web_search server tool, unified `reasoning`, provider routing prefs,
+ *  max_tool_calls, and the file-parser/response-healing plugins). None of these are sent on the
+ *  generic `openai` lane, which would 400 on them. */
+export function buildOpenRouterParams(req: LlmRequest): OpenRouterParams {
+  const params = buildBaseParams(req, req.modelOverride || MODELS[req.role].openrouter) as OpenRouterParams;
+
+  // Cache the stable system prefix via Anthropic-through-OpenRouter cache_control passthrough
+  // (harmlessly ignored by non-Anthropic experiment models). Replace the plain system message the
+  // base builder emitted at index 0.
+  if (req.system && CACHE_SYSTEM[req.role]) {
+    params.messages[0] = {
+      role: 'system',
+      content: [{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }],
+    } as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam;
+  }
+
+  // OpenRouter runs web_search server-side and folds the results into the reply (no client
+  // round-trip) — the cross-provider analogue of Anthropic's native web_search. The SDK doesn't
+  // type this server-tool entry, hence the cast.
+  // https://openrouter.ai/docs/guides/features/server-tools/web-search
+  // max_uses MUST be set: uncapped, a deep-research model browses freely and every fetched page is
+  // billed as prompt tokens. Mirrors the Anthropic lane's web_search max_uses.
+  if (req.enableWebSearch) {
+    const tools = (params.tools ?? []) as OpenAI.Chat.Completions.ChatCompletionTool[];
+    tools.push({
+      type: 'openrouter:web_search',
+      parameters: { max_uses: req.webSearchMaxUses ?? 3 },
+    } as unknown as OpenAI.Chat.Completions.ChatCompletionTool);
+    params.tools = tools;
+  }
+
+  // Reasoning (adaptive thinking / effort) for opted-in roles. OpenRouter is the experiment lane, so
+  // send it whenever configured and let the chosen model honor it (effort capped to 'high' above).
+  const orEffort = toOpenRouterEffort(EFFORT[req.role]);
+  if (THINKING[req.role] || orEffort) {
+    params.reasoning = { enabled: true, ...(orEffort ? { effort: orEffort } : {}) };
+  }
+
+  // Request-level ceiling on server-tool invocations (OpenRouter's default is 30 — far too loose for
+  // a cost-bounded agent, and it applies even with NO web_search tool: a deep-research model browses
+  // server-side regardless). Web search ON → the web-search cap wins; OFF → the always-on default
+  // (see MAX_TOOL_CALLS_DEFAULT above; 0 disables the field).
+  if (req.enableWebSearch) params.max_tool_calls = req.webSearchMaxUses ?? 3;
+  else if (MAX_TOOL_CALLS_DEFAULT > 0) params.max_tool_calls = MAX_TOOL_CALLS_DEFAULT;
+
+  // response_format is already on params (base builder). On OpenRouter it needs require_parameters
+  // routing so it lands only on a provider that supports every param we send — several
+  // deepseek-v4-flash providers accept response_format but lack structured_outputs and silently drop
+  // the schema, letting prose slip out. Fail loud rather than silently drop the constraint.
+  if (req.jsonBubbles) {
     params.provider = { ...(params.provider ?? {}), require_parameters: true };
   }
   // Unit-price ceiling (see MAX_PRICE_* note above) — merged so jsonBubbles' require_parameters

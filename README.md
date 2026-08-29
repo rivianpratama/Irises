@@ -46,7 +46,7 @@ The engine stays completely unmodified. One command wires it up. That's the whol
 - **She makes the first move.** Once, minutes after install, Irises asks the engine what it already knows about its user, seeds her own memory with it (stamped second-hand), and introduces herself — *"Irises, but you can call me Iris"*. She texts first only where the engine confirms you've genuinely talked in that exact chat before; anything less and she folds the introduction into her reply to your first message instead. No cold text ever leaves the box. `FIRST_MOVE_ENABLED=false` makes the install silent.
 - **It reaches out first, but politely.** The engine's cron jobs and mail triage push back through `POST /api/engine/push`, get voiced by the Composer (which opens with *why* the text is arriving), and land on whatever channel the chat came from. Duplicates are collapsed, and a non-urgent push that arrives overnight waits for morning. If you opt in (`THREADING_PINGS_ENABLED`, off by default because it makes a phone buzz unprompted), she may also text once about something you left hanging — hard-bounded to one ping per person per week, only after 48h of silence, never twice about the same thing. This part I'm quite proud of.
 - **A hidden mood.** There is a small affect engine behind the scenes — a per-chat mood based on the Gloria Willcox feeling wheel, a 28-day cycle, a circadian rhythm. Nobody is told about it, and its status output is swallowed before you see it. It only makes the voice feel a bit more alive.
-- **Provider-neutral LLM layer.** One `callLLM` over Anthropic and OpenRouter — a primary lane per role, automatic fallback to the other on transient errors, and tool-calls, structured "bubble" output and prompt caching normalized to one shape.
+- **Provider-neutral LLM layer.** One `callLLM` over Anthropic, OpenRouter, and any OpenAI-compatible API — a primary lane per role, automatic fallback to the next configured lane on transient errors, and tool-calls, structured "bubble" output and prompt caching normalized to one shape.
 - **Nothing is a black box.** `/debug` shows every prompt trace, and `/dashboard` shows every hop, cost, and error.
 
 ## How it works
@@ -306,9 +306,9 @@ Outbound routes by `chatId` prefix — `web:` → web / CLI, `eng:<platform>:<ch
 
 ## Models
 
-**By default, Irises speaks with your engine's model.** Deep work already runs on the engine; on top of that, at boot Irises reads the model your hermes/OpenClaw is configured with and uses it for its own three voice roles too — so there is *one* model, not two. Both engines express their model as a `provider/model` slug, which Irises's OpenRouter lane consumes verbatim (an exact match), reusing the engine's key. Nothing to configure.
+**By default, Irises speaks on your engine's API.** Deep work already runs on the engine; on top of that, at boot Irises reads your hermes/OpenClaw's configured **provider, endpoint, and key** and points its own three voice roles at the *same API* — so the voice works whatever the engine runs on, including a non-OpenRouter, non-Anthropic ("obscure") OpenAI-compatible API (OpenAI, Azure, vLLM, deepseek-direct, Groq, a self-hosted gateway…). The chat voice keeps a **cheap, fast** model on that API (curated per provider: OpenRouter → `deepseek/deepseek-v4-flash:nitro`, OpenAI → `gpt-5.6-luna`, Anthropic → `claude-sonnet-5`; any other reachable provider → the engine's own model), so replies stay snappy while deep work uses the big engine model. A foreign auth/protocol Irises can't call directly (Bedrock, Vertex, Gemini-native, OAuth) keeps a working fallback lane and warns. Nothing to configure. *(Auto endpoint/key inheritance is implemented for hermes; an OpenClaw user on an obscure API sets it by hand — see [docs/ENGINES.md](docs/ENGINES.md#model-inheritance).)*
 
-Want a cheaper or faster voice? Override any role independently: set `<ROLE>_MODEL` / `<ROLE>_MODEL_OPENROUTER` / `<ROLE>_PROVIDER` — anything you set wins over what's inherited. To stop inheriting completely and keep Irises's own shipped models, set `ENGINE_MODEL_INHERIT=off`.
+There are **three lanes**: `anthropic` (native SDK, honours `ANTHROPIC_BASE_URL`), `openrouter` (openrouter.ai + its proprietary extras), and `openai` (a generic OpenAI-compatible client whose endpoint is `OPENAI_BASE_URL`). Want a cheaper or faster voice, or a different endpoint? Override any role independently: `<ROLE>_MODEL` / `<ROLE>_MODEL_OPENROUTER` / `<ROLE>_MODEL_OPENAI` / `<ROLE>_PROVIDER`, plus `OPENAI_BASE_URL` / `OPENROUTER_BASE_URL` — anything you set wins over what's inherited. To stop inheriting and keep Irises's own shipped models, set `ENGINE_MODEL_INHERIT=off`. The live model map (voice vs. deep-work) shows in `/health`, the `/dashboard` overview, and `npx tsx ./scripts/print-model-map.ts` — and Irises will tell you in chat if you ask.
 
 With **no engine** (the debug/standalone path) Irises falls back to its own shipped models — three roles, OpenRouter-primary with an Anthropic fallback lane:
 
@@ -319,7 +319,7 @@ With **no engine** (the debug/standalone path) Irises falls back to its own ship
 | **Fallfirm** — holding beats + recovery voice | `openai/gpt-5.6-luna:nitro` | `claude-sonnet-4-6` |
 | **Transcribe** — voice memos *(never inherited — needs an audio model)* | `google/gemini-3.5-flash-lite:nitro` | *(OpenRouter only)* |
 
-`<ROLE>_PROVIDER` picks the primary lane per role; the other becomes the automatic fallback on 5xx / 429 / network errors.
+`<ROLE>_PROVIDER` picks the primary lane per role (`anthropic` | `openrouter` | `openai`); the first configured other lane becomes the automatic fallback on 5xx / 429 / network errors.
 
 ## HTTP API
 
@@ -340,7 +340,7 @@ irises/
 │  ├─ index.ts             #   HTTP entry, batching/mouth, boot
 │  ├─ agents/              #   convo · ops (engine seam) · composer · fallfirm + orchestrator
 │  ├─ channels/            #   Channel abstraction + web (SSE + CLI) · bridge
-│  ├─ llm/                 #   callLLM: provider-neutral LLM layer (Anthropic + OpenRouter)
+│  ├─ llm/                 #   callLLM: provider-neutral LLM layer (Anthropic + OpenRouter + OpenAI-compatible)
 │  ├─ persona/             #   hidden affect engine (mood wheel · circadian · 28-day cycle · status) · climate · threads
 │  ├─ state/ · memory/     #   send lock, batching, pacing · memory tiers · thread harvest · note groomer · semantic recall
 │  ├─ db/ · pipeline/      #   local data layer (SQLite + memory files) · bubble, cron, time helpers

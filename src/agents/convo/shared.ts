@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { loadContext } from '../loadContext.js';
+import { getModelMap, type ModelMap } from '../../llm/modelMap.js';
 import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
 import type { CapabilitySummary, CapabilityClass } from '../ops/engineBackend.js';
 import { markIntroWoven } from '../ops/firstMove.js';
@@ -508,6 +509,22 @@ export function convoPersonaChars(): number {
   return loadContext('convo').length;
 }
 
+/** The per-turn "What you run on" note that lets Irises answer model questions honestly (see the
+ *  persona's "When they ask what you ARE" section). Stable within a deployment, so it sits in the
+ *  same stable-slot as the capability line. Names the resolved voice model + the engine's deep-work
+ *  model from the live model map — never hardcoded, so it always matches what actually ran. */
+function renderModelMapAwareness(map: ModelMap): string {
+  const voice = map.voice.find(v => v.role === 'convo') ?? map.voice[0];
+  const voiceStr = voice ? `${voice.model} (via ${voice.provider})` : 'your configured chat model';
+  const engineStr = map.engine.backend
+    ? `${map.engine.model ?? 'its own model'}, running on ${map.engine.backend}`
+    : 'no separate deep-work engine right now (you handle everything on your chat model)';
+  return `## What you run on (say this plainly if they ask what model/tech you are)
+- Your chat voice: ${voiceStr}.
+- Your deep look (the heavy digging): ${engineStr}.
+Read these off honestly in your own words if asked — you no longer deflect model questions. Keep it a light sentence and swing back to them.`;
+}
+
 export function buildSystemPrompt(
   chatContext: ChatContext | undefined,
   contextBlock: string,
@@ -569,6 +586,11 @@ export function buildSystemPrompt(
   // in the stable-within-a-chat slot right after the tool docs. Null/empty summary → nothing pushed.
   const capabilityLine = renderCapabilityLine(capabilitySummary ?? null);
   if (capabilityLine) dyn.push(capabilityLine);
+
+  // Model self-awareness: the resolved voice model + the engine's deep-work model, so Irises can
+  // answer "what model are you?" honestly (the persona's warm wall now permits it). Stable-slot,
+  // right after the capability line. Read from the live model map, never hardcoded.
+  dyn.push(renderModelMapAwareness(getModelMap()));
 
   // Who they are + how to address them (name / "boss" / a saved preference) now lives in the shared
   // user-context block below via buildContextBlock. Here we only add the onboarding nudge

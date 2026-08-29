@@ -20,9 +20,12 @@ pointed at. This hermes stays completely unmodified; Irises talks to it only thr
 OpenAI-compatible API server (`API_SERVER_ENABLED`) and the cron REST API.
 
 Irises rides **on top of** this hermes: on boot it auto-detects it (sets `OPS_BACKEND=hermes`),
-reuses this hermes's API key, and makes its own voice **inherit this hermes's model** — so there is
-nothing to configure by hand. The setup below just enables the API surface and generates the push
-token; everything else is derived at boot.
+reuses this hermes's API key, and makes its own voice **inherit this hermes's provider, endpoint, and
+model** — including when this hermes runs on an OpenAI-compatible or otherwise "obscure" API (OpenAI,
+Azure, vLLM, deepseek-direct, Groq, a self-hosted gateway…), not just OpenRouter or Anthropic. The
+voice keeps a cheap, fast model on that same API (so replies stay snappy); deep work always uses the
+engine's own model. So there is nothing to configure by hand. The setup below just enables the API
+surface and generates the push token; everything else is derived at boot.
 
 ## What setup does
 
@@ -45,8 +48,8 @@ making it. Walk the user through these stages, running the script for the mechan
      and `PORT=3000` — the committed `deploy/app.env` baseline says `8080`, which is the Docker
      image's port behind Caddy, so a local install pins 3000 and the server, the printed web URL
      and `npm run chat` all agree (no database needed — Irises persists to `~/.irises` on its own),
-   - offers to reuse the Anthropic/OpenRouter key hermes already uses for Irises's own small voice
-     models (never overwrites values the user set themselves),
+   - offers to reuse the Anthropic / OpenRouter / OpenAI key (and `OPENAI_BASE_URL`) hermes already
+     uses, for Irises's own small voice models (never overwrites values the user set themselves),
    - sets up bridge mode **by default** (front this hermes's channels — iMessage, WhatsApp, Discord,
      any of them — with Irises, via a plugin installed AND enabled through hermes's own plugin
      system; writes `IRISES_FRONT=*:*` so Irises fronts everything out of the box, narrow it per chat
@@ -99,6 +102,11 @@ making it. Walk the user through these stages, running the script for the mechan
 ## Notes
 
 - Details, security notes, and troubleshooting live in `docs/ENGINES.md` inside the clone.
+- **Which model is live:** Irises's voice model vs. this hermes's deep-work model show in `/health`,
+  on the `/dashboard` overview, and via `npx tsx ./scripts/print-model-map.ts`. Irises will also tell
+  the user her model plainly if they ask in chat. Override any voice role with `<ROLE>_PROVIDER` /
+  `<ROLE>_MODEL_OPENROUTER` / `<ROLE>_MODEL_OPENAI` / `<ROLE>_MODEL`, or turn inheritance off with
+  `ENGINE_MODEL_INHERIT=off` (see `docs/ENGINES.md` § Model inheritance).
 - On its first boot, Irises sends this hermes a one-time **engine-mode onboarding** over the API
   server: how to recognize a delegated request, the reply contract, the full-reach invitation and
   its hard limits (including never messaging the user on any channel itself). Hermes appends it to

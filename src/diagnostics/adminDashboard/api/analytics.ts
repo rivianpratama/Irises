@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { getLlmRoleStats, getLlmHourly, listSlowestCalls, listRecentErrors } from '../../../db/repositories/tokenUsage.js';
 import { estimateCostUsd, OPS_DAILY_TOKEN_CAP, LLM_DAILY_TOKEN_CAP } from '../../../llm/budget.js';
+import { laneBaseUrl } from '../../../llm/laneKeys.js';
 import { driver } from '../../../db/client.js';
 import { authed } from '../auth.js';
 import { cached } from '../cache.js';
@@ -43,7 +44,9 @@ async function openrouterCredits(): Promise<{ totalCredits: number; totalUsage: 
   const key = process.env.OPENROUTER_API_KEY;
   if (!key) return null;
   try {
-    const resp = await fetch('https://openrouter.ai/api/v1/credits', {
+    // Tracks OPENROUTER_BASE_URL (the /credits endpoint is OpenRouter-proprietary — a non-OpenRouter
+    // gateway just 404s here, which returns null and hides the card, so this stays failure-tolerant).
+    const resp = await fetch(`${laneBaseUrl('openrouter')}/credits`, {
       headers: { Authorization: `Bearer ${key}` },
       signal: AbortSignal.timeout(5000),
     });

@@ -7,6 +7,11 @@ process.env.TZ = 'UTC';
 process.env.DATA_BACKEND = 'memory';
 process.env.MEMORY_SEMANTIC_RECALL = 'on';
 process.env.OPENROUTER_API_KEY = 'test-key-not-a-real-one';
+// embeddingsLane() now falls back to the openai lane when OpenRouter is blank; scrub OPENAI_* so the
+// "no lane configured" case (test 1 blanks OPENROUTER_API_KEY) can't silently resolve to it from the
+// developer's/CI shell env (engine discovery fills OPENAI_API_KEY for host engines).
+delete process.env.OPENAI_API_KEY;
+delete process.env.OPENAI_BASE_URL;
 process.env.EMBEDDINGS_MODEL = 'openai/text-embedding-3-small';
 process.env.EMBEDDINGS_DIMENSIONS = '8';
 // Daily caps are read at module load — set BEFORE the dynamic import of embed.js (which pulls in

@@ -55,6 +55,19 @@ test('a bad-model 400 (unusable slug) falls back ONLY toward Anthropic', () => {
   assert.equal(shouldFallback(withStatus(400, 'No allowed providers are available for the selected model'), 'anthropic'), true);
 });
 
+test('a bad-model error on the generic openai lane also salvages toward Anthropic (not OpenRouter-only wording)', () => {
+  // A typo in <ROLE>_MODEL_OPENAI hits a genuine OpenAI-shaped endpoint, whose wording differs from
+  // OpenRouter's — the salvage must still self-heal onto a configured Anthropic lane, matching the
+  // openrouter-lane behavior above. Covers both the 400 and the 404 model-not-found shapes.
+  assert.equal(shouldFallback(withStatus(400, 'The model `gpt-9.9-nope` does not exist or you do not have access to it'), 'anthropic'), true);
+  assert.equal(shouldFallback(withStatus(404, 'model_not_found'), 'anthropic'), true);
+  assert.equal(shouldFallback(withStatus(400, 'Model Not Exist'), 'anthropic'), true); // deepseek-direct wording
+  // Still only toward Anthropic (toward another OpenAI-compatible lane it would re-hit the bad model).
+  assert.equal(shouldFallback(withStatus(400, 'The model `gpt-9.9-nope` does not exist or you do not have access to it'), 'openrouter'), false);
+  // A bare 404 with no model-unusable wording is NOT a bad-model salvage (stays loud).
+  assert.equal(shouldFallback(withStatus(404, 'Not Found'), 'anthropic'), false);
+});
+
 test('an ordinary validation 400 still fails loud (the bad-model salvage stays narrow)', () => {
   // A schema/parameter 400 is a real bad request — re-running it on Anthropic would just 400 again
   // (double-billing risk), so it must NOT match the bad-model salvage.

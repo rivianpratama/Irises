@@ -21,13 +21,15 @@ import type { LlmProvider } from './types.js';
  *  client-side with NO status, so without this check it looks exactly like a network blip. */
 const CONFIG_GUARD_PATTERNS = [/streaming is strongly recommended/i];
 
-/** A 400 from OpenRouter meaning the MODEL itself is unusable — a bad slug or a model no provider
- *  will serve — rather than a bad request body. This is a deploy config mistake (2026-08-01:
- *  `deepseek/deepseek-v4-flash-latest` shipped as a model id → "…is not a valid model ID"), so it
- *  re-fires on every call like a 402; salvaging TOWARD Anthropic (valid first-party slug, first-party
- *  billing) keeps Irises replying through the misconfig instead of taking the role fully down. Kept
- *  deliberately narrow so ordinary validation 400s (schema/params) still fail loud. */
-const OPENROUTER_MODEL_UNUSABLE = /not a valid model|no endpoints found|no allowed providers/i;
+/** A 400/404 meaning the MODEL itself is unusable — a bad slug or a model no provider will serve —
+ *  rather than a bad request body. A deploy config mistake (2026-08-01: `deepseek/deepseek-v4-flash-
+ *  latest` shipped as a model id → "…is not a valid model ID"), so it re-fires on every call like a
+ *  402; salvaging TOWARD Anthropic (valid first-party slug, first-party billing) keeps Irises replying
+ *  through the misconfig instead of taking the role fully down. Covers ALL the OpenAI-compatible lanes
+ *  (openrouter AND the generic openai lane), so an OpenAI/Azure/deepseek-direct typo self-heals the
+ *  same way — the wordings differ per vendor. Kept deliberately narrow so ordinary validation 400s
+ *  (schema/params) still fail loud. */
+const MODEL_UNUSABLE = /not a valid model|no endpoints found|no allowed providers|does not exist or you do not have access|model[_ ]not[_ ]found|model not exist|the model `[^`]+` does not exist/i;
 
 /** Errors marked by callers (budget guards) that must fail loud instead of re-billing elsewhere. */
 export function isNonFallbackable(err: unknown): boolean {
@@ -55,10 +57,10 @@ export function shouldFallback(err: unknown, fallbackLane: LlmProvider): boolean
     // keeps replying while the OpenRouter balance is empty. The lane flip stays visible via the
     // llm:fallback trace event (dashboard fallback counters + orchestration graph).
     if (status === 402) return fallbackLane === 'anthropic';
-    // A bad-model 400 (unusable slug / no-serving-provider) is likewise deterministic and likewise
-    // salvageable ONLY toward Anthropic — same reasoning as 402. Toward OpenRouter it would just
-    // re-hit the same bad model, so it stays loud there.
-    if (status === 400 && fallbackLane === 'anthropic' && OPENROUTER_MODEL_UNUSABLE.test(message)) return true;
+    // A bad-model 400/404 (unusable slug / no-serving-provider / model-not-found) is likewise
+    // deterministic and likewise salvageable ONLY toward Anthropic — same reasoning as 402. Toward
+    // the OpenAI-compatible lanes it would just re-hit the same bad model, so it stays loud there.
+    if ((status === 400 || status === 404) && fallbackLane === 'anthropic' && MODEL_UNUSABLE.test(message)) return true;
     return status >= 500 || status === 429;
   }
 

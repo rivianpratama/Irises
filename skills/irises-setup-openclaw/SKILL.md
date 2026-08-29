@@ -36,8 +36,8 @@ making it. Walk the user through these stages, running the script for the mechan
    - installs the `@openclaw/gateway-client` package into the Irises clone,
    - writes the Irises `.env`: `OPS_BACKEND=openclaw`, `OPENCLAW_URL`, `OPENCLAW_TOKEN`, and a
      generated `ENGINE_PUSH_TOKEN` (no database needed — Irises persists to `~/.irises` on its own),
-   - asks for an `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` for Irises's own small voice models
-     (reusing one from the OpenClaw config/environment when present),
+   - asks for an `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, or `OPENAI_API_KEY` for Irises's own small
+     voice models (reusing one from the OpenClaw config/environment when present),
    - sets up OPTIONAL bridge mode only when asked with `--bridge` (front chosen OpenClaw channels —
      WhatsApp, Discord, any of them — with Irises, via a plugin installed with
      `openclaw plugins install`; opt-in per chat via `IRISES_FRONT` patterns, off by default — see
@@ -74,6 +74,12 @@ making it. Walk the user through these stages, running the script for the mechan
   agent's own skills, parallel subagents, artifacts.
 - The user keeps using OpenClaw directly exactly as before; Irises is an additional,
   differently-voiced front door that uses it as an engine.
+- **Which model is live:** Irises's voice model vs. OpenClaw's deep-work model show in `/health`, on
+  the `/dashboard` overview, and via `npx tsx ./scripts/print-model-map.ts`; Irises will also tell the
+  user her model if they ask. OpenClaw's `provider/model` slug routes the voice automatically; if this
+  OpenClaw runs on an OpenAI-compatible/obscure API, point the voice at it by hand with
+  `<ROLE>_PROVIDER=openai` + `OPENAI_BASE_URL` + `OPENAI_API_KEY` (the auto endpoint/key inheritance is
+  hermes-only for now — see `docs/ENGINES.md` § Model inheritance).
 - To undo bridge mode: `bash ./scripts/engine-setup.sh --engine openclaw --revert`.
 - To update later: `bash ./scripts/update.sh` from the clone (pull + rebuild, then restart). Irises
   also checks for new versions itself and mentions them in chat.

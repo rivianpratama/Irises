@@ -5,7 +5,7 @@ process.env.TZ = 'UTC';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEngineDiscovery, envFileValue, scanYamlModel, scanYamlProvider, type DiscoveryDeps } from './engineDiscovery.js';
+import { applyEngineDiscovery, envFileValue, scanYamlModel, scanYamlProvider, getDiscoveredEngine, type DiscoveryDeps } from './engineDiscovery.js';
 
 const HERMES_ENV = '/home/user/.hermes/.env';
 const HERMES_YAML = '/home/user/.hermes/config.yaml';
@@ -178,7 +178,7 @@ test('Anthropic-only + non-anthropic slug → cannot map, keeps defaults + warns
 // e.g. `claude-sonnet-4-5-20250929` or `gpt-4o` on the OpenRouter lane, which 400s every voice turn —
 // auto-detection breaking an install that worked before it ran.
 
-test('provider openrouter → OpenRouter lane verbatim, even with an Anthropic key and an anthropic/ slug', () => {
+test('provider openrouter → OpenRouter lane, curated cheap voice model (not the host deep-work slug)', () => {
   const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key', ANTHROPIC_API_KEY: 'ak' });
   const { deps } = mkDeps(env, {
     files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
@@ -188,15 +188,16 @@ test('provider openrouter → OpenRouter lane verbatim, even with an Anthropic k
     },
   });
   applyEngineDiscovery(deps);
+  // The voice keeps a cheap, fast model on the host's provider — NOT the engine's big deep-work slug.
   for (const r of ['CONVO', 'CLASSIFY', 'FALLFIRM']) {
-    assert.equal(env[`${r}_MODEL_OPENROUTER`], 'anthropic/claude-opus-4.6', `${r} openrouter slot`);
+    assert.equal(env[`${r}_MODEL_OPENROUTER`], 'deepseek/deepseek-v4-flash:nitro', `${r} openrouter slot`);
     assert.equal(env[`${r}_PROVIDER`], 'openrouter', `${r} provider`);
   }
 });
 
-test('provider anthropic + a bare provider-native id → Anthropic lane unchanged, NOT OpenRouter', () => {
-  // The reported break: an OPENROUTER_API_KEY is present (hermes's headline aggregator), so the old
-  // key-guess shipped this bare Anthropic id to OpenRouter.
+test('provider anthropic → Anthropic lane, curated cheap voice model (NOT the host deep-work slug, NOT OpenRouter)', () => {
+  // An OPENROUTER_API_KEY is present (hermes's headline aggregator); the voice must still land on the
+  // Anthropic lane (its provider), on the curated cheap model rather than the engine's big slug.
   const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key', ANTHROPIC_API_KEY: 'ak' });
   const { deps } = mkDeps(env, {
     files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
@@ -207,13 +208,13 @@ test('provider anthropic + a bare provider-native id → Anthropic lane unchange
   });
   applyEngineDiscovery(deps);
   for (const r of ['CONVO', 'CLASSIFY', 'FALLFIRM']) {
-    assert.equal(env[`${r}_MODEL`], 'claude-sonnet-4-5-20250929', `${r} anthropic slot`);
+    assert.equal(env[`${r}_MODEL`], 'claude-sonnet-5', `${r} anthropic slot`);
     assert.equal(env[`${r}_PROVIDER`], 'anthropic', `${r} provider`);
   }
   assert.equal(env.CONVO_MODEL_OPENROUTER, 'openai/gpt-5.6-luna:nitro'); // OpenRouter slot untouched
 });
 
-test('provider anthropic + an anthropic/-prefixed slug → prefix stripped for the Anthropic lane', () => {
+test('provider anthropic + an anthropic/-prefixed slug → curated Anthropic voice model', () => {
   const env = baselineEnv({ ANTHROPIC_API_KEY: 'ak' });
   const { deps } = mkDeps(env, {
     files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
@@ -223,14 +224,17 @@ test('provider anthropic + an anthropic/-prefixed slug → prefix stripped for t
     },
   });
   applyEngineDiscovery(deps);
-  assert.equal(env.CONVO_MODEL, 'claude-opus-4.6');
+  assert.equal(env.CONVO_MODEL, 'claude-sonnet-5');
   assert.equal(env.CONVO_PROVIDER, 'anthropic');
 });
 
+// Not directly reachable this config → shipped defaults kept. moa/copilot are foreign auth/protocols;
+// azure-foundry is OpenAI-compatible but keeps defaults here because no base URL is resolvable (a
+// separate test covers azure-foundry WITH a base URL inheriting via the openai lane).
 for (const [provider, model] of [['azure-foundry', 'gpt-4o'], ['moa', 'default'], ['copilot', 'claude-sonnet-4.6']]) {
-  test(`provider ${provider} → no inheritance, shipped defaults kept, one log line naming both`, () => {
+  test(`provider ${provider} → not directly reachable, shipped defaults kept, one line naming it`, () => {
     const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key' });
-    const { deps, logs } = mkDeps(env, {
+    const { deps, logs, warns } = mkDeps(env, {
       files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
       cli: {
         'hermes config get model.default': model,
@@ -245,11 +249,154 @@ for (const [provider, model] of [['azure-foundry', 'gpt-4o'], ['moa', 'default']
       assert.equal(env[`${r}_MODEL`], baselineEnv()[`${r}_MODEL`], `${r} anthropic slot`);
       assert.equal(env[`${r}_PROVIDER`], 'openrouter', `${r} provider`);
     }
-    const line = logs.find((l) => l.includes(model) && l.includes(provider));
-    assert.ok(line, `a log line names the model and the provider: ${JSON.stringify(logs)}`);
+    const line = [...logs, ...warns].find((l) => l.includes(model) && l.includes(provider));
+    assert.ok(line, `a line names the model and the provider: ${JSON.stringify({ logs, warns })}`);
     assert.ok(line!.includes('keeping Irises'), 'and says the defaults were kept');
   });
 }
+
+// ── the generic openai lane: reaching an arbitrary OpenAI-compatible host ────
+
+test('provider openai → OpenAI lane, curated cheap model, host key reused, DEFAULT endpoint (no marker)', () => {
+  const env = baselineEnv();
+  const { deps } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\nOPENAI_API_KEY=sk-openai\n' },
+    cli: { 'hermes config get model.default': 'gpt-5.6-terra', 'hermes config get model.provider': 'openai' },
+  });
+  applyEngineDiscovery(deps);
+  assert.equal(env.OPENAI_API_KEY, 'sk-openai');   // reused from ~/.hermes/.env
+  assert.equal(env.OPENAI_BASE_URL, undefined);    // official OpenAI → SDK/default endpoint, no marker
+  for (const r of ['CONVO', 'CLASSIFY', 'FALLFIRM']) {
+    assert.equal(env[`${r}_MODEL_OPENAI`], 'gpt-5.6-luna', `${r} openai slot (curated cheap)`);
+    assert.equal(env[`${r}_PROVIDER`], 'openai', `${r} provider`);
+  }
+});
+
+test('OpenAI-compatible host (deepseek) with model.base_url + model.api_key → openai lane at the host endpoint, host model', () => {
+  const env = baselineEnv();
+  const { deps } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: {
+      'hermes config get model.default': 'deepseek-chat',
+      'hermes config get model.provider': 'deepseek',
+      'hermes config get model.base_url': 'https://api.deepseek.com/v1',
+      'hermes config get model.api_key': 'sk-deepseek',
+    },
+  });
+  applyEngineDiscovery(deps);
+  assert.equal(env.OPENAI_BASE_URL, 'https://api.deepseek.com/v1'); // host endpoint inherited
+  assert.equal(env.OPENAI_API_KEY, 'sk-deepseek');                  // host key reused
+  for (const r of ['CONVO', 'CLASSIFY', 'FALLFIRM']) {
+    assert.equal(env[`${r}_MODEL_OPENAI`], 'deepseek-chat', `${r} openai slot (host's own model, no curated slug for deepseek)`);
+    assert.equal(env[`${r}_PROVIDER`], 'openai', `${r} provider`);
+  }
+});
+
+test('OpenAI-compatible host with NO resolvable base URL → keeps defaults + warns to set OPENAI_BASE_URL', () => {
+  const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key' });
+  const { deps, warns } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: { 'hermes config get model.default': 'foundry-model', 'hermes config get model.provider': 'azure-foundry' },
+  });
+  applyEngineDiscovery(deps);
+  assert.equal(env.CONVO_MODEL_OPENROUTER, 'openai/gpt-5.6-luna:nitro'); // unchanged
+  assert.ok(warns.some((w) => w.includes('OPENAI_BASE_URL') && w.includes('keeping Irises')));
+});
+
+test('api_mode anthropic is authoritative → Anthropic lane even without a provider name', () => {
+  const env = baselineEnv({ ANTHROPIC_API_KEY: 'ak' });
+  const { deps } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: {
+      'hermes config get model.default': 'some-messages-api-model',
+      'hermes config get model.api_mode': 'anthropic',
+    },
+  });
+  applyEngineDiscovery(deps);
+  assert.equal(env.CONVO_PROVIDER, 'anthropic');
+  assert.equal(env.CONVO_MODEL, 'claude-sonnet-5'); // curated
+});
+
+test('getDiscoveredEngine captures the host deep-work model + provider (even for a foreign provider)', () => {
+  const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key' });
+  const { deps } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: { 'hermes config get model.default': 'anthropic.claude-v2', 'hermes config get model.provider': 'bedrock' },
+  });
+  applyEngineDiscovery(deps);
+  const eng = getDiscoveredEngine();
+  assert.equal(eng?.backend, 'hermes');
+  assert.equal(eng?.model, 'anthropic.claude-v2');
+  assert.equal(eng?.provider, 'bedrock');
+  assert.equal(env.CONVO_PROVIDER, 'openrouter'); // foreign → voice keeps its shipped default lane
+});
+
+test('anthropic host with a leftover OPENAI_BASE_URL in ~/.hermes/.env does NOT leak into ANTHROPIC_BASE_URL', () => {
+  // Regression: the OpenAI-namespaced .env fallback must never reach the anthropic branch, or a
+  // stale OPENAI_BASE_URL points the Anthropic Messages lane at an OpenAI endpoint (404 every turn).
+  const env = baselineEnv({ ANTHROPIC_API_KEY: 'ak' });
+  const { deps } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\nOPENAI_BASE_URL=https://api.deepseek.com/v1\n' },
+    cli: {
+      'hermes config get model.default': 'claude-sonnet-4-5-20250929',
+      'hermes config get model.provider': 'anthropic', // no model.base_url — api.anthropic.com
+    },
+  });
+  applyEngineDiscovery(deps);
+  assert.equal(env.ANTHROPIC_BASE_URL, undefined);            // the OpenAI leftover must NOT leak here
+  assert.equal(env.CONVO_PROVIDER, 'anthropic');
+  assert.equal(env.CONVO_MODEL, 'claude-sonnet-5');
+  assert.equal(env.OPENAI_BASE_URL, 'https://api.deepseek.com/v1'); // reused into its OWN var, harmless
+});
+
+test('a custom Anthropic gateway (model.base_url on an anthropic host) DOES set ANTHROPIC_BASE_URL', () => {
+  const env = baselineEnv({ ANTHROPIC_API_KEY: 'ak' });
+  const { deps } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: {
+      'hermes config get model.default': 'claude-opus-4.6',
+      'hermes config get model.provider': 'anthropic',
+      'hermes config get model.base_url': 'https://anthropic.gw.example/v1',
+    },
+  });
+  applyEngineDiscovery(deps);
+  assert.equal(env.ANTHROPIC_BASE_URL, 'https://anthropic.gw.example/v1');
+  assert.equal(env.CONVO_PROVIDER, 'anthropic');
+});
+
+test('api_mode anthropic wins over an OpenAI-compatible provider NAME (custom) → Anthropic lane', () => {
+  const env = baselineEnv({ ANTHROPIC_API_KEY: 'ak' });
+  const { deps } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: {
+      'hermes config get model.default': 'claude-via-custom-gateway',
+      'hermes config get model.provider': 'custom',    // in OPENAI_COMPATIBLE_PROVIDERS…
+      'hermes config get model.api_mode': 'anthropic',  // …but actually speaks the Messages API
+    },
+  });
+  applyEngineDiscovery(deps);
+  assert.equal(env.CONVO_PROVIDER, 'anthropic');
+  assert.equal(env.CONVO_MODEL, 'claude-sonnet-5');
+  assert.equal(env.CONVO_MODEL_OPENAI, undefined); // NOT misrouted to the openai lane
+});
+
+test('openai lane inherits OPENAI_BASE_URL from ~/.hermes/.env when model.base_url is unset', () => {
+  const env = baselineEnv();
+  const { deps } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\nOPENAI_API_KEY=sk-x\nOPENAI_BASE_URL=https://vllm.internal/v1\n' },
+    cli: {
+      'hermes config get model.default': 'my-local-model',
+      'hermes config get model.provider': 'custom', // OpenAI-compatible; endpoint comes from .env
+    },
+  });
+  applyEngineDiscovery(deps);
+  assert.equal(env.OPENAI_BASE_URL, 'https://vllm.internal/v1');
+  assert.equal(env.OPENAI_API_KEY, 'sk-x');
+  for (const r of ['CONVO', 'CLASSIFY', 'FALLFIRM']) {
+    assert.equal(env[`${r}_MODEL_OPENAI`], 'my-local-model');
+    assert.equal(env[`${r}_PROVIDER`], 'openai');
+  }
+});
 
 test('a bare un-slashed id with no readable provider → no inheritance, defaults kept', () => {
   const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key' });

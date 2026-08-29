@@ -52,6 +52,65 @@ const HERMES_DEFAULT_HOST = '127.0.0.1';
 const HERMES_DEFAULT_PORT = '8642';
 const OPENCLAW_DEFAULT_URL = 'ws://127.0.0.1:18789';
 
+/** Which of Irises's voice LANES a host provider maps to. `foreign` = an auth/protocol none of the
+ *  lanes can speak directly (SigV4/GCP/native/OAuth), so it is not inheritable. */
+type LaneClass = 'anthropic' | 'openrouter' | 'openai' | 'foreign';
+
+/** Provider names that speak the Anthropic Messages API. */
+const ANTHROPIC_PROVIDERS = new Set(['anthropic']);
+
+/** Provider names that speak the OpenAI chat/completions schema — reachable via the generic `openai`
+ *  lane pointed at the host's base URL. Drawn from hermes's provider profiles (api_mode
+ *  chat_completions). Heuristic, not exhaustive: a misclassified provider fails loud at call time and
+ *  falls back, and api_mode from the host config is preferred over this table when readable. */
+const OPENAI_COMPATIBLE_PROVIDERS = new Set([
+  'openai', 'azure', 'azure-foundry', 'azure-openai', 'deepseek', 'fireworks', 'together', 'togetherai',
+  'groq', 'nvidia', 'novita', 'deepinfra', 'minimax', 'minimax-cn', 'alibaba', 'alibaba-coding-plan',
+  'stepfun', 'upstage', 'kimi-coding', 'kimi-coding-cn', 'qwen', 'qwen-oauth', 'xiaomi', 'zai', 'arcee',
+  'gmi', 'huggingface', 'opencode-go', 'opencode-zen', 'ai-gateway', 'kilocode', 'actual', 'custom',
+  'ollama', 'ollama-cloud', 'vllm', 'llamacpp', 'llama.cpp', 'local', 'xai', 'openai-codex',
+]);
+
+/** Providers whose auth/protocol neither Irises voice lane can speak directly. */
+const FOREIGN_PROVIDERS = new Set(['bedrock', 'vertex', 'gemini', 'copilot', 'copilot-acp', 'nous', 'moa']);
+
+/** The cheap, fast voice model Irises defaults to per host provider — so the chat voice stays snappy
+ *  even when the host runs a big deep-work model. Keyed by the EXACT provider (not the lane class):
+ *  a host on some other OpenAI-compatible provider (deepseek-direct, azure, vllm…) has no curated
+ *  slug and falls through to the host's own model. Overridable per role via <ROLE>_MODEL* /
+ *  <ROLE>_PROVIDER. The slugs are lane-native (`:nitro` is OpenRouter-only; `gpt-5.6-luna` is an
+ *  OpenAI-native id; `claude-sonnet-5` is Anthropic-native). */
+const CURATED_VOICE_MODEL: Record<string, string> = {
+  openrouter: 'deepseek/deepseek-v4-flash:nitro',
+  openai: 'gpt-5.6-luna',
+  anthropic: 'claude-sonnet-5',
+};
+
+/** Best-effort default endpoints for common OpenAI-compatible providers whose base URL lives in a
+ *  hermes provider PROFILE rather than in config.yaml's model.base_url. Config / ~/.hermes/.env
+ *  always win over this; it only spares the user a manual OPENAI_BASE_URL for the common hosts. */
+const PROVIDER_DEFAULT_BASE_URL: Record<string, string> = {
+  openai: 'https://api.openai.com/v1',
+  deepseek: 'https://api.deepseek.com/v1',
+  groq: 'https://api.groq.com/openai/v1',
+  together: 'https://api.together.xyz/v1',
+  togetherai: 'https://api.together.xyz/v1',
+  fireworks: 'https://api.fireworks.ai/inference/v1',
+  xai: 'https://api.x.ai/v1',
+  novita: 'https://api.novita.ai/v3/openai',
+  deepinfra: 'https://api.deepinfra.com/v1/openai',
+  nvidia: 'https://integrate.api.nvidia.com/v1',
+};
+
+/** The host engine's OWN deep-work model, captured at discovery for the model map (getModelMap in
+ *  src/llm/modelMap.ts). Deep work ALWAYS runs on this — the engine's config — regardless of what
+ *  Irises's voice lanes inherit, so it is captured even when the provider is foreign / not inherited.
+ *  Module-level (last discovery wins); production runs discovery once at boot. */
+let discoveredEngine: { backend: string; model: string | null; provider: string | null } | null = null;
+export function getDiscoveredEngine(): { backend: string; model: string | null; provider: string | null } | null {
+  return discoveredEngine;
+}
+
 /** Where the hermes API server listens, from its OWN bind settings in ~/.hermes/.env (the multi-
  *  profile docs tell users to move the port, and the gateway reads these two keys from that same
  *  file). A wildcard bind is not a dialable address, so it maps back to loopback. */
@@ -221,7 +280,11 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
   // local preset name. Sent to the OpenRouter lane those 400 on every turn — auto-detection breaking
   // an install that worked before it ran. So: inherit only when the (id, provider) pair is
   // conclusive, otherwise leave the shipped defaults alone and say why.
-  const applyModel = (slug: string | null, provider: string | null): void => {
+  const applyModel = (
+    slug: string | null,
+    provider: string | null,
+    opts?: { baseUrl?: string | null; apiKey?: string | null; apiMode?: string | null },
+  ): void => {
     if (!inheritEnabled) return;
     if (nullish(slug)) {
       deps.warn('could not read the engine model — keeping Irises\'s own model defaults');
@@ -232,46 +295,94 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
     // at OpenRouter) — unknown, not a provider of its own.
     const raw = nullish(provider) ? '' : provider!.trim().toLowerCase();
     const p = raw === 'auto' ? '' : raw;
+    const apiMode = nullish(opts?.apiMode ?? null) ? '' : (opts!.apiMode as string).trim().toLowerCase();
 
-    const toOpenRouter = (): void => {
+    // All lane setters override the same three VOICE_ROLES + <ROLE>_PROVIDER. The curated cheap model
+    // is used for the three named providers; other reachable hosts get their own model slug.
+    const setLane = (lane: 'openrouter' | 'openai' | 'anthropic', model: string): void => {
       for (const r of VOICE_ROLES) {
-        override(`${r}_MODEL_OPENROUTER`, s);
-        override(`${r}_PROVIDER`, 'openrouter');
+        if (lane === 'anthropic') override(`${r}_MODEL`, model);
+        else if (lane === 'openrouter') override(`${r}_MODEL_OPENROUTER`, model);
+        else override(`${r}_MODEL_OPENAI`, model);
+        override(`${r}_PROVIDER`, lane);
       }
-      deps.log(`inheriting engine model "${s}" on all voice roles (OpenRouter lane)`);
-      if (!has('OPENROUTER_API_KEY')) deps.warn(`inherited "${s}" but no OPENROUTER_API_KEY is set — add one so Irises's voice can use it`);
-    };
-    const toAnthropic = (): void => {
-      // hermes's Anthropic-direct ids are bare; the aggregator-shaped `anthropic/<id>` also occurs
-      // (hermes's own example config), and the Anthropic lane needs it without the vendor prefix.
-      const bare = s.startsWith('anthropic/') ? s.slice('anthropic/'.length) : s;
-      for (const r of VOICE_ROLES) {
-        override(`${r}_MODEL`, bare);
-        override(`${r}_PROVIDER`, 'anthropic');
-      }
-      deps.log(`inheriting engine model "${bare}" on all voice roles (Anthropic lane)`);
-      deps.warn(`applied "${bare}" to the Anthropic lane as-is; if the API rejects it, set <ROLE>_MODEL to override`);
     };
 
-    if (p === 'openrouter') { toOpenRouter(); return; }
-    if (p === 'anthropic') { toAnthropic(); return; }
-    if (p) {
-      // azure-foundry / moa / copilot / openai-codex / bedrock / nous / custom / … — the id is native
-      // to an API neither of Irises's voice lanes can call (a MoA preset name means nothing at all
-      // outside that box), so inheriting it would only take a working baseline offline.
-      deps.log(`engine model "${s}" runs on provider "${p}", which Irises's voice lanes (OpenRouter, Anthropic) cannot reach — keeping Irises's own model defaults`);
+    // ── Recognised provider (or a decisive api_mode from host config) → a specific lane ──
+    // A readable api_mode is AUTHORITATIVE (it disambiguates a generic provider name like `custom`
+    // that actually speaks the Anthropic Messages API), so it wins over the provider-name table.
+    const openaiApiMode = apiMode === 'chat_completions' || apiMode === 'responses' || apiMode === 'codex_responses' || apiMode === 'openai';
+    const anthropicHost = apiMode === 'anthropic' || (!apiMode && (p ? ANTHROPIC_PROVIDERS.has(p) : false));
+    const openrouterHost = apiMode !== 'anthropic' && p === 'openrouter';
+    const openaiHost = apiMode !== 'anthropic'
+      && ((openaiApiMode && p !== 'openrouter') || (p !== 'openrouter' && OPENAI_COMPATIBLE_PROVIDERS.has(p)));
+    const foreignHost = apiMode !== 'anthropic' && !openaiApiMode && (p ? FOREIGN_PROVIDERS.has(p) : false);
+
+    if (anthropicHost) {
+      // Honour a custom Anthropic-compatible gateway (the SDK reads ANTHROPIC_BASE_URL) + reuse key.
+      if (opts?.apiKey) fill('ANTHROPIC_API_KEY', opts.apiKey, `reused from ${backend}`);
+      if (opts?.baseUrl) fill('ANTHROPIC_BASE_URL', opts.baseUrl, `from ${backend}`);
+      setLane('anthropic', CURATED_VOICE_MODEL.anthropic);
+      deps.log(`engine provider anthropic → voice on ${CURATED_VOICE_MODEL.anthropic} (Anthropic lane)`);
+      if (!has('ANTHROPIC_API_KEY') && !has('ANTHROPIC_AUTH_TOKEN')) deps.warn('voice set to the Anthropic lane but no ANTHROPIC_API_KEY is set — add one');
       return;
     }
-    // No readable provider. A `/` is the de-facto aggregator slug shape, which the OpenRouter lane
-    // consumes verbatim; a bare id is provider-native and unattributable — guessing there is the bug.
+    if (openrouterHost) {
+      setLane('openrouter', CURATED_VOICE_MODEL.openrouter);
+      deps.log(`engine provider openrouter → voice on ${CURATED_VOICE_MODEL.openrouter} (OpenRouter lane)`);
+      if (!has('OPENROUTER_API_KEY')) deps.warn('voice set to the OpenRouter lane but no OPENROUTER_API_KEY is set — add one');
+      return;
+    }
+    if (openaiHost) {
+      const cfgUrl = (opts?.baseUrl || '').trim();
+      const envUrl = (env.OPENAI_BASE_URL || '').trim();
+      const baseUrl = cfgUrl || envUrl || PROVIDER_DEFAULT_BASE_URL[p] || (p === 'openai' ? 'https://api.openai.com/v1' : null);
+      if (!baseUrl) {
+        deps.warn(`engine model "${s}" runs on OpenAI-compatible provider "${p || apiMode}" but its base URL couldn't be resolved — set OPENAI_BASE_URL to inherit it; keeping Irises's own model defaults`);
+        return;
+      }
+      const key = (opts?.apiKey || '').trim() || (env.OPENAI_API_KEY || '').trim() || null;
+      if (key) fill('OPENAI_API_KEY', key, `reused from ${backend}`);
+      // Only mark a non-default endpoint (an official-OpenAI host keeps the SDK/env default).
+      if (baseUrl !== 'https://api.openai.com/v1') override('OPENAI_BASE_URL', baseUrl);
+      // Official OpenAI → curated cheap model; any other OpenAI-compatible host → its own model slug.
+      const model = p === 'openai' ? CURATED_VOICE_MODEL.openai : s;
+      setLane('openai', model);
+      deps.log(`engine provider ${p || 'openai-compatible'} (${baseUrl}) → voice on ${model} (OpenAI lane)`);
+      if (!has('OPENAI_API_KEY')) deps.warn(`voice set to the OpenAI lane (${baseUrl}) but no OPENAI_API_KEY is set — add one`);
+      return;
+    }
+    if (foreignHost) {
+      // bedrock / vertex / gemini / copilot / nous / moa — the id is native to an auth/protocol none
+      // of Irises's voice lanes can speak. Deep work still runs on it (engine-delegated); the voice
+      // keeps a working fallback lane rather than taking a baseline offline.
+      deps.log(`engine model "${s}" runs on provider "${p}", which Irises's voice cannot call directly — deep work still uses it; keeping Irises's own model defaults`);
+      return;
+    }
+
+    // ── Unrecognised or no readable provider → slug-shape heuristic (preserves prior behaviour,
+    //    the OpenClaw path) ──
+    // A `/` is the de-facto aggregator slug shape, which the OpenRouter lane consumes verbatim; a
+    // bare id is provider-native and unattributable — guessing there is the bug.
     if (!s.includes('/')) {
       deps.log(`engine model "${s}" is a bare provider-native id and no model.provider was readable, so its lane is unknown — keeping Irises's own model defaults`);
       return;
     }
     const hasOR = has('OPENROUTER_API_KEY');
     const hasAnthropic = has('ANTHROPIC_API_KEY');
-    if (hasOR || !hasAnthropic) { toOpenRouter(); return; }
-    if (s.startsWith('anthropic/')) { toAnthropic(); return; }
+    if (hasOR || !hasAnthropic) {
+      setLane('openrouter', s);
+      deps.log(`inheriting engine model "${s}" on all voice roles (OpenRouter lane)`);
+      if (!hasOR) deps.warn(`inherited "${s}" but no OPENROUTER_API_KEY is set — add one so Irises's voice can use it`);
+      return;
+    }
+    if (s.startsWith('anthropic/')) {
+      const bare = s.slice('anthropic/'.length);
+      setLane('anthropic', bare);
+      deps.log(`inheriting engine model "${bare}" on all voice roles (Anthropic lane)`);
+      deps.warn(`applied "${bare}" to the Anthropic lane as-is; if the API rejects it, set <ROLE>_MODEL to override`);
+      return;
+    }
     deps.warn(`engine model "${s}" needs OpenRouter but no OPENROUTER_API_KEY is set — keeping Irises defaults`);
   };
 
@@ -296,6 +407,11 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
       fill('HERMES_API_KEY', envFileValue(hermesEnv, 'API_SERVER_KEY'), 'from ~/.hermes/.env');
       fill('OPENROUTER_API_KEY', envFileValue(hermesEnv, 'OPENROUTER_API_KEY'), 'reused from hermes');
       fill('ANTHROPIC_API_KEY', envFileValue(hermesEnv, 'ANTHROPIC_API_KEY'), 'reused from hermes');
+      // OpenAI-namespaced creds are reused ONLY into their own env vars, which the openai lane reads
+      // directly (applyModel's openaiHost branch) — never folded into the shared model.* opts below,
+      // so they can never leak onto the Anthropic/OpenRouter lanes.
+      fill('OPENAI_API_KEY', envFileValue(hermesEnv, 'OPENAI_API_KEY'), 'reused from hermes');
+      fill('OPENAI_BASE_URL', envFileValue(hermesEnv, 'OPENAI_BASE_URL'), 'reused from hermes');
     }
     // `hermes config get model.default` resolves aliases + the HERMES_MODEL env fallback correctly;
     // fall back to the .env var, then a crude config.yaml scan, if the CLI isn't on PATH.
@@ -304,7 +420,19 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
       || cliValue('hermes', ['config', 'get', 'model.name'])
       || (hermesEnv ? envFileValue(hermesEnv, 'HERMES_MODEL') : null)
       || scanYamlModel(readHermesYaml());
-    applyModel(slug, cliValue('hermes', ['config', 'get', 'model.provider']) || scanYamlProvider(readHermesYaml()));
+    const provider = cliValue('hermes', ['config', 'get', 'model.provider']) || scanYamlProvider(readHermesYaml());
+    // `model.base_url` / `model.api_key` are the host's OWN config for its CURRENT provider — so they
+    // are lane-appropriate (a custom Anthropic gateway for an anthropic host, the endpoint for an
+    // openai-compatible host). Read config ONLY here (no OPENAI_* .env fallback), so the anthropic
+    // branch can never receive a leftover OPENAI_BASE_URL/OPENAI_API_KEY; the openai lane still gets
+    // those via env.OPENAI_* filled just above. model.api_mode is anthropic|chat_completions|….
+    const baseUrl = cliValue('hermes', ['config', 'get', 'model.base_url']);
+    const apiKey = cliValue('hermes', ['config', 'get', 'model.api_key']);
+    const apiMode = cliValue('hermes', ['config', 'get', 'model.api_mode']);
+    // Deep work always runs on THIS (the engine's own model) regardless of what the voice inherits —
+    // capture it for the model map (src/llm/modelMap.ts) even when the provider is foreign.
+    discoveredEngine = { backend, model: slug, provider };
+    applyModel(slug, provider, { baseUrl, apiKey, apiMode });
     if (!has('OPENROUTER_API_KEY') && !has('ANTHROPIC_API_KEY')) {
       deps.warn('no ANTHROPIC_API_KEY or OPENROUTER_API_KEY found — add one so Irises\'s own voice can call an LLM');
     }
@@ -316,7 +444,10 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
     const slug = cliValue('openclaw', ['config', 'get', `agents.entries.${agentId}.model`])
       || cliValue('openclaw', ['config', 'get', 'agents.defaults.model.primary'])
       || cliValue('openclaw', ['config', 'get', 'agents.defaults.model']);
-    // OpenClaw binds models as `provider/model` slugs — there is no separate provider key to read.
+    // OpenClaw binds models as `provider/model` slugs — there is no separate provider key to read, so
+    // the slug-shape heuristic in applyModel routes it (as before). Auto openai-lane inheritance is
+    // hermes-focused; an OpenClaw user on an obscure API can set <ROLE>_PROVIDER=openai + OPENAI_*.
+    discoveredEngine = { backend, model: slug, provider: null };
     applyModel(slug, null);
     if (!has('OPENROUTER_API_KEY') && !has('ANTHROPIC_API_KEY')) {
       deps.warn('no ANTHROPIC_API_KEY or OPENROUTER_API_KEY found — add one so Irises\'s own voice can call an LLM');

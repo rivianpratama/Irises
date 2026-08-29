@@ -1,17 +1,22 @@
-import { isLaneConfigured } from './laneKeys.js';
+import { isLaneConfigured, laneEnvVar } from './laneKeys.js';
 import type { LlmRole, LlmProvider } from './types.js';
 
 // Role -> the model slug on each provider. EVERY slot is overridable from .env so models
 // can be tuned without code changes. Which provider runs FIRST for a role is set by
 // PROVIDERS (below); the other provider is the automatic transient-error fallback.
 // Confirm live slugs before shipping.
-export const MODELS: Record<LlmRole, { anthropic: string; openrouter: string }> = {
+// Each role carries a slug per lane. `openai` is the generic OpenAI-compatible lane (env
+// <ROLE>_MODEL_OPENAI): a bare provider-native id (no `vendor/` prefix, no `:nitro`/`:online`
+// routing suffix — those are OpenRouter-only). Its default is a small, fast model so the chat voice
+// stays cheap when a host points Irises's openai lane at OpenAI/Azure/etc.
+export const MODELS: Record<LlmRole, { anthropic: string; openrouter: string; openai: string }> = {
   // Convo's Anthropic slot is the transient-error FALLBACK (OpenRouter/DeepSeek is primary). It
   // must be a structured-outputs-capable model (output_config.format carries the tool_calls
   // envelope) — Sonnet 4.6 is NOT (it would 400 into the unenforced path); Sonnet 5 is.
   convo: {
     anthropic: process.env.CONVO_MODEL || 'claude-sonnet-5',
     openrouter: process.env.CONVO_MODEL_OPENROUTER || 'deepseek/deepseek-v4-flash',
+    openai: process.env.CONVO_MODEL_OPENAI || 'gpt-5.6-luna',
   },
   // Ops: deep work runs on the external engine (its own model), so nothing dispatches this role
   // natively today. The entry stays because `ops` is the role string the token ledger and daily
@@ -19,10 +24,12 @@ export const MODELS: Record<LlmRole, { anthropic: string; openrouter: string }> 
   ops: {
     anthropic: process.env.OPS_MODEL || 'claude-opus-4-8',
     openrouter: process.env.OPS_MODEL_OPENROUTER || 'anthropic/claude-opus-4.8',
+    openai: process.env.OPS_MODEL_OPENAI || 'gpt-5.6-luna',
   },
   classify: {
     anthropic: process.env.CLASSIFY_MODEL || 'claude-haiku-4-5',
     openrouter: process.env.CLASSIFY_MODEL_OPENROUTER || 'anthropic/claude-haiku-4.5',
+    openai: process.env.CLASSIFY_MODEL_OPENAI || 'gpt-5.6-luna',
   },
   // Fallfirm: the fallback+confirm voicer. When a primary agent couldn't voice a failure or a
   // confirmation itself (Convo is single-shot and never sees a tool result; or the composer
@@ -32,6 +39,7 @@ export const MODELS: Record<LlmRole, { anthropic: string; openrouter: string }> 
   fallfirm: {
     anthropic: process.env.FALLFIRM_MODEL || 'claude-haiku-4-5',
     openrouter: process.env.FALLFIRM_MODEL_OPENROUTER || 'anthropic/claude-haiku-4.5',
+    openai: process.env.FALLFIRM_MODEL_OPENAI || 'gpt-5.6-luna',
   },
 };
 
@@ -148,18 +156,21 @@ export const TEMPERATURE: Record<LlmRole, number | null> = {
 
 // Per-role PRIMARY provider (<ROLE>_PROVIDER in .env). Defaults to Anthropic so existing
 // deployments are unchanged. Set a role to `openrouter` to run it on an OpenRouter model
-// (its <ROLE>_MODEL_OPENROUTER slug); Anthropic then becomes that role's fallback.
-// NOTE: web search + PDF work on both providers (OpenRouter shaping in ./openrouterRequest), but
-// on OpenRouter they need a TOOLS-CAPABLE model (supported_parameters includes "tools").
-// A non-empty value that is neither provider is a typo — warn and default to anthropic
-// rather than silently swallowing it.
+// (its <ROLE>_MODEL_OPENROUTER slug), or `openai` for the generic OpenAI-compatible lane
+// (<ROLE>_MODEL_OPENAI + OPENAI_BASE_URL); a configured other lane becomes the fallback.
+// NOTE: web search + PDF work on the openrouter and anthropic lanes (OpenRouter shaping in
+// ./openrouterRequest); on OpenRouter they need a TOOLS-CAPABLE model (supported_parameters
+// includes "tools"). The generic `openai` lane sends no OpenRouter-proprietary fields.
+// A non-empty value that is no known provider is a typo — warn and default rather than silently
+// swallowing it.
 function parseProvider(envName: string, fallback: LlmProvider = 'anthropic'): LlmProvider {
   const raw = process.env[envName];
   const v = (raw || '').trim().toLowerCase();
   if (v === 'openrouter') return 'openrouter';
   if (v === 'anthropic') return 'anthropic';
+  if (v === 'openai') return 'openai';
   if (v !== '') {
-    console.warn(`[llm] ${envName}="${raw}" is not 'anthropic' or 'openrouter' — defaulting to ${fallback}`);
+    console.warn(`[llm] ${envName}="${raw}" is not 'anthropic', 'openrouter', or 'openai' — defaulting to ${fallback}`);
   }
   return fallback;
 }
@@ -177,18 +188,20 @@ export const PROVIDERS: Record<LlmRole, LlmProvider> = {
 // fails, the run degrades to the transient-snag beat — the single retry is the whole ladder.
 export const OPS_RETRY_ENABLED = parseBoolEnv(process.env.OPS_RETRY_ENABLED, true);
 
-// Loud-but-harmless heads-up: a role pinned to OpenRouter with no key just falls back to
-// Anthropic at call time, which can mask a config typo. Warn once at boot. A key that is SET BUT
-// BLANK counts as unset here (isLaneConfigured) — that is the exact shape this warning is for.
-if (!isLaneConfigured('openrouter')) {
-  const orphaned = (Object.keys(PROVIDERS) as LlmRole[]).filter(r => PROVIDERS[r] === 'openrouter');
-  if (orphaned.length) {
-    // With no Anthropic key either there is nothing to fall back TO: callLLM fails these roles fast
-    // (naming both vars) rather than half-working, so don't promise a lane that isn't there.
-    console.warn(isLaneConfigured('anthropic')
-      ? `[llm] ${orphaned.join(', ')} set to provider=openrouter but OPENROUTER_API_KEY is unset — these will fall back to Anthropic`
-      : `[llm] ${orphaned.join(', ')} set to provider=openrouter but neither OPENROUTER_API_KEY nor ANTHROPIC_API_KEY is set — these roles cannot call an LLM at all`);
-  }
+// Loud-but-harmless heads-up: a role pinned to a lane with no key just falls back to another
+// configured lane at call time, which can mask a config typo. Warn once at boot, per lane. A key
+// that is SET BUT BLANK counts as unset here (isLaneConfigured) — that is the exact shape this is for.
+export const ALL_LANES: readonly LlmProvider[] = ['anthropic', 'openrouter', 'openai'];
+for (const lane of ALL_LANES) {
+  if (isLaneConfigured(lane)) continue;
+  const orphaned = (Object.keys(PROVIDERS) as LlmRole[]).filter(r => PROVIDERS[r] === lane);
+  if (!orphaned.length) continue;
+  // With no other configured lane there is nothing to fall back TO: callLLM fails these roles fast
+  // (naming the vars) rather than half-working, so don't promise a lane that isn't there.
+  const otherConfigured = ALL_LANES.some(p => p !== lane && isLaneConfigured(p));
+  console.warn(otherConfigured
+    ? `[llm] ${orphaned.join(', ')} set to provider=${lane} but ${laneEnvVar(lane)} is unset — these will fall back to another configured lane`
+    : `[llm] ${orphaned.join(', ')} set to provider=${lane} but ${laneEnvVar(lane)} is unset and no other lane is configured — these roles cannot call an LLM at all`);
 }
 
 // Starvation trap, warned at boot: thinking/effort spend chain-of-thought AGAINST max_tokens on
