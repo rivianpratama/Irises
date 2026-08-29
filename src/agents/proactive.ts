@@ -1,17 +1,19 @@
 // The voice of a message NO ONE ASKED FOR. Everything else Irises says is a reply — a live turn, a
-// late Ops follow-up, a progress beat. These five kinds start the thread themselves: a reminder the
-// user set coming due, mail they asked to be watched for, a background finding, an update note, and
-// — alone among them, carrying nothing to hand over — a callback on a thread they left hanging.
+// late Ops follow-up, a progress beat. These six kinds start the thread themselves: a reminder the
+// user set coming due, mail they asked to be watched for, a background finding, an update note, a
+// callback on a thread they left hanging — alone among them, carrying nothing to hand over — and,
+// once per install, the first text of all, sent before a thread between them exists.
 //
 // Same Composer persona and the same assembly as the reactive path (composerCore.ts), plus one thing
 // a reply never needs: an ORIENTATION beat. A text arriving out of nowhere has to say why it's
 // arriving in its first bubble, grounded in what the user themselves set up — "you asked me friday
-// to flag this" — never announcement-shaped and never "my system fired".
+// to flag this" — never announcement-shaped and never "my system fired". The introduction is the one
+// kind that skips it: nothing was set up, so there is nothing to place.
 //
 // Fidelity is stricter here than anywhere: the payload is the ONLY fact source. The thread above is
 // register and continuity, nothing more. On conflict the payload wins, silently. The one standing
 // thread this module reads for itself (readContinuity, below) lives under the same rule and one
-// tighter: it is offered to three of the five kinds only, and never to the user's own setups.
+// tighter: it is offered to three of the six kinds only, and never to the user's own setups.
 
 import { composeWithComposer } from './composerCore.js';
 import { voiceOutcome } from './fallfirm/client.js';
@@ -21,7 +23,7 @@ import { topStandingThread } from '../persona/threads.js';
 import { isGroupHandle } from '../memory/identity.js';
 
 // `proactive_deliveries.kind` is a bare TEXT column with no CHECK, so a new kind needs no migration.
-export type ProactiveKind = 'reminder' | 'email' | 'memo' | 'update' | 'callback';
+export type ProactiveKind = 'reminder' | 'email' | 'memo' | 'update' | 'callback' | 'introduction';
 
 export interface ProactivePayload {
   kind: ProactiveKind;
@@ -37,6 +39,11 @@ export interface ProactivePayload {
 // orchestrator.ts).
 export const PROACTIVE_MARK = '(no one texted you — this one starts with you)';
 
+// The second mark, stacked under the first for the one text that has no thread beneath it at all.
+// Must stay BYTE-IDENTICAL to the "when it's the very first text ever" phrase in composer/Context.md
+// — change both or neither. Harmless in a bubble, like the mark above it.
+export const INTRODUCTION_MARK = '(this is the very first text between you — no thread exists yet)';
+
 /** How the Composer is pointed at each kind. Never "a job fired" — always the user's own setup
  *  coming due, in words that could be spoken out loud without cracking the seam. */
 const COMPOSER_FRAMING: Record<ProactiveKind, string> = {
@@ -48,9 +55,12 @@ const COMPOSER_FRAMING: Record<ProactiveKind, string> = {
   // and so it is the only place the "never open with a question" rule bends — the question still
   // comes last, after the beat that places the thing.
   callback: "you're circling back on something you two keep coming back to — nothing new in hand, no result, no reminder due, just you asking how it's going. one short beat placing the thing first, grounded and in their word for it, never question-shaped — then the question itself, once, light, easy to wave off, and it ends your message. this is the only proactive that carries a question at all. you hold no outcome: nothing guessed, nothing assumed — you don't know how it went; that is exactly why you're asking.",
+  // The only kind with no orientation beat, because there is nothing to orient them to: no setup of
+  // theirs came due, no thread runs above it. She was installed minutes ago and speaks first.
+  introduction: "you're texting them first, ever — you were just set up on their phone and they haven't said a word to you. no orientation beat: nothing was set up, there's nothing to place. open as yourself — you're Irises, and they can call you Iris or Ilish or Lish, your words, never a form. then, if the lines below carry details: pick TWO at most, make ONE light playful association between them, and stop — a statement with an open edge, never a question mark doing the work. if the lines below are empty you're newly acquainted, never blank: one bold deniable read about who they probably are instead. hard rules: nothing sensitive, never their name even if you hold it, never 'i was told' or anything that smells like a file was read — you just moved in, you noticed things. 1-2 short bubbles after the intro line, then you're done.",
 };
 
-/** The Fallfirm framings for the same five moments — the degrade path when the Composer's own
+/** The Fallfirm framings for the same six moments — the degrade path when the Composer's own
  *  ladder is spent. Substance rides `facts` (relayed exactly); this is only the framing. */
 const FALLFIRM_FRAMING: Record<ProactiveKind, string> = {
   reminder: 'a reminder they set with you is due — deliver it now, warm and brief, like you remembered on your own',
@@ -58,6 +68,7 @@ const FALLFIRM_FRAMING: Record<ProactiveKind, string> = {
   memo: 'you have something for them from work you were doing in the background — hand it over naturally',
   update: 'you have a light note about yourself to pass on — mention it once, casual and brief, never a changelog',
   callback: "you're checking in on something you two keep coming back to — place it in their words, then one light question, easy to wave off",
+  introduction: "you're introducing yourself for the very first time — you're Irises, they can call you Iris or Lish, one warm line and the floor is theirs",
 };
 
 /** The Outcome Fallfirm voices when the Composer could not. `framing` from the caller (the update
@@ -89,7 +100,9 @@ export interface ProactiveContinuity {
  *  those two relay the USER'S OWN setups — a time they asked to be held to, mail they asked to be
  *  watched for — and carry the tightest fidelity contract in the engine. Nothing goes near them
  *  that could add a word she was not handed. `memo`/`update`/`callback` are hers to shape, so a
- *  thread may tint the register there. */
+ *  thread may tint the register there. `introduction` is out for a third reason: the payload is the
+ *  only thing she holds about a person she has never spoken to, and by definition no thread between
+ *  them can exist yet. */
 const CONTINUITY_KINDS: ReadonlySet<ProactiveKind> = new Set<ProactiveKind>(['memo', 'update', 'callback']);
 
 /** Collapse to the comparable core of a label — the payload's label arrives quoted from the ping
@@ -116,10 +129,12 @@ function continuityLineFor(payload: ProactivePayload, continuity: ProactiveConti
 /** The turn's instruction: the branch mark, the framing, the optional continuity colour, the
  *  fidelity contract, then the payload LAST (recency — the facts are the final thing the model
  *  reads before it writes). The colour sits ABOVE the fidelity clause deliberately: whatever it
- *  suggests, the very next thing read is the sentence saying the payload wins. */
+ *  suggests, the very next thing read is the sentence saying the payload wins. An introduction
+ *  stacks its own mark on the line right under the first: it is still a text no one asked for, and
+ *  additionally the first one there has ever been. */
 function buildProactiveInstruction(payload: ProactivePayload, continuity?: ProactiveContinuity | null): string {
   return [
-    PROACTIVE_MARK,
+    payload.kind === 'introduction' ? `${PROACTIVE_MARK}\n${INTRODUCTION_MARK}` : PROACTIVE_MARK,
     COMPOSER_FRAMING[payload.kind],
     payload.framing,
     continuityLineFor(payload, continuity),

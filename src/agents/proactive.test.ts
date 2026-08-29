@@ -9,13 +9,15 @@ import test, { beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { PROACTIVE_MARK, fallfirmOutcomeFor, voiceProactive, _internal, type ProactiveKind, type ProactiveContinuity } from './proactive.js';
+import { PROACTIVE_MARK, INTRODUCTION_MARK, fallfirmOutcomeFor, voiceProactive, _internal, type ProactiveKind, type ProactiveContinuity } from './proactive.js';
 import { fallfirmFloor } from './fallfirm/floor.js';
 import { resetStorageForTests } from '../db/sqlite.js';
 import { saveThreadInventory } from '../db/repositories/threadInventory.js';
 import { defaultThreadInventory, type ThreadTheme } from '../persona/threads.js';
 import { groupHandle } from '../memory/identity.js';
 
+// The five kinds that arrive INTO a thread. `introduction` is the odd one out end to end — a second
+// mark, no orientation beat, no colour — and has its own section at the bottom.
 const KINDS: ProactiveKind[] = ['reminder', 'email', 'memo', 'update', 'callback'];
 
 beforeEach(() => resetStorageForTests());
@@ -198,6 +200,58 @@ test('the pre-read finds a standing thread, and degrades to nothing everywhere e
   // An inventory with themes but none STANDING (still open, never twice-evidenced) is empty here.
   await saveThreadInventory(CH, { ...defaultThreadInventory(), themes: [theme({ status: 'open' })] });
   assert.equal(await _internal.readContinuity(CH), null, 'nothing has earned standing yet');
+});
+
+// ── the first text ever (introduction) ───────────────────────────────────────────────
+// The one proactive with nothing above it: no setup of theirs came due, no thread runs over it, and
+// the person on the other end has never heard from her. Everything below is about the second mark
+// being the only thing that says so.
+
+test('the persona first-move trigger is byte-identical to INTRODUCTION_MARK', () => {
+  const persona = readFileSync(join(__dirname, 'composer', 'Context.md'), 'utf8');
+  assert.ok(
+    persona.includes(INTRODUCTION_MARK),
+    "composer/Context.md must carry the exact INTRODUCTION_MARK phrase — the \"when it's the very first text ever\" section is keyed on the surface form",
+  );
+});
+
+test('the introduction stacks its own mark on the line under the proactive one', () => {
+  const text = '- keeps orchids alive\n- calls the car the tank';
+  const instruction = _internal.buildProactiveInstruction({ kind: 'introduction', text });
+  assert.ok(instruction.startsWith(`${PROACTIVE_MARK}\n${INTRODUCTION_MARK}`), 'both marks, in that order, before anything else');
+  // The framing, pinned: no orientation beat, the nicknames, two details and one association, and
+  // the line that keeps a seeded profile from reading like a file was opened.
+  assert.match(instruction, /you're texting them first, ever/);
+  assert.match(instruction, /no orientation beat: nothing was set up, there's nothing to place/);
+  assert.match(instruction, /they can call you Iris or Ilish or Lish, your words, never a form/);
+  assert.match(instruction, /pick TWO at most, make ONE light playful association/);
+  assert.match(instruction, /never their name even if you hold it, never 'i was told'/);
+  // And the payload still reads last, like every other kind.
+  assert.ok(instruction.trimEnd().endsWith(`"${text}"`));
+});
+
+test('the first-text mark belongs to the introduction alone', () => {
+  for (const kind of KINDS) {
+    assert.ok(
+      !_internal.buildProactiveInstruction({ kind, text: 'x' }).includes(INTRODUCTION_MARK),
+      `${kind}: a thread already exists — the second mark would be a lie`,
+    );
+  }
+});
+
+// She has never spoken to this person: there is no thread to nod to, and the seeded profile in the
+// payload is the only thing she holds. A colour line here would be a second source out of nowhere.
+test('no thread ever colours the first text, even when one is handed in', () => {
+  const instruction = _internal.buildProactiveInstruction({ kind: 'introduction', text: '- keeps orchids alive' }, THREAD);
+  assert.doesNotMatch(instruction, CONTINUITY);
+  assert.ok(!instruction.includes(THREAD.label), 'not the label either, in any wording');
+});
+
+test('at the floor the introduction is still an introduction', () => {
+  const outcome = fallfirmOutcomeFor({ kind: 'introduction', text: '(no details — newly acquainted)' });
+  assert.match(outcome.summary, /introducing yourself for the very first time/);
+  assert.match(outcome.summary, /they can call you Iris or Lish, one warm line and the floor is theirs/);
+  assert.equal(outcome.facts, '(no details — newly acquainted)');
 });
 
 test('the Fallfirm degrade carries the substance in facts, the framing in summary', () => {

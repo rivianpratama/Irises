@@ -10,12 +10,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { OpenClawBackend, openclawSessionKey } from './openclawBackend.js';
 import { OPENCLAW_TASK_HEADER, OPENCLAW_ONBOARDING_MESSAGE, onboardingVersion } from './openclawDoctrine.js';
-import { EngineUnavailableError } from './engineBackend.js';
+import { EngineUnavailableError, EngineRunError } from './engineBackend.js';
 import { buildTaskPrompt } from './client.js';
 import { emptyMedia } from '../../webhook/types.js';
 import type { OpsTask } from '../types.js';
 
-type Call = { method: string; params: Record<string, unknown> };
+type RequestOpts = { expectFinal?: boolean; timeoutMs?: number };
+type Call = { method: string; params: Record<string, unknown>; opts?: RequestOpts };
 
 function fakeClientFactory(calls: Call[], opts: { failFirstRequest?: boolean } = {}) {
   let created = 0;
@@ -24,9 +25,9 @@ function fakeClientFactory(calls: Call[], opts: { failFirstRequest?: boolean } =
     created += 1;
     return {
       start() { /* connected */ },
-      async request(method: string, params: Record<string, unknown>) {
+      async request(method: string, params: Record<string, unknown>, reqOpts?: RequestOpts) {
         if (shouldFail) { shouldFail = false; throw new Error('socket closed'); }
-        calls.push({ method, params });
+        calls.push({ method, params, opts: reqOpts });
         return { status: 'ok', result: { payloads: [{ text: 'ANSWER: x\nSOURCE: y\nFLAGS: none' }] } };
       },
       stop() { /* noop */ },
@@ -183,4 +184,64 @@ test('sendOnboarding: its own session key, a version-keyed idempotencyKey, and t
   assert.match(String(calls[0].params.sessionKey), /:irises-onboarding$/, 'the doctrine stays out of every chat\'s continuity');
   assert.equal(calls[0].params.idempotencyKey, `onboarding-${onboardingVersion()}`);
   assert.match(reply, /ANSWER: x/);
+});
+
+// ── askEngine: one utility run that belongs to no chat ────────────────────────────────────────
+
+test('askEngine: the tag decides the session AND namespaces the idempotency key away from the doctrine\'s', async () => {
+  const calls: Call[] = [];
+  const { factory } = fakeClientFactory(calls);
+  const be = new OpenClawBackend({ createClient: factory });
+
+  const reply = await be.askEngine('what do you know about them?', { tag: 'first-move' });
+
+  assert.equal(calls[0].method, 'agent');
+  assert.equal(calls[0].params.message, 'what do you know about them?');
+  assert.equal(calls[0].params.sessionKey, openclawSessionKey('first-move'));
+  assert.match(String(calls[0].params.sessionKey), /:irises-first-move$/, 'the ask stays out of every chat\'s continuity');
+  assert.notEqual(calls[0].params.sessionKey, openclawSessionKey('onboarding'));
+  assert.match(String(calls[0].params.idempotencyKey), /^ask-first-move-/, 'namespaced by the tag');
+  assert.notEqual(String(calls[0].params.idempotencyKey), `onboarding-${onboardingVersion()}`,
+    'it can never collide with the version-keyed doctrine key');
+  assert.match(reply, /ANSWER: x/);
+
+  await be.askEngine('ask again', { tag: 'first-move' });
+  assert.notEqual(calls[0].params.idempotencyKey, calls[1].params.idempotencyKey,
+    'a retried pull actually re-runs instead of replaying a gateway-cached answer');
+});
+
+test('askEngine: the run budget defaults to the doctrine send\'s and is the caller\'s to set', async () => {
+  const calls: Call[] = [];
+  const { factory } = fakeClientFactory(calls);
+  const be = new OpenClawBackend({ createClient: factory });
+
+  await be.askEngine('x', { tag: 'first-move' });
+  assert.equal(calls[0].params.timeout, 120, 'seconds, on the run itself');
+  assert.equal(calls[0].opts?.timeoutMs, 135_000, 'the RPC wait sits 15s past the run budget');
+  assert.equal(calls[0].opts?.expectFinal, true);
+
+  await be.askEngine('x', { tag: 'first-move', timeoutMs: 30_000 });
+  assert.equal(calls[1].params.timeout, 30);
+  assert.equal(calls[1].opts?.timeoutMs, 45_000);
+});
+
+test('askEngine: transport error → EngineUnavailableError + redial; a textless run → EngineRunError', async () => {
+  const calls: Call[] = [];
+  const { factory, createdCount } = fakeClientFactory(calls, { failFirstRequest: true });
+  const be = new OpenClawBackend({ createClient: factory });
+
+  await assert.rejects(be.askEngine('x', { tag: 'first-move' }), (e: Error) =>
+    e instanceof EngineUnavailableError && /ask \(first-move\) failed at transport level/.test(e.message));
+  await be.askEngine('x', { tag: 'first-move' });
+  assert.equal(createdCount(), 2, 'the poisoned socket was dropped and the next ask redialed');
+
+  const textless = new OpenClawBackend({
+    createClient: async () => ({
+      start() { /* connected */ },
+      async request() { return { status: 'ok', result: { payloads: [] } }; },
+      stop() { /* noop */ },
+    }),
+  });
+  await assert.rejects(textless.askEngine('x', { tag: 'first-move' }), (e: Error) =>
+    e instanceof EngineRunError && /ask \(first-move\) returned no text/.test(e.message));
 });

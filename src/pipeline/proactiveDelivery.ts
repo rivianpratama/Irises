@@ -45,6 +45,12 @@ export interface ProactiveMessage {
   /** Caller-supplied idempotency key. Defaults to a hash of chatId|kind|text. */
   dedupeKey?: string;
   emailMeta?: ProactiveEmailMeta;
+  /** WHOSE memory to read when the chat itself can't say — used ONLY where resolveProactiveHandle
+   *  comes back empty (a cold push into a chat nobody has spoken in). The install introduction is
+   *  the case: it seeded that handle's memory minutes ago and would otherwise be voiced blind to
+   *  it. A recorded speaker always wins — the hint is a caller's guess, the chat's own history
+   *  isn't. Persisted in the row's meta, so a deferred hint is still there in the morning. */
+  handleHint?: string;
 }
 
 export interface ProactiveDeliveryDeps {
@@ -115,6 +121,11 @@ export function createProactiveDelivery(deps: ProactiveDeliveryDeps): ProactiveD
   const getPref = deps.getPref ?? getPreference;
   const now = deps.now ?? (() => Date.now());
 
+  /** Resolution first, the caller's hint only where resolution found nobody. */
+  async function handleFor(chatId: string, hint?: string): Promise<string> {
+    return (await resolveHandle(chatId)) || hint?.trim() || '';
+  }
+
   // Voice + send one claimed row. Owns the row's terminal state: delivered (including a mouth-level
   // drop, which is final, not retryable) or failed.
   async function send(msg: ProactiveMessage, handle: string, rowId: string): Promise<'sent' | 'dropped' | 'failed'> {
@@ -159,8 +170,12 @@ export function createProactiveDelivery(deps: ProactiveDeliveryDeps): ProactiveD
       return 'duplicate';
     }
 
-    const handle = await resolveHandle(msg.chatId);
-    const meta = { ...(msg.framing ? { framing: msg.framing } : {}), ...(msg.emailMeta ? { emailMeta: sanitizeEmailMeta(msg.emailMeta) } : {}) };
+    const handle = await handleFor(msg.chatId, msg.handleHint);
+    const meta = {
+      ...(msg.framing ? { framing: msg.framing } : {}),
+      ...(msg.emailMeta ? { emailMeta: sanitizeEmailMeta(msg.emailMeta) } : {}),
+      ...(msg.handleHint ? { handleHint: msg.handleHint } : {}),
+    };
 
     // Quiet hours, opt-in per user and never for a reminder (they chose that time themselves).
     if (msg.kind !== 'reminder' && (await getPref<boolean>(handle, 'respect_quiet_hours')) === true) {
@@ -189,9 +204,10 @@ export function createProactiveDelivery(deps: ProactiveDeliveryDeps): ProactiveD
       let sent = 0;
       for (const row of rows) {
         // Re-resolve: the chat may have gained a second speaker while the row waited overnight.
-        const handle = await resolveHandle(row.chatId);
         const emailMeta = row.meta.emailMeta as ProactiveEmailMeta | undefined;
         const framing = typeof row.meta.framing === 'string' ? row.meta.framing : undefined;
+        const handleHint = typeof row.meta.handleHint === 'string' ? row.meta.handleHint : undefined;
+        const handle = await handleFor(row.chatId, handleHint);
         // No re-defer: this row already served its wait, and quiet hours ended.
         const outcome = await send(
           { chatId: row.chatId, kind: row.kind as ProactiveKind, text: row.text, framing, emailMeta },

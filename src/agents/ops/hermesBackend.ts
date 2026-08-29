@@ -441,6 +441,30 @@ export class HermesBackend implements EngineBackend {
     return reply.trim();
   }
 
+  /** One utility ask outside any chat (firstMove.ts's install-time memory pull is the first caller).
+   *  The tag rides the ordinary session headers, so `irises-<tag>` is a namespace of its own: the
+   *  exchange never enters a chat's continuity or its engine-side memory scope, exactly as the
+   *  doctrine send stays inside `irises-onboarding`. Tags are code-owned constants, and hermesSessionKey
+   *  sanitizes anyway, so nothing user-shaped can reach a header. Default budget matches the doctrine
+   *  send — the engine is being asked to go and consult its own memory, which is a real tool run.
+   *  The reply comes back as the engine wrote it (edges trimmed, nothing re-shaped); the CALLER owns
+   *  parsing it, and treats it as untrusted text. */
+  async askEngine(text: string, opts: { tag: string; timeoutMs?: number }): Promise<string> {
+    const what = `ask (${opts.tag})`;
+    const res = await this.requestText('/v1/chat/completions', {
+      method: 'POST',
+      headers: this.headers(opts.tag),
+      body: JSON.stringify({ model: 'hermes-agent', messages: [{ role: 'user', content: text }], stream: false }),
+    }, undefined, opts.timeoutMs ?? 120_000);
+    this.throwForStatus(res, what);
+    const data = this.parseJson<ChatCompletionResponse>(res, what);
+    const reply = data.choices?.[0]?.message?.content;
+    if (typeof reply !== 'string' || !reply.trim()) {
+      throw new EngineRunError(`hermes ${what} returned no message content`, 'llm_error', res.status);
+    }
+    return reply.trim();
+  }
+
   async createReminder(spec: ReminderSpec): Promise<ReminderRef> {
     const pushUrl = process.env.IRISES_PUSH_URL || `http://127.0.0.1:${process.env.PORT || 3000}/api/engine/push`;
     let schedule: string;

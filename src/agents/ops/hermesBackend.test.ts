@@ -85,6 +85,57 @@ test('sendOnboarding: rides its own session, returns the reply, and fails honest
   await assert.rejects(down.sendOnboarding('x', 'v'), EngineUnavailableError);
 });
 
+// ── askEngine: one utility run that belongs to no chat ────────────────────────────────────────
+
+test('askEngine: the tag names its own session, and the reply comes back unshaped', async () => {
+  const captured: Captured[] = [];
+  const reply = '```json\n{ "user_brief": "they sail on weekends" }\n```';
+  const be = new HermesBackend({ fetchFn: fakeFetch(200, { choices: [{ message: { content: `  ${reply}\n` } }] }, captured) });
+
+  const out = await be.askEngine('what do you know about them?', { tag: 'first-move' });
+
+  assert.equal(out, reply, 'the fenced block survives byte-for-byte — the CALLER owns parsing it');
+  assert.match(captured[0].url, /\/v1\/chat\/completions$/);
+  const headers = captured[0].init.headers as Record<string, string>;
+  assert.equal(headers['X-Hermes-Session-Id'], 'irises-first-move');
+  assert.equal(headers['X-Hermes-Session-Key'], hermesSessionKey('first-move'),
+    'the ask touches neither a chat\'s continuity nor its engine-side memory scope');
+  assert.notEqual(headers['X-Hermes-Session-Key'], hermesSessionKey('onboarding'), 'nor the doctrine\'s session');
+  const body = JSON.parse(String(captured[0].init.body));
+  assert.equal(body.stream, false);
+  assert.equal(body.messages.length, 1);
+  assert.equal(body.messages[0].content, 'what do you know about them?', 'no task header on a utility ask');
+});
+
+test('askEngine: opts.timeoutMs is the budget, and it aborts the request', async () => {
+  const be = new HermesBackend({
+    fetchFn: (async (_u: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_res, rej) => {
+      const fail = () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+      if (init?.signal?.aborted) fail();
+      else init?.signal?.addEventListener('abort', fail, { once: true });
+    })) as typeof fetch,
+  });
+  // 5ms, not the 120s default: an engine that never answers gives up on the CALLER's clock.
+  await assert.rejects(be.askEngine('slow one', { tag: 'first-move', timeoutMs: 5 }), (e: Error) => e.name === 'AbortError');
+});
+
+test('askEngine: empty reply, rejected key and dead engine all fail in the seam\'s own vocabulary', async () => {
+  const empty = new HermesBackend({ fetchFn: fakeFetch(200, { choices: [{ message: { content: '  ' } }] }) });
+  await assert.rejects(empty.askEngine('x', { tag: 'first-move' }), (e: Error) =>
+    e instanceof EngineRunError && /ask \(first-move\) returned no message content/.test(e.message));
+
+  const be401 = new HermesBackend({ fetchFn: fakeFetch(401, { error: 'bad key' }) });
+  await assert.rejects(be401.askEngine('x', { tag: 'first-move' }), (e: Error) =>
+    e instanceof EngineRunError && e.failureCause === 'needs_auth');
+
+  const html = new HermesBackend({ fetchFn: fakeFetch(200, '<html>502 Bad Gateway (nginx)</html>') });
+  await assert.rejects(html.askEngine('x', { tag: 'first-move' }), (e: Error) =>
+    e instanceof EngineRunError && /returned non-JSON/.test(e.message));
+
+  const down = new HermesBackend({ fetchFn: (async () => { throw new TypeError('refused'); }) as typeof fetch });
+  await assert.rejects(down.askEngine('x', { tag: 'first-move' }), EngineUnavailableError);
+});
+
 test('runTask: images become image_url content blocks; other media rides as URLs in text', async () => {
   const captured: Captured[] = [];
   const be = new HermesBackend({ fetchFn: fakeFetch(200, { choices: [{ message: { content: 'ok' } }] }, captured) });

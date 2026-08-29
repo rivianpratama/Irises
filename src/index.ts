@@ -15,6 +15,7 @@ import * as convoClient from './agents/convo/client.js';
 import { getUserProfile, addMessage, hasHistory } from './state/conversation.js';
 import { runOpsAndFollowUp } from './agents/orchestrator.js';
 import { ensureEngineOnboarded } from './agents/ops/engineOnboarding.js';
+import { initFirstMove } from './agents/ops/firstMove.js';
 import { createEnginePushRouter } from './webhook/enginePush.js';
 import { createProactiveDelivery } from './pipeline/proactiveDelivery.js';
 import { shouldShareContactCard, shouldStartTypingEarly } from './pipeline/turnGates.js';
@@ -964,6 +965,11 @@ app.listen(PORT, () => {
   // Engine-mode doctrine: sent once per content version to whichever engine is configured, so it
   // saves the standing section into its own instructions by its own hand.
   void ensureEngineOnboarded();
+  // The first move: once per install, after the doctrine has landed, ask the engine what it already
+  // knows about its user, seed that into her own memory, and either text them first (only where the
+  // engine confirms real prior history on that chat) or arm the introduction to ride her reply to
+  // their own first text. Default ON — one message following one deliberate install.
+  initFirstMove({ deliver: proactive.deliver });
 
   console.log(`
   Irises — a general, casual, do-anything assistant

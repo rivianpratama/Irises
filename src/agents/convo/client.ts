@@ -18,6 +18,7 @@ import { buildContextBlock } from '../../memory/dossier.js';
 import { getActiveOps } from '../../state/opsCoordination.js';
 import { getConversation, addMessage, clearConversation, clearUserProfile } from '../../state/conversation.js';
 import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
+import { pendingIntroWeave } from '../ops/firstMove.js';
 import { timestampLabel } from '../../pipeline/chatTime.js';
 import { getAffectState } from '../../db/repositories/affectState.js';
 import {
@@ -276,9 +277,17 @@ export async function chat(
     ? await pickThreadForTurn(handle, affectState, { incomingText: textToSend, gapMs, chatId })
     : { offer: null, outcomeAsk: null };
 
+  // The install introduction, when this turn is the very first word they have ever sent her: the
+  // first-move machine couldn't text them proactively (no confirmed history on that chat, or no
+  // channel at all), so her reply to their own opener carries it instead. Awaited here rather than
+  // inside buildSystemPrompt because it can re-key the seeded memory onto the handle that actually
+  // texted — a store write, and the prompt assembler is synchronous. Null on every turn but one,
+  // ever, from a cached state read; a group handle never gets it.
+  const introWeave = handle ? await pendingIntroWeave(handle) : null;
+
   // Held in a variable (not inlined): recall_memory's second pass re-invokes the model with this
   // SAME system + messages, minus the recall tool (see processConvoResult).
-  const system = buildSystemPrompt(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined, affectState, computed, capabilitySummary, climate, thread);
+  const system = buildSystemPrompt(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined, affectState, computed, capabilitySummary, climate, thread, introWeave);
 
   try {
     const res = await callConvoLLM({
@@ -297,6 +306,7 @@ export async function chat(
       res, chatId, handle, chatContext, textToSend, history, media,
       turn: { system, messages, tools },
       computed,
+      introWoven: !!introWeave,
     });
     // Stash this turn's media for a LATER text follow-up to recall (delegate_to_mm media_scope
     // "earlier"). Written AFTER processConvoResult so an "earlier" recall THIS turn still resolves to

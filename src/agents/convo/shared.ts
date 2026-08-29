@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { loadContext } from '../loadContext.js';
 import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
 import type { CapabilitySummary, CapabilityClass } from '../ops/engineBackend.js';
+import { markIntroWoven } from '../ops/firstMove.js';
 import { isValidCron } from '../../pipeline/cron.js';
 import { getPreference, setPreference } from '../../db/repositories/memory.js';
 // Directives/notes/facts are memory_medium rows now (Stage 1) — the "no error margin" tier:
@@ -544,6 +545,10 @@ export function buildSystemPrompt(
   // `{offer:null, outcomeAsk:null}` (or an absent param) renders to nothing at all, so an install
   // with no inventory — or the flag off — builds a byte-identical prompt.
   thread?: ThreadTurn,
+  // The one-shot install introduction block, when THIS turn is the first word they have ever sent
+  // her (agents/ops/firstMove.ts). Already resolved by the caller — see the push site below for why
+  // it arrives as a value rather than being awaited here. Absent/null on every other turn.
+  introWeave?: string | null,
 ): string {
   const persona = loadContext('convo');
 
@@ -572,6 +577,14 @@ export function buildSystemPrompt(
     dyn.push(`## Getting their name\nYou don't know their name yet. Call them "boss" for now, let their name surface naturally, and save it with remember_user the moment it does.`);
   }
 
+  // Its sibling one turn earlier in the relationship: this is the FIRST text they have ever sent her,
+  // and this reply is her introduction (agents/ops/firstMove.ts — the install-time first move that
+  // couldn't be delivered proactively, so it rides their own opener instead). Resolved by the caller
+  // and passed in already awaited: the block's one-and-only side effect is a memory re-key onto the
+  // handle that actually texted, which is an async store write and has no business on a prompt
+  // assembler that every existing caller calls synchronously. Null on all but one turn, ever, and
+  // never non-null for a group — pendingIntroWeave refuses a group handle at the door.
+  if (introWeave) dyn.push(introWeave);
 
   // Durable memory + recent/active-deal context (the user's profile injected each turn) — external
   // data, so it's sub-tagged.
@@ -884,6 +897,10 @@ export async function processConvoResult(args: {
   // and persisted. The recall second pass forwards it via {...args}; persistence lands on the pass
   // that reaches the final return (the first pass returns early into the recursion).
   computed?: ComputedState;
+  // True when THIS turn's system prompt carried the one-shot install-introduction block
+  // (agents/ops/firstMove.ts). Threaded the same way `computed` is — the recall second pass forwards
+  // it via {...args}, so the mark lands exactly once, on the pass that actually reaches the return.
+  introWoven?: boolean;
 }): Promise<ChatResponse> {
   const { res, chatId, handle, chatContext, textToSend, history, media } = args;
 
@@ -1517,6 +1534,15 @@ export async function processConvoResult(args: {
     // Stamp the holding line's canonical timestamp on the task (single-clock). The composer uses
     // it to find messages the user sends WHILE Ops runs, so the late reply can nod to them.
     if (delegatedTask) delegatedTask.holdingAt = holdingAt;
+    // The introduction has been said — settle the first-move machine forever, which also cancels the
+    // proactive send if a sweep is mid-flight. Gated on `cleanForRecord` because a reaction-only or
+    // silent turn introduced nobody: leaving the block armed for the next inbound is the right
+    // failure direction (worst case one repeated greeting, best case the greeting still happens).
+    // Marked HERE, at result-processing time, not on send confirmation: the actual channel send
+    // happens back in src/index.ts from the returned text and is not observable from this function.
+    // The reply is committed to history one line above, so this is the last point inside the turn
+    // where "she said it" is still true of everything we can see.
+    if (args.introWoven) markIntroWoven();
   } else if (reaction) {
     const d = reaction.type === 'custom' ? (reaction as { type: 'custom'; emoji: string }).emoji : reaction.type;
     await addMessage(chatId, 'assistant', `[reacted with ${d}]`);

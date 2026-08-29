@@ -243,6 +243,41 @@ test('the resolved handle is what the voicer is given', async () => {
   assert.deepEqual(h.handles, ['+15551111']);
 });
 
+// ── the cold-push hint ────────────────────────────────────────────────────────────────────────
+// A chat nobody has ever spoken in resolves to '' — no memory layer at all. The install
+// introduction is exactly that push, and it knows whose chat it is, so it may say so.
+
+const COLD = 'eng:whatsapp:4477010';
+
+test('the handleHint stands in only where the chat has no speaker of its own', async () => {
+  const { h, pipeline } = harness({ resolveHandle: undefined });
+  await pipeline.deliver({ chatId: COLD, kind: 'introduction', text: '- keeps orchids alive', handleHint: COLD });
+  assert.deepEqual(h.handles, [COLD], 'nobody has spoken here — the hint is the only identity there is');
+
+  // A recorded speaker always wins: the hint is the caller's guess, the chat's own history is not.
+  await addMessage('web:solo', 'user', 'hey', '+15551111');
+  await pipeline.deliver({ chatId: 'web:solo', kind: 'memo', text: 'x', handleHint: COLD });
+  assert.deepEqual(h.handles, [COLD, '+15551111']);
+});
+
+test('a deferred hint is still there in the morning', async () => {
+  const night = harness(
+    { now: () => QUIET_2AM, resolveHandle: async () => '' },
+    { respect_quiet_hours: true, agent_tz: 'America/Chicago' },
+  );
+  assert.equal(
+    await night.pipeline.deliver({ chatId: COLD, kind: 'introduction', text: '- keeps orchids alive', handleHint: COLD }),
+    'deferred',
+  );
+  assert.equal(night.h.sent.length, 0);
+
+  // A different process, next morning: the hint rode the row's meta through the night.
+  const morning = harness({ now: () => AWAKE_NOON, resolveHandle: async () => '' });
+  assert.equal(await morning.pipeline.sweepDue(), 1);
+  assert.deepEqual(morning.h.handles, [COLD]);
+  assert.deepEqual(morning.h.sent.map(s => s.text), ['voiced:- keeps orchids alive']);
+});
+
 test('start() is idempotent and its timers never hold the process open', () => {
   const { pipeline } = harness();
   pipeline.start();

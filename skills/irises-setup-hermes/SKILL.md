@@ -101,6 +101,13 @@ making it. Walk the user through these stages, running the script for the mechan
   its own SOUL.md by its own hand — nothing in hermes is edited by Irises. To remove it later, tell
   hermes by chat to delete that section; to skip the send entirely, set `ENGINE_ONBOARDING=off` in
   the Irises `.env`. Manual fallback: `bridge/hermes/engine-onboarding-message.md`.
+- Once after that, Irises makes the **first move**: she asks this hermes what it already knows about
+  its user — a normal chat message hermes answers in its own words, nothing in hermes is read or
+  edited — and keeps a sanitized version in her own memory so her first words are not cold. Then she
+  either texts the user first, **only** on a chat this hermes has genuinely exchanged messages in
+  before, or sends nothing at all and folds the introduction into her reply the first time they
+  text her. It happens exactly once per install; to skip it entirely, set `FIRST_MOVE_ENABLED=false`
+  in the Irises `.env`.
 - With bridge mode on (the default), Irises **fronts** this hermes's messaging channels: a user
   texting a fronted channel (iMessage, etc.) now reaches Irises, which answers in its own voice and
   uses hermes as its engine. Hermes itself is unchanged and still reachable directly in a terminal

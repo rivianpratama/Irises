@@ -106,6 +106,14 @@ export interface EngineBackend {
    *  engine that has it. Where the transport carries no idempotency key (hermes), the doctrine text's
    *  own replace-by-heading ask is the guard against a duplicate append. */
   sendOnboarding?(text: string, version: string): Promise<string>;
+  /** ONE utility agent run that belongs to no chat: text in, the engine's reply text out. `tag` names
+   *  its own engine session (code-owned, never a user string), so the exchange stays out of every
+   *  chat's continuity AND out of every chat's engine-side memory scope — same transport as
+   *  sendOnboarding, and optional the same way: a backend without it simply skips the features that
+   *  need to ask (firstMove.ts). `timeoutMs` defaults to the doctrine send's generous budget, because
+   *  what gets asked here is a real tool run on the engine's side. Throws EngineUnavailableError /
+   *  EngineRunError like everything else on this interface; never returns empty. */
+  askEngine?(text: string, opts: { tag: string; timeoutMs?: number }): Promise<string>;
   /** Bridge mode: deliver a message THROUGH one of the engine's own channel connections
    *  (the engine keeps owning the bot/number; Irises fronts it — see docs/ENGINES.md).
    *  `platform` is the engine's channel name (telegram/whatsapp/discord/…), `chatId` the raw

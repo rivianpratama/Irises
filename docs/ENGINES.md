@@ -164,6 +164,63 @@ to **replace** any section with the same heading rather than append a second one
 delegated task — the invitation, the hard limits, the reply shape — so an engine that never got
 onboarded, or forgot, still gets the essentials on every single run. Degraded, not broken.
 
+## First move (install introduction)
+
+The engine has lived with this person for months; Irises has known them for zero seconds. Once per
+install — after the doctrine above has landed, and retried on a sweep because `engine-setup.sh`
+restarts the gateway *last* — she closes that gap herself: she **asks** the engine what it knows
+about its user, folds the answer into her own memory, and then either texts them first or waits to
+be texted. `FIRST_MOVE_ENABLED=false` turns the whole thing off (a silent install: no ask, no seed,
+no introduction).
+
+**What is asked.** One message, on its own session key so the ask never enters chat continuity,
+carrying the text in `src/agents/ops/firstMoveAsk.ts` (the canonical wording — read it with
+`npx tsx scripts/preview-first-move.ts`). It asks the engine to consult *its own* memory and
+channels and reply with ONLY a fenced JSON block: a 3-6 sentence brief, a name, up to five **light**
+details (never health, relationships, work stress, money or private struggles), and the one DIRECT
+1:1 chat where the two of them actually talk — with `has_history` true *only* if messages were
+really exchanged in that exact chat, false when unsure. Unknown is `null`; inventing a value is
+forbidden. The ask is content-hashed like the doctrine, so editing it re-pulls on the next boot
+while an unchanged one never asks twice.
+
+**What is seeded** (`src/memory/seedFromEngine.ts`), keyed on the bridge handle
+`eng:<platform>:<chat_id>`: a first `LONG.md` dossier, the user's name on their profile row, one
+medium-tier fact holding the details, and up to two thread themes minted through the normal harvest
+path (so a seeded theme is byte-identical to one she noticed herself, and just as unsurfaceable
+until a second day's evidence arrives). Two honesty rules run through all of it. It is written
+**only into empty memory** — earned memory always outranks a seed, which doubles as the idempotency
+test — and **the provenance travels with it**: the dossier says in its own text that this picture
+came second-hand from the engine at install, and a standing note tells her to hold it lightly,
+verify it naturally in conversation, and never cite it as something they told her.
+
+**Send, or wait.** She texts first (proactive kind `introduction`) **only** when the engine
+confirmed `has_history` on a valid channel. Every other outcome — history not confirmed, no channel
+in the reply, an unparseable reply, or 24h of failed pulls — arms *nudge mode* instead: **no cold
+text is ever sent**, and the introduction rides her reply to the user's own first message. That
+asymmetry is the spam-flag rule (iMessage being the motivating case), and it fails toward silence by
+construction: `has_history` is coerced to a strict boolean, and anything that is not literally
+`true` is false. Nudge mode also covers the case where she was seeded against a predicted handle and
+the real inbound arrives on a different one — the seed is re-run against the handle that actually
+wrote in. Either way the introduction happens, grounded or not: with an empty profile she introduces
+herself ungrounded rather than not at all.
+
+**This is the sanctioned reverse flow, not a new one.** Per *Memory boundary* below, Irises never
+reads engine storage: the profile arrives as a **chat reply the engine composed itself**, exactly
+like `update_memory` and `/forget me` travel outward as requests rather than writes. And it arrives
+as *untrusted input* — the reply is sanitized at the door (headings and scope sections stripped so a
+reply cannot legislate what she refuses to do, brackets and fences removed because these strings are
+quoted into prompts, hard caps on every field, non-`true` history coerced to false) before one
+character of it reaches a prompt or a memory tier. Influence through Irises's own pipeline; Irises
+decides and writes.
+
+**One-shot, and it stays that way.** State lives in `$IRISES_HOME/first-move.json` (default
+`~/.irises`), keyed by engine name, claimed *before* the send. It survives restarts,
+`scripts/update.sh` and `--revert` — none of which touch `$IRISES_HOME` — so the introduction can
+never fire twice. `/forget me` deliberately does **not** re-arm it: forgetting what she knows about
+someone is not the same as never having met them. Deleting the file by hand is the only way to make
+her do it again. `ENGINE_ONBOARDING=off` only removes the wait-for-doctrine gate (the first move
+still runs); `CONVO_THREADING_ENABLED=false` only skips the seeded themes.
+
 ## Bridge mode — Irises on EVERY engine channel
 
 The engine already speaks WhatsApp, Signal, Discord, Slack, LINE, email, … Bridge mode puts
@@ -342,6 +399,7 @@ above) — set one only to override it.
 | `OPENCLAW_AGENT_ID` | openclaw | default `main` (also picks which agent's model is inherited) |
 | `OPENCLAW_CAPABILITIES` | openclaw | same closed vocabulary as `HERMES_CAPABILITIES`. OpenClaw has no discovery path yet, so this is the ONLY source there. Unset = unknown |
 | `ENGINE_ONBOARDING` | openclaw, hermes | `off` disables the boot onboarding send (see *Engine onboarding* above) |
+| `FIRST_MOVE_ENABLED` | both | default **on**; `false` disables the one-time install introduction entirely — the engine memory pull, the memory seed and her first text (see *First move* above) |
 | `ENGINE_PUSH_TOKEN` | both | guards `POST /api/engine/push` AND `POST /api/bridge/inbound` (generated by setup) |
 | `HERMES_BRIDGE_URL` | hermes | bridge mode outbound: the plugin's loopback listener (default `http://127.0.0.1:8655`) |
 | `ENGINE_TIMEOUT_MS` | both | per-engine-call budget (default: `OPS_TASK_TIMEOUT_MS` − 15s) |

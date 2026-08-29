@@ -226,6 +226,35 @@ export class OpenClawBackend implements EngineBackend {
     return reply;
   }
 
+  /** One utility ask outside any chat (firstMove.ts's install-time memory pull is the first caller).
+   *  The tag decides the session key, so the exchange stays out of every chat's continuity the same
+   *  way the doctrine send does. The idempotency key is namespaced by the tag — it must never collide
+   *  with the version-keyed `onboarding-<version>` one — and carries a per-call suffix on top: a
+   *  retry after a failed ask has to actually re-run, not replay a gateway-cached answer (the same
+   *  reasoning as remember()'s key, and the mirror image of runTask's deliberate replay guard). */
+  async askEngine(text: string, opts: { tag: string; timeoutMs?: number }): Promise<string> {
+    const timeoutMs = opts.timeoutMs ?? 120_000;
+    const client = await this.ensureClient();
+    let raw: unknown;
+    try {
+      raw = await client.request('agent', {
+        message: text,
+        sessionKey: openclawSessionKey(opts.tag),
+        idempotencyKey: `ask-${opts.tag}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        timeout: Math.ceil(timeoutMs / 1000),
+      }, { expectFinal: true, timeoutMs: timeoutMs + 15_000 });
+    } catch (err) {
+      this.dropClient();
+      throw new EngineUnavailableError(`OpenClaw ask (${opts.tag}) failed at transport level (${(err as Error)?.message ?? err})`, err);
+    }
+    const run = raw as AgentRunResult;
+    // The reply is the caller's to parse (and to distrust); nothing is re-shaped here beyond the
+    // payload join every reply on this transport goes through.
+    const reply = (run.result?.payloads ?? []).map(p => p.text ?? '').filter(Boolean).join('\n').trim();
+    if (!reply) throw new EngineRunError(`OpenClaw ask (${opts.tag}) returned no text (status ${run.status ?? 'unknown'})`, 'llm_error');
+    return reply;
+  }
+
   /** Bridge outbound: the gateway `send` RPC delivers through ANY configured OpenClaw channel
    *  (verified: src/gateway/server-methods/send.ts; scope operator.write; idempotencyKey required).
    *  No plugin needed on the outbound side — the same WS client the deep-work seam uses. */

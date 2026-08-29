@@ -61,6 +61,13 @@ making it. Walk the user through these stages, running the script for the mechan
   its hard limits. The agent saves it to its own instructions by its own hand (nothing in OpenClaw
   is edited). To remove it later, tell the agent by chat to delete that section; to skip the send
   entirely, set `ENGINE_ONBOARDING=off` in the Irises `.env`.
+- Once after that, Irises makes the **first move**: she asks this OpenClaw what it already knows
+  about its user — a normal chat message the agent answers in its own words, no OpenClaw file is
+  read or edited — and keeps a sanitized version in her own memory so her first words are not cold.
+  Then she either texts the user first, **only** on a chat this agent has genuinely exchanged
+  messages in before, or sends nothing at all and folds the introduction into her reply the first
+  time they text her. Exactly once per install; skip it with `FIRST_MOVE_ENABLED=false` in the
+  Irises `.env`.
 - Known v1 gap: reminders scheduled through Irises require the hermes engine for now (OpenClaw
   cron wiring is pending), so the reminder tools aren't offered on OpenClaw at all and Irises never
   promises a reminder that can't fire. Everything else runs full-reach here: real code, this
