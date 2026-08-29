@@ -2,7 +2,7 @@ process.env.TZ = 'UTC';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { estimateOpsEta, etaStatus, CROSS_ENTITY_RE } from './etaEstimate.js';
+import { estimateOpsEta, etaStatus, CROSS_ENTITY_RE, INBOX_FILES_RE } from './etaEstimate.js';
 
 test('the quick kind (draft) returns about a minute', () => {
   assert.equal(estimateOpsEta({ kind: 'draft', request: 'write a thank-you note' }).phrase, 'about a minute');
@@ -43,6 +43,31 @@ test('CROSS_ENTITY_RE matches sweeps and leaves single-target asks alone', () =>
   assert.ok(CROSS_ENTITY_RE.test('is there anything outstanding'));
   assert.ok(!CROSS_ENTITY_RE.test('read the invoice jamie sent me'));
   assert.ok(!CROSS_ENTITY_RE.test('what time is the meeting'));
+});
+
+test('an inbox sweep promotes to a few minutes, but a single-item read does NOT', () => {
+  assert.equal(estimateOpsEta({ kind: 'general', request: 'go through my inbox for anything about the lease' }).phrase, 'a few minutes');
+  assert.equal(estimateOpsEta({ kind: 'general', request: 'check my email for the closing docs' }).phrase, 'a few minutes');
+  assert.equal(estimateOpsEta({ kind: 'general', request: 'dig through the attachments jamie sent' }).phrase, 'a few minutes');
+  // Single-item reads stay in the standard bucket — no over-promotion.
+  assert.equal(estimateOpsEta({ kind: 'document_read', request: 'open the pdf jamie sent' }).phrase, 'a couple of minutes');
+  assert.equal(estimateOpsEta({ kind: 'general', request: 'read the contract carey emailed' }).phrase, 'a couple of minutes');
+});
+
+test('INBOX_FILES_RE matches sweep phrasing, not single-item reads', () => {
+  assert.ok(INBOX_FILES_RE.test('go through my inbox'));
+  assert.ok(INBOX_FILES_RE.test('check my email'));
+  assert.ok(INBOX_FILES_RE.test('dig through the documents'));
+  assert.ok(!INBOX_FILES_RE.test('open the pdf jamie sent'));
+  assert.ok(!INBOX_FILES_RE.test('read the invoice'));
+});
+
+test('no bucket ever exceeds the 210s cap (closing/overrun must stay reachable before the deadline)', () => {
+  for (const req of ['write a note', 'what did the fed do', 'show me all my subscriptions', 'go through my inbox', 'add up every invoice']) {
+    for (const kind of ['draft', 'general', 'web_research', 'document_read', 'compute'] as const) {
+      assert.ok(estimateOpsEta({ kind, request: req }).bucketMs <= 210_000, `${kind}/${req} must stay ≤210s`);
+    }
+  }
 });
 
 test('etaStatus early state with remaining phrase', () => {

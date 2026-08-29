@@ -32,7 +32,7 @@ const stubChannel: Channel = {
   async getMessage() { getMessageCalls++; return nextFetched; },
 };
 
-let resolveTappedReply: (messageId: string, chatId: string) => Promise<ResolvedReply>;
+let resolveTappedReply: (messageId: string, chatId: string, quotedContent?: string) => Promise<ResolvedReply>;
 before(async () => {
   ({ resolveTappedReply } = await import('./replyResolution.js'));
   const { registerChannel } = await import('../channels/registry.js');
@@ -136,5 +136,27 @@ test('a channel with no getMessage degrades to unresolved instead of guessing', 
   // `web:` chatIds route to the web channel, which advertises no live message fetch (and isn't
   // registered in this test) — either way there's no getMessage, so resolution stays honest.
   const r = await resolveTappedReply('gone-id', 'web:debug');
+  assert.deepEqual(r, { kind: 'unresolved' });
+});
+
+// ── #3: forwarded quoted content (bridge ships the quote but the id can't be resolved) ────────────
+
+test('local + live both miss but the bridge forwarded the quote → kind "quoted" with that text', async () => {
+  nextFetched = null; // live fetch returns nothing
+  const r = await resolveTappedReply('unknown-id', CHAT, 'the earlier message they replied to');
+  assert.deepEqual(r, { kind: 'quoted', text: 'the earlier message they replied to' });
+  assert.equal(getMessageCalls, 1); // live fetch was still attempted first
+});
+
+test('an authoritative local hit wins even when a quote was forwarded (quote is a fallback only)', async () => {
+  await recordSentBubble(CHAT, 'bubble-9', 'irises actually said this');
+  const r = await resolveTappedReply('bubble-9', CHAT, 'some forwarded quote text');
+  assert.deepEqual(r, { kind: 'assistant', text: 'irises actually said this' });
+  assert.equal(getMessageCalls, 0); // never even reached the live/quote fallback
+});
+
+test('no quote and both misses → still an honest unresolved', async () => {
+  nextFetched = null;
+  const r = await resolveTappedReply('nope', CHAT, '   '); // blank quote is ignored
   assert.deepEqual(r, { kind: 'unresolved' });
 });

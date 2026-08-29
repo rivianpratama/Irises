@@ -19,11 +19,18 @@ export interface EtaEstimate {
  */
 export const CROSS_ENTITY_RE = /\b(all|across|every|each|which ones|everything (?:due|open|pending|outstanding)|anything (?:due|open|pending|outstanding))\b/i;
 
+// An inbox sweep — going THROUGH a mailbox or a pile of files — fans out over many fetch-and-read
+// steps and reliably overruns the standard bucket, like a cross-entity sweep, so it gets the deep
+// bucket regardless of kind. Deliberately narrow: it matches sweep PHRASING ("go through my inbox",
+// "check my email", "dig through the attachments"), NOT a single-item read ("open the pdf jamie
+// sent", "read the contract") — those stay in the standard bucket. Request-text based like CROSS_ENTITY.
+export const INBOX_FILES_RE = /\b(inbox|go through|dig through|sweep)\b|\bthrough (?:my|the|all) (?:e-?mails?|mail|messages|attachments?|files|docs|documents)\b|\bcheck (?:my|the) (?:e-?mail|inbox)\b/i;
+
 // Writing a message is one LLM turn plus maybe a lookup — reliably the fastest lane we have.
 const QUICK_KINDS: TaskKind[] = ['draft'];
 
 export function estimateOpsEta(input: { kind: TaskKind; request: string; forceGrounding?: boolean }): EtaEstimate {
-  if (CROSS_ENTITY_RE.test(input.request) || (input.kind === 'general' && input.forceGrounding) || input.kind === 'compute') {
+  if (CROSS_ENTITY_RE.test(input.request) || INBOX_FILES_RE.test(input.request) || (input.kind === 'general' && input.forceGrounding) || input.kind === 'compute') {
     return { bucketMs: 210_000, phrase: 'a few minutes' };
   }
   if (QUICK_KINDS.includes(input.kind)) {

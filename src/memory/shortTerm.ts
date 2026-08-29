@@ -18,7 +18,10 @@ export const PENDING_EMAIL_TTL_MS = 12 * 60 * 60 * 1000;
 export const PENDING_EMAIL_SHOW = 3; // render at most the few most-recent flagged emails
 
 const DIGEST_SHOW = 6;
-const DIGEST_LINE_CHARS = 150;
+// One-line digest length for an already-delivered look. Exported so the LIVE renderer
+// (wrappers.ts renderShortBlock) uses the SAME cap — one source of truth for "compressed
+// to a line, too short to re-recite verbatim".
+export const DIGEST_LINE_CHARS = 150;
 
 /**
  * The freshest research/media answer, rendered while still hot (45 min) so Convo answers

@@ -26,7 +26,7 @@ import { groomNotes } from '../../memory/noteGroomer.js';
 import { expandRecallQuery, recallExpansionEnabled } from '../../memory/recallExpansion.js';
 import { isGroupHandle } from '../../memory/identity.js';
 import { isDuplicateDelegation, getActiveOps, hasInFlightRequest, requestOpsCancel, type ActiveOps } from '../../state/opsCoordination.js';
-import { etaStatus } from '../etaEstimate.js';
+import { etaStatus, estimateOpsEta } from '../etaEstimate.js';
 import { needsGrounding, salvageHoldingText, refusedCapabilities } from '../routingGate.js';
 import { addMessage, setUserName, addUserFact, UserProfile, StoredMessage } from '../../state/conversation.js';
 import { redactInternalTools } from '../guardrails.js';
@@ -365,12 +365,15 @@ function renderToolDocs(tools: LlmToolDef[]): string {
 }
 
 // Maps a run's progress milestone keys to a short user-meaning phrase, so Convo can say WHAT a run
-// is doing rather than a generic "still on it". 'engine' is the ONLY key any adapter emits
-// (engineBackend.ts onProgress) — and it fires AFTER the concurrency slot is acquired, so it
-// genuinely means "running now", not "queued behind another run". Unmapped keys render no "right
-// now" clause at all (safe fallback), which is what left every status line generic.
+// is doing rather than a generic "still on it". Keys emitted today (engineBackend.ts / hermesBackend
+// streaming): 'queued' (parked behind the concurrency cap, NOT started), 'engine' (slot acquired —
+// running now), 'streaming'/'engine_tool' (Hermes stream heartbeats when HERMES_STREAM is on).
+// Unmapped keys render no "right now" clause at all (safe fallback).
 const MILESTONE_PHRASES: Record<string, string> = {
+  queued: "waiting for a free slot (hasn't started yet)",
   engine: 'actively digging (the run is on the engine)',
+  streaming: 'putting the answer together',
+  engine_tool: 'digging through sources',
 };
 
 /** Friendly elapsed label from an in-flight run's startedAt: "~40s", "~2m". */
@@ -382,6 +385,11 @@ function elapsedLabel(startedAt: number): string {
 /** One status line per in-flight run: the ask, how long it's been going, ETA pace, and — when Ops
  *  has signalled a milestone — what it's doing right now (mapped from the tool to user-meaning). */
 function opsStatusLine(o: ActiveOps): string {
+  // Queued: parked behind the concurrency cap, not started. Elapsed/ETA measure RUN time, so suppress
+  // the pace clause entirely and say plainly it's still waiting for a slot — never imply progress.
+  if (o.lastMilestone === 'queued') {
+    return `- "${o.request}" — queued ${elapsedLabel(o.firstStartedAt)}, hasn't started yet (waiting for a free slot)`;
+  }
   const phrase = o.lastMilestone ? MILESTONE_PHRASES[o.lastMilestone] : undefined;
   let etaPace = '';
   // The "you said it'd take X" attribution only holds for an Ops run the user actually got a
@@ -409,7 +417,7 @@ export function renderActiveOps(activeOps: ActiveOps[]): string {
     blocks.push(`You're mid-research and they haven't heard back yet:\n${requested.map(opsStatusLine).join('\n')}`);
   }
   blocks.push('If their new message is just an ack ("ok"/"thanks"/"cool"/"sounds good") or asks about THAT same thing: do NOT delegate_to_ops again, and do NOT repeat a holding line like "pulling that up". Check the thread and the timestamps first — if the answer already landed in a recent bubble of yours, their ack is just closing the loop: close it warmly (a tiny ack or a reaction) and say nothing about still working. Only if the result genuinely has NOT gone out yet does one short "still on it" beat fit. Either way, only delegate if they\'ve clearly asked for something genuinely different.');
-  blocks.push('If they ask how it\'s going, answer from the status above in your own words — one short bubble naming what it\'s doing and roughly how long it\'s been ("still digging through the emails, couple minutes in"). When the status shows time left, you may pass it on loosely; when it shows "running past that", own it lightly ("taking longer than i thought") — never invent a fresh number, never a countdown, never invent progress beyond what the status shows.');
+  blocks.push('If they ask how it\'s going, answer from the status above in your own words — one short bubble naming what it\'s doing and roughly how long it\'s been ("still digging through the emails, couple minutes in"). When the status shows time left, you may pass it on loosely; when it shows "running past that", own it lightly ("taking longer than i thought") — never invent a fresh number, never a countdown, never invent progress beyond what the status shows. If a run shows "queued … hasn\'t started yet", it\'s behind another look of theirs — say it\'s next in line and starting shortly, and don\'t pretend it\'s already digging.');
   if (scheduled.length) {
     blocks.push(`Also running right now — a scheduled check they set up earlier (they did NOT just ask for this):\n${scheduled.map(opsStatusLine).join('\n')}\nDon't say "still on it" as if you're answering them. But if their new message asks about that same thing, do NOT delegate_to_ops for it — tell them you're actually pulling exactly that right now and it'll reach them in a moment. cancel_research stops this run; if they want the recurring check itself gone, that's cancel_automation.`);
   }
@@ -648,6 +656,9 @@ export function buildSystemPrompt(
       ? `Your answer to it ran as ${repliedTo.assistantBubbles.length} bubble${repliedTo.assistantBubbles.length === 1 ? '' : 's'}: ${repliedTo.assistantBubbles.map(b => `"${b.length > 120 ? `${b.slice(0, 120)}…` : b}"`).join(' · ')}`
       : `Your answer bubbles to it aren't on record anymore — rely on the conversation above for what you said in that exchange.`;
     dyn.push(`## They tapped reply INSIDE one of your answer threads\nTheir reply targets the exchange that began with this earlier message of theirs${fromClause}. The messaging app reports a tapped reply by the thread's FIRST message, so what they actually tapped is almost always one of YOUR answer bubbles in that thread — not this message itself:\n${dataTag('their_earlier_message', rootSnippet)}\n${bubbleList}\nAnswer in the context of THAT exchange — their message above plus your answer to it — never against whatever you sent most recently. Their message also carries an app-added \`[replying within the earlier exchange …]\` tag marking this — that tag is metadata, not something they typed; never echo or mention it.\nMake it clear which exchange you're addressing: if their reply alone is ambiguous, lightly name the subject in a few words (e.g. "on the option period -- yeah..."). And FIRST read what their reply IS — a tapped reply is a pointer, not automatically a request for more. A question or an imperative gets answered about that exchange; a bare ack, reaction, or comment ("ok", "interesting", "lol") means that ground is SETTLED — one light beat or a tapback (send_reaction + "bubbles":[]), never a re-explanation of what the thread already said.${recallNote}`);
+  } else if (repliedTo?.kind === 'quoted') {
+    const snippet = repliedTo.text.length > 200 ? `${repliedTo.text.slice(0, 200)}…` : repliedTo.text;
+    dyn.push(`## They tapped reply on a SPECIFIC earlier message — here's its text\nThey replied to one specific earlier message, and the app forwarded its content so you can see exactly what it was:\n${dataTag('the_message_they_replied_to', snippet)}\nAnswer about THAT message — it's the subject of their reply, even if it isn't your latest line and even though it isn't clear whether you or they sent it originally. Don't assume it's your most recent bubble. Their message also carries an app-added \`[replying to an earlier message: "…"]\` tag marking this — that tag is metadata, not something they typed; never echo or mention it. And FIRST read what their reply IS: a question or imperative gets answered about that message; a bare ack or reaction ("ok", "lol", "interesting") means that ground is SETTLED — one light beat or a tapback (send_reaction + "bubbles":[]), never a re-explanation of what the quoted message already said.`);
   } else if (repliedTo?.kind === 'unresolved') {
     dyn.push(`## They tapped reply on a SPECIFIC earlier message you can't pull up\nThey replied to one specific earlier message in this thread, but it can't be retrieved right now (it's old and no longer on hand). Do NOT assume it's your latest bubbles — it usually isn't; that's exactly why they tapped reply instead of just texting. First try to infer the subject from their words plus the conversation above: if it's clear, answer THAT and lightly name the subject so they can see what you're addressing (e.g. "on the option period -- yeah..."). If you genuinely can't tell which message they mean, be honest and ask — acknowledge you can see they're replying to an earlier text but you can't pull it up, and ask in ONE short bubble what it was about (e.g. "i see you're replying to something earlier but i can't pull it up on my end — which one do you mean?"). Own the gap lightly; don't make it a big deal, and never guess: a confident answer aimed at the wrong message is the worst outcome here. Their message also carries an app-added \`[replying to a specific earlier message …]\` tag — metadata, not something they typed; never echo or mention it.`);
   }
@@ -759,6 +770,10 @@ export function annotateTappedReply(text: string, repliedTo?: ResolvedReply): st
     const root = repliedTo.rootText.length > 200 ? `${repliedTo.rootText.slice(0, 200)}…` : repliedTo.rootText;
     const from = dateLabel ? ` from ${dateLabel}` : '';
     return `[replying within the earlier exchange${from} that began with their message: "${root}" — most likely to one of your answer bubbles in that thread]\n${text}`;
+  }
+  if (repliedTo.kind === 'quoted') {
+    const snippet = repliedTo.text.length > 200 ? `${repliedTo.text.slice(0, 200)}…` : repliedTo.text;
+    return `[replying to an earlier message: "${snippet}"]\n${text}`;
   }
   return `[replying to a specific earlier message that could not be identified — not necessarily your latest bubbles]\n${text}`;
 }
@@ -1443,7 +1458,12 @@ export async function processConvoResult(args: {
   // progress voice: it reads the recent thread so the line blends in and doesn't repeat, with the
   // fallfirm/floor.ts pools as the zero-latency fallback if its call fails. This sits on the live reply
   // path but is the rare branch — the model normally writes its own holding line and this is skipped.
-  if (!textResponse && delegatedTask) textResponse = await voiceInstant({ kind: 'holding', taskKind: delegatedTask.kind, request: delegatedTask.request, addressHint: delegatedTask.addressHint, dealHint: delegatedTask.dealHint }, chatId, handle ?? '');
+  if (!textResponse && delegatedTask) {
+    // Seed the holding line with the SAME coarse ETA the run is stored with, so the very first beat can
+    // set a soft duration expectation ("give me a couple mins" energy) — an offer, never a countdown.
+    const holdEta = estimateOpsEta({ kind: delegatedTask.kind, request: delegatedTask.request });
+    textResponse = await voiceInstant({ kind: 'holding', taskKind: delegatedTask.kind, request: delegatedTask.request, addressHint: delegatedTask.addressHint, dealHint: delegatedTask.dealHint, eta: { phrase: holdEta.phrase, state: 'fresh' } }, chatId, handle ?? '');
+  }
   if (!textResponse && suppressedDuplicate) {
     const line = await voiceInstant({ kind: 'still_on_it', request: textToSend }, chatId, handle ?? '');
     // This reassurance can race the real answer: voiceInstant is a model call, and the in-flight task

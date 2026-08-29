@@ -10,7 +10,7 @@
 import { Router, type Request } from 'express';
 import { noteBridgeChat } from './channel.js';
 import { record } from '../../diagnostics/trace.js';
-import { emptyMedia, type IncomingMedia } from '../../webhook/types.js';
+import { emptyMedia, type IncomingMedia, type ReplyTo } from '../../webhook/types.js';
 import type { AgentClient, EnqueueInbound } from '../../index.js';
 
 interface BridgeInbound {
@@ -24,8 +24,22 @@ interface BridgeInbound {
   message_id?: string | number;
   thread_id?: string | number;
   reply_to_id?: string | number;
+  reply_to_text?: string;          // the quoted message's content, when the engine event carried it
+  timestamp?: number;              // platform send time (epoch seconds or ms); used as receivedAt
   is_group?: boolean;
   media?: Array<{ url?: string; path?: string; mimeType?: string; mime_type?: string; filename?: string }>;
+}
+
+/** Normalize a platform-supplied timestamp (seconds OR ms) to epoch ms, or undefined when absent or
+ *  implausible. A bogus value must never poison gap detection, so we clamp: nothing more than a
+ *  minute in the future, nothing older than 7 days back. Absent/garbage → undefined → the caller
+ *  falls back to Date.now() (exactly today's behavior). */
+export function normalizeTimestamp(raw: unknown, nowMs: number = Date.now()): number | undefined {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  const ms = n < 1e12 ? n * 1000 : n; // < ~2001 in ms means it's really seconds
+  if (ms > nowMs + 60_000 || ms < nowMs - 7 * 24 * 3600_000) return undefined;
+  return ms;
 }
 
 // Exact match, never a substring: `includes('127.0.0.1')` also accepts a real remote address that
@@ -85,8 +99,14 @@ export function createBridgeInboundRouter(deps: { enqueueInbound: EnqueueInbound
       threadId: b.thread_id != null ? String(b.thread_id) : undefined,
     });
     record({ type: 'event', chatId, label: 'bridge:inbound', detail: { engine: b.engine, platform, isGroup: b.is_group === true, chars: text.length, media: (b.media ?? []).length } });
-    const replyTo = b.reply_to_id != null ? { message_id: String(b.reply_to_id) } : undefined;
-    deps.enqueueInbound(deps.agentClient, chatId, from, text, String(b.message_id ?? `eng-in-${Date.now().toString(36)}`), media, replyTo);
+    // Reply-to: carry the quoted CONTENT alongside the id when the plugin forwarded it, so the model
+    // sees what was replied to even if the id can't be resolved to a stored bubble/inbound row.
+    const quoted = typeof b.reply_to_text === 'string' && b.reply_to_text.trim() ? b.reply_to_text.slice(0, 2000) : undefined;
+    const replyTo: ReplyTo | undefined = b.reply_to_id != null
+      ? { message_id: String(b.reply_to_id), ...(quoted ? { content: quoted } : {}) }
+      : undefined;
+    const receivedAt = normalizeTimestamp(b.timestamp);
+    deps.enqueueInbound(deps.agentClient, chatId, from, text, String(b.message_id ?? `eng-in-${Date.now().toString(36)}`), media, replyTo, receivedAt);
     res.status(202).json({ ok: true, chatId });
   });
 

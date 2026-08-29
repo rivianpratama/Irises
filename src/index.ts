@@ -225,12 +225,17 @@ function burstSettleMs(pending: PendingChat): number {
   return effectiveSettleMs(pending.messages.length, BATCH_SETTLE_MS, BATCH_SETTLE_INCREMENT_MS, BATCH_MAX_SETTLE_MS);
 }
 const USER_QUIET_WAIT_MS = Number(process.env.USER_QUIET_WAIT_MS || 600);      // quiet required after the user stops typing before we send (only when PAUSE_WHILE_TYPING)
-const TYPING_CPM = Number(process.env.TYPING_CPM || 800);                      // chars/min; ≈160 WPM "fast texter" (190 ≈ avg two-thumb speed proved way too slow: every bubble hit the cap)
-const TYPING_DELAY_MAX_MS = Number(process.env.TYPING_DELAY_MAX_MS || 3000);   // hard cap: after this, stop simulating and just send the bubble
-const TYPING_DELAY_MIN_MS = Number(process.env.TYPING_DELAY_MIN_MS || 600);    // floor: even a 5-char bubble still reads as typed, not machine-gunned
-const TYPING_FIRST_BUBBLE_MAX_MS = Number(process.env.TYPING_FIRST_BUBBLE_MAX_MS || 800); // bubble 1 only: dots were already up all through the LLM call
+const TYPING_CPM = Number(process.env.TYPING_CPM || 1100);                     // chars/min; ≈220 WPM fast texter (raised from 800 so fewer bubbles hit the cap → snappier)
+const TYPING_DELAY_MAX_MS = Number(process.env.TYPING_DELAY_MAX_MS || 2000);   // hard cap: after this, stop simulating and just send the bubble (tightened from 3000)
+const TYPING_DELAY_MIN_MS = Number(process.env.TYPING_DELAY_MIN_MS || 400);    // floor: even a 5-char bubble still reads as typed, not machine-gunned (lowered from 600)
+const TYPING_FIRST_BUBBLE_MAX_MS = Number(process.env.TYPING_FIRST_BUBBLE_MAX_MS || 600); // bubble 1 only: dots were already up through the LLM call (lowered from 800 so first ink lands sooner)
 const TYPING_JITTER_PCT = Number(process.env.TYPING_JITTER_PCT || 15);         // ±% humanizing wobble on the hold; 0 disables
 const TYPING_REFRESH_MS = Number(process.env.TYPING_REFRESH_MS || 2000);       // re-ping the typing indicator this often so it stays visible (no dead air)
+// On a channel with NO visible typing indicator (bridge with BRIDGE_TYPING off, or an adapter with no
+// chat-action), a full per-bubble simulated-typing HOLD is pure dead air — a delay the user sees as an
+// unexplained gap. There we skip the hold and space multi-bubble replies by just this small gap so they
+// still land in order and read as separate sends. 0 = fire bubbles back-to-back.
+const BRIDGE_BUBBLE_GAP_MS = Number(process.env.BRIDGE_BUBBLE_GAP_MS || 400);
 const PACING: PacingConfig = { cpm: TYPING_CPM, minMs: TYPING_DELAY_MIN_MS, maxMs: TYPING_DELAY_MAX_MS, firstBubbleMaxMs: TYPING_FIRST_BUBBLE_MAX_MS, jitterPct: TYPING_JITTER_PCT };
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -398,6 +403,9 @@ async function holdTyping(chatId: string, totalMs: number, finalPing: boolean): 
 // then the message pops in later"). This re-pings every TYPING_REFRESH_MS while `work`
 // runs and is GUARANTEED to stop on resolve OR reject, so no interval ever leaks.
 async function withTypingKeptAlive<T>(chatId: string, work: Promise<T>): Promise<T> {
+  // Nothing to keep alive on a channel that shows no dots — skip the ping loop entirely instead of
+  // firing a no-op startTyping every couple seconds for the whole LLM call.
+  if (!resolveChannel(chatId).caps.typing) return work;
   void startTyping(chatId);
   const timer = setInterval(() => { void startTyping(chatId); }, TYPING_REFRESH_MS);
   (timer as { unref?: () => void }).unref?.();  // don't keep the process alive just for this
@@ -449,10 +457,15 @@ async function sendBubbles(chatId: string, rawBubbles: string[], opts: SendBubbl
   if (prepared.length === 0) return;
 
   const paced = opts.paced !== false;
+  // Does THIS channel actually show a typing indicator? On one that does (web, or the bridge with
+  // BRIDGE_TYPING on + a capable adapter), the per-bubble hold is real feedback — the dots are up
+  // while we "type". On one that doesn't, the same hold is pure DEAD AIR: an unexplained gap with no
+  // dots. There we drop the hold and only space multi-bubble replies by a small gap.
+  const typingVisible = resolveChannel(chatId).caps.typing;
   for (let i = 0; i < prepared.length; i++) {
     const { text, replyTo } = prepared[i];
     const isLast = i === prepared.length - 1;
-    if (paced) {
+    if (paced && typingVisible) {
       await waitForUserQuiet(chatId);
       // Hold a LIVE typing indicator for a simulated-typing beat before every bubble (the
       // first gets only a short beat — the user already waited through the LLM call), then
@@ -460,6 +473,10 @@ async function sendBubbles(chatId: string, rawBubbles: string[], opts: SendBubbl
       // re-show dots after the reply is done.
       await holdTyping(chatId, typingDelayMs(text, i === 0), !isLast);
       await waitForUserQuiet(chatId);
+    } else if (paced && !isLast && BRIDGE_BUBBLE_GAP_MS > 0) {
+      // No visible dots: skip the simulated-typing hold (dead air) and keep only a small inter-bubble
+      // gap so a multi-bubble reply still reads as separate sends rather than one wall of text.
+      await sleep(BRIDGE_BUBBLE_GAP_MS);
     }
     const sent = await sendMessage(chatId, text, replyTo);
     // Remember this bubble by its channel message id so a later inbound reply_to can be resolved
@@ -470,8 +487,9 @@ async function sendBubbles(chatId: string, rawBubbles: string[], opts: SendBubbl
     // Sending a message clears the recipient's typing dots. If MORE bubbles are coming, re-assert
     // them immediately so there's no dark gap — the user sees "bubble → dots again" = more coming.
     // After the last bubble we intentionally don't, so the dots clear (= done). Fire-and-forget:
-    // startTyping swallows its own errors, and the next bubble's hold re-pings anyway.
-    if (paced && !isLast) void startTyping(chatId);
+    // startTyping swallows its own errors, and the next bubble's hold re-pings anyway. Only meaningful
+    // where dots are visible.
+    if (paced && typingVisible && !isLast) void startTyping(chatId);
   }
   // Log this send (ONE entry per delivery ≈ one assistant history row): so a later message answered
   // after these bubbles is treated as "gapped" and gets a quote, and so a queued message that predates
@@ -602,7 +620,7 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
   // Irises's own bubbles, the user's own thread root (the transport collapses a tapped reply to the
   // root — for a reply on an Ops answer that's the originating question), or an honest unresolved.
   // `let`: re-resolved if a late-drained message brings a different tapped-reply target.
-  let repliedTo: ResolvedReply | undefined = incomingReplyTo ? await resolveTappedReply(incomingReplyTo.message_id, chatId) : undefined;
+  let repliedTo: ResolvedReply | undefined = incomingReplyTo ? await resolveTappedReply(incomingReplyTo.message_id, chatId, incomingReplyTo.content) : undefined;
 
   // Get agent's response (typing indicator shows while this runs)
   await waitForUserQuiet(chatId);
@@ -635,7 +653,7 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
       const remerged = mergeBurst(lateArrivals.batch);
       if ((remerged.incomingReplyTo?.message_id ?? null) !== (incomingReplyTo?.message_id ?? null)) {
         incomingReplyTo = remerged.incomingReplyTo;
-        repliedTo = incomingReplyTo ? await resolveTappedReply(incomingReplyTo.message_id, chatId) : undefined;
+        repliedTo = incomingReplyTo ? await resolveTappedReply(incomingReplyTo.message_id, chatId, incomingReplyTo.content) : undefined;
       }
       text = remerged.combinedText;
       messageId = remerged.lastMessageId;
@@ -831,6 +849,7 @@ export function enqueueInbound(
   messageId: string,
   media: IncomingMedia,
   incomingReplyTo?: ReplyTo,
+  receivedAt?: number,
 ): void {
   if (!pendingChats.has(chatId)) {
     pendingChats.set(chatId, {
@@ -838,7 +857,10 @@ export function enqueueInbound(
     });
   }
   const pending = pendingChats.get(chatId)!;
-  pending.messages.push({ from, text, messageId, media, incomingReplyTo, receivedAt: Date.now() });
+  // receivedAt is the message's real platform send time when the bridge forwarded one (normalized
+  // upstream); it feeds arrivals/gap detection. Falls back to now when absent (web/CLI, or an engine
+  // that doesn't forward timestamps) — exactly the prior behavior.
+  pending.messages.push({ from, text, messageId, media, incomingReplyTo, receivedAt: receivedAt ?? Date.now() });
 
   // Index this inbound message's id → text so a LATER tapped reply that the transport collapses to
   // the thread root (this user's own message) resolves to what they said. Sits HERE, in the single

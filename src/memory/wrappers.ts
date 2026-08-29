@@ -29,6 +29,7 @@
 import { getMemory, type AgentMemory } from '../db/repositories/memory.js';
 import { getUserProfile } from '../db/repositories/profiles.js';
 import { listShortTerm, type ShortTermEntry } from '../db/repositories/memoryShort.js';
+import { RECENT_RESEARCH_TTL_MS, DIGEST_LINE_CHARS } from './shortTerm.js';
 import { getLongDoc } from '../db/repositories/memoryLong.js';
 import { loadMediumBundle, renderFactsBlock, type MediumBundle } from './mediumTerm.js';
 import { looksUnsafe, sanitizeDirectives } from './preferences.js';
@@ -152,6 +153,43 @@ function formatShortEntry(e: ShortTermEntry, nowMs: number): string {
 const SHORT_ENTRY_MAX = 8;
 const SHORT_ENTRY_CHARS = 600;
 
+// Tokens too common to signal a topic; ignored when testing whether the current turn touches a
+// past look. Kept small and generic on purpose.
+const TOPIC_STOPWORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'but', 'of', 'to', 'in', 'on', 'for', 'with', 'is', 'are', 'was',
+  'were', 'be', 'been', 'it', 'this', 'that', 'these', 'those', 'my', 'your', 'their', 'our', 'you',
+  'they', 'we', 'me', 'them', 'us', 'what', 'when', 'where', 'who', 'how', 'why', 'do', 'does', 'did',
+  'can', 'could', 'would', 'should', 'will', 'about', 'get', 'got', 'tell', 'know', 'so', 'if', 'at',
+  'as', 'by', 'from', 'up', 'out', 'now', 'just', 'ok', 'okay', 'thanks', 'thank', 'yeah', 'yes',
+  'not', 'any', 'some', 'all', 'more', 'much', 'have', 'has', 'had', 'want', 'need', 'please',
+]);
+
+function salientTokens(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const raw of text.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (raw.length >= 3 && !TOPIC_STOPWORDS.has(raw)) out.add(raw);
+  }
+  return out;
+}
+
+/**
+ * Cheap topical relatedness between the current user turn and a past look: ≥1 shared salient token
+ * against the entry's ask (its `request` plus `meta.topicKey`). Deliberately simple — no embeddings.
+ * An absent/empty/token-less current turn (e.g. a bare "ok thanks") defaults to RELATED (true), so
+ * legacy/non-Convo callers never lose an entry and acks can still close a loop from the hot look.
+ */
+export function topicallyRelated(currentTurnText: string | undefined, entry: ShortTermEntry): boolean {
+  if (!currentTurnText || !currentTurnText.trim()) return true;
+  const turn = salientTokens(currentTurnText);
+  if (!turn.size) return true;
+  const topicKey = typeof (entry.meta as { topicKey?: unknown } | undefined)?.topicKey === 'string'
+    ? (entry.meta as { topicKey?: string }).topicKey!
+    : '';
+  const entryTokens = salientTokens(`${entry.request ?? ''} ${topicKey}`);
+  for (const t of turn) if (entryTokens.has(t)) return true;
+  return false;
+}
+
 // ── The wrapper prose (RIGID, code-authored) ─────────────────────────────────
 
 /** Shared precedence preamble — rendered once, before the first tier block. */
@@ -190,14 +228,39 @@ export function renderShortBlock(
   entries: ShortTermEntry[],
   nowMs: number = Date.now(),
   engine: 'hermes' | 'openclaw' | null = getEngineBackend()?.name ?? null,
+  currentTurnText?: string,
 ): string {
-  const visible = entries
-    .filter(e => e.expiresAt > nowMs)
-    .slice(0, SHORT_ENTRY_MAX);
+  const visible = entries.filter(e => e.expiresAt > nowMs);
   if (!visible.length) return '';
-  const payload = visible
-    .map(e => formatShortEntry({ ...e, content: e.content.slice(0, SHORT_ENTRY_CHARS) }, nowMs))
-    .join('\n');
+
+  // Split the re-recitation hazard (research/media looks) from the fact channel (email flags, which
+  // feed follow-ups like "yes, remind me"). Research is capped and already newest-first.
+  const research = visible.filter(e => e.kind === 'ops_research' || e.kind === 'media_analysis').slice(0, SHORT_ENTRY_MAX);
+  const emails = visible.filter(e => e.kind === 'email_flag');
+
+  // STRUCTURAL de-dup — the fix for "re-states an old result after the topic moved on": at most ONE
+  // research look renders in FULL, and only while it's genuinely hot — the freshest, ≤45 min old, AND
+  // topically related to what they just said. Every other look — including a freshest gone cold or
+  // off-topic — collapses to a one-line "already delivered, settled ground" digest, too short to
+  // recite. So once the conversation moves off a look, its full text simply leaves the prompt; prose
+  // ("never re-deliver") is no longer the only thing standing between the model and a repeat.
+  const freshest = research[0];
+  const freshestIsHot = !!freshest
+    && (nowMs - freshest.createdAt) <= RECENT_RESEARCH_TTL_MS
+    && topicallyRelated(currentTurnText, freshest);
+
+  const lines: string[] = [];
+  if (freshest && freshestIsHot) {
+    lines.push(formatShortEntry({ ...freshest, content: freshest.content.slice(0, SHORT_ENTRY_CHARS) }, nowMs));
+  }
+  for (const e of research.slice(freshest && freshestIsHot ? 1 : 0)) {
+    lines.push(formatShortEntry({ ...e, content: e.content.slice(0, DIGEST_LINE_CHARS) }, nowMs));
+  }
+  for (const e of emails) {
+    lines.push(formatShortEntry({ ...e, content: e.content.slice(0, SHORT_ENTRY_CHARS) }, nowMs));
+  }
+  if (!lines.length) return '';
+  const payload = lines.join('\n');
 
   const reminderBullet = engine === 'openclaw'
     ? [
@@ -662,14 +725,16 @@ export interface UserMemoryData {
  * flexible (LAST, recency). Empty tiers render nothing; a fully-empty memory renders ''
  * (consumers .filter(Boolean), so the section simply doesn't appear).
  */
-export function renderUserMemory(agent: MemoryAgent, data: UserMemoryData, nowMs: number = Date.now(), opts: { audience?: MemoryAudience; includeMedium?: boolean } = {}): string {
+export function renderUserMemory(agent: MemoryAgent, data: UserMemoryData, nowMs: number = Date.now(), opts: { audience?: MemoryAudience; includeMedium?: boolean; currentTurnText?: string } = {}): string {
   const matrix = AGENT_MEMORY_MATRIX[agent];
   const prefs = data.memory?.prefs ?? {};
   const audience = opts.audience ?? 'individual';
 
   const blocks: string[] = [];
   if (matrix.short !== 'none') {
-    const shortBlock = renderShortBlock(data.short, nowMs);
+    // currentTurnText gates whether the freshest look renders full or collapses to a digest line — see
+    // renderShortBlock. Undefined (composer/fallfirm don't render short anyway) defaults to "related".
+    const shortBlock = renderShortBlock(data.short, nowMs, getEngineBackend()?.name ?? null, opts.currentTurnText);
     if (shortBlock) blocks.push(shortBlock);
   }
   if (matrix.medium || opts.includeMedium) {

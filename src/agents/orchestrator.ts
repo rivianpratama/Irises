@@ -3,7 +3,7 @@ import { withDeadline, DeadlineError } from './deadline.js';
 import { setPreference } from '../db/repositories/memory.js';
 import { addShortTerm } from '../db/repositories/memoryShort.js';
 import { composeWithComposer } from './composerCore.js';
-import { markOpsDone, isOpsCancelled, noteOpsProgress, markOpsRetry, getOpsEtaStatus } from '../state/opsCoordination.js';
+import { markOpsDone, isOpsCancelled, noteOpsProgress, markOpsRetry, getOpsEtaStatus, normalizeRequest } from '../state/opsCoordination.js';
 import { detectCause, decide, splitMiss, type TriageDecision } from './ops/triage.js';
 import { selectInterveningUserMessages } from './interveningMessages.js';
 import { redactInternalTools } from './guardrails.js';
@@ -494,7 +494,10 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
         await Promise.all([
           addShortTerm({
             agentHandle: task.agentHandle, chatId: task.chatId, kind: 'ops_research',
-            request: task.request, content: summary, meta: { taskKind: task.kind, attempt }, taskId: task.id,
+            // topicKey: the normalized ask, so the short-tier renderer can tell whether a LATER turn is
+            // still on THIS topic (renders the look full) or has moved on (collapses it to a digest line).
+            // The row is written at delivery, so createdAt already IS "delivered-at" — no separate flag.
+            request: task.request, content: summary, meta: { taskKind: task.kind, attempt, topicKey: normalizeRequest(task.kind, task.request) }, taskId: task.id,
           }).catch(err => console.error('[orchestrator] failed to persist short-term research', err)),
           setPreference(task.agentHandle, 'recent_research', {
             request: task.request, kind: task.kind, summary, at: Date.now(),

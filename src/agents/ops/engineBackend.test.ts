@@ -82,7 +82,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 const tick = () => new Promise(r => setTimeout(r, 0));
 
 test('withEngineSlot: only MAX_CONCURRENT run at once; the rest are admitted FIFO', async () => {
-  const max = Number(process.env.ENGINE_MAX_CONCURRENT) || 2;
+  const max = engineSlotState().cap; // the real cap (default bumped to 3), robust to the env default
   const names = Array.from({ length: max + 2 }, (_, i) => `run${i}`);
   const gates = names.map(() => deferred());
   const started: string[] = [];
@@ -321,9 +321,11 @@ test('runViaEngine: a queued run is TRACED and bounded — never silence before 
   try {
     clearTraces();
     let contacted = false;
+    const milestones: string[] = [];
     const debrief = mkDebrief();
     const r = await runViaEngine(
-      stub(async () => { contacted = true; return 'answer'; }), 'prompt', mkTask(), {}, debrief,
+      stub(async () => { contacted = true; return 'answer'; }), 'prompt', mkTask(),
+      { onProgress: (m: string) => { milestones.push(m); } }, debrief,
     );
     assert.equal(contacted, false, 'the engine was never reached — the run never left the queue');
     assert.equal(debrief.failure?.cause, 'timeout', 'an honest mapped timeout triage can voice');
@@ -332,8 +334,27 @@ test('runViaEngine: a queued run is TRACED and bounded — never silence before 
     assert.ok(labels.includes('engine:hermes:queued'), 'the queue wait is on the record');
     assert.ok(labels.includes('engine:hermes:error'), 'and so is how it ended');
     assert.ok(!labels.includes('engine:hermes:start'), 'the run never started');
+    assert.deepEqual(milestones, ['queued'], 'a parked run reports queued, never engine (never started)');
   } finally {
     await pins.freeAll();
     if (prev === undefined) delete process.env.ENGINE_QUEUE_WAIT_MS; else process.env.ENGINE_QUEUE_WAIT_MS = prev;
   }
+});
+
+test('runViaEngine: a queued run flips queued → engine once a slot frees, and completes', async () => {
+  const pins = await pinEverySlot();
+  const milestones: string[] = [];
+  const debrief = mkDebrief();
+  // Start the run while every slot is held → it parks and reports 'queued'.
+  const p = runViaEngine(
+    stub(async () => 'the answer'), 'prompt', mkTask(),
+    { onProgress: (m: string) => { milestones.push(m); } }, debrief,
+  );
+  await settle();
+  assert.deepEqual(milestones, ['queued'], 'parked behind the cap → queued');
+  // Free the slots → our run acquires one, flips to 'engine', and finishes.
+  await pins.freeAll();
+  const r = await p;
+  assert.equal(r.summary, 'the answer');
+  assert.deepEqual(milestones, ['queued', 'engine'], 'acquiring a slot flips it to engine (running)');
 });

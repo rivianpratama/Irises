@@ -98,8 +98,9 @@ export function webClientCount(chatId: string): number {
 
 export const webChannel: Channel = {
   kind: 'web',
-  // No group ops in a browser; threading + reactions render as UI affordances.
-  caps: { threading: true, reactions: true, groupOps: false, contactCard: false },
+  // No group ops in a browser; threading + reactions render as UI affordances. Typing dots are real
+  // here — startTyping/stopTyping push `type:'typing'` SSE events the browser renders.
+  caps: { threading: true, reactions: true, groupOps: false, contactCard: false, typing: true },
 
   async sendMessage(chatId, text, replyTo) {
     const id = 'web-out-' + randomUUID();

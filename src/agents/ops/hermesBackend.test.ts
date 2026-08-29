@@ -6,7 +6,7 @@ process.env.TZ = 'UTC';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { HermesBackend, hermesSessionKey, jobPrefix, legacyJobPrefix, reminderJobPrompt, shiftCronToEngineZone, inlineLocalImage, normalizeCapabilities } from './hermesBackend.js';
+import { HermesBackend, hermesSessionKey, hermesTaskSessionId, jobPrefix, legacyJobPrefix, reminderJobPrompt, shiftCronToEngineZone, inlineLocalImage, normalizeCapabilities } from './hermesBackend.js';
 import { HERMES_TASK_HEADER, HERMES_ONBOARDING_MESSAGE, hermesOnboardingVersion } from './hermesDoctrine.js';
 import { EngineUnavailableError, EngineRunError } from './engineBackend.js';
 import { emptyMedia } from '../../webhook/types.js';
@@ -39,14 +39,65 @@ test('runTask: happy path returns the message content and sends session headers'
   assert.equal(captured.length, 1);
   assert.match(captured[0].url, /\/v1\/chat\/completions$/);
   const headers = captured[0].init.headers as Record<string, string>;
-  assert.equal(headers['X-Hermes-Session-Id'], hermesSessionKey('web:debug'));
+  // Research rides a task-scoped Session-Id (so a mid-run inbound doesn't trip the interrupt notice),
+  // while the memory-scoping Session-Key stays the chat's own key.
+  assert.equal(headers['X-Hermes-Session-Id'], hermesTaskSessionId('web:debug'));
   assert.equal(headers['X-Hermes-Session-Key'], hermesSessionKey('web:debug'));
+  assert.notEqual(headers['X-Hermes-Session-Id'], headers['X-Hermes-Session-Key'], 'the two are decoupled for research');
   assert.match(headers.Authorization, /^Bearer /);
   const body = JSON.parse(String(captured[0].init.body));
   assert.equal(body.stream, false);
   // The engine-mode header leads every run (an un-onboarded hermes still gets the limits and the
   // reply shape); the prompt below it is passed through untouched.
   assert.equal(body.messages[0].content, `${HERMES_TASK_HEADER}\n\nthe prompt`);
+});
+
+test('hermesTaskSessionId: distinct from the chat key, ends in -task, and is stable', () => {
+  const chat = 'eng:imessage:+1555';
+  assert.notEqual(hermesTaskSessionId(chat), hermesSessionKey(chat));
+  assert.ok(hermesTaskSessionId(chat).endsWith('-task'));
+  assert.equal(hermesTaskSessionId(chat), hermesTaskSessionId(chat)); // stable across calls
+});
+
+test('runTask (streaming): accumulates SSE deltas, heartbeats, and keeps the task session', async () => {
+  const prev = process.env.HERMES_STREAM;
+  process.env.HERMES_STREAM = 'on';
+  try {
+    const captured: Captured[] = [];
+    const sse = [
+      'data: {"choices":[{"delta":{"content":"Hello"}}]}', '',
+      'data: {"choices":[{"delta":{"content":", world"}}]}', '',
+      'data: {"choices":[{"delta":{"tool_calls":[{"id":"1"}]}}]}', '',
+      'data: [DONE]', '',
+    ].join('\n');
+    const streamFetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      captured.push({ url: String(url), init: init ?? {} });
+      return new Response(sse, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+    }) as typeof fetch;
+    const be = new HermesBackend({ fetchFn: streamFetch });
+    const milestones: string[] = [];
+    const out = await be.runTask('the prompt', mkTask(), { onProgress: (m: string) => { milestones.push(m); } });
+    assert.equal(out, 'Hello, world', 'delta contents are accumulated');
+    assert.ok(milestones.includes('streaming'), 'token flow emits a streaming heartbeat');
+    const body = JSON.parse(String(captured[0].init.body));
+    assert.equal(body.stream, true);
+    const headers = captured[0].init.headers as Record<string, string>;
+    assert.equal(headers['X-Hermes-Session-Id'], hermesTaskSessionId('web:debug'), 'streaming keeps the task session split');
+  } finally {
+    if (prev === undefined) delete process.env.HERMES_STREAM; else process.env.HERMES_STREAM = prev;
+  }
+});
+
+test('runTask (streaming): a non-SSE body (proxy ignored stream:true) falls back to the JSON completion', async () => {
+  const prev = process.env.HERMES_STREAM;
+  process.env.HERMES_STREAM = 'on';
+  try {
+    const be = new HermesBackend({ fetchFn: fakeFetch(200, { choices: [{ message: { content: 'plain answer' } }] }) });
+    const out = await be.runTask('the prompt', mkTask(), {});
+    assert.equal(out, 'plain answer', 'the ordinary completion shape is read when it is not an event-stream');
+  } finally {
+    if (prev === undefined) delete process.env.HERMES_STREAM; else process.env.HERMES_STREAM = prev;
+  }
 });
 
 test('runTask: the doctrine header restates the limits that matter most on a gateway engine', async () => {

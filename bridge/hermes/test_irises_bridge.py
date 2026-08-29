@@ -114,6 +114,29 @@ class OnInbound(unittest.TestCase):
             bridge.on_inbound(event=_event(chat_type=chat_type), gateway=None)
             self.assertEqual(self.q.get_nowait()["is_group"], expect, chat_type)
 
+    def test_reply_and_timestamp_forward_when_present(self):
+        ev = _event(reply_to_message_id="root9", reply_to_text="the report you asked for", timestamp=1700000000)
+        bridge.on_inbound(event=ev, gateway="GW")
+        payload = self.q.get_nowait()
+        self.assertEqual(payload["reply_to_id"], "root9")
+        self.assertEqual(payload["reply_to_text"], "the report you asked for")
+        self.assertEqual(payload["timestamp"], 1700000000)
+
+    def test_reply_and_timestamp_absent_default_to_none(self):
+        bridge.on_inbound(event=_event(), gateway="GW")
+        payload = self.q.get_nowait()
+        self.assertIsNone(payload["reply_to_text"])
+        self.assertIsNone(payload["timestamp"])
+
+    def test_alternate_reply_and_timestamp_field_names_are_picked_up(self):
+        # A Photon-style adapter may name the fields differently; _first_attr tries a spread.
+        ev = _event(quoted_text="the earlier msg", created_at=1699999999, quoted_message_id="q7")
+        bridge.on_inbound(event=ev, gateway="GW")
+        payload = self.q.get_nowait()
+        self.assertEqual(payload["reply_to_id"], "q7")
+        self.assertEqual(payload["reply_to_text"], "the earlier msg")
+        self.assertEqual(payload["timestamp"], 1699999999)
+
     def test_gateway_captured_for_outbound_listener(self):
         with mock.patch.object(bridge, "_GW", [None, None]):
             bridge.on_inbound(event=_event(), gateway="THE-GATEWAY")
@@ -404,6 +427,66 @@ class Healthy(unittest.TestCase):
         self.assertFalse(h.is_healthy(now=103.0), "a forward failure is not masked by a fresh probe")
         h.note_ok(now=104.0)
         self.assertTrue(h.is_healthy(now=105.0), "and a later success clears it again")
+
+
+class ResolveTypingCall(unittest.TestCase):
+    def test_picks_the_first_available_method_in_priority_order(self):
+        class Adapter:  # both exist → send_chat_action wins (first in priority order)
+            async def send_chat_action(self, *a):
+                ...
+            async def send_typing(self, *a):
+                ...
+        name, fn = bridge._resolve_typing_call(Adapter())
+        self.assertEqual(name, "send_chat_action")
+        self.assertTrue(callable(fn))
+
+    def test_falls_through_to_a_later_name(self):
+        class Adapter:
+            async def set_typing(self, *a):
+                ...
+        name, _ = bridge._resolve_typing_call(Adapter())
+        self.assertEqual(name, "set_typing")
+
+    def test_none_when_the_adapter_has_no_chat_action(self):
+        class Adapter:
+            async def send(self, *a):  # a send-only adapter can't type
+                ...
+        self.assertIsNone(bridge._resolve_typing_call(Adapter()))
+
+    def test_a_non_callable_attribute_is_ignored(self):
+        class Adapter:
+            send_chat_action = "not a method"  # must not be mistaken for a callable
+            async def typing(self, *a):
+                ...
+        name, _ = bridge._resolve_typing_call(Adapter())
+        self.assertEqual(name, "typing")
+
+    def test_fuzzy_matches_an_unlisted_typing_method_name(self):
+        # A Photon adapter's own name (not in the exact list) is still caught by the fuzzy pass.
+        class Adapter:
+            async def sendTypingIndicator(self, *a):
+                ...
+        name, _ = bridge._resolve_typing_call(Adapter())
+        self.assertEqual(name, "sendTypingIndicator")
+
+    def test_fuzzy_skips_predicates_and_handlers(self):
+        # `is_typing`/`on_typing` are a getter and an event handler, not an action to invoke → no match.
+        class Adapter:
+            async def is_typing(self, *a):
+                ...
+            async def on_typing(self, *a):
+                ...
+        self.assertIsNone(bridge._resolve_typing_call(Adapter()))
+
+
+class FirstAttr(unittest.TestCase):
+    def test_returns_the_first_non_none_field(self):
+        obj = types.SimpleNamespace(a=None, b="x", c="y")
+        self.assertEqual(bridge._first_attr(obj, ("a", "b", "c")), "x")
+
+    def test_none_when_no_candidate_is_set(self):
+        obj = types.SimpleNamespace(a=None)
+        self.assertIsNone(bridge._first_attr(obj, ("a", "missing", "alsomissing")))
 
 
 if __name__ == "__main__":

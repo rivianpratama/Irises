@@ -31,6 +31,8 @@ interface BeforeDispatchEvent {
   sessionKey?: string;
   senderId?: string;
   replyToId?: string;
+  replyToText?: string;   // the quoted message's content, when the event carries it
+  quotedText?: string;    // alternate field name some channels use
   isGroup?: boolean;
   timestamp?: number;
 }
@@ -87,6 +89,10 @@ export default definePluginEntry({
             text: body,
             message_id: event.messageId,
             reply_to_id: event.replyToId,
+            // The quoted message's text (so Irises can show what was replied to even without a resolvable
+            // id) and the platform send time (used as receivedAt) — both when the event carries them.
+            reply_to_text: event.replyToText ?? event.quotedText,
+            timestamp: event.timestamp,
             is_group: event.isGroup === true,
           };
           // Fire-and-forget: never couple OpenClaw's dispatch lane to Irises's latency.
@@ -106,5 +112,29 @@ export default definePluginEntry({
       // No default timeout exists for before_dispatch — a hung handler would stall the turn.
       { priority: 100, timeoutMs: 5_000 },
     );
+
+    // Also claim the engine's OWN reply path for fronted chats, so an engine-authored system notice —
+    // notably "⚡ Interrupting current task. I'll respond to your message shortly." when a new message
+    // lands mid-turn — never reaches a chat Irises is fronting. before_dispatch suppresses the normal
+    // agent reply, but that busy/interrupt notice fires on a DIFFERENT path (docs/ENGINES.md documents
+    // `before_agent_reply` as the hook that covers it). Registering an unknown hook must never throw at
+    // load: guarded so an older OpenClaw without this hook simply logs once and keeps working (the
+    // notice just isn't suppressed there — the hermes session-split is the primary fix for that anyway).
+    try {
+      api.on(
+        "before_agent_reply",
+        async (event: BeforeDispatchEvent, ctx: BeforeDispatchCtx) => {
+          try {
+            const channel = (event?.channel ?? ctx?.channelId ?? "").toLowerCase();
+            const conversation = String(ctx?.conversationId ?? event?.senderId ?? "");
+            if (channel && conversation && fronted(channel, conversation)) return { handled: true };
+          } catch { /* fall through — never break the engine's own reply path */ }
+          return undefined; // not fronted → the engine's reply/notice proceeds untouched
+        },
+        { priority: 100, timeoutMs: 5_000 },
+      );
+    } catch (err) {
+      console.warn("[irises-bridge] before_agent_reply not available on this OpenClaw — interrupt-notice suppression skipped:", (err as Error)?.message ?? err);
+    }
   },
 });

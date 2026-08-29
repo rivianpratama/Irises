@@ -67,6 +67,7 @@ export interface ChannelCaps {
   reactions: boolean;    // tapback / message reactions
   groupOps: boolean;     // rename / icon / remove participant
   contactCard: boolean;  // shareContactCard
+  typing: boolean;       // a live typing indicator is actually shown to the user on this transport
 }
 
 export interface Channel {

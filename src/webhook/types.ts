@@ -7,6 +7,11 @@
 export interface ReplyTo {
   message_id: string;
   part_index?: number;
+  // The quoted message's text, when the bridge/transport forwarded it. INTERNAL-only: the provider
+  // APIs reject unknown fields on content blocks, so this never rides the wire to the model as a
+  // structured field — it's folded inline by annotateTappedReply. Lets Irises show the model WHAT was
+  // replied to even when the local sent/inbound index can't resolve the id to stored content.
+  content?: string;
 }
 
 export interface ExtractedMedia {

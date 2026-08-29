@@ -102,7 +102,7 @@ function renderTenure(profile: UserProfile | null): string {
  * medium → flexible LAST for recency). The wrapped part carries its own data tags + handling
  * prose, so the caller injects this string bare — no dataTag('user_context') around it.
  */
-export async function buildContextBlock(handle: string): Promise<string> {
+export async function buildContextBlock(handle: string, currentTurnText?: string): Promise<string> {
   const [memory, profile, shortEntries, medium, longDoc] = await Promise.all([
     getMemory(handle),
     getUserProfile(handle),
@@ -166,7 +166,7 @@ export async function buildContextBlock(handle: string): Promise<string> {
   parts.push(renderUserMemory('convo', {
     profile, memory, medium, short: shortForWrapper,
     longDocMd: longDoc?.docMd ?? '',
-  }, Date.now(), { audience: isGroupHandle(handle) ? 'group' : 'individual' }));
+  }, Date.now(), { audience: isGroupHandle(handle) ? 'group' : 'individual', currentTurnText }));
 
   return parts.join('\n\n');
 }

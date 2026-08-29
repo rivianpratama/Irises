@@ -46,6 +46,19 @@ export function hermesSessionKey(chatId: string): string {
   return `irises-${sanitized.slice(0, 55)}-${hash8(chatId)}`;
 }
 
+/**
+ * Session id for a long-running RESEARCH run — distinct from the chat's session id (`hermesSessionKey`).
+ * A research run holds a session for minutes; if it shared the chat's session id, a new user inbound
+ * arriving mid-run collides with it and the engine emits its "⚡ Interrupting current task" notice. Giving
+ * research its own session id decouples the two so that collision (and the notice) doesn't fire. Only the
+ * Session-ID (continuity/busy state) is separated — the Session-KEY (memory scope) stays the chat's key,
+ * so per-chat engine memory is untouched. Research is one-shot (prompt in, answer out), so losing
+ * cross-run continuity on this id costs nothing. Always ends in `-task`, so it can never equal a chat key.
+ */
+export function hermesTaskSessionId(chatId: string): string {
+  return `${hermesSessionKey(chatId)}-task`;
+}
+
 /** Job-name scope so listing/cancel only ever touch jobs Irises created for this chat. Same
  *  collision fix as the session key: a long id carries a hash of the raw id. */
 export function jobPrefix(chatId: string): string {
@@ -314,15 +327,18 @@ export class HermesBackend implements EngineBackend {
     this.declaredCapabilities = parseDeclaredCapabilities(process.env.HERMES_CAPABILITIES);
   }
 
-  private headers(chatId?: string): Record<string, string> {
+  private headers(chatId?: string, opts: { sessionId?: string } = {}): Record<string, string> {
     const h: Record<string, string> = {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${this.apiKey}`,
     };
     if (chatId) {
-      // Session-Id: server-side conversation continuity. Session-Key: long-term memory scoping —
-      // hermes threads it to its user-model layer, so each chat accrues its own engine-side memory.
-      h['X-Hermes-Session-Id'] = hermesSessionKey(chatId);
+      // Session-Id: server-side conversation continuity + the engine's busy/interrupt tracking. Research
+      // overrides it with a task-scoped id (hermesTaskSessionId) so a mid-run inbound doesn't collide and
+      // trip the interrupt notice. Session-Key: long-term memory scoping — hermes threads it to its
+      // user-model layer, so each chat accrues its own engine-side memory. It ALWAYS stays the chat key,
+      // even for research, so the memory scope is unchanged by the session-id split.
+      h['X-Hermes-Session-Id'] = opts.sessionId ?? hermesSessionKey(chatId);
       h['X-Hermes-Session-Key'] = hermesSessionKey(chatId);
     }
     return h;
@@ -408,15 +424,108 @@ export class HermesBackend implements EngineBackend {
     if (notes.length) text += `\n\n${notes.join('\n')}`;
     const content: unknown = blocks.length ? [{ type: 'text', text }, ...blocks] : text;
 
+    // Research rides a task-scoped Session-Id (interrupt-notice fix); memory scope stays the chat key.
+    const headers = this.headers(task.chatId, { sessionId: hermesTaskSessionId(task.chatId) });
+
+    // HERMES_STREAM (default off): stream the completion so token flow gives a live "still producing"
+    // heartbeat for long runs, instead of one silent blocking POST. Falls back safely to non-stream.
+    if (process.env.HERMES_STREAM === 'on') {
+      const out = await this.requestStream('/v1/chat/completions', {
+        method: 'POST', headers,
+        body: JSON.stringify({ model: 'hermes-agent', messages: [{ role: 'user', content }], stream: true }),
+      }, ctx);
+      if (typeof out !== 'string') throw new EngineRunError('hermes returned no streamed content', 'llm_error');
+      return out;
+    }
+
     const res = await this.requestText('/v1/chat/completions', {
       method: 'POST',
-      headers: this.headers(task.chatId),
+      headers,
       body: JSON.stringify({ model: 'hermes-agent', messages: [{ role: 'user', content }], stream: false }),
     }, ctx.signal);
     this.throwForStatus(res, 'chat completion');
     const data = this.parseJson<ChatCompletionResponse>(res, 'chat completion');
     const out = data.choices?.[0]?.message?.content;
     if (typeof out !== 'string') throw new EngineRunError('hermes returned no message content', 'llm_error', res.status);
+    return out;
+  }
+
+  /**
+   * Stream a chat completion over SSE, keeping the SAME guarded timeout+abort window over the ENTIRE
+   * stream that requestText keeps over a blocking body read — an engine that stalls mid-stream is
+   * aborted at ENGINE_TIMEOUT_MS, never left hanging. Accumulates `choices[0].delta.content` and returns
+   * the joined text on `data: [DONE]`. Fires throttled onProgress heartbeats ('streaming' on token flow,
+   * 'engine_tool' when the stream carries tool-call deltas) so the status line knows the run is alive.
+   * Safe fallbacks: a non-2xx maps like the blocking path; a response that is NOT event-stream (a proxy
+   * that ignored stream:true, or a single JSON blob) is parsed as the ordinary completion shape.
+   */
+  private async requestStream(path: string, init: RequestInit, ctx: EngineRunContext, timeoutMs = ENGINE_TIMEOUT_MS): Promise<string> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const signal = ctx.signal;
+    const onCallerAbort = () => controller.abort();
+    if (signal) {
+      if (signal.aborted) controller.abort();
+      else signal.addEventListener('abort', onCallerAbort, { once: true });
+    }
+    try {
+      const res = await this.deps.fetchFn(`${this.baseUrl}${path}`, { ...init, signal: controller.signal });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        this.throwForStatus({ status: res.status, ok: res.ok, text }, 'chat completion (stream)');
+      }
+      const ctype = res.headers?.get?.('content-type') ?? '';
+      // The engine ignored stream:true (single JSON body) — read and parse it as an ordinary completion.
+      if (!res.body || !/text\/event-stream/i.test(ctype)) {
+        const text = await res.text();
+        const data = this.parseJson<ChatCompletionResponse>({ status: res.status, ok: res.ok, text }, 'chat completion (stream fallback)');
+        const out = data.choices?.[0]?.message?.content;
+        if (typeof out !== 'string') throw new EngineRunError('hermes stream fallback returned no content', 'llm_error', res.status);
+        return out;
+      }
+      return await this.consumeSse(res.body as ReadableStream<Uint8Array>, ctx);
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') throw err;
+      if (err instanceof EngineRunError) throw err;
+      throw new EngineUnavailableError(`hermes not reachable at ${this.baseUrl} (${(err as Error)?.message ?? err})`, err);
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onCallerAbort);
+    }
+  }
+
+  /** Parse an OpenAI-style SSE stream: accumulate delta content, emit throttled progress heartbeats.
+   *  Exposed shape is a pure string return; malformed/partial frames are skipped, `[DONE]` ends it. */
+  private async consumeSse(body: ReadableStream<Uint8Array>, ctx: EngineRunContext): Promise<string> {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let out = '';
+    let lastHeartbeat = 0;
+    const HEARTBEAT_MS = 10_000;
+    const heartbeat = (key: string) => {
+      const now = this.deps.now();
+      if (now - lastHeartbeat >= HEARTBEAT_MS) { lastHeartbeat = now; ctx.onProgress?.(key); }
+    };
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (payload === '[DONE]') return out;
+        try {
+          const frame = JSON.parse(payload) as { choices?: Array<{ delta?: { content?: string; tool_calls?: unknown[] } }> };
+          const delta = frame.choices?.[0]?.delta;
+          if (typeof delta?.content === 'string' && delta.content) { out += delta.content; heartbeat('streaming'); }
+          if (Array.isArray(delta?.tool_calls) && delta.tool_calls.length) heartbeat('engine_tool');
+        } catch { /* a partial or non-JSON frame — skip it, more will follow */ }
+      }
+    }
     return out;
   }
 
@@ -672,6 +781,28 @@ export class HermesBackend implements EngineBackend {
     } catch (err) {
       if (err instanceof EngineRunError) throw err;
       throw new EngineUnavailableError(`hermes bridge listener not reachable at ${bridgeUrl} — is the irises-bridge plugin installed and enabled? (${(err as Error)?.message ?? err})`, err);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Bridge typing: POST /typing on the same irises-bridge loopback listener. The plugin feature-detects
+   *  a chat-action coroutine on gateway.adapters[platform] and no-ops (HTTP 200, supported:false) when
+   *  the adapter has none — so this is best-effort by construction. Short timeout, and EVERY failure is
+   *  swallowed to a resolved no-op: a typing ping must never delay or break the turn that spawned it. */
+  async channelTyping(platform: string, chatId: string, state: 'start' | 'stop', opts: { threadId?: string } = {}): Promise<void> {
+    const bridgeUrl = (process.env.HERMES_BRIDGE_URL || 'http://127.0.0.1:8655').replace(/\/$/, '');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3_000);
+    try {
+      await this.deps.fetchFn(`${bridgeUrl}/typing`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-bridge-token': process.env.ENGINE_PUSH_TOKEN || '' },
+        body: JSON.stringify({ platform, chat_id: chatId, state, thread_id: opts.threadId }),
+        signal: controller.signal,
+      });
+    } catch {
+      /* typing is cosmetic and best-effort — never surface a failure to the caller */
     } finally {
       clearTimeout(timer);
     }

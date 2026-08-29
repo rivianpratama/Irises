@@ -104,7 +104,7 @@ export function beginTurn(chatId: string, handle: string, triggerText: string, r
 }
 
 /** Kind of the earlier message a tapped reply resolved to (see state/replyResolution.ts). */
-export type ReplyKind = 'assistant' | 'own-thread' | 'unresolved';
+export type ReplyKind = 'assistant' | 'own-thread' | 'quoted' | 'unresolved';
 
 /**
  * Record how this turn's tapped reply resolved — surfaced on the dashboard turn so a

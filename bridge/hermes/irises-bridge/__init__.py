@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -97,6 +98,9 @@ _STARTED = threading.Event()
 _LISTENING = threading.Event()
 _LISTEN_RETRY_S = 30.0
 _WATCHING = threading.Event()
+# One-time-per-platform typing capability log (see _SendHandler._log_typing_once). A set of
+# "<platform>:<supported>" keys; races between forward threads only cost a duplicate log line.
+_TYPING_LOGGED: set[str] = set()
 
 
 def _patterns() -> list[str]:
@@ -172,6 +176,55 @@ def _forward_decision(healthy: bool, fail_closed: bool) -> str:
     if fail_closed or healthy:
         return "forward"
     return "let_hermes"
+
+
+# Method names a hermes channel adapter MIGHT expose for a typing / chat-action, in priority order.
+# Both snake_case and camelCase are listed so a thin wrapper over a camelCase SDK (e.g. Photon's
+# `im.chats.setTyping`) is caught either way. If none match exactly, a fuzzy pass catches any
+# send/set-style method whose name mentions typing or chat-action, so we don't need the adapter's
+# exact name up front — unknown adapters still fall through to a safe no-op.
+_TYPING_METHOD_NAMES = ("send_chat_action", "send_typing", "set_typing", "setTyping", "sendTyping", "typing")
+_TYPING_NAME_RE = re.compile(r"typing|chat.?action", re.IGNORECASE)
+# Prefixes that mark a PREDICATE/GETTER, not an action to invoke — skip these in the fuzzy pass so we
+# never call something like `is_typing()` expecting it to SEND a typing state.
+_NON_ACTION_PREFIXES = ("is_", "get_", "has_", "on_", "handle_")
+
+
+def _resolve_typing_call(adapter):
+    """Return (name, callable) for a typing/chat-action the adapter exposes, or None when it has none.
+    getattr-only feature detection — never assumes any method exists. Exact priority names first, then a
+    fuzzy match on any action-style method whose name mentions typing/chat-action (so a Photon adapter's
+    own naming is caught even if it isn't in the list above). None → the handler 200-no-ops."""
+    for name in _TYPING_METHOD_NAMES:
+        fn = getattr(adapter, name, None)
+        if callable(fn):
+            return name, fn
+    for name in dir(adapter):
+        if name.startswith("_") or name.startswith(_NON_ACTION_PREFIXES):
+            continue
+        if not _TYPING_NAME_RE.search(name):
+            continue
+        fn = getattr(adapter, name, None)
+        if callable(fn):
+            return name, fn
+    return None
+
+
+def _first_attr(obj, names):
+    """First non-None attribute among `names` (feature-detection over differently-named event fields)."""
+    for n in names:
+        v = getattr(obj, n, None)
+        if v is not None:
+            return v
+    return None
+
+
+# hermes normalizes each platform's inbound into its own MessageEvent; different adapters (Photon
+# included) may name the reply/quote/timestamp fields differently, so we try a spread and take the
+# first that's set. All getattr-with-None, so an event lacking every candidate just omits the field.
+_REPLY_ID_FIELDS = ("reply_to_message_id", "reply_to_id", "quoted_message_id", "in_reply_to", "replied_to_id")
+_REPLY_TEXT_FIELDS = ("reply_to_text", "quoted_text", "quote_text", "quoted_message_text", "reply_text", "replied_text")
+_TIMESTAMP_FIELDS = ("timestamp", "date", "created_at", "sent_at", "time", "ts")
 
 
 def _classify_send_result(result):
@@ -367,6 +420,9 @@ class _SendHandler(BaseHTTPRequestHandler):
         if denied is not None:
             self._reply(*denied)
             return
+        if self.path == "/typing":
+            self._handle_typing()
+            return
         if self.path != "/send":
             self._reply(404, {"error": "unknown path"})
             return
@@ -409,6 +465,98 @@ class _SendHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             log.warning("irises-bridge: send to %s:%s failed: %s", platform, chat_id, exc)
             self._reply(502, {"error": str(exc)[:300]})
+
+    def _handle_typing(self) -> None:
+        """POST /typing {platform, chat_id, state}. Forwards a typing/chat-action through the adapter's
+        OWN primitive when it has one; answers a harmless 200 supported:false otherwise. NEVER returns
+        an error status for a missing capability — Irises's channelTyping swallows failures and this is
+        cosmetic: it must never look like the send door is broken."""
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0) or b"{}")
+        except Exception:  # noqa: BLE001
+            self._reply(400, {"error": "invalid json"})
+            return
+        platform, chat_id = body.get("platform"), body.get("chat_id")
+        state = body.get("state", "start")
+        if not platform or not chat_id:
+            self._reply(400, {"error": "platform, chat_id required"})
+            return
+        if not _await_gateway():
+            self._reply(503, {"error": "gateway not ready", "retryable": True})
+            return
+        gateway, loop = _GW
+        try:
+            from gateway.platforms.base import Platform
+            try:
+                resolved = Platform(platform)
+            except ValueError:
+                self._reply(400, {"error": f"platform '{platform}' is not a platform this hermes knows"})
+                return
+            adapter = gateway.adapters.get(resolved)
+            if adapter is None:
+                self._reply(400, {"error": f"platform '{platform}' is not connected on this hermes"})
+                return
+            call = _resolve_typing_call(adapter)
+            if call is None:
+                self._log_typing_unsupported(platform, adapter)
+                self._reply(200, {"ok": True, "supported": False})  # adapter has no chat-action → no-op
+                return
+            name, fn = call
+            active = str(state) != "stop"
+            # Adapters differ on shape: a chat-action wants an action STRING ("typing"); a setTyping-style
+            # wants an active BOOL; some take only the chat id. Try the shapes in the order that fits the
+            # method NAME, falling through on a TypeError (wrong arity/shape) to the next.
+            is_chat_action = "chat" in name.lower() and "action" in name.lower()
+            sigs = (
+                ((str(chat_id), "typing"), (str(chat_id), active), (str(chat_id),))
+                if is_chat_action else
+                ((str(chat_id), active), (str(chat_id),), (str(chat_id), "typing"))
+            )
+            sent, last_exc = False, None
+            for args in sigs:
+                try:
+                    asyncio.run_coroutine_threadsafe(fn(*args), loop).result(timeout=3)
+                    sent = True
+                    break
+                except TypeError as exc:
+                    last_exc = exc  # wrong signature — try the next shape
+                    continue
+                except Exception as exc:  # noqa: BLE001 — a real send error: stop, report unsupported
+                    last_exc = exc
+                    break
+            if sent:
+                self._log_typing_once(platform, supported=True, method=name)
+                self._reply(200, {"ok": True, "supported": True})
+            else:
+                self._reply(200, {"ok": True, "supported": False, "detail": str(last_exc)[:200] if last_exc else None})
+        except Exception as exc:  # noqa: BLE001
+            self._reply(200, {"ok": True, "supported": False, "detail": str(exc)[:200]})
+
+    @staticmethod
+    def _log_typing_once(platform: str, supported: bool, method: str = "") -> None:
+        """One log line per platform so the operator can see at runtime whether bridge typing actually
+        works there (this is the 'did the adapter have a chat-action?' verification the design calls for)."""
+        key = f"{platform}:{supported}"
+        if key in _TYPING_LOGGED:
+            return
+        _TYPING_LOGGED.add(key)
+        log.info("irises-bridge: typing forwarded to %s via adapter.%s — BRIDGE_TYPING will show dots", platform, method)
+
+    @staticmethod
+    def _log_typing_unsupported(platform: str, adapter) -> None:
+        """One-time-per-platform diagnostic when NO typing method matched: names the adapter's public
+        methods so the operator (or a bridge tweak) can see the real chat-action name and pin it if the
+        auto-detection missed it. Safe/no-op regardless — typing just shows no dots on this platform."""
+        key = f"{platform}:False"
+        if key in _TYPING_LOGGED:
+            return
+        _TYPING_LOGGED.add(key)
+        try:
+            methods = sorted(m for m in dir(adapter) if not m.startswith("_") and callable(getattr(adapter, m, None)))
+        except Exception:  # noqa: BLE001 — never let a diagnostic break the handler
+            methods = []
+        log.info("irises-bridge: %s adapter exposes no recognized typing/chat-action — typing is a no-op "
+                 "there (safe; Irises just shows no dots). Adapter methods seen: %s", platform, ", ".join(methods) or "(none)")
 
     def _reply(self, code: int, obj: dict) -> None:
         data = json.dumps(obj).encode("utf-8")
@@ -494,7 +642,12 @@ def on_inbound(event=None, gateway=None, session_store=None, **_kwargs):
             "text": getattr(event, "text", "") or "",
             "message_id": getattr(event, "message_id", None),
             "thread_id": getattr(src, "thread_id", None),
-            "reply_to_id": getattr(event, "reply_to_message_id", None),
+            # Reply id / quoted TEXT / platform send time — tried across the field names different
+            # adapters use (Photon included). Irises uses the quote to show what was replied to even when
+            # it can't resolve the id, and the timestamp as the message's real receivedAt.
+            "reply_to_id": _first_attr(event, _REPLY_ID_FIELDS),
+            "reply_to_text": _first_attr(event, _REPLY_TEXT_FIELDS),
+            "timestamp": _first_attr(event, _TIMESTAMP_FIELDS),
             # hermes normalizes chat_type to dm/group/channel/thread ("supergroup" kept defensively
             # for adapters that pass raw platform values through).
             "is_group": (getattr(src, "chat_type", "") or "").lower() in ("group", "supergroup", "channel", "thread"),

@@ -19,9 +19,13 @@ export type ResolvedReply =
   // The tapped id is the user's own earlier message — the root of a thread. What they tapped is
   // almost always one of Irises's answer bubbles IN that thread (assistantBubbles), send-ordered.
   | { kind: 'own-thread'; rootText: string; rootSenderHandle?: string; assistantBubbles: string[]; sentAtMs?: number; viaLiveFetch?: boolean }
-  // The tapped id resolves to nothing — not local, and the channel couldn't return it (deleted,
-  // network failure, a cross-chat/forged id, or a transport with no live message fetch at all).
-  // Honest unknown: acknowledge and ask, never guess.
+  // The transport forwarded the quoted message's TEXT inline, but neither the local index nor a live
+  // fetch could say WHO sent it (a bridged platform that ships the quote but no resolvable id). We
+  // still show the model what was quoted — content known, authorship unknown.
+  | { kind: 'quoted'; text: string }
+  // The tapped id resolves to nothing — not local, the channel couldn't return it (deleted,
+  // network failure, a cross-chat/forged id, or a transport with no live message fetch at all), and
+  // no quoted text was forwarded either. Honest unknown: acknowledge and ask, never guess.
   | { kind: 'unresolved' };
 
 /**
@@ -30,7 +34,7 @@ export type ResolvedReply =
  * unresolved target, a convo:reply_unresolved tripwire + a console warn), so every call site in
  * index.ts stays a one-liner.
  */
-export async function resolveTappedReply(messageId: string, chatId: string): Promise<ResolvedReply> {
+export async function resolveTappedReply(messageId: string, chatId: string, quotedContent?: string): Promise<ResolvedReply> {
   // Parallel: the two point-reads add no wall time over a single lookup on the common paths.
   const [own, inbound] = await Promise.all([
     lookupSentBubble(messageId, chatId),
@@ -49,6 +53,11 @@ export async function resolveTappedReply(messageId: string, chatId: string): Pro
     // that can serve a message by id the message still lives on its servers — pull it directly so an
     // old tapped reply is still recoverable.
     resolved = await resolveViaLiveFetch(messageId, chatId);
+    // Live fetch couldn't recover it, but the bridge forwarded the quoted TEXT inline — use it so the
+    // model still sees what was replied to (authorship unknown) instead of a bare 'unresolved'.
+    if (resolved.kind === 'unresolved' && quotedContent?.trim()) {
+      resolved = { kind: 'quoted', text: quotedContent.trim() };
+    }
   }
 
   noteTurnReply(chatId, {
@@ -56,6 +65,7 @@ export async function resolveTappedReply(messageId: string, chatId: string): Pro
     kind: resolved.kind,
     snippet: resolved.kind === 'assistant' ? resolved.text.slice(0, 80)
       : resolved.kind === 'own-thread' ? resolved.rootText.slice(0, 80)
+      : resolved.kind === 'quoted' ? resolved.text.slice(0, 80)
       : undefined,
   });
   return resolved;

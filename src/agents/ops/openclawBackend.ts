@@ -277,4 +277,34 @@ export class OpenClawBackend implements EngineBackend {
       throw new EngineUnavailableError(`OpenClaw channel send failed (${(err as Error)?.message ?? err})`, err);
     }
   }
+
+  /** Bridge typing: a lightweight gateway RPC delivering a typing/presence signal through the same WS
+   *  client. Feature-detected by ATTEMPTING the call: an "unknown method / unsupported" rejection means
+   *  the gateway build has no such RPC — treated as a clean no-op, NOT a transport failure. Unlike
+   *  runTask/channelSend we never dropClient() here: a rejected optional RPC must not poison the socket
+   *  the real work rides on. Any real transport error is swallowed too — typing must never break a turn. */
+  async channelTyping(platform: string, chatId: string, state: 'start' | 'stop', opts: { threadId?: string } = {}): Promise<void> {
+    let client: Awaited<ReturnType<typeof this.ensureClient>>;
+    try {
+      client = await this.ensureClient();
+    } catch {
+      return; // engine away → nothing to type at
+    }
+    // Candidate RPC names an OpenClaw gateway MIGHT expose, in priority order. First accepted wins.
+    for (const method of ['typing', 'presence', 'chatAction'] as const) {
+      try {
+        await client.request(method, {
+          to: chatId,
+          channel: platform,
+          state,
+          ...(opts.threadId ? { threadId: opts.threadId } : {}),
+        }, { timeoutMs: 3_000 });
+        return;
+      } catch (err) {
+        // Unknown-method / unsupported → try the next candidate name. Any OTHER error is a real
+        // transport problem: stop and no-op (do NOT dropClient — this is an optional side channel).
+        if (!/unknown method|method not found|unsupported|no such method|not implemented/i.test(String((err as Error)?.message ?? err))) return;
+      }
+    }
+  }
 }

@@ -9,11 +9,11 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import type { Server } from 'node:http';
 import { bridgeChannel, parseBridgeChatId, noteBridgeChat } from './channel.js';
-import { createBridgeInboundRouter, mapBridgeMedia } from './inboundRouter.js';
+import { createBridgeInboundRouter, mapBridgeMedia, normalizeTimestamp } from './inboundRouter.js';
 import { parseChannelKind } from '../registry.js';
 import { resetEngineBackendCache, type EngineBackend } from '../../agents/ops/engineBackend.js';
 import type { AgentClient, EnqueueInbound } from '../../index.js';
-import type { IncomingMedia } from '../../webhook/types.js';
+import type { IncomingMedia, ReplyTo } from '../../webhook/types.js';
 
 test('parseBridgeChatId: valid forms parse, junk rejects', () => {
   assert.deepEqual(parseBridgeChatId('eng:whatsapp:+15551234567'), { platform: 'whatsapp', target: '+15551234567' });
@@ -122,13 +122,13 @@ test('getChat reflects the group flag learned from inbound', async () => {
 
 // ── inbound router over real HTTP ─────────────────────────────────────────────
 
-type Queued = { chatId: string; from: string; text: string; messageId: string; media: IncomingMedia };
+type Queued = { chatId: string; from: string; text: string; messageId: string; media: IncomingMedia; replyTo?: ReplyTo; receivedAt?: number };
 
 async function startApp(queued: Queued[]): Promise<{ server: Server; base: string }> {
   const app = express();
   app.use(express.json());
-  const enqueueInbound: EnqueueInbound = ((_c: AgentClient, chatId: string, from: string, text: string, messageId: string, media: IncomingMedia) => {
-    queued.push({ chatId, from, text, messageId, media });
+  const enqueueInbound: EnqueueInbound = ((_c: AgentClient, chatId: string, from: string, text: string, messageId: string, media: IncomingMedia, replyTo?: ReplyTo, receivedAt?: number) => {
+    queued.push({ chatId, from, text, messageId, media, replyTo, receivedAt });
   }) as EnqueueInbound;
   app.use(createBridgeInboundRouter({ enqueueInbound, agentClient: {} as AgentClient }));
   const server = app.listen(0);
@@ -197,4 +197,51 @@ test('inbound: media-only turns queue; empty turns reject', async (t) => {
   assert.equal((await post(base, { platform: 'signal', chat_id: '+1', media: [{ url: 'u', mimeType: 'image/png' }] }, 'brtok')).status, 202);
   assert.equal((await post(base, { platform: 'signal', chat_id: '+1', text: '   ' }, 'brtok')).status, 400);
   assert.equal(queued.length, 1);
+});
+
+test('inbound: reply_to_id + reply_to_text forward the quoted content into the turn', async (t) => {
+  process.env.ENGINE_PUSH_TOKEN = 'brtok';
+  t.after(() => { delete process.env.ENGINE_PUSH_TOKEN; });
+  const queued: Queued[] = [];
+  const { server, base } = await startApp(queued);
+  t.after(() => server.close());
+
+  const res = await post(base, {
+    platform: 'imessage', chat_id: '+1555', text: 'yes that one',
+    message_id: 'm2', reply_to_id: 'root9', reply_to_text: 'here is the report you asked for',
+  }, 'brtok');
+  assert.equal(res.status, 202);
+  assert.equal(queued[0].replyTo?.message_id, 'root9');
+  assert.equal(queued[0].replyTo?.content, 'here is the report you asked for', 'the quoted text rides along');
+
+  // No reply_to_text → id only, no content field.
+  await post(base, { platform: 'imessage', chat_id: '+1555', text: 'hi', message_id: 'm3', reply_to_id: 'root9' }, 'brtok');
+  assert.equal(queued[1].replyTo?.message_id, 'root9');
+  assert.equal(queued[1].replyTo?.content, undefined);
+});
+
+test('inbound: a forwarded platform timestamp becomes receivedAt; absent/bogus falls back', async (t) => {
+  process.env.ENGINE_PUSH_TOKEN = 'brtok';
+  t.after(() => { delete process.env.ENGINE_PUSH_TOKEN; });
+  const queued: Queued[] = [];
+  const { server, base } = await startApp(queued);
+  t.after(() => server.close());
+
+  const sec = Math.floor((Date.now() - 30_000) / 1000); // 30s ago, in SECONDS
+  await post(base, { platform: 'telegram', chat_id: '-1', text: 'a', message_id: 'm1', timestamp: sec }, 'brtok');
+  assert.equal(queued[0].receivedAt, sec * 1000, 'seconds normalize to ms');
+
+  await post(base, { platform: 'telegram', chat_id: '-1', text: 'b', message_id: 'm2', timestamp: 'garbage' }, 'brtok');
+  assert.equal(queued[1].receivedAt, undefined, 'garbage → undefined → caller falls back to now');
+});
+
+test('normalizeTimestamp: seconds↔ms, future/ancient clamp, garbage', () => {
+  const now = 1_700_000_000_000; // fixed ms
+  assert.equal(normalizeTimestamp(1_700_000_000, now), 1_700_000_000_000, 'seconds → ms');
+  assert.equal(normalizeTimestamp(1_699_999_970_000, now), 1_699_999_970_000, 'ms passes through');
+  assert.equal(normalizeTimestamp(now + 5 * 60_000, now), undefined, 'far future → undefined');
+  assert.equal(normalizeTimestamp(now - 30 * 24 * 3600_000, now), undefined, 'ancient → undefined');
+  assert.equal(normalizeTimestamp('nope', now), undefined);
+  assert.equal(normalizeTimestamp(0, now), undefined);
+  assert.equal(normalizeTimestamp(undefined, now), undefined);
 });

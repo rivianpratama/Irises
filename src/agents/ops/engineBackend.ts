@@ -122,6 +122,13 @@ export interface EngineBackend {
    *  stores it so a later tapped reply on that bubble resolves back to what Irises said
    *  (recordSentBubble → resolveTappedReply). `{}` when the engine can't tell us. */
   channelSend(platform: string, chatId: string, text: string, opts?: { threadId?: string; replyToId?: string }): Promise<{ messageId?: string }>;
+  /** Bridge typing: best-effort typing / chat-action THROUGH the engine's own channel adapter, using a
+   *  primitive the adapter ALREADY exposes (feature-detected in the bridge plugin — no engine-core
+   *  change). Fire-and-forget semantics: MUST never throw on the caller's path (typing must never break
+   *  or delay a turn) and MUST bypass the engine-run semaphore (like a lightweight side channel, not an
+   *  agent run). No-ops safely when the adapter/gateway lacks the capability. Optional: a backend
+   *  without it means "no bridge typing" — bridgeChannel.startTyping short-circuits on `!channelTyping`. */
+  channelTyping?(platform: string, chatId: string, state: 'start' | 'stop', opts?: { threadId?: string }): Promise<void>;
 }
 
 // ── dispatch ──────────────────────────────────────────────────────────────────
@@ -170,7 +177,10 @@ export function computeEngineQueueWaitMs(env: NodeJS.ProcessEnv): number {
 // runViaEngine and the fire-and-forget memory asks (withEngineSlot). Deliberately NOT covered:
 // reminder CRUD (15s REST calls, not agent runs — they must stay snappy) and channelSend (a reply
 // already composed must never queue behind two long runs).
-const MAX_CONCURRENT = Number(process.env.ENGINE_MAX_CONCURRENT) || 2;
+// Default 3 concurrent engine runs. Keep it modest and matched to the engine's OWN concurrent-run
+// cap: hermes 429s past its limit (mapped to 'rate_limited'), so raising this blindly just trades a
+// queue wait for a hard failure. Override with ENGINE_MAX_CONCURRENT.
+const MAX_CONCURRENT = Number(process.env.ENGINE_MAX_CONCURRENT) || 3;
 let active = 0;
 const waiters: Array<() => void> = [];
 
@@ -338,10 +348,16 @@ export async function runViaEngine(
   try {
     release = await acquire({
       signal: ctx.signal,
-      onQueued: () => record({
-        type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
-        label: `engine:${engine.name}:queued`, detail: { kind: task.kind, ...engineSlotState() },
-      }),
+      onQueued: () => {
+        // The run is parked behind the concurrency cap — it has NOT contacted the engine yet. Mark it
+        // 'queued' so the in-flight status line can say "waiting for a free slot, hasn't started" and
+        // not imply progress. Acquiring the slot fires onProgress('engine'), overwriting this.
+        ctx.onProgress?.('queued');
+        record({
+          type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
+          label: `engine:${engine.name}:queued`, detail: { kind: task.kind, ...engineSlotState() },
+        });
+      },
     });
     ctx.onProgress?.('engine');
     record({

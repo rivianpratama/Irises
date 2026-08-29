@@ -32,9 +32,16 @@ export function noteBridgeChat(chatId: string, meta: { isGroup: boolean; name?: 
   chatMeta.set(chatId, meta);
 }
 
+// Bridge typing is OFF by default: the engine adapter may or may not expose a chat-action primitive
+// for a given platform, and when it can't, a "live typing hold" is pure dead air (see index.ts
+// sendBubbles). Defaulting off makes the safe outcome — no invisible holds — the default; an operator
+// flips BRIDGE_TYPING=on only for platforms where the plugin's register-time log confirmed the adapter
+// has a chat-action method. When on, caps.typing=true re-enables the per-bubble typing pacing.
+const BRIDGE_TYPING = process.env.BRIDGE_TYPING === 'on';
+
 export const bridgeChannel: Channel = {
   kind: 'bridge',
-  caps: { threading: true, reactions: false, groupOps: false, contactCard: false },
+  caps: { threading: true, reactions: false, groupOps: false, contactCard: false, typing: BRIDGE_TYPING },
 
   async sendMessage(chatId, text, replyTo) {
     const parsed = parseBridgeChatId(chatId);
@@ -57,10 +64,26 @@ export const bridgeChannel: Channel = {
     };
   },
 
-  // The engines don't expose typing/read for external senders uniformly — quiet no-ops. The user
-  // still gets the human pacing from Irises's mouth (send timing), just no typing indicator.
-  async startTyping() { /* no-op */ },
-  async stopTyping() { /* no-op */ },
+  // Typing is forwarded THROUGH the engine's own channel adapter (channelTyping), but only when
+  // BRIDGE_TYPING is on AND the backend implements the optional seam. Best-effort and fire-and-forget:
+  // channelTyping swallows its own errors and no-ops when the adapter lacks a chat-action method, so a
+  // typing call can never delay or break a turn. When off/unsupported these degrade to the old no-op.
+  async startTyping(chatId) {
+    if (!BRIDGE_TYPING) return;
+    const parsed = parseBridgeChatId(chatId);
+    const engine = getEngineBackend();
+    if (!parsed || !engine?.channelTyping) return;
+    const threadId = chatMeta.get(chatId)?.threadId;
+    void engine.channelTyping(parsed.platform, parsed.target, 'start', threadId ? { threadId } : {});
+  },
+  async stopTyping(chatId) {
+    if (!BRIDGE_TYPING) return;
+    const parsed = parseBridgeChatId(chatId);
+    const engine = getEngineBackend();
+    if (!parsed || !engine?.channelTyping) return;
+    void engine.channelTyping(parsed.platform, parsed.target, 'stop');
+  },
+  // The engines don't expose read receipts for external senders uniformly — quiet no-op.
   async markAsRead() { /* no-op */ },
 
   async getChat(chatId): Promise<ChatInfo> {

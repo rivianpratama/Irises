@@ -159,7 +159,9 @@ export async function chat(
   }
   const [contextBlock, agentTz, climate] = handle
     ? await Promise.all([
-        buildContextBlock(handle),
+        // Pass the current turn text so the short-tier renderer can gate whether the freshest research
+        // look renders in full (on-topic follow-up) or collapses to a settled digest line (topic moved on).
+        buildContextBlock(handle, userMessage),
         getPreference<string>(handle, 'agent_tz'),
         // The weeks-scale standing register with THIS identity (climate.ts). Handle-keyed like the
         // memory tiers beside it, unlike the chat-keyed affect read below. Defaults when there's no
