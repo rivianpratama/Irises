@@ -65,8 +65,11 @@ making it. Walk the user through these stages, running the script for the mechan
 4. Tell the user where to talk to Irises. With bridge mode on (the default), **Irises answers this
    hermes's own channels** (iMessage, etc.) — the user just messages hermes as usual and Irises
    replies in its own voice — BUT only after the gateway is restarted (see the gateway-guard note
-   below): until then hermes still answers. Also available anytime: the web chat URL the script
-   prints, and `npm run chat` in the clone for a terminal session.
+   below): until then hermes still answers. And set one expectation: shortly after that restart,
+   **Irises usually texts first** — a one-time introduction, sent only on a chat this hermes has
+   genuinely exchanged messages in before (the "first move", see Notes) — so a text from her out of
+   the blue is the feature working, not a glitch. Also available anytime: the web chat URL the
+   script prints, and `npm run chat` in the clone for a terminal session.
 
 ## Running this as the agent
 
@@ -87,7 +90,8 @@ making it. Walk the user through these stages, running the script for the mechan
   the gateway from inside your own turn (you would kill your own reply mid-send). Finish everything
   else, then give the user the single command to run themselves — `hermes gateway restart` (or
   `hermes gateway install` if the gateway was never installed as a service) — and tell them plainly:
-  **until they run it, hermes still answers its channels; once it restarts, Irises fronts them.**
+  **until they run it, hermes still answers its channels; once it restarts, Irises fronts them —
+  and her one-time introduction text usually follows within minutes (see Notes).**
   Verify after they run it.
 - **The script leaves Irises running.** Don't start extra copies, and don't launch one as a child of
   your own session — report the URL the script printed.
