@@ -219,6 +219,24 @@ def _first_attr(obj, names):
     return None
 
 
+def _to_epoch(value):
+    """Normalize a timestamp to epoch SECONDS so it survives json.dumps. Hermes adapters set
+    event.timestamp to a datetime (Telegram message.date, Photon's parsed ISO) — json.dumps CANNOT
+    serialize a datetime and would raise, failing the whole inbound forward. A datetime → .timestamp();
+    a number passes through; anything else → None (the field is simply omitted)."""
+    if value is None:
+        return None
+    ts = getattr(value, "timestamp", None)
+    if callable(ts):                       # a datetime-like → epoch float seconds
+        try:
+            return value.timestamp()
+        except Exception:  # noqa: BLE001
+            return None
+    if isinstance(value, (int, float)):
+        return value
+    return None
+
+
 # hermes normalizes each platform's inbound into its own MessageEvent; different adapters (Photon
 # included) may name the reply/quote/timestamp fields differently, so we try a spread and take the
 # first that's set. All getattr-with-None, so an event lacking every candidate just omits the field.
@@ -502,33 +520,24 @@ class _SendHandler(BaseHTTPRequestHandler):
                 self._reply(200, {"ok": True, "supported": False})  # adapter has no chat-action → no-op
                 return
             name, fn = call
-            active = str(state) != "stop"
-            # Adapters differ on shape: a chat-action wants an action STRING ("typing"); a setTyping-style
-            # wants an active BOOL; some take only the chat id. Try the shapes in the order that fits the
-            # method NAME, falling through on a TypeError (wrong arity/shape) to the next.
-            is_chat_action = "chat" in name.lower() and "action" in name.lower()
-            sigs = (
-                ((str(chat_id), "typing"), (str(chat_id), active), (str(chat_id),))
-                if is_chat_action else
-                ((str(chat_id), active), (str(chat_id),), (str(chat_id), "typing"))
-            )
-            sent, last_exc = False, None
-            for args in sigs:
-                try:
-                    asyncio.run_coroutine_threadsafe(fn(*args), loop).result(timeout=3)
-                    sent = True
-                    break
-                except TypeError as exc:
-                    last_exc = exc  # wrong signature — try the next shape
-                    continue
-                except Exception as exc:  # noqa: BLE001 — a real send error: stop, report unsupported
-                    last_exc = exc
-                    break
-            if sent:
+            metadata = {"thread_id": body["thread_id"]} if body.get("thread_id") else None
+            try:
+                if str(state) == "stop":
+                    # STOP: the platform adapters expose a dedicated stop_typing(chat_id); where there
+                    # isn't one, typing self-expires within a few seconds so doing nothing is correct.
+                    stop_fn = getattr(adapter, "stop_typing", None)
+                    if callable(stop_fn):
+                        asyncio.run_coroutine_threadsafe(stop_fn(str(chat_id)), loop).result(timeout=3)
+                else:
+                    # START: the base adapter interface is send_typing(chat_id, metadata=None) (Photon and
+                    # Telegram both). A Telegram-style send_chat_action instead wants an action STRING.
+                    is_chat_action = "chat" in name.lower() and "action" in name.lower()
+                    coro = fn(str(chat_id), "typing") if is_chat_action else fn(str(chat_id), metadata)
+                    asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=3)
                 self._log_typing_once(platform, supported=True, method=name)
                 self._reply(200, {"ok": True, "supported": True})
-            else:
-                self._reply(200, {"ok": True, "supported": False, "detail": str(last_exc)[:200] if last_exc else None})
+            except Exception as exc:  # noqa: BLE001 — typing is cosmetic; never a hard error
+                self._reply(200, {"ok": True, "supported": False, "detail": str(exc)[:200]})
         except Exception as exc:  # noqa: BLE001
             self._reply(200, {"ok": True, "supported": False, "detail": str(exc)[:200]})
 
@@ -647,7 +656,8 @@ def on_inbound(event=None, gateway=None, session_store=None, **_kwargs):
             # it can't resolve the id, and the timestamp as the message's real receivedAt.
             "reply_to_id": _first_attr(event, _REPLY_ID_FIELDS),
             "reply_to_text": _first_attr(event, _REPLY_TEXT_FIELDS),
-            "timestamp": _first_attr(event, _TIMESTAMP_FIELDS),
+            # MUST be epoch, not a datetime — a datetime here breaks json.dumps and drops the message.
+            "timestamp": _to_epoch(_first_attr(event, _TIMESTAMP_FIELDS)),
             # hermes normalizes chat_type to dm/group/channel/thread ("supergroup" kept defensively
             # for adapters that pass raw platform values through).
             "is_group": (getattr(src, "chat_type", "") or "").lower() in ("group", "supergroup", "channel", "thread"),

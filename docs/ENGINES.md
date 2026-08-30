@@ -317,6 +317,7 @@ can still be lost (it is logged at ERROR), and everything after it goes to herme
 | `IRISES_BRIDGE_FAIL` | `open` | `open` = engine answers on bridge failure; `closed` = silence |
 | `IRISES_BRIDGE_PORT` | `8655` | hermes only: loopback listener for Irises's outbound sends |
 | `IRISES_BRIDGE_WORKERS` | `2` | hermes only: forward workers / queue shards (a chat is pinned to one, so its messages stay ordered) |
+| `HERMES_GATEWAY_BUSY_ACK_ENABLED` | `true` | hermes's OWN var (set in `~/.hermes/.env`): `false` silences the "⚡ Interrupting current task" / queued / steered busy acks globally. Recommended `false` for fronted chats, which do their own batching |
 
 `BRIDGE_TYPING` is set on the **Irises** side (not the gateway): `off` by default; `on` forwards a
 typing indicator to the platform through the engine adapter's own chat-action. It's feature-detected in
@@ -347,13 +348,14 @@ loopback listener; OpenClaw needs nothing extra (outbound rides the existing gat
   regardless.
 - **Loops**: the bridge only ever forwards *inbound* user messages; Irises's replies leave through
   the engine's outbound path, which does not re-enter the inbound hooks.
-- **The engine's "⚡ Interrupting current task" notice**: when a new message lands while the engine
-  thinks a session is busy, the engine (not Irises) emits that notice. The bridge's inbound skip stops
-  the engine's *reply*, not this notice, which fires on a different path. Two Irises-side mitigations:
-  hermes research now runs on a **task-scoped session id** (`hermesTaskSessionId`) so a mid-run inbound
-  no longer collides with the research session (its memory scope stays the chat's key); and the OpenClaw
-  plugin claims `before_agent_reply` for fronted chats to drop engine-authored replies/notices where
-  that hook exists. Neither can guarantee a hard zero — the emitter is engine-core we don't touch.
+- **The engine's "⚡ Interrupting current task" notice**: when a new message lands while a chat's
+  gateway session is still busy handling the previous one, hermes (not Irises) emits that notice from its
+  per-chat serialization guard (`_active_sessions[session_key]`). It fires on *any* rapid second inbound,
+  and the bridge's inbound skip cannot stop it — the busy ack is pushed straight through the adapter with
+  no plugin hook on that path (verified against hermes's `VALID_HOOKS`). The only reliable suppression is
+  hermes's own env switch **`HERMES_GATEWAY_BUSY_ACK_ENABLED=false`** in `~/.hermes/.env` (it silences ALL
+  busy acks — interrupt/queued/steered/redirected — globally; real interrupts still happen, just
+  silently). OpenClaw additionally has a `before_agent_reply` hook the bridge claims for fronted chats.
 - **Reply-to context**: the plugins forward the quoted message's text (`reply_to_text`, when the engine
   event carries it) and a per-message `timestamp` alongside the reply id, so Irises can show what was
   replied to and stamp the real send time even when it can't resolve the id locally.

@@ -218,6 +218,12 @@ test('inbound: reply_to_id + reply_to_text forward the quoted content into the t
   await post(base, { platform: 'imessage', chat_id: '+1555', text: 'hi', message_id: 'm3', reply_to_id: 'root9' }, 'brtok');
   assert.equal(queued[1].replyTo?.message_id, 'root9');
   assert.equal(queued[1].replyTo?.content, undefined);
+
+  // Quote text but NO id (a platform that ships the quote without a resolvable id) → still forwarded,
+  // under a synthetic id so resolveTappedReply can fall to the 'quoted' branch.
+  await post(base, { platform: 'imessage', chat_id: '+1555', text: 'yeah', message_id: 'm4', reply_to_text: 'the earlier one' }, 'brtok');
+  assert.equal(queued[2].replyTo?.content, 'the earlier one');
+  assert.ok(queued[2].replyTo?.message_id.startsWith('eng-quote-'), 'a synthetic id is assigned');
 });
 
 test('inbound: a forwarded platform timestamp becomes receivedAt; absent/bogus falls back', async (t) => {

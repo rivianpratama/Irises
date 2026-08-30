@@ -6,7 +6,7 @@ process.env.TZ = 'UTC';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { HermesBackend, hermesSessionKey, hermesTaskSessionId, jobPrefix, legacyJobPrefix, reminderJobPrompt, shiftCronToEngineZone, inlineLocalImage, normalizeCapabilities } from './hermesBackend.js';
+import { HermesBackend, hermesSessionKey, jobPrefix, legacyJobPrefix, reminderJobPrompt, shiftCronToEngineZone, inlineLocalImage, normalizeCapabilities } from './hermesBackend.js';
 import { HERMES_TASK_HEADER, HERMES_ONBOARDING_MESSAGE, hermesOnboardingVersion } from './hermesDoctrine.js';
 import { EngineUnavailableError, EngineRunError } from './engineBackend.js';
 import { emptyMedia } from '../../webhook/types.js';
@@ -39,11 +39,8 @@ test('runTask: happy path returns the message content and sends session headers'
   assert.equal(captured.length, 1);
   assert.match(captured[0].url, /\/v1\/chat\/completions$/);
   const headers = captured[0].init.headers as Record<string, string>;
-  // Research rides a task-scoped Session-Id (so a mid-run inbound doesn't trip the interrupt notice),
-  // while the memory-scoping Session-Key stays the chat's own key.
-  assert.equal(headers['X-Hermes-Session-Id'], hermesTaskSessionId('web:debug'));
+  assert.equal(headers['X-Hermes-Session-Id'], hermesSessionKey('web:debug'));
   assert.equal(headers['X-Hermes-Session-Key'], hermesSessionKey('web:debug'));
-  assert.notEqual(headers['X-Hermes-Session-Id'], headers['X-Hermes-Session-Key'], 'the two are decoupled for research');
   assert.match(headers.Authorization, /^Bearer /);
   const body = JSON.parse(String(captured[0].init.body));
   assert.equal(body.stream, false);
@@ -52,14 +49,7 @@ test('runTask: happy path returns the message content and sends session headers'
   assert.equal(body.messages[0].content, `${HERMES_TASK_HEADER}\n\nthe prompt`);
 });
 
-test('hermesTaskSessionId: distinct from the chat key, ends in -task, and is stable', () => {
-  const chat = 'eng:imessage:+1555';
-  assert.notEqual(hermesTaskSessionId(chat), hermesSessionKey(chat));
-  assert.ok(hermesTaskSessionId(chat).endsWith('-task'));
-  assert.equal(hermesTaskSessionId(chat), hermesTaskSessionId(chat)); // stable across calls
-});
-
-test('runTask (streaming): accumulates SSE deltas, heartbeats, and keeps the task session', async () => {
+test('runTask (streaming): accumulates SSE deltas, heartbeats, and keeps the chat session', async () => {
   const prev = process.env.HERMES_STREAM;
   process.env.HERMES_STREAM = 'on';
   try {
@@ -82,7 +72,7 @@ test('runTask (streaming): accumulates SSE deltas, heartbeats, and keeps the tas
     const body = JSON.parse(String(captured[0].init.body));
     assert.equal(body.stream, true);
     const headers = captured[0].init.headers as Record<string, string>;
-    assert.equal(headers['X-Hermes-Session-Id'], hermesTaskSessionId('web:debug'), 'streaming keeps the task session split');
+    assert.equal(headers['X-Hermes-Session-Id'], hermesSessionKey('web:debug'), 'streaming uses the chat session');
   } finally {
     if (prev === undefined) delete process.env.HERMES_STREAM; else process.env.HERMES_STREAM = prev;
   }

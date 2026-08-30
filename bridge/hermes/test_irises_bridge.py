@@ -128,6 +128,17 @@ class OnInbound(unittest.TestCase):
         self.assertIsNone(payload["reply_to_text"])
         self.assertIsNone(payload["timestamp"])
 
+    def test_a_datetime_timestamp_is_forwarded_as_epoch_and_stays_json_safe(self):
+        # Hermes adapters set event.timestamp to a datetime; forwarding it raw would break json.dumps
+        # (and drop every message). It must be converted to epoch seconds.
+        import datetime as _dt
+        import json as _json
+        when = _dt.datetime(2026, 8, 30, 12, 0, tzinfo=_dt.timezone.utc)
+        bridge.on_inbound(event=_event(timestamp=when), gateway="GW")
+        payload = self.q.get_nowait()
+        self.assertEqual(payload["timestamp"], when.timestamp())
+        _json.dumps(payload)  # must NOT raise — a raw datetime here would
+
     def test_alternate_reply_and_timestamp_field_names_are_picked_up(self):
         # A Photon-style adapter may name the fields differently; _first_attr tries a spread.
         ev = _event(quoted_text="the earlier msg", created_at=1699999999, quoted_message_id="q7")
@@ -487,6 +498,21 @@ class FirstAttr(unittest.TestCase):
     def test_none_when_no_candidate_is_set(self):
         obj = types.SimpleNamespace(a=None)
         self.assertIsNone(bridge._first_attr(obj, ("a", "missing", "alsomissing")))
+
+
+class ToEpoch(unittest.TestCase):
+    def test_datetime_becomes_epoch_seconds(self):
+        import datetime as _dt
+        dt = _dt.datetime(2026, 8, 30, 12, 0, tzinfo=_dt.timezone.utc)
+        self.assertEqual(bridge._to_epoch(dt), dt.timestamp())
+
+    def test_number_passes_through(self):
+        self.assertEqual(bridge._to_epoch(1700000000), 1700000000)
+        self.assertEqual(bridge._to_epoch(1700000000.5), 1700000000.5)
+
+    def test_none_and_junk_yield_none(self):
+        self.assertIsNone(bridge._to_epoch(None))
+        self.assertIsNone(bridge._to_epoch("not a time"))
 
 
 if __name__ == "__main__":

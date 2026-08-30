@@ -46,19 +46,6 @@ export function hermesSessionKey(chatId: string): string {
   return `irises-${sanitized.slice(0, 55)}-${hash8(chatId)}`;
 }
 
-/**
- * Session id for a long-running RESEARCH run — distinct from the chat's session id (`hermesSessionKey`).
- * A research run holds a session for minutes; if it shared the chat's session id, a new user inbound
- * arriving mid-run collides with it and the engine emits its "⚡ Interrupting current task" notice. Giving
- * research its own session id decouples the two so that collision (and the notice) doesn't fire. Only the
- * Session-ID (continuity/busy state) is separated — the Session-KEY (memory scope) stays the chat's key,
- * so per-chat engine memory is untouched. Research is one-shot (prompt in, answer out), so losing
- * cross-run continuity on this id costs nothing. Always ends in `-task`, so it can never equal a chat key.
- */
-export function hermesTaskSessionId(chatId: string): string {
-  return `${hermesSessionKey(chatId)}-task`;
-}
-
 /** Job-name scope so listing/cancel only ever touch jobs Irises created for this chat. Same
  *  collision fix as the session key: a long id carries a hash of the raw id. */
 export function jobPrefix(chatId: string): string {
@@ -327,18 +314,15 @@ export class HermesBackend implements EngineBackend {
     this.declaredCapabilities = parseDeclaredCapabilities(process.env.HERMES_CAPABILITIES);
   }
 
-  private headers(chatId?: string, opts: { sessionId?: string } = {}): Record<string, string> {
+  private headers(chatId?: string): Record<string, string> {
     const h: Record<string, string> = {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${this.apiKey}`,
     };
     if (chatId) {
-      // Session-Id: server-side conversation continuity + the engine's busy/interrupt tracking. Research
-      // overrides it with a task-scoped id (hermesTaskSessionId) so a mid-run inbound doesn't collide and
-      // trip the interrupt notice. Session-Key: long-term memory scoping — hermes threads it to its
-      // user-model layer, so each chat accrues its own engine-side memory. It ALWAYS stays the chat key,
-      // even for research, so the memory scope is unchanged by the session-id split.
-      h['X-Hermes-Session-Id'] = opts.sessionId ?? hermesSessionKey(chatId);
+      // Session-Id: server-side conversation continuity. Session-Key: long-term memory scoping —
+      // hermes threads it to its user-model layer, so each chat accrues its own engine-side memory.
+      h['X-Hermes-Session-Id'] = hermesSessionKey(chatId);
       h['X-Hermes-Session-Key'] = hermesSessionKey(chatId);
     }
     return h;
@@ -424,8 +408,7 @@ export class HermesBackend implements EngineBackend {
     if (notes.length) text += `\n\n${notes.join('\n')}`;
     const content: unknown = blocks.length ? [{ type: 'text', text }, ...blocks] : text;
 
-    // Research rides a task-scoped Session-Id (interrupt-notice fix); memory scope stays the chat key.
-    const headers = this.headers(task.chatId, { sessionId: hermesTaskSessionId(task.chatId) });
+    const headers = this.headers(task.chatId);
 
     // HERMES_STREAM (default off): stream the completion so token flow gives a live "still producing"
     // heartbeat for long runs, instead of one silent blocking POST. Falls back safely to non-stream.

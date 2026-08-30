@@ -100,10 +100,15 @@ export function createBridgeInboundRouter(deps: { enqueueInbound: EnqueueInbound
     });
     record({ type: 'event', chatId, label: 'bridge:inbound', detail: { engine: b.engine, platform, isGroup: b.is_group === true, chars: text.length, media: (b.media ?? []).length } });
     // Reply-to: carry the quoted CONTENT alongside the id when the plugin forwarded it, so the model
-    // sees what was replied to even if the id can't be resolved to a stored bubble/inbound row.
+    // sees what was replied to even if the id can't be resolved to a stored bubble/inbound row. Build it
+    // when EITHER an id OR quoted text is present — a platform that ships the quote but no resolvable id
+    // (or vice-versa) still surfaces context; a synthetic id lets resolveTappedReply fall to 'quoted'.
     const quoted = typeof b.reply_to_text === 'string' && b.reply_to_text.trim() ? b.reply_to_text.slice(0, 2000) : undefined;
-    const replyTo: ReplyTo | undefined = b.reply_to_id != null
-      ? { message_id: String(b.reply_to_id), ...(quoted ? { content: quoted } : {}) }
+    const replyTo: ReplyTo | undefined = (b.reply_to_id != null || quoted)
+      ? {
+          message_id: b.reply_to_id != null ? String(b.reply_to_id) : `eng-quote-${Date.now().toString(36)}`,
+          ...(quoted ? { content: quoted } : {}),
+        }
       : undefined;
     const receivedAt = normalizeTimestamp(b.timestamp);
     deps.enqueueInbound(deps.agentClient, chatId, from, text, String(b.message_id ?? `eng-in-${Date.now().toString(36)}`), media, replyTo, receivedAt);
