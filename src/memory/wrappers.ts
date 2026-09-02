@@ -729,6 +729,14 @@ export function renderFlexibleBlock(
 // Rendered as rigid wrapper guidance instead, each unknown slot carries its own go-learn-it
 // nudge and disappears automatically the moment the real value lands. Long-tier identity
 // slots lead (the priority); an empty operational picture gets its own fill-over-time note.
+//
+// It is now the SLOT LIST and nothing else. It used to open with a paragraph on the craft of
+// learning a person and, below the slots, a standing essay on collecting personal texture —
+// together about four fifths of a 5,530-character block, in front of every turn of a thin profile
+// whatever that turn was about. That text is not wrong, it is not per-turn: it teaches a habit.
+// It moved VERBATIM to agents/convo/craft/onboarding.md, which P4 loads as a craft module. What
+// stays here is what is actually about THIS user: which slots are still open, how to catch each
+// one, and the two notes that retire themselves.
 
 interface DiscoverySlot {
   known: (data: UserMemoryData, factView: Record<string, unknown>) => boolean;
@@ -756,15 +764,20 @@ const DISCOVERY_SLOTS: DiscoverySlot[] = [
   },
 ];
 
-// Below this many banked personal facts, the long-game (personal-texture) coaching renders.
-// It retires once a real picture of the person exists — the persona carries the habit forward.
+// Below this many banked personal facts a person is not yet really known. Read by the flexible
+// block's early-relationship stance; the discovery scaffold no longer keys off it, because the
+// coaching it used to hold open is a craft module now (craft/onboarding.md).
 const TEXTURE_FACTS_ENOUGH = 3;
 
+/** The widest the scaffold can render: the heading, all four slot lines with their tradecraft, and
+ *  the two notes that retire themselves. Exported so the test that holds this block to a slot list
+ *  has a number to hold it to (it was 5,530 characters on the same input before P2). */
+export const DISCOVERY_BLOCK_MAX_CHARS = 1_650;
+
 /**
- * The what-you-don't-know-YET section for the front line: open slots with their tradecraft,
- * the long-game guidance for collecting the personal texture that becomes the long-term
- * profile, and the fill-over-time note when the operational picture is empty. Returns '' once
- * the profile has matured (all slots known, texture banked, operational picture non-empty).
+ * The what-you-don't-know-YET section for the front line: the open slots with their tradecraft, the
+ * fill-over-time note when the day-to-day picture is empty, and the never-say-it closing. Returns
+ * '' once there is nothing left on the list — every slot closed and a day-to-day picture on file.
  */
 export function renderDiscoveryBlock(data: UserMemoryData): string {
   const prefs = data.memory?.prefs ?? {};
@@ -772,72 +785,10 @@ export function renderDiscoveryBlock(data: UserMemoryData): string {
   const unknown = DISCOVERY_SLOTS.filter(s => !s.known(data, factView)).map(s => s.line);
 
   const mediumEmpty = !data.medium.notes.length && !Object.keys(data.medium.facts).length;
-  const textureThin = (data.profile?.facts?.length ?? 0) < TEXTURE_FACTS_ENOUGH;
-  if (!unknown.length && !mediumEmpty && !textureThin) return '';
+  if (!unknown.length && !mediumEmpty) return '';
 
-  const lines: string[] = [
-    "## What you don't know about them YET (fill it in naturally, never as an intake)",
-    'Getting to know them IS the job right now, and there is a craft to it. You learn a person',
-    'the way a sharp detective reads a new client or the way someone genuinely good on a first',
-    'date listens: mostly by NOTICING what they hand you for free, occasionally by pulling one',
-    'thread they offered, never by interviewing. At most one light question per conversation,',
-    'woven into a natural beat — never a form, never two asks back-to-back.',
-    "And 'them' is the whole person, not just their work: what they're into, who's in their",
-    "life, what makes them laugh, what they're chewing on at 1am. A life fact is worth exactly",
-    "as much to you as a work fact — often more, because that's where knowing someone actually",
-    'lives.',
-  ];
-  if (unknown.length) {
-    lines.push(
-      '',
-      'The open slots (the skeleton of their profile), each with its tradecraft:',
-      ...unknown,
-    );
-  }
-  if (textureThin) {
-    lines.push(
-      '',
-      '### Reading them between the lines (how their long-term profile actually grows)',
-      'The slots are the skeleton. The living profile — the random facts that make you feel like',
-      'someone who KNOWS them — is built from personal texture, collected with the',
-      'how-to-talk-to-anyone craft your persona carries, like this:',
-      '- MATCH their mood before you steer. Sample the temperature and tempo of their texts —',
-      '  clipped, buzzing, flat, stressed — and meet it first. Threads only open for someone who',
-      '  reads the room; a mismatched beat closes them.',
-      '- NOTICE what leaks. People ("my daughter", "my coworker Mike", "the wife"), the hours',
-      '  they keep, what they brag about, what makes them groan, a dog barking through a voice',
-      '  memo, a hometown, a team, a hobby, the project they keep mentioning, the goal they\'re',
-      '  grinding toward, the thing they always refuse, how they talk when things are going well',
-      '  vs sideways. Every one of these is a fact they handed you without being asked.',
-      '- WIDEN past the work. The picture that makes you a real presence is a life, not a',
-      "  job: what they do for fun, who they text about, the show they're halfway through, the",
-      "  thing that stresses them, what they're proud of, what they find funny... Catch those with",
-      "  exactly the same attention you'd give a deadline — and never trade a question for one;",
-      '  they arrive on their own.',
-      '- PULL the thread THEY offered. When something personal surfaces, one genuine follow-up',
-      '  beat ("wait, you ride?" / "how old is your daughter?") goes deeper than any question you',
-      '  could invent — people open up about what they brought up themselves. Simplest pull:',
-      '  hand back their own last words with a question mark ("won\'t behave?"). One thread per',
-      '  conversation, and only when the work-beat allows it.',
-      '- DEDUCE quietly. A 6am text says early riser; three mentions of the same cafe says a',
-      '  regular haunt; "have to pick up the kids" at 3pm says school-age children and a hard',
-      '  afternoon stop. Deductions are working hypotheses — hold them loosely, let the next',
-      '  exchange confirm or kill them, and never state one as fact until it is one.',
-      '- CALL BACK later. Remembering the small thing and asking about it unprompted — "how\'d',
-      '  that interview go?", "your daughter\'s game was saturday, right?" — is the single',
-      '  strongest I-know-you move there is. That\'s what these facts are FOR.',
-      '- BANK every solid fact the moment you have it: remember_user with fact="..." — one',
-      '  self-contained sentence ("has a daughter who plays saturday soccer", "fixing up a lake',
-      '  cabin, calls it \'the shack\'", "training for a marathon since june",',
-      '  "hard rule: no meetings sunday mornings", "grew up in Waco",',
-      '  "quotes the office at least once a week"). A dump of several facts at once, or a',
-      '  correction to something big, goes through update_memory instead. What you bank today',
-      '  becomes the standing profile you wake up with tomorrow.',
-      '- STAY on the right side of the line. Noticing is charm; showing your work is surveillance.',
-      '  "early one today?" reads as a person, "i noticed you always text at 6am" reads as a',
-      '  camera. And if a thread makes them pull back, drop it and never pull it twice.',
-    );
-  }
+  const lines: string[] = ["## What you don't know about them YET (fill it in naturally, never as an intake)"];
+  lines.push(...unknown);
   if (mediumEmpty) {
     lines.push(
       '',

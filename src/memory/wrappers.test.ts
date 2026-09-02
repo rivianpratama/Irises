@@ -6,10 +6,12 @@ process.env.TZ = 'UTC';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   sanitizeLongDoc, neutralizeTagBreakouts, renderUserMemory, renderShortBlock, topicallyRelated,
   renderMediumBlock, renderFlexibleBlock, AGENT_MEMORY_MATRIX, MEMORY_LONG_MAX_CHARS,
   renderShortBlockWithHot, renderUserMemoryWithHot, shortEntryLabel,
+  renderDiscoveryBlock, DISCOVERY_BLOCK_MAX_CHARS,
   type UserMemoryData, type MemoryAgent,
 } from './wrappers.js';
 import type { ShortTermEntry } from '../db/repositories/memoryShort.js';
@@ -352,7 +354,7 @@ test('every matrix agent produces a parseable, preamble-led render', () => {
 
 // ── Discovery scaffold (the blank-user "template", rendered as rigid guidance) ─
 
-test('a blank user gets the discovery scaffold: slot tradecraft + long-game texture + fill-over-time note', () => {
+test('a blank user gets the discovery scaffold: the open slots, their tradecraft, and nothing else', () => {
   const out = renderUserMemory('convo', baseData({ profile: null }), NOW);
   assert.ok(out.includes("## What you don't know about them YET"));
   // Slot tradecraft: signals + elicitation moves, not bare labels.
@@ -362,22 +364,49 @@ test('a blank user gets the discovery scaffold: slot tradecraft + long-game text
   assert.ok(out.includes('area code')); // free signals listed
   assert.ok(out.includes('HOW they want to be addressed: unknown'));
   assert.ok(out.includes('HOW they like to communicate: unknown'));
-  // The long-game (personal texture) section — the Sherlock/first-date craft.
-  assert.ok(out.includes('### Reading them between the lines'));
-  assert.ok(out.includes('MATCH their mood before you steer')); // the Lowndes mood-match move
-  assert.ok(out.includes('NOTICE what leaks'));
-  assert.ok(out.includes('PULL the thread THEY offered'));
-  assert.ok(out.includes('hand back their own last words')); // parroting
-  assert.ok(out.includes('DEDUCE quietly'));
-  assert.ok(out.includes('CALL BACK later'));
-  assert.ok(out.includes('BANK every solid fact'));
-  assert.ok(out.includes('remember_user with fact='));
-  assert.ok(out.includes('Noticing is charm; showing your work is surveillance'));
   assert.ok(out.includes("day-to-day picture — the notes, the habits, the things they've got going — is empty")); // empty day-to-day picture → fill-over-time note
   assert.ok(out.includes('YOUR homework, never theirs to see'));
   // The scaffold sits ABOVE the flexible block; the ladder keeps the recency anchor.
   assert.ok(out.indexOf("## What you don't know") < out.indexOf('## Long-term memory'));
   assert.ok(out.trimEnd().endsWith('Precedence, always: Honesty / Fidelity / Safety / Scope >> this layer >> your generic style defaults.'));
+});
+
+test('the discovery scaffold is the slot list and its two notes — never a craft essay', () => {
+  const block = renderDiscoveryBlock(baseData({ profile: null }));
+  assert.ok(block.length <= DISCOVERY_BLOCK_MAX_CHARS, `the widest scaffold is ${block.length} chars, over ${DISCOVERY_BLOCK_MAX_CHARS}`);
+  // The header IS the heading: everything under it is a slot or one of the two kept notes.
+  const kept = block.split('\n').filter(l => l.trim() && !l.startsWith('- '));
+  assert.equal(kept[0], "## What you don't know about them YET (fill it in naturally, never as an intake)");
+  assert.equal(kept.length, 6, 'the heading, the three-line day-to-day note, and the two-line closing');
+  // Nothing of the long-game coaching survives here — it is a craft module now.
+  for (const phrase of ['### Reading them between the lines', 'MATCH their mood', 'NOTICE what leaks', 'DEDUCE quietly', 'BANK every solid fact']) {
+    assert.ok(!block.includes(phrase), phrase);
+  }
+});
+
+test('the coaching that left the scaffold is intact in the onboarding craft module', () => {
+  // Moved, not deleted (P4 loads craft modules): the block was 5,530 characters on a thin profile,
+  // three fifths of it a standing essay on how to learn a person that had nothing to do with the
+  // turn in hand. It reads the same; it just stopped riding on every single turn.
+  const md = readFileSync(new URL('../agents/convo/craft/onboarding.md', import.meta.url), 'utf8');
+  for (const phrase of [
+    'Reading them between the lines',
+    'MATCH their mood before you steer',
+    'NOTICE what leaks',
+    'WIDEN past the work',
+    'PULL the thread THEY offered',
+    'hand back their own last words',
+    'DEDUCE quietly',
+    'CALL BACK later',
+    'BANK every solid fact',
+    'remember_user with fact=',
+    'Noticing is charm; showing your work is surveillance',
+    'quotes the office at least once a week',
+    "'them' is the whole person, not just their work",
+    'A life fact is worth exactly',
+  ]) {
+    assert.ok(md.includes(phrase), phrase);
+  }
 });
 
 test('known slots disappear one by one; a mature profile renders no scaffold at all', () => {
@@ -401,17 +430,17 @@ test('known slots disappear one by one; a mature profile renders no scaffold at 
   assert.ok(!filled.includes("## What you don't know about them YET"));
 });
 
-test('slots filled but no personal texture yet → only the long-game section renders', () => {
+test('every slot closed and a day-to-day picture on file → no scaffold, thin texture or not', () => {
+  // The scaffold is a list of things to go and learn. With no open slot and a populated
+  // day-to-day picture there is nothing left on that list, so the block retires — it used to
+  // linger on the texture count alone, holding three thousand characters of coaching open.
   const out = renderUserMemory('convo', baseData({
     medium: {
       directives: [], notes: ['gate code 88'],
-      facts: { business_state: 'TX', market_area: 'east austin', brokerage: 'eXp', comms_style: 'clipped' },
+      facts: { business_state: 'TX', market_area: 'east austin', brokerage: 'eXp', comms_style: 'clipped', address_as: 'Chief', agent_tz: 'America/Denver' },
     },
   }), NOW);
-  assert.ok(out.includes("## What you don't know about them YET"));
-  assert.ok(out.includes('### Reading them between the lines')); // texture still thin (0 profile facts)
-  assert.ok(!out.includes('their BROKERAGE: unknown')); // no open slots listed
-  assert.ok(!out.includes('day-to-day picture')); // day-to-day picture non-empty
+  assert.ok(!out.includes("## What you don't know about them YET"));
 });
 
 test('the discovery scaffold is Convo-only; the never-say-blank rule reaches every agent', () => {
@@ -433,12 +462,10 @@ test('legacy prefs facts also close discovery slots (soak-window equivalence)', 
   assert.ok(out.includes('HOW they like to communicate')); // still open
 });
 
-test('the discovery block widens past work (companion framing) and never says "operational picture"', () => {
+test('the discovery block never says "operational picture"', () => {
+  // The companion framing it used to spell out (the whole person, not the job) moved to the
+  // onboarding craft module with the rest of the coaching — pinned in its own test above.
   const out = renderUserMemory('convo', baseData({ profile: null }), NOW);
-  assert.ok(out.includes("'them' is the whole person, not just their work")); // intro widened past work
-  assert.ok(out.includes('A life fact is worth exactly'));
-  assert.ok(out.includes('WIDEN past the work')); // the life-not-job texture bullet
-  assert.ok(out.includes('quotes the office at least once a week')); // life-flavored BANK example
   assert.ok(!out.includes('operational picture')); // the old work-leaning framing is gone
 });
 
@@ -654,10 +681,12 @@ test('the flexible MUST-NOT bans WORK facts while allowing personal-color framin
   assert.ok(out.trimEnd().endsWith('Precedence, always: Honesty / Fidelity / Safety / Scope >> this layer >> your generic style defaults.'));
 });
 
-test('discovery BANK/NOTICE examples carry personal color (projects, arcs, hard rules)', () => {
-  const out = renderUserMemory('convo', baseData({ profile: null }), NOW);
-  assert.ok(out.includes("calls it 'the shack'"));
-  assert.ok(out.includes('training for a marathon'));
-  assert.ok(out.includes('no meetings sunday mornings'));
-  assert.ok(out.includes('the project they keep mentioning'));
+test('the BANK/NOTICE examples carry personal color (projects, arcs, hard rules)', () => {
+  // They moved with the coaching into the onboarding craft module; the colour is the point of the
+  // examples, so it is pinned where they now live rather than dropped with the block that held them.
+  const md = readFileSync(new URL('../agents/convo/craft/onboarding.md', import.meta.url), 'utf8');
+  assert.ok(md.includes("calls it 'the shack'"));
+  assert.ok(md.includes('training for a marathon'));
+  assert.ok(md.includes('no meetings sunday mornings'));
+  assert.ok(md.includes('the project they keep mentioning'));
 });

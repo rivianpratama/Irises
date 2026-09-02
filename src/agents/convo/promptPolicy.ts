@@ -67,7 +67,7 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
   model_map: 800,              // 387 on a bare checkout — HOST-DEPENDENT, see above
   name_nudge: 165,             // 163 — fixed prose (was 171)
   intro_weave: 770,            // 760 — INTRO_WEAVE_BLOCK (agents/ops/firstMove.ts) (was 795)
-  context_block: 12_500,       // 12,290 — the cold fixture (a thin profile is not a small prompt)
+  context_block: 10_800,       // 10,644 — the cold fixture (was 12,500 for 12,290, before P2 sent the discovery scaffold's craft coaching to craft/onboarding.md)
   active_ops: 1_980,           // 1,946 — two looks in flight, one queued (was 2,040)
   group: 105,                  // 104 — a named group, three participants (was 109)
   tapped_reply: 2_230,         // 2,190 — kind 'assistant' beyond the visible window (the largest of the four) (was 2,290)
@@ -82,7 +82,7 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
   turn_focus: 550,             // 544 — a 400-char restatement plus two hits (was 570)
   behavior_anchor: 705,        // 699 — P1: six lines that drift first (was 1,740 for 1,659 / 14 lines)
   json_anchor: 2_950,          // 2,908 — the envelope contract, last in the prompt (was 3,050)
-  memory_stack: 12_500,        // 12,290 — the cold stack (discovery + default stance), the biggest measured
+  memory_stack: 10_500,        // 10,379 — the cold stack (discovery + default stance), still the biggest measured (was 12,500 for 12,290 — same deletion)
 };
 
 /**
