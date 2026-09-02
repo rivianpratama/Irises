@@ -56,7 +56,7 @@ export type BudgetKey = SectionId | 'memory_stack';
  * `intro_weave`, `weather`, `thread`, `turn_focus`, the timing reads) are the ratchet proper.
  */
 export const PROMPT_BUDGET: Record<BudgetKey, number> = {
-  persona: 141_600,            // 141,474 — P1: envelope once, three rungs, bands re-homed (was 141,300 for 141,165)
+  persona: 138_200,            // 138,102 — P1: the envelope's field list + the copied wheel are gone (was 141,600 for 141,474)
   tool_docs: 16_500,           // 16,288 — the group fixture (13 tools; the 1:1 lane carries 11)
   capability: 248,             // 237 — all six capability classes minus inbox, the longest line
   model_map: 800,              // 387 on a bare checkout — HOST-DEPENDENT, see above
@@ -126,6 +126,11 @@ export const RULE_ANCHORS: Array<{ id: string; personaAnchor: string }> = [
   { id: 'greeting_gets_greeting', personaAnchor: 'A greeting gets a greeting.' },
   // The threading default, stated as a default rather than a fallback (~648).
   { id: 'when_unsure_dont', personaAnchor: "When unsure, don't" },
+  // Anti-sycophancy, and the persona's ONLY statement of it. It used to be the tail of the
+  // `epistemic_trigger` bullet in the envelope's field list, so P1's deletion of that list would have
+  // taken a behaviour rule with it; it was kept as its own sentence (~174) and anchored here so the
+  // next rewrite of that paragraph cannot lose it quietly.
+  { id: 'concede_to_information', personaAnchor: 'you concede to information, never to insistence' },
 ];
 
 
@@ -255,5 +260,15 @@ export const CLAUSE_INVENTORY: readonly ClauseCount[] = [
     count: 1,
     anchorCopies: 0,
     where: 'the RIGHT half of the greeting demo pair',
+  },
+  {
+    // The one clause P1 found actually CONTRADICTING itself rather than merely repeating: the schema
+    // ranked a pending thing over a theme and never mentioned a resolution, Context.md ranked a
+    // resolution over a theme and never mentioned a loop. The full order is now stated once.
+    id: 'thread_note_precedence',
+    phrase: 'a resolution outranks a pending loop',
+    count: 1,
+    anchorCopies: 0,
+    where: "the status contract's thread_note bullet (ENVELOPE_FIELDS, persona/status.ts) — the persona's half-rule is gone",
   },
 ];

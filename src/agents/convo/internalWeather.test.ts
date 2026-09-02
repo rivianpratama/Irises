@@ -68,7 +68,9 @@ test('the status contract rides with the weather block, and the tail points at i
 test('no computed state → no internal-weather block and no contract (legacy path unchanged)', () => {
   const prompt = buildSystemPrompt(ctx, '', [], undefined, undefined, [], 'hey', undefined);
   assert.ok(!prompt.includes('INTERNAL weather'));
-  assert.ok(!prompt.includes('Your hidden status — the contract'), 'nothing asked her to re-report, so no contract');
+  // The HEADING, `## ` and all: the persona still points at the block by name ("…arrive in your
+  // per-turn context under 'Your hidden status — the contract'"), which is not the block itself.
+  assert.ok(!prompt.includes('## Your hidden status — the contract'), 'nothing asked her to re-report, so no contract');
 });
 
 // The weeks-scale standing register (persona/climate.ts) rides the SAME block — one header, ever.

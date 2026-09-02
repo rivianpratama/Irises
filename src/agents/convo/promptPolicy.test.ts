@@ -22,6 +22,8 @@ import { RULE_ANCHORS, CONFIDENCE_BANDS } from './promptPolicy.js';
 import { loadContext } from '../loadContext.js';
 import { BUBBLE_LAW_MAX } from '../../pipeline/bubbleJson.js';
 import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '../../pipeline/bubbles.js';
+import { ENVELOPE_FIELDS } from '../../persona/status.js';
+import { MOOD_CORES, CORE_VALENCE_BAND } from '../../persona/mood.js';
 import type { ThreadRung } from '../../persona/threads.js';
 import { FORMAT_ANCHOR } from '../composerCore.js';
 import { buildOutcomeBrief } from '../fallfirm/client.js';
@@ -85,6 +87,44 @@ test('the persona teaches exactly the rungs the engine can deliver, in the same 
   assert.ok(!/[Ff]ive rungs/.test(persona), 'the five-rung ladder is still in the persona');
   assert.ok(!persona.includes('a named theme ("the perfectionism loop again?")'), 'the named-theme rung is still listed');
 });
+
+// ── the hidden envelope, described once ──────────────────────────────────────
+//
+// The `status` object used to be described in four places, two of which lived in the persona: a
+// hand-copied feelings wheel (83 words, with each core's valence band beside it) and a field-by-field
+// bullet list. Both were a second copy of persona/status.ts — the wheel of WILLCOX_WHEEL, the list of
+// STATUS_SCHEMA_PROP — and both had drifted. They are gone; ENVELOPE_FIELDS is the source and the
+// `status_contract` section is the copy the model reads. This is what holds them out of the prose: a
+// well-meant "let me just remind her what mood_core is" in Context.md fails here.
+
+test('the persona describes no envelope field and copies no wheel — it points at the contract', () => {
+  const persona = loadContext('convo');
+
+  // The bands are the wheel's tell: they only ever appeared in the hand-copied list.
+  assert.ok(!persona.includes('joyful [70-100]'), 'the copied feelings wheel is back in the persona');
+  for (const core of MOOD_CORES) {
+    const [lo, hi] = CORE_VALENCE_BAND[core];
+    assert.ok(!persona.includes(`${core} [${lo}-${hi}]`), `${core}'s valence band is back in the persona`);
+  }
+
+  // A field described in the persona is a field described twice — the contract owns all seventeen.
+  for (const f of ENVELOPE_FIELDS) {
+    assert.ok(
+      !persona.includes(`- \`${f.key}\``),
+      `\`${f.key}\` is described as a persona bullet again — ENVELOPE_FIELDS (persona/status.ts) owns it, and the status_contract section is where the model reads it`,
+    );
+  }
+
+  // …and the pointer that replaced them still names the block it points at.
+  assert.ok(
+    persona.includes(STATUS_CONTRACT_POINTER),
+    `the inner-weather section no longer points at the contract (looked for ${JSON.stringify(STATUS_CONTRACT_POINTER)}), so the persona now describes the envelope nowhere at all`,
+  );
+});
+
+/** How Context.md names the per-turn block that carries the field list now. The contract's own
+ *  heading, so a rename fails on both sides at once. */
+const STATUS_CONTRACT_POINTER = 'under "Your hidden status — the contract"';
 
 // ── the bubble law, as stated vs as enforced ─────────────────────────────────
 
