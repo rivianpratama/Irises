@@ -242,9 +242,20 @@ test('every reported section is a known id, named once, in assembly order', () =
   }
 });
 
+/** Sections these fixtures deliberately never render, because rendering them would put NEW bytes in
+ *  a golden whose whole job is to hold the pre-change ones. Each must be verified somewhere else,
+ *  named here so the exemption is a decision rather than a gap:
+ *    • turn_focus — pushed only when the caller hands in a focus input, which these fixtures don't;
+ *      its push site, its placement and its flag are covered by turnFocus.test.ts. */
+const GOLDEN_EXEMPT: ReadonlySet<string> = new Set(['turn_focus']);
+
 test('the fixtures between them exercise every dyn section — no push site left unnamed', () => {
   const seen = new Set(FIXTURES.flatMap(f => buildSystemPromptSections(...f.args).sections.map(s => s.name)));
   for (const id of DYN_SECTION_IDS) {
+    if (GOLDEN_EXEMPT.has(id)) {
+      assert.ok(!seen.has(id), `${id} is exempt, so no fixture may render it into a golden`);
+      continue;
+    }
     assert.ok(seen.has(id), `no fixture renders the ${id} section — its push site would go unverified`);
   }
 });

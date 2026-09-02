@@ -15,6 +15,10 @@ import { PROMPT_TAG } from '../../llm/promptTag.js';
  * per-turn data last) IS this order, and the size arithmetic below counts the `\n\n` joins between
  * whichever of them actually rendered. Every entry is conditional except `model_map` and
  * `current_time`, so a real build carries a subsequence of this list, never all of it.
+ *
+ * `turn_focus` is last on purpose and must STAY last: it restates the message the whole prompt is
+ * there to answer, and the recency edge is what makes it a counterweight rather than one more voice
+ * in the pile (convo/turnFocus.ts). A new section belongs before it, never after.
  */
 export const DYN_SECTION_IDS = [
   'tool_docs',            // renderToolDocs — under toolsViaJson, the model's only view of its tools
@@ -33,6 +37,7 @@ export const DYN_SECTION_IDS = [
   'conversation_timing',  // renderConversationTiming
   'reply_order',          // renderArrivalGap OR renderReplyOrder — never both
   'extra',                // the caller's addendum (`extraSection`)
+  'turn_focus',           // renderTurnFocus — LAST, always: what they just said and what touches it
 ] as const;
 
 /**

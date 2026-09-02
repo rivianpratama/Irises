@@ -40,6 +40,7 @@ import { saveAffectState } from '../../db/repositories/affectState.js';
 import type { RelationshipClimate } from '../../persona/climate.js';
 import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
 import type { PromptSection, SectionId } from './promptSections.js';
+import { renderTurnFocus, turnFocusBlockEnabled, type TurnFocusInput } from './turnFocus.js';
 import { callLLM } from '../../llm/callLLM.js';
 import { record } from '../../diagnostics/trace.js';
 import { reportError } from '../../diagnostics/errorLog.js';
@@ -599,6 +600,11 @@ export function buildSystemPromptSections(
   // her (agents/ops/firstMove.ts). Already resolved by the caller — see the push site below for why
   // it arrives as a value rather than being awaited here. Absent/null on every other turn.
   introWeave?: string | null,
+  // What this turn is actually about: their message, its code-classified shape, and the one or two
+  // held things that touch it (convo/turnFocus.ts). Assembled by the caller from values it already
+  // has, and rendered LAST inside the block. Absent → nothing pushed, prompt byte-identical to the
+  // install that never had the block — which is also what every non-Convo caller gets for free.
+  turnFocus?: TurnFocusInput,
 ): PromptSectionsResult {
   const persona = loadContext('convo');
 
@@ -753,6 +759,17 @@ export function buildSystemPromptSections(
   }
 
   if (extraSection) push('extra', extraSection);
+
+  // LAST inside the block, and it has to be last: everything above urges her to bring something of
+  // hers along, and this is the one place that says what she is answering. The recency edge is the
+  // whole mechanism — a restatement of their message, its shape read in code, and the one or two
+  // held things that actually touch it, shown as evidence instead of urged as instruction. Renders
+  // to nothing when the caller passed no focus input (every non-Convo caller, and the recall_memory
+  // second pass, which reuses this turn's already-built system string).
+  if (turnFocus && turnFocusBlockEnabled()) {
+    const focusBlock = renderTurnFocus(turnFocus);
+    if (focusBlock) push('turn_focus', focusBlock);
+  }
 
   // The LAST tokens of the system prompt get the strongest recency attention (charter §11.3), so the
   // assembled prompt ends on the persona's #1 rule — the JSON bubble contract — AFTER the <prompt>
