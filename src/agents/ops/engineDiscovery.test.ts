@@ -5,7 +5,7 @@ process.env.TZ = 'UTC';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEngineDiscovery, envFileValue, scanYamlModel, scanYamlProvider, getDiscoveredEngine, type DiscoveryDeps } from './engineDiscovery.js';
+import { applyEngineDiscovery, envFileValue, scanYamlModel, scanYamlProvider, getDiscoveredEngine, isReasoningFamilyModel, type DiscoveryDeps } from './engineDiscovery.js';
 
 const HERMES_ENV = '/home/user/.hermes/.env';
 const HERMES_YAML = '/home/user/.hermes/config.yaml';
@@ -594,4 +594,73 @@ test('scanYamlProvider: the provider sibling, and nothing from the inline scalar
   assert.equal(scanYamlProvider('model: "anthropic/claude-opus-4.6"'), null); // a scalar has no sibling
   assert.equal(scanYamlProvider('other:\n  provider: nested-should-not-leak\n'), null);
   assert.equal(scanYamlProvider(null), null);
+});
+
+// ── Reasoning-family inheritance heads-up (informational; no behavior change) ─
+// The live failure this names: the engine's model lands on every voice role, and a reasoning-family
+// slug thinks BY DEFAULT while CONVO/CLASSIFY/FALLFIRM_THINKING are all off — so the small per-call
+// caps (classify's 20, the climate eval's 200) go to thinking and the call comes back empty.
+
+test('isReasoningFamilyModel: the four families, and the slugs that must NOT match', () => {
+  for (const slug of [
+    'deepseek/deepseek-v4-flash', 'deepseek/deepseek-v4-flash:nitro', 'deepseek/deepseek-r1',
+    'openai/o1', 'openai/o3-mini', 'o4-mini', 'qwen/qwen3-235b-thinking', 'google/gemini-3-pro-thinking:free',
+  ]) {
+    assert.equal(isReasoningFamilyModel(slug), true, `${slug} reasons by default`);
+  }
+  for (const slug of [
+    'openai/gpt-5.6-luna', 'openai/gpt-5.6-luna:nitro', 'anthropic/claude-opus-4.8', 'claude-sonnet-5',
+    'openai/gpt-4o', 'deepseek/deepseek-v3', 'meta-llama/llama-4-scout', 'mistralai/mistral-large',
+  ]) {
+    assert.equal(isReasoningFamilyModel(slug), false, `${slug} is not a reasoning-family slug`);
+  }
+});
+
+test('inheriting a reasoning-family model with thinking off logs one heads-up naming the opt-out', () => {
+  const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key' });
+  const { deps, logs } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: { 'hermes config get model.default': 'deepseek/deepseek-v4-flash' },
+  });
+  applyEngineDiscovery(deps);
+  assert.equal(env.CONVO_MODEL_OPENROUTER, 'deepseek/deepseek-v4-flash', 'still inherited — log only');
+  const lines = logs.filter((l) => l.includes('reasoning-family'));
+  assert.equal(lines.length, 1, 'exactly one heads-up');
+  assert.match(lines[0], /deepseek\/deepseek-v4-flash/);
+  assert.match(lines[0], /CONVO, CLASSIFY, FALLFIRM/, 'names the roles whose thinking is off');
+  assert.match(lines[0], /ENGINE_MODEL_INHERIT=off/, 'names the opt-out');
+});
+
+test('a non-reasoning inherited model logs no heads-up', () => {
+  const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key' });
+  const { deps, logs, warns } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: { 'hermes config get model.default': 'openai/gpt-5.6-luna' },
+  });
+  applyEngineDiscovery(deps);
+  assert.equal(env.CONVO_MODEL_OPENROUTER, 'openai/gpt-5.6-luna');
+  assert.equal([...logs, ...warns].filter((l) => l.includes('reasoning-family')).length, 0);
+});
+
+test('the heads-up skips a role whose own <ROLE>_THINKING is armed, and goes silent when all are', () => {
+  const armed = baselineEnv({ OPENROUTER_API_KEY: 'or-key', CLASSIFY_THINKING: 'on' });
+  const one = mkDeps(armed, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: { 'hermes config get model.default': 'deepseek/deepseek-v4-flash' },
+  });
+  applyEngineDiscovery(one.deps);
+  const line = one.logs.find((l) => l.includes('reasoning-family'));
+  assert.ok(line);
+  assert.match(line!, /CONVO, FALLFIRM/);
+  assert.equal(/CLASSIFY/.test(line!), false, 'a role that armed thinking asked for this');
+
+  const all = baselineEnv({
+    OPENROUTER_API_KEY: 'or-key', CONVO_THINKING: 'true', CLASSIFY_THINKING: 'adaptive', FALLFIRM_THINKING: '1',
+  });
+  const every = mkDeps(all, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: { 'hermes config get model.default': 'deepseek/deepseek-v4-flash' },
+  });
+  applyEngineDiscovery(every.deps);
+  assert.equal(every.logs.filter((l) => l.includes('reasoning-family')).length, 0);
 });

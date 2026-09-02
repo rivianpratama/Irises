@@ -202,6 +202,26 @@ function nullish(v: string | null): boolean {
   return ['', 'none', 'null', 'undefined', 'nil', 'not set'].includes((v || '').trim().toLowerCase());
 }
 
+/** Slug shapes of model families that spend chain-of-thought BY DEFAULT, with no reasoning param
+ *  asked for. `o[134]` needs a `/` or `-` in front so `gpt-4o` and `claude-opus-*` don't match. */
+const REASONING_FAMILY: readonly RegExp[] = [
+  /deepseek-v4/,
+  /deepseek-r/,
+  /(?:^|[/-])o[134](?:$|[-.:])/,
+  /-thinking(?:$|[-.:])/,
+];
+
+/** True for a model slug whose family reasons by default (see REASONING_FAMILY). Exported for the
+ *  test table — the inheritance heads-up below is the only production caller. */
+export function isReasoningFamilyModel(slug: string): boolean {
+  const s = slug.trim().toLowerCase();
+  return REASONING_FAMILY.some(re => re.test(s));
+}
+
+/** Values of `<ROLE>_THINKING` that ARM thinking (mirrors models.ts parseThinking; every voice role
+ *  defaults off, so anything else — unset included — means off). */
+const THINKING_ON_VALUES = ['adaptive', 'on', 'true', '1', 'enabled', 'yes'];
+
 /** Core discovery — pure over its injected deps. Mutates `deps.env` in place. */
 export function applyEngineDiscovery(deps: DiscoveryDeps): void {
   const { env, protectedKeys } = deps;
@@ -306,7 +326,28 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
         else override(`${r}_MODEL_OPENAI`, model);
         override(`${r}_PROVIDER`, lane);
       }
+      noteReasoningInherit(model);
     };
+
+    /** One informational line when a voice role just inherited a model that reasons BY DEFAULT while
+     *  that role asked for no thinking: chain-of-thought is billed against max_tokens, and these
+     *  roles run deliberately tiny per-call caps (the climate eval's 200, validateDirective's 20), so
+     *  the budget can go entirely to thinking. The lane itself now sends reasoning-disable and takes
+     *  one bounded starved retry (llm/openrouterRequest.ts, llm/callLLM.ts) — this is the heads-up
+     *  that says WHY, and names the opt-out. Log only; nothing here changes what was inherited. */
+    function noteReasoningInherit(model: string): void {
+      if (!isReasoningFamilyModel(model)) return;
+      const unarmed = VOICE_ROLES.filter(
+        r => !THINKING_ON_VALUES.includes((env[`${r}_THINKING`] || '').trim().toLowerCase()),
+      );
+      if (!unarmed.length) return;
+      deps.log(
+        `inherited model "${model}" is a reasoning-family slug, but ${unarmed.join(', ')}_THINKING `
+        + 'is off — those roles run small per-call caps that a thinking model can spend before it '
+        + 'answers (Irises sends reasoning-disable and retries once with a bigger cap). '
+        + 'Set ENGINE_MODEL_INHERIT=off to keep Irises\'s own voice models instead.',
+      );
+    }
 
     // ── Recognised provider (or a decisive api_mode from host config) → a specific lane ──
     // A readable api_mode is AUTHORITATIVE (it disambiguates a generic provider name like `custom`
