@@ -15,7 +15,7 @@ import { deleteShortTermForHandle } from '../../db/repositories/memoryShort.js';
 import { purgeArchiveFor } from '../../db/repositories/memoryArchive.js';
 import { getLongDoc, saveLongDoc } from '../../db/repositories/memoryLong.js';
 import { buildContextBlockWithHot } from '../../memory/dossier.js';
-import { shortEntryLabel, threadHit } from '../../memory/relevance.js';
+import { memoryRelevanceEnabled, shortEntryLabel, threadHit } from '../../memory/relevance.js';
 import { renderedTurnFocusHits, type TurnFocusHit, type TurnFocusInput } from './turnFocus.js';
 import { getActiveOps } from '../../state/opsCoordination.js';
 import { getConversation, addMessage, clearConversation, clearUserProfile } from '../../state/conversation.js';
@@ -48,6 +48,23 @@ export type {
   StandardReactionType, ReactionType, Reaction,
   ChatContext, ImageInput, AudioInput, ChatResponse,
 } from './shared.js';
+
+/** How long a quiet stretch has to be before this turn counts as an OPENING — the same half hour
+ *  the threading engine treats as the start of a conversation rather than the middle of one. */
+export const UPDATE_NOTE_MIN_GAP_MS = 30 * 60 * 1000;
+
+/**
+ * May the one-off version note be claimed on this turn? PURE.
+ *
+ * The claim is one-shot per chat per version, so WHERE it is claimed decides whether the note
+ * interrupts: taken three messages into a live back and forth it spends itself on the turn where
+ * "by the way, you have an upgrade waiting" arrives instead of an answer. An opening is a real
+ * quiet stretch before this message, or their very first message ever — and an unclaimed note is
+ * not a lost note, it is simply still waiting at the next one.
+ */
+export function updateNoteOpening(gapMs: number, historyRows: number): boolean {
+  return historyRows === 0 || gapMs >= UPDATE_NOTE_MIN_GAP_MS;
+}
 
 /**
  * The Convo model doesn't receive the file bytes itself, so a media turn gets a bracketed text note
@@ -254,9 +271,27 @@ export async function chat(
   // Synchronous read of what Ops is working on for this chat RIGHT NOW (in-memory, race-free).
   const activeOps = getActiveOps(chatId);
 
+  // `gapMs` is the real opening before this message. It gates two things, for the same reason: the
+  // loop stage below (a reopening callback belongs at the START of a conversation) and the version
+  // note just under here.
+  //
+  // The stored rows carry `at`, but the type allows it to be absent (older rows, hand-built
+  // fixtures), and an absent or non-finite stamp must read as "no idea how long it's been" — which
+  // is Infinity, the value that makes both gates PASS. That is the right direction: a loop still has
+  // to clear quiet-since-capture, the cooldown, the present-topic check and the turn/day budgets,
+  // and treating an undated thread as mid-conversation would silently disable the callback on any
+  // install whose history predates the stamps.
+  const lastAt = history.length ? history[history.length - 1].at : undefined;
+  const gapMs = typeof lastAt === 'number' && Number.isFinite(lastAt) ? nowMs - lastAt : Infinity;
+
   // If a version update is pending and this chat hasn't been told yet, weave a one-off mention into
   // this reply (claimed once per chat per version — this suppresses the cold proactive push for it).
-  const updateNote = claimPendingUpdateNote(chatId);
+  // Only at an OPENING: the claim is one-shot, so claiming it three messages into a live back and
+  // forth spends it on the turn where "by the way, you have an upgrade waiting" arrives instead of
+  // an answer. Mid-conversation the claim is left unconsumed and the note waits — it is still there
+  // at the next real opening, which comes around within the hour.
+  const updateOpening = !memoryRelevanceEnabled() || updateNoteOpening(gapMs, history.length);
+  const updateNote = updateOpening ? claimPendingUpdateNote(chatId) : null;
 
   // What the active engine can actually do this deployment (closed vocabulary). Read INSTANTLY from
   // the backend's cached summary — this returns synchronously and never triggers a blocking fetch (the
@@ -267,18 +302,8 @@ export async function chat(
   // At most ONE standing thread of theirs to put in front of her this turn — an open loop worth a
   // plain "how did it go", or a theme that has earned a light tag — chosen, budgeted and billed by
   // pure code (memory/threadHarvest.ts → persona/threads.ts). Awaited: it is a single indexed row
-  // read, and its output shapes the system prompt built on the next line.
-  //
-  // `gapMs` is the real opening before this message — the loop stage's hard gate, because the one
-  // sanctioned reopening callback belongs at the START of a conversation, never mid-list-working.
-  // The stored rows carry `at`, but the type allows it to be absent (older rows, hand-built fixtures),
-  // and an absent or non-finite stamp must read as "no idea how long it's been" — which is Infinity,
-  // the value that makes the gate PASS. That is the right direction here: a loop still has to clear
-  // quiet-since-capture, the cooldown, the present-topic check and the turn/day budgets, and treating
-  // an undated thread as mid-conversation would silently disable the callback on any install whose
-  // history predates the stamps.
-  const lastAt = history.length ? history[history.length - 1].at : undefined;
-  const gapMs = typeof lastAt === 'number' && Number.isFinite(lastAt) ? nowMs - lastAt : Infinity;
+  // read, and its output shapes the system prompt built on the next line. `gapMs` — the loop stage's
+  // hard gate — is computed above, beside the other gate that reads it.
   const thread: ThreadTurn = handle && !isGroupHandle(handle)
     ? await pickThreadForTurn(handle, affectState, { incomingText: textToSend, gapMs, chatId })
     : { offer: null, outcomeAsk: null };
@@ -363,7 +388,15 @@ export async function chat(
             hits: (context.turn?.hits ?? []).map(h => ({ label: h.label, kind: h.kind })),
             // What the gate table did with each block it rendered, straight off the renderers that
             // decided it (memory/wrappers.ts). Empty with CONVO_MEMORY_RELEVANCE off — no gate ran.
-            blocks: context.gates,
+            // The version note's row is added here because this is where that one is decided.
+            blocks: memoryRelevanceEnabled()
+              ? {
+                  ...context.gates,
+                  update_note: updateOpening
+                    ? { verdict: updateNote ? 'full' : 'dropped', reason: updateNote ? 'gap_open' : 'nothing_held' }
+                    : { verdict: 'dropped', reason: 'mid_conversation' },
+                }
+              : context.gates,
           },
           extras: { updateNote: !!updateNote, introWeave: !!introWeave, activeOps: activeOps.length },
         },

@@ -4,6 +4,7 @@
 import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createUpdateAnnouncer, claimPendingUpdateNote, _internal } from './announce.js';
+import { updateNoteOpening, UPDATE_NOTE_MIN_GAP_MS } from '../agents/convo/client.js';
 import { _setUpdateStatusForTests, _resetCheckerForTests } from './checker.js';
 import { _resetStateForTests } from './state.js';
 import { resetStorageForTests, stmt } from '../db/sqlite.js';
@@ -114,6 +115,28 @@ test("'deferred' and 'duplicate' hold the claim — the chat is told, or was alr
   _setUpdateStatusForTests({ remoteSha: 'sha7', updateAvailable: true });
   await createUpdateAnnouncer({ deliver: async () => 'duplicate' }).onUpdateDetected('sha7');
   assert.equal(claimPendingUpdateNote('web:a'), null);
+});
+
+test('the weave waits for an opening rather than landing mid-conversation', () => {
+  // The claim gate is shared, so WHERE Convo claims decides whether the note interrupts. It used to
+  // claim on whatever turn happened to come next — including the third message of a live back and
+  // forth, where "by the way, you have an upgrade waiting" is the reply arriving instead of an
+  // answer. The note is one-off and unrepeatable, so this is not about suppressing it: an opening
+  // comes around within the hour, and the note is still there when it does.
+  assert.equal(updateNoteOpening(Infinity, 0), true, 'their very first message ever');
+  assert.equal(updateNoteOpening(UPDATE_NOTE_MIN_GAP_MS, 40), true, 'exactly at the gap');
+  assert.equal(updateNoteOpening(4 * 3600_000, 40), true, 'a quiet afternoon');
+  assert.equal(updateNoteOpening(60_000, 40), false, 'a minute into a live thread');
+  assert.equal(updateNoteOpening(Infinity, 40), true, 'an undated history reads as no idea how long, which passes');
+});
+
+test('a note left unclaimed mid-conversation is still there at the next opening', () => {
+  _setUpdateStatusForTests({ remoteSha: 'sha9', updateAvailable: true });
+  // The mid-conversation turn does not call claim at all, so nothing is consumed…
+  assert.equal(updateNoteOpening(60_000, 12), false);
+  // …and the next turn with a real opening still gets it.
+  assert.ok(updateNoteOpening(45 * 60_000, 12));
+  assert.ok(claimPendingUpdateNote('web:weave'));
 });
 
 test('builders: availability carries the exact command as relayed text; the changelog stays in framing', () => {
