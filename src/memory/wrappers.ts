@@ -30,6 +30,7 @@ import { getMemory, type AgentMemory } from '../db/repositories/memory.js';
 import { getUserProfile } from '../db/repositories/profiles.js';
 import { listShortTerm, type ShortTermEntry } from '../db/repositories/memoryShort.js';
 import { RECENT_RESEARCH_TTL_MS, DIGEST_LINE_CHARS } from './shortTerm.js';
+import { touchesTurn } from './topicality.js';
 import { getLongDoc } from '../db/repositories/memoryLong.js';
 import { loadMediumBundle, renderFactsBlock, type MediumBundle } from './mediumTerm.js';
 import { looksUnsafe, sanitizeDirectives } from './preferences.js';
@@ -153,41 +154,19 @@ function formatShortEntry(e: ShortTermEntry, nowMs: number): string {
 const SHORT_ENTRY_MAX = 8;
 const SHORT_ENTRY_CHARS = 600;
 
-// Tokens too common to signal a topic; ignored when testing whether the current turn touches a
-// past look. Kept small and generic on purpose.
-const TOPIC_STOPWORDS = new Set([
-  'the', 'a', 'an', 'and', 'or', 'but', 'of', 'to', 'in', 'on', 'for', 'with', 'is', 'are', 'was',
-  'were', 'be', 'been', 'it', 'this', 'that', 'these', 'those', 'my', 'your', 'their', 'our', 'you',
-  'they', 'we', 'me', 'them', 'us', 'what', 'when', 'where', 'who', 'how', 'why', 'do', 'does', 'did',
-  'can', 'could', 'would', 'should', 'will', 'about', 'get', 'got', 'tell', 'know', 'so', 'if', 'at',
-  'as', 'by', 'from', 'up', 'out', 'now', 'just', 'ok', 'okay', 'thanks', 'thank', 'yeah', 'yes',
-  'not', 'any', 'some', 'all', 'more', 'much', 'have', 'has', 'had', 'want', 'need', 'please',
-]);
-
-function salientTokens(text: string): Set<string> {
-  const out = new Set<string>();
-  for (const raw of text.toLowerCase().split(/[^a-z0-9]+/)) {
-    if (raw.length >= 3 && !TOPIC_STOPWORDS.has(raw)) out.add(raw);
-  }
-  return out;
-}
-
 /**
  * Cheap topical relatedness between the current user turn and a past look: ≥1 shared salient token
  * against the entry's ask (its `request` plus `meta.topicKey`). Deliberately simple — no embeddings.
  * An absent/empty/token-less current turn (e.g. a bare "ok thanks") defaults to RELATED (true), so
- * legacy/non-Convo callers never lose an entry and acks can still close a loop from the hot look.
+ * legacy/non-Convo callers never lose an entry and acks can still close a loop from the hot look —
+ * which is what `whenEmpty: 'touch'` buys. The tokenizer itself lives in topicality.ts, shared with
+ * the thread engine's theme gate.
  */
 export function topicallyRelated(currentTurnText: string | undefined, entry: ShortTermEntry): boolean {
-  if (!currentTurnText || !currentTurnText.trim()) return true;
-  const turn = salientTokens(currentTurnText);
-  if (!turn.size) return true;
   const topicKey = typeof (entry.meta as { topicKey?: unknown } | undefined)?.topicKey === 'string'
     ? (entry.meta as { topicKey?: string }).topicKey!
     : '';
-  const entryTokens = salientTokens(`${entry.request ?? ''} ${topicKey}`);
-  for (const t of turn) if (entryTokens.has(t)) return true;
-  return false;
+  return touchesTurn(currentTurnText, `${entry.request ?? ''} ${topicKey}`, { whenEmpty: 'touch' });
 }
 
 // ── The wrapper prose (RIGID, code-authored) ─────────────────────────────────
