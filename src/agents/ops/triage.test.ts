@@ -2,7 +2,9 @@ process.env.TZ = 'UTC';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detectCause, decide, splitMiss } from './triage.js';
+import { detectCause, decide, splitMiss, retryTaskFor, type TriageDecision } from './triage.js';
+import { browserRetryDirective } from './walledUrls.js';
+import { buildTaskPrompt } from './client.js';
 import type { OpsResult, OpsTask, OpsDebrief } from '../types.js';
 import type { CapabilitySummary } from './engineBackend.js';
 import type { LlmResult } from '../../llm/types.js';
@@ -208,4 +210,52 @@ test('splitMiss: OPS_WALLED_URL_HINT off → the escalation never arms', async (
     const d = await splitMiss(mkResult(), mkTask({ request: REEL_ASK }), fakeLlm(UNANSWERABLE) as never, WITH_BROWSER);
     assert.equal(d.action, 'retry');
   });
+});
+
+// ── retryTaskFor: the escalated leg has to be told something the first one wasn't ──
+//
+// Review r1 / Important #1. The escalation's `directive` had NO consumer: the orchestrator built
+// `{...task, retryOf}` and buildTaskPrompt derives every field from kind/hints/media/metaPrompt/
+// request — none of which that spread changes — so the second leg re-sent a byte-identical prompt
+// (same `tooling:` line included, since the escalation arms on exactly the condition that inserted
+// it) and burned up to OPS_TASK_TIMEOUT_MS to re-roll the same dice. The retry task is built here,
+// pure, so both the folding and the untouched transient path are pinnable.
+
+const AT = { now: Date.parse('2026-08-12T00:00:00Z'), tz: 'UTC' };
+
+test('retryTaskFor: the browser directive rides into the retry brief — and changes the prompt', () => {
+  const task = mkTask({ request: REEL_ASK, metaPrompt: 'sources: web research — akses URL IG reel itu / depth: cepet' });
+  const decision: TriageDecision = {
+    cause: 'empty_miss', action: 'retry', deterministic: true, directive: browserRetryDirective(REEL),
+  };
+  const retry = retryTaskFor(task, decision);
+  assert.equal(retry.id, task.id, 'same task id — cancel / dedupe / trace continuity');
+  assert.equal(retry.retryOf, task.id, 'still the retry leg the orchestrator’s bookkeeping expects');
+  assert.ok(retry.metaPrompt!.startsWith(task.metaPrompt!), 'the front-line brief still leads');
+  assert.ok(retry.metaPrompt!.includes(`browser_navigate to ${REEL}`), 'and the directive is appended to it');
+  // The point of the whole fix: the second pass is NOT the first prompt again.
+  assert.notEqual(
+    buildTaskPrompt(retry, { ...AT, capabilities: WITH_BROWSER }),
+    buildTaskPrompt(task, { ...AT, capabilities: WITH_BROWSER }),
+    'the escalated leg must not re-send byte-identical bytes',
+  );
+});
+
+test('retryTaskFor: no directive → exactly today’s retry task (the transient path is untouched)', () => {
+  const task = mkTask({ metaPrompt: 'the original brief' });
+  const decisions: TriageDecision[] = [
+    { cause: 'llm_error', action: 'retry', deterministic: true },              // the cheap transient retry
+    { cause: 'empty_miss', action: 'retry', deterministic: true, directive: '' }, // an empty directive is no directive
+  ];
+  for (const decision of decisions) {
+    assert.deepEqual(retryTaskFor(task, decision), { ...task, retryOf: task.id },
+      `${decision.cause} must build the pre-fix retry task byte for byte`);
+  }
+});
+
+test('retryTaskFor: a brief-less task gets the directive as its whole brief', () => {
+  const retry = retryTaskFor(mkTask({ request: REEL_ASK }), {
+    cause: 'empty_miss', action: 'retry', deterministic: true, directive: 'open it in a browser',
+  });
+  assert.equal(retry.metaPrompt, 'open it in a browser', 'never "undefined\\n\\n…"');
 });

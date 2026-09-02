@@ -30,11 +30,30 @@ export interface TriageDecision {
   action: TriageAction;
   missingFields?: string[];    // ask_user: the detail(s) only the user can supply
   deterministic: boolean;      // false when the empty-miss splitter (an LLM call) decided
-  /** retry only: WHY this leg is worth running, in the words the second pass should hear. Set by
-   *  the walled-URL escalation below. The retry leg re-runs the original brief, whose prompt now
-   *  carries the same steer as its `tooling:` line (buildTaskPrompt), so this reads as the reason
-   *  on the decision rather than a second copy of the instruction. */
+  /** retry only: WHAT the second pass should do differently, in the words it should hear. Set by
+   *  the walled-URL escalation below and READ by retryTaskFor, which folds it onto the retry leg's
+   *  brief — that reader is what makes the escalated leg a different run instead of a re-send. */
   directive?: string;
+}
+
+/**
+ * The RETRY LEG's task. Keeps the original id (cancel / dedupe / trace continuity / markOpsDone) and
+ * sets `retryOf` (keeps the role on `ops` and blocks a retry-of-retry) — plus, when triage had
+ * something NEW to say, the directive folded onto the brief.
+ *
+ * That fold is the whole point: `buildTaskPrompt` derives every field it renders from
+ * kind/hints/media/metaPrompt/request, so a bare `{...task, retryOf}` re-sends a byte-identical
+ * prompt — and the walled-URL escalation arms on exactly the condition that already put the
+ * `tooling:` line into the first pass, so its second leg would spend a full engine run (up to
+ * OPS_TASK_TIMEOUT_MS) re-rolling the same dice. A decision with no directive — the transient
+ * llm_error/rate_limited retry — returns precisely the task that path has always built.
+ *
+ * Pure: no clock, no env, no engine read.
+ */
+export function retryTaskFor(task: OpsTask, decision: TriageDecision): OpsTask {
+  const retry: OpsTask = { ...task, retryOf: task.id };
+  if (!decision.directive) return retry;
+  return { ...retry, metaPrompt: [task.metaPrompt, decision.directive].filter(Boolean).join('\n\n') };
 }
 
 /** A second leg has already run for this attempt (the cheap retry). Blocks a further RETRY

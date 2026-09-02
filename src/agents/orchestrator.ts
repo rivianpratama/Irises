@@ -4,7 +4,7 @@ import { setPreference } from '../db/repositories/memory.js';
 import { addShortTerm } from '../db/repositories/memoryShort.js';
 import { composeWithComposer } from './composerCore.js';
 import { markOpsDone, isOpsCancelled, noteOpsProgress, markOpsRetry, getOpsEtaStatus, normalizeRequest } from '../state/opsCoordination.js';
-import { detectCause, decide, splitMiss, type TriageDecision } from './ops/triage.js';
+import { detectCause, decide, splitMiss, retryTaskFor, type TriageDecision } from './ops/triage.js';
 import { selectInterveningUserMessages } from './interveningMessages.js';
 import { redactInternalTools } from './guardrails.js';
 import { describeGap } from '../pipeline/chatTime.js';
@@ -370,7 +370,9 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
       triage = cause === 'empty_miss' ? await splitMiss(result, task) : decide(cause, task);
       record({
         type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:triage',
-        detail: { cause: triage.cause, action: triage.action, missingFields: triage.missingFields, deterministic: triage.deterministic, attempt: task.attempt ?? 1 },
+        // `directive` rides along so a trace says what the second pass was actually told (it is what
+        // retryTaskFor folds onto the retry brief) — absent on every decision that carries none.
+        detail: { cause: triage.cause, action: triage.action, missingFields: triage.missingFields, deterministic: triage.deterministic, attempt: task.attempt ?? 1, directive: triage.directive },
       });
 
       if (triage.action === 'retry' && !isOpsCancelled(task.chatId, task.id)) {
@@ -388,10 +390,13 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
         pingStops.push(() => retry.gate.stop());
 
         // Same task.id + user signal keep cancel/dedupe/trace-continuity/markOpsDone working; retryOf
-        // keeps the role on `ops` and blocks a retry-of-retry. This is a from-scratch fresh attempt on the
-        // ORIGINAL brief (not a trail continuation — the retry model is never told to reuse prior work),
-        // so it seeds NO prior corpus: grounding rests only on what this pass actually re-fetches.
-        const retryTask: OpsTask = { ...task, retryOf: task.id };
+        // keeps the role on `ops` and blocks a retry-of-retry. This is a from-scratch fresh attempt (not a
+        // trail continuation — the retry model is never told to reuse prior work), so it seeds NO prior
+        // corpus: grounding rests only on what this pass actually re-fetches. retryTaskFor owns the ONE
+        // difference a second leg may carry: triage's directive, folded onto the brief, so an escalation
+        // that had something new to say does not re-send byte-identical bytes. A transient retry has no
+        // directive and gets the original brief unchanged.
+        const retryTask: OpsTask = retryTaskFor(task, triage);
         const t0 = Date.now();
         const retryAbort = new AbortController();
         const retryRun = runTask(retryTask, milestoneKey => { noteOpsProgress(retryTask.chatId, retryTask.id, milestoneKey); void retry.voiceAndPing('progress', milestoneKey); }, combineSignals(signal, retryAbort.signal), undefined, undefined);
