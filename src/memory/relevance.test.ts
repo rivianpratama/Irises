@@ -13,7 +13,7 @@ import {
   RELEVANCE_HIT_KINDS, RELEVANCE_HITS_MAX,
 } from './relevance.js';
 import {
-  renderFlexibleBlock, renderFlexibleBlockWithGates, LONG_ANCHOR_CHARS, sanitizeLongDoc,
+  renderFlexibleBlock, renderFlexibleBlockWithGates, LONG_ANCHOR_CHARS, DIRECTIVES_RECENT_MAX, sanitizeLongDoc,
   renderMediumBlock, renderMediumBlockWithGates,
   renderShortBlockWithHot, renderUserMemory, renderUserMemoryWithHot, splitSections,
   type UserMemoryData,
@@ -305,6 +305,7 @@ test('handing the stack a router is what turns every gate on', () => {
   assert.ok(routed.text.length < plain.length, `${routed.text.length} chars against ${plain.length}`);
   assert.equal(routed.text.split('- [email flagged').length - 1, 4, 'the email cap');
   assert.equal(routed.text.split('a standing note number').length - 1, 6, 'the note cap');
+  assert.equal(routed.text.split('- standing preference number').length - 1, 12, 'the directive window');
   assert.ok(!routed.text.includes('## How they work'), 'the long doc kept only its anchor');
 });
 
@@ -694,4 +695,62 @@ test('with no router the long doc renders whole, exactly as it always did', () =
 test('an empty long doc reports the gate table no-op', () => {
   const out = renderFlexibleBlockWithGates('', [], null, {}, 'convo', 'individual', buildTurnRelevance('hey', {}));
   assert.deepEqual(out.gates.long, { verdict: 'dropped', reason: 'nothing_held' });
+});
+
+// ── the gate table: standing directives ─────────────────────────────────────
+// A directive is a rule they asked for, so recency is the gate, not topicality: the ones they set
+// most recently are how they want to be talked to right now, whatever the turn is about. An older
+// one only rides when the turn is about it.
+
+/** Everything inside <user_directives>, as a list. */
+function directiveLines(block: string): string[] {
+  const open = block.indexOf('<user_directives>\n');
+  if (open < 0) return [];
+  return block.slice(open + '<user_directives>\n'.length, block.indexOf('\n</user_directives>')).split('\n');
+}
+
+/** Twenty standing rules, newest first, one of them old and about cedar. */
+function manyDirectives() {
+  return [
+    ...Array.from({ length: 19 }, (_, i) => ({ id: `d${i}`, text: `standing rule number ${i}`, createdAt: NOW - i * 86_400_000 })),
+    { id: 'old_cedar', text: 'always call the cedar order "the north order"', createdAt: NOW - 400 * 86_400_000 },
+  ];
+}
+
+test('the twelve most recent directives always ride, and an older one only when the turn is about it', () => {
+  const directives = manyDirectives();
+  const text = 'any word on the cedar order';
+  const out = renderFlexibleBlockWithGates('', directives, null, {}, 'convo', 'individual', buildTurnRelevance(text, { medium: { directives, notes: [], facts: {} } }));
+
+  const lines = directiveLines(out.text);
+  assert.equal(lines.length, DIRECTIVES_RECENT_MAX + 1, 'the recent window plus the one that touches');
+  assert.deepEqual(lines.slice(0, 3), ['- standing rule number 0', '- standing rule number 1', '- standing rule number 2']);
+  assert.ok(lines.includes('- always call the cedar order "the north order"'), 'a year-old rule about the thing in hand');
+  assert.ok(!lines.includes('- standing rule number 15'), 'an older rule about nothing in hand');
+  assert.deepEqual(out.gates.directives, { verdict: 'digest', reason: 'partly_kept', dropped: 7 });
+});
+
+test('a turn about nothing held gets the recent window and nothing else', () => {
+  const directives = manyDirectives();
+  const text = 'what should i cook for dinner';
+  const out = renderFlexibleBlockWithGates('', directives, null, {}, 'convo', 'individual', buildTurnRelevance(text, { medium: { directives, notes: [], facts: {} } }));
+  assert.equal(directiveLines(out.text).length, DIRECTIVES_RECENT_MAX);
+  assert.deepEqual(out.gates.directives, { verdict: 'digest', reason: 'partly_kept', dropped: 8 });
+});
+
+test('a directive list inside the window rides whole, and says so', () => {
+  const directives = [{ id: 'a', text: 'keep replies short', createdAt: NOW }, { id: 'b', text: 'no calls before ten', createdAt: NOW - 86_400_000 }];
+  const out = renderFlexibleBlockWithGates('', directives, null, {}, 'convo', 'individual', buildTurnRelevance('hey', { medium: { directives, notes: [], facts: {} } }));
+  assert.equal(directiveLines(out.text).length, 2);
+  assert.deepEqual(out.gates.directives, { verdict: 'full', reason: 'all_kept', dropped: 0 });
+
+  const none = renderFlexibleBlockWithGates('', [], null, {}, 'convo', 'individual', buildTurnRelevance('hey', {}));
+  assert.deepEqual(none.gates.directives, { verdict: 'dropped', reason: 'nothing_held' });
+});
+
+test('with no router every directive rides, exactly as it always did', () => {
+  const directives = manyDirectives();
+  const out = renderFlexibleBlockWithGates('', directives, null, {}, 'convo', 'individual');
+  assert.equal(directiveLines(out.text).length, 20);
+  assert.deepEqual(out.gates, {}, 'no gate ran, so the receipt claims nothing');
 });

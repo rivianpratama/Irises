@@ -644,6 +644,22 @@ const LONG_SUBSTANCE_CHARS = 320;
  *  who this person is; not enough to re-tell their whole narrative on a turn about dinner. */
 export const LONG_ANCHOR_CHARS = 400;
 
+/** How many of their most recent standing rules ride on every turn regardless. The tier holds up
+ *  to forty; the ones they set most recently are how they want to be talked to now. */
+export const DIRECTIVES_RECENT_MAX = 12;
+
+/** The directives this turn renders: the most recent DIRECTIVES_RECENT_MAX of them, plus any older
+ *  one the turn is about — returned in the order they were stored, which is the order the block has
+ *  always read in. Nothing here is a digest: a rule is either stated or it is not, so the receipt's
+ *  `digest` verdict on this block means "some rules are not in the prompt", and `dropped` counts
+ *  exactly how many. */
+function gateDirectives(safe: readonly Directive[], turn: TurnRelevance): Directive[] {
+  const recent = new Set(
+    [...safe].sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)).slice(0, DIRECTIVES_RECENT_MAX),
+  );
+  return safe.filter(d => recent.has(d) || turn.touches(d.text, 'touch'));
+}
+
 /** The doc's identity anchor: its `## Who they are` section, or — for a doc that never adopted the
  *  canonical headings — whatever it opens with. Always rides, so the flexible layer never renders
  *  an empty promise under "here's their standing profile". */
@@ -717,7 +733,15 @@ export function renderFlexibleBlockWithGates(
     gates.long = gateReport(sections.length, touched.filter(Boolean).length, sections.length - kept.length);
   }
   const safeDirectives = sanitizeDirectives(directives.filter(d => d && typeof d.text === 'string'));
-  const directiveList = safeDirectives.map(d => `- ${neutralizeTagBreakouts(d.text.trim())}`).join('\n');
+  // Directives are rules they ASKED for, so the gate here is recency, not topicality: the ones they
+  // set most recently are how they want to be talked to right now, whatever this turn is about. An
+  // older one rides only when the turn is about it — which is how a year-old "call it the north
+  // order" is there on the one turn that says "order" and nowhere else.
+  const shownDirectives = turn ? gateDirectives(safeDirectives, turn) : safeDirectives;
+  if (turn) {
+    gates.directives = gateReport(safeDirectives.length, shownDirectives.length, safeDirectives.length - shownDirectives.length);
+  }
+  const directiveList = shownDirectives.map(d => `- ${neutralizeTagBreakouts(d.text.trim())}`).join('\n');
   const addressing = renderAddressingHeader(profile, prefs, audience);
 
   // The flexible slot always carries a standing picture. Early on that's the default relationship
