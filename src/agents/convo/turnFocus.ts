@@ -141,7 +141,10 @@ const SHORT_WORDS = 4;
 /** …and for the sign-off gate, which is looser because a sign-off trails a short clause. */
 const CLOSING_MAX_WORDS = 6;
 
-/** Lowercased word tokens, apostrophes dropped so contractions collapse to one token. */
+/** Lowercased word tokens: apostrophes dropped so a contraction collapses to one token ("what's" →
+ *  "whats"), `%` kept so "15%" stays one. Deliberately NOT salientTokens (memory/topicality.ts) —
+ *  that one strips exactly the stopwords the grammar rules here read the shape off ("what", "did",
+ *  "ok"), so it answers a different question and would blind this one. */
 function words(text: string): string[] {
   return text.toLowerCase().replace(/['’]/g, '').split(/[^a-z0-9%]+/).filter(Boolean);
 }
@@ -163,9 +166,6 @@ function isQuestionLead(token: string): boolean {
  *                    the same message ("night, you around tomorrow?" wants an answer tonight).
  *   2. `work_ask`  — an imperative verb leading the message. Ahead of the social shapes so
  *                    "hey look up the flights" is work, not a hello.
- *
- * Both leads are read past at most ONE filler token (LEAD_FILLERS), which is how "so are they
- * coming or not" reads as a question and "please check the lease" as work.
  *   3. `closing`   — a sign-off word in a short message. Ahead of `greeting` because "night" and
  *                    "later" read as both, and reading a goodbye as a hello is the costlier miss.
  *   4. `greeting`  — a greeting word in the first two tokens of a short message.
@@ -173,6 +173,14 @@ function isQuestionLead(token: string): boolean {
  *   6. `statement` — everything else, including a message with nothing in it at all (a media-only
  *                    turn, where the attachment note is the whole text). The neutral default: she
  *                    reads it herself, as she always did.
+ *
+ * Rules 1 and 2 both read the lead past at most ONE filler token (LEAD_FILLERS), which is how "so
+ * are they coming or not" reads as a question and "please check the lease" as work. Rules 3-5 are
+ * length-gated, so a greeting or sign-off word buried in a real sentence never wins.
+ *
+ * It will be wrong sometimes — it is a surface read of a text message, with no stemming and no
+ * model. That is priced in: nothing branches on the shape, it is one word of orientation in the
+ * block, and a wrong word there costs less than the block not existing.
  */
 export function classifyTurnShape(text: string): TurnShape {
   const w = words(text);
