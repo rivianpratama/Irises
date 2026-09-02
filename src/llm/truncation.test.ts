@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isTruncatedStop, starvedError, isStarvedError, bumpStarvedBudget } from './truncation.js';
+import { isTruncatedStop, starvedError, isStarvedError, bumpStarvedBudget, starvedRetryCap } from './truncation.js';
 
 test("both lanes' spellings count as truncation", () => {
   // OpenRouter (OpenAI-compatible) says 'length'; Anthropic says 'max_tokens'. Every guard in the
@@ -27,6 +27,21 @@ test('bumpStarvedBudget grows only the tiny per-call caps, never past the role c
   // one starving reasoning model becomes an unbounded bill.
   assert.equal(bumpStarvedBudget(8000, 8000), 8000);
   assert.equal(bumpStarvedBudget(64000, 64000), 64000);
+});
+
+test('starvedRetryCap: 3x the cap that starved, with a 600 floor and NO role-ceiling clamp', () => {
+  // The SAME-lane retry's budget. Unlike bumpStarvedBudget (the cross-lane leg) this is deliberately
+  // not clamped to the role ceiling: classify's ceiling IS 20, so clamping there would hand the
+  // retry the very cap that just starved.
+  assert.equal(starvedRetryCap(20), 600);     // validateDirective's safety check
+  assert.equal(starvedRetryCap(100), 600);    // fidelity L2
+  assert.equal(starvedRetryCap(200), 600);    // the climate eval — 3x is under the floor
+  assert.equal(starvedRetryCap(201), 603);    // …and just above it, 3x takes over
+  assert.equal(starvedRetryCap(900), 2700);   // updateDossier
+  // A non-positive or non-finite cap can only come from a misread ceiling — it still gets the floor.
+  assert.equal(starvedRetryCap(0), 600);
+  assert.equal(starvedRetryCap(-5), 600);
+  assert.equal(starvedRetryCap(Number.NaN), 600);
 });
 
 test('starvedError carries a marker isStarvedError reads, and names the cap in its message', () => {

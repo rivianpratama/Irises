@@ -51,3 +51,22 @@ export function isStarvedError(err: unknown): boolean {
 export function bumpStarvedBudget(sent: number, roleCeiling: number): number {
   return Math.min(Math.max(sent * 2, 1024), Math.max(roleCeiling, 1024));
 }
+
+/** The floor a SAME-LANE starved retry runs with: enough for a one-word verdict or a small JSON
+ *  object even after a short burst of thinking. */
+export const STARVED_RETRY_FLOOR = 600;
+
+/**
+ * The budget the SAME-LANE starved retry sends: 3× what starved, floored at STARVED_RETRY_FLOOR.
+ *
+ * Deliberately NOT clamped to the role ceiling, which is the one difference from bumpStarvedBudget
+ * (the cross-lane leg): the caps that starve are the small per-call ones — the climate eval's 200,
+ * validateDirective's 20, updateDossier's 900 — and `classify`'s role ceiling is itself 20, so
+ * clamping there would hand the retry the very cap that just failed. The retry is ONCE per call and
+ * the number stays small, so this cannot compound into a bill; a non-positive/NaN cap (a misread
+ * ceiling) still gets the floor rather than 0.
+ */
+export function starvedRetryCap(sent: number): number {
+  const tripled = Number.isFinite(sent) ? sent * 3 : 0;
+  return Math.max(STARVED_RETRY_FLOOR, tripled);
+}
