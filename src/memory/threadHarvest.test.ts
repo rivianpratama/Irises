@@ -219,7 +219,8 @@ test('a healthy no-op still records threads:select, with the disjoint filtered c
   const picked = await pickThreadForTurn(H, affect(T0 - 60_000), {
     incomingText: 'what time is the standup', gapMs: 5 * 60_000, now: T0, chatId: 'chat-threads',
   });
-  assert.deepEqual(picked, { offer: null, outcomeAsk: null });
+  assert.equal(picked.offer, null);
+  assert.equal(picked.outcomeAsk, null);
 
   const ev = trace('threads:select');
   assert.ok(ev, 'the quiet turn is still on the record');
@@ -231,6 +232,11 @@ test('a healthy no-op still records threads:select, with the disjoint filtered c
   assert.equal(d.outcomeAsk, null);
   assert.ok(d.filtered, 'the disjoint buckets ride along');
   assert.equal(d.material, undefined, 'nothing was offered, so no material is claimed');
+  // The same accounting rides BACK to the turn as well, so the turn's own receipt
+  // (diagnostics/turnTrace.ts → gates.threads) carries the threading verdict instead of two records
+  // having to be correlated by timestamp afterwards.
+  assert.equal(picked.report?.reason, 'turn_gate');
+  assert.equal(picked.report?.turnsSinceOffer, 0);
 });
 
 test('an offered theme is billed into the row and reported on the receipt', async () => {
@@ -268,11 +274,13 @@ test('an off-topic theme is not offered, and threads:select names the new bucket
   const picked = await pickThreadForTurn(H, affect(T0 - 60_000), {
     incomingText: 'what time is the standup tomorrow', gapMs: 5 * 60_000, now: T0,
   });
-  assert.deepEqual(picked, { offer: null, outcomeAsk: null });
+  assert.equal(picked.offer, null);
+  assert.equal(picked.outcomeAsk, null);
 
   const d = detail(trace('threads:select'));
   assert.equal(d.reason, 'no_eligible');
   assert.equal((d.filtered as { themes: { off_topic: number } }).themes.off_topic, 1);
+  assert.equal(picked.report?.filtered.themes.off_topic, 1, 'and the bucket reaches the turn too');
   // Nothing was billed, so the theme is still there for the turn that IS about it.
   assert.equal((await getThreadInventory(H)).themes[0].lastOfferedAt, 0);
 });
@@ -324,7 +332,8 @@ test('an awaiting pending whose thread has vanished renders nothing', async () =
   const picked = await pickThreadForTurn(H, affect(T0 - 60_000), {
     incomingText: 'hey', gapMs: 60_000, now: T0,
   });
-  assert.deepEqual(picked, { offer: null, outcomeAsk: null });
+  assert.equal(picked.offer, null);
+  assert.equal(picked.outcomeAsk, null, 'no question about a thread that no longer exists');
   assert.equal(traces('threads:select').length, 1, 'the run is still on the record');
 });
 

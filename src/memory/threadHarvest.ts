@@ -29,7 +29,7 @@ import {
 } from '../db/repositories/threadInventory.js';
 import {
   applyThreadHarvest, selectThreadCandidate,
-  type ThreadCandidate, type ThreadMaterial,
+  type ThreadCandidate, type ThreadMaterial, type ThreadSelectReport,
 } from '../persona/threads.js';
 import { isGroupHandle } from './identity.js';
 import { record } from '../diagnostics/trace.js';
@@ -63,6 +63,13 @@ const DISTRESS_MOOD_FLOOR = 35;
 export interface ThreadTurn {
   offer: ThreadCandidate | null;
   outcomeAsk: { label: string; material: ThreadMaterial } | null;
+  /** The selection engine's own accounting for this turn — the same object the `threads:select`
+   *  receipt carries, handed back so the turn can fold it into its one per-turn receipt
+   *  (diagnostics/turnTrace.ts → `gates.threads`) instead of the two records having to be
+   *  correlated by timestamp. Absent whenever selection did not run at all: the flag off, a group
+   *  identity, or a read that failed — which is exactly what `null` means in that receipt. Nothing
+   *  in the prompt path reads it, so it cannot change a single byte the model sees. */
+  report?: ThreadSelectReport;
 }
 
 const NOTHING: ThreadTurn = { offer: null, outcomeAsk: null };
@@ -225,7 +232,7 @@ export async function pickThreadForTurn(
       },
     });
 
-    return { offer: candidate, outcomeAsk };
+    return { offer: candidate, outcomeAsk, report };
   } catch (err) {
     reportError({
       source: 'memory',
