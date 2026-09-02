@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   coerceStatus, extractStatus, clampGauge, mergeStatus, pushMood, renderStatusForPrompt,
   renderStatusForComposer, sanitizeThreadText,
@@ -301,6 +302,29 @@ test('the table describes every field the coercer emits, in the envelope order',
     (STATUS_SCHEMA_PROP as { required: readonly string[] }).required, ENVELOPE_FIELDS.map(f => f.key),
     'the schema\'s `required` is the whole table, in order — nothing may sit between them and drop a field',
   );
+});
+
+/** The three modules that declare every name the `consumers` column uses. Listed here rather than
+ *  imported: pulling threadHarvest.ts into this unit test would drag the repositories (and node:sqlite)
+ *  in behind it, and the question being asked is only "does this name still exist". */
+const CONSUMER_SOURCES = ['./status.ts', './threads.ts', '../memory/threadHarvest.ts'] as const;
+
+// The `consumers` column's whole value is that it is GREPPABLE — and grep does not fail a build, so a
+// rename would rot the column silently while every other test kept passing. Nothing checked that the
+// names it lists exist at all; only the four EMPTY rows were pinned (below). This reads the three
+// modules that own them and holds every listed name to a real exported function.
+test('every consumer the table names is still an exported function', () => {
+  const src = CONSUMER_SOURCES
+    .map(rel => readFileSync(new URL(rel, import.meta.url), 'utf8'))
+    .join('\n');
+  const listed = [...new Set(ENVELOPE_FIELDS.flatMap(f => f.consumers))].sort();
+  assert.ok(listed.length >= 5, 'the column still names the readers it did — this check went vacuous');
+  for (const name of listed) {
+    assert.match(
+      src, new RegExp(`export (?:async )?function ${name}\\(`),
+      `\`${name}\` is listed as a consumer but no longer declared in ${CONSUMER_SOURCES.join(' / ')} — it was renamed, moved or deleted. Fix the column (persona/status.ts) in the same commit, or the one documented map of who reads the envelope is now fiction.`,
+    );
+  }
 });
 
 test('the table says who reads each field back, and names the four nothing reads', () => {
