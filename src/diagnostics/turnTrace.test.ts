@@ -35,7 +35,7 @@ import { computeCircadian } from '../persona/circadian.js';
 import { buildBubbleReport } from '../pipeline/bubbleJson.js';
 import { emptyMedia } from '../webhook/types.js';
 import { __resetOpsCoordination } from '../state/opsCoordination.js';
-import type { LlmResult } from '../llm/types.js';
+import type { LlmResult, LlmToolCall } from '../llm/types.js';
 import type { StoredMessage, UserProfile } from '../db/types.js';
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
@@ -306,14 +306,14 @@ test('the flag off files no event; on, exactly one turn:trace', () => {
 
 const ASK = 'haha ok tell me a joke about cats';
 
-function envelope(bubbles: string[], status?: Record<string, unknown>): LlmResult {
+function envelope(bubbles: string[], status?: Record<string, unknown>, toolCalls: LlmToolCall[] = []): LlmResult {
   const body = {
     confidence_level: 85,
-    tool_calls: null,
+    tool_calls: toolCalls.length ? toolCalls.map(c => ({ name: c.name, args: c.input })) : null,
     bubbles: bubbles.map(text => ({ text, re: null })),
     ...(status ? { status } : {}),
   };
-  return { text: JSON.stringify(body), toolCalls: [], stopReason: 'end_turn', provider: 'anthropic', model: 'test' };
+  return { text: JSON.stringify(body), toolCalls, stopReason: 'end_turn', provider: 'anthropic', model: 'test' };
 }
 
 let seq = 0;
@@ -356,6 +356,25 @@ test('a reply with no usable envelope still hands over a draft', async () => {
   assert.equal(d.outcome.wasEnvelope, false);
   assert.equal(d.affect.source, 'defaulted');
   assert.deepEqual(d.affect.coercions, [{ field: 'status', from: null, to: null, reason: 'absent' }]);
+});
+
+test('a silent-turn retry that was spent and died still reads as retried', async () => {
+  // The floor spends its ONE extra call, the call throws, and Fallfirm voices the floor instead —
+  // all on this same pass, so `args.silentRetry` is still false when the draft is built. The receipt
+  // must not read like a turn that never tried: `convo:silent_turn` already recorded
+  // `recovery: 'retry'`, and a receipt that disagrees with it is worse than no receipt.
+  const out = await processConvoResult({
+    ...convoArgs(),
+    res: envelope([], GOOD_STATUS),   // schema-valid and empty: the live silent-turn shape
+    turn: {
+      system: 'SYSTEM PROMPT (persona + this turn)',
+      messages: [{ role: 'user', content: ASK }],
+      tools: [],
+      call: async () => { throw new Error('provider down'); },
+    },
+  });
+  assert.equal(out.turnTrace!.outcome.retried, true, 'a spent retry is in the receipt even when it died');
+  assert.ok(out.text && out.text.trim().length, 'and the user is still not left on read');
 });
 
 test('the flag off returns no draft, so the boundary has nothing to file', async () => {

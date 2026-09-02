@@ -1632,6 +1632,13 @@ export async function processConvoResult(args: {
   // carries a tool call, so it can never reach here; nor can a tool-only turn whose own
   // acknowledgment floor above (schedule/note/directive/delegation) already spoke.
   // Placed BEFORE the history write and the dossier refresh below, so a retried turn persists once.
+  //
+  // Whether the one extra call was SPENT — for the turn receipt below (`outcome.retried`). Not the
+  // same question as `args.silentRetry`, which only says "this pass IS the retry": a retry whose
+  // call throws lands the floor on THIS pass, where silentRetry is still false, and a receipt that
+  // read `retried: false` there would contradict the `convo:silent_turn` event that just recorded
+  // `recovery: 'retry'`.
+  let retrySpent = args.silentRetry === true;
   if (!textResponse && !reaction && !renameChat && !rememberedUser && !removeMember && !delegatedTask
       && !res.toolCalls.length && textToSend.trim()) {
     const turn = args.silentRetry ? undefined : args.turn;   // the fence: a retry never retries
@@ -1640,6 +1647,7 @@ export async function processConvoResult(args: {
     console.warn(`[convo] silent turn on a real message (chat ${chatId}) — ${turn ? 'retrying once' : 'voicing the floor'}`);
     record({ type: 'event', label: 'convo:silent_turn', chatId, handle, detail: { recovery: turn ? 'retry' : 'floor' } });
     if (turn) {
+      retrySpent = true;   // spent whether or not the call below survives
       try {
         const retry = await (turn.call ?? callConvoLLM)({
           role: 'convo',
@@ -1806,7 +1814,9 @@ export async function processConvoResult(args: {
         affect: { raw: reply.statusRaw, coerced: emitted },
         outcome: {
           wasEnvelope: reply.wasEnvelope,
-          retried: args.silentRetry === true,
+          // The one extra call, spent on this turn either way: this pass IS the retry, or the retry
+          // was tried on this pass and its call died into the voiced floor.
+          retried: retrySpent,
           // The turn's own reading of "nothing the user or the thread can see" — the same condition
           // the silent-turn tripwire above fires on. The boundary re-checks it against what shipped.
           silent: !textResponse && !reaction && !renameChat && !rememberedUser && !removeMember && !delegatedTask,

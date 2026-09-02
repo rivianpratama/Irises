@@ -115,7 +115,10 @@ export interface TurnTraceAffect {
 export interface TurnTraceOutcome {
   /** The reply validated as the JSON bubble envelope. False means a garbled/legacy reply. */
   wasEnvelope: boolean;
-  /** This pass IS the silent-turn retry (processConvoResult's one extra call). */
+  /** The silent-turn floor's one extra call was SPENT on this turn — either this pass IS that retry,
+   *  or it was tried here and the call died into the voiced floor. Reads the same as the
+   *  `convo:silent_turn` event's `recovery: 'retry'`, which is the point: a spent recovery is never
+   *  invisible in the receipt. */
   retried: boolean;
   /** The turn put nothing on their screen and did nothing on their behalf. */
   silent: boolean;
