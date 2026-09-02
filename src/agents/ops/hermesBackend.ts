@@ -10,7 +10,10 @@ import { HERMES_TASK_HEADER } from './hermesDoctrine.js';
 import { parseDeclaredCapabilities } from './capabilityDeclaration.js';
 import { renderAttachmentBlock } from './attachments.js';
 import { hash8 } from './sessionHash.js';
-import { engineSessionId, parseSessionRotation, type SessionRotation } from './engineSession.js';
+import {
+  engineSessionId, parseSessionRotation, unknownSessionRotation,
+  DEFAULT_SESSION_ROTATION, SESSION_ROTATIONS, type SessionRotation,
+} from './engineSession.js';
 import { DEFAULT_TZ, zoneOffsetMs } from '../../pipeline/zonedTime.js';
 import { dataTag } from '../../llm/promptTag.js';
 import { record } from '../../diagnostics/trace.js';
@@ -83,12 +86,31 @@ function engineZone(): string {
   return process.env.HERMES_TZ || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 }
 
+/** The unrecognized value already warned about. Keyed on the VALUE rather than a once-per-process
+ *  boolean because this env is read on every outbound request: one line per mistake, none per call,
+ *  and an operator who trades one typo for another still hears about the second. */
+let warnedRotationValue: string | null = null;
+
 /** How often a chat's engine TRANSCRIPT starts over (env: HERMES_SESSION_ROTATION, default weekly;
  *  `never` is the byte-identical pre-rotation behavior). Read at call time, beside the other engine
  *  env reads — see engineSession.ts for why rotating is what keeps a flash-tier model out of a
- *  near-full context. The engine-side MEMORY key is deliberately not rotated. */
+ *  near-full context. The engine-side MEMORY key is deliberately not rotated.
+ *
+ *  An unrecognized value falls back to the default (fail-safe: a typo must not silently disable the
+ *  rotation) and SAYS SO — otherwise `HERMES_SESSION_ROTATION=off`, written by someone meaning to
+ *  turn rotation off, would quietly rotate weekly forever. Same courtesy the sibling engine flag
+ *  pays with its `unknown OPS_BACKEND "…"` line. */
 export function hermesSessionRotation(): SessionRotation {
-  return parseSessionRotation(process.env.HERMES_SESSION_ROTATION);
+  const raw = process.env.HERMES_SESSION_ROTATION;
+  const unknown = unknownSessionRotation(raw);
+  if (unknown !== null && unknown !== warnedRotationValue) {
+    warnedRotationValue = unknown;
+    console.warn(
+      `[engine] unknown HERMES_SESSION_ROTATION "${unknown}" — rotating "${DEFAULT_SESSION_ROTATION}" instead ` +
+      `(valid: ${SESSION_ROTATIONS.join(', ')}; "never" is the off switch)`,
+    );
+  }
+  return parseSessionRotation(raw);
 }
 
 /** A plain non-negative integer field (the only shape we can shift arithmetically). */

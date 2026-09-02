@@ -5,7 +5,7 @@ process.env.TZ = 'UTC';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { engineSessionId, parseSessionRotation, SESSION_ROTATIONS, DEFAULT_SESSION_ROTATION } from './engineSession.js';
+import { engineSessionId, parseSessionRotation, unknownSessionRotation, SESSION_ROTATIONS, DEFAULT_SESSION_ROTATION } from './engineSession.js';
 import { isoWeekParts } from '../../pipeline/isoWeek.js';
 
 /** Instants pinned in UTC — the whole point of the arithmetic is that the host zone cannot move it. */
@@ -96,4 +96,23 @@ test('parseSessionRotation: default weekly, every member accepted, anything else
   // An operator typo must not silently disable the rotation — it lands on the documented default.
   assert.equal(parseSessionRotation('week'), 'weekly');
   assert.equal(parseSessionRotation('off'), 'weekly');
+});
+
+test('unknownSessionRotation: names the miss the env boundary has to warn about', () => {
+  // Unset/empty is not a mistake — it deliberately means the default, so it must stay silent.
+  assert.equal(unknownSessionRotation(undefined), null);
+  assert.equal(unknownSessionRotation(''), null);
+  assert.equal(unknownSessionRotation('   '), null);
+  for (const policy of SESSION_ROTATIONS) {
+    assert.equal(unknownSessionRotation(policy), null, policy);
+    assert.equal(unknownSessionRotation(` ${policy.toUpperCase()} `), null, 'same trim/lower-case as the parse');
+  }
+  // A miss comes back as the operator wrote it (trimmed), so the warning can quote it back.
+  assert.equal(unknownSessionRotation(' Off '), 'Off');
+  // The tie: every value the parse silently defaults is a value this reports, so the warning can
+  // never disagree with the policy actually used.
+  for (const raw of ['off', 'none', 'disabled', 'week', 'monthly', 'weeekly']) {
+    assert.equal(parseSessionRotation(raw), DEFAULT_SESSION_ROTATION, raw);
+    assert.equal(unknownSessionRotation(raw), raw, raw);
+  }
 });

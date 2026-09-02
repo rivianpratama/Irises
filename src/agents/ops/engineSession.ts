@@ -75,13 +75,34 @@ export function engineSessionId(baseId: string, nowMs: number, policy: SessionRo
 }
 
 /**
- * Parse a rotation policy out of a raw env value. Same parse shape as `threadingEnabled()`
- * (`src/db/repositories/threadInventory.ts`): trimmed, lower-cased, empty means the default. An
- * unrecognized value ALSO means the default — a typo (`HERMES_SESSION_ROTATION=week`) must not
- * silently switch the rotation off, which is the one failure mode that would be invisible.
+ * Parse a rotation policy out of a raw env value. Reading shape borrowed from `threadingEnabled()`
+ * (`src/db/repositories/threadInventory.ts`): trimmed, lower-cased, empty means the default.
+ *
+ * The FALLBACK direction is deliberately the opposite of that sibling's, so do not read the two as
+ * the same rule: `threadingEnabled` maps an unrecognized value to OFF, while an unrecognized value
+ * here also means the DEFAULT (`weekly`). A typo (`HERMES_SESSION_ROTATION=week`) must not silently
+ * switch the rotation off — that is the one failure mode nobody would see. What an operator loses
+ * instead is the value they typed, so the env boundary announces the miss: `unknownSessionRotation`
+ * below, warned about in `hermesSessionRotation()`.
+ *
  * Pure — the env read itself lives beside its sibling engine env reads in the adapter.
  */
 export function parseSessionRotation(raw: string | undefined): SessionRotation {
   const v = (raw || '').trim().toLowerCase();
   return (SESSION_ROTATIONS as readonly string[]).includes(v) ? (v as SessionRotation) : DEFAULT_SESSION_ROTATION;
+}
+
+/**
+ * The value `raw` tried and failed to name, or `null` when it named a window — i.e. exactly the
+ * cases `parseSessionRotation` sends to the default without being asked to. Split out so the parse
+ * stays pure and the WARNING lives at the env boundary, the way the `unknown OPS_BACKEND "…"` line
+ * does for the sibling engine flag (`engineBackend.ts`).
+ *
+ * Empty/unset is NOT a miss: it means the default on purpose. The offending value comes back as
+ * written (trimmed only), so the warning can quote it back to whoever typed it.
+ */
+export function unknownSessionRotation(raw: string | undefined): string | null {
+  const v = (raw || '').trim();
+  if (!v) return null;
+  return (SESSION_ROTATIONS as readonly string[]).includes(v.toLowerCase()) ? null : v;
 }

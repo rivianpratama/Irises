@@ -449,6 +449,16 @@ function sessionIdOf(captured: Captured[], n: number): string {
   return (captured[n].init.headers as Record<string, string>)['X-Hermes-Session-Id'];
 }
 
+/** Swap console.warn for the duration of `fn` and hand back what it said — the assertions below are
+ *  about a warning, and an escaped one would be new noise in the suite's output. */
+function captureWarns(fn: () => void): string[] {
+  const lines: string[] = [];
+  const prev = console.warn;
+  console.warn = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+  try { fn(); } finally { console.warn = prev; }
+  return lines;
+}
+
 test('hermesSessionRotation: weekly by default, and the operator can pick another window', () => {
   assert.equal(hermesSessionRotation(), 'weekly', 'unset → weekly');
   const prev = process.env.HERMES_SESSION_ROTATION;
@@ -458,7 +468,40 @@ test('hermesSessionRotation: weekly by default, and the operator can pick anothe
     process.env.HERMES_SESSION_ROTATION = ' DAILY ';
     assert.equal(hermesSessionRotation(), 'daily');
     process.env.HERMES_SESSION_ROTATION = 'weeekly';
-    assert.equal(hermesSessionRotation(), 'weekly', 'a typo lands on the default, never silently off');
+    // A typo lands on the default, never silently off — and says so out loud (the next test).
+    captureWarns(() => assert.equal(hermesSessionRotation(), 'weekly'));
+  } finally {
+    if (prev === undefined) delete process.env.HERMES_SESSION_ROTATION; else process.env.HERMES_SESSION_ROTATION = prev;
+  }
+});
+
+test('hermesSessionRotation: an unrecognized value warns, naming the policy actually used', () => {
+  // The failure this closes: an operator writes HERMES_SESSION_ROTATION=off meaning to disable
+  // rotation, gets weekly (the fail-safe direction), and has no way to notice. Same shape as the
+  // sibling engine flag's `unknown OPS_BACKEND "…"` line.
+  const prev = process.env.HERMES_SESSION_ROTATION;
+  try {
+    process.env.HERMES_SESSION_ROTATION = 'off';
+    const warns = captureWarns(() => assert.equal(hermesSessionRotation(), 'weekly'));
+    assert.equal(warns.length, 1);
+    assert.match(warns[0], /HERMES_SESSION_ROTATION/);
+    assert.match(warns[0], /"off"/, 'quotes the value the operator wrote');
+    assert.match(warns[0], /weekly/, 'and the policy it is using instead');
+    assert.match(warns[0], /never/, 'pointing at the real off switch');
+
+    // Read once per outbound request, so it must not spam: the same value stays quiet after the
+    // first line. A DIFFERENT mistake is a different mistake and gets its own.
+    assert.deepEqual(captureWarns(() => { hermesSessionRotation(); hermesSessionRotation(); }), []);
+    process.env.HERMES_SESSION_ROTATION = 'monthly';
+    assert.equal(captureWarns(() => hermesSessionRotation()).length, 1);
+
+    // Anything the flag actually accepts says nothing at all.
+    for (const v of ['never', 'weekly', ' DAILY ', '', '  ']) {
+      process.env.HERMES_SESSION_ROTATION = v;
+      assert.deepEqual(captureWarns(() => hermesSessionRotation()), [], JSON.stringify(v));
+    }
+    delete process.env.HERMES_SESSION_ROTATION;
+    assert.deepEqual(captureWarns(() => hermesSessionRotation()), [], 'unset is the default, not a miss');
   } finally {
     if (prev === undefined) delete process.env.HERMES_SESSION_ROTATION; else process.env.HERMES_SESSION_ROTATION = prev;
   }
