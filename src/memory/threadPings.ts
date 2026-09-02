@@ -27,6 +27,9 @@ import {
 } from '../db/repositories/threadInventory.js';
 import { LOOP_EXPIRY_MS, type OpenLoop, type ThreadInventory } from '../persona/threads.js';
 import { isGroupHandle } from './identity.js';
+// A pure leaf with no imports of its own — the note further down about src/memory not reaching into
+// src/pipeline is about the modules that reach BACK into src/agents; this one reaches nowhere.
+import { isoWeekParts } from '../pipeline/isoWeek.js';
 import { record } from '../diagnostics/trace.js';
 import { reportError } from '../diagnostics/errorLog.js';
 
@@ -131,15 +134,10 @@ export interface ThreadPingDeps {
  *  What it buys is that two sweeps racing the same ripe loop inside that window collapse into one
  *  delivery even if the billing write somehow lost its race. */
 function isoWeek(at: number): string {
-  const d = new Date(at);
-  const midnight = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-  // ISO weeks are Monday-based and belong to the year of their Thursday.
-  const mondayIndex = (new Date(midnight).getUTCDay() + 6) % 7;
-  const thursday = midnight + (3 - mondayIndex) * DAY;
-  const year = new Date(thursday).getUTCFullYear();
-  const jan4 = Date.UTC(year, 0, 4);
-  const week1Monday = jan4 - ((new Date(jan4).getUTCDay() + 6) % 7) * DAY;
-  const week = Math.round((thursday - week1Monday) / (7 * DAY)) + 1;
+  // The arithmetic (Monday-based weeks that belong to the year of their Thursday) lives in
+  // `src/pipeline/isoWeek.ts` — one home, shared with the engine session's rotation window, which
+  // renders the same parts as `-w2026-36`. Only this rendering is local.
+  const { year, week } = isoWeekParts(at);
   return `${year}-W${String(week).padStart(2, '0')}`;
 }
 

@@ -16,6 +16,8 @@
 // there would drop the engine's user model along with the transcript — the opposite of the point.
 // Splitting that needs a second key OpenClaw's RPC does not have.
 
+import { isoWeekParts } from '../../pipeline/isoWeek.js';
+
 /** The rotation windows, single-source (the THEME_KINDS pattern) → the type is derived from it. */
 export const SESSION_ROTATIONS = ['never', 'weekly', 'daily'] as const;
 export type SessionRotation = (typeof SESSION_ROTATIONS)[number];
@@ -24,26 +26,18 @@ export type SessionRotation = (typeof SESSION_ROTATIONS)[number];
  *  cannot grow to the size that starved the failing run. `never` is the byte-identical off path. */
 export const DEFAULT_SESSION_ROTATION: SessionRotation = 'weekly';
 
-const DAY_MS = 86_400_000;
-
 /**
  * ISO-8601 week of a UTC instant as `<week-numbering-year>-<2-digit week>`.
  *
- * The week-numbering year is NOT the calendar year: 2026 has 53 ISO weeks, so 2027-01-01..03 belong
- * to `2026-53` and a calendar-year suffix would have rotated the session mid-week, on a Friday.
- * Deliberately a local twin of `isoWeek` in `src/memory/threadPings.ts` (same Monday-based, Thursday-
- * owns-the-year arithmetic, same two-digit padding) rather than a shared import: that module pulls
- * the proactive pipeline in behind it, which has no business inside an engine adapter.
+ * The arithmetic itself is `isoWeekParts` in `src/pipeline/isoWeek.ts` — the repo's one home for it,
+ * shared with the thread-ping dedupe key, which renders the same parts as `2026-W36`. Only the
+ * rendering is local: two-digit padding so the suffix has one fixed width all year (matching the
+ * repo's other ISO-week rendering). The week-numbering year is NOT the calendar year: 2026 has 53
+ * ISO weeks, so 2027-01-01..03 belong to `2026-53`, and a calendar-year suffix would have rotated a
+ * session mid-week, on a Friday.
  */
 function isoWeekToken(nowMs: number): string {
-  const d = new Date(nowMs);
-  const midnight = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-  const mondayIndex = (new Date(midnight).getUTCDay() + 6) % 7; // Mon=0 … Sun=6
-  const thursday = midnight + (3 - mondayIndex) * DAY_MS;       // the week's Thursday owns its year
-  const year = new Date(thursday).getUTCFullYear();
-  const jan4 = Date.UTC(year, 0, 4);                            // always in ISO week 1
-  const week1Monday = jan4 - ((new Date(jan4).getUTCDay() + 6) % 7) * DAY_MS;
-  const week = Math.round((thursday - week1Monday) / (7 * DAY_MS)) + 1;
+  const { year, week } = isoWeekParts(nowMs);
   return `${year}-${String(week).padStart(2, '0')}`;
 }
 

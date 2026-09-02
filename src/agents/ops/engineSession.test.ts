@@ -6,6 +6,7 @@ process.env.TZ = 'UTC';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { engineSessionId, parseSessionRotation, SESSION_ROTATIONS, DEFAULT_SESSION_ROTATION } from './engineSession.js';
+import { isoWeekParts } from '../../pipeline/isoWeek.js';
 
 /** Instants pinned in UTC — the whole point of the arithmetic is that the host zone cannot move it. */
 const WED_2026_09_02 = Date.parse('2026-09-02T12:00:00Z'); // ISO 2026-W36
@@ -50,6 +51,17 @@ test('engineSessionId: weekly carries the ISO WEEK-NUMBERING year, not the calen
   // Weeks are zero-padded to two digits (the repo's other ISO-week rendering does the same), so the
   // suffix has one fixed width all year.
   assert.equal(engineSessionId('irises-x', Date.parse('2026-01-01T00:00:00Z'), 'weekly'), 'irises-x-w2026-01');
+});
+
+test('engineSessionId: weekly renders the SHARED ISO week — one arithmetic, two renderings', () => {
+  // The window token is `-w<year>-<ww>` of exactly the week `src/pipeline/isoWeek.ts` reports; the
+  // thread-ping dedupe key renders the same parts as `<year>-W<ww>`. This is the tie that was
+  // missing while each side owned its own copy of the arithmetic: change the shared function and
+  // both this file and threadPings.test.ts fail together.
+  for (const at of [SUN_2026_08_30, MON_2026_08_31, WED_2026_09_02, FRI_2027_01_01, MON_2027_01_04, Date.parse('2026-04-01T00:00:00Z')]) {
+    const { year, week } = isoWeekParts(at);
+    assert.equal(engineSessionId('irises-x', at, 'weekly'), `irises-x-w${year}-${String(week).padStart(2, '0')}`, new Date(at).toISOString());
+  }
 });
 
 test('engineSessionId: daily rolls at UTC midnight', () => {

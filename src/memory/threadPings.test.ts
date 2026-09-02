@@ -126,7 +126,10 @@ test('an aged, unasked loop is billed and then handed to the proactive pipeline'
   assert.equal(msg.kind, 'callback', 'the one proactive kind that ends on a question');
   assert.match(msg.text, /the interview/, "the thread rides in their own words");
   assert.match(msg.text, /she was dreading/, 'label and note both, so the beat has something to place');
-  assert.match(msg.dedupeKey, /^threads:ping:\+15551230009:l1:2026-W\d\d$/);
+  // The exact ISO week of T0 (2026-04-01), not `W\d\d`: the week arithmetic is shared with the
+  // engine session's rotation window (`src/pipeline/isoWeek.ts`, covered there), so this key is
+  // what says the ping side of it still spells the week it always did.
+  assert.equal(msg.dedupeKey, 'threads:ping:+15551230009:l1:2026-W14');
 
   // Billed: the week is spent, the loop is under the reply path's own offer cooldown, and the
   // pending slot is armed straight to `awaiting` — the ping IS the utterance.
