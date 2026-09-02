@@ -110,6 +110,10 @@ function turnInputs(prompt = realPrompt()): TurnTraceTurnInputs {
           { label: 'the cedar order', kind: 'research' },
           { label: 'the shack rewiring', kind: 'note' },
         ],
+        blocks: {
+          emails: { verdict: 'digest', reason: 'none_kept', dropped: 1 },
+          notes: { verdict: 'full', reason: 'all_kept', dropped: 0 },
+        },
       },
       extras: { updateNote: false, introWeave: false, activeOps: 0 },
     },

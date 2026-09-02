@@ -76,6 +76,56 @@ export interface MemoryHit {
   kind: RelevanceHitKind;
 }
 
+/**
+ * The memory blocks the gate table decides about, one receipt each. Single-sourced array → type
+ * (the THEME_KINDS pattern). Where each is decided:
+ *   `emails` `notes` `facts` `discovery` `long` `directives` — memory/wrappers.ts, while rendering;
+ *   `clarification` — memory/dossier.ts (the steering-question marker);
+ *   `update_note` — agents/convo/client.ts (whether the pending version note was claimed at all).
+ * The short tier's research look is NOT here: it has had its own gate since before this table, and
+ * it reports through `shortHotLook` above.
+ */
+export const MEMORY_GATE_BLOCKS = [
+  'emails', 'notes', 'facts', 'discovery', 'long', 'directives', 'clarification', 'update_note',
+] as const;
+export type MemoryGateBlock = typeof MEMORY_GATE_BLOCKS[number];
+
+/** How much of a block reached the model: everything it holds, a shortened stand-in for some or all
+ *  of it, or nothing at all. `dropped` and the reason say which — a block reporting `dropped` with
+ *  `nothing_held` had nothing to render in the first place. */
+export type MemoryGateVerdict = 'full' | 'digest' | 'dropped';
+
+/** Why a block landed where it did. Closed vocabulary, disjoint per decision, so a scan of the ring
+ *  can bucket a month of turns:
+ *  - `nothing_held` — the block had no content this turn (and so no gate to run);
+ *  - `kept_always` — the block is not gated on the turn at all (medium facts);
+ *  - `all_kept` — everything it holds qualified and rendered in full;
+ *  - `partly_kept` — some of it qualified; the rest was shortened or left out;
+ *  - `none_kept` — nothing it holds qualified, so all of it is standing in as a digest;
+ *  - `slots_only` — the discovery scaffold rendered its open slots without the craft coaching;
+ *  - `short_turn` — kept because the turn was too thin to gate on (the fail-open path);
+ *  - `ttl_expired` — the marker aged out before the gate was reached;
+ *  - `gap_open` — a real opening in the conversation, so the note was claimed;
+ *  - `mid_conversation` — no opening, so the claim was left for a later turn. */
+export const MEMORY_GATE_REASONS = [
+  'nothing_held', 'kept_always', 'all_kept', 'partly_kept', 'none_kept',
+  'slots_only', 'short_turn', 'ttl_expired', 'gap_open', 'mid_conversation',
+] as const;
+export type MemoryGateReason = typeof MEMORY_GATE_REASONS[number];
+
+/** One block's verdict for this turn. `dropped` counts held items that reached the prompt in no
+ *  form at all — a cap or a gate left them out — and is absent where the block cannot drop one. */
+export interface MemoryGateReport {
+  verdict: MemoryGateVerdict;
+  reason: MemoryGateReason;
+  dropped?: number;
+}
+
+/** The gate table's receipt: a report per block that actually ran a gate. EMPTY when
+ *  CONVO_MEMORY_RELEVANCE is off — no gate ran, so the receipt claims nothing rather than claiming
+ *  a decision nobody made. */
+export type MemoryGateReports = Partial<Record<MemoryGateBlock, MemoryGateReport>>;
+
 /** Which pre-turn gates fired, as they were decided — nothing is re-derived here. */
 export interface TurnTraceGates {
   /** The threading engine's own receipt for this turn (persona/threads.ts), or null when threading
@@ -90,6 +140,10 @@ export interface TurnTraceGates {
      *  on a turn the router could not read (a caption-less media turn, where every gate fails open
      *  but nothing counts as evidence) and on every turn with CONVO_MEMORY_RELEVANCE off. */
     hits: MemoryHit[];
+    /** What each gated memory block did with what it held — the gate table's own receipt. Every
+     *  block that ran a gate reports, including the ones that changed nothing, so "she never saw
+     *  the note" and "there was no note" are different readings. Empty with the flag off. */
+    blocks: MemoryGateReports;
   };
   extras: {
     /** A pending version note was woven into this reply (update/announce.ts). */
@@ -335,7 +389,13 @@ export function buildTurnTrace(inputs: { draft: TurnTraceDraft; bubbles: BubbleR
     prompt: { ...draft.prompt, sections: [...draft.prompt.sections] },
     gates: {
       threads: draft.gates.threads,
-      memory: { ...draft.gates.memory, hits: draft.gates.memory.hits.map(h => ({ ...h })) },
+      memory: {
+        ...draft.gates.memory,
+        hits: draft.gates.memory.hits.map(h => ({ ...h })),
+        blocks: Object.fromEntries(
+          Object.entries(draft.gates.memory.blocks).map(([block, report]) => [block, { ...report }]),
+        ) as MemoryGateReports,
+      },
       extras: { ...draft.gates.extras },
     },
     affect: { ...draft.affect, coercions: draft.affect.coercions.map(c => ({ ...c })) },

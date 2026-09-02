@@ -177,7 +177,7 @@ export async function chat(
           ? getRelationshipClimate(handle)
           : Promise.resolve(defaultClimate()),
       ])
-    : [{ block: '', hotLook: null, turn: null }, undefined, defaultClimate()];
+    : [{ block: '', hotLook: null, turn: null, gates: {} }, undefined, defaultClimate()];
   const contextBlock = context.block;
 
   // Irises's hidden affect state: her persisted prior-turn mood/gauges/meta-prompt for THIS chat,
@@ -361,6 +361,9 @@ export async function chat(
           memory: {
             shortHotLook: context.hotLook ? 'full' : contextBlock ? 'digest' : 'none',
             hits: (context.turn?.hits ?? []).map(h => ({ label: h.label, kind: h.kind })),
+            // What the gate table did with each block it rendered, straight off the renderers that
+            // decided it (memory/wrappers.ts). Empty with CONVO_MEMORY_RELEVANCE off — no gate ran.
+            blocks: context.gates,
           },
           extras: { updateNote: !!updateNote, introWeave: !!introWeave, activeOps: activeOps.length },
         },

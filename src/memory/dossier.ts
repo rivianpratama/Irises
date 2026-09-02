@@ -15,6 +15,7 @@ import { buildTurnRelevance, memoryRelevanceEnabled, type TurnRelevance } from '
 import { scopeHistoryToUser } from './transcript.js';
 import { isGroupHandle } from './identity.js';
 import { record } from '../diagnostics/trace.js';
+import type { MemoryGateReports } from '../diagnostics/turnTrace.js';
 import { reportError } from '../diagnostics/errorLog.js';
 import type { StoredMessage, UserProfile } from '../db/types.js';
 
@@ -123,7 +124,7 @@ export async function buildContextBlock(handle: string, currentTurnText?: string
 export async function buildContextBlockWithHot(
   handle: string,
   currentTurnText?: string,
-): Promise<{ block: string; hotLook: ShortTermEntry | null; turn: TurnRelevance | null }> {
+): Promise<{ block: string; hotLook: ShortTermEntry | null; turn: TurnRelevance | null; gates: MemoryGateReports }> {
   const [memory, profile, shortEntries, medium, longDoc] = await Promise.all([
     getMemory(handle),
     getUserProfile(handle),
@@ -223,7 +224,7 @@ export async function buildContextBlockWithHot(
   }, nowMs, { audience: isGroupHandle(handle) ? 'group' : 'individual', currentTurnText, turn });
   parts.push(wrapped.text);
 
-  return { block: parts.join('\n\n'), hotLook: wrapped.hotEntry, turn };
+  return { block: parts.join('\n\n'), hotLook: wrapped.hotEntry, turn, gates: wrapped.gates };
 }
 
 /** The dossier updater's harvest contract — exported so tests can pin the two-family

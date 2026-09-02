@@ -519,7 +519,7 @@ function messagesFor(f: Fixture): TranscriptMessage[] {
  *  inputs are inert — this reads one number off the prompt measurement. */
 function transcriptShare(prompt: MeasuredPrompt, messages: readonly TranscriptMessage[]): number {
   return buildTurnTraceDraft({
-    turn: { prompt, messages, gates: { threads: null, memory: { shortHotLook: 'none', hits: [] }, extras: { updateNote: false, introWeave: false, activeOps: 0 } }, hits: [] },
+    turn: { prompt, messages, gates: { threads: null, memory: { shortHotLook: 'none', hits: [], blocks: {} }, extras: { updateNote: false, introWeave: false, activeOps: 0 } }, hits: [] },
     affect: { raw: null, coerced: null },
     outcome: { wasEnvelope: true, retried: false, silent: false, toolCalls: [] },
   }).prompt.transcriptShare;

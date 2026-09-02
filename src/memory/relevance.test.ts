@@ -380,3 +380,112 @@ test('CONVO_MEMORY_RELEVANCE parses like its sibling flags, default ON', () => {
     else process.env.CONVO_MEMORY_RELEVANCE = prior;
   }
 });
+
+// ── the gate table: short-tier email flags ───────────────────────────────────
+// Email flags were the one short-tier channel with no gate and no cap: every held flag rendered its
+// whole body on every turn, however old and whatever the turn was about. They are also the FACT
+// channel behind "yes, remind me", so topicality alone is the wrong gate — a deadline inside two
+// days, or a flag that landed minutes ago, is live whatever this message is about.
+
+const HOUR = 3_600_000;
+
+/** The last words of a flag's body — present in the line only when the whole body rendered, since a
+ *  digest cuts the body at DIGEST_LINE_CHARS (150) and the body is far longer than that. */
+const EMAIL_BODY_END = 'and-they-want-the-signed-page-back';
+
+/** A flagged email whose body is comfortably longer than DIGEST_LINE_CHARS, so "full" and "digest"
+ *  are visibly different renders rather than the same string twice. */
+function emailFlag(over: Partial<ShortTermEntry> & { id: string }): ShortTermEntry {
+  return shortEntry({
+    kind: 'email_flag',
+    content: `they want an answer on the disputed expedite fee before the next shipment leaves the mill ${'x'.repeat(200)} ${EMAIL_BODY_END}`,
+    createdAt: NOW - 9 * HOUR,
+    expiresAt: NOW + 3 * HOUR,
+    ...over,
+    meta: over.meta ?? {},
+  });
+}
+
+/** Which flags rendered their whole body, by subject — read back off the block's own lines. */
+function emailRenders(text: string): Array<{ subject: string; full: boolean }> {
+  return text.split('\n')
+    .filter(l => l.startsWith('- [email flagged'))
+    .map(l => ({ subject: (/"([^"]*)"/.exec(l)?.[1]) ?? '', full: l.includes(EMAIL_BODY_END) }));
+}
+
+test('an email flag renders in full only while it is live: touching, due soon, or minutes old', () => {
+  const entries = [
+    emailFlag({ id: 'e_topic', meta: { from: 'accounts@north.example', subject: 'RE: invoice 4471 cedar' } }),
+    emailFlag({ id: 'e_due', meta: { from: 'county@x.example', subject: 'irrigation permit', deadlineDate: new Date(NOW + 30 * HOUR).toISOString().slice(0, 10) } }),
+    emailFlag({ id: 'e_fresh', createdAt: NOW - 20 * 60_000, meta: { from: 'ada@x.example', subject: 'delivery van' } }),
+    emailFlag({ id: 'e_cold', meta: { from: 'newsletter@x.example', subject: 'spring catalogue' } }),
+  ];
+  const text = 'any word on the cedar invoice';
+  const out = renderShortBlockWithHot(entries, NOW, null, text, buildTurnRelevance(text, { short: entries }));
+
+  assert.deepEqual(emailRenders(out.text), [
+    { subject: 'RE: invoice 4471 cedar', full: true },   // touches this turn
+    { subject: 'irrigation permit', full: true },        // deadline inside 48h
+    { subject: 'delivery van', full: true },             // landed 20 minutes ago
+    { subject: 'spring catalogue', full: false },        // cold, undated, off topic
+  ]);
+  assert.deepEqual(out.gates.emails, { verdict: 'digest', reason: 'partly_kept', dropped: 0 });
+});
+
+test('a deadline further out than 48h does not keep a cold flag in full', () => {
+  const entries = [
+    emailFlag({ id: 'e_far', meta: { from: 'x@y.example', subject: 'lease renewal', deadlineDate: new Date(NOW + 9 * 24 * HOUR).toISOString().slice(0, 10) } }),
+    emailFlag({ id: 'e_unparsed', meta: { from: 'x@y.example', subject: 'yard rota', deadlineDate: 'sometime next week' } }),
+  ];
+  const text = 'what should i cook for dinner';
+  const out = renderShortBlockWithHot(entries, NOW, null, text, buildTurnRelevance(text, { short: entries }));
+  assert.deepEqual(emailRenders(out.text).map(r => r.full), [false, false]);
+  assert.deepEqual(out.gates.emails, { verdict: 'digest', reason: 'none_kept', dropped: 0 });
+});
+
+test('at most four email flags render, and the live ones keep their slots', () => {
+  const entries = [
+    emailFlag({ id: 'c1', meta: { from: 'a@x.example', subject: 'catalogue one' } }),
+    emailFlag({ id: 'c2', meta: { from: 'a@x.example', subject: 'catalogue two' } }),
+    emailFlag({ id: 'c3', meta: { from: 'a@x.example', subject: 'catalogue three' } }),
+    emailFlag({ id: 'c4', meta: { from: 'a@x.example', subject: 'catalogue four' } }),
+    emailFlag({ id: 'c5', meta: { from: 'a@x.example', subject: 'catalogue five' } }),
+    emailFlag({ id: 'live', meta: { from: 'accounts@north.example', subject: 'cedar invoice' } }),
+  ];
+  const text = 'any word on the cedar invoice';
+  const out = renderShortBlockWithHot(entries, NOW, null, text, buildTurnRelevance(text, { short: entries }));
+  const rendered = emailRenders(out.text);
+
+  assert.equal(rendered.length, 4, 'the cap holds');
+  assert.ok(rendered.some(r => r.subject === 'cedar invoice' && r.full), 'the one that touches this turn is never lost to the cap');
+  assert.equal(rendered[rendered.length - 1].subject, 'cedar invoice', 'and the kept ones stay in the order they arrived');
+  assert.deepEqual(out.gates.emails, { verdict: 'digest', reason: 'partly_kept', dropped: 2 });
+});
+
+test('the email gate reports the no-op too: nothing held, and everything live', () => {
+  const text = 'any word on the cedar invoice';
+  const research = [shortEntry({ id: 'r', request: 'cedar lead times', content: 'z'.repeat(300) })];
+  assert.deepEqual(
+    renderShortBlockWithHot(research, NOW, null, text, buildTurnRelevance(text, { short: research })).gates.emails,
+    { verdict: 'dropped', reason: 'nothing_held' },
+  );
+
+  const live = [emailFlag({ id: 'e', createdAt: NOW - 60_000, meta: { from: 'a@x.example', subject: 'cedar invoice' } })];
+  assert.deepEqual(
+    renderShortBlockWithHot(live, NOW, null, text, buildTurnRelevance(text, { short: live })).gates.emails,
+    { verdict: 'full', reason: 'all_kept', dropped: 0 },
+  );
+});
+
+test('with no router the short tier renders every email flag in full, exactly as it always did', () => {
+  const entries = [
+    emailFlag({ id: 'e1', meta: { from: 'a@x.example', subject: 'one' } }),
+    emailFlag({ id: 'e2', meta: { from: 'a@x.example', subject: 'two' } }),
+    emailFlag({ id: 'e3', meta: { from: 'a@x.example', subject: 'three' } }),
+    emailFlag({ id: 'e4', meta: { from: 'a@x.example', subject: 'four' } }),
+    emailFlag({ id: 'e5', meta: { from: 'a@x.example', subject: 'five' } }),
+  ];
+  const out = renderShortBlockWithHot(entries, NOW, null, 'what should i cook for dinner');
+  assert.deepEqual(emailRenders(out.text).map(r => r.full), [true, true, true, true, true]);
+  assert.deepEqual(out.gates, {}, 'no gate ran, so the receipt claims nothing');
+});

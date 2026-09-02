@@ -113,6 +113,17 @@ export function shortEntryAsk(entry: ShortTermEntry): string {
   return `${entry.request ?? ''} ${entryTopicKey(entry)}`;
 }
 
+/** The text an EMAIL FLAG is matched by: the ask above plus the two things a person would name the
+ *  mail by — its subject and who sent it — and never the judge's summary body, for the same reason
+ *  shortEntryAsk avoids the result body. One implementation, because the flag's own render gate
+ *  (wrappers.ts) and the email HIT here have to agree on what a flagged mail is about. */
+export function emailEntryAsk(entry: ShortTermEntry): string {
+  const meta = (entry.meta ?? {}) as { from?: unknown; subject?: unknown };
+  const subject = typeof meta.subject === 'string' ? meta.subject : '';
+  const from = typeof meta.from === 'string' ? meta.from : '';
+  return `${shortEntryAsk(entry)} ${subject} ${from}`;
+}
+
 // ── the candidates ───────────────────────────────────────────────────────────
 
 /** A held thing, ready to be scored: what to call it, what to match it by, and where it came from. */
@@ -142,11 +153,14 @@ function collect(held: HeldItems): Candidate[] {
   for (const e of held.short ?? []) {
     if (e.kind === 'email_flag') {
       // Matched by the ask too — subject and sender, not the judge's summary body (same reasoning
-      // as shortEntryAsk). Task 11 owns whether an email flag RENDERS; this only names it.
-      const meta = (e.meta ?? {}) as { from?: unknown; subject?: unknown };
-      const subject = typeof meta.subject === 'string' ? meta.subject : '';
-      const from = typeof meta.from === 'string' ? meta.from : '';
-      out.push({ kind: 'email', label: shortEntryLabel(e) || subject.trim(), text: `${shortEntryAsk(e)} ${subject} ${from}`, source: e.id });
+      // as shortEntryAsk), through the same emailEntryAsk the flag's own render gate reads.
+      const subject = (e.meta as { subject?: unknown } | undefined)?.subject;
+      out.push({
+        kind: 'email',
+        label: shortEntryLabel(e) || (typeof subject === 'string' ? subject.trim() : ''),
+        text: emailEntryAsk(e),
+        source: e.id,
+      });
     } else {
       // Named whether the row rendered in full or collapsed to its digest line — the digest carries
       // the ask ("they asked X → …"), so she can see the thing the hit names either way.

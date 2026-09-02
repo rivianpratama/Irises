@@ -286,7 +286,7 @@ const TRACE_INPUTS = {
   messages: [{ content: ASK }],
   gates: {
     threads: null,
-    memory: { shortHotLook: 'none' as const, hits: [] },
+    memory: { shortHotLook: 'none' as const, hits: [], blocks: {} },
     extras: { updateNote: false, introWeave: false, activeOps: 0 },
   },
   hits: [],
