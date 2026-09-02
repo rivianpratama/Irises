@@ -754,9 +754,9 @@ export function buildSystemPromptSections(
   }
 
   // The one standing thread of theirs she may pick up this turn. Its OWN dyn entry, deliberately
-  // adjacent to the weather block rather than inside it: the weather block ends on a pinned re-report
-  // tail, and threading must never touch those bytes. Sits here because it is the same class of
-  // orientation — what she is carrying into this turn — and it is read BEFORE the conversation-timing
+  // outside the weather block rather than inside it: that block ends on a pinned re-report line and
+  // the contract answers it, so threading must never touch either one's bytes. Sits here because it is
+  // the same class of orientation — what she is carrying into this turn — and is read BEFORE the timing
   // block below, whose gap arithmetic is what qualified a loop for an opening in the first place.
   // Renders to '' whenever there is nothing to offer and nothing to report back, which is most turns.
   const threadBlock = renderThreadForPrompt(thread?.offer ?? null, thread?.outcomeAsk ?? null);

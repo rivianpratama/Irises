@@ -248,10 +248,12 @@ export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
 export const STATUS_SCHEMA_PROP: Record<string, unknown> = {
   type: ['object', 'null'],
   additionalProperties: false,
+  // Read off the rows rather than assumed: every row says `required: true` today, and a row that
+  // ever says otherwise drops out of this list instead of being silently required anyway.
   required: ENVELOPE_FIELDS.filter(f => f.required).map(f => f.key),
   properties: Object.fromEntries(ENVELOPE_FIELDS.map(f => [f.key, {
-    // Copied rather than shared: the schema is handed to two lanes' SDKs, and a table row must not be
-    // reachable through it.
+    // The type array is COPIED, not shared: this object is handed to the lanes' SDKs, and a table row
+    // must not be mutable through it.
     type: typeof f.type === 'string' ? f.type : [...f.type],
     description: f.description,
   }])),
