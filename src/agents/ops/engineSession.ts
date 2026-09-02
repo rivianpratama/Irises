@@ -6,10 +6,12 @@
 // transcript. The failing VPS run's session held 398 messages and spent ≈221,760 input tokens per
 // API call — a flash-tier model reasoning inside a near-full context, which is what plausibly cost
 // it its tool choice ("Repaired 6 message-alternation violations" in the engine's own log). The
-// engine's DURABLE user memory is a separate store (hermes keeps it under ~/.hermes/memories and
-// scopes it by the memory KEY, not by the transcript), so starting a fresh transcript each window
-// drops the bloat and keeps the engine's model of the user. That split is the whole design: the
-// adapter rotates its continuity id and leaves its memory key alone.
+// engine's DURABLE user memory does not live in the transcript: hermes keeps it under
+// ~/.hermes/memories, while transcripts are rows in ~/.hermes/state.db (`sessions`, keyed by the
+// session id we send, plus their `messages`). So starting a fresh transcript each window drops the
+// bloat and leaves the engine's model of the user exactly where it is — and the memory KEY keeps
+// going out unrotated, so a build that namespaces memory by that key keeps its scope too. That
+// split is the whole design: the adapter rotates its continuity id and never its memory key.
 //
 // Only the hermes adapter rotates today (env HERMES_SESSION_ROTATION). OpenClaw's `openclawSessionKey`
 // is ONE string used as both continuity and memory scope on the Gateway `agent` RPC, so rotating it

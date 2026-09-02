@@ -642,6 +642,50 @@ test('a non-reasoning inherited model logs no heads-up', () => {
   assert.equal([...logs, ...warns].filter((l) => l.includes('reasoning-family')).length, 0);
 });
 
+test('the heads-up promises only the mitigations the inherited LANE actually has', () => {
+  // reasoning-disable is an OpenRouter body field, and the starved retry lives in the
+  // OpenAI-compatible lanes (callAnthropic is untouched). A line that claims both on the Anthropic
+  // lane is a false promise about the one thing this heads-up exists to explain.
+  const or = mkDeps(baselineEnv({ OPENROUTER_API_KEY: 'or-key' }), {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: { 'hermes config get model.default': 'deepseek/deepseek-v4-flash' },
+  });
+  applyEngineDiscovery(or.deps);
+  const orLine = or.logs.find((l) => l.includes('reasoning-family'))!;
+  assert.ok(orLine);
+  assert.match(orLine, /retries a starved call once/, 'the retry runs on this lane');
+  assert.match(orLine, /reasoning off/, 'and so does the reasoning-disable field');
+
+  // A generic OpenAI-compatible host (hermes on deepseek-direct): the retry runs, the OpenRouter-only
+  // body field does not.
+  const oai = mkDeps(baselineEnv({ OPENAI_API_KEY: 'oai-key' }), {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: {
+      'hermes config get model.default': 'deepseek-reasoner',
+      'hermes config get model.provider': 'deepseek',
+    },
+  });
+  applyEngineDiscovery(oai.deps);
+  const oaiLine = oai.logs.find((l) => l.includes('reasoning-family'))!;
+  assert.ok(oaiLine, 'the openai lane inherits the engine\'s own slug, so the heads-up still fires');
+  assert.match(oaiLine, /retries a starved call once/);
+  assert.equal(/reasoning off/.test(oaiLine), false, 'reasoning-disable is OpenRouter-only');
+  assert.match(oaiLine, /OpenRouter-only/, 'and it says so');
+
+  // The Anthropic lane has NEITHER: a starved call there salvages cross-lane on a doubled budget.
+  const ant = mkDeps(baselineEnv({ ANTHROPIC_API_KEY: 'ant-key' }), {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: { 'hermes config get model.default': 'anthropic/claude-opus-4.8-thinking' },
+  });
+  applyEngineDiscovery(ant.deps);
+  const antLine = ant.logs.find((l) => l.includes('reasoning-family'))!;
+  assert.ok(antLine);
+  assert.equal(/retries a starved call once/.test(antLine), false, 'no same-lane retry on this lane');
+  assert.equal(/reasoning off/.test(antLine), false);
+  assert.match(antLine, /Anthropic lane/);
+  for (const l of [orLine, oaiLine, antLine]) assert.match(l, /ENGINE_MODEL_INHERIT=off/, 'every lane names the opt-out');
+});
+
 test('the heads-up skips a role whose own <ROLE>_THINKING is armed, and goes silent when all are', () => {
   const armed = baselineEnv({ OPENROUTER_API_KEY: 'or-key', CLASSIFY_THINKING: 'on' });
   const one = mkDeps(armed, {

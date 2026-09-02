@@ -326,16 +326,30 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
         else override(`${r}_MODEL_OPENAI`, model);
         override(`${r}_PROVIDER`, lane);
       }
-      noteReasoningInherit(model);
+      noteReasoningInherit(lane, model);
+    };
+
+    /** What Irises actually does about a thinking model on each lane — the heads-up below promises
+     *  exactly this and nothing more. The starved retry lives in the OpenAI-compatible lanes
+     *  (llm/callLLM.callOpenAICompatible; callAnthropic is untouched), and reasoning-disable is an
+     *  OpenRouter body field (llm/openrouterRequest.ts) that the structured-output roles skip because
+     *  it would narrow their provider filter. The Anthropic lane has neither, and says so. */
+    const REASONING_MITIGATION: Record<'openrouter' | 'openai' | 'anthropic', string> = {
+      openrouter: 'Irises retries a starved call once with a bigger cap and asks for reasoning off '
+        + 'where the request allows it',
+      openai: 'Irises retries a starved call once with a bigger cap (reasoning-disable is an '
+        + 'OpenRouter-only field)',
+      anthropic: 'neither of Irises\'s mitigations runs on the Anthropic lane — a starved call there '
+        + 'falls back to another lane on a doubled budget instead',
     };
 
     /** One informational line when a voice role just inherited a model that reasons BY DEFAULT while
      *  that role asked for no thinking: chain-of-thought is billed against max_tokens, and these
      *  roles run deliberately tiny per-call caps (the climate eval's 200, validateDirective's 20), so
-     *  the budget can go entirely to thinking. The lane itself now sends reasoning-disable and takes
-     *  one bounded starved retry (llm/openrouterRequest.ts, llm/callLLM.ts) — this is the heads-up
-     *  that says WHY, and names the opt-out. Log only; nothing here changes what was inherited. */
-    function noteReasoningInherit(model: string): void {
+     *  the budget can go entirely to thinking. The mitigation clause is per LANE (see
+     *  REASONING_MITIGATION) — this is the heads-up that says WHY, and names the opt-out. Log only;
+     *  nothing here changes what was inherited. */
+    function noteReasoningInherit(lane: 'openrouter' | 'openai' | 'anthropic', model: string): void {
       if (!isReasoningFamilyModel(model)) return;
       const unarmed = VOICE_ROLES.filter(
         r => !THINKING_ON_VALUES.includes((env[`${r}_THINKING`] || '').trim().toLowerCase()),
@@ -344,7 +358,7 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
       deps.log(
         `inherited model "${model}" is a reasoning-family slug, but ${unarmed.join(', ')}_THINKING `
         + 'is off — those roles run small per-call caps that a thinking model can spend before it '
-        + 'answers (Irises sends reasoning-disable and retries once with a bigger cap). '
+        + `answers (${REASONING_MITIGATION[lane]}). `
         + 'Set ENGINE_MODEL_INHERIT=off to keep Irises\'s own voice models instead.',
       );
     }
