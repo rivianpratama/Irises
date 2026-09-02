@@ -13,6 +13,12 @@
 // going out unrotated, so a build that namespaces memory by that key keeps its scope too. That
 // split is the whole design: the adapter rotates its continuity id and never its memory key.
 //
+// The cost an operator should know about: a rotated-away transcript is not deleted, only stopped
+// being addressed, and nothing on either side prunes it — so a weekly window leaves ~52 abandoned
+// session rows per chat per year in the engine's own store. Small (metadata plus the messages that
+// were already there), but it is the engine host's disk, not ours, so `never` remains a real choice
+// for an install that would rather keep one growing transcript than many finished ones.
+//
 // Only the hermes adapter rotates today (env HERMES_SESSION_ROTATION). OpenClaw's `openclawSessionKey`
 // is ONE string used as both continuity and memory scope on the Gateway `agent` RPC, so rotating it
 // there would drop the engine's user model along with the transcript — the opposite of the point.
