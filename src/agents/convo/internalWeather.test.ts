@@ -47,7 +47,8 @@ test('a prior mood + meta-prompt carry forward into the block', () => {
 
 // The envelope contract (persona/status.ts renderStatusContract) is its OWN section, pushed under the
 // same `computed` guard and immediately after the weather block — whose last line is now one pointer
-// at it instead of a 470-character re-listing of the fields it describes.
+// at it (63 chars) instead of a 382-character re-listing of the fields it describes. (Measured off
+// the pre-change golden; "470" was the brief's estimate, and it stood in two comments until review.)
 
 test('the status contract rides with the weather block, and the tail points at it', () => {
   const prompt = buildSystemPrompt(ctx, '', [], undefined, undefined, [], 'hey', undefined, affect(), COMPUTED);

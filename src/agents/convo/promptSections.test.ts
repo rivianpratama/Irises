@@ -16,7 +16,7 @@
 // IS the list of deletions.
 //
 // GOLDEN_BLOCK_C has been regenerated THREE times, all for the same phase's second half. First: the
-// weather block's 470-character re-report tail became one pointer line, and the `status_contract`
+// weather block's 382-character re-report tail became one pointer line, and the `status_contract`
 // section it points at (persona/status.ts renderStatusContract) now sits between the weather block
 // and the thread block — the envelope's field list moved out of the persona and into generated prose,
 // so the bytes moved with it. Then, in review: three CAPTURE rules that had lived only in the deleted

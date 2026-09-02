@@ -462,8 +462,10 @@ export const STATUS_CONTRACT_HEADER = '## Your hidden status — the contract';
  * the weather block above it is what asks her to fill it (charter §11.3's recency edge, the same
  * arrangement the bubble law has: the section teaches, the edge states the law).
  *
- * It replaced ~3.7k characters of Context.md (a hand-copied feelings wheel plus a second field list
- * that had already drifted from the schema). It is not small — the descriptions are the schema's own,
+ * It replaced 3,372 characters of Context.md, net: 16 lines and 3,902 characters deleted (a
+ * hand-copied feelings wheel plus a second field list that had already drifted from the schema)
+ * against the one paragraph that points here instead. Same arithmetic from the other end on the
+ * persona budget line, 141,474 → 138,102. It is not small — the descriptions are the schema's own,
  * which is the point of one source — so a shorter contract means shortening THEM, in the table, where
  * both copies change together.
  */
