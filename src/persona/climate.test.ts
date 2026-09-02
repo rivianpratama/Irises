@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import {
   DIALS, CLIMATE_WINDOW_MS, CLIMATE_WINDOW_CAP, CLIMATE_MOVES_CAP,
   defaultClimate, coerceDials, applyDrift, climateLines, climateLinesForComposer,
+  clampToSpec, signOf, spentInWindow,
   type DialKey, type RelationshipClimate,
 } from './climate.js';
 
@@ -197,6 +198,42 @@ test('moves that age out of the window free the budget again', () => {
   assert.deepEqual(r.changed, ['candor']);
   assert.equal(r.next.dials.candor, 45 + CLIMATE_WINDOW_CAP + 2);
   assert.deepEqual(r.next.moves.map(m => m.at), [later], 'aged-out moves are pruned');
+});
+
+// ── 8b: the three shared helpers ─────────────────────────────────────────────
+
+// `clampToSpec`, `signOf` and `spentInWindow` are exported so `affectDrift.ts` can REUSE the
+// bound arithmetic rather than grow a second, drifting copy of it. Their signatures are widened
+// (a structural spec, a generic move key, an overridable window) precisely so a second gauge
+// table with its own keys and its own shorter window can borrow them unchanged — this pins that
+// the widening kept climate's own behavior exactly.
+test('the shared bound helpers are exported and behave identically through the wider signatures', () => {
+  const ease = DIALS.find(d => d.key === 'ease')!;
+  assert.equal(clampToSpec(999, ease), ease.ceiling);
+  assert.equal(clampToSpec(-999, ease), ease.floor);
+  assert.equal(clampToSpec(35.6, ease), 36, 'rounds, it does not truncate');
+  // A bare {floor, ceiling} is enough — no DialKey needed, which is what lets another table reuse it.
+  assert.equal(clampToSpec(150, { floor: 1, ceiling: 100 }), 100);
+
+  assert.equal(signOf(7), 1);
+  assert.equal(signOf('-4'), -1);
+  assert.equal(signOf(true), 1);
+  assert.equal(signOf(false), 0);
+  assert.equal(signOf(null), 0);
+  assert.equal(signOf('later'), 0);
+
+  const moves = [
+    { at: T0 - 1000, k: 'ease' as DialKey, d: 2 },
+    { at: T0 - 1000, k: 'candor' as DialKey, d: -1 },
+    { at: T0 - WEEK - 1000, k: 'ease' as DialKey, d: 2 }, // outside the window
+  ];
+  assert.equal(spentInWindow(moves, 'ease', T0), 2, '|movement| inside the window only');
+  assert.equal(spentInWindow(moves, 'candor', T0), 1, 'a down-step spends its magnitude');
+  assert.equal(spentInWindow(moves, 'playfulness', T0), 0);
+  // The window is overridable, and defaults to climate's own week.
+  assert.equal(spentInWindow(moves, 'ease', T0, 2000), 2);
+  assert.equal(spentInWindow(moves, 'ease', T0, 500), 0, 'a shorter window sees less');
+  assert.equal(spentInWindow(moves, 'ease', T0, CLIMATE_WINDOW_MS), spentInWindow(moves, 'ease', T0));
 });
 
 // ── 9: purity ────────────────────────────────────────────────────────────────

@@ -69,7 +69,12 @@ const SPEC_BY_KEY: Record<DialKey, DialSpec> = Object.fromEntries(
   DIALS.map(d => [d.key, d]),
 ) as Record<DialKey, DialSpec>;
 
-function clampToSpec(v: number, spec: DialSpec): number {
+/**
+ * Round into [floor, ceiling]. Takes a bare `{ floor, ceiling }` rather than a whole `DialSpec` so
+ * the affect gauge table (`affectDrift.ts`, its own keys and its own bounds) reuses this arithmetic
+ * instead of growing a second copy that can drift away from it.
+ */
+export function clampToSpec(v: number, spec: { floor: number; ceiling: number }): number {
   return Math.max(spec.floor, Math.min(spec.ceiling, Math.round(v)));
 }
 
@@ -97,17 +102,29 @@ export function coerceDials(raw: unknown): ClimateDials {
   return out;
 }
 
-/** The ONLY thing read out of a model's suggestion: which way, if at all. Not how far. */
-function signOf(v: unknown): -1 | 0 | 1 {
+/** The ONLY thing read out of a model's suggestion: which way, if at all. Not how far.
+ *  Exported because `affectDrift.ts` reads its own model input the same way. */
+export function signOf(v: unknown): -1 | 0 | 1 {
   if (typeof v === 'boolean') return v ? 1 : 0;
   const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
   if (!Number.isFinite(n) || n === 0) return 0;
   return n > 0 ? 1 : -1;
 }
 
-/** |movement| already spent on this dial inside the rolling window ending at `now`. */
-function spentInWindow(moves: ClimateMove[], key: DialKey, now: number): number {
-  const from = now - CLIMATE_WINDOW_MS;
+/**
+ * |movement| already spent on this dial inside the rolling window ending at `now`.
+ *
+ * Generic in the ledger's key type and in the window length, so `affectDrift.ts` can ask the same
+ * question of its own ledger over its own (much shorter) window. Both widenings are inert here:
+ * `K` infers as `DialKey` from the ledger passed in, and `windowMs` defaults to climate's week.
+ */
+export function spentInWindow<K extends string>(
+  moves: readonly { at: number; k: K; d: number }[],
+  key: K,
+  now: number,
+  windowMs: number = CLIMATE_WINDOW_MS,
+): number {
+  const from = now - windowMs;
   let sum = 0;
   for (const m of moves) {
     if (m.k === key && m.at > from) sum += Math.abs(m.d);
