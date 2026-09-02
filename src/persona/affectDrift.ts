@@ -1,5 +1,5 @@
 // The per-turn AFFECT gauges: the fast weather, where climate.ts is the slow standing register.
-// Same charter §10.1 bargain as climate (`applyDrift`, `climate.ts:145-207`), and this file is
+// Same charter §10.1 bargain as climate (`applyDrift` in climate.ts), and this file is
 // deliberately modeled on it line for line — the model contributes a DIRECTION and a WORD, and
 // every bound that makes that safe is arithmetic here:
 //
@@ -20,8 +20,15 @@
 // The asymmetries are the safety: a dip is cheaper than a lift (8 vs 6) and anxiety climbs faster
 // than it falls (8 vs 5), because a state that is quick to earn and slow to shake is what a
 // difficult day actually feels like — and because the flattering direction should be the expensive
-// one. `AFFECT_TURN_CAP` then bounds the whole turn: no single message can move her more than 18
-// points across all six gauges, whatever it says or how many times it says it.
+// one. `AFFECT_TURN_CAP` then bounds the whole turn: no single message can buy more than 18 points
+// of STEPPED movement across all six gauges, whatever it says or how many times it says it. One
+// thing sits outside that 18 on purpose — the reported word's band may additionally SNAP the level
+// (a "delighted 12" is not a state, so seeding pulls it inside the band), which is a coercion
+// rather than a step: it spends none of the cap and is reported in `report.coerced`.
+// The ≤2 pull toward the clock target is NOT outside it: the pull rides along with mood's own step,
+// so it spends the turn cap and the 20-points-an-hour mood budget like anything else, and geometry
+// is what bounds it rather than a budget of its own — it stops at the target or at the band edge,
+// whichever it reaches first, and never overshoots either.
 //
 // PURE by construction: no DB, no LLM, no clock reads. `now` is always passed in, and neither the
 // gauges nor the ledger handed in is ever mutated.
@@ -32,7 +39,7 @@ import { CORE_VALENCE_BAND, coreForLabel } from './mood.js';
 // import here would close a runtime import cycle. These three types are erased at compile time.
 import type { ComputedState, EpistemicTrigger, ThreadOutcome } from './status.js';
 
-/** The shape of a row in the gauge table — `DialSpec`'s counterpart (`climate.ts:37-46`). */
+/** The shape of a row in the gauge table — `DialSpec`'s counterpart in climate.ts. */
 interface GaugeSpecShape {
   key: string;
   /** Where a gauge with no stored value starts. Never 0: on a 1-100 gauge that reads as collapse. */
@@ -65,7 +72,8 @@ export type GaugeKey = (typeof GAUGE_SPECS)[number]['key'];
 
 export type GaugeSpec = GaugeSpecShape & { key: GaugeKey };
 
-/** Every gauge the model no longer reports, keyed 1-100. */
+/** The six gauges this engine owns, keyed 1-100 — the fields the model will no longer report once
+ *  Task 15 wires the envelope to it. */
 export type AffectGauges = Record<GaugeKey, number>;
 
 /** The gauges that seek a clock target. `rapport` is the exception: it answers to evidence only. */
@@ -239,7 +247,7 @@ function wantedFor(
 
 /**
  * Fold one turn into the gauges. Every clamp is here, in this order — the same order, for the same
- * reasons, as `applyDrift` (`climate.ts:118-144`):
+ * reasons, as `applyDrift`, and the rolling budget is read through climate's own `spentInWindow`:
  *   0. seed: a missing or garbled gauge starts from its `dflt`, and every gauge is clamped into its
  *      bounds before anything is asked of it. For mood that is the word's valence band, so a level
  *      stored outside it comes back inside — a COERCION, not a step: it spends none of the turn's
@@ -323,6 +331,8 @@ export function applyAffectDrift(
 
     next[spec.key] = cur + applied;
     spent += Math.abs(applied);
+    // Every row a turn writes is stamped with the SAME `now`, which is what lets a caller read the
+    // applied magnitudes back off `moves.filter(m => m.at === now)` (Task 15's receipt does).
     // Only a break that actually LANDED claims the next six hours.
     const claimsBreak = spec.key === 'mood_level' && input.moodShift === 'broke' && !brokeDowngraded;
     moves.push(claimsBreak
