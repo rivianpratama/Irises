@@ -162,6 +162,25 @@ test('a retry that ERRORS surfaces the original starvation error (the cross-lane
   assert.match(String(r.error), /exceeds the model limit/);
 });
 
+test('a retry cancelled mid-flight surfaces the abort, not a starvation error', async () => {
+  // The caller walked away (an Ops step timeout, a superseded turn). Reporting starvation there would
+  // put a starving-lane line in the error log for a call nobody was waiting for.
+  const ac = new AbortController();
+  const abort = new Error('Request was aborted.');
+  const { send, sent } = sender([starved(), abort]);
+  const wrapped: ChatSender = (p, o) => { ac.abort(); return send(p, o); };
+  await assert.rejects(
+    () => callOpenAICompatible(req({ signal: ac.signal }), 'openrouter', wrapped),
+    (err: unknown) => {
+      assert.equal(err, abort, 'the abort itself');
+      assert.equal(isStarvedError(err), false);
+      return true;
+    },
+  );
+  assert.equal(sent.length, 2);
+  assert.equal(receipts()[0].ok, false, 'the starvation is still on the record');
+});
+
 test('the openai lane retries too, and carries no reasoning field in either attempt', async () => {
   // engineDiscovery can put the engine's reasoning model on the generic openai lane as well; the
   // budget half of the fix works there, and `reasoning` is OpenRouter-only so it is never sent.

@@ -375,6 +375,7 @@ export async function callOpenAICompatible(
     const retriedCap = starvedRetryCap(cap);
     let ok = false;
     let error: string | undefined;
+    let retryErr: unknown;
     let starvedCap = cap;
     try {
       const retryParams = build({ maxTokens: retriedCap, disableReasoning: true });
@@ -388,6 +389,7 @@ export async function callOpenAICompatible(
       // the ORIGINAL starvation error as the one that surfaces: it is statusless and marked, which is
       // what makes callLLM's cross-lane salvage (with bumpStarvedBudget) still run. The cause is not
       // lost — it rides on the receipt below.
+      retryErr = err;
       error = String((err as Error)?.message ?? err).slice(0, 300);
     }
     // Fires on EVERY starvation, retry landed or not — a starving lane is a pattern, and `ok: false`
@@ -397,6 +399,10 @@ export async function callOpenAICompatible(
       chatId: req.trace?.chatId, handle: req.trace?.handle, taskId: req.trace?.taskId,
       detail: { role: req.role, model, cap, retriedCap, ok, ...(error ? { error } : {}) },
     });
+    // A cancelled retry surfaces as the cancellation it is. callLLM checks the signal rather than
+    // the error, so the abort is honoured either way — but dressing it up as starvation would put a
+    // starvation line in the error log for a turn the caller simply walked away from.
+    if (retryErr !== undefined && req.signal?.aborted) throw retryErr;
     if (!ok) throw starvedError(provider, model, starvedCap);
   }
   // The unretried throw (flag off), and the shape callers have always seen: a status-less error is
