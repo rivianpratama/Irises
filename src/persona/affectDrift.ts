@@ -275,8 +275,11 @@ export function applyAffectDrift(
   const coerced: GaugeKey[] = [];
   for (const spec of GAUGE_SPECS) {
     bounds[spec.key] = boundsFor(spec, input.moodLabel);
-    const raw = (current as Partial<AffectGauges> | undefined)?.[spec.key];
-    const stored = typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+    // Read exactly the way `coerceDials` (climate.ts) and `clampGauge` (status.ts) read one, so the
+    // third mirror of this arithmetic cannot disagree with the other two about `'55'`.
+    const raw = (current as Partial<AffectGauges> | undefined)?.[spec.key] as unknown;
+    const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
+    const stored = Number.isFinite(n) ? n : null;
     const seeded = clampToSpec(stored ?? spec.dflt, bounds[spec.key]);
     next[spec.key] = seeded;
     // A BOUND moving the stored level is the coercion; rounding it is not, and a gauge with no

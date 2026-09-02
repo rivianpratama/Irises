@@ -162,6 +162,35 @@ test('a missing or garbled gauge seeds from its default rather than corrupting t
   assert.equal(r.next.rapport, 40, 'an absent gauge is its default, not 0');
 });
 
+// This seed is the third mirror of the same arithmetic: `coerceDials` (climate.ts) and `clampGauge`
+// (status.ts) both read a numeric string as the number it is, and a gauge that round-tripped
+// through a store that stringifies its numbers must not silently reset to its default here.
+test('a stored gauge that arrived as a numeric string is read, not thrown away', () => {
+  const asString = { ...settled(PEAK), warmth: '55' } as unknown as AffectGauges;
+  const r = applyAffectDrift(asString, shift('steady', 'content'), PEAK, [], T0);
+  assert.equal(r.next.warmth, 59, "'55' seeded 55, then one up step toward PEAK's warmth target");
+  assert.deepEqual(
+    r.next,
+    applyAffectDrift({ ...settled(PEAK), warmth: 55 }, shift('steady', 'content'), PEAK, [], T0).next,
+    'a number in a string is the same turn as the number',
+  );
+  assert.deepEqual(r.report.coerced, [], 'and it was inside its bounds, so nothing snapped it');
+
+  // Out of range in a string is still out of range.
+  const high = applyAffectDrift(
+    { ...settled(PEAK), patience: '150' } as unknown as AffectGauges, shift('steady', 'content'), PEAK, [], T0,
+  );
+  assert.deepEqual(high.report.coerced, ['patience']);
+  assert.equal(high.next.patience, 93, 'clamped to 100, then one down step toward the target');
+
+  // A string that is not a number is still garbage, and still seeds from the default.
+  const garbled = applyAffectDrift(
+    { ...settled(PEAK), warmth: 'quite warm' } as unknown as AffectGauges, shift('steady', 'content'), PEAK, [], T0,
+  );
+  assert.equal(garbled.next.warmth, 54, 'the default 50, then one up step');
+  assert.deepEqual(garbled.report.coerced, [], 'it was seeded, not snapped');
+});
+
 // Every coefficient, pinned at four points — and the one place a coefficient change is meant to
 // fail first, before it surfaces as a confusing off-by-three in a step test further down.
 test('the clock targets are what the fixtures below assume', () => {
