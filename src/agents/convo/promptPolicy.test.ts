@@ -88,7 +88,7 @@ test('the persona teaches exactly the rungs the engine can deliver, in the same 
 
 // ── the bubble law, as stated vs as enforced ─────────────────────────────────
 
-/** The two static bookends after `</prompt>`: the behaviour retelling, then the JSON contract. */
+/** The two static bookends after `</prompt>`: the identity anchor, then the JSON contract. */
 function anchors(): { behavior: string; json: string } {
   const { system } = buildSystemPromptSections(undefined, '');
   const behaviorAt = system.lastIndexOf('## Still the same Irises');
@@ -132,7 +132,7 @@ test('the behaviour anchor states no bubble number at all — the JSON anchor ow
  *  why the spelled copies need a test. */
 const SPELLED = ['zero', 'one', 'two', 'three', 'four', 'five'] as const;
 
-test("the composer's format anchor states the word ceiling the pipeline enforces", () => {
+test("the composer's format anchor states the ceiling and the count the pipeline enforces", () => {
   assert.ok(
     FORMAT_ANCHOR.includes(`never past ${MAX_BUBBLE_WORDS} words`),
     `the composer anchor's word ceiling has drifted from MAX_BUBBLE_WORDS (${MAX_BUBBLE_WORDS})`,
