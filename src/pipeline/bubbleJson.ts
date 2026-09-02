@@ -15,6 +15,7 @@
 import { jsonrepair } from 'jsonrepair';
 import type { LlmToolDef } from '../llm/types.js';
 import { STATUS_SCHEMA_PROP } from '../persona/status.js';
+import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from './bubbles.js';
 
 /** One chat bubble. `re` (optional) is the 1-based index of the burst message this bubble answers —
  *  it renders back into the legacy `[[re:N]]` routing prefix that replyThreading.ts resolves. */
@@ -66,10 +67,25 @@ interface Envelope {
   source?: Record<string, unknown>;
 }
 
-// A reply over this many bubbles is a persona failure, not a real text — cap it so a runaway model
-// can't fan out hundreds of sends. The persona law is 1-2 bubbles ideal, 3 ok, 5 is the absolute
-// ceiling — hitting the cap means the model is being too verbose and needs reinforcing (§10.1).
-export const MAX_BUBBLES = 5;
+// ── the bubble-count law, in two numbers ─────────────────────────────────────────────────────────
+// The LAW is what the model is told and held to: 1-2 bubbles ideal, three at most, no exceptions.
+// Every prompt that states it (Convo's JSON anchor, both envelope schemas below) interpolates this
+// constant, so the prose and the code can never drift apart again.
+export const BUBBLE_LAW_MAX = 3;
+
+// The runaway GUARD sits above the law: a reply over this many bubbles is a persona failure, not a
+// real text, so cap it before a runaway model fans out hundreds of sends. A cap hit means the model
+// is being too verbose and needs reinforcing (§10.1) — over the law is a slip, over the guard is a
+// break, which is why they are two numbers and not one.
+export const BUBBLE_HARD_CAP = 5;
+
+/** The guard's original name, kept so existing importers compile. Same number, one source. */
+export const MAX_BUBBLES = BUBBLE_HARD_CAP;
+
+// The one sentence both envelope schemas use to describe a bubble's text, built from the word law
+// in bubbles.ts (the module that ENFORCES the ceiling) rather than restating it. It used to be two
+// identical literals, one per schema — the exact shape a number drifts out of.
+const BUBBLE_TEXT_DESCRIPTION = `one short thought — one sentence or question, ideally ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, never past ${MAX_BUBBLE_WORDS}`;
 
 // The exact envelope shape, as a JSON Schema for OpenRouter structured outputs (response_format:
 // json_schema). This ENFORCES valid JSON at the API — the fix for weaker tool-calling models
@@ -94,7 +110,7 @@ export const BUBBLE_ENVELOPE_SCHEMA: Record<string, unknown> = {
         additionalProperties: false,
         required: ['text', 're'],
         properties: {
-          text: { type: 'string', description: 'one short thought — one sentence or question, ideally 5-12 words, never past 20' },
+          text: { type: 'string', description: BUBBLE_TEXT_DESCRIPTION },
           re: { type: ['integer', 'null'], description: '1-based index of the incoming burst message this bubble quotes, or null' },
         },
       },
@@ -125,7 +141,7 @@ export const MM_ENVELOPE_SCHEMA: Record<string, unknown> = {
         additionalProperties: false,
         required: ['text'],
         properties: {
-          text: { type: 'string', description: 'one short thought — one sentence or question, ideally 5-12 words, never past 20' },
+          text: { type: 'string', description: BUBBLE_TEXT_DESCRIPTION },
         },
       },
     },
@@ -354,18 +370,41 @@ function coerceBubble(item: unknown): BubbleJson | null {
   return re != null ? { text: trimmed, re } : { text: trimmed };
 }
 
-// Collect items into bubbles. Over the cap we keep the first MAX_BUBBLES-1 PLUS the final bubble —
-// personas put the action/question/consent link last, and the send path's contract is "never drop a
-// word" — rather than truncating the tail. A cap hit is a persona slip, so it's logged.
+// How many times the guard above has fired since anyone last asked. The cap fires deep inside the
+// parse, where there is no chatId and no reply object to hang a flag on, so it is tallied here and
+// drained at the ONE place that reports on a delivered reply (the send boundary in index.ts — see
+// takeHardCapHits). Diagnostic only: nothing about the reply itself depends on this number.
+let hardCapHits = 0;
+
+/**
+ * Read-and-reset the hard-cap tally: how many replies the guard capped since the last read. The
+ * send boundary is the intended single reader — it drains the tally for the reply it is about to
+ * deliver, so `> 0` means "the parse behind THIS reply overran the guard".
+ *
+ * Read-and-reset, not a running total, because a second reader would silently steal the hit. The
+ * one imprecision worth knowing: a parse that caps but ships nothing (a tool-only turn) leaves its
+ * hit for the next delivered reply to report. That is a wrong receipt, never a wrong reply.
+ */
+export function takeHardCapHits(): number {
+  const n = hardCapHits;
+  hardCapHits = 0;
+  return n;
+}
+
+// Collect items into bubbles. Over the guard we keep the first BUBBLE_HARD_CAP-1 PLUS the final
+// bubble — personas put the action/question/consent link last, and the send path's contract is
+// "never drop a word" — rather than truncating the tail. A cap hit is a persona slip, so it's
+// logged, and tallied for the send boundary's BubbleReport.
 function collectBubbles(items: unknown[]): BubbleJson[] {
   const all: BubbleJson[] = [];
   for (const item of items) {
     const b = coerceBubble(item);
     if (b) all.push(b);
   }
-  if (all.length <= MAX_BUBBLES) return all;
-  console.warn(`[bubbles] capped a reply at ${MAX_BUBBLES} bubbles (model overran) — kept the last one`);
-  return [...all.slice(0, MAX_BUBBLES - 1), all[all.length - 1]];
+  if (all.length <= BUBBLE_HARD_CAP) return all;
+  console.warn(`[bubbles] capped a reply at ${BUBBLE_HARD_CAP} bubbles (model overran) — kept the last one`);
+  hardCapHits++;
+  return [...all.slice(0, BUBBLE_HARD_CAP - 1), all[all.length - 1]];
 }
 
 /**
@@ -534,6 +573,62 @@ export function parseMmReply(raw: string | null | undefined): MmParsedReply {
     couldNotOpen: src?.could_not_open === true,
     wasEnvelope: true,
   };
+}
+
+// ── the send boundary's receipt ──────────────────────────────────────────────────────────────────
+// Both bubble caps used to be invisible: the count guard only ever printed a console.warn, and so
+// did the word ceiling (bubbles.ts). A reply that came out four bubbles long, or as a re-split
+// wall, left nothing an attribution pass could read. BubbleReport is that reading — computed once,
+// at the one place the list that actually ships is known.
+
+/** What the bubble law did to one delivered reply. Numbers and flags only — never bubble text. */
+export interface BubbleReport {
+  /** Bubbles actually sent, after both caps and the word-ceiling re-split. */
+  count: number;
+  /** Words in the longest of them (0 when nothing shipped). */
+  maxWords: number;
+  /** Over the law the model was told (`count > BUBBLE_LAW_MAX`) — a persona slip, not a break. */
+  overLaw: boolean;
+  /** The runaway guard fired during the parse: the model wrote more than BUBBLE_HARD_CAP bubbles. */
+  hardCapped: boolean;
+  /** Word-ceiling splits the backstop had to make (`splitLongBubble`) — a wall got through. */
+  splits: number;
+}
+
+/**
+ * Report on the bubbles that ship. Pure: `hardCapped` and `splits` are the two facts the boundary
+ * can't see in the list itself, so they come from the parse (takeHardCapHits) and the splitter
+ * (splitIntoBubblesWithSplits) that produced it.
+ */
+export function buildBubbleReport(bubbles: string[], opts: { hardCapped: boolean; splits: number }): BubbleReport {
+  const wordsIn = (b: string) => b.split(/\s+/).filter(Boolean).length;
+  return {
+    count: bubbles.length,
+    maxWords: bubbles.reduce((max, b) => Math.max(max, wordsIn(b)), 0),
+    overLaw: bubbles.length > BUBBLE_LAW_MAX,
+    hardCapped: opts.hardCapped,
+    splits: opts.splits,
+  };
+}
+
+// The last report per chat, so a turn receipt assembled elsewhere can fold it in without the send
+// boundary having to thread it back up through the agent layers. Bounded: one entry per chat, and
+// a single-host, single-user instance never holds more than a handful of chats — the prune is a
+// belt-and-braces guard against a long-lived process seeing an unbounded spread of chat ids.
+const REPORT_MEMORY = 32;
+const lastReports = new Map<string, BubbleReport>();
+
+/** Park a delivered reply's report under its chat and hand it straight back. */
+export function noteBubbleReport(chatId: string, report: BubbleReport): BubbleReport {
+  lastReports.delete(chatId);              // re-insert so the map's order is least-recent-first
+  lastReports.set(chatId, report);
+  while (lastReports.size > REPORT_MEMORY) lastReports.delete(lastReports.keys().next().value as string);
+  return report;
+}
+
+/** The most recent delivered reply's report for this chat, or undefined if it hasn't sent one. */
+export function lastBubbleReport(chatId: string): BubbleReport | undefined {
+  return lastReports.get(chatId);
 }
 
 export function parseReply(raw: string | null | undefined): ParsedReply {

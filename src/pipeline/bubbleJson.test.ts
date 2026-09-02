@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseBubblesJson, bubblesToLegacyText, normalizeLlmText, parseReply, parseMmReply, buildEnvelopeSchema, BUBBLE_ENVELOPE_SCHEMA, MM_ENVELOPE_SCHEMA, MAX_BUBBLES } from './bubbleJson.js';
-import { splitIntoBubbles } from './bubbles.js';
+import {
+  parseBubblesJson, bubblesToLegacyText, normalizeLlmText, parseReply, parseMmReply, buildEnvelopeSchema,
+  BUBBLE_ENVELOPE_SCHEMA, MM_ENVELOPE_SCHEMA, MAX_BUBBLES, BUBBLE_HARD_CAP, BUBBLE_LAW_MAX,
+  buildBubbleReport, takeHardCapHits, noteBubbleReport, lastBubbleReport,
+} from './bubbleJson.js';
+import { splitIntoBubbles, splitIntoBubblesWithSplits, MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from './bubbles.js';
 import { resolveOutboundBubbles } from '../state/replyThreading.js';
 
 // ── clean envelopes ──────────────────────────────────────────────────────────────────────────
@@ -463,4 +467,90 @@ test('parseReply tolerates a null / missing status without breaking the envelope
   const missing = parseReply('{"confidence_level":80,"bubbles":[{"text":"hi","re":null}]}');
   assert.equal(missing.legacyText, 'hi');
   assert.equal(missing.statusRaw, undefined);
+});
+
+// ── the bubble law: two numbers, one source ──────────────────────────────────────────────────
+// BUBBLE_LAW_MAX is what the model is TOLD (three bubbles, no exceptions); BUBBLE_HARD_CAP is the
+// runaway guard the parser enforces above it. They used to be the same literal `5` in code while
+// the persona said `3`, which is exactly the drift these two names exist to stop.
+
+test('the law the model is told is tighter than the runaway guard, and MAX_BUBBLES is the old name', () => {
+  assert.equal(BUBBLE_LAW_MAX, 3);
+  assert.equal(BUBBLE_HARD_CAP, 5);
+  assert.equal(MAX_BUBBLES, BUBBLE_HARD_CAP, 'the old export name is an alias, same number');
+  assert.ok(BUBBLE_LAW_MAX < BUBBLE_HARD_CAP, 'the guard has to sit above the law it backstops');
+});
+
+test('both envelope schemas describe a bubble with the same single-sourced sentence', () => {
+  const descOf = (schema: Record<string, unknown>): string => {
+    const props = schema.properties as { bubbles: { items: { properties: { text: { description: string } } } } };
+    return props.bubbles.items.properties.text.description;
+  };
+  const expected = `one short thought — one sentence or question, ideally ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, never past ${MAX_BUBBLE_WORDS}`;
+  assert.equal(descOf(BUBBLE_ENVELOPE_SCHEMA), expected);
+  assert.equal(descOf(MM_ENVELOPE_SCHEMA), expected, 'MM reads the same sentence, not its own copy');
+  assert.equal(descOf(buildEnvelopeSchema([{ name: 'x', description: 'd', inputSchema: { type: 'object', properties: {} } }])), expected);
+  // Every digit in that sentence came from a constant — no bare bubble number left behind.
+  assert.deepEqual(
+    [...expected.matchAll(/\d+/g)].map(m => Number(m[0])),
+    [BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI, MAX_BUBBLE_WORDS],
+  );
+});
+
+// ── BubbleReport: both caps, observable ──────────────────────────────────────────────────────
+// What the send boundary in index.ts does, verbatim: split the final text (counting ceiling
+// splits), resolve the reply targets, then report on the list that actually ships.
+
+function deliver(raw: string) {
+  takeHardCapHits();                                  // drain what an earlier test left behind
+  const legacy = normalizeLlmText(raw) ?? '';
+  const hardCapped = takeHardCapHits() > 0;           // read-and-reset: the boundary is the one reader
+  const { bubbles: segments, splits } = splitIntoBubblesWithSplits(legacy);
+  const { bubbles } = resolveOutboundBubbles(segments, ['m1'], { isBurst: false });
+  return { bubbles, report: buildBubbleReport(bubbles, { hardCapped, splits }) };
+}
+
+const envelope = (...texts: string[]) => JSON.stringify({ bubbles: texts.map(text => ({ text })) });
+
+test('BubbleReport counts what ships and the longest bubble in words', () => {
+  const { report } = deliver(envelope('hey', 'the option period ends friday at noon'));
+  assert.deepEqual(report, { count: 2, maxWords: 7, overLaw: false, hardCapped: false, splits: 0 });
+});
+
+test('overLaw fires on the fourth bubble, not the third', () => {
+  assert.equal(deliver(envelope('a', 'b', 'c')).report.overLaw, false, 'three is the law, not a breach');
+  const four = deliver(envelope('a', 'b', 'c', 'd')).report;
+  assert.equal(four.count, 4);
+  assert.equal(four.overLaw, true);
+  assert.equal(four.hardCapped, false, 'four is over the law but under the guard');
+});
+
+test('hardCapped is true when the parser had to cap a six-bubble reply', () => {
+  const six = deliver(envelope('a', 'b', 'c', 'd', 'e', 'f')).report;
+  assert.equal(six.hardCapped, true);
+  assert.equal(six.count, BUBBLE_HARD_CAP);
+  assert.equal(six.overLaw, true);
+  assert.equal(deliver(envelope('a', 'b', 'c', 'd', 'e')).report.hardCapped, false, 'at the cap is not over it');
+});
+
+test('the word ceiling still fires after the count cap, and no word is lost', () => {
+  // Six bubbles where the LAST one — the one the cap deliberately keeps — is a 24-word wall.
+  const wall = 'the option period ends march 14 so you still have your contingency rights until then and i can pull the exact contract language for you';
+  const { bubbles, report } = deliver(envelope('a', 'b', 'c', 'd', 'e', wall));
+  assert.equal(report.hardCapped, true, 'the count cap fired');
+  assert.ok(report.splits >= 1, 'and the word ceiling still ran on what survived it');
+  assert.equal(report.count, BUBBLE_HARD_CAP + report.splits, 'the ceiling adds bubbles above the cap');
+  assert.ok(report.maxWords <= MAX_BUBBLE_WORDS, `a bubble stayed over the ceiling: ${JSON.stringify(bubbles)}`);
+  // Not one word of the wall was dropped between the cap and the ceiling.
+  assert.equal(bubbles.slice(BUBBLE_HARD_CAP - 1).join(' ').replace(/,/g, ''), wall.replace(/,/g, ''));
+});
+
+test('the report is parked per chat for the turn receipt to fold in', () => {
+  const { report } = deliver(envelope('hey'));
+  assert.equal(lastBubbleReport('chat:none'), undefined, 'a chat that never sent has no report');
+  assert.equal(noteBubbleReport('chat:a', report), report, 'noting hands the report straight back');
+  assert.deepEqual(lastBubbleReport('chat:a'), report);
+  const second = deliver(envelope('hey', 'and again')).report;
+  noteBubbleReport('chat:a', second);
+  assert.deepEqual(lastBubbleReport('chat:a'), second, 'the newest reply wins');
 });

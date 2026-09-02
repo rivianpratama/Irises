@@ -60,6 +60,13 @@ export function splitSentences(bubble: string): string[] {
 // call and code stays out of the way; above it the persona has already failed and we re-split.
 export const MAX_BUBBLE_WORDS = 20;
 
+// The band the prompts tell the model to AIM for, well under the ceiling above — a texting-sized
+// thought. Nothing enforces the band (a 3-word bubble is fine, a 15-word one is the persona's
+// call); it exists as a constant so the sentences that state it — Convo's JSON anchor and both
+// envelope schemas (bubbleJson.ts) — interpolate one source instead of each spelling out "5-12".
+export const BUBBLE_WORD_TARGET_LO = 5;
+export const BUBBLE_WORD_TARGET_HI = 12;
+
 // Where a run-on naturally breathes: right BEFORE one of these words a human would have hit
 // send and started the next bubble ("...ends march 14" / "so you've still got...").
 const CLAUSE_STARTERS = /^(?:so|but|and|or|then|plus|also|though|cause|because|which|if|want|wanna)$/i;
@@ -74,8 +81,12 @@ const CLAUSE_STARTERS = /^(?:so|but|and|or|then|plus|also|though|cause|because|w
  * whole so a tappable link never shatters; tight ranges ("$1,800-2,000", "3-5") are single
  * tokens by the time we're called (cleanResponse), so a split can never land inside one.
  * Logs once per hit — a hit means a persona let a wall through and needs reinforcing (§10.1).
+ *
+ * `tally` (optional) counts the seams this call had to add, recursion included — one per log line,
+ * i.e. one per extra bubble the ceiling created. Only splitIntoBubblesWithSplits passes it; every
+ * other caller gets exactly the behavior it always had.
  */
-export function splitLongBubble(bubble: string): string[] {
+export function splitLongBubble(bubble: string, tally?: { splits: number }): string[] {
   const words = bubble.split(/\s+/).filter(Boolean);
   if (words.length <= MAX_BUBBLE_WORDS) return [bubble];
   if (/https?:\/\//i.test(bubble)) return [bubble]; // never break a link bubble
@@ -96,7 +107,8 @@ export function splitLongBubble(bubble: string): string[] {
   const left = words.slice(0, best).join(' ').replace(/,$/, '');
   const right = words.slice(best).join(' ');
   console.warn(`[guardrail] split a ${words.length}-word bubble over the ${MAX_BUBBLE_WORDS}-word ceiling`);
-  return [...splitLongBubble(left), ...splitLongBubble(right)];
+  if (tally) tally.splits++;
+  return [...splitLongBubble(left, tally), ...splitLongBubble(right, tally)];
 }
 
 // Split a reply into chat bubbles. Breaks on "---", newlines, a SPACED em/en-dash
@@ -106,7 +118,18 @@ export function splitLongBubble(bubble: string): string[] {
 // $1,800–2,000, word—word) is part of a range/compound and is left intact for
 // cleanResponse to normalize, so ranges are never chopped across two bubbles.
 export function splitIntoBubbles(text: string): string[] {
-  return text
+  return splitIntoBubblesWithSplits(text).bubbles;
+}
+
+/**
+ * splitIntoBubbles plus the number of word-ceiling splits it had to make — the same `bubbles`,
+ * character for character, with the count the send boundary needs for its BubbleReport (a nonzero
+ * `splits` means a persona shipped a wall and the backstop caught it). Kept as the one
+ * implementation so the plain splitter above can never diverge from the counted one.
+ */
+export function splitIntoBubblesWithSplits(text: string): { bubbles: string[]; splits: number } {
+  const tally = { splits: 0 };
+  const bubbles = text
     // Normalize SPACED numeric/currency ranges ("$1,800 – $2,000", "3 – 5") to a tight
     // hyphen BEFORE the split below, or the spaced-dash rule would chop the range across
     // two bubbles. Word-level spaced dashes still split (that rule stays).
@@ -117,5 +140,6 @@ export function splitIntoBubbles(text: string): string[] {
     .filter(m => m.length > 0)
     // Word-ceiling enforcement LAST, on the cleaned text: cleanResponse turns mid-sentence
     // dashes into commas, which are exactly the seams splitLongBubble prefers.
-    .flatMap(m => splitLongBubble(m));
+    .flatMap(m => splitLongBubble(m, tally));
+  return { bubbles, splits: tally.splits };
 }

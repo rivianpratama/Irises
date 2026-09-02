@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { splitIntoBubbles, splitLongBubble, MAX_BUBBLE_WORDS } from './bubbles.js';
+import {
+  splitIntoBubbles, splitIntoBubblesWithSplits, splitLongBubble,
+  MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI,
+} from './bubbles.js';
 
 const words = (s: string) => s.split(/\s+/).filter(Boolean).length;
 
@@ -83,4 +86,36 @@ test('sentence boundaries still split even without ---', () => {
 test('abbreviations and decimals still do not trigger a sentence split', () => {
   assert.deepEqual(splitIntoBubbles('showing is at 9 a.m. tomorrow at the house'), ['showing is at 9 a.m. tomorrow at the house']);
   assert.deepEqual(splitIntoBubbles('rate came in at 6.5 today'), ['rate came in at 6.5 today']);
+});
+
+// ── the bubble-length law, single-sourced ────────────────────────────────────────────────────
+// Every prompt that states the law (Convo's JSON anchor, both envelope schemas) now interpolates
+// these three numbers instead of spelling them out, so the prose and the backstop can never drift.
+
+test('the word-target band lives beside the ceiling it sits under', () => {
+  assert.equal(BUBBLE_WORD_TARGET_LO, 5);
+  assert.equal(BUBBLE_WORD_TARGET_HI, 12);
+  assert.equal(MAX_BUBBLE_WORDS, 20);
+  assert.ok(BUBBLE_WORD_TARGET_LO < BUBBLE_WORD_TARGET_HI, 'the band has to read low-to-high');
+  assert.ok(BUBBLE_WORD_TARGET_HI < MAX_BUBBLE_WORDS, 'the target has to sit under the hard ceiling');
+});
+
+// ── the split count, for the send boundary's receipt ─────────────────────────────────────────
+
+test('splitIntoBubblesWithSplits counts every ceiling split and loses no word', () => {
+  // One unpunctuated 29-word run-on: the ONLY thing that can break it up is the word ceiling,
+  // so the extra bubbles and the reported split count have to be the same number.
+  const wall = 'the option period ends march 14 so you still have your contingency rights until then and i can pull the exact contract language for you if that would help you decide';
+  const { bubbles, splits } = splitIntoBubblesWithSplits(wall);
+  assert.ok(splits >= 1, 'a wall over the ceiling has to report a split');
+  assert.equal(bubbles.length - 1, splits, 'one split per extra bubble the ceiling created');
+  for (const b of bubbles) assert.ok(words(b) <= MAX_BUBBLE_WORDS, `bubble over ceiling: "${b}"`);
+  assert.equal(bubbles.join(' ').replace(/,/g, ''), wall.replace(/,/g, ''), 'nothing lost');
+});
+
+test('splitIntoBubbles is the same output as the counted split, and a clean reply reports 0', () => {
+  const t = "option period ends march 14\n---\nyou've still got your contingency rights til then";
+  const counted = splitIntoBubblesWithSplits(t);
+  assert.deepEqual(counted.bubbles, splitIntoBubbles(t), 'the plain splitter stays byte-identical');
+  assert.equal(counted.splits, 0, 'no bubble was over the ceiling, so the ceiling never fired');
 });
