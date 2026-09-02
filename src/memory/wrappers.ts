@@ -37,7 +37,7 @@ import { loadMediumBundle, renderFactsBlock, type MediumBundle } from './mediumT
 import { looksUnsafe, sanitizeDirectives } from './preferences.js';
 import { stripScopeSections } from './userContext.js';
 import { isGroupHandle } from './identity.js';
-import { dataTag } from '../llm/promptTag.js';
+import { dataTag, neutralizeTagBreakouts } from '../llm/promptTag.js';
 import { getEngineBackend } from '../agents/ops/engineBackend.js';
 import type { UserProfile } from '../db/types.js';
 import type { Directive } from '../db/repositories/memory.js';
@@ -62,17 +62,11 @@ export const AGENT_MEMORY_MATRIX: Record<MemoryAgent, { short: 'all' | 'none'; m
 
 export const MEMORY_LONG_MAX_CHARS = 6000;
 
-const PAYLOAD_TAGS = ['prompt', 'memory_short', 'memory_medium', 'memory_long', 'user_directives'];
-const TAG_BREAKOUT_RE = new RegExp(`<(/?)(?:${PAYLOAD_TAGS.join('|')})\\b`, 'gi');
-
-/**
- * Neutralize any literal open/close of our own data tags inside a payload, so stored content
- * can never close its tag and promote itself to instruction position. New, necessary guard:
- * the long doc is the first injected artifact whose author may be adversarial AND multi-line.
- */
-export function neutralizeTagBreakouts(text: string): string {
-  return text.replace(TAG_BREAKOUT_RE, m => `&lt;${m.slice(1)}`);
-}
+// The tag-breakout defuser moved to llm/promptTag.ts, beside the tags it defends — the turn-focus
+// block needs the same guard for text it prints with no tag around it at all, and it cannot import
+// this module (wrappers → relevance → turnFocus already runs the other way). Re-exported to keep
+// the historical import path working, the same pattern as shortEntryLabel below.
+export { neutralizeTagBreakouts } from '../llm/promptTag.js';
 
 /** Split a markdown doc into heading-delimited sections (preamble before the first heading
  *  is its own section). Granularity rationale: a whole-doc screen would nuke a legitimate

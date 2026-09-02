@@ -24,3 +24,21 @@ export function dataTag(name: string, content: string | null | undefined): strin
   if (!body) return '';
   return `<${name}>\n${body}\n</${name}>`;
 }
+
+/** The tags a payload could close to promote itself out of data position. Lives here, beside the
+ *  tags themselves, because every payload that carries text somebody else wrote has to defuse the
+ *  same list — the memory tiers on their way into their own tag (memory/wrappers.ts), and the
+ *  turn-focus block, whose hits line is prose with no tag around it at all. */
+const PAYLOAD_TAGS = [PROMPT_TAG, 'memory_short', 'memory_medium', 'memory_long', 'user_directives'];
+const TAG_BREAKOUT_RE = new RegExp(`<(/?)(?:${PAYLOAD_TAGS.join('|')})\\b`, 'gi');
+
+/**
+ * Neutralize any literal open/close of our own data tags inside a payload, so stored content can
+ * never close its tag and promote itself to instruction position. Necessary wherever text the
+ * codebase did not author reaches the system prompt: the long doc is the first injected artifact
+ * whose author may be adversarial AND multi-line, and the turn-focus block is the first to print
+ * such text OUTSIDE a data tag.
+ */
+export function neutralizeTagBreakouts(text: string): string {
+  return text.replace(TAG_BREAKOUT_RE, m => `&lt;${m.slice(1)}`);
+}

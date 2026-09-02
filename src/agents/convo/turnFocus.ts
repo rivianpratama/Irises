@@ -20,7 +20,7 @@
 // the caller already computed (convo/client.ts assembles the input; convo/shared.ts pushes it last).
 // The one env read is the feature flag at the bottom, which gates the PUSH SITE, not the renderer.
 
-import { dataTag } from '../../llm/promptTag.js';
+import { dataTag, neutralizeTagBreakouts } from '../../llm/promptTag.js';
 
 /**
  * What a message IS, as far as code can tell from its surface. Six shapes, single-sourced here so
@@ -213,10 +213,15 @@ export function classifyTurnShape(text: string): TurnShape {
  * Exported because the turn receipt reports "what she was shown" (convo/client.ts) and the only
  * honest way to say that is to ask the block. Slicing the raw list instead reported a label the
  * block had dropped, and hid the one it printed in its place.
+ *
+ * A label is somebody else's words — a note, a fact, a directive, a section heading — and this line
+ * prints them with no data tag around them, so a stored `</prompt>` here would end the dynamic
+ * block early and promote whatever follows to instruction position. Defused before the clip, so
+ * the escaped length is the length that counts.
  */
 export function renderedTurnFocusHits(hits: readonly TurnFocusHit[]): TurnFocusHit[] {
   return hits
-    .map(h => ({ label: clip(h.label.replace(/\s+/g, ' ').trim(), TURN_FOCUS_LABEL_CHARS), source: h.source }))
+    .map(h => ({ label: clip(neutralizeTagBreakouts(h.label.replace(/\s+/g, ' ').trim()), TURN_FOCUS_LABEL_CHARS), source: h.source }))
     .filter(h => h.label)
     .slice(0, TURN_FOCUS_MAX_HITS);
 }
@@ -242,7 +247,9 @@ export function renderTurnFocus(input: TurnFocusInput): string {
 
   return [
     HEADER,
-    dataTag('their_message', clip(message, TURN_FOCUS_TEXT_CHARS)),
+    // Their own words, restated inside the system prompt — the one place a user's text lands there.
+    // Defused for the same reason the labels are: a typed `</prompt>` must not close the wrapper.
+    dataTag('their_message', clip(neutralizeTagBreakouts(message), TURN_FOCUS_TEXT_CHARS)),
     `Shape: ${classifyTurnShape(message)}`,
     `${HITS_LABEL}${held}`,
     CLOSER,
