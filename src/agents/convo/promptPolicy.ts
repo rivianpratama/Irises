@@ -51,7 +51,7 @@ export type BudgetKey = SectionId | 'memory_stack';
  * `intro_weave`, `weather`, `thread`, `turn_focus`, the timing reads) are the ratchet proper.
  */
 export const PROMPT_BUDGET: Record<BudgetKey, number> = {
-  persona: 141_300,            // 141,165 — P1: envelope once, three rungs (was 146,000 for 145,851)
+  persona: 141_600,            // 141,474 — P1: envelope once, three rungs, bands re-homed (was 141,300 for 141,165)
   tool_docs: 16_500,           // 16,288 — the group fixture (13 tools; the 1:1 lane carries 11)
   capability: 248,             // 237 — all six capability classes minus inbox, the longest line
   model_map: 800,              // 387 on a bare checkout — HOST-DEPENDENT, see above
@@ -122,6 +122,30 @@ export const RULE_ANCHORS: Array<{ id: string; personaAnchor: string }> = [
   { id: 'when_unsure_dont', personaAnchor: "When unsure, don't" },
 ];
 
+
+/**
+ * The four `confidence_level` bands and the reply each one buys.
+ *
+ * P1 deleted the two restatements of this mapping — Context.md's opening `ABSOLUTE RULE` and its
+ * `FINAL REMINDER` — which left it stated only in the JSON anchor. That is one home, and the one at
+ * the recency edge, but it is a code file: the persona's own confidence section then taught how to
+ * SCORE at length and never said what the score BUYS, so a persona editor reading Context.md end to
+ * end could not find the mapping at all. It is back in that section as one compressed sentence, and
+ * the JSON anchor keeps its copy last. That is the same arrangement as the bubble law — the section
+ * owns the teaching, the anchor states the operational law at the edge — and, like the bubble law,
+ * two copies need a test to keep them in step.
+ *
+ * Each row pins what its band buys IN EACH COPY, because the two are deliberately worded for their
+ * own place rather than duplicated byte for byte. Read the two columns side by side: they have to
+ * describe the same reply. Reword the prose around a phrase freely; losing one means that copy now
+ * promises a different reply than the other, which is the drift no other test can see.
+ */
+export const CONFIDENCE_BANDS: ReadonlyArray<{ band: string; personaShape: string; anchorShape: string }> = [
+  { band: '0-30', personaShape: 'get the missing details', anchorShape: 'ask for the missing details' },
+  { band: '30-60', personaShape: 'one short confirm', anchorShape: 'confirm with ONE short question' },
+  { band: '60-80', personaShape: 'walk it through', anchorShape: 'walk it through' },
+  { band: '80-100', personaShape: 'straight answer', anchorShape: 'straight answer, first bubble, no preamble' },
+];
 
 /** One counted clause: the phrase, how many times the assembled prompt carries it today, and how
  *  that total splits between the per-turn body and the two static anchors after `</prompt>`. */

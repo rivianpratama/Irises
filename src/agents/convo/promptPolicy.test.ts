@@ -18,7 +18,7 @@ process.env.TZ = 'UTC';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSystemPromptSections } from './shared.js';
-import { RULE_ANCHORS } from './promptPolicy.js';
+import { RULE_ANCHORS, CONFIDENCE_BANDS } from './promptPolicy.js';
 import { loadContext } from '../loadContext.js';
 import { BUBBLE_LAW_MAX } from '../../pipeline/bubbleJson.js';
 import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '../../pipeline/bubbles.js';
@@ -116,6 +116,52 @@ test('the behaviour anchor states no bubble number at all — the JSON anchor ow
   assert.deepEqual(digits, [], 'a number came back into the behaviour anchor — state it in the JSON anchor instead');
   const bullets = behavior.split('\n').filter(l => l.startsWith('- '));
   assert.equal(bullets.length, 6, 'the anchor is the six lines that drift first, and stays that short');
+});
+
+// ── the confidence bands, as taught vs as anchored ───────────────────────────
+//
+// `confidence_level` is the first field of every reply, and the number is only worth setting because
+// it picks the SHAPE of the reply. Until this test that mapping lived only in the JSON anchor: P1
+// deleted the two prose restatements (the opening ABSOLUTE RULE and the FINAL REMINDER) and the
+// persona's own confidence section teaches how to score without ever saying what a score buys. So
+// the section states it again, once, compressed — and this holds the two copies in step, the same
+// job the bubble-law checks above do for the numbers.
+
+/** Where the compressed mapping lives in the persona. Bold lead-in, so it is findable by a reader
+ *  scanning the section as well as by this test. */
+const BAND_MAPPING_LEAD = "**The band picks the reply's shape";
+
+test('the persona says what each confidence band buys, and the JSON anchor still agrees', () => {
+  const persona = loadContext('convo');
+  const at = persona.indexOf(BAND_MAPPING_LEAD);
+  assert.ok(
+    at > 0,
+    `the confidence section no longer maps a band to a reply shape (looked for ${JSON.stringify(BAND_MAPPING_LEAD)}). It teaches how to SCORE and never says what the score buys, which leaves the mapping only in the JSON anchor — a code file no persona editor reads.`,
+  );
+  const mapping = persona.slice(at, persona.indexOf('\n', at));
+
+  const copies = [
+    { name: 'the persona confidence section', text: mapping, shape: (b: typeof CONFIDENCE_BANDS[number]) => b.personaShape },
+    { name: 'the JSON anchor', text: anchors().json, shape: (b: typeof CONFIDENCE_BANDS[number]) => b.anchorShape },
+  ];
+  for (const copy of copies) {
+    const found = CONFIDENCE_BANDS.map(b => ({
+      band: b.band, phrase: copy.shape(b),
+      bandAt: copy.text.indexOf(b.band), shapeAt: copy.text.indexOf(copy.shape(b)),
+    }));
+    for (const f of found) {
+      assert.ok(f.bandAt >= 0, `${copy.name}: the ${f.band} band is gone from the mapping`);
+      assert.ok(
+        f.shapeAt >= 0,
+        `${copy.name}: the ${f.band} band no longer buys ${JSON.stringify(f.phrase)} — the two copies now promise different replies. If the wording moved on, move CONFIDENCE_BANDS with it in the same commit.`,
+      );
+    }
+    const byBand = [...found].sort((a, b) => a.bandAt - b.bandAt).map(f => f.band);
+    const byShape = [...found].sort((a, b) => a.shapeAt - b.shapeAt).map(f => f.band);
+    const order = CONFIDENCE_BANDS.map(b => b.band);
+    assert.deepEqual(byBand, order, `${copy.name}: the bands are not listed lowest-first`);
+    assert.deepEqual(byShape, order, `${copy.name}: the shapes do not climb with the bands — a band is described by the wrong reply`);
+  }
 });
 
 // ── the same law, as the other lanes state it ────────────────────────────────
