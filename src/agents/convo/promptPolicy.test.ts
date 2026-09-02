@@ -22,7 +22,7 @@ import { RULE_ANCHORS, CONFIDENCE_BANDS } from './promptPolicy.js';
 import { loadContext } from '../loadContext.js';
 import { BUBBLE_LAW_MAX } from '../../pipeline/bubbleJson.js';
 import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '../../pipeline/bubbles.js';
-import { ENVELOPE_FIELDS } from '../../persona/status.js';
+import { ENVELOPE_FIELDS, STATUS_CONTRACT_HEADER } from '../../persona/status.js';
 import { MOOD_CORES, CORE_VALENCE_BAND } from '../../persona/mood.js';
 import type { ThreadRung } from '../../persona/threads.js';
 import { FORMAT_ANCHOR } from '../composerCore.js';
@@ -97,9 +97,13 @@ test('the persona teaches exactly the rungs the engine can deliver, in the same 
 // `status_contract` section is the copy the model reads. This is what holds them out of the prose: a
 // well-meant "let me just remind her what mood_core is" in Context.md fails here.
 
-/** How Context.md names the per-turn block that carries the field list now. The contract's own
- *  heading, so a rename fails on both sides at once. */
-const STATUS_CONTRACT_POINTER = 'under "Your hidden status — the contract"';
+/** How Context.md names the per-turn block that carries the field list now — DERIVED from the
+ *  contract's own heading (persona/status.ts), so renaming the heading fails here, on the persona
+ *  side, in the same run. It used to be a hardcoded copy of the same words, which meant a rename
+ *  failed only because internalWeather.test.ts spelled them a third time: nothing linked Context.md's
+ *  pointer to the code's heading, and this check would have gone on passing while the persona pointed
+ *  at a block that no longer existed under that name. */
+const STATUS_CONTRACT_POINTER = `under "${STATUS_CONTRACT_HEADER.replace(/^## /, '')}"`;
 
 /**
  * The one thing the persona still says about a named envelope field, and it is a RULE rather than a

@@ -6,7 +6,9 @@ process.env.TZ = 'UTC';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSystemPrompt, type ChatContext } from './shared.js';
-import { coerceStatus, mergeStatus, type AffectState, type ComputedState } from '../../persona/status.js';
+import {
+  coerceStatus, mergeStatus, STATUS_CONTRACT_HEADER, type AffectState, type ComputedState,
+} from '../../persona/status.js';
 import { computeCycle } from '../../persona/cycle.js';
 import { computeCircadian } from '../../persona/circadian.js';
 import { defaultClimate, type RelationshipClimate } from '../../persona/climate.js';
@@ -50,7 +52,7 @@ test('a prior mood + meta-prompt carry forward into the block', () => {
 test('the status contract rides with the weather block, and the tail points at it', () => {
   const prompt = buildSystemPrompt(ctx, '', [], undefined, undefined, [], 'hey', undefined, affect(), COMPUTED);
   const weather = prompt.indexOf('## Where you are right now (INTERNAL weather');
-  const contract = prompt.indexOf('## Your hidden status — the contract');
+  const contract = prompt.indexOf(STATUS_CONTRACT_HEADER);
   assert.ok(weather !== -1, 'the weather block is present');
   assert.ok(contract > weather, 'the contract follows it');
   assert.equal(
@@ -70,7 +72,7 @@ test('no computed state → no internal-weather block and no contract (legacy pa
   assert.ok(!prompt.includes('INTERNAL weather'));
   // The HEADING, `## ` and all: the persona still points at the block by name ("…arrive in your
   // per-turn context under 'Your hidden status — the contract'"), which is not the block itself.
-  assert.ok(!prompt.includes('## Your hidden status — the contract'), 'nothing asked her to re-report, so no contract');
+  assert.ok(!prompt.includes(STATUS_CONTRACT_HEADER), 'nothing asked her to re-report, so no contract');
 });
 
 // The weeks-scale standing register (persona/climate.ts) rides the SAME block — one header, ever.

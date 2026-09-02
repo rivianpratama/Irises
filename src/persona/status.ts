@@ -445,8 +445,14 @@ export function renderStatusForPrompt(
 /** The contract's heading. Its own section (`status_contract`, agents/convo/promptSections.ts),
  *  pushed immediately after the weather block, whose last line points at it by this name — and named
  *  in Context.md's inner-weather section, which now says where the fields are described instead of
- *  describing them a second time. */
-const STATUS_CONTRACT_HEADER = '## Your hidden status — the contract';
+ *  describing them a second time.
+ *
+ *  EXPORTED for the tests that hold those two pointers to it: promptPolicy.test.ts derives Context.md's
+ *  quoted name from this string rather than repeating it, and internalWeather.test.ts locates the
+ *  section by it. Nothing at runtime reads it from outside — renderStatusContract is the only caller —
+ *  but a rename here has to fail in the places that quote the heading, and the way to guarantee that
+ *  is for them to read the heading instead of spelling it again. */
+export const STATUS_CONTRACT_HEADER = '## Your hidden status — the contract';
 
 /**
  * The envelope's hidden `status` field, as PROSE for the model — one bullet per field, in envelope
