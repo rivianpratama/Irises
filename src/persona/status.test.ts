@@ -289,9 +289,9 @@ test('renderStatusForPrompt always warns it is internal, and carries prior mood 
   assert.match(warm, /hopeful/);
   assert.match(warm, /keep it light/); // the prior meta_prompt is re-injected
 
-  // Phase A is capture-only: neither threading field reaches the prompt, and the re-report tail
-  // deliberately keeps naming the same fields it always did — naming a usually-null field in an
-  // every-turn instruction is what makes a model start inventing one to fill.
+  // The threading capture is still read by nobody HERE: neither field's value reaches the weather
+  // block, and the re-report tail names no field at all now — it points at the contract, which
+  // describes all seventeen in one place (the contract's own bullets are tested above).
   // (The bare /thread/i sweep is safe because COMPUTED's slot is afternoon_peak; the EVENING
   // circadian description legitimately uses the word, so keep this fixture out of 18:00-22:00.)
   assert.doesNotMatch(warm, /thread/i);
@@ -359,7 +359,7 @@ test('a moved climate rides ONE weather block, after the momentum lines and befo
   const momentum = out.indexOf('Your state has MOMENTUM');
   const meta = out.indexOf('Your read going into this message');
   const leadIn = out.indexOf('standing register');
-  const reReport = out.indexOf('re-report your `status`');
+  const reReport = out.indexOf('Re-report your `status`');
   assert.ok(momentum !== -1 && meta !== -1 && leadIn !== -1 && reReport !== -1);
   assert.ok(leadIn > momentum, 'climate must sit after the momentum line');
   assert.ok(leadIn > meta, 'climate must sit after the carried meta-prompt');

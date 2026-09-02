@@ -35,7 +35,10 @@ import { parseReply, BUBBLE_LAW_MAX } from '../../pipeline/bubbleJson.js';
 import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '../../pipeline/bubbles.js';
 import { timestampLabel, renderConversationTiming, describeGap } from '../../pipeline/chatTime.js';
 import { DEFAULT_TZ } from '../../pipeline/zonedTime.js';
-import { renderStatusForPrompt, coerceStatus, mergeStatus, type AffectState, type ComputedState } from '../../persona/status.js';
+import {
+  renderStatusForPrompt, renderStatusContract, coerceStatus, mergeStatus,
+  type AffectState, type ComputedState,
+} from '../../persona/status.js';
 import { renderThreadForPrompt } from '../../persona/threads.js';
 import { saveAffectState } from '../../db/repositories/affectState.js';
 import type { RelationshipClimate } from '../../persona/climate.js';
@@ -740,7 +743,15 @@ export function buildSystemPromptSections(
   // Irises's internal weather — her cycle/circadian baseline + carried-forward mood + last-turn
   // meta-prompt. Sits right after the clock (both are "where am I right now" orientation) and, like
   // the clock, is code-precomputed so she never has to derive it. NEVER named to the user.
-  if (computed) push('weather', renderStatusForPrompt(affectState, computed, climate));
+  // …and, immediately below it, the contract for the hidden `status` field the weather block's last
+  // line tells her to re-report (persona/status.ts renderStatusContract — generated from the same
+  // ENVELOPE_FIELDS table that builds the response schema, so the prose and the schema cannot say
+  // different things). Same guard on purpose: with no computed state nothing asks her to re-report,
+  // and a spec for a field nobody prompted is just weight.
+  if (computed) {
+    push('weather', renderStatusForPrompt(affectState, computed, climate));
+    push('status_contract', renderStatusContract());
+  }
 
   // The one standing thread of theirs she may pick up this turn. Its OWN dyn entry, deliberately
   // adjacent to the weather block rather than inside it: the weather block ends on a pinned re-report

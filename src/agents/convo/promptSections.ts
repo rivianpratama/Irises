@@ -33,6 +33,7 @@ export const DYN_SECTION_IDS = [
   'burst',                // the numbered incoming messages of a burst
   'current_time',         // unconditional
   'weather',              // renderStatusForPrompt — affect + cycle/circadian + climate
+  'status_contract',      // renderStatusContract — the hidden envelope's fields, where weather points
   'thread',               // renderThreadForPrompt — the one standing thread on offer
   'conversation_timing',  // renderConversationTiming
   'reply_order',          // renderArrivalGap OR renderReplyOrder — never both

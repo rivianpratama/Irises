@@ -399,7 +399,8 @@ const FIXTURES: Fixture[] = [
     memoryStack: MATURE_STACK,
     sections: [
       'persona', 'tool_docs', 'capability', 'model_map', 'context_block', 'current_time',
-      'weather', 'conversation_timing', 'reply_order', 'turn_focus', 'behavior_anchor', 'json_anchor',
+      'weather', 'status_contract', 'conversation_timing', 'reply_order', 'turn_focus',
+      'behavior_anchor', 'json_anchor',
     ],
   },
   {
@@ -427,7 +428,7 @@ const FIXTURES: Fixture[] = [
     memoryStack: MEDIA_STACK,
     sections: [
       'persona', 'tool_docs', 'capability', 'model_map', 'context_block', 'active_ops',
-      'current_time', 'weather', 'conversation_timing', 'reply_order', 'turn_focus',
+      'current_time', 'weather', 'status_contract', 'conversation_timing', 'reply_order', 'turn_focus',
       'behavior_anchor', 'json_anchor',
     ],
   },
@@ -463,7 +464,7 @@ const FIXTURES: Fixture[] = [
     memoryStack: GROUP_STACK,
     sections: [
       'persona', 'tool_docs', 'capability', 'model_map', 'context_block', 'group', 'tapped_reply',
-      'burst', 'current_time', 'weather', 'conversation_timing', 'turn_focus',
+      'burst', 'current_time', 'weather', 'status_contract', 'conversation_timing', 'turn_focus',
       'behavior_anchor', 'json_anchor',
     ],
   },
@@ -494,7 +495,7 @@ const FIXTURES: Fixture[] = [
     memoryStack: MATURE_STACK,
     sections: [
       'persona', 'tool_docs', 'capability', 'model_map', 'context_block', 'current_time',
-      'weather', 'thread', 'conversation_timing', 'reply_order', 'extra', 'turn_focus',
+      'weather', 'status_contract', 'thread', 'conversation_timing', 'reply_order', 'extra', 'turn_focus',
       'behavior_anchor', 'json_anchor',
     ],
   },

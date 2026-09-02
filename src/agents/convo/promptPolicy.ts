@@ -45,6 +45,11 @@ export type BudgetKey = SectionId | 'memory_stack';
  * grows with USE rather than with editing — every look, note and directive lands in it — and because
  * a `context_block` ceiling alone cannot say whether the dossier or the tiers moved.
  *
+ * `status_contract` is prose too, but GENERATED prose: the seventeen ENVELOPE_FIELDS descriptions plus
+ * the feeling wheel (persona/status.ts), identical on every turn. It is the one line here that cannot
+ * be tightened in the prompt alone — those descriptions are also the response schema both lanes
+ * validate against, so shrinking this number means editing the table and moving both copies at once.
+ *
  * The data-shaped sections (`context_block`, `memory_stack`, `burst`, `group`, `active_ops`,
  * `tapped_reply`) are measured on their fixture's data, so changing a fixture re-measures the number
  * rather than breaking the test's meaning. The prose-shaped ones (`persona`, both anchors,
@@ -64,6 +69,7 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
   burst: 1_160,                // 1,110 — three messages, group-labelled
   current_time: 305,           // 291 — fixed prose plus the formatted instant
   weather: 2_700,              // 2,581 — affect + cycle + circadian + a moved climate
+  status_contract: 3_650,      // 3,591 — STATIC (ENVELOPE_FIELDS + the wheel), the same on every turn
   thread: 1_270,               // 1,211 — a pattern-rung theme offer plus a loop outcome ask
   conversation_timing: 278,    // 266 — the widest of the gap/regime readings on these fixtures
   reply_order: 640,            // 613 — renderArrivalGap (the backward-order variant, the larger one)

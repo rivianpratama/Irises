@@ -43,9 +43,32 @@ test('a prior mood + meta-prompt carry forward into the block', () => {
   assert.match(prompt, /keep it light and follow their lead/); // carried meta-prompt
 });
 
-test('no computed state → no internal-weather block (legacy path unchanged)', () => {
+// The envelope contract (persona/status.ts renderStatusContract) is its OWN section, pushed under the
+// same `computed` guard and immediately after the weather block — whose last line is now one pointer
+// at it instead of a 470-character re-listing of the fields it describes.
+
+test('the status contract rides with the weather block, and the tail points at it', () => {
+  const prompt = buildSystemPrompt(ctx, '', [], undefined, undefined, [], 'hey', undefined, affect(), COMPUTED);
+  const weather = prompt.indexOf('## Where you are right now (INTERNAL weather');
+  const contract = prompt.indexOf('## Your hidden status — the contract');
+  assert.ok(weather !== -1, 'the weather block is present');
+  assert.ok(contract > weather, 'the contract follows it');
+  assert.equal(
+    prompt.slice(weather, contract).split('\n## ').length - 1, 0,
+    'nothing is pushed between the weather block and the contract it points at',
+  );
+
+  assert.match(prompt, /- Re-report your `status` per the contract below; never spoken\./);
+  assert.ok(!prompt.includes('After you read them, re-report'), 'the long re-report tail is gone');
+  // What the tail used to spell out, the contract's bullets now do — once.
+  assert.match(prompt, /- `meta_prompt` —/);
+  assert.match(prompt, /joyful: excited/);
+});
+
+test('no computed state → no internal-weather block and no contract (legacy path unchanged)', () => {
   const prompt = buildSystemPrompt(ctx, '', [], undefined, undefined, [], 'hey', undefined);
   assert.ok(!prompt.includes('INTERNAL weather'));
+  assert.ok(!prompt.includes('Your hidden status — the contract'), 'nothing asked her to re-report, so no contract');
 });
 
 // The weeks-scale standing register (persona/climate.ts) rides the SAME block — one header, ever.
@@ -63,7 +86,7 @@ test('a moved climate reaches the assembled prompt as prose, with no dial values
 
   // A dial VALUE in the prompt is a thing to optimize; a band is a thing to speak in.
   const from = prompt.indexOf('standing register');
-  const to = prompt.indexOf('re-report your `status`');
+  const to = prompt.indexOf('Re-report your `status`');
   assert.ok(from !== -1 && to > from);
   assert.doesNotMatch(prompt.slice(from, to), /\d/);
 });

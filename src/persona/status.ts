@@ -413,7 +413,10 @@ export function renderStatusForPrompt(
   // relationship has actually moved.
   lines.push(...climateLines(climate));
 
-  lines.push('- After you read them, re-report your `status` in this reply: your mood on the wheel (core + one word) and its 1-100 level, the gauges, what they are doing (intent), whether real INFORMATION moved you vs just pressure (epistemic_trigger), a one-line note-to-self for next turn (meta_prompt), and a one-line read of who they are (profile_note). None of it is ever spoken in a bubble.');
+  // The tail stays last (it is the instruction the reply obeys) and is now one POINTER: it used to
+  // re-list six of the seventeen fields in its own words, which was a fourth description of the
+  // envelope and the one nobody could edit — the contract block right below it is the list.
+  lines.push('- Re-report your `status` per the contract below; never spoken.');
   return lines.join('\n');
 }
 

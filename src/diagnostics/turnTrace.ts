@@ -31,7 +31,7 @@ export const TURN_TRACE_LABEL = 'turn:trace';
 
 /**
  * Hard bound on the recorded section list. A build can carry at most one entry per section id
- * (SECTION_IDS, currently 20), so this can never fire on an assembled prompt — it exists so a future
+ * (SECTION_IDS, currently 21), so this can never fire on an assembled prompt — it exists so a future
  * repeated push can't put an unbounded list into a 30-day store. Because it never fires in practice,
  * `sectionsTotalChars(sections) === systemChars` stays exhaustive rather than approximate
  * (turnTrace.test.ts pins both halves of that sentence).
