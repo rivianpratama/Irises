@@ -207,6 +207,38 @@ test('the openai lane retries too, and carries no reasoning field in either atte
   for (const p of sent) assert.equal('reasoning' in p, false);
 });
 
+// ── What the durable ledger says after a landed retry ────────────────────────
+
+test('a landed retry reports the SERVED cap, so the ledger\'s output-vs-cap is not a lie', async () => {
+  // callLLM derives max_tokens_sent from the REQUEST (200 here) and both the token_usage row and the
+  // llm:truncated trail read it — deliberately, so "output_tokens == max_tokens_sent" stays a usable
+  // truncation signature. The same-lane retry raises the cap INSIDE the lane, so unless the served
+  // cap travels back on the result, every landed retry writes "output 600 / cap 200".
+  process.env.OPENROUTER_API_KEY = 'sk-or-test';
+  process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+  const { send, sent } = sender([starved(), reply({ content: 'half a sen', finish: 'length' })]);
+  const run = (_p: LlmProvider, r: LlmRequest) => callOpenAICompatible(r, 'openrouter', send);
+  const result = await callLLM(req(), run);
+
+  assert.equal(sent[1].max_tokens, 600, 'the retry is the leg that answered');
+  assert.equal(result.servedMaxTokens, 600, 'the cap that actually produced this reply');
+  const trunc = getTraces().find(e => e.label === 'llm:truncated')?.detail as Record<string, unknown>;
+  assert.ok(trunc, 'the retry came back truncated WITH content, so the truncation trail fires');
+  assert.equal(trunc.maxTokensSent, 600, 'not the 200 the caller asked for');
+});
+
+test('an unretried call reports the requested cap, and says nothing about a served one', async () => {
+  process.env.OPENROUTER_API_KEY = 'sk-or-test';
+  process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+  const { send } = sender([reply({ content: 'half a sen', finish: 'length' })]);
+  const run = (_p: LlmProvider, r: LlmRequest) => callOpenAICompatible(r, 'openrouter', send);
+  const result = await callLLM(req(), run);
+
+  assert.equal(result.servedMaxTokens, undefined, 'no retry → the lane leaves the field alone');
+  const trunc = getTraces().find(e => e.label === 'llm:truncated')?.detail as Record<string, unknown>;
+  assert.equal(trunc.maxTokensSent, 200, 'unchanged: the cap the caller sent');
+});
+
 // ── The bug this task exists for, end to end ─────────────────────────────────
 
 test('updateRelationshipClimate applies drift once the starved retry succeeds', async () => {

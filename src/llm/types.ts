@@ -135,6 +135,14 @@ export interface LlmResult {
   provider: LlmProvider;
   model: string;
   usage?: LlmUsage;          // optional: not every provider path reports usage
+  /** The completion cap that actually PRODUCED this reply, when the lane raised it mid-call — i.e.
+   *  the starved retry's bigger budget (llm/callLLM.callOpenAICompatible). Undefined means "the cap
+   *  the request asked for", which is what callLLM assumes. It exists because callLLM records
+   *  max_tokens_sent in the durable ledger and on the llm:truncated trail, and a row saying
+   *  `output_tokens=600 / max_tokens_sent=200` describes a call that never happened — the
+   *  "output_tokens == max_tokens_sent is a truncation signature" property depends on the SERVED
+   *  cap. Never a request field: callers set maxTokens, lanes report what they served. */
+  servedMaxTokens?: number;
   /** Human-readable text harvested from SERVER-SIDE web-search results (titles/urls/cited snippets),
    *  when the turn ran web_search. Undefined when no web results were returned. Ops seeds this into
    *  its grounding corpus so a legitimately web-sourced fact isn't flagged ungrounded (see

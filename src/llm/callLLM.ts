@@ -356,6 +356,11 @@ export async function callOpenAICompatible(
   };
   let params = build();
   const model = params.model;
+  /** The cap that actually produced the reply, set ONLY when the starved retry lands. callLLM
+   *  derives max_tokens_sent for the ledger and the llm:truncated trail from the REQUEST, so
+   *  without this a landed retry writes a row describing a call that never happened
+   *  (output_tokens from the 600-token leg against max_tokens_sent=200). */
+  let servedMaxTokens: number | undefined;
 
   // signal: cancel the in-flight HTTP request, not just the loop around it (see LlmRequest.signal).
   // Document requests get one retry, not the default two — a retry re-uploads the full base64 body.
@@ -382,7 +387,7 @@ export async function callOpenAICompatible(
       const retryResp = await send(retryParams, sendOpts);
       const retryChoice = retryResp.choices[0];
       ok = !isLengthStarved(retryChoice);
-      if (ok) { resp = retryResp; choice = retryChoice; params = retryParams; }
+      if (ok) { resp = retryResp; choice = retryChoice; params = retryParams; servedMaxTokens = retriedCap; }
       else starvedCap = retriedCap;   // the budget that actually failed last
     } catch (err) {
       // A 3x cap can exceed what a provider accepts, and a retry can hit any transport failure. Keep
@@ -435,6 +440,7 @@ export async function callOpenAICompatible(
     usage: u
       ? { inputTokens: u.prompt_tokens ?? 0, outputTokens: u.completion_tokens ?? 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }
       : undefined,
+    ...(servedMaxTokens !== undefined ? { servedMaxTokens } : {}),
     serverToolText: serverToolText || undefined,
     raw: resp,
   };
@@ -514,8 +520,10 @@ export async function callLLM(req: LlmRequest, run: LaneRunner = runOn): Promise
     throw err;
   }
   // The cap sent to the PRIMARY lane, and (separately) the cap that actually produced the result —
-  // they differ when a starved primary fell back on a bumped budget. The ledger records the served
-  // one, so "output_tokens == max_tokens_sent" stays a reliable truncation signature.
+  // they differ when a starved primary fell back on a bumped budget, and when the lane itself took
+  // its own same-lane starved retry (LlmResult.servedMaxTokens, folded in after the run below). The
+  // ledger records the served one, so "output_tokens == max_tokens_sent" stays a reliable
+  // truncation signature.
   const maxTokensSent = req.maxTokens ?? MAX_TOKENS[req.role];
   let servedMaxTokens = maxTokensSent;
   // Budget gates run BEFORE any provider dispatch. BudgetExceededError is nonFallbackable (see
@@ -628,6 +636,10 @@ export async function callLLM(req: LlmRequest, run: LaneRunner = runOn): Promise
       throw err;
     }
   }
+  // A lane that raised its own cap mid-call (the starved retry) reports the budget that actually
+  // answered. It wins over the cross-lane bump above: if the fallback leg ALSO retried in-lane, its
+  // retried cap is the last one sent, and this runs after both.
+  if (result.servedMaxTokens !== undefined) servedMaxTokens = result.servedMaxTokens;
   // toolsViaJson: the model WROTE its tool calls into the JSON envelope — parse them back into
   // result.toolCalls here, BEFORE record(), so tracing/the dashboard see them exactly like native
   // calls and every caller dispatches identically. Dedupe against any native calls (belt-and-braces:
