@@ -13,7 +13,7 @@ import { callLLM } from '../../llm/callLLM.js';
 import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
 import { OPS_RETRY_ENABLED, walledUrlHintEnabled } from '../../llm/models.js';
 import { getEngineBackend } from './engineBackend.js';
-import { findWalledUrls, hasBrowserClass, walledScanText, browserRetryDirective } from './walledUrls.js';
+import { decideWalledTooling, walledScanText, browserRetryDirective } from './walledUrls.js';
 import type { CapabilitySummary } from './engineBackend.js';
 import type { OpsResult, OpsTask, OpsFailureCause } from '../types.js';
 
@@ -147,15 +147,18 @@ export async function splitMiss(
   // ── Deterministic escalation: a walled URL nobody opened in a browser ──
   // An empty hand on a JavaScript/login-walled link is a ROUTE failure, not an absent answer: a
   // fetch of that URL returns a login shell, and the splitter — reading a ledger full of curls that
-  // "found nothing" — has no way to tell those apart, so it called the live instagram-reel case
+  // "found nothing" — cannot tell those apart, so it called the live instagram-reel case
   // UNANSWERABLE and gave up on the first look. When the engine HAS a browser, spend the one cheap
-  // leg instead of a classify call: its prompt carries the `tooling:` line, which is the exact steer
-  // this directive names. canRetry keeps it to one leg per attempt (never a retry-of-retry, and
-  // never at all with OPS_RETRY_ENABLED off); attempt 2 falls through to today's behavior, because
-  // by then the browser route has already been tried and the honest answer is a soft give-up.
-  const walled = walledUrlHintEnabled() ? findWalledUrls(walledScanText(task)) : [];
-  if (attempt === 1 && walled.length > 0 && hasBrowserClass(capabilities) && canRetry(task)) {
-    return { cause, action: 'retry', deterministic: true, directive: browserRetryDirective(walled[0].url) };
+  // leg instead of a classify call. canRetry keeps it to one leg per attempt (never a retry-of-retry,
+  // and never at all with OPS_RETRY_ENABLED off); attempt 2 falls through to today's behavior, since
+  // by then the browser route has been tried and a soft give-up is the honest answer.
+  //
+  // `walled.line` is non-null on exactly the three conditions that put the `tooling:` line into the
+  // first pass's prompt — flag on, a walled URL in the ask or the brief, an engine with a browser —
+  // so the prompt and the escalation can never drift apart on what "walled" means.
+  const walled = decideWalledTooling({ text: walledScanText(task), capabilities, enabled: walledUrlHintEnabled() });
+  if (attempt === 1 && walled.line && canRetry(task)) {
+    return { cause, action: 'retry', deterministic: true, directive: browserRetryDirective(walled.urls[0]) };
   }
 
   const ledger = (result.debrief?.toolsRun ?? [])

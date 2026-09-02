@@ -306,8 +306,9 @@ export async function chat(
   // SAME system + messages, minus the recall tool (see processConvoResult).
   //
   // The measuring variant of the assembler, for the same string plus a per-section size table — the
-  // sizes are what the turn receipt reports, and they are free here (`prompt.system` is the byte
-  // identical output buildSystemPrompt returns; see convo/promptSections.ts).
+  // sizes are what the turn receipt reports, and they are free here (`prompt.system` is the
+  // byte-identical output buildSystemPrompt returns, which is now just a wrapper over this call;
+  // see convo/promptSections.ts).
   const prompt = buildSystemPromptSections(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined, affectState, computed, capabilitySummary, climate, thread, introWeave, turnFocus);
   const system = prompt.system;
 

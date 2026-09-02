@@ -22,7 +22,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import {
   buildTurnTrace, buildTurnTraceDraft, describeStatusCoercions, recordTurnTrace,
-  TRACE_SECTIONS_CAP, TURN_TRACE_LABEL,
+  STATUS_COERCION_REASONS, TRACE_SECTIONS_CAP, TURN_TRACE_LABEL,
   type TurnTraceDraft, type TurnTraceOutcome, type TurnTraceTurnInputs,
 } from './turnTrace.js';
 import { getTraces, clearTraces } from './trace.js';
@@ -136,13 +136,19 @@ test('the coercion diff names the field, what the model wrote, and what it becam
     { field: 'thread_outcome', from: 'delighted', to: null, reason: 'dropped' },
   ]);
 
-  // An out-of-range integer is clamped, a numeric string is parsed, an unknown enum is replaced.
+  // An out-of-range integer is clamped, a numeric string is parsed, an unknown enum is replaced,
+  // and a missing field is named as absent rather than silently defaulted.
   const messy = { ...GOOD_STATUS, patience: 900, warmth: '64', intent_mode: 'vibing' };
-  assert.deepEqual(describeStatusCoercions(messy, coerceStatus(messy)), [
+  delete messy.rapport;
+  const coercions = describeStatusCoercions(messy, coerceStatus(messy));
+  assert.deepEqual(coercions, [
     { field: 'warmth', from: '64', to: 64, reason: 'parsed' },
+    { field: 'rapport', from: null, to: 50, reason: 'absent' },
     { field: 'patience', from: 900, to: 100, reason: 'clamped' },
     { field: 'intent_mode', from: 'vibing', to: 'questioning', reason: 'replaced' },
   ]);
+  // Every reason comes from the closed vocabulary, so a scan of the ring can bucket them.
+  for (const c of coercions) assert.ok(STATUS_COERCION_REASONS.includes(c.reason), c.reason);
 });
 
 test('a garbled envelope files a receipt naming the whole-object default', () => {
