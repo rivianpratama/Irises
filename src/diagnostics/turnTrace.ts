@@ -290,13 +290,26 @@ export function buildTurnTraceDraft(inputs: {
  * text, no reaction, no action — the same condition the `convo:silent_turn` tripwire fires on) only
  * stands if nothing came out the other end either. A turn whose bubbles went out is never silent,
  * whatever the turn thought it produced.
+ *
+ * COPYING, stated so it can't be read as an accident: every container this function owns is rebuilt
+ * (prompt, its section list, gates and both of its leaves, affect and its coercion list, hits,
+ * outcome), so a draft mutated afterwards can never change a detail already built from it. Three
+ * payloads pass through by reference — `gates.threads` (the selection engine's finished report),
+ * `affect.rawEmitted` and `affect.coerced` (the model's own status objects) — because they are
+ * settled values owned elsewhere and deep-cloning a foreign shape here would go stale the moment
+ * that shape changed. Nothing downstream aliases them either way: `record` (diagnostics/trace.ts)
+ * rebuilds the whole detail through `trunc` before it enters the ring.
  */
 export function buildTurnTrace(inputs: { draft: TurnTraceDraft; bubbles: BubbleReport }): TurnTraceDetail {
   const { draft, bubbles } = inputs;
   return {
     prompt: { ...draft.prompt, sections: [...draft.prompt.sections] },
-    gates: draft.gates,
-    affect: draft.affect,
+    gates: {
+      threads: draft.gates.threads,
+      memory: { ...draft.gates.memory },
+      extras: { ...draft.gates.extras },
+    },
+    affect: { ...draft.affect, coercions: draft.affect.coercions.map(c => ({ ...c })) },
     hits: [...draft.hits],
     outcome: { ...draft.outcome, silent: draft.outcome.silent && bubbles.count === 0 },
     bubbles,

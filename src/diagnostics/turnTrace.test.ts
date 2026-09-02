@@ -264,12 +264,27 @@ test('buildTurnTrace is pure', () => {
   Object.freeze(d.prompt.sections);
   Object.freeze(d.hits);
   Object.freeze(d.outcome);
+  Object.freeze(d.gates);
+  Object.freeze(d.affect);
   const first = buildTurnTrace({ draft: d, bubbles: TWO_BUBBLES });
   const second = buildTurnTrace({ draft: d, bubbles: TWO_BUBBLES });
   assert.deepEqual(first, second);
   assert.notEqual(first, second, 'a fresh detail each call');
   assert.notEqual(first.hits, d.hits, 'and it copies rather than hands out the draft\'s own arrays');
   assert.deepEqual(d.hits, ['the cedar order'], 'the draft is untouched');
+
+  // Every container the builder OWNS is fresh, not the draft's own object — so nothing that mutated
+  // a draft after the fact could reach a detail already built from it. The three payloads it does
+  // pass through by reference (the thread report, and the model's raw/coerced status) are documented
+  // as such on the function, and `record` deep-copies the whole detail on the way into the ring.
+  assert.notEqual(first.prompt, d.prompt, 'prompt');
+  assert.notEqual(first.prompt.sections, d.prompt.sections, 'prompt.sections');
+  assert.notEqual(first.outcome, d.outcome, 'outcome');
+  assert.notEqual(first.gates, d.gates, 'gates');
+  assert.notEqual(first.gates.memory, d.gates.memory, 'gates.memory');
+  assert.notEqual(first.gates.extras, d.gates.extras, 'gates.extras');
+  assert.notEqual(first.affect, d.affect, 'affect');
+  assert.notEqual(first.affect.coercions, d.affect.coercions, 'affect.coercions');
 });
 
 // ── the flag ─────────────────────────────────────────────────────────────────
