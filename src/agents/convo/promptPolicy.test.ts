@@ -97,6 +97,10 @@ test('the persona teaches exactly the rungs the engine can deliver, in the same 
 // `status_contract` section is the copy the model reads. This is what holds them out of the prose: a
 // well-meant "let me just remind her what mood_core is" in Context.md fails here.
 
+/** How Context.md names the per-turn block that carries the field list now. The contract's own
+ *  heading, so a rename fails on both sides at once. */
+const STATUS_CONTRACT_POINTER = 'under "Your hidden status — the contract"';
+
 test('the persona describes no envelope field and copies no wheel — it points at the contract', () => {
   const persona = loadContext('convo');
 
@@ -121,10 +125,6 @@ test('the persona describes no envelope field and copies no wheel — it points 
     `the inner-weather section no longer points at the contract (looked for ${JSON.stringify(STATUS_CONTRACT_POINTER)}), so the persona now describes the envelope nowhere at all`,
   );
 });
-
-/** How Context.md names the per-turn block that carries the field list now. The contract's own
- *  heading, so a rename fails on both sides at once. */
-const STATUS_CONTRACT_POINTER = 'under "Your hidden status — the contract"';
 
 // ── the bubble law, as stated vs as enforced ─────────────────────────────────
 
