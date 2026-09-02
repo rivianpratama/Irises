@@ -127,8 +127,16 @@ export const AFFECT_MOOD_WINDOW_MS = 60 * 60 * 1000;
 export const AFFECT_MOOD_WINDOW_CAP = 20;
 /** `broke` is allowed once inside this window; the second one is an ordinary dip. */
 export const AFFECT_BROKE_WINDOW_MS = 6 * 60 * 60 * 1000;
-/** Defensive ceiling on the ledger array. The prune already bounds it; this bounds a clock that
- *  jumped backwards or a row hand-edited into nonsense. */
+/** Defensive ceiling on the ledger rows NO budget reads any more — everything except an in-window
+ *  `broke` and a mood row inside the hour. It cannot be applied to the whole array: the ledger is
+ *  kept newest-last, so a blanket cap drops the OLDEST rows, and the oldest rows are exactly the
+ *  ones a rolling window is counted from. Six rows can arrive in one turn, so 64 fills in a few
+ *  dozen turns — far inside the six hours a break is meant to be remembered for.
+ *  What it still bounds: the ordinary gauge rows, and mood rows already too old for the hour, on a
+ *  clock that jumped backwards or a ledger hand-edited into nonsense. What it no longer needs to
+ *  bound is bounded by the budgets themselves — a mood row is only written when at least one point
+ *  landed, so the hour can hold at most `AFFECT_MOOD_WINDOW_CAP` of them, plus the one `broke` the
+ *  six hours allow. */
 export const AFFECT_MOVES_CAP = 64;
 
 /** The ledger must keep whatever the LONGEST window still reads, or `broke` would forget itself. */
@@ -230,8 +238,8 @@ function wantedFor(
  *      nothing and spends none of it standing still.
  *   3. the turn cap: the step is TRUNCATED to whatever is left of `AFFECT_TURN_CAP`, in
  *      `GAUGE_SPECS` order. Mood additionally answers to its rolling hour.
- * Then the applied delta is appended to the ledger, rows outside the longest window are pruned,
- * and the array is defensively capped.
+ * Then the applied delta is appended to the ledger, rows outside the longest window are pruned, and
+ * the rows no budget reads any more are defensively capped at `AFFECT_MOVES_CAP`.
  *
  * PURE: `current` and `ledger` are never mutated, and the same inputs always give the same result.
  */
@@ -299,9 +307,19 @@ export function applyAffectDrift(
 
   const from = now - LEDGER_WINDOW_MS;
   const pruned = moves.filter(m => m.at > from);
+  // The rows the two budgets above are counted from, kept whatever the cap says: dropping one does
+  // not just shorten an audit trail, it hands a spent budget back.
+  const readByABudget = (m: AffectMove) =>
+    (m.broke === true && m.at > now - AFFECT_BROKE_WINDOW_MS)
+    || (m.k === 'mood_level' && m.at > now - AFFECT_MOOD_WINDOW_MS);
+  let over = pruned.filter(m => !readByABudget(m)).length - AFFECT_MOVES_CAP;
   return {
     next,
-    moves: pruned.length > AFFECT_MOVES_CAP ? pruned.slice(pruned.length - AFFECT_MOVES_CAP) : pruned,
+    // Oldest-first among the rows nothing reads, so the ledger keeps its newest-last order.
+    moves: over <= 0 ? pruned : pruned.filter(m => {
+      if (over > 0 && !readByABudget(m)) { over--; return false; }
+      return true;
+    }),
     report,
   };
 }

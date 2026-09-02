@@ -559,7 +559,10 @@ test('the ledger is pruned to the longest window and defensively capped', () => 
   // 200 rows for a gauge with no rolling budget of its own, so only the caps are under test.
   const fat: AffectMove[] = Array.from({ length: 200 }, (_, i) => ({ at: T0 - i, k: 'rapport' as const, d: 1 }));
   const r = applyAffectDrift(settled(PEAK, { mood_level: 60 }), shift('steady', 'content'), PEAK, fat, T0);
-  assert.equal(r.moves.length, AFFECT_MOVES_CAP);
+  // The cap bounds the rows no budget will ever read again. The rows a budget DOES still read are
+  // kept on TOP of it — this turn's own mood row is inside the hour, so it is not a candidate.
+  assert.equal(r.moves.filter(m => m.k !== 'mood_level').length, AFFECT_MOVES_CAP);
+  assert.equal(r.moves.length, AFFECT_MOVES_CAP + 1);
   assert.ok(r.moves.some(m => m.k === 'mood_level'), "this turn's own move survived the cap");
 
   // Everything older than the longest window this engine reads is gone.
@@ -569,6 +572,53 @@ test('the ledger is pruned to the longest window and defensively capped', () => 
   ];
   const pruned = applyAffectDrift(settled(PEAK), shift('steady', 'content'), PEAK, stale, T0);
   assert.deepEqual(pruned.moves.map(m => m.at), [T0 - 60_000]);
+});
+
+// The cap has to spare the rows the BUDGETS read, because the ledger is trimmed newest-last: a
+// blanket cap drops the OLDEST rows, and the oldest rows are exactly the ones a rolling window is
+// counted from. Six rows can arrive in a single turn, so 64 fills in a few dozen turns of ordinary
+// talking — well inside the six hours the break is supposed to be remembered for.
+test('a flood of other gauges cannot make the ledger forget a break inside the six hours', () => {
+  const g = settled(PEAK, { mood_level: 45 });
+  const broke: AffectMove = { at: T0 - 3 * HOUR, k: 'mood_level', d: -18, broke: true };
+  // 100 rows AFTER the break, from a gauge with no rolling budget of its own.
+  const flood: AffectMove[] = Array.from({ length: 100 }, (_, i) => ({
+    at: T0 - 2 * HOUR + i * 1000, k: 'rapport' as const, d: 1,
+  }));
+
+  const carried = applyAffectDrift(g, shift('steady', 'content'), PEAK, [broke, ...flood], T0);
+  assert.ok(carried.moves.some(m => m.broke), 'the break was capped out of its own window');
+
+  // And the next turn, reading the ledger the last one handed back, still refuses the 3x step.
+  const later = T0 + 60_000;
+  const second = applyAffectDrift(g, shift('broke', 'irritated'), PEAK, carried.moves, later);
+  const plainDip = applyAffectDrift(g, shift('dipped', 'irritated'), PEAK, carried.moves, later);
+  assert.equal(second.next.mood_level, plainDip.next.mood_level, 'a second break inside six hours');
+  assert.deepEqual(second.report.shortened, ['mood_level'], 'and the downgrade is still reported');
+});
+
+// Same failure, on the other budget: mood's hour is counted off the mood rows in the ledger, so
+// dropping the oldest of them hands the budget back a few points at a time.
+test('a flood of non-mood rows cannot buy back the hour spent on mood', () => {
+  // The hour's whole budget, one point at a time...
+  const spent: AffectMove[] = Array.from({ length: AFFECT_MOOD_WINDOW_CAP }, (_, i) => ({
+    at: T0 - 50 * 60_000 + i, k: 'mood_level' as const, d: -1,
+  }));
+  // ...and 45 later rows from a gauge with no budget: 20 + 45 is past AFFECT_MOVES_CAP, so a
+  // blanket cap starts eating the mood rows the hour is counted from.
+  const flood: AffectMove[] = Array.from({ length: 45 }, (_, i) => ({
+    at: T0 - 40 * 60_000 + i, k: 'rapport' as const, d: 1,
+  }));
+  const g = settled(PEAK, { mood_level: 55 });
+
+  const first = applyAffectDrift(g, shift('steady', 'content'), PEAK, [...spent, ...flood], T0);
+  assert.deepEqual(first.report.capped, ['mood_level'], 'the hour was already gone');
+  assert.equal(first.moves.filter(m => m.k === 'mood_level').length, AFFECT_MOOD_WINDOW_CAP,
+    'every mood row the hour is counted from survived the cap');
+
+  const second = applyAffectDrift(g, shift('lifted', 'content'), PEAK, first.moves, T0 + 1000);
+  assert.deepEqual(second.report.capped, ['mood_level'], 'the flood bought mood budget back');
+  assert.equal(second.next.mood_level, 55, 'and it moved on budget it had already spent');
 });
 
 // ── the invariants, across a grid of turns ──────────────────────────────────
