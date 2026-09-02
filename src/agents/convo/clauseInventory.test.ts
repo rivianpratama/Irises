@@ -23,7 +23,7 @@ import assert from 'node:assert/strict';
 import { buildSystemPromptSections } from './shared.js';
 import { CLAUSE_INVENTORY } from './promptPolicy.js';
 import { renderUserMemory } from '../../memory/wrappers.js';
-import { coerceStatus, mergeStatus, type AffectState, type ComputedState } from '../../persona/status.js';
+import { coerceStatus, mergeStatus, ENVELOPE_FIELDS, type AffectState, type ComputedState } from '../../persona/status.js';
 import { computeCycle } from '../../persona/cycle.js';
 import { computeCircadian } from '../../persona/circadian.js';
 import { defaultClimate, type RelationshipClimate } from '../../persona/climate.js';
@@ -167,6 +167,24 @@ test('each count splits between the persona and the anchors exactly as the table
     assert.equal(
       occurrences(body, phrase), count - anchorCopies,
       `${id}: the persona and the per-turn block carry it a different number of times than count - anchorCopies (${where})`,
+    );
+  }
+});
+
+// A clause that lives on an ENVELOPE_FIELDS description reaches the model TWICE per turn from one
+// source: once in the status contract, which this file counts, and once on the response schema, which
+// it cannot see (the schema is the request's response_format, not part of the system prompt). The
+// header above asks "how many times the model is told the same thing", so a row reading 1 with no
+// mention of the second channel answers that question wrongly. `where` is the only place that can say
+// it, which is what this holds.
+test('a counted clause that rides a field description says so, and names its second channel', () => {
+  const descriptions = ENVELOPE_FIELDS.map(f => f.description).join('\n');
+  const fromSchema = CLAUSE_INVENTORY.filter(c => descriptions.includes(c.phrase));
+  assert.ok(fromSchema.length > 0, 'no counted clause comes from ENVELOPE_FIELDS — this check went vacuous');
+  for (const c of fromSchema) {
+    assert.match(
+      c.where, /response schema/,
+      `${c.id}: its phrase is an ENVELOPE_FIELDS description, so the model also gets it on the response schema every turn. Say that in \`where\` — a reader of this file otherwise takes the pinned count as the whole answer.`,
     );
   }
 });

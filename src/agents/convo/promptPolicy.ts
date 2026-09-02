@@ -182,7 +182,10 @@ export interface ClauseCount {
    *  plus its anchor and a 2/0 row is two copies inside Context.md. Checked rather than annotated:
    *  clauseInventory.test.ts counts both halves. */
   anchorCopies: number;
-  /** Which copies make up `count`, so a later pass tightens the right one. */
+  /** Which copies make up `count`, so a later pass tightens the right one — and any copy the count
+   *  CANNOT see. A clause whose text is an ENVELOPE_FIELDS description also reaches the model on the
+   *  response schema every turn, which is not part of the system prompt, so only this string can say
+   *  so (clauseInventory.test.ts checks that it does). */
   where: string;
 }
 
@@ -279,7 +282,7 @@ export const CLAUSE_INVENTORY: readonly ClauseCount[] = [
     phrase: 'a resolution outranks a pending loop',
     count: 1,
     anchorCopies: 0,
-    where: "the status contract's thread_note bullet (ENVELOPE_FIELDS, persona/status.ts) — the persona's half-rule is gone",
+    where: "the status contract's thread_note bullet — and, off-prompt, the response schema built from the same description (ENVELOPE_FIELDS, persona/status.ts); the persona's half-rule is gone",
   },
   {
     // The capture rule with no other home. P1 deleted Context.md's `thread_note` bullet as a duplicate
