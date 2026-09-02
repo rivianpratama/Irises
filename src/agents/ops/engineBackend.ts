@@ -99,6 +99,12 @@ export interface EngineBackend {
    *  any latency here lands on a user turn. The adapter refreshes the cache in the background.
    *  Optional: a backend that hasn't wired capability discovery simply omits it. */
   getCapabilitySummary?(): CapabilitySummary | null;
+  /** Which engine session a call for this chat would ride right now, and the rotation window that
+   *  named it — for the `engine:*:start` receipt, so a degraded run can be attributed to the
+   *  transcript it ran inside (engine sessions rotate: `engineSession.ts`). MUST be synchronous,
+   *  pure-ish and cheap (it runs per dispatch). Optional: an adapter without it simply records no
+   *  session on the receipt, exactly as before. */
+  sessionDescriptor?(chatId: string): { session: string; rotation: string };
   /** Deliver the engine-mode doctrine ONCE, as a chat message the engine folds into its own durable
    *  instructions by its own hand (Irises never edits engine files). `version` is the doctrine's
    *  content hash, so the adapter can key its idempotency on it; returns the engine's reply text.
@@ -362,7 +368,10 @@ export async function runViaEngine(
     ctx.onProgress?.('engine');
     record({
       type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
-      label: `engine:${engine.name}:start`, detail: { kind: task.kind, promptChars: prompt.length, queuedMs: Date.now() - t0 },
+      label: `engine:${engine.name}:start`,
+      // …plus which session/rotation window the adapter is about to speak into, when it can say
+      // (spreading an absent descriptor adds nothing — the detail stays exactly as it was).
+      detail: { kind: task.kind, promptChars: prompt.length, queuedMs: Date.now() - t0, ...engine.sessionDescriptor?.(task.chatId) },
     });
     const text = (await engine.runTask(prompt, task, ctx)).trim();
     debrief.steps += 1;

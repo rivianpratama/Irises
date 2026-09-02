@@ -3,14 +3,18 @@
 // (401/429/refused/timeout), the jobs API body shape, and the NO-ENGINE-left-behind guarantees.
 
 process.env.TZ = 'UTC';
+// Session ids carry the rotation window, so an operator value inherited from the shell would decide
+// what every header below looks like. Tests that care set it themselves and restore it.
+delete process.env.HERMES_SESSION_ROTATION;
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { HermesBackend, hermesSessionKey, jobPrefix, legacyJobPrefix, reminderJobPrompt, shiftCronToEngineZone, inlineLocalImage, normalizeCapabilities } from './hermesBackend.js';
+import { HermesBackend, hermesSessionKey, hermesSessionRotation, jobPrefix, legacyJobPrefix, reminderJobPrompt, shiftCronToEngineZone, inlineLocalImage, normalizeCapabilities } from './hermesBackend.js';
 import { HERMES_TASK_HEADER, HERMES_ONBOARDING_MESSAGE, hermesOnboardingVersion } from './hermesDoctrine.js';
-import { EngineUnavailableError, EngineRunError } from './engineBackend.js';
+import { EngineUnavailableError, EngineRunError, runViaEngine } from './engineBackend.js';
+import { getTraces, clearTraces } from '../../diagnostics/trace.js';
 import { emptyMedia } from '../../webhook/types.js';
-import type { OpsTask } from '../types.js';
+import type { OpsTask, OpsDebrief } from '../types.js';
 
 function mkTask(over: Partial<OpsTask> = {}): OpsTask {
   return {
@@ -20,6 +24,12 @@ function mkTask(over: Partial<OpsTask> = {}): OpsTask {
 }
 
 type Captured = { url: string; init: RequestInit };
+
+/** Instants pinned in UTC so the rotation window in a session id is a constant, not the clock.
+ *  2026-08-31 (Mon) → 2026-09-06 (Sun) is ISO week 2026-W36; the 7th opens W37. */
+const IN_WEEK_36 = Date.parse('2026-09-02T12:00:00Z');
+const LATER_IN_WEEK_36 = Date.parse('2026-09-04T23:00:00Z');
+const IN_WEEK_37 = Date.parse('2026-09-07T00:00:00Z');
 
 /** A fetchFn returning a canned response while capturing the request. */
 function fakeFetch(status: number, body: unknown, captured: Captured[] = []): typeof fetch {
@@ -33,14 +43,14 @@ function fakeFetch(status: number, body: unknown, captured: Captured[] = []): ty
 
 test('runTask: happy path returns the message content and sends session headers', async () => {
   const captured: Captured[] = [];
-  const be = new HermesBackend({ fetchFn: fakeFetch(200, { choices: [{ message: { content: 'ANSWER: 42\nSOURCE: web\nFLAGS: none' } }] }, captured) });
+  const be = new HermesBackend({ fetchFn: fakeFetch(200, { choices: [{ message: { content: 'ANSWER: 42\nSOURCE: web\nFLAGS: none' } }] }, captured), now: () => IN_WEEK_36 });
   const out = await be.runTask('the prompt', mkTask(), {});
   assert.equal(out, 'ANSWER: 42\nSOURCE: web\nFLAGS: none');
   assert.equal(captured.length, 1);
   assert.match(captured[0].url, /\/v1\/chat\/completions$/);
   const headers = captured[0].init.headers as Record<string, string>;
-  assert.equal(headers['X-Hermes-Session-Id'], hermesSessionKey('web:debug'));
-  assert.equal(headers['X-Hermes-Session-Key'], hermesSessionKey('web:debug'));
+  assert.equal(headers['X-Hermes-Session-Id'], 'irises-web-debug-w2026-36', 'the transcript session carries this week');
+  assert.equal(headers['X-Hermes-Session-Key'], hermesSessionKey('web:debug'), 'the memory scope does not rotate');
   assert.match(headers.Authorization, /^Bearer /);
   const body = JSON.parse(String(captured[0].init.body));
   assert.equal(body.stream, false);
@@ -64,7 +74,7 @@ test('runTask (streaming): accumulates SSE deltas, heartbeats, and keeps the cha
       captured.push({ url: String(url), init: init ?? {} });
       return new Response(sse, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
     }) as typeof fetch;
-    const be = new HermesBackend({ fetchFn: streamFetch });
+    const be = new HermesBackend({ fetchFn: streamFetch, now: () => IN_WEEK_36 });
     const milestones: string[] = [];
     const out = await be.runTask('the prompt', mkTask(), { onProgress: (m: string) => { milestones.push(m); } });
     assert.equal(out, 'Hello, world', 'delta contents are accumulated');
@@ -72,7 +82,7 @@ test('runTask (streaming): accumulates SSE deltas, heartbeats, and keeps the cha
     const body = JSON.parse(String(captured[0].init.body));
     assert.equal(body.stream, true);
     const headers = captured[0].init.headers as Record<string, string>;
-    assert.equal(headers['X-Hermes-Session-Id'], hermesSessionKey('web:debug'), 'streaming uses the chat session');
+    assert.equal(headers['X-Hermes-Session-Id'], 'irises-web-debug-w2026-36', 'streaming uses the chat\'s current session');
   } finally {
     if (prev === undefined) delete process.env.HERMES_STREAM; else process.env.HERMES_STREAM = prev;
   }
@@ -131,14 +141,14 @@ test('sendOnboarding: rides its own session, returns the reply, and fails honest
 test('askEngine: the tag names its own session, and the reply comes back unshaped', async () => {
   const captured: Captured[] = [];
   const reply = '```json\n{ "user_brief": "they sail on weekends" }\n```';
-  const be = new HermesBackend({ fetchFn: fakeFetch(200, { choices: [{ message: { content: `  ${reply}\n` } }] }, captured) });
+  const be = new HermesBackend({ fetchFn: fakeFetch(200, { choices: [{ message: { content: `  ${reply}\n` } }] }, captured), now: () => IN_WEEK_36 });
 
   const out = await be.askEngine('what do you know about them?', { tag: 'first-move' });
 
   assert.equal(out, reply, 'the fenced block survives byte-for-byte — the CALLER owns parsing it');
   assert.match(captured[0].url, /\/v1\/chat\/completions$/);
   const headers = captured[0].init.headers as Record<string, string>;
-  assert.equal(headers['X-Hermes-Session-Id'], 'irises-first-move');
+  assert.equal(headers['X-Hermes-Session-Id'], 'irises-first-move-w2026-36');
   assert.equal(headers['X-Hermes-Session-Key'], hermesSessionKey('first-move'),
     'the ask touches neither a chat\'s continuity nor its engine-side memory scope');
   assert.notEqual(headers['X-Hermes-Session-Key'], hermesSessionKey('onboarding'), 'nor the doctrine\'s session');
@@ -419,6 +429,94 @@ test('hermesSessionKey: ids over 64 sanitized chars get a hash suffix and stay d
   assert.equal(a.length, 71, 'irises- + 55 head + - + 8 hex');
   assert.match(a, /-[0-9a-f]{8}$/);
   assert.equal(hermesSessionKey(`${head}-one`), a, 'stable across calls');
+});
+
+// ── session rotation: the transcript rolls, the memory scope does not ─────────────────────────
+
+/** Run `fn` with HERMES_SESSION_ROTATION set to `value` (or deliberately unset), then restore. */
+async function withRotation<T>(value: string | undefined, fn: () => Promise<T>): Promise<T> {
+  const prev = process.env.HERMES_SESSION_ROTATION;
+  if (value === undefined) delete process.env.HERMES_SESSION_ROTATION; else process.env.HERMES_SESSION_ROTATION = value;
+  try {
+    return await fn();
+  } finally {
+    if (prev === undefined) delete process.env.HERMES_SESSION_ROTATION; else process.env.HERMES_SESSION_ROTATION = prev;
+  }
+}
+
+/** The Session-Id (continuity) of the nth captured request. */
+function sessionIdOf(captured: Captured[], n: number): string {
+  return (captured[n].init.headers as Record<string, string>)['X-Hermes-Session-Id'];
+}
+
+test('hermesSessionRotation: weekly by default, and the operator can pick another window', () => {
+  assert.equal(hermesSessionRotation(), 'weekly', 'unset → weekly');
+  const prev = process.env.HERMES_SESSION_ROTATION;
+  try {
+    process.env.HERMES_SESSION_ROTATION = 'never';
+    assert.equal(hermesSessionRotation(), 'never');
+    process.env.HERMES_SESSION_ROTATION = ' DAILY ';
+    assert.equal(hermesSessionRotation(), 'daily');
+    process.env.HERMES_SESSION_ROTATION = 'weeekly';
+    assert.equal(hermesSessionRotation(), 'weekly', 'a typo lands on the default, never silently off');
+  } finally {
+    if (prev === undefined) delete process.env.HERMES_SESSION_ROTATION; else process.env.HERMES_SESSION_ROTATION = prev;
+  }
+});
+
+test('a memory note rides the SAME current session as the run, and both roll together', async () => {
+  // The two calls that must agree: a delegation and the memory ask that follows it. If they read
+  // different windows, the note lands in a transcript the next run never sees.
+  await withRotation(undefined, async () => {
+    const captured: Captured[] = [];
+    const body = { choices: [{ message: { content: 'OK' } }] };
+    const run = new HermesBackend({ fetchFn: fakeFetch(200, body, captured), now: () => IN_WEEK_36 });
+    await run.runTask('the prompt', mkTask(), {});
+    const noteSameWeek = new HermesBackend({ fetchFn: fakeFetch(200, body, captured), now: () => LATER_IN_WEEK_36 });
+    await noteSameWeek.remember('web:debug', 'h', 'they sail on weekends');
+    assert.equal(sessionIdOf(captured, 1), sessionIdOf(captured, 0), 'two days later is still the same session');
+    assert.equal(sessionIdOf(captured, 0), 'irises-web-debug-w2026-36');
+
+    const nextWeek = new HermesBackend({ fetchFn: fakeFetch(200, body, captured), now: () => IN_WEEK_37 });
+    await nextWeek.remember('web:debug', 'h', 'they sail on weekends');
+    assert.equal(sessionIdOf(captured, 2), 'irises-web-debug-w2026-37', 'the note moves with the window');
+    // The engine-side MEMORY key is the same string in all three calls — that is what keeps the
+    // engine's model of the user while its transcript starts over.
+    const keys = new Set(captured.map(c => (c.init.headers as Record<string, string>)['X-Hermes-Session-Key']));
+    assert.deepEqual([...keys], [hermesSessionKey('web:debug')]);
+  });
+});
+
+test('HERMES_SESSION_ROTATION=never: the session id is byte-identical to the pre-rotation form', async () => {
+  await withRotation('never', async () => {
+    const captured: Captured[] = [];
+    const body = { choices: [{ message: { content: 'OK' } }] };
+    const be = new HermesBackend({ fetchFn: fakeFetch(200, body, captured), now: () => IN_WEEK_36 });
+    await be.runTask('the prompt', mkTask(), {});
+    await be.remember('web:debug', 'h', 'a note');
+    assert.equal(sessionIdOf(captured, 0), hermesSessionKey('web:debug'));
+    assert.equal(sessionIdOf(captured, 1), hermesSessionKey('web:debug'));
+    // And nothing about the instant leaks in: a later call in another week is the same id.
+    const later = new HermesBackend({ fetchFn: fakeFetch(200, body, captured), now: () => IN_WEEK_37 });
+    await later.runTask('the prompt', mkTask(), {});
+    assert.equal(sessionIdOf(captured, 2), hermesSessionKey('web:debug'));
+  });
+});
+
+test('sessionDescriptor / engine:hermes:start: the receipt names the session the run used', async () => {
+  await withRotation(undefined, async () => {
+    const be = new HermesBackend({ fetchFn: fakeFetch(200, { choices: [{ message: { content: 'ANSWER: 42' } }] }), now: () => IN_WEEK_36 });
+    assert.deepEqual(be.sessionDescriptor('web:debug'), { session: 'irises-web-debug-w2026-36', rotation: 'weekly' });
+
+    clearTraces();
+    const debrief: OpsDebrief = { steps: 0, toolsRun: [], corpus: [], startedAt: IN_WEEK_36, endedAt: 0 };
+    const out = await runViaEngine(be, 'the prompt', mkTask(), {}, debrief);
+    assert.equal(out.status, 'ok');
+    const start = getTraces().find(e => e.label === 'engine:hermes:start');
+    assert.ok(start, 'the run start is on the record');
+    assert.equal(start?.detail?.session, 'irises-web-debug-w2026-36', 'which transcript this run spoke into');
+    assert.equal(start?.detail?.rotation, 'weekly');
+  });
 });
 
 test('jobPrefix: ids over 24 sanitized chars get a hash suffix; the legacy prefix is reproduced', () => {

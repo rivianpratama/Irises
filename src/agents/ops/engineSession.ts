@@ -10,6 +10,11 @@
 // scopes it by the memory KEY, not by the transcript), so starting a fresh transcript each window
 // drops the bloat and keeps the engine's model of the user. That split is the whole design: the
 // adapter rotates its continuity id and leaves its memory key alone.
+//
+// Only the hermes adapter rotates today (env HERMES_SESSION_ROTATION). OpenClaw's `openclawSessionKey`
+// is ONE string used as both continuity and memory scope on the Gateway `agent` RPC, so rotating it
+// there would drop the engine's user model along with the transcript — the opposite of the point.
+// Splitting that needs a second key OpenClaw's RPC does not have.
 
 /** The rotation windows, single-source (the THEME_KINDS pattern) → the type is derived from it. */
 export const SESSION_ROTATIONS = ['never', 'weekly', 'daily'] as const;

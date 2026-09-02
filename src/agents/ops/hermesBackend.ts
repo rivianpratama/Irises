@@ -10,6 +10,7 @@ import { HERMES_TASK_HEADER } from './hermesDoctrine.js';
 import { parseDeclaredCapabilities } from './capabilityDeclaration.js';
 import { renderAttachmentBlock } from './attachments.js';
 import { hash8 } from './sessionHash.js';
+import { engineSessionId, parseSessionRotation, type SessionRotation } from './engineSession.js';
 import { DEFAULT_TZ, zoneOffsetMs } from '../../pipeline/zonedTime.js';
 import { dataTag } from '../../llm/promptTag.js';
 import { record } from '../../diagnostics/trace.js';
@@ -80,6 +81,14 @@ export function reminderJobPrompt(spec: ReminderSpec, pushUrl: string): string {
  *  engine, else this host's zone (Irises and hermes are normally the same box). */
 function engineZone(): string {
   return process.env.HERMES_TZ || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+}
+
+/** How often a chat's engine TRANSCRIPT starts over (env: HERMES_SESSION_ROTATION, default weekly;
+ *  `never` is the byte-identical pre-rotation behavior). Read at call time, beside the other engine
+ *  env reads — see engineSession.ts for why rotating is what keeps a flash-tier model out of a
+ *  near-full context. The engine-side MEMORY key is deliberately not rotated. */
+export function hermesSessionRotation(): SessionRotation {
+  return parseSessionRotation(process.env.HERMES_SESSION_ROTATION);
 }
 
 /** A plain non-negative integer field (the only shape we can shift arithmetically). */
@@ -320,12 +329,26 @@ export class HermesBackend implements EngineBackend {
       Authorization: `Bearer ${this.apiKey}`,
     };
     if (chatId) {
-      // Session-Id: server-side conversation continuity. Session-Key: long-term memory scoping —
-      // hermes threads it to its user-model layer, so each chat accrues its own engine-side memory.
-      h['X-Hermes-Session-Id'] = hermesSessionKey(chatId);
+      // Session-Id: server-side conversation continuity — i.e. a TRANSCRIPT, which is why it carries
+      // the rotation window (engineSession.ts: one session per chat forever grew to 398 messages and
+      // ≈221,760 input tokens per call). Session-Key: long-term memory scoping — hermes threads it to
+      // its user-model layer, so each chat accrues its own engine-side memory. It must NEVER rotate:
+      // rotating it would throw away the model of the user this whole change is designed to keep.
+      // Every caller of headers() shares this, so a run and the memory note that follows it land in
+      // the same session, and a code-owned tag ('onboarding', 'first-move') gets a fresh transcript
+      // on the same schedule.
+      h['X-Hermes-Session-Id'] = this.sessionDescriptor(chatId).session;
       h['X-Hermes-Session-Key'] = hermesSessionKey(chatId);
     }
     return h;
+  }
+
+  /** Which engine session this chat/tag speaks into RIGHT NOW, and the window policy that named it.
+   *  On the `engine:hermes:start` receipt, so a degraded run can be attributed to the transcript it
+   *  ran inside (`engineBackend.ts` reads it through the optional `sessionDescriptor` seam). */
+  sessionDescriptor(chatId: string): { session: string; rotation: SessionRotation } {
+    const rotation = hermesSessionRotation();
+    return { session: engineSessionId(hermesSessionKey(chatId), this.deps.now(), rotation), rotation };
   }
 
   /**
