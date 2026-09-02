@@ -118,7 +118,7 @@ function turnCtx(call: (req: LlmRequest) => Promise<LlmResult>): ConvoTurnContex
   };
 }
 
-function args(textToSend = ASK) {
+function args() {
   __resetOpsCoordination();
   clearTraces();
   delete process.env.CONVO_UNKEPT_PROMISE_GUARD;
@@ -130,7 +130,7 @@ function args(textToSend = ASK) {
     chatContext,
     history: [],
     media: emptyMedia(),
-    textToSend,
+    textToSend: ASK,
   };
 }
 
@@ -233,7 +233,7 @@ test('a promise with research actually running is left alone: no re-ask, no rece
   assert.equal(out.text, 'masih jalan bro\n---\nbentar lagi');
 });
 
-test('a kept promise (the reply called the tool itself) never reaches the guard', async () => {
+test('a promise the reply backed with its own delegation is left alone too', async () => {
   let calls = 0;
   const out = await processConvoResult({
     ...args(),
