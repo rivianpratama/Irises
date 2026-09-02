@@ -17,9 +17,9 @@ process.env.TZ = 'UTC';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  classifyTurnShape, renderTurnFocus, turnFocusBlockEnabled,
+  classifyTurnShape, renderTurnFocus, renderedTurnFocusHits, turnFocusBlockEnabled,
   TURN_SHAPES, TURN_FOCUS_TEXT_CHARS, TURN_FOCUS_LABEL_CHARS, TURN_FOCUS_MAX_HITS,
-  type TurnShape, type TurnFocusInput,
+  type TurnShape, type TurnFocusInput, type TurnFocusHit,
 } from './turnFocus.js';
 import { buildSystemPrompt, buildSystemPromptSections } from './shared.js';
 import { DYN_SECTION_IDS } from './promptSections.js';
@@ -112,6 +112,30 @@ test('renderTurnFocus lists the hits it was handed, source-labelled, at most two
   assert.equal(TURN_FOCUS_MAX_HITS, 2);
   assert.ok(!three.includes('they run a nursery'), 'the third hit is not rendered');
   assert.equal((three.match(/ · /g) ?? []).length, TURN_FOCUS_MAX_HITS - 1, 'exactly two hits, one separator');
+});
+
+test('renderedTurnFocusHits IS what the block prints — the receipt reads it, not the raw list', () => {
+  // The turn receipt (convo/client.ts) reports "what she was shown". It used to slice the raw hits,
+  // but the block drops a blank name BEFORE it counts to two — so a nameless hit at the front made
+  // the receipt claim a label the block had thrown away, and hide the one it printed in its place.
+  const hits: TurnFocusHit[] = [
+    { label: '   ', source: 'research' },              // no name → not evidence, never printed
+    { label: 'speed vs craft', source: 'thread' },
+    { label: 'cedar lead\n  times', source: 'research' },
+    { label: 'they run a nursery', source: 'fact' },   // past the cap
+  ];
+  assert.deepEqual(
+    renderedTurnFocusHits(hits),
+    [{ label: 'speed vs craft', source: 'thread' }, { label: 'cedar lead times', source: 'research' }],
+    'blank dropped first, then flattened, then capped',
+  );
+
+  const block = renderTurnFocus({ text: 'any word on the cedars', hits });
+  for (const h of renderedTurnFocusHits(hits)) assert.ok(block.includes(`${h.label} (${h.source})`), h.label);
+  assert.ok(!block.includes('they run a nursery'), 'and nothing it did not print');
+
+  // A hit whose name is only whitespace leaves nothing behind at all.
+  assert.deepEqual(renderedTurnFocusHits([{ label: ' \n ', source: 'note' }]), []);
 });
 
 test('renderTurnFocus says so plainly when nothing it holds touches the turn', () => {

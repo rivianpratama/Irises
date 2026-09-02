@@ -206,21 +206,33 @@ export function classifyTurnShape(text: string): TurnShape {
 // ── the block ────────────────────────────────────────────────────────────────
 
 /**
+ * The hits the block will actually PRINT, in the order it prints them: a blank name is dropped
+ * first (a hit with no name is not evidence), each survivor is flattened to one line and clipped,
+ * and only then does the cap apply — so a nameless hit at the front costs nobody a slot.
+ *
+ * Exported because the turn receipt reports "what she was shown" (convo/client.ts) and the only
+ * honest way to say that is to ask the block. Slicing the raw list instead reported a label the
+ * block had dropped, and hid the one it printed in its place.
+ */
+export function renderedTurnFocusHits(hits: readonly TurnFocusHit[]): TurnFocusHit[] {
+  return hits
+    .map(h => ({ label: clip(h.label.replace(/\s+/g, ' ').trim(), TURN_FOCUS_LABEL_CHARS), source: h.source }))
+    .filter(h => h.label)
+    .slice(0, TURN_FOCUS_MAX_HITS);
+}
+
+/**
  * Render the block. Returns '' when there is no message to restate — a turn with no text at all has
  * nothing to point at, and an empty block would be a header promising something it does not carry.
  *
- * Hits arrive already chosen and already ordered by the caller; nothing is decided here. Blank
- * labels are dropped (a hit with no name is not evidence), each surviving label is flattened to one
- * line and clipped, and at most TURN_FOCUS_MAX_HITS render.
+ * Hits arrive already chosen and already ordered by the caller; nothing is decided here beyond what
+ * renderedTurnFocusHits decides above.
  */
 export function renderTurnFocus(input: TurnFocusInput): string {
   const message = input.text.trim();
   if (!message) return '';
 
-  const hits = input.hits
-    .map(h => ({ label: clip(h.label.replace(/\s+/g, ' ').trim(), TURN_FOCUS_LABEL_CHARS), source: h.source }))
-    .filter(h => h.label)
-    .slice(0, TURN_FOCUS_MAX_HITS);
+  const hits = renderedTurnFocusHits(input.hits);
 
   // The label stays on both paths so the block's line structure is constant turn to turn: the fast
   // tier reads a fixed five-line shape, and only the values move.
