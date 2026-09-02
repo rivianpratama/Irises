@@ -347,12 +347,18 @@ export async function callOpenAICompatible(
   // only touches its own block types, so the order is irrelevant.
   const prepared = await inlineMediaBlocks(await inlineImageBlocks(req));
   /** This request's body. `maxTokens`/`disableReasoning` are the starved retry's two changes; the
-   *  rest of the body is rebuilt identically, so nothing else about the call drifts between legs. */
-  const build = (opts?: { maxTokens?: number; disableReasoning?: boolean }): OpenRouterParams => {
+   *  rest of the body is rebuilt identically, so nothing else about the call drifts between legs.
+   *  The return is a UNION, not the OpenRouter type: the generic lane's body genuinely has no
+   *  `reasoning`/`provider`/`plugins`, and casting it up would let a later read of those fields
+   *  typecheck on an openai-lane request. Everything used below (`model`, `max_tokens`, and the
+   *  send itself, which takes the wider type) is common to both. */
+  const build = (
+    opts?: { maxTokens?: number; disableReasoning?: boolean },
+  ): OpenRouterParams | OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming => {
     const r = opts?.maxTokens !== undefined ? { ...prepared, maxTokens: opts.maxTokens } : prepared;
     return provider === 'openrouter'
       ? buildOpenRouterParams(r, { disableReasoning: opts?.disableReasoning })
-      : buildOpenAIParams(r) as OpenRouterParams;   // the generic lane never carries `reasoning`
+      : buildOpenAIParams(r);
   };
   let params = build();
   const model = params.model;
