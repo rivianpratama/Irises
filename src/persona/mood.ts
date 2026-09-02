@@ -101,6 +101,33 @@ export function normalizeMoodLabel(core: MoodCore, label: unknown): string {
 }
 
 /**
+ * Word → core: the INVERSE of the wheel, built from the same two tables so it can never disagree
+ * with them. The canonical wheel is laid down last, so a word that appears both on Willcox's chart
+ * and in `EXTENDED_WORDS` files under its chart core ('cheerful' is the only such word today:
+ * `powerful` tertiary and a `joyful` extra) and every one of the 72 wheel words round-trips.
+ */
+const CORE_BY_WORD: ReadonlyMap<string, MoodCore> = new Map<string, MoodCore>([
+  ...MOOD_CORES.flatMap(c => EXTENDED_WORDS[c].map(w => [w, c] as [string, MoodCore])),
+  ...MOOD_CORES.flatMap(c => wheelWords(c).map(w => [w, c] as [string, MoodCore])),
+]);
+
+/**
+ * Which core a feeling word belongs to. This is what makes `mood_core` code's answer rather than a
+ * second thing the model has to report (and can contradict its own label with): the model says one
+ * honest word, and the core — and through it the valence band — follows from the chart.
+ *
+ * An unrecognized word gives `'peaceful'`, the same fallback the rest of the module already uses
+ * for a label it cannot place. Non-strings cannot throw: this reads a field off a model envelope.
+ */
+export function coreForLabel(label: string): MoodCore {
+  if (typeof label === 'string') {
+    const hit = CORE_BY_WORD.get(label.trim().toLowerCase());
+    if (hit) return hit;
+  }
+  return 'peaceful';
+}
+
+/**
  * The Fe-Si-Ne-Ti texture for a mood band, keyed by the 1-100 valence level (NOT by a persuasion
  * score — this is the port's key departure from Martins-Crib, where mood was derived from
  * convinced_level). Fed into the prompt so she embodies the feeling without naming it.
