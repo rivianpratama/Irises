@@ -5,7 +5,11 @@ import assert from 'node:assert/strict';
 import {
   WALLED_HOSTS, findWalledUrls, hasBrowserClass, decideWalledTooling, browserRetryDirective, walledScanText,
 } from './walledUrls.js';
-import type { CapabilitySummary } from './engineBackend.js';
+import { buildTaskPrompt, runTask } from './client.js';
+import { resetEngineBackendCache, type CapabilitySummary, type EngineBackend } from './engineBackend.js';
+import { getTraces, clearTraces } from '../../diagnostics/trace.js';
+import { emptyMedia } from '../../webhook/types.js';
+import type { OpsTask } from '../types.js';
 
 const WITH_BROWSER: CapabilitySummary = { classes: ['web', 'code'] };
 const NO_BROWSER: CapabilitySummary = { classes: ['code', 'files'] };
@@ -144,4 +148,106 @@ test('browserRetryDirective: names the URL and says why the first pass came back
     browserRetryDirective('https://www.instagram.com/reel/DcJg4VkgMT0/'),
     'The first pass never opened the page in a browser. browser_navigate to https://www.instagram.com/reel/DcJg4VkgMT0/, read the caption/tags/comments from the rendered page, then answer.',
   );
+});
+
+// ── buildTaskPrompt: where the hint lands, and the byte-identical off path ────
+
+const AT = { now: Date.parse('2026-08-12T00:00:00Z'), tz: 'UTC' };
+
+function mkTask(over: Partial<OpsTask> = {}): OpsTask {
+  return {
+    id: 't1', chatId: 'web:debug', agentHandle: '+15551234567', kind: 'web_research',
+    request: ASK, createdAt: Date.now(), media: emptyMedia(), ...over,
+  };
+}
+
+function withFlag(value: string | undefined, fn: () => void): void {
+  const prev = process.env.OPS_WALLED_URL_HINT;
+  if (value === undefined) delete process.env.OPS_WALLED_URL_HINT;
+  else process.env.OPS_WALLED_URL_HINT = value;
+  try { fn(); } finally {
+    if (prev === undefined) delete process.env.OPS_WALLED_URL_HINT; else process.env.OPS_WALLED_URL_HINT = prev;
+  }
+}
+
+test('buildTaskPrompt: the tooling line sits immediately after `task kind:`, exactly once', () => {
+  const lines = buildTaskPrompt(mkTask(), { ...AT, capabilities: WITH_BROWSER }).split('\n');
+  const kindAt = lines.findIndex(l => l.startsWith('task kind: '));
+  assert.ok(kindAt >= 0, 'the task kind line is still there');
+  assert.equal(lines.filter(l => l.startsWith('tooling: ')).length, 1, 'one hint, not two');
+  assert.ok(lines[kindAt + 1].startsWith('tooling: instagram.com pages are JavaScript/login-walled'),
+    `expected the hint right after the kind line, got: ${lines[kindAt + 1]}`);
+});
+
+test('buildTaskPrompt: no hint without a walled URL, without a browser, or with no capabilities read', () => {
+  const plain = buildTaskPrompt(mkTask({ request: 'find the date on that invoice' }), { ...AT, capabilities: WITH_BROWSER });
+  assert.doesNotMatch(plain, /^tooling: /m);
+  assert.doesNotMatch(buildTaskPrompt(mkTask(), { ...AT, capabilities: NO_BROWSER }), /^tooling: /m);
+  assert.doesNotMatch(buildTaskPrompt(mkTask(), { ...AT, capabilities: null }), /^tooling: /m);
+  assert.doesNotMatch(buildTaskPrompt(mkTask(), AT), /^tooling: /m, 'a caller that reads no capabilities gets today’s prompt');
+});
+
+test('buildTaskPrompt: the URL can ride in the front-line brief instead of the ask', () => {
+  const p = buildTaskPrompt(mkTask({ request: 'who is the girl', metaPrompt: 'akses https://www.instagram.com/reel/DcJg4VkgMT0/ itu, cepet' }), { ...AT, capabilities: WITH_BROWSER });
+  assert.match(p, /^tooling: instagram\.com pages are/m);
+});
+
+test('buildTaskPrompt: OPS_WALLED_URL_HINT off → byte-identical to the pre-hint prompt', () => {
+  const task = mkTask();
+  const before = buildTaskPrompt(task, AT); // no capabilities read == today's bytes
+  withFlag('false', () => {
+    assert.equal(buildTaskPrompt(task, { ...AT, capabilities: WITH_BROWSER }), before);
+  });
+  withFlag('true', () => {
+    assert.notEqual(buildTaskPrompt(task, { ...AT, capabilities: WITH_BROWSER }), before, 'and on, it really does change the bytes');
+  });
+});
+
+// ── the ops:kickoff receipt ───────────────────────────────────────────────────
+
+function stubEngine(summary: CapabilitySummary | null, onPrompt: (p: string) => void): EngineBackend {
+  return {
+    name: 'hermes',
+    runTask: async (prompt: string) => { onPrompt(prompt); return 'ANSWER: her name is on the caption\nSOURCE: the reel page\nFLAGS: none'; },
+    async createReminder() { return { id: 'r', title: 't', schedule: 's' }; },
+    async listReminders() { return []; },
+    async cancelReminder() { return false; },
+    async remember() { /* noop */ },
+    async probe() { return { ok: true }; },
+    async channelSend() { return {}; },
+    getCapabilitySummary() { return summary; },
+  };
+}
+
+async function kickoffDetail(task: OpsTask, summary: CapabilitySummary | null): Promise<{ detail: Record<string, unknown>; prompt: string }> {
+  let prompt = '';
+  resetEngineBackendCache(stubEngine(summary, p => { prompt = p; }));
+  clearTraces();
+  try {
+    await runTask(task);
+    const kickoff = getTraces().find(e => e.label === 'ops:kickoff');
+    assert.ok(kickoff, 'ops:kickoff was recorded');
+    return { detail: (kickoff.detail ?? {}) as Record<string, unknown>, prompt };
+  } finally {
+    resetEngineBackendCache(undefined);
+  }
+}
+
+test('runTask: ops:kickoff reports the walled hosts and whether the hint went in', async () => {
+  const armed = await kickoffDetail(mkTask(), WITH_BROWSER);
+  assert.deepEqual(armed.detail.walledHosts, ['instagram.com']);
+  assert.equal(armed.detail.toolingHint, true);
+  assert.match(armed.prompt, /^tooling: instagram\.com pages are/m, 'and the engine actually received it');
+  assert.equal(armed.detail.kind, 'web_research', 'the fields it already carried are untouched');
+});
+
+test('runTask: ops:kickoff carries both fields on the no-op too — a walled URL with no browser', async () => {
+  const noBrowser = await kickoffDetail(mkTask(), NO_BROWSER);
+  assert.deepEqual(noBrowser.detail.walledHosts, ['instagram.com'], 'the URL was walled; only the capability was missing');
+  assert.equal(noBrowser.detail.toolingHint, false);
+  assert.doesNotMatch(noBrowser.prompt, /^tooling: /m);
+
+  const plain = await kickoffDetail(mkTask({ request: 'find the date on that invoice' }), WITH_BROWSER);
+  assert.deepEqual(plain.detail.walledHosts, []);
+  assert.equal(plain.detail.toolingHint, false);
 });

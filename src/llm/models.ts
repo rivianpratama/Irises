@@ -188,6 +188,18 @@ export const PROVIDERS: Record<LlmRole, LlmProvider> = {
 // fails, the run degrades to the transient-snag beat — the single retry is the whole ladder.
 export const OPS_RETRY_ENABLED = parseBoolEnv(process.env.OPS_RETRY_ENABLED, true);
 
+/** The walled-URL browser hint (env: OPS_WALLED_URL_HINT). Default ON. Gates BOTH halves of the
+ *  feature: the `tooling:` line buildTaskPrompt inserts when the ask carries a JavaScript/login-
+ *  walled link and the engine has a browser, and the deterministic retry that fires when such a
+ *  first pass still comes back empty-handed. Off → the task prompt's bytes are exactly what they
+ *  were before the hint existed and triage takes today's route.
+ *
+ *  Read at CALL time (a function, not a module-load const like its sibling above) so the off path
+ *  is exercisable from a test without re-importing this module. */
+export function walledUrlHintEnabled(): boolean {
+  return parseBoolEnv(process.env.OPS_WALLED_URL_HINT, true);
+}
+
 // Loud-but-harmless heads-up: a role pinned to a lane with no key just falls back to another
 // configured lane at call time, which can mask a config typo. Warn once at boot, per lane. A key
 // that is SET BUT BLANK counts as unset here (isLaneConfigured) — that is the exact shape this is for.

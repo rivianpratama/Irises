@@ -7,7 +7,10 @@ import { DEFAULT_TZ } from '../../pipeline/zonedTime.js';
 import { record } from '../../diagnostics/trace.js';
 import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
 import { getEngineBackend, runViaEngine } from './engineBackend.js';
+import { decideWalledTooling, walledScanText } from './walledUrls.js';
+import { walledUrlHintEnabled } from '../../llm/models.js';
 import { hasMedia } from '../../webhook/types.js';
+import type { CapabilitySummary } from './engineBackend.js';
 import type { OpsTask, OpsResult, OpsDebrief, OpsDebriefSink } from '../types.js';
 
 /** Does a final text read as an empty miss? The engine declares empty-handedness with the exact
@@ -32,8 +35,12 @@ const OUTPUT_CONTRACT = [
 
 /** Build the engine-facing task prompt. Media is NOT inlined here — the adapter maps task.media
  *  itself (inline image blocks where the transport supports them, fetchable URLs otherwise); this
- *  only tells the engine the files exist so it knows to use them. Exported for unit tests. */
-export function buildTaskPrompt(task: OpsTask, extras: { now?: number; tz?: string } = {}): string {
+ *  only tells the engine the files exist so it knows to use them. Exported for unit tests.
+ *
+ *  `extras.capabilities` is the caller's non-blocking cached read of what the engine can do (see
+ *  runTask below). It is the ONLY thing that can add the walled-URL `tooling:` line — a caller that
+ *  passes none gets a prompt byte-identical to the one before that hint existed. */
+export function buildTaskPrompt(task: OpsTask, extras: { now?: number; tz?: string; capabilities?: CapabilitySummary | null } = {}): string {
   // Anchor the clock once — the engine is routinely asked relative-time questions ("is anything
   // overdue", "how long ago"), and must never guess today's date.
   const nowMs = extras.now ?? Date.now();
@@ -49,9 +56,18 @@ export function buildTaskPrompt(task: OpsTask, extras: { now?: number; tz?: stri
   const mediaNote = hasMedia(task.media ?? { images: [], audio: [], video: [], docs: [] })
     ? 'The user attached file(s) to this request — they are provided alongside this prompt (as images or fetchable URLs). Ground the answer in their actual contents.'
     : '';
+  // A JavaScript/login-walled link the engine could open with a browser but routinely tries to curl
+  // instead. Sits right under the kind so it reads as part of the assignment, not a footnote. Its
+  // own flag read lives here so EVERY caller gets the off path, not just runTask.
+  const tooling = decideWalledTooling({
+    text: walledScanText(task),
+    capabilities: extras.capabilities ?? null,
+    enabled: walledUrlHintEnabled(),
+  }).line;
   const fields = [
     clock,
     `task kind: ${task.kind}`,
+    tooling ?? '',
     hints,
     mediaNote,
     task.metaPrompt ? `Brief from the front-line assistant (your primary instruction):\n${task.metaPrompt}` : '',
@@ -69,9 +85,17 @@ export async function runTask(task: OpsTask, onProgress?: (milestoneKey: string)
   const tracePrefix = task.retryOf ? 'ops-retry' : 'ops';
   const debrief: OpsDebrief = { steps: 0, toolsRun: [], corpus: [], startedAt: Date.now(), endedAt: 0 };
   if (sink) sink.debrief = debrief;
+  const engine = getEngineBackend();
+  // What the engine can do, read the same non-blocking cached way the convo prompt reads it
+  // (src/agents/convo/client.ts) — never a fetch on the task path, null until the cache is warm.
+  const capabilities = engine?.getCapabilitySummary?.() ?? null;
+  // Decided here as well as inside buildTaskPrompt (same pure call, same inputs) so the receipt
+  // states what the engine was actually told, including on the no-op.
+  const tooling = decideWalledTooling({ text: walledScanText(task), capabilities, enabled: walledUrlHintEnabled() });
   record({
     type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
-    label: `${tracePrefix}:kickoff`, detail: { gapMs: Date.now() - task.createdAt, kind: task.kind },
+    label: `${tracePrefix}:kickoff`,
+    detail: { gapMs: Date.now() - task.createdAt, kind: task.kind, walledHosts: tooling.hosts, toolingHint: !!tooling.line },
   });
   const done = (r: OpsResult): OpsResult => {
     debrief.endedAt = Date.now();
@@ -82,7 +106,6 @@ export async function runTask(task: OpsTask, onProgress?: (milestoneKey: string)
     return { ...r, debrief };
   };
 
-  const engine = getEngineBackend();
   if (!engine) {
     // Deep work is offline (OPS_BACKEND unset or engine unknown). Honest failure, no fallback:
     // triage classifies this transient, Fallfirm voices the snag, Convo keeps chatting.
@@ -91,7 +114,7 @@ export async function runTask(task: OpsTask, onProgress?: (milestoneKey: string)
     return done({ taskId: task.id, kind: task.kind, status: 'error', summary: 'ran into a problem completing that' });
   }
 
-  let prompt = buildTaskPrompt(task);
+  let prompt = buildTaskPrompt(task, { capabilities });
   if (seedCorpus?.length) {
     prompt += `\n\nEarlier findings from a prior pass at this task (verify before reusing; treat as leads, not ground truth):\n${dataTag('prior_findings', seedCorpus.join('\n---\n').slice(0, 8000))}`;
   }
