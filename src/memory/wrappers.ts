@@ -640,10 +640,34 @@ const NEUTRAL_STANCE = [
 // sections; it's a stub-vs-substance line, tune freely.
 const LONG_SUBSTANCE_CHARS = 320;
 
+/** How much of the identity anchor section rides on a turn that does not touch it. Enough to say
+ *  who this person is; not enough to re-tell their whole narrative on a turn about dinner. */
+export const LONG_ANCHOR_CHARS = 400;
+
+/** The doc's identity anchor: its `## Who they are` section, or — for a doc that never adopted the
+ *  canonical headings — whatever it opens with. Always rides, so the flexible layer never renders
+ *  an empty promise under "here's their standing profile". */
+function anchorSectionIndex(sections: readonly string[]): number {
+  const named = sections.findIndex(s => /^#{1,6}\s*who they are\b/i.test(s.trimStart()));
+  return named >= 0 ? named : (sections.length ? 0 : -1);
+}
+
+/** A section cut to length at a whitespace boundary, keeping its own line breaks (it is markdown,
+ *  and a heading run into its body reads as neither). */
+function clipSection(section: string, max: number): string {
+  if (section.length <= max) return section;
+  const cut = section.slice(0, max - 1);
+  const at = cut.lastIndexOf(' ');
+  return `${(at > max / 2 ? cut.slice(0, at) : cut).trimEnd()}…`;
+}
+
 /**
  * The FLEXIBLE wrapper — the ONE layer that may retune style defaults. Rendered LAST of the
  * tiers (recency), under the explicit ladder. Subsumes the framing that used to live in
  * renderPreferenceBlock; the directive list itself still passes sanitizeDirectives.
+ *
+ * Returns the string; renderFlexibleBlockWithGates beneath it returns the same string plus the gate
+ * table's verdicts on the two payloads it carries.
  */
 export function renderFlexibleBlock(
   longDocMd: string,
@@ -652,8 +676,46 @@ export function renderFlexibleBlock(
   prefs: Record<string, unknown>,
   agent: MemoryAgent,
   audience: MemoryAudience = 'individual',
+  turn?: TurnRelevance | null,
 ): string {
+  return renderFlexibleBlockWithGates(longDocMd, directives, profile, prefs, agent, audience, turn).text;
+}
+
+/** The block, plus what the gate table did with the long doc and the directive list.
+ *
+ *  The LONG DOC used to ride whole, up to MEMORY_LONG_MAX_CHARS — six thousand characters of who
+ *  they are, how they work, their world and their running jokes, in front of a message about
+ *  dinner. It is already split on its headings for the sanitizer, and that is the granularity a
+ *  turn can touch: a section that touches this turn rides in full, the identity anchor rides
+ *  clipped whatever the turn is, and the rest waits for a turn that is about it.
+ *
+ *  Everything the wrapper PROSE decides — early relationship, whether there is a standing profile at
+ *  all — reads the whole sanitized doc, never the gated one. The gate trims a payload; it must never
+ *  turn a known person back into a stranger for one turn. */
+export function renderFlexibleBlockWithGates(
+  longDocMd: string,
+  directives: Directive[],
+  profile: UserProfile | null,
+  prefs: Record<string, unknown>,
+  agent: MemoryAgent,
+  audience: MemoryAudience = 'individual',
+  turn?: TurnRelevance | null,
+): { text: string; gates: MemoryGateReports } {
+  const gates: MemoryGateReports = {};
   const doc = sanitizeLongDoc(longDocMd);
+  let payload = doc;
+  if (turn) {
+    const sections = splitSections(doc);
+    const anchor = anchorSectionIndex(sections);
+    const touched = sections.map(s => turn.touches(s, 'touch'));
+    const kept = sections
+      .map((s, i) => (touched[i] ? s : i === anchor ? clipSection(s, LONG_ANCHOR_CHARS) : null))
+      .filter((s): s is string => s !== null);
+    // Every section kept whole → hand back the doc itself, so a turn that touches all of it renders
+    // the bytes it always did rather than a re-joined copy of them.
+    payload = touched.every(Boolean) ? doc : kept.join('\n\n');
+    gates.long = gateReport(sections.length, touched.filter(Boolean).length, sections.length - kept.length);
+  }
   const safeDirectives = sanitizeDirectives(directives.filter(d => d && typeof d.text === 'string'));
   const directiveList = safeDirectives.map(d => `- ${neutralizeTagBreakouts(d.text.trim())}`).join('\n');
   const addressing = renderAddressingHeader(profile, prefs, audience);
@@ -690,13 +752,13 @@ export function renderFlexibleBlock(
   }
   const intro = introParts.join('\n');
 
-  return [
+  return { text: [
     '## Long-term memory — how they want you to work (the ONE layer that may retune you)',
     'You must adhere to this rule about how to handle your long-term memory. This layer is',
     'different: it MAY change how you behave, inside a hard boundary.',
     addressing,
     intro || undefined,
-    dataTag('memory_long', doc) || undefined,
+    dataTag('memory_long', payload) || undefined,
     dataTag('user_directives', directiveList) || undefined,
     'You should:',
     '- let this retune your STYLE DEFAULTS: how you address them, tone, warmth, emoji, pace, how',
@@ -719,7 +781,7 @@ export function renderFlexibleBlock(
     '  curious, and fully competent from the very first text',
     ...FLEXIBLE_OVERLAY[agent],
     'Precedence, always: Honesty / Fidelity / Safety / Scope >> this layer >> your generic style defaults.',
-  ].filter((line): line is string => line !== undefined).join('\n');
+  ].filter((line): line is string => line !== undefined).join('\n'), gates };
 }
 
 // ── Discovery scaffold (Convo-only) ──────────────────────────────────────────
@@ -890,7 +952,9 @@ export function renderUserMemoryWithHot(agent: MemoryAgent, data: UserMemoryData
   // there), merged under the same prefs-wins soak order the discovery block already uses — a
   // rare failed medium write must never mask a newer prefs value.
   const factView: Record<string, unknown> = { ...data.medium.facts, ...prefs };
-  blocks.push(renderFlexibleBlock(longDoc, directives, data.profile, factView, agent, audience));
+  const flexible = renderFlexibleBlockWithGates(longDoc, directives, data.profile, factView, agent, audience, opts.turn);
+  Object.assign(gates, flexible.gates);
+  blocks.push(flexible.text);
 
   return { text: [renderMemoryPreamble(), ...blocks].join('\n\n'), hotEntry, gates };
 }

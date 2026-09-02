@@ -13,6 +13,7 @@ import {
   RELEVANCE_HIT_KINDS, RELEVANCE_HITS_MAX,
 } from './relevance.js';
 import {
+  renderFlexibleBlock, renderFlexibleBlockWithGates, LONG_ANCHOR_CHARS, sanitizeLongDoc,
   renderMediumBlock, renderMediumBlockWithGates,
   renderShortBlockWithHot, renderUserMemory, renderUserMemoryWithHot, splitSections,
   type UserMemoryData,
@@ -254,20 +255,57 @@ test('the short-tier hot-look gate lands on the same verdict through the router'
   }
 });
 
-test('the memory stack renders the same bytes with a router as without', () => {
-  const data: UserMemoryData = {
+/** A stack with something in every gated channel, at a size where a gate is visible. */
+function richData(): UserMemoryData {
+  return {
     profile: { handle: '+15550005555', name: 'Jordan', facts: ['fixing up a lake cabin'], firstSeen: 0, lastSeen: 0 },
     memory: null,
-    medium: medium({ notes: ['the shack rewiring is booked for august'], facts: { comms_style: 'lowercase' }, directives: [{ id: 'd1', text: 'always reply in lowercase', createdAt: NOW }] }),
-    short: [shortEntry({ request: 'cedar lead times', content: 'z'.repeat(300) })],
-    longDocMd: '## Who they are\nJordan, print shop owner\n\n## Their world\nthe shack',
+    medium: medium({
+      notes: Array.from({ length: 9 }, (_, i) => `a standing note number ${i} that runs on well past the eighty characters a digest of it would be cut to`),
+      facts: { comms_style: 'lowercase' },
+      directives: Array.from({ length: 15 }, (_, i) => ({ id: `d${i}`, text: `standing preference number ${i}`, createdAt: NOW - i * 86_400_000 })),
+    }),
+    short: [
+      shortEntry({ request: 'cedar lead times', content: 'z'.repeat(300) }),
+      ...Array.from({ length: 5 }, (_, i) => shortEntry({
+        id: `e${i}`, kind: 'email_flag', content: 'a flagged mail body that runs on for well over a hundred and fifty characters so that a digest of it is plainly shorter than the mail itself, twice over',
+        createdAt: NOW - (9 + i) * 3_600_000, meta: { from: `s${i}@x.example`, subject: `subject ${i}` },
+      })),
+    ],
+    longDocMd: `## Who they are\nJordan, print shop owner\n\n## How they work\n${'mornings at the press, and the section runs on. '.repeat(12)}\n\n## Their world\nthe shack`,
   };
+}
+
+test('with no router every gated channel renders whole, exactly as it always did', () => {
+  // The off path, stated as behaviour rather than as a hash: with CONVO_MEMORY_RELEVANCE off no
+  // router is built (dossier.ts), so every gate here is inert and the stack is the pre-P2 stack.
+  const data = richData();
   for (const text of ['any word on cedar yet', 'what should i cook for dinner']) {
-    const opts = { audience: 'individual' as const, currentTurnText: text };
-    const plain = renderUserMemory('convo', data, NOW, opts);
-    const routed = renderUserMemoryWithHot('convo', data, NOW, { ...opts, turn: buildTurnRelevance(text, { short: data.short, medium: data.medium, longSections: splitSections(data.longDocMd) }) });
-    assert.equal(routed.text, plain, `same bytes: "${text}"`);
+    const plain = renderUserMemory('convo', data, NOW, { audience: 'individual', currentTurnText: text });
+    assert.equal(plain.split('- [email flagged').length - 1, 5, `all five flags: "${text}"`);
+    assert.equal(plain.split('a flagged mail body that runs on for well over a hundred and fifty characters so that a digest').length - 1, 5, 'each of them whole');
+    assert.equal(plain.split('a standing note number').length - 1, 9, 'all nine notes');
+    assert.ok(plain.includes('a standing note number 8 that runs on well past the eighty characters'), 'each of them whole');
+    assert.equal(plain.split('- standing preference number').length - 1, 15, 'all fifteen directives');
+    assert.ok(plain.includes('## How they work'), 'and every section of the long doc');
+    assert.ok(plain.includes('mornings at the press, and the section runs on. '.repeat(12).trim()));
   }
+});
+
+test('handing the stack a router is what turns every gate on', () => {
+  const data = richData();
+  const text = 'what should i cook for dinner';
+  const opts = { audience: 'individual' as const, currentTurnText: text };
+  const plain = renderUserMemory('convo', data, NOW, opts);
+  const routed = renderUserMemoryWithHot('convo', data, NOW, {
+    ...opts,
+    turn: buildTurnRelevance(text, { short: data.short, medium: data.medium, longSections: splitSections(data.longDocMd) }),
+  });
+
+  assert.ok(routed.text.length < plain.length, `${routed.text.length} chars against ${plain.length}`);
+  assert.equal(routed.text.split('- [email flagged').length - 1, 4, 'the email cap');
+  assert.equal(routed.text.split('a standing note number').length - 1, 6, 'the note cap');
+  assert.ok(!routed.text.includes('## How they work'), 'the long doc kept only its anchor');
 });
 
 test('buildContextBlockWithHot builds the router when the flag is on, and the block is byte-identical either way', async () => {
@@ -571,4 +609,89 @@ test('with no router the medium block renders every note in full, exactly as it 
   const bundle = { directives: [], notes, facts: { comms_style: 'clipped' } };
   assert.deepEqual(noteLines(renderMediumBlock(bundle)), notes);
   assert.deepEqual(renderMediumBlockWithGates(bundle).gates, {}, 'no gate ran, so the receipt claims nothing');
+});
+
+// ── the gate table: the long doc, section by section ────────────────────────
+// The narrative profile rode into every turn whole, up to MEMORY_LONG_MAX_CHARS of it — six
+// thousand characters of who they are, how they work, their world and their running jokes, in front
+// of "what should i cook for dinner". It is already split on its headings for the sanitizer, which
+// is the granularity a turn can actually touch.
+
+/** Everything inside <memory_long>, or '' when the tag did not render. */
+function longPayload(block: string): string {
+  const open = block.indexOf('<memory_long>\n');
+  if (open < 0) return '';
+  return block.slice(open + '<memory_long>\n'.length, block.indexOf('\n</memory_long>'));
+}
+
+const SECTION_BODY = (topic: string) =>
+  `${topic}. ${'and the section runs on for a good while after that, the way a real dossier section does. '.repeat(5)}`;
+
+const RICH_LONG_DOC = [
+  `## Who they are\n${SECTION_BODY('Sam, runs a plant nursery outside bend')}`,
+  `## How they work\n${SECTION_BODY('mornings in the yard, desk work after four')}`,
+  `## Their world\n${SECTION_BODY('the cedar order from the north supplier is late and disputed')}`,
+  `## Running jokes\n${SECTION_BODY('the budget committee, her own phrase for a third round of price comparisons')}`,
+].join('\n\n');
+
+const flexible = (text: string | null) => renderFlexibleBlockWithGates(
+  RICH_LONG_DOC, [], null, {}, 'convo', 'individual',
+  text === null ? null : buildTurnRelevance(text, { longSections: splitSections(RICH_LONG_DOC) }),
+);
+
+test('the long doc renders the sections this turn touches, plus who they are', () => {
+  const out = flexible('any word on the cedar order');
+  const payload = longPayload(out.text);
+
+  assert.ok(payload.includes('the cedar order from the north supplier is late and disputed'));
+  assert.ok(payload.includes('## Who they are'), 'the identity anchor always rides');
+  assert.ok(payload.includes('…'), 'and rides clipped');
+  assert.ok(!payload.includes('mornings in the yard'), 'a section this turn does not touch stays out');
+  assert.ok(!payload.includes('the budget committee'));
+  assert.ok(payload.length < 1_500, `${payload.length} chars, down from ${RICH_LONG_DOC.length}`);
+  assert.deepEqual(out.gates.long, { verdict: 'digest', reason: 'partly_kept', dropped: 2 });
+});
+
+test('a turn that touches nothing still gets who they are, and only that', () => {
+  const out = flexible('what should i cook for dinner');
+  const payload = longPayload(out.text);
+
+  assert.ok(payload.startsWith('## Who they are'));
+  assert.ok(payload.length <= LONG_ANCHOR_CHARS + 40, `the anchor is ${payload.length} chars`);
+  assert.ok(!payload.includes('the cedar order'));
+  assert.deepEqual(out.gates.long, { verdict: 'digest', reason: 'none_kept', dropped: 3 });
+
+  // …and the wrapper prose still reads as a person who HAS a standing profile: the gate trims the
+  // payload, it never turns a known person back into a stranger.
+  assert.ok(out.text.includes("Here's their standing profile and working preferences"));
+  assert.ok(!out.text.includes("There's no standing profile of them yet"));
+});
+
+test('a doc with no "who they are" heading keeps its opening section as the anchor', () => {
+  const doc = `## Their world\n${SECTION_BODY('the cedar order is disputed')}\n\n## Running jokes\n${SECTION_BODY('the budget committee')}`;
+  const out = renderFlexibleBlockWithGates(doc, [], null, {}, 'convo', 'individual', buildTurnRelevance('what should i cook for dinner', { longSections: splitSections(doc) }));
+  const payload = longPayload(out.text);
+  assert.ok(payload.startsWith('## Their world'), 'the flexible layer never renders an empty promise');
+  assert.ok(payload.length <= LONG_ANCHOR_CHARS + 40);
+});
+
+test('a doc whose every section touches the turn renders exactly as it always did', () => {
+  const doc = `## Who they are\n${SECTION_BODY('cedar')}\n\n## Their world\n${SECTION_BODY('cedar again')}`;
+  const text = 'cedar';
+  const on = renderFlexibleBlockWithGates(doc, [], null, {}, 'convo', 'individual', buildTurnRelevance(text, { longSections: splitSections(doc) }));
+  assert.equal(longPayload(on.text), longPayload(renderFlexibleBlock(doc, [], null, {}, 'convo', 'individual')), 'byte for byte');
+  assert.deepEqual(on.gates.long, { verdict: 'full', reason: 'all_kept', dropped: 0 });
+});
+
+test('with no router the long doc renders whole, exactly as it always did', () => {
+  const out = flexible(null);
+  // sanitizeLongDoc is what "whole" means here: the gate sits after it, never in front of it.
+  assert.equal(longPayload(out.text), sanitizeLongDoc(RICH_LONG_DOC));
+  assert.deepEqual(out.gates, {}, 'no gate ran, so the receipt claims nothing');
+  assert.equal(out.text, renderFlexibleBlock(RICH_LONG_DOC, [], null, {}, 'convo', 'individual'));
+});
+
+test('an empty long doc reports the gate table no-op', () => {
+  const out = renderFlexibleBlockWithGates('', [], null, {}, 'convo', 'individual', buildTurnRelevance('hey', {}));
+  assert.deepEqual(out.gates.long, { verdict: 'dropped', reason: 'nothing_held' });
 });
