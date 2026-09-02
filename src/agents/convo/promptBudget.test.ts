@@ -564,6 +564,51 @@ test('the memory stack is inside its budget on every fixture that carries one', 
   }
 });
 
+/** The largest each budget line reaches across the five fixtures — the number its ceiling is meant to
+ *  be a rounded-up copy of. `memory_stack` comes off the fixtures' own stacks because it is a part of
+ *  `context_block` rather than a section of its own. */
+function measuredMaxima(): Map<BudgetKey, number> {
+  const max = new Map<BudgetKey, number>();
+  const bump = (key: BudgetKey, chars: number) => max.set(key, Math.max(max.get(key) ?? 0, chars));
+  for (const f of FIXTURES) {
+    for (const s of buildSystemPromptSections(...argsFor(f.spec)).sections) bump(s.name, s.chars);
+    if (f.memoryStack !== null) bump('memory_stack', f.memoryStack.length);
+  }
+  return max;
+}
+
+/** How much a ceiling may sit above its measurement: enough to round to a tidy number, not enough to
+ *  hide a new block. Stated as a fraction so the big prose lines are held tightest in absolute terms,
+ *  which is where an unnoticed arrival would cost the most. */
+const MAX_HEADROOM = 0.02;
+
+test('no ceiling carries more than 2% of headroom over what the fixtures measure', () => {
+  // The other half of the ratchet, and the half that had no test: the budget above only fails when a
+  // section GROWS past its ceiling, so a phase that deletes 3k characters of prose leaves the ceiling
+  // where it was and the next arrival lands in the slack for free. This fails instead — a deletion
+  // now has to pull its own number down in the same commit, which is the "tightening is a one-line
+  // diff" the module was built for.
+  //
+  // `model_map` is exempt, for the reason promptPolicy.ts gives beside it: its text is built from the
+  // host's resolved model map, so a bare checkout and a configured install measure different sizes and
+  // a tight ceiling would fail on somebody else's machine. Every other line is deterministic here —
+  // fixture data, repo prose, or the frozen clock.
+  const measured = measuredMaxima();
+  const rows: string[] = [];
+  const loose: string[] = [];
+  for (const [key, chars] of [...measured].sort((a, b) => b[1] - a[1])) {
+    const ceiling = PROMPT_BUDGET[key];
+    const headroom = (ceiling - chars) / chars;
+    rows.push(`  ${key}: measured ${chars}, ceiling ${ceiling} (+${(headroom * 100).toFixed(1)}%)`);
+    if (key === 'model_map') continue;
+    if (headroom > MAX_HEADROOM) loose.push(key);
+  }
+  assert.deepEqual(
+    loose, [],
+    `these ceilings are cushions rather than measurements — ratchet them down in promptPolicy.ts:\n${rows.join('\n')}`,
+  );
+});
+
 test('the live conversation keeps its share of the context on a mature turn', () => {
   const f = FIXTURES[1];
   assert.equal(f.name, 'mature profile, plain question');

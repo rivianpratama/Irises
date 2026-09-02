@@ -12,10 +12,11 @@
 // produce is "a prose block grew since someone last looked", which is exactly the failure that has
 // no other detector.
 //
-// Its whole design point is that TIGHTENING IS A ONE-LINE DIFF. P0 (this task) measures and pins.
-// P1 deletes the duplicated clauses and drops the counts in CLAUSE_INVENTORY; the later phases pull
-// the PROMPT_BUDGET numbers down as the prose shrinks. Nothing here is an aspiration — every number
-// is a measurement, and the comment beside a number says which fixture produced it.
+// Its whole design point is that TIGHTENING IS A ONE-LINE DIFF. P0 measured and pinned; P1 deleted
+// the duplicated clauses, dropped every count in CLAUSE_INVENTORY to one, and then re-measured — the
+// numbers below are that second measurement, each ceiling now within 2% of what the fixtures assemble.
+// Nothing here is an aspiration — every number is a measurement, and the comment beside a number says
+// which fixture produced it and what it used to be.
 
 import type { SectionId } from './promptSections.js';
 
@@ -30,10 +31,14 @@ export type BudgetKey = SectionId | 'memory_stack';
  * mature profile with a plain question · media turn · burst + tapped reply in a group · thread
  * offer), then rounded UP to a tidy number.
  *
- * How much headroom: at most 5%, and much less than that on the big prose blocks, where 5% would be
- * thousands of characters — i.e. room for a whole new section to arrive unnoticed, which is the thing
- * this table exists to notice. `persona` therefore carries ~150 characters of slack: a sentence added
- * to Context.md is meant to fail here and be ratcheted deliberately, not absorbed.
+ * How much headroom: at most 2%, and less than that wherever a tidy number allows — 2% of `persona`
+ * is already 2,700 characters, i.e. room for a whole new section to arrive unnoticed, which is the
+ * thing this table exists to notice. `persona` carries ~100 characters of slack: a sentence added to
+ * Context.md is meant to fail here and be ratcheted deliberately, not absorbed.
+ *
+ * The 2% is checked, not promised. promptBudget.test.ts fails on a ceiling that sits further than that
+ * above its measurement, so a phase that deletes prose cannot leave its old ceiling behind as slack
+ * for the next arrival to land in — the deletion pulls the number down in the same commit.
  *
  * `model_map` is the one deliberate exception, at ~2× its measured size: its text is built from the
  * host's resolved model map (MODELS/PROVIDERS plus whatever engine discovery found), so a bare
@@ -58,25 +63,25 @@ export type BudgetKey = SectionId | 'memory_stack';
 export const PROMPT_BUDGET: Record<BudgetKey, number> = {
   persona: 138_200,            // 138,102 — P1: the envelope's field list + the copied wheel are gone (was 141,600 for 141,474)
   tool_docs: 16_500,           // 16,288 — the group fixture (13 tools; the 1:1 lane carries 11)
-  capability: 248,             // 237 — all six capability classes minus inbox, the longest line
+  capability: 240,             // 237 — all six capability classes minus inbox, the longest line (was 248)
   model_map: 800,              // 387 on a bare checkout — HOST-DEPENDENT, see above
-  name_nudge: 171,             // 163 — fixed prose
-  intro_weave: 795,            // 760 — INTRO_WEAVE_BLOCK (agents/ops/firstMove.ts)
+  name_nudge: 165,             // 163 — fixed prose (was 171)
+  intro_weave: 770,            // 760 — INTRO_WEAVE_BLOCK (agents/ops/firstMove.ts) (was 795)
   context_block: 12_500,       // 12,290 — the cold fixture (a thin profile is not a small prompt)
-  active_ops: 2_040,           // 1,946 — two looks in flight, one queued
-  group: 109,                  // 104 — a named group, three participants
-  tapped_reply: 2_290,         // 2,190 — kind 'assistant' beyond the visible window (the largest of the four)
-  burst: 1_160,                // 1,110 — three messages, group-labelled
-  current_time: 305,           // 291 — fixed prose plus the formatted instant
-  weather: 2_700,              // 2,581 — affect + cycle + circadian + a moved climate
+  active_ops: 1_980,           // 1,946 — two looks in flight, one queued (was 2,040)
+  group: 105,                  // 104 — a named group, three participants (was 109)
+  tapped_reply: 2_230,         // 2,190 — kind 'assistant' beyond the visible window (the largest of the four) (was 2,290)
+  burst: 1_130,                // 1,110 — three messages, group-labelled (was 1,160)
+  current_time: 295,           // 291 — fixed prose plus the formatted instant (was 305)
+  weather: 2_300,              // 2,262 — affect + cycle + circadian + a moved climate (was 2,700 for 2,581, before P1 pointed the block's tail at the status contract instead of re-listing the fields)
   status_contract: 4_000,      // 3,976 — STATIC (ENVELOPE_FIELDS + the wheel), the same on every turn (was 3,650 for 3,591; +353 re-homed three capture rules onto the two threading descriptions, +32 said whose mode `intent_mode` reads)
-  thread: 1_270,               // 1,211 — a pattern-rung theme offer plus a loop outcome ask
-  conversation_timing: 278,    // 266 — the widest of the gap/regime readings on these fixtures
-  reply_order: 640,            // 613 — renderArrivalGap (the backward-order variant, the larger one)
-  extra: 610,                  // 583 — the pending version note (update/announce.ts)
-  turn_focus: 570,             // 544 — a 400-char restatement plus two hits
+  thread: 1_230,               // 1,211 — a pattern-rung theme offer plus a loop outcome ask (was 1,270)
+  conversation_timing: 270,    // 266 — the widest of the gap/regime readings on these fixtures (was 278)
+  reply_order: 620,            // 613 — renderArrivalGap (the backward-order variant, the larger one) (was 640)
+  extra: 590,                  // 583 — the pending version note (update/announce.ts) (was 610)
+  turn_focus: 550,             // 544 — a 400-char restatement plus two hits (was 570)
   behavior_anchor: 705,        // 699 — P1: six lines that drift first (was 1,740 for 1,659 / 14 lines)
-  json_anchor: 3_050,          // 2,908 — the envelope contract, last in the prompt
+  json_anchor: 2_950,          // 2,908 — the envelope contract, last in the prompt (was 3,050)
   memory_stack: 12_500,        // 12,290 — the cold stack (discovery + default stance), the biggest measured
 };
 
