@@ -52,7 +52,7 @@ import { beginTurn } from './diagnostics/trace.js';
 import { loadContext } from './agents/loadContext.js';
 import { redactInternalTools, stripOpsScaffolding } from './agents/guardrails.js';
 import { splitIntoBubbles, splitIntoBubblesWithSplits } from './pipeline/bubbles.js';
-import { buildBubbleReport, noteBubbleReport, takeHardCapHits } from './pipeline/bubbleJson.js';
+import { buildBubbleReport, noteBubbleReport } from './pipeline/bubbleJson.js';
 import type { OpsTask } from './agents/types.js';
 
 // Short, stable fingerprint of a persona body so /health can confirm which version is live.
@@ -130,6 +130,10 @@ interface AgentChatResult {
   groupChatIcon: { prompt: string } | null;
   removeMember: string | null;
   delegatedTask?: OpsTask | null;
+  // The bubble-count guard fired on the parse behind `text` (agents/convo/shared.ts → ChatResponse).
+  // Rides the reply itself so the send boundary reports the cap against the reply it ships; optional
+  // so an agent that doesn't parse a bubble envelope still satisfies this shape.
+  hardCapped?: boolean;
 }
 
 export interface AgentClient {
@@ -692,7 +696,7 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
     arrivals,
   });
   turnOut = out;
-  const { text: responseText, reaction, renameChat, rememberedUser, generatedImage, groupChatIcon, removeMember, delegatedTask } = out;
+  const { text: responseText, reaction, renameChat, rememberedUser, generatedImage, groupChatIcon, removeMember, delegatedTask, hardCapped } = out;
   console.log(`[timing] agent: ${Date.now() - start}ms`);
   console.log(`[debug] responseText: ${responseText ? `"${responseText.substring(0, 50)}..."` : 'null'}, renameChat: ${renameChat || 'null'}, generatedImage: ${generatedImage ? 'yes' : 'null'}, removeMember: ${removeMember || 'null'}`);
   // Send reaction if agent wants to. On a burst the model may target a specific [msg N] via `re` (e.g.
@@ -752,11 +756,13 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
       ? resolveOutboundBubbles(split.bubbles, incomingMessageIds, { isBurst, anchorFirstTo })
       : { bubbles: [] as string[], targets: [] as (ReplyTo | undefined)[] };
 
-    // What the bubble law did to this reply, read ONCE, here: this is the only place the list that
-    // actually ships is known, and both caps are otherwise invisible (each only logs). Parked per
-    // chat (lastBubbleReport) for the turn receipt to fold in, so nothing has to be threaded back
-    // up through the agent layers. takeHardCapHits is read-and-reset — this is its one reader.
-    noteBubbleReport(chatId, buildBubbleReport(bubbles, { hardCapped: takeHardCapHits() > 0, splits: split.splits }));
+    // What the bubble law did to THIS reply, read ONCE, here: this is the only place the list that
+    // actually ships is known, and both caps are otherwise invisible (each only logs). `hardCapped`
+    // rides `out` from the parse that produced this very text (never a process-wide tally, which
+    // would attach another chat's or another agent's cap to this receipt); `splits` comes from the
+    // split above. Also parked per chat (lastBubbleReport) for an out-of-band reader — see the
+    // ordering note there; a turn receipt assembled here uses the returned report directly.
+    noteBubbleReport(chatId, buildBubbleReport(bubbles, { hardCapped: hardCapped === true, splits: split.splits }));
 
     // If we're delegating, thread the LATE Ops follow-up to the message that actually asked, not the
     // last burst message (which may be a "thanks"). Prefer the message a holding bubble quoted; else,

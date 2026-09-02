@@ -44,6 +44,12 @@ export interface ParsedReply {
   /** The raw hidden `status` object the model emitted (mood/gauges/meta-prompt), if any. Swallowed
    *  from the user-facing text exactly like confidence_level; the persona layer coerces it (coerceStatus). */
   statusRaw?: Record<string, unknown>;
+  /** The runaway guard fired on THIS parse: the model wrote more than BUBBLE_HARD_CAP bubbles and
+   *  collectBubbles dropped the middle. A property of this parse and nothing else — a parse whose
+   *  bubbles are discarded (tool-call extraction, a retry-validation parse) carries its own flag and
+   *  can never colour another reply's. The send boundary reports the flag of the parse that produced
+   *  the reply it ships (index.ts → buildBubbleReport). */
+  hardCapped: boolean;
 }
 
 /** MM's parsed reply: bridged bubbles plus the two MM-only channels. Unlike ParsedReply there is
@@ -65,6 +71,8 @@ interface Envelope {
   confidenceLevel?: number;
   toolCalls?: EnvelopeToolCall[];
   source?: Record<string, unknown>;
+  /** The count guard fired while collecting THIS envelope's bubbles (see collectBubbles). */
+  hardCapped: boolean;
 }
 
 // ── the bubble-count law, in two numbers ─────────────────────────────────────────────────────────
@@ -370,41 +378,22 @@ function coerceBubble(item: unknown): BubbleJson | null {
   return re != null ? { text: trimmed, re } : { text: trimmed };
 }
 
-// How many times the guard above has fired since anyone last asked. The cap fires deep inside the
-// parse, where there is no chatId and no reply object to hang a flag on, so it is tallied here and
-// drained at the ONE place that reports on a delivered reply (the send boundary in index.ts — see
-// takeHardCapHits). Diagnostic only: nothing about the reply itself depends on this number.
-let hardCapHits = 0;
-
-/**
- * Read-and-reset the hard-cap tally: how many replies the guard capped since the last read. The
- * send boundary is the intended single reader — it drains the tally for the reply it is about to
- * deliver, so `> 0` means "the parse behind THIS reply overran the guard".
- *
- * Read-and-reset, not a running total, because a second reader would silently steal the hit. The
- * one imprecision worth knowing: a parse that caps but ships nothing (a tool-only turn) leaves its
- * hit for the next delivered reply to report. That is a wrong receipt, never a wrong reply.
- */
-export function takeHardCapHits(): number {
-  const n = hardCapHits;
-  hardCapHits = 0;
-  return n;
-}
-
 // Collect items into bubbles. Over the guard we keep the first BUBBLE_HARD_CAP-1 PLUS the final
 // bubble — personas put the action/question/consent link last, and the send path's contract is
 // "never drop a word" — rather than truncating the tail. A cap hit is a persona slip, so it's
-// logged, and tallied for the send boundary's BubbleReport.
-function collectBubbles(items: unknown[]): BubbleJson[] {
+// logged, and reported back as `hardCapped` so it rides THIS parse's result all the way to the
+// send boundary (a process-wide tally would attach one parse's hit to another reply's receipt:
+// Composer, Fallfirm, a discarded retry-validation parse and a tool-call-only parse all run
+// through here, and concurrent chats hold no shared lock).
+function collectBubbles(items: unknown[]): { bubbles: BubbleJson[]; hardCapped: boolean } {
   const all: BubbleJson[] = [];
   for (const item of items) {
     const b = coerceBubble(item);
     if (b) all.push(b);
   }
-  if (all.length <= BUBBLE_HARD_CAP) return all;
+  if (all.length <= BUBBLE_HARD_CAP) return { bubbles: all, hardCapped: false };
   console.warn(`[bubbles] capped a reply at ${BUBBLE_HARD_CAP} bubbles (model overran) — kept the last one`);
-  hardCapHits++;
-  return [...all.slice(0, BUBBLE_HARD_CAP - 1), all[all.length - 1]];
+  return { bubbles: [...all.slice(0, BUBBLE_HARD_CAP - 1), all[all.length - 1]], hardCapped: true };
 }
 
 /**
@@ -423,8 +412,9 @@ function collectBubbles(items: unknown[]): BubbleJson[] {
  */
 function validateEnvelope(v: unknown, allowBareArray: boolean): Envelope | null {
   if (isEnvelopeObject(v)) {
-    const bubbles = Array.isArray(v.bubbles) ? (v.bubbles as unknown[]) : [];
-    return { bubbles: collectBubbles(bubbles), confidenceLevel: extractConfidence(v), toolCalls: extractToolCalls(v), source: v };
+    const items = Array.isArray(v.bubbles) ? (v.bubbles as unknown[]) : [];
+    const { bubbles, hardCapped } = collectBubbles(items);
+    return { bubbles, hardCapped, confidenceLevel: extractConfidence(v), toolCalls: extractToolCalls(v), source: v };
   }
   if (Array.isArray(v) && v.length > 0 && v.every(isEnvelopeObject)) {
     const merged: unknown[] = [];
@@ -435,11 +425,13 @@ function validateEnvelope(v: unknown, allowBareArray: boolean): Envelope | null 
       if (confidenceLevel == null) confidenceLevel = extractConfidence(o);
       mergedCalls.push(...(extractToolCalls(o) ?? []));
     }
-    return { bubbles: collectBubbles(merged), confidenceLevel, toolCalls: mergedCalls.length ? mergedCalls : undefined, source: v[0] };
+    const { bubbles, hardCapped } = collectBubbles(merged);
+    return { bubbles, hardCapped, confidenceLevel, toolCalls: mergedCalls.length ? mergedCalls : undefined, source: v[0] };
   }
   if (allowBareArray && Array.isArray(v)) {
-    const out = collectBubbles(v);
-    return out.length ? { bubbles: out } : null;   // a bare array that yields no bubble is not a meaningful envelope
+    const { bubbles, hardCapped } = collectBubbles(v);
+    // a bare array that yields no bubble is not a meaningful envelope
+    return bubbles.length ? { bubbles, hardCapped } : null;
   }
   return null;
 }
@@ -597,8 +589,9 @@ export interface BubbleReport {
 
 /**
  * Report on the bubbles that ship. Pure: `hardCapped` and `splits` are the two facts the boundary
- * can't see in the list itself, so they come from the parse (takeHardCapHits) and the splitter
- * (splitIntoBubblesWithSplits) that produced it.
+ * can't see in the list itself, so they come from the parse (`ParsedReply.hardCapped`, carried down
+ * to the boundary on the value the turn returns) and the splitter (splitIntoBubblesWithSplits) that
+ * produced it — both per-reply, never a process-wide tally.
  */
 export function buildBubbleReport(bubbles: string[], opts: { hardCapped: boolean; splits: number }): BubbleReport {
   const wordsIn = (b: string) => b.split(/\s+/).filter(Boolean).length;
@@ -615,10 +608,21 @@ export function buildBubbleReport(bubbles: string[], opts: { hardCapped: boolean
 // boundary having to thread it back up through the agent layers. Bounded: one entry per chat, and
 // a single-host, single-user instance never holds more than a handful of chats — the prune is a
 // belt-and-braces guard against a long-lived process seeing an unbounded spread of chat ids.
+//
+// ORDERING — read this before consuming lastBubbleReport anywhere:
+// a turn's report only exists AFTER the send boundary in src/index.ts has run, and that boundary
+// runs on the text the Convo turn has already RETURNED. So a read from inside processConvoResult
+// (agents/convo/shared.ts) — or from anything else upstream of the return — gets the PREVIOUS
+// turn's report, or undefined on the first turn of a chat. There is no ordering that fixes that
+// from upstream; the report is a property of the shipped list, which upstream hasn't produced yet.
+// The `turn:trace` task therefore consumes the report AT the send boundary, where buildBubbleReport
+// returns it directly (noteBubbleReport hands its argument straight back for exactly that). This
+// parking spot is for a later, out-of-band reader that only needs "the newest one for this chat".
 const REPORT_MEMORY = 32;
 const lastReports = new Map<string, BubbleReport>();
 
-/** Park a delivered reply's report under its chat and hand it straight back. */
+/** Park a delivered reply's report under its chat and hand it straight back (see the ordering note
+ *  above: it is parked at the send boundary, i.e. after the Convo turn has returned). */
 export function noteBubbleReport(chatId: string, report: BubbleReport): BubbleReport {
   lastReports.delete(chatId);              // re-insert so the map's order is least-recent-first
   lastReports.set(chatId, report);
@@ -626,30 +630,32 @@ export function noteBubbleReport(chatId: string, report: BubbleReport): BubbleRe
   return report;
 }
 
-/** The most recent delivered reply's report for this chat, or undefined if it hasn't sent one. */
+/** The most recent delivered reply's report for this chat, or undefined if it hasn't sent one.
+ *  NOT the current turn's report when called from inside the turn: see the ordering note above —
+ *  from anywhere upstream of the send boundary this is the PREVIOUS turn's reading. */
 export function lastBubbleReport(chatId: string): BubbleReport | undefined {
   return lastReports.get(chatId);
 }
 
 export function parseReply(raw: string | null | undefined): ParsedReply {
-  if (raw == null) return { legacyText: null, wasEnvelope: false };
+  if (raw == null) return { legacyText: null, wasEnvelope: false, hardCapped: false };
   const env = parseEnvelope(raw);
   if (env == null) {
-    if (!raw.trim()) return { legacyText: null, wasEnvelope: false };
+    if (!raw.trim()) return { legacyText: null, wasEnvelope: false, hardCapped: false };
     // Garble hardening: a reply that mentions "tool_calls" but failed every tier is broken envelope
     // JSON, not prose — passing it to the legacy splitter would text JSON shrapnel (possibly a
     // meta_prompt naming internal tools) to the user. Swallow the text; the caller's never-go-silent
     // floors take over, and wasEnvelope=false still drives the corrective retry upstream.
     if (raw.includes('"tool_calls"') || raw.includes("'tool_calls'")) {
       console.warn('[bubbles] unparseable reply mentions tool_calls — suppressing it instead of texting JSON shrapnel');
-      return { legacyText: null, wasEnvelope: false };
+      return { legacyText: null, wasEnvelope: false, hardCapped: false };
     }
     // Every user-facing persona is on the JSON envelope now, so a non-JSON reply reaching here is a
     // persona slip (not a routine legacy passthrough). Log it — the legacy splitter still ships the
     // reply, so nothing breaks, but this is the flip-week telemetry signal (charter §13). One line,
     // never throws (mirrors the guardrail tripwire logs). No confidence is available from prose.
     console.warn('[bubbles] reply did not parse as a JSON envelope — using the legacy splitter');
-    return { legacyText: raw, wasEnvelope: false };
+    return { legacyText: raw, wasEnvelope: false, hardCapped: false };
   }
   const rawStatus = env.source?.status;
   return {
@@ -658,5 +664,6 @@ export function parseReply(raw: string | null | undefined): ParsedReply {
     toolCalls: env.toolCalls,
     wasEnvelope: true,
     statusRaw: rawStatus && typeof rawStatus === 'object' ? rawStatus as Record<string, unknown> : undefined,
+    hardCapped: env.hardCapped,
   };
 }

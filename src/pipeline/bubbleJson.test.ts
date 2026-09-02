@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   parseBubblesJson, bubblesToLegacyText, normalizeLlmText, parseReply, parseMmReply, buildEnvelopeSchema,
   BUBBLE_ENVELOPE_SCHEMA, MM_ENVELOPE_SCHEMA, MAX_BUBBLES, BUBBLE_HARD_CAP, BUBBLE_LAW_MAX,
-  buildBubbleReport, takeHardCapHits, noteBubbleReport, lastBubbleReport,
+  buildBubbleReport, noteBubbleReport, lastBubbleReport,
 } from './bubbleJson.js';
 import { splitIntoBubbles, splitIntoBubblesWithSplits, MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from './bubbles.js';
 import { resolveOutboundBubbles } from '../state/replyThreading.js';
@@ -499,15 +499,15 @@ test('both envelope schemas describe a bubble with the same single-sourced sente
 
 // ── BubbleReport: both caps, observable ──────────────────────────────────────────────────────
 // What the send boundary in index.ts does, verbatim: split the final text (counting ceiling
-// splits), resolve the reply targets, then report on the list that actually ships.
+// splits), resolve the reply targets, then report on the list that actually ships — with
+// `hardCapped` taken from the ONE parse that produced this reply, exactly as the boundary reads it
+// off the value the turn returned.
 
 function deliver(raw: string) {
-  takeHardCapHits();                                  // drain what an earlier test left behind
-  const legacy = normalizeLlmText(raw) ?? '';
-  const hardCapped = takeHardCapHits() > 0;           // read-and-reset: the boundary is the one reader
-  const { bubbles: segments, splits } = splitIntoBubblesWithSplits(legacy);
+  const reply = parseReply(raw);                      // the parse behind THIS reply, and only it
+  const { bubbles: segments, splits } = splitIntoBubblesWithSplits(reply.legacyText ?? '');
   const { bubbles } = resolveOutboundBubbles(segments, ['m1'], { isBurst: false });
-  return { bubbles, report: buildBubbleReport(bubbles, { hardCapped, splits }) };
+  return { bubbles, report: buildBubbleReport(bubbles, { hardCapped: reply.hardCapped, splits }) };
 }
 
 const envelope = (...texts: string[]) => JSON.stringify({ bubbles: texts.map(text => ({ text })) });
@@ -531,6 +531,34 @@ test('hardCapped is true when the parser had to cap a six-bubble reply', () => {
   assert.equal(six.count, BUBBLE_HARD_CAP);
   assert.equal(six.overLaw, true);
   assert.equal(deliver(envelope('a', 'b', 'c', 'd', 'e')).report.hardCapped, false, 'at the cap is not over it');
+});
+
+// The flag is a property of ONE parse, not of the process. Every one of these parses runs through
+// the same collectBubbles and throws away its bubbles (or belongs to a different agent entirely):
+// the Composer's re-voice (agents/composerCore.ts), Fallfirm's voicers (fallfirm/client.ts,
+// voiceInstant.ts), callLLM's toolsViaJson tool-call extraction (llm/callLLM.ts), and Convo's own
+// retry-validation parses (convo/shared.ts). A tally drained at the send boundary attributed all of
+// them to whichever chat sent next; the flag riding the parse cannot.
+test("a capped parse somewhere else can't flip hardCapped on an unrelated reply", () => {
+  const capped = envelope('a', 'b', 'c', 'd', 'e', 'f');
+
+  // A Composer / Fallfirm re-voice that capped: its own parse says so, loudly.
+  assert.equal(parseReply(capped).hardCapped, true, 'the capped parse owns its own flag');
+  // A tool-call-only parse that capped and DISCARDED its bubbles (callLLM reads only .toolCalls).
+  const toolOnly = JSON.stringify({
+    tool_calls: [{ name: 'delegate_to_ops', args: { request: 'x' } }],
+    bubbles: ['a', 'b', 'c', 'd', 'e', 'f'].map(text => ({ text })),
+  });
+  assert.equal(parseReply(toolOnly).hardCapped, true);
+  assert.ok(parseReply(toolOnly).toolCalls?.length, 'and it is the tool calls that caller wanted');
+  // A retry-validation parse of the same capped turn (shared.ts checks .wasEnvelope only).
+  assert.equal(parseReply(capped).wasEnvelope, true);
+
+  // None of that reaches the next reply's receipt: this one shipped two clean bubbles.
+  assert.deepEqual(
+    deliver(envelope('hey', 'the option period ends friday at noon')).report,
+    { count: 2, maxWords: 7, overLaw: false, hardCapped: false, splits: 0 },
+  );
 });
 
 test('the word ceiling still fires after the count cap, and no word is lost', () => {

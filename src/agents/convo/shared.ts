@@ -107,6 +107,13 @@ export interface ChatResponse {
   groupChatIcon: { prompt: string } | null;
   removeMember: string | null;
   delegatedTask: OpsTask | null;
+  /** The bubble-count guard fired on the parse that produced `text` (bubbleJson's collectBubbles):
+   *  the model wrote more than BUBBLE_HARD_CAP bubbles and the middle was dropped. Rides the reply
+   *  so the send boundary (src/index.ts → buildBubbleReport) can report the cap against the reply it
+   *  actually ships — never a process-wide tally, which would let one chat's or one agent's cap
+   *  surface on another reply's receipt. Absent/false on every path where `text` is not the parsed
+   *  reply (a Fallfirm-voiced fallback, a legacy agent). Diagnostics only. */
+  hardCapped?: boolean;
 }
 
 export function emptyExtras() {
@@ -1027,6 +1034,11 @@ export async function processConvoResult(args: {
   const reply = parseReply(res.text);
   const normalizedText = reply.legacyText;
   const textParts: string[] = normalizedText ? [normalizedText] : [];
+  // Did the count guard fire on THIS turn's parse? Carried on the returned ChatResponse so the send
+  // boundary can report the cap against the reply it ships (index.ts → buildBubbleReport). Cleared
+  // wherever the shipped text stops being this parse's text — a voiced fallback that REPLACES it is
+  // Fallfirm's list, not the capped one, and reporting the cap there would be a wrong receipt.
+  let hardCapped = reply.hardCapped;
   let reaction: Reaction | null = null;
   let renameChat: string | null = null;
   let rememberedUser: ChatResponse['rememberedUser'] = null;
@@ -1531,6 +1543,10 @@ export async function processConvoResult(args: {
 
   // Never leave the user hanging when we delegated, scheduled, or generated a consent link.
   let textResponse = textParts.length ? textParts.join('\n') : null;
+  // textParts holds the parsed reply (or a salvaged opener of it) and nothing else, so an empty one
+  // here means what ships will be a voiced line instead — whose own parse the cap says nothing
+  // about. Every branch below either fills a NULL textResponse or replaces it (marked there).
+  if (!textResponse) hardCapped = false;
   // Reassurances that precede a background Ops run — the holding line when the model wrote none, a
   // "still on it" when a dup was suppressed, the consent prompt. voiceInstant is the Composer-shaped
   // progress voice: it reads the recent thread so the line blends in and doesn't repeat, with the
@@ -1574,6 +1590,7 @@ export async function processConvoResult(args: {
       const voiced: string[] = [];
       for (const o of outcomeParts) voiced.push(await voiceOutcome(o, chatId, handle));
       textResponse = voiced.join('\n---\n');
+      hardCapped = false;   // the voiced correction REPLACES the parsed text — its cap isn't news about this send
     } else {
       const facts = outcomeParts.map(o => o.facts).filter((f): f is string => !!f);
       if (facts.length) textResponse = `${textResponse}\n---\n${facts.join('\n---\n')}`;
@@ -1751,5 +1768,5 @@ export async function processConvoResult(args: {
     }
   }
 
-  return { text: textResponse, reaction, renameChat, rememberedUser, removeMember, delegatedTask, generatedImage: null, groupChatIcon: null };
+  return { text: textResponse, reaction, renameChat, rememberedUser, removeMember, delegatedTask, generatedImage: null, groupChatIcon: null, hardCapped };
 }
