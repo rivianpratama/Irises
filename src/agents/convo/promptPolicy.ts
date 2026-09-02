@@ -122,3 +122,108 @@ export const RULE_ANCHORS: Array<{ id: string; personaAnchor: string }> = [
   { id: 'when_unsure_dont', personaAnchor: "When unsure, don't" },
 ];
 
+
+/** One counted clause: the phrase, how many times the assembled prompt carries it today, and how
+ *  that total splits between the per-turn body and the two static anchors after `</prompt>`. */
+export interface ClauseCount {
+  id: string;
+  /** Counted as a plain substring of the assembled prompt (`String.split(phrase).length - 1`). */
+  phrase: string;
+  /** TODAY's total. This number is the ratchet: P1 deletes a duplicate and drops the count by one. */
+  count: number;
+  /** How many of those copies live in the behaviour/JSON anchors rather than ahead of them — i.e.
+   *  how many are the recency-edge RETELLING rather than the clause's own home in Context.md. The
+   *  remainder (`count - anchorCopies`) is what the persona itself carries, so a 2/1 row is a rule
+   *  plus its anchor and a 2/0 row is two copies inside Context.md. Checked rather than annotated:
+   *  clauseInventory.test.ts counts both halves. */
+  anchorCopies: number;
+  /** Which copies make up `count`, so a later pass tightens the right one. */
+  where: string;
+}
+
+/**
+ * How many times each load-bearing clause reaches the model on one turn.
+ *
+ * Several of these arrive TWICE — once in the persona's own section and once in the behaviour anchor
+ * at the recency edge — which is not an accident: the anchor is a deliberate retelling of rules that
+ * decay across a 146k-character prompt (charter §11.3, and the anchor's own comment in shared.ts
+ * says so). But a retelling that has drifted from its source is worse than no retelling, and a rule
+ * stated three times is a rule nobody can edit. So the counts are pinned rather than judged, and P1
+ * tightens the ones it decides to collapse — a one-line edit per row, right here.
+ *
+ * Read `anchorCopies` and `where` before changing a `count`. `predict_named` in particular is 2/0
+ * for a reason that is NOT duplication: both copies are in Context.md because the second one is a
+ * cross-reference pointing at the section, and deleting a pointer is not a tightening.
+ */
+export const CLAUSE_INVENTORY: readonly ClauseCount[] = [
+  {
+    id: 'predict_clause',
+    phrase: 'from your model of them',
+    count: 2,
+    anchorCopies: 1,
+    where: "Context.md's \"Predict, don't interview\" header + the behaviour anchor's retelling of it",
+  },
+  {
+    id: 'predict_named',
+    phrase: "Predict, don't interview",
+    count: 2,
+    anchorCopies: 0,
+    where: 'the section itself + the cross-reference to it from "Answer first" — a POINTER, not a duplicate',
+  },
+  {
+    id: 'probe_clause',
+    phrase: "probe wears a statement's clothes",
+    count: 2,
+    anchorCopies: 1,
+    where: 'its own section header + the behaviour anchor',
+  },
+  {
+    id: 'four_bends_clause',
+    phrase: 'Four bends that stay safe',
+    count: 1,
+    anchorCopies: 0,
+    where: 'Context.md only — the behaviour anchor carries the same rule in its own words',
+  },
+  {
+    id: 'tease_wound_clause',
+    phrase: 'never their wound',
+    count: 2,
+    anchorCopies: 1,
+    where: "the four-bends parenthetical + the behaviour anchor's tease line",
+  },
+  {
+    id: 'response_overrules_clause',
+    phrase: 'Their response overrules your framing, instantly.',
+    count: 1,
+    anchorCopies: 0,
+    where: 'Context.md only',
+  },
+  {
+    id: 'three_check_gate_clause',
+    phrase: 'The gate — run three checks before any memory enters a bubble',
+    count: 1,
+    anchorCopies: 0,
+    where: 'Context.md only',
+  },
+  {
+    id: 'greeting_clause',
+    phrase: 'A greeting gets a greeting.',
+    count: 2,
+    anchorCopies: 1,
+    where: 'the "what you never do with what you know" list + the behaviour anchor',
+  },
+  {
+    id: 'greeting_example_wrong',
+    phrase: 'WRONG, "hey" after four quiet days, you inventoried their life:',
+    count: 1,
+    anchorCopies: 0,
+    where: 'the WRONG half of the greeting demo pair',
+  },
+  {
+    id: 'greeting_example_right',
+    phrase: 'RIGHT, a greeting, one light callback max:',
+    count: 1,
+    anchorCopies: 0,
+    where: 'the RIGHT half of the greeting demo pair',
+  },
+];
