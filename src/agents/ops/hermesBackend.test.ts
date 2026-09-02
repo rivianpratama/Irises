@@ -500,6 +500,8 @@ test('HERMES_SESSION_ROTATION=never: the session id is byte-identical to the pre
     const later = new HermesBackend({ fetchFn: fakeFetch(200, body, captured), now: () => IN_WEEK_37 });
     await later.runTask('the prompt', mkTask(), {});
     assert.equal(sessionIdOf(captured, 2), hermesSessionKey('web:debug'));
+    // The no-op is still on the receipt — 'never' is a decision, and the run is attributable.
+    assert.deepEqual(be.sessionDescriptor('web:debug'), { session: hermesSessionKey('web:debug'), rotation: 'never' });
   });
 });
 

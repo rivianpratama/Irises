@@ -345,7 +345,8 @@ export class HermesBackend implements EngineBackend {
 
   /** Which engine session this chat/tag speaks into RIGHT NOW, and the window policy that named it.
    *  On the `engine:hermes:start` receipt, so a degraded run can be attributed to the transcript it
-   *  ran inside (`engineBackend.ts` reads it through the optional `sessionDescriptor` seam). */
+   *  ran inside (`engineBackend.ts` reads it through the optional `sessionDescriptor` seam). The
+   *  window adds at most 10 chars to a ≤71-char key — still far inside hermes's 256-char header cap. */
   sessionDescriptor(chatId: string): { session: string; rotation: SessionRotation } {
     const rotation = hermesSessionRotation();
     return { session: engineSessionId(hermesSessionKey(chatId), this.deps.now(), rotation), rotation };

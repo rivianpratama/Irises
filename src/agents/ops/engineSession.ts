@@ -55,10 +55,10 @@ function dayToken(nowMs: number): string {
 /**
  * The window token a policy appends — `''` for `never`, `-w<iso-year>-<iso-week>`, `-d<YYYYMMDD>`.
  * UTC on purpose: the boundary must be the same instant for every deployment, and a session id that
- * moved with the host's zone would rotate twice (or not at all) around a zone change. Exported for
- * the receipt/tests; `engineSessionId` is what callers want.
+ * moved with the host's zone would rotate twice (or not at all) around a zone change. At most 10
+ * characters, so a rotated id stays far inside the engines' header/key limits.
  */
-export function sessionWindow(nowMs: number, policy: SessionRotation): string {
+function windowToken(nowMs: number, policy: SessionRotation): string {
   if (policy === 'weekly') return `-w${isoWeekToken(nowMs)}`;
   if (policy === 'daily') return `-d${dayToken(nowMs)}`;
   return '';
@@ -77,7 +77,7 @@ export function sessionWindow(nowMs: number, policy: SessionRotation): string {
  * id, so the off path is a no-op rather than a differently-computed same-looking string).
  */
 export function engineSessionId(baseId: string, nowMs: number, policy: SessionRotation): string {
-  return `${baseId}${sessionWindow(nowMs, policy)}`;
+  return `${baseId}${windowToken(nowMs, policy)}`;
 }
 
 /**

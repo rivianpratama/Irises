@@ -5,7 +5,7 @@ process.env.TZ = 'UTC';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { engineSessionId, parseSessionRotation, sessionWindow, SESSION_ROTATIONS, DEFAULT_SESSION_ROTATION } from './engineSession.js';
+import { engineSessionId, parseSessionRotation, SESSION_ROTATIONS, DEFAULT_SESSION_ROTATION } from './engineSession.js';
 
 /** Instants pinned in UTC — the whole point of the arithmetic is that the host zone cannot move it. */
 const WED_2026_09_02 = Date.parse('2026-09-02T12:00:00Z'); // ISO 2026-W36
@@ -70,12 +70,6 @@ test('engineSessionId: pure and collision-free across policies', () => {
   }
   const ids = new Set(SESSION_ROTATIONS.map(p => engineSessionId(base, WED_2026_09_02, p)));
   assert.equal(ids.size, SESSION_ROTATIONS.length, 'the three windows can never name the same session');
-});
-
-test('sessionWindow: the bare window token each policy appends', () => {
-  assert.equal(sessionWindow(WED_2026_09_02, 'never'), '');
-  assert.equal(sessionWindow(WED_2026_09_02, 'weekly'), '-w2026-36');
-  assert.equal(sessionWindow(WED_2026_09_02, 'daily'), '-d20260902');
 });
 
 test('parseSessionRotation: default weekly, every member accepted, anything else defaults', () => {
