@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { detectCause, decide, splitMiss } from './triage.js';
 import type { OpsResult, OpsTask, OpsDebrief } from '../types.js';
+import type { CapabilitySummary } from './engineBackend.js';
 import type { LlmResult } from '../../llm/types.js';
 
 // NOTE: OPS_RETRY_ENABLED defaults to true when the env var is unset (the test env). The engine IS
@@ -127,4 +128,84 @@ test('splitMiss: missing fields are capped at 3 items and 120 chars each', async
   assert.equal(d.action, 'ask_user');
   assert.equal(d.missingFields!.length, 3);
   assert.equal(d.missingFields![0].length, 120);
+});
+
+// ── the walled-URL escalation: deterministic, decided BEFORE the LLM verdict ──
+//
+// The live failure this is for (VPS, 2026-09-02): an instagram reel ask came back empty because the
+// engine curled a login shell instead of opening the page, and the splitter — reading an empty tool
+// ledger — called it UNANSWERABLE and gave up on the FIRST attempt.
+
+const REEL = 'https://www.instagram.com/reel/DcJg4VkgMT0/';
+const REEL_ASK = `who is the girl in ${REEL}`;
+const WITH_BROWSER: CapabilitySummary = { classes: ['web', 'code'] };
+const NO_BROWSER: CapabilitySummary = { classes: ['code', 'files'] };
+const UNANSWERABLE = '{"verdict":"UNANSWERABLE","missing":[],"directive":""}';
+
+function countingLlm(text: string): { llm: never; calls: () => number } {
+  let calls = 0;
+  const llm = (async () => { calls++; return { text, toolCalls: [], stopReason: 'end_turn', provider: 'anthropic', model: 'test' }; }) as never;
+  return { llm, calls: () => calls };
+}
+
+function withHintFlag(value: string | undefined, fn: () => Promise<void>): Promise<void> {
+  const prev = process.env.OPS_WALLED_URL_HINT;
+  if (value === undefined) delete process.env.OPS_WALLED_URL_HINT;
+  else process.env.OPS_WALLED_URL_HINT = value;
+  return fn().finally(() => {
+    if (prev === undefined) delete process.env.OPS_WALLED_URL_HINT; else process.env.OPS_WALLED_URL_HINT = prev;
+  });
+}
+
+test('splitMiss: a walled URL the engine could have browsed retries deterministically, no LLM call', async () => {
+  const { llm, calls } = countingLlm(UNANSWERABLE);
+  const d = await splitMiss(mkResult(), mkTask({ request: REEL_ASK }), llm, WITH_BROWSER);
+  assert.equal(d.cause, 'empty_miss');
+  assert.equal(d.action, 'retry');
+  assert.equal(d.deterministic, true);
+  assert.equal(d.directive, `The first pass never opened the page in a browser. browser_navigate to ${REEL}, read the caption/tags/comments from the rendered page, then answer.`);
+  assert.equal(calls(), 0, 'the branch sits BEFORE the one LLM call — no tokens spent to learn what the URL already says');
+});
+
+test('splitMiss: the walled URL can ride in the brief instead of the ask', async () => {
+  const d = await splitMiss(mkResult(), mkTask({ request: 'who is the girl', metaPrompt: `akses ${REEL} itu, cepet` }), fakeLlm(UNANSWERABLE) as never, WITH_BROWSER);
+  assert.equal(d.action, 'retry');
+  assert.match(d.directive!, /browser_navigate to https:/);
+});
+
+test('splitMiss: attempt 2 falls through to today’s verdict (the escalation is a first-look move)', async () => {
+  const d = await splitMiss(mkResult(), mkTask({ request: REEL_ASK, attempt: 2 }), fakeLlm(UNANSWERABLE) as never, WITH_BROWSER);
+  assert.equal(d.action, 'give_up');
+  assert.equal(d.deterministic, false);
+  assert.equal(d.directive, undefined);
+});
+
+test('splitMiss: no browser to escalate TO → today’s verdict stands', async () => {
+  for (const caps of [NO_BROWSER, null] as const) {
+    const d = await splitMiss(mkResult(), mkTask({ request: REEL_ASK }), fakeLlm(UNANSWERABLE) as never, caps);
+    assert.equal(d.action, 'give_up', `caps ${JSON.stringify(caps)} should not escalate`);
+    assert.equal(d.deterministic, false);
+  }
+});
+
+test('splitMiss: a retry leg never escalates again — one browser leg per attempt', async () => {
+  const d = await splitMiss(mkResult(), mkTask({ request: REEL_ASK, retryOf: 't1' }), fakeLlm(UNANSWERABLE) as never, WITH_BROWSER);
+  assert.equal(d.action, 'give_up');
+});
+
+test('splitMiss: an ask with no walled URL is untouched by the escalation', async () => {
+  const d = await splitMiss(mkResult(), mkTask({ request: 'who is the girl in https://example.com/gallery/7' }), fakeLlm(UNANSWERABLE) as never, WITH_BROWSER);
+  assert.equal(d.action, 'give_up');
+});
+
+test('splitMiss: OPS_WALLED_URL_HINT off → the escalation never arms', async () => {
+  await withHintFlag('false', async () => {
+    const d = await splitMiss(mkResult(), mkTask({ request: REEL_ASK }), fakeLlm(UNANSWERABLE) as never, WITH_BROWSER);
+    assert.equal(d.action, 'give_up');
+    assert.equal(d.deterministic, false);
+  });
+  await withHintFlag('true', async () => {
+    const d = await splitMiss(mkResult(), mkTask({ request: REEL_ASK }), fakeLlm(UNANSWERABLE) as never, WITH_BROWSER);
+    assert.equal(d.action, 'retry');
+  });
 });

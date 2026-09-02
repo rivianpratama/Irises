@@ -11,7 +11,10 @@
 
 import { callLLM } from '../../llm/callLLM.js';
 import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
-import { OPS_RETRY_ENABLED } from '../../llm/models.js';
+import { OPS_RETRY_ENABLED, walledUrlHintEnabled } from '../../llm/models.js';
+import { getEngineBackend } from './engineBackend.js';
+import { findWalledUrls, hasBrowserClass, walledScanText, browserRetryDirective } from './walledUrls.js';
+import type { CapabilitySummary } from './engineBackend.js';
 import type { OpsResult, OpsTask, OpsFailureCause } from '../types.js';
 
 // What triage decides to do with a failed run:
@@ -27,6 +30,11 @@ export interface TriageDecision {
   action: TriageAction;
   missingFields?: string[];    // ask_user: the detail(s) only the user can supply
   deterministic: boolean;      // false when the empty-miss splitter (an LLM call) decided
+  /** retry only: WHY this leg is worth running, in the words the second pass should hear. Set by
+   *  the walled-URL escalation below. The retry leg re-runs the original brief, whose prompt now
+   *  carries the same steer as its `tooling:` line (buildTaskPrompt), so this reads as the reason
+   *  on the decision rather than a second copy of the instruction. */
+  directive?: string;
 }
 
 /** A second leg has already run for this attempt (the cheap retry). Blocks a further RETRY
@@ -120,16 +128,35 @@ async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
 /**
  * Decide why an empty miss came back empty. One small `classify`-role call, bounded and defensive:
  * ANY failure (parse, timeout, throw) returns `action: 'none'` so the follow-up degrades to today's
- * generic steering question. `llm` is injectable for tests.
+ * generic steering question. `llm` and `capabilities` are injectable for tests.
+ *
+ * One case never reaches that call: a walled URL the engine could have opened in a browser and
+ * didn't (see the branch below).
  */
 export async function splitMiss(
   result: OpsResult,
   task: OpsTask,
   llm: typeof callLLM = callLLM,
+  // The same non-blocking cached read the task prompt uses — null while the cache is cold.
+  capabilities: CapabilitySummary | null = getEngineBackend()?.getCapabilitySummary?.() ?? null,
 ): Promise<TriageDecision> {
   const cause: OpsFailureCause = 'empty_miss';
   const attempt = task.attempt ?? 1;
   const none: TriageDecision = { cause, action: 'none', deterministic: false };
+
+  // ── Deterministic escalation: a walled URL nobody opened in a browser ──
+  // An empty hand on a JavaScript/login-walled link is a ROUTE failure, not an absent answer: a
+  // fetch of that URL returns a login shell, and the splitter — reading a ledger full of curls that
+  // "found nothing" — has no way to tell those apart, so it called the live instagram-reel case
+  // UNANSWERABLE and gave up on the first look. When the engine HAS a browser, spend the one cheap
+  // leg instead of a classify call: its prompt carries the `tooling:` line, which is the exact steer
+  // this directive names. canRetry keeps it to one leg per attempt (never a retry-of-retry, and
+  // never at all with OPS_RETRY_ENABLED off); attempt 2 falls through to today's behavior, because
+  // by then the browser route has already been tried and the honest answer is a soft give-up.
+  const walled = walledUrlHintEnabled() ? findWalledUrls(walledScanText(task)) : [];
+  if (attempt === 1 && walled.length > 0 && hasBrowserClass(capabilities) && canRetry(task)) {
+    return { cause, action: 'retry', deterministic: true, directive: browserRetryDirective(walled[0].url) };
+  }
 
   const ledger = (result.debrief?.toolsRun ?? [])
     .map(t => `${t.name}(${t.argsSummary}) -> ${t.ok ? 'ok' : 'FAILED'}: ${t.resultPreview}`)
