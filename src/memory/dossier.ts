@@ -9,7 +9,7 @@ import { listShortTerm, SHORT_TTL_MS, type ShortTermEntry } from '../db/reposito
 import { getLongDoc, saveLongDoc } from '../db/repositories/memoryLong.js';
 import { loadMediumBundle } from './mediumTerm.js';
 import { PENDING_EMAIL_TTL_MS } from './shortTerm.js';
-import { renderUserMemory } from './wrappers.js';
+import { renderUserMemoryWithHot } from './wrappers.js';
 import { scopeHistoryToUser } from './transcript.js';
 import { isGroupHandle } from './identity.js';
 import { record } from '../diagnostics/trace.js';
@@ -103,6 +103,19 @@ function renderTenure(profile: UserProfile | null): string {
  * prose, so the caller injects this string bare — no dataTag('user_context') around it.
  */
 export async function buildContextBlock(handle: string, currentTurnText?: string): Promise<string> {
+  return (await buildContextBlockWithHot(handle, currentTurnText)).block;
+}
+
+/** The context block, plus which short-tier look rendered HOT inside it (see ShortBlockRender in
+ *  wrappers.ts). Identical bytes to buildContextBlock, which is a one-line wrapper over this.
+ *
+ *  The hot look is the one held thing the memory stack has already proved touches this turn, so the
+ *  turn-focus block names it as evidence (agents/convo/turnFocus.ts) — this is the last leg of that
+ *  verdict's trip back out to convo/client.ts. `null` whenever no look rendered in full. */
+export async function buildContextBlockWithHot(
+  handle: string,
+  currentTurnText?: string,
+): Promise<{ block: string; hotLook: ShortTermEntry | null }> {
   const [memory, profile, shortEntries, medium, longDoc] = await Promise.all([
     getMemory(handle),
     getUserProfile(handle),
@@ -163,12 +176,13 @@ export async function buildContextBlock(handle: string, currentTurnText?: string
   // The wrapped memory tiers LAST: preamble → short → medium → flexible (identity/addressing +
   // long doc + directives) in the recency slot; the persona's hard rules stay anchored at the
   // top of the system prompt and outrank all of it.
-  parts.push(renderUserMemory('convo', {
+  const wrapped = renderUserMemoryWithHot('convo', {
     profile, memory, medium, short: shortForWrapper,
     longDocMd: longDoc?.docMd ?? '',
-  }, Date.now(), { audience: isGroupHandle(handle) ? 'group' : 'individual', currentTurnText }));
+  }, Date.now(), { audience: isGroupHandle(handle) ? 'group' : 'individual', currentTurnText });
+  parts.push(wrapped.text);
 
-  return parts.join('\n\n');
+  return { block: parts.join('\n\n'), hotLook: wrapped.hotEntry };
 }
 
 /** The dossier updater's harvest contract — exported so tests can pin the two-family

@@ -10,7 +10,8 @@ process.env.TZ = 'UTC';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DOSSIER_SYSTEM_PROMPT, buildDossierTranscript, dossierUpdateUsable, persistDossierMerge, formatDaySpan } from './dossier.js';
+import { DOSSIER_SYSTEM_PROMPT, buildDossierTranscript, dossierUpdateUsable, persistDossierMerge, formatDaySpan, buildContextBlock, buildContextBlockWithHot } from './dossier.js';
+import { addShortTerm } from '../db/repositories/memoryShort.js';
 import { saveDossier, clearDossier, getMemory, getForgetEpoch } from '../db/repositories/memory.js';
 import { getLongDoc, saveLongDoc } from '../db/repositories/memoryLong.js';
 
@@ -178,4 +179,32 @@ test('long-doc version conflict + UNCHANGED content retries once at the fresh ve
   const doc = await getLongDoc(h);
   assert.equal(doc?.docMd, 'a fully merged dossier');
   assert.equal(doc?.version, 2);
+});
+
+// ── The hot look, reported out of the context block ──────────────────────────
+// buildContextBlock renders the memory tiers, and the short tier's hot-look verdict — the one
+// held thing the memory stack proves touches this turn — used to die inside it. The turn-focus
+// block names that look (agents/convo/turnFocus.ts), so it now travels back out. The string is
+// unchanged either way, which is what these pin.
+
+test('buildContextBlockWithHot reports the hot research look, and buildContextBlock still returns just the string', async () => {
+  const h = freshHandle();
+  await addShortTerm({ agentHandle: h, kind: 'ops_research', request: 'cedar lead times', content: 'x'.repeat(300) });
+
+  const onTopic = await buildContextBlockWithHot(h, 'any word on cedar yet');
+  assert.equal(onTopic.hotLook?.request, 'cedar lead times', 'the look that rendered in full is named');
+  assert.ok(onTopic.block.includes('cedar lead times'));
+  assert.equal(await buildContextBlock(h, 'any word on cedar yet'), onTopic.block, 'same bytes as ever');
+
+  // Topic moved on → the full body left the prompt, so there is no hot look to name.
+  const movedOn = await buildContextBlockWithHot(h, 'what should i cook for dinner');
+  assert.equal(movedOn.hotLook, null);
+  assert.equal(await buildContextBlock(h, 'what should i cook for dinner'), movedOn.block, 'same bytes as ever');
+});
+
+test('buildContextBlockWithHot reports no hot look when nothing is held at all', async () => {
+  const h = freshHandle();
+  const out = await buildContextBlockWithHot(h, 'any word on cedar yet');
+  assert.equal(out.hotLook, null);
+  assert.ok(out.block.length > 0, 'the memory stack still renders (the addressing rule alone)');
 });

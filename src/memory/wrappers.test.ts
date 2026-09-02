@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import {
   sanitizeLongDoc, neutralizeTagBreakouts, renderUserMemory, renderShortBlock, topicallyRelated,
   renderMediumBlock, renderFlexibleBlock, AGENT_MEMORY_MATRIX, MEMORY_LONG_MAX_CHARS,
+  renderShortBlockWithHot, renderUserMemoryWithHot, shortEntryLabel,
   type UserMemoryData, type MemoryAgent,
 } from './wrappers.js';
 import type { ShortTermEntry } from '../db/repositories/memoryShort.js';
@@ -277,6 +278,68 @@ test('#7: topicallyRelated defaults to related for a bare ack, and matches on a 
   assert.equal(topicallyRelated('ok thanks', entry), true);      // token-less ack → related
   assert.equal(topicallyRelated('any update on bitcoin?', entry), true);  // shared 'bitcoin'
   assert.equal(topicallyRelated('what should i cook for dinner', entry), false); // nothing shared
+});
+
+// ── Which entry rendered HOT — the same verdict, now reported ────────────────
+// The hot look is the one held thing the memory stack already proves touches this turn, so the
+// turn-focus block (agents/convo/turnFocus.ts) needs to NAME it. That verdict was computed and
+// thrown away; these pin that reporting it changed no byte of the render and no caller.
+
+test('renderShortBlockWithHot returns the same bytes renderShortBlock always did', () => {
+  const cases: Array<Parameters<typeof renderShortBlock>> = [
+    [[], NOW],
+    [[shortEntry({ id: 'a', request: 'bitcoin price today', content: bodyWithTail('FRESHTAIL') })], NOW],
+    [[shortEntry({ id: 'f', kind: 'email_flag', content: 'wire change', meta: { from: 'title', subject: 'wire' } })], NOW, 'openclaw'],
+    [[shortEntry({ id: 'a', request: 'bitcoin price today', createdAt: NOW - 90 * 60_000 })], NOW, null, 'what about bitcoin now'],
+  ];
+  for (const args of cases) {
+    assert.equal(renderShortBlockWithHot(...args).text, renderShortBlock(...args));
+  }
+});
+
+test('the hot entry is reported exactly when it rendered in FULL', () => {
+  const hot = shortEntry({ id: 'a', request: 'bitcoin price today', createdAt: NOW - 5 * 60_000, content: bodyWithTail('FRESHTAIL'), meta: { topicKey: 'general:bitcoin price today' } });
+  const older = shortEntry({ id: 'b', request: 'weather in tokyo', createdAt: NOW - 90 * 60_000, content: bodyWithTail('MIDTAIL') });
+
+  const onTopic = renderShortBlockWithHot([hot, older], NOW, null, 'what about bitcoin now');
+  assert.ok(onTopic.text.includes('FRESHTAIL'), 'it did render full');
+  assert.equal(onTopic.hotEntry?.id, 'a', 'and that is the entry reported');
+
+  // The three ways the full render is refused — each must report nothing rather than the freshest.
+  assert.equal(renderShortBlockWithHot([hot, older], NOW, null, 'help me plan dinner tonight').hotEntry, null, 'off-topic');
+  assert.equal(renderShortBlockWithHot([older], NOW, null, 'weather in tokyo').hotEntry, null, 'past the hot window');
+  assert.equal(renderShortBlockWithHot([], NOW).hotEntry, null, 'nothing held at all');
+  assert.equal(
+    renderShortBlockWithHot([shortEntry({ id: 'f', kind: 'email_flag', content: 'wire change', meta: {} })], NOW).hotEntry,
+    null,
+    'an email flag is not a research look',
+  );
+});
+
+test('renderUserMemoryWithHot threads the hot entry up, and only where short renders', () => {
+  const data = baseData({
+    short: [shortEntry({ id: 'a', request: 'bitcoin price today', createdAt: NOW - 5 * 60_000, content: bodyWithTail('FRESHTAIL'), meta: { topicKey: 'general:bitcoin price today' } })],
+  });
+  const opts = { currentTurnText: 'what about bitcoin now' };
+
+  const convo = renderUserMemoryWithHot('convo', data, NOW, opts);
+  assert.equal(convo.text, renderUserMemory('convo', data, NOW, opts), 'same bytes as ever');
+  assert.equal(convo.hotEntry?.id, 'a');
+
+  // composer/fallfirm never receive the short tier (AGENT_MEMORY_MATRIX), so there is no hot look
+  // to report even with a hot entry in the data.
+  for (const agent of ['composer', 'fallfirm'] as MemoryAgent[]) {
+    const out = renderUserMemoryWithHot(agent, data, NOW, opts);
+    assert.equal(out.text, renderUserMemory(agent, data, NOW, opts), `${agent}: same bytes as ever`);
+    assert.equal(out.hotEntry, null, `${agent}: no short tier, no hot look`);
+  }
+});
+
+test('shortEntryLabel names a look the way the user asked for it', () => {
+  assert.equal(shortEntryLabel(shortEntry({ request: 'bitcoin price today', meta: { topicKey: 'general:btc' } })), 'bitcoin price today');
+  assert.equal(shortEntryLabel(shortEntry({ request: undefined, meta: { topicKey: 'general:btc' } })), 'general:btc');
+  assert.equal(shortEntryLabel(shortEntry({ request: undefined, meta: {} })), '');
+  assert.equal(shortEntryLabel(shortEntry({ request: '  ', meta: { topicKey: 42 } })), '', 'a non-string topicKey is not a label');
 });
 
 test('every matrix agent produces a parseable, preamble-led render', () => {
