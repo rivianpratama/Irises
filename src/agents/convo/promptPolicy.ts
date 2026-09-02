@@ -51,7 +51,7 @@ export type BudgetKey = SectionId | 'memory_stack';
  * `intro_weave`, `weather`, `thread`, `turn_focus`, the timing reads) are the ratchet proper.
  */
 export const PROMPT_BUDGET: Record<BudgetKey, number> = {
-  persona: 146_000,            // 145,851 — Context.md, every fixture
+  persona: 141_400,            // 141,221 — P1: the envelope stated once (was 146,000 for 145,851)
   tool_docs: 16_500,           // 16,288 — the group fixture (13 tools; the 1:1 lane carries 11)
   capability: 248,             // 237 — all six capability classes minus inbox, the longest line
   model_map: 800,              // 387 on a bare checkout — HOST-DEPENDENT, see above
