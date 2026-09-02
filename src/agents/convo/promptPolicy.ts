@@ -90,25 +90,24 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
  * `messagesChars / (systemChars + messagesChars)`, the same number the per-turn receipt reports
  * (diagnostics/turnTrace.ts).
  *
- * Measured at **0.0066** on the mature fixture — a full 40-row window against a 182k-character
- * prompt — and pinned a hair below it. Read that number twice: two thirds of one percent of what the
- * model reads is the actual conversation. That is the finding this whole phase exists to move, and
- * the floor is what stops it moving the wrong way in the meantime.
+ * Measured at **0.0068** on the mature fixture — 1,207 characters of a full 40-row window against a
+ * 177k-character prompt — and pinned a hair below it. Read that number twice: two thirds of one
+ * percent of what the model reads is the actual conversation. That is the finding this whole phase
+ * exists to move, and the floor is what stops it moving the wrong way in the meantime.
  *
  * It rises as the prose shrinks, so this line ratchets UP in the later phases while PROMPT_BUDGET
- * ratchets down.
+ * ratchets down. P0 measured **0.0066** against a 182k prompt and pinned 0.0065; the rise to 0.0068 is
+ * P1's persona deletions (the two restated envelope paragraphs, the collapsed behaviour anchor, the
+ * copied feelings wheel and field list), and it is now held.
  *
- * It stands at **0.0068** today and the floor has NOT been raised to match, which is deliberate on
- * both counts. Almost all of that rise is P1's persona deletions (the two restated envelope
- * paragraphs, the collapsed behaviour anchor, the copied feelings wheel and field list); the status
- * contract that replaced the last of those is generated prose of very nearly the same size, so P1
- * part 2 moved this fixture's whole prompt by **+255 characters** — −3,372 of persona and −319 of
- * weather tail against +3,946 of contract — and this number not at all at four decimal places. Read
- * that as the honest accounting of the phase's second half: it bought ONE editable description of the
- * envelope, and it did not buy size. Raising the floor is one line, and it belongs to whoever next
- * accounts for the phase rather than to the task that happened to re-measure it.
+ * What the rise is NOT is P1's second half. The status contract that replaced the deleted field list
+ * is generated prose of very nearly the same size, so part 2 moved this fixture's whole prompt by
+ * **+255 characters** — −3,372 of persona and −319 of weather tail against +3,946 of contract — and
+ * this number not at all at four decimal places. That is the honest accounting: part 2 bought ONE
+ * editable description of the envelope, and it did not buy size. Every four-decimal point of the floor
+ * above came from part 1.
  */
-export const MIN_TRANSCRIPT_SHARE = 0.0065;
+export const MIN_TRANSCRIPT_SHARE = 0.0067;
 
 /**
  * Phrases that must exist in the persona, verbatim — the rules whose deletion would be silent.

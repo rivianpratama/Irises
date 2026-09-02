@@ -622,6 +622,19 @@ test('the live conversation keeps its share of the context on a mature turn', ()
   );
 });
 
+test('the transcript floor sits a hair under the measured share, not a phase behind it', () => {
+  // The ratchet running the other way, and the same argument as the 2% above: a floor left at an old
+  // measurement no longer notices the scaffolding creeping back, because the share can fall by
+  // everything the last phase won and still clear it. Same band, read downwards.
+  const f = FIXTURES[1];
+  assert.equal(f.name, 'mature profile, plain question');
+  const share = transcriptShare(buildSystemPromptSections(...argsFor(f.spec)), messagesFor(f));
+  assert.ok(
+    MIN_TRANSCRIPT_SHARE >= share * (1 - MAX_HEADROOM),
+    `the transcript measures ${share} on ${f.name} but the floor stands at ${MIN_TRANSCRIPT_SHARE} — raise it (promptPolicy.ts) so the share the last phase bought is the share that is held`,
+  );
+});
+
 test('every budget line was measured on a fixture, so no ceiling is invented', () => {
   const seen = new Set<BudgetKey>(FIXTURES.flatMap(f => buildSystemPromptSections(...argsFor(f.spec)).sections.map(s => s.name)));
   if (FIXTURES.some(f => f.memoryStack !== null)) seen.add('memory_stack');
