@@ -107,6 +107,42 @@ function toOpenRouterEffort(effort: EffortLevel | null): 'low' | 'medium' | 'hig
 }
 
 /**
+ * Say "no reasoning" OUT LOUD on requests whose role has none armed (env LLM_REASONING_DISABLE,
+ * default on, read at call time, parsed like threadingEnabled()).
+ *
+ * Omitting the field does not mean no reasoning — it means the MODEL's default decides. Engine
+ * discovery puts the host engine's model on EVERY voice role (agents/ops/engineDiscovery.ts's
+ * applyModel), so a reasoning-family engine model runs the classify lane, whose per-call caps are
+ * tiny by design (the climate eval's 200, validateDirective's 20, updateDossier's 900). The whole cap
+ * goes to thinking and the reply arrives with finish_reason='length' and nothing in it — the
+ * starvation shape isLengthStarved names below, and the reason the relationship climate never moved
+ * in production.
+ *
+ * The field: `reasoning: { enabled: false }` — the exact inverse of the `{ enabled: true, effort }`
+ * this file already sends, `enabled` being a documented boolean of OpenRouter's unified reasoning
+ * param. We deliberately do NOT send the other documented off-switch, `effort: 'none'`: models with
+ * mandatory reasoning REJECT it, and a 400 on every classify call is worse than a starved one (which
+ * at least salvages on another lane). An ignored `enabled: false` therefore degrades to exactly
+ * today's behavior, and the starved retry below does not depend on it either way.
+ *
+ * Off → the field is omitted exactly as before, on every role.
+ */
+export function reasoningDisableEnabled(): boolean {
+  const v = (process.env.LLM_REASONING_DISABLE || '').trim().toLowerCase();
+  if (v === '') return true;
+  return ['true', '1', 'on', 'yes'].includes(v);
+}
+
+/** The ONE bounded same-lane retry after a starved reply (env LLM_STARVED_RETRY, default on, read at
+ *  call time, parsed like threadingEnabled()). Off → the starved reply throws straight to the
+ *  cross-lane fallback, byte for byte as before. Lives beside the detector it reacts to. */
+export function starvedRetryEnabled(): boolean {
+  const v = (process.env.LLM_STARVED_RETRY || '').trim().toLowerCase();
+  if (v === '') return true;
+  return ['true', '1', 'on', 'yes'].includes(v);
+}
+
+/**
  * The GENERIC OpenAI Chat Completions body, shared by both OpenAI-compatible lanes (`openrouter`
  * and `openai`). Nothing OpenRouter-proprietary here — no cache_control, no `openrouter:web_search`
  * server tool, no `reasoning`/`provider`/`plugins`/`max_tool_calls`. A stock OpenAI-compatible
@@ -160,7 +196,10 @@ export function buildOpenAIParams(req: LlmRequest): OpenAI.Chat.Completions.Chat
  *  passthrough, the openrouter:web_search server tool, unified `reasoning`, provider routing prefs,
  *  max_tool_calls, and the file-parser/response-healing plugins). None of these are sent on the
  *  generic `openai` lane, which would 400 on them. */
-export function buildOpenRouterParams(req: LlmRequest): OpenRouterParams {
+export function buildOpenRouterParams(
+  req: LlmRequest,
+  opts?: { disableReasoning?: boolean },
+): OpenRouterParams {
   const params = buildBaseParams(req, req.modelOverride || MODELS[req.role].openrouter) as OpenRouterParams;
 
   // Cache the stable system prefix via Anthropic-through-OpenRouter cache_control passthrough
@@ -190,10 +229,15 @@ export function buildOpenRouterParams(req: LlmRequest): OpenRouterParams {
 
   // Reasoning (adaptive thinking / effort) for opted-in roles. OpenRouter is the experiment lane, so
   // send it whenever configured and let the chosen model honor it (effort capped to 'high' above).
+  // The other direction is just as load-bearing: a role with NOTHING armed says so explicitly, so an
+  // inherited reasoning model can't spend a 200-token cap on thinking (see reasoningDisableEnabled).
+  // `opts.disableReasoning` is the starved retry, which overrides even an armed role — the whole
+  // point of that leg is that thinking is what ate the first budget.
   const orEffort = toOpenRouterEffort(EFFORT[req.role]);
-  if (THINKING[req.role] || orEffort) {
-    params.reasoning = { enabled: true, ...(orEffort ? { effort: orEffort } : {}) };
-  }
+  const armed = THINKING[req.role] || !!orEffort;
+  if (opts?.disableReasoning) params.reasoning = { enabled: false };
+  else if (armed) params.reasoning = { enabled: true, ...(orEffort ? { effort: orEffort } : {}) };
+  else if (reasoningDisableEnabled()) params.reasoning = { enabled: false };
 
   // Request-level ceiling on server-tool invocations (OpenRouter's default is 30 — far too loose for
   // a cost-bounded agent, and it applies even with NO web_search tool: a deep-research model browses

@@ -261,11 +261,13 @@ test('temperature passes through on the OpenRouter path when set', () => {
   assert.equal(params.temperature, 0.4);
 });
 
-test('non-opted-in roles carry no reasoning and keep a plain-string system', () => {
+test('non-opted-in roles DISABLE reasoning explicitly and keep a plain-string system', () => {
   // fallfirm opts into neither reasoning nor caching (both hardcoded off, not env-driven) — a stable
   // example of the plain-string path. (convo used to sit here but now opts into caching; see below.)
+  // The reasoning field is no longer absent: absent means "the model's default decides", and an
+  // inherited reasoning model then eats the small per-call caps (see openrouterRequest.reasoning.test.ts).
   const params = buildOpenRouterParams({ role: 'fallfirm', system: 'sys', messages: [{ role: 'user', content: 'x' }] }) as Any;
-  assert.equal(params.reasoning, undefined);
+  assert.deepEqual(params.reasoning, { enabled: false });
   assert.equal(params.messages[0].content, 'sys');
 });
 
