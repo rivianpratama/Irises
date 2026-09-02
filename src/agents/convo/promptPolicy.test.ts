@@ -101,6 +101,17 @@ test('the persona teaches exactly the rungs the engine can deliver, in the same 
  *  heading, so a rename fails on both sides at once. */
 const STATUS_CONTRACT_POINTER = 'under "Your hidden status — the contract"';
 
+/**
+ * The one thing the persona still says about a named envelope field, and it is a RULE rather than a
+ * description: "you concede to information, never to insistence" is the persona's ONLY statement of
+ * that anti-sycophancy behaviour (RULE_ANCHORS.concede_to_information), rescued from the field list
+ * P1 deleted. It was reintroduced as "One of those fields is a rule rather than a reading:", which
+ * hands the model a rule with no referent — seventeen fields, and no way to know which one it
+ * calibrates. It names the field now. An inline backtick is not a `- \`key\`` bullet, so this does
+ * not reopen the description the contract owns (checked in the same test below).
+ */
+const PERSONA_RULE_FIELD = '`epistemic_trigger` is a rule rather than a reading:';
+
 test('the persona describes no envelope field and copies no wheel — it points at the contract', () => {
   const persona = loadContext('convo');
 
@@ -123,6 +134,18 @@ test('the persona describes no envelope field and copies no wheel — it points 
   assert.ok(
     persona.includes(STATUS_CONTRACT_POINTER),
     `the inner-weather section no longer points at the contract (looked for ${JSON.stringify(STATUS_CONTRACT_POINTER)}), so the persona now describes the envelope nowhere at all`,
+  );
+
+  // The one rule the persona kept says which field it calibrates, in the same sentence.
+  const ruleAt = persona.indexOf(PERSONA_RULE_FIELD);
+  assert.ok(
+    ruleAt > 0,
+    `the rescued anti-sycophancy rule no longer names its field (looked for ${JSON.stringify(PERSONA_RULE_FIELD)}) — it is the persona's only statement of "concede to information, never to insistence", and without the field name it is a rule about nothing`,
+  );
+  const concede = persona.indexOf('you concede to information, never to insistence');
+  assert.ok(
+    concede > ruleAt && concede - ruleAt < 80,
+    'the field name and the rule it introduces are still one sentence, not two paragraphs apart',
   );
 });
 
