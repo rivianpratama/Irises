@@ -20,6 +20,8 @@ process.env.DATA_BACKEND = 'memory';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   buildTurnTrace, buildTurnTraceDraft, describeStatusCoercions, recordTurnTrace,
   STATUS_COERCION_REASONS, TRACE_SECTIONS_CAP, TURN_TRACE_LABEL,
@@ -324,6 +326,41 @@ test('the flag off files no event; on, exactly one turn:trace', () => {
   recordTurnTrace(undefined, { chatId, handle: PROFILE.handle, bubbles: TWO_BUBBLES });
   assert.equal(getTraces().length, 1);
   clearTraces();
+});
+
+// ── the send boundary's placement ────────────────────────────────────────────
+
+test('index.ts files the receipt once, after the send block, off the report it computed', () => {
+  // `processMessage` is not exported, and reaching it means standing up channels, the chat lock and
+  // the batching pipeline — so the three guarantees the emit rests on (ONCE per turn, AFTER both
+  // exits of the send block, off the RETURNED bubble report rather than the parked accessor) are
+  // otherwise held down by nothing but a careful reading of the diff. This reads the source instead,
+  // which is worth more here than nothing: a regression fails a test.
+  const src = readFileSync(join(__dirname, '..', 'index.ts'), 'utf8');
+
+  assert.equal((src.match(/recordTurnTrace\(/g) ?? []).length, 1, 'exactly one emit site — the event is per-turn');
+
+  // At the function body's own indentation, which is what puts it OUTSIDE the
+  // `if (finalText …) { … } else if (reaction) { … }` chain instead of on one of its branches.
+  const emit = '\n  recordTurnTrace(turnTrace, { chatId, handle: from, bubbles: bubbleReport });';
+  assert.ok(src.includes(emit), 'the emit reads the turn draft and this turn\'s bubble report, at the boundary');
+
+  // And textually after both of that chain's exits, so neither a reply nor a reaction-only turn can
+  // reach a send without filing one.
+  const reactionOnlyExit = src.indexOf('} else if (reaction) {');
+  assert.ok(reactionOnlyExit > 0, 'the send block still has its reaction-only exit');
+  assert.ok(src.indexOf(emit) > reactionOnlyExit, 'the emit comes after the send block, not inside it');
+
+  // The seed above the chain is what makes it unconditional: a turn that ships nothing still has an
+  // honest reading to file (an empty list capped nothing and split nothing).
+  assert.ok(src.includes('let bubbleReport = buildBubbleReport([], { hardCapped: false, splits: 0 });'),
+    'the "nothing shipped" seed is still hoisted above the send block');
+
+  // Task 4's ordering note: `lastBubbleReport` runs AFTER this point and is test-only, so the
+  // boundary consumes `noteBubbleReport`'s return value and never reads the park back out. (The
+  // name appears once in a comment here, which is why this looks for a CALL and an import.)
+  assert.ok(!/lastBubbleReport\s*\(/.test(src), 'the boundary never calls the parked accessor');
+  assert.ok(!/^import[^;]*\blastBubbleReport\b/m.test(src), 'and never imports it');
 });
 
 // ── the seam: a real Convo turn returns the draft the boundary needs ─────────
