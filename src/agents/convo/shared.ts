@@ -45,6 +45,7 @@ import type { RelationshipClimate } from '../../persona/climate.js';
 import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
 import type { PromptSection, SectionId } from './promptSections.js';
 import { renderTurnFocus, turnFocusBlockEnabled, type TurnFocusInput } from './turnFocus.js';
+import { detectUnkeptPromise, renderPromiseCorrection, unkeptPromiseGuardEnabled } from './unkeptPromise.js';
 import { callLLM } from '../../llm/callLLM.js';
 import { record } from '../../diagnostics/trace.js';
 import {
@@ -1024,6 +1025,92 @@ function buildForcedTask(opts: {
   };
 }
 
+// ── The unkept-promise guard ────────────────────────────────────────────────────────────────────
+/**
+ * The bubble texts of a parsed reply, for the promise scan: the legacy `\n---\n` wire form split
+ * back into the bubbles it was made of. A non-envelope reply is one blob, which scans the same (the
+ * matcher treats a newline as a clause break either way). Takes the ALREADY-parsed reply, so it can
+ * never disagree with the parse the turn is actually running on.
+ */
+function replyBubbles(reply: { legacyText: string | null }): string[] {
+  return reply.legacyText ? reply.legacyText.split('\n---\n') : [];
+}
+
+/**
+ * ONE corrective re-ask for a reply that promised work with nothing behind it — the honesty backstop
+ * for the failure the persona calls unrecoverable. The lexicon, the verdict and the live evidence are
+ * in convo/unkeptPromise.ts; this is the call.
+ *
+ * Shaped exactly like the JSON-envelope retry above (callConvoLLM): show the model its own reply,
+ * append a system-authored correction, ask once. The retry is accepted only if it fixed the thing —
+ * it carries a tool call (the work is real now), or it no longer promises and still says something.
+ * Anything else keeps the ORIGINAL reply: a fabricated in-flight claim is bad, an empty screen is
+ * worse, and this must never turn one into the other.
+ *
+ * Runs BEFORE dispatch and before any history write, so a discarded draft has no effects to undo.
+ * It sits ahead of the routing gate and the false-refusal floor deliberately: those read the USER's
+ * message and the draft's refusals, and neither fires on this shape (the live failure passed both).
+ * The cost of being first is that a grounded ask the gate would have force-delegated for free can
+ * spend this call ahead of it — and land on the same delegation, which is the right answer anyway.
+ *
+ * At most one extra call, and it needs no fence: the re-ask does not re-enter processConvoResult, so
+ * the recall second pass and the silent-turn retry each get their own reply checked exactly once.
+ */
+async function enforcePromiseKept(
+  args: { res: LlmResult; chatId: string; handle: string | undefined; turn?: ConvoTurnContext },
+  bubbles: string[],
+): Promise<LlmResult> {
+  if (!unkeptPromiseGuardEnabled()) return args.res;
+  const { res, chatId, handle, turn } = args;
+  // Live, synchronous read of what Ops is doing for this chat RIGHT NOW — the same source the
+  // prompt's active-ops block was built from, re-read here because a run can settle mid-turn.
+  const active = getActiveOps(chatId).length;
+  const verdict = detectUnkeptPromise(bubbles, res.toolCalls, active);
+  if (!verdict.unkept || !verdict.phrase) return res;
+  const phrase = verdict.phrase;
+  // chatId in the line, not just the trace event: a live convergence round attributes the failure
+  // per-chat from the instance log when the trace buffer isn't reachable.
+  console.warn(`[convo] reply promised work with no tool call and nothing running ("${phrase}") — one corrective re-ask (chat ${chatId})`);
+  let out = res;
+  let resolved: 'tool_call' | 'honest' | 'kept_original' = 'kept_original';
+  if (turn) {
+    try {
+      const retry = await (turn.call ?? callConvoLLM)({
+        role: 'convo',
+        system: turn.system,
+        systemCachePrefixLen: convoPersonaChars(),
+        tools: turn.tools,
+        jsonBubbles: true,
+        toolsViaJson: true,
+        messages: [
+          ...turn.messages,
+          { role: 'assistant', content: res.text ?? '' },
+          { role: 'user', content: renderPromiseCorrection(phrase) },
+        ],
+        trace: { chatId, handle, label: 'convo:unkept_promise' },
+      });
+      const retryBubbles = replyBubbles(parseReply(retry.text));
+      if (retry.toolCalls.length) {
+        out = retry;
+        resolved = 'tool_call';
+      } else if (retryBubbles.length && !detectUnkeptPromise(retryBubbles, retry.toolCalls, active).promised) {
+        out = retry;
+        resolved = 'honest';
+      } else {
+        console.warn(`[convo] the re-ask ${retryBubbles.length ? 'promised again' : 'came back empty'} — keeping the original reply (chat ${chatId})`);
+      }
+    } catch (err) {
+      // The one recovery is spent: the original (dishonest) reply ships, so the log has to be what
+      // ties that line to this failure. Same category as the JSON-envelope retry's own exhaustion —
+      // it is the same ladder, and it must not be `unkept_promise`, which reportError would mirror
+      // into the ring under the very label the decision receipt below uses.
+      reportError({ source: 'convo', category: 'retry_exhausted', severity: 'warn', err, detail: { guard: 'unkept_promise', phrase }, chatId, handle });
+    }
+  }
+  record({ type: 'event', label: 'convo:unkept_promise', chatId, handle, detail: { phrase, retried: !!turn, resolved } });
+  return out;
+}
+
 /**
  * Process an LLM result into a ChatResponse: fold text, run every tool call (reactions,
  * remember_user, delegate_to_ops, scheduling, directives), apply the never-go-silent fallbacks,
@@ -1061,14 +1148,21 @@ export async function processConvoResult(args: {
   // pass that actually produced the reply.
   trace?: TurnTraceTurnInputs;
 }): Promise<ChatResponse> {
-  const { res, chatId, handle, chatContext, textToSend, history, media } = args;
+  const { chatId, handle, chatContext, textToSend, history, media } = args;
 
   // The model now replies with a JSON bubble envelope; parseReply turns it back into the legacy
   // `[[re:N]]…\n---\n…` wire format the rest of this function (and the send path) already speak, and
   // surfaces the self-reported confidence_level. A not-yet-flipped persona (plain `---` prose) or a
   // garbled reply passes through unchanged; an empty/tool-only envelope yields null text, so the
   // never-go-silent fallbacks below take over.
-  const reply = parseReply(res.text);
+  const firstReply = parseReply(args.res.text);
+  // The honesty backstop, BEFORE anything is dispatched or persisted: a reply that promised work
+  // while calling no tool with nothing running for them gets one corrective re-ask, and whatever
+  // stands after it is the reply this whole function then processes (convo/unkeptPromise.ts).
+  const res = await enforcePromiseKept(args, replyBubbles(firstReply));
+  // Re-parsed only when the re-ask actually replaced the reply — parseReply logs a line for a
+  // non-envelope reply, and parsing the same one twice would double it.
+  const reply = res === args.res ? firstReply : parseReply(res.text);
   const normalizedText = reply.legacyText;
   const textParts: string[] = normalizedText ? [normalizedText] : [];
   // Did the count guard fire on THIS turn's parse? Carried on the returned ChatResponse so the send
