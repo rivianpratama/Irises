@@ -367,6 +367,10 @@ export async function callOpenAICompatible(
   const sendOpts = { signal: req.signal, ...(hasDocument(req) ? { maxRetries: 1 } : {}) };
   let resp = await send(params, sendOpts);
   let choice = resp.choices[0];
+  /** The STARVED leg's usage, kept when a retry replaces `resp`: that leg still consumed a prompt
+   *  and burned its whole completion cap on reasoning, and both are billed. Folded into the returned
+   *  usage below so reportTaskUsage (task budget enforcement) and the ledger see the real spend. */
+  let starvedUsage: typeof resp.usage;
 
   // Reasoning starvation: the whole max_tokens budget went to chain-of-thought and the reply carries
   // no content/tool call at all. An identical retry starves identically, so it gets ONE same-lane
@@ -387,7 +391,10 @@ export async function callOpenAICompatible(
       const retryResp = await send(retryParams, sendOpts);
       const retryChoice = retryResp.choices[0];
       ok = !isLengthStarved(retryChoice);
-      if (ok) { resp = retryResp; choice = retryChoice; params = retryParams; servedMaxTokens = retriedCap; }
+      if (ok) {
+        starvedUsage = resp.usage;
+        resp = retryResp; choice = retryChoice; params = retryParams; servedMaxTokens = retriedCap;
+      }
       else starvedCap = retriedCap;   // the budget that actually failed last
     } catch (err) {
       // A 3x cap can exceed what a provider accepts, and a retry can hit any transport failure. Keep
@@ -427,6 +434,21 @@ export async function callOpenAICompatible(
     }
   }
   const u = resp.usage;
+  // BOTH legs when a starved retry landed: the leg that starved is billed too (its prompt, plus the
+  // completion cap it spent on reasoning), and this usage is the only accounting path — it feeds
+  // reportTaskUsage's budget enforcement and the token_usage row. Undefined stays undefined when
+  // NEITHER leg reported usage, so a silent provider still writes no phantom zeros.
+  // The one consequence: on that path output_tokens is the SUM across two legs, so it can exceed
+  // max_tokens_sent (the SERVED cap) — `truncated`/stop_reason, not the output==cap equality, is
+  // what identifies a reply that hit its ceiling there.
+  const usage = u || starvedUsage
+    ? {
+      inputTokens: (u?.prompt_tokens ?? 0) + (starvedUsage?.prompt_tokens ?? 0),
+      outputTokens: (u?.completion_tokens ?? 0) + (starvedUsage?.completion_tokens ?? 0),
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+    }
+    : undefined;
   // Server-tool text is an OpenRouter concept; a generic OpenAI endpoint returns none, so this is a
   // harmless no-op on the openai lane.
   const serverToolText = fromOpenRouterMessage(choice.message);
@@ -437,9 +459,7 @@ export async function callOpenAICompatible(
     truncated: isTruncatedStop(choice.finish_reason),
     provider,
     model,
-    usage: u
-      ? { inputTokens: u.prompt_tokens ?? 0, outputTokens: u.completion_tokens ?? 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }
-      : undefined,
+    usage,
     ...(servedMaxTokens !== undefined ? { servedMaxTokens } : {}),
     serverToolText: serverToolText || undefined,
     raw: resp,

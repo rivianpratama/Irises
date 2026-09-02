@@ -209,6 +209,35 @@ test('the openai lane retries too, and carries no reasoning field in either atte
 
 // ── What the durable ledger says after a landed retry ────────────────────────
 
+test('a landed retry bills BOTH legs — the starved one spent a prompt and its whole cap', async () => {
+  // `resp` is replaced by the retry, so the response object alone reports one leg. The starved leg's
+  // prompt and the completion budget it burned on reasoning are real spend: they feed
+  // reportTaskUsage (task BUDGET enforcement, not just analytics) and the token_usage row.
+  const { send, sent } = sender([starved(), reply()]);
+  const result = await callOpenAICompatible(req(), 'openrouter', send);
+  assert.equal(sent.length, 2);
+  assert.deepEqual(result.usage, {
+    inputTokens: 20, outputTokens: 10,   // 10 + 10 prompt, 5 + 5 completion — both fake legs
+    cacheCreationInputTokens: 0, cacheReadInputTokens: 0,
+  });
+});
+
+test('an unretried call bills exactly one leg, as before', async () => {
+  const { send } = sender([reply()]);
+  const result = await callOpenAICompatible(req(), 'openrouter', send);
+  assert.deepEqual(result.usage, {
+    inputTokens: 10, outputTokens: 5, cacheCreationInputTokens: 0, cacheReadInputTokens: 0,
+  });
+});
+
+test('a provider that reports no usage on either leg still reports none (no phantom zero row)', async () => {
+  const bare = (r: Any): Any => { delete r.usage; return r; };
+  const { send, sent } = sender([bare(starved()), bare(reply())]);
+  const result = await callOpenAICompatible(req(), 'openrouter', send);
+  assert.equal(sent.length, 2, 'it starved and retried');
+  assert.equal(result.usage, undefined, 'undefined, not a zeroed object');
+});
+
 test('a landed retry reports the SERVED cap, so the ledger\'s output-vs-cap is not a lie', async () => {
   // callLLM derives max_tokens_sent from the REQUEST (200 here) and both the token_usage row and the
   // llm:truncated trail read it — deliberately, so "output_tokens == max_tokens_sent" stays a usable
