@@ -13,6 +13,7 @@ import {
   RELEVANCE_HIT_KINDS, RELEVANCE_HITS_MAX,
 } from './relevance.js';
 import {
+  renderMediumBlock, renderMediumBlockWithGates,
   renderShortBlockWithHot, renderUserMemory, renderUserMemoryWithHot, splitSections,
   type UserMemoryData,
 } from './wrappers.js';
@@ -488,4 +489,86 @@ test('with no router the short tier renders every email flag in full, exactly as
   const out = renderShortBlockWithHot(entries, NOW, null, 'what should i cook for dinner');
   assert.deepEqual(emailRenders(out.text).map(r => r.full), [true, true, true, true, true]);
   assert.deepEqual(out.gates, {}, 'no gate ran, so the receipt claims nothing');
+});
+
+// ── the gate table: medium-tier notes and facts ─────────────────────────────
+// Notes are what they ASKED to be remembered, so this block is the one row of the table that may
+// never drop to nothing: an off-topic note shortens to a line she can still recognise it by, and
+// the block itself always renders. Facts are not gated at all — they are the "so they never have to
+// repeat themselves" channel, and every one of them is one short line.
+
+const NOTE_DIGEST = 80;
+
+/** The note lines the medium block rendered, without their "- " bullet — the run of bullets right
+ *  after the notes header, stopping before the closing data tag (the wrapper's own You-should
+ *  bullets sit further down and are not notes). */
+function noteLines(text: string): string[] {
+  // lastIndexOf: the wrapper prose ABOVE the data tag ends on the same words.
+  const start = text.lastIndexOf('things they explicitly asked you to remember:');
+  if (start < 0) return [];
+  const after = text.slice(start).split('\n').slice(1);
+  const end = after.findIndex(l => !l.startsWith('- '));
+  return (end < 0 ? after : after.slice(0, end)).map(l => l.slice(2));
+}
+
+const LONG_NOTE = (topic: string) =>
+  `${topic} — and the whole rest of this note runs on well past eighty characters so that a digest of it is obviously not the note itself`;
+
+test('a note that touches the turn keeps its words; the rest shorten to a line', () => {
+  const notes = [LONG_NOTE('the cedar order from the north supplier is disputed'), LONG_NOTE('her sister visits the last weekend of every month')];
+  const text = 'any word on the cedar order';
+  const out = renderMediumBlockWithGates({ directives: [], notes, facts: {} }, buildTurnRelevance(text, { medium: { directives: [], notes, facts: {} } }));
+
+  const lines = noteLines(out.text);
+  assert.equal(lines[0], notes[0], 'the touching note, whole');
+  assert.ok(lines[1].length <= NOTE_DIGEST, `the off-topic note shortened to ${lines[1].length} chars`);
+  assert.ok(notes[1].startsWith(lines[1].slice(0, 20)), 'and it is still recognisably that note');
+  assert.deepEqual(out.gates.notes, { verdict: 'digest', reason: 'partly_kept', dropped: 0 });
+});
+
+test('twenty notes render six lines, and the touching ones are the six', () => {
+  const notes = [
+    ...Array.from({ length: 17 }, (_, i) => LONG_NOTE(`an old thing number ${i} about nothing in particular`)),
+    LONG_NOTE('the cedar order is late'),
+    LONG_NOTE('the cedar invoice is disputed'),
+    LONG_NOTE('cedar decking for the dock'),
+  ];
+  const text = 'any word on the cedar order';
+  const out = renderMediumBlockWithGates({ directives: [], notes, facts: {} }, buildTurnRelevance(text, { medium: { directives: [], notes, facts: {} } }));
+
+  const lines = noteLines(out.text);
+  assert.equal(lines.length, 6, 'the line cap holds');
+  assert.equal(lines.filter(l => l.includes('cedar')).length, 3, 'every touching note survived the cap');
+  assert.deepEqual(lines.slice(3), notes.slice(17), 'and the survivors read in the order they were stored');
+  assert.deepEqual(out.gates.notes, { verdict: 'digest', reason: 'partly_kept', dropped: 14 });
+});
+
+test('a note block is never dropped, however far the topic has moved', () => {
+  const notes = [LONG_NOTE('her sister visits the last weekend of every month')];
+  const text = 'what should i cook for dinner';
+  const out = renderMediumBlockWithGates({ directives: [], notes, facts: {} }, buildTurnRelevance(text, { medium: { directives: [], notes, facts: {} } }));
+
+  assert.equal(noteLines(out.text).length, 1, 'still there');
+  assert.ok(noteLines(out.text)[0].length <= NOTE_DIGEST, 'as a digest');
+  assert.deepEqual(out.gates.notes, { verdict: 'digest', reason: 'none_kept', dropped: 0 });
+});
+
+test('medium facts are not gated on the turn, and say so', () => {
+  const text = 'what should i cook for dinner';
+  const facts = { comms_style: 'clipped, lowercase', work: 'runs a plant nursery' };
+  const out = renderMediumBlockWithGates({ directives: [], notes: [], facts }, buildTurnRelevance(text, { medium: { directives: [], notes: [], facts } }));
+  assert.ok(out.text.includes('comms style: clipped, lowercase'));
+  assert.ok(out.text.includes('work: runs a plant nursery'), 'every fact still renders');
+  assert.deepEqual(out.gates.facts, { verdict: 'full', reason: 'kept_always' });
+  assert.deepEqual(out.gates.notes, { verdict: 'dropped', reason: 'nothing_held' });
+
+  const empty = renderMediumBlockWithGates({ directives: [], notes: ['x'], facts: {} }, buildTurnRelevance(text, {}));
+  assert.deepEqual(empty.gates.facts, { verdict: 'dropped', reason: 'nothing_held' });
+});
+
+test('with no router the medium block renders every note in full, exactly as it always did', () => {
+  const notes = Array.from({ length: 9 }, (_, i) => LONG_NOTE(`thing ${i}`));
+  const bundle = { directives: [], notes, facts: { comms_style: 'clipped' } };
+  assert.deepEqual(noteLines(renderMediumBlock(bundle)), notes);
+  assert.deepEqual(renderMediumBlockWithGates(bundle).gates, {}, 'no gate ran, so the receipt claims nothing');
 });
