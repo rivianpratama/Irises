@@ -17,6 +17,7 @@ import {
   type UserMemoryData,
 } from './wrappers.js';
 import { buildContextBlockWithHot } from './dossier.js';
+import { renderTurnFocus, TURN_FOCUS_HIT_SOURCES, TURN_FOCUS_LABEL_CHARS } from '../agents/convo/turnFocus.js';
 import { addShortTerm, type ShortTermEntry } from '../db/repositories/memoryShort.js';
 import { addImportantNote } from '../db/repositories/memoryMedium.js';
 import type { MediumBundle } from './mediumTerm.js';
@@ -188,6 +189,25 @@ test('the router is pure: same answer twice, and nothing it was handed is mutate
   assert.deepEqual([...a.tokens], [...b.tokens]);
   assert.equal(JSON.stringify(held), snapshot, 'inputs untouched');
   assert.deepEqual(buildTurnRelevance('cedar?', {}).hits, [], 'no held items, no hits');
+});
+
+test('a label is one line, and short enough for a 30-day receipt', () => {
+  const long = `cedar ${'x'.repeat(400)}\nsecond line`;
+  const turn = buildTurnRelevance('cedar', { medium: medium({ notes: [long] }) });
+  assert.equal(turn.hits[0].label.length, TURN_FOCUS_LABEL_CHARS, 'clipped to what the block renders');
+  assert.ok(turn.hits[0].label.endsWith('…'));
+  assert.ok(!turn.hits[0].label.includes('\n'), 'flattened to one line');
+  // The same clip the renderer would apply, so the receipt says exactly what the model was shown —
+  // and a 40-note bundle can never put 40 note bodies into diagnostic_turn_history.
+  assert.equal(renderTurnFocus({ text: 'cedar', hits: [{ label: turn.hits[0].label, source: 'note' }] }).includes(turn.hits[0].label), true);
+});
+
+test('every relevance kind is something the turn-focus block can render', () => {
+  // Two vocabularies, one meaning: the router names the channel, the block prints it. They have to
+  // stay in step or a hit would render as a source the type never named.
+  for (const kind of RELEVANCE_HIT_KINDS) {
+    assert.ok((TURN_FOCUS_HIT_SOURCES as readonly string[]).includes(kind), kind);
+  }
 });
 
 test('every hit kind is a member of the single-sourced vocabulary', () => {

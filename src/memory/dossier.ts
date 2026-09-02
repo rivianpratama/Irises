@@ -184,9 +184,11 @@ export async function buildContextBlockWithHot(
   const longDocMd = longDoc?.docMd ?? '';
 
   // ONE relevance verdict for the turn, over exactly what the loaders came back with — the router
-  // is pure, so it can only see what it is handed. The short tier is filtered the way the renderer
-  // filters it (a legacy synthetic entry can arrive already expired), and the long doc is split at
-  // the granularity the sanitizer uses, so a hit can never name something the model cannot see.
+  // is pure, so it can only see what it is handed. Handed the same things the renderers are: the
+  // short tier filtered for expiry the way the renderer filters it (a legacy synthetic entry can
+  // arrive already expired), and the long doc split at the granularity the sanitizer uses. So a
+  // named hit is something the model can see — a look as its full body or as its settled digest
+  // line, a long section as its own text.
   //
   // Built from `currentTurnText`, which on the Convo path is `userMessage` — deliberately, and
   // ahead of transcription/attachments (see convo/client.ts): these reads run inside a Promise.all

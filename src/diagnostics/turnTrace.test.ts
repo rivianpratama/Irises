@@ -104,7 +104,13 @@ function turnInputs(prompt = realPrompt()): TurnTraceTurnInputs {
     ],
     gates: {
       threads: null,
-      memory: { shortHotLook: 'full' },
+      memory: {
+        shortHotLook: 'full',
+        hits: [
+          { label: 'the cedar order', kind: 'research' },
+          { label: 'the shack rewiring', kind: 'note' },
+        ],
+      },
       extras: { updateNote: false, introWeave: false, activeOps: 0 },
     },
     hits: ['the cedar order'],
@@ -293,6 +299,7 @@ test('buildTurnTrace is pure', () => {
   assert.notEqual(first.outcome, d.outcome, 'outcome');
   assert.notEqual(first.gates, d.gates, 'gates');
   assert.notEqual(first.gates.memory, d.gates.memory, 'gates.memory');
+  assert.notEqual(first.gates.memory.hits, d.gates.memory.hits, 'gates.memory.hits');
   assert.notEqual(first.gates.extras, d.gates.extras, 'gates.extras');
   assert.notEqual(first.affect, d.affect, 'affect');
   assert.notEqual(first.affect.coercions, d.affect.coercions, 'affect.coercions');
@@ -406,6 +413,12 @@ test('a Convo turn hands the send boundary a draft of everything but the bubbles
   assert.deepEqual(d.outcome, { wasEnvelope: true, retried: false, silent: false, toolCalls: [] });
   assert.deepEqual(d.hits, ['the cedar order'], 'the turn-focus hits ride through');
   assert.equal(d.gates.memory.shortHotLook, 'full');
+  // What the memory stack itself found touching this turn — the whole ranked set, by channel, not
+  // just the two the turn-focus block had room to render.
+  assert.deepEqual(d.gates.memory.hits, [
+    { label: 'the cedar order', kind: 'research' },
+    { label: 'the shack rewiring', kind: 'note' },
+  ], 'the router\'s hits are the memory gate\'s receipt');
   assert.equal(d.prompt.systemChars, trace.prompt.system.length);
 
   // The bubbles are the one thing it does NOT have — the boundary owns that.

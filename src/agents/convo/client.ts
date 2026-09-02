@@ -15,7 +15,7 @@ import { deleteShortTermForHandle } from '../../db/repositories/memoryShort.js';
 import { purgeArchiveFor } from '../../db/repositories/memoryArchive.js';
 import { getLongDoc, saveLongDoc } from '../../db/repositories/memoryLong.js';
 import { buildContextBlockWithHot } from '../../memory/dossier.js';
-import { shortEntryLabel } from '../../memory/wrappers.js';
+import { shortEntryLabel, threadHit } from '../../memory/relevance.js';
 import type { TurnFocusHit, TurnFocusInput } from './turnFocus.js';
 import { getActiveOps } from '../../state/opsCoordination.js';
 import { getConversation, addMessage, clearConversation, clearUserProfile } from '../../state/conversation.js';
@@ -177,7 +177,7 @@ export async function chat(
           ? getRelationshipClimate(handle)
           : Promise.resolve(defaultClimate()),
       ])
-    : [{ block: '', hotLook: null }, undefined, defaultClimate()];
+    : [{ block: '', hotLook: null, turn: null }, undefined, defaultClimate()];
   const contextBlock = context.block;
 
   // Irises's hidden affect state: her persisted prior-turn mood/gauges/meta-prompt for THIS chat,
@@ -292,14 +292,27 @@ export async function chat(
   const introWeave = handle ? await pendingIntroWeave(handle) : null;
 
   // What this turn is ABOUT, for the block that goes last inside <prompt> (convo/turnFocus.ts):
-  // their message, plus the held things that touch it. P0 draws on the two verdicts this turn has
-  // already made and can prove — the standing thread it actually chose to offer, and the research
-  // look the memory stack rendered in FULL because it touched the message. Nothing is re-derived
-  // here; both are read off values computed above. The P2 relevance router widens `hits` (notes,
-  // facts, the long doc, email) and nothing else about the block has to change when it does.
-  const hits: TurnFocusHit[] = [];
-  if (thread.offer) hits.push({ label: thread.offer.label, source: 'thread' });
-  if (context.hotLook) hits.push({ label: shortEntryLabel(context.hotLook), source: 'research' });
+  // their message, plus the held things that touch it. Nothing is re-derived here — the relevance
+  // router already scored every held channel during the memory read (memory/relevance.ts), and the
+  // standing thread arrives through its own door because the thread engine picks its offer AFTER
+  // that read (see threadHit, and the sequencing note on buildContextBlockWithHot).
+  //
+  // The offer leads, and not because it scored best: it is the one item here that was CHOSEN for
+  // this turn rather than merely found, and a loop is offered precisely when it is off-topic. The
+  // router's own hits follow, best first; the block prints the first two.
+  //
+  // With CONVO_MEMORY_RELEVANCE off there is no router, and the block falls back to P0's two
+  // sources — the offer plus the one research look the memory stack rendered in FULL — so the
+  // prompt is byte-identical to an install that never had P2.
+  const hits: TurnFocusHit[] = context.turn
+    ? [
+        ...(thread.offer ? [threadHit(context.turn, thread.offer.label)] : []),
+        ...context.turn.hits,
+      ].map(h => ({ label: h.label, source: h.kind }))
+    : [
+        ...(thread.offer ? [{ label: thread.offer.label, source: 'thread' as const }] : []),
+        ...(context.hotLook ? [{ label: shortEntryLabel(context.hotLook), source: 'research' as const }] : []),
+      ];
   const turnFocus: TurnFocusInput = { text: textToSend, hits };
 
   // Held in a variable (not inlined): recall_memory's second pass re-invokes the model with this
@@ -342,8 +355,13 @@ export async function chat(
           // never ran (threading off, or a group identity — a room has no threads of its own).
           threads: thread.report ?? null,
           // Whether the freshest held look is in front of her in FULL (it touched this message), or
-          // only as its settled digest line, or whether no memory rendered at all.
-          memory: { shortHotLook: context.hotLook ? 'full' : contextBlock ? 'digest' : 'none' },
+          // only as its settled digest line, or whether no memory rendered at all — plus everything
+          // else the stack held that touched the message, which is the reading that says whether a
+          // full memory stack had anything to do with what she was asked.
+          memory: {
+            shortHotLook: context.hotLook ? 'full' : contextBlock ? 'digest' : 'none',
+            hits: (context.turn?.hits ?? []).map(h => ({ label: h.label, kind: h.kind })),
+          },
           extras: { updateNote: !!updateNote, introWeave: !!introWeave, activeOps: activeOps.length },
         },
         hits: hits.map(h => h.label),

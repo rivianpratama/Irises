@@ -24,6 +24,7 @@ import { isDynSection, type PromptSection } from '../agents/convo/promptSections
 import { record } from './trace.js';
 import type { BubbleReport } from '../pipeline/bubbleJson.js';
 import type { EmittedStatus } from '../persona/status.js';
+import type { RelevanceHitKind } from '../memory/relevance.js';
 import type { ThreadSelectReport } from '../persona/threads.js';
 
 /** The trace label, in one place — the dashboard and any later reader match on this string. */
@@ -66,12 +67,30 @@ export interface TranscriptMessage {
  *  - `none` — no memory block at all this turn (no memory identity, or nothing held). */
 export type ShortHotLook = 'full' | 'digest' | 'none';
 
+/** One held thing the turn relevance router found touching this message (memory/relevance.ts), as
+ *  the receipt carries it: what it is called, and which channel it came off. The label is already
+ *  clipped to the width the turn-focus block renders, which is what keeps this bounded — see the
+ *  header on what may persist for 30 days. */
+export interface MemoryHit {
+  label: string;
+  kind: RelevanceHitKind;
+}
+
 /** Which pre-turn gates fired, as they were decided — nothing is re-derived here. */
 export interface TurnTraceGates {
   /** The threading engine's own receipt for this turn (persona/threads.ts), or null when threading
    *  did not run at all (flag off, a group identity, or a read that failed). */
   threads: ThreadSelectReport | null;
-  memory: { shortHotLook: ShortHotLook };
+  memory: {
+    shortHotLook: ShortHotLook;
+    /** Everything the memory stack held that touched this turn, best first — the router's whole
+     *  ranked set, not only the two the turn-focus block had room to print (`hits` on the detail is
+     *  what the block actually said). Empty is the interesting reading, and it fires on every turn:
+     *  a full memory stack in front of her with nothing in it about the message in hand. Empty also
+     *  on a turn the router could not read (a caption-less media turn, where every gate fails open
+     *  but nothing counts as evidence) and on every turn with CONVO_MEMORY_RELEVANCE off. */
+    hits: MemoryHit[];
+  };
   extras: {
     /** A pending version note was woven into this reply (update/announce.ts). */
     updateNote: boolean;
@@ -114,7 +133,9 @@ export interface TurnTraceAffect {
    *  named. Nothing here bounds its size: `trunc` in trace.ts is governed by DIAGNOSTICS_STR_CAP,
    *  whose default is 0 = unlimited, so a model that writes a 10k `meta_prompt` (or invents fields)
    *  persists all of it for 30 days. The cap is available rather than applied; if
-   *  diagnostic_turn_history ever grows unexpectedly, this and `hits` are the two places to look. */
+   *  diagnostic_turn_history ever grows unexpectedly, this is the first place to look — the hit
+   *  labels beside it are bounded at both ends (RELEVANCE_HITS_MAX entries, each clipped to
+   *  TURN_FOCUS_LABEL_CHARS by the router that produces them). */
   rawEmitted: Record<string, unknown> | null;
   /** The same status as READ — every string here is already capped by coerceStatus (600/400). */
   coerced: EmittedStatus | null;
@@ -178,7 +199,9 @@ export interface TurnTraceTurnInputs {
   prompt: MeasuredPrompt;
   messages: readonly TranscriptMessage[];
   gates: TurnTraceGates;
-  /** Task 3's turn-focus hit labels — the held things this turn's prompt said touch the message. */
+  /** The turn-focus block's hit labels — the held things the PROMPT said touch the message, in the
+   *  order and number it printed them. Distinct from `gates.memory.hits`, which is everything the
+   *  router found: this is what she was actually shown, that is what was available to show. */
   hits: readonly string[];
 }
 
@@ -311,7 +334,7 @@ export function buildTurnTrace(inputs: { draft: TurnTraceDraft; bubbles: BubbleR
     prompt: { ...draft.prompt, sections: [...draft.prompt.sections] },
     gates: {
       threads: draft.gates.threads,
-      memory: { ...draft.gates.memory },
+      memory: { ...draft.gates.memory, hits: draft.gates.memory.hits.map(h => ({ ...h })) },
       extras: { ...draft.gates.extras },
     },
     affect: { ...draft.affect, coercions: draft.affect.coercions.map(c => ({ ...c })) },

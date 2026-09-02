@@ -33,12 +33,15 @@ export const TURN_SHAPES = ['greeting', 'ack', 'question', 'work_ask', 'statemen
 export type TurnShape = typeof TURN_SHAPES[number];
 
 /**
- * Where a hit came from. P0 fills only `thread` (the standing thread offered this turn) and
- * `research` (the hot short-tier look that rendered in full); the rest are declared now because the
- * P2 relevance router widens the SOURCE of hits without touching this renderer — it adds entries to
- * `TurnFocusInput.hits`, and that is the whole extension point.
+ * Where a hit came from. P0 filled only `thread` (the standing thread offered this turn) and
+ * `research` (the hot short-tier look that rendered in full); P2's relevance router
+ * (memory/relevance.ts) fills all of them, and widening this list was the whole of the change to
+ * this renderer — it reads what the caller put in `TurnFocusInput.hits` and prints the word.
+ *
+ * Same vocabulary as `RELEVANCE_HIT_KINDS` over there, and relevance.test.ts pins that every kind
+ * the router can emit is a source this list names.
  */
-export const TURN_FOCUS_HIT_SOURCES = ['thread', 'research', 'note', 'fact', 'long'] as const;
+export const TURN_FOCUS_HIT_SOURCES = ['thread', 'research', 'email', 'note', 'fact', 'directive', 'long'] as const;
 export type TurnFocusHitSource = typeof TURN_FOCUS_HIT_SOURCES[number];
 
 /** One held thing that touches this turn: what to call it, and which channel it came off. */

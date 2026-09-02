@@ -25,7 +25,7 @@
 
 import { salientTokens, touchesTurn } from './topicality.js';
 import { simScore, tokenSet } from './textSim.js';
-import { classifyTurnShape, type TurnShape } from '../agents/convo/turnFocus.js';
+import { classifyTurnShape, TURN_FOCUS_LABEL_CHARS, type TurnShape } from '../agents/convo/turnFocus.js';
 import type { ShortTermEntry } from '../db/repositories/memoryShort.js';
 import type { MediumBundle } from './mediumTerm.js';
 
@@ -146,6 +146,8 @@ function collect(held: HeldItems): Candidate[] {
       const from = typeof meta.from === 'string' ? meta.from : '';
       out.push({ kind: 'email', label: shortEntryLabel(e) || subject.trim(), text: `${shortEntryAsk(e)} ${subject} ${from}`, source: e.id });
     } else {
+      // Named whether the row rendered in full or collapsed to its digest line — the digest carries
+      // the ask ("they asked X → …"), so she can see the thing the hit names either way.
       out.push({ kind: 'research', label: shortEntryLabel(e), text: shortEntryAsk(e), source: e.id });
     }
   }
@@ -183,9 +185,18 @@ function collect(held: HeldItems): Candidate[] {
 
 // ── the router ───────────────────────────────────────────────────────────────
 
-/** One line, flattened and trimmed — a label is rendered on one line of the turn-focus block. */
+/**
+ * A label, as it will be seen: flattened to one line and clipped to exactly what the turn-focus
+ * block renders (TURN_FOCUS_LABEL_CHARS, and the same clip shape, so the block's own clip is a
+ * no-op on it). Two reasons it happens HERE rather than only at the render:
+ *   • a note, a fact or a directive is the user's own stored text with no length contract, and the
+ *     receipt these hits travel on persists for 30 days (diagnostics/turnTrace.ts) — a 40-note
+ *     bundle must not be able to put 40 note bodies into that store;
+ *   • so the receipt says exactly what the model was shown, not a longer version of it.
+ */
 function oneLine(text: string): string {
-  return text.replace(/\s+/g, ' ').trim();
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length <= TURN_FOCUS_LABEL_CHARS ? flat : `${flat.slice(0, TURN_FOCUS_LABEL_CHARS - 1)}…`;
 }
 
 /** How many of the turn's tokens a candidate shares. */
