@@ -12,10 +12,10 @@ import { PENDING_EMAIL_TTL_MS } from './shortTerm.js';
 import { renderUserMemoryWithHot, sanitizeLongDoc, splitSections } from './wrappers.js';
 import { sanitizeDirectives } from './preferences.js';
 import { buildTurnRelevance, memoryRelevanceEnabled, type TurnRelevance } from './relevance.js';
+import type { MemoryGateReport, MemoryGateReports } from '../diagnostics/turnTrace.js';
 import { scopeHistoryToUser } from './transcript.js';
 import { isGroupHandle } from './identity.js';
 import { record } from '../diagnostics/trace.js';
-import type { MemoryGateReports } from '../diagnostics/turnTrace.js';
 import { reportError } from '../diagnostics/errorLog.js';
 import type { StoredMessage, UserProfile } from '../db/types.js';
 
@@ -40,7 +40,39 @@ const DOSSIER_MAX_TOKENS = 900;
 export const PENDING_CLARIFICATION_TTL_MS = 30 * 60 * 1000;
 
 interface RecentResearch { request?: string; kind?: string; summary?: string; at?: number }
-interface PendingClarificationCtx { request?: string; kind?: string; attempt?: number; at?: number; missingFields?: string[] }
+export interface PendingClarificationCtx { request?: string; kind?: string; attempt?: number; at?: number; missingFields?: string[] }
+
+/** Below this many salient tokens the turn is too thin to read as a topic change, so the steering
+ *  question stands. An ack, a one-word answer and a caption-less media turn all land here — the
+ *  fail-open direction, because the cost of keeping the marker one turn too long is a re-run look
+ *  and the cost of dropping it too early is answering a narrowed ask from memory. */
+export const CLARIFICATION_THIN_TURN_TOKENS = 8;
+
+/**
+ * Does the steering question she just asked still stand? PURE — `now` is injected and the turn's
+ * verdict is already computed.
+ *
+ * It used to stand on the TTL alone, and thirty minutes is a long time in a text thread: they can
+ * answer it, move on, and ask two new things well inside the window, and every one of those turns
+ * was read as "them narrowing THAT ask". The clock still has the first word; then the turn has to
+ * be about it, or be too thin to tell.
+ *
+ * `report` is null with no router — no gate ran, so the receipt claims nothing.
+ */
+export function gatePendingClarification(
+  pc: PendingClarificationCtx | undefined,
+  nowMs: number,
+  turn: TurnRelevance | null,
+): { keep: boolean; report: MemoryGateReport | null } {
+  if (!pc?.request || typeof pc.at !== 'number') return { keep: false, report: { verdict: 'dropped', reason: 'nothing_held' } };
+  if (nowMs - pc.at > PENDING_CLARIFICATION_TTL_MS) return { keep: false, report: { verdict: 'dropped', reason: 'ttl_expired' } };
+  if (!turn) return { keep: true, report: null };
+  // `no_touch` on the empty turn deliberately: the fail-open lives in the thin-turn branch below, so
+  // a turn the router could not read is reported as what it is rather than as a match it never made.
+  if (turn.touches(pc.request, 'no_touch')) return { keep: true, report: { verdict: 'full', reason: 'all_kept' } };
+  if (turn.tokens.size < CLARIFICATION_THIN_TURN_TOKENS) return { keep: true, report: { verdict: 'full', reason: 'short_turn' } };
+  return { keep: false, report: { verdict: 'dropped', reason: 'none_kept' } };
+}
 interface PendingEmailContext {
   emailId?: string; from?: string; subject?: string; summary?: string; severity?: string;
   category?: string; deadlineDate?: string | null; deadlineLabel?: string | null;
@@ -155,15 +187,6 @@ export async function buildContextBlockWithHot(
         }
       : null;
 
-  // Pending clarification: you recently asked the agent a steering question because a look came
-  // back thin (they never heard it was thin). Their next message is almost certainly them
-  // narrowing that ask — so re-run the look, don't answer from memory or treat it as a new topic.
-  const pc = prefs.pending_clarification as PendingClarificationCtx | undefined;
-  if (pc?.request && typeof pc.at === 'number' && Date.now() - pc.at <= PENDING_CLARIFICATION_TTL_MS) {
-    const asked = pc.missingFields?.length ? `\nYou specifically asked them for: ${pc.missingFields.join('; ')}.` : '';
-    parts.push(`## You just asked them to narrow something down (their next reply likely answers it)\nA recent look at "${pc.request}" came back thin, so you asked them a quick steering question instead of telling them.${asked}\nWhen they reply, treat it as them narrowing THAT ask. delegate_to_ops again with the original ask plus what they just clarified, combined. Do NOT answer it from memory, and do NOT treat it as a brand-new topic. If they clearly changed the subject instead, handle the new thing normally.`);
-  }
-
   // Judge-flagged emails: same tier-first / legacy-fallback shape as research above.
   const emailEntries = shortEntries.filter(e => e.kind === 'email_flag');
   const legacyFlags: ShortTermEntry[] = emailEntries.length
@@ -216,6 +239,19 @@ export async function buildContextBlockWithHot(
       })
     : null;
 
+  // Pending clarification: you recently asked the agent a steering question because a look came
+  // back thin (they never heard it was thin). Their next message is almost certainly them
+  // narrowing that ask — so re-run the look, don't answer from memory or treat it as a new topic.
+  // Rendered HERE rather than above the short tier because its gate reads the router, and the
+  // router cannot be built until every loader has answered; it still leads the wrapped tiers, which
+  // is the order this block has always read in.
+  const clarification = gatePendingClarification(prefs.pending_clarification as PendingClarificationCtx | undefined, nowMs, turn);
+  if (clarification.keep) {
+    const pc = prefs.pending_clarification as PendingClarificationCtx;
+    const asked = pc.missingFields?.length ? `\nYou specifically asked them for: ${pc.missingFields.join('; ')}.` : '';
+    parts.push(`## You just asked them to narrow something down (their next reply likely answers it)\nA recent look at "${pc.request}" came back thin, so you asked them a quick steering question instead of telling them.${asked}\nWhen they reply, treat it as them narrowing THAT ask. delegate_to_ops again with the original ask plus what they just clarified, combined. Do NOT answer it from memory, and do NOT treat it as a brand-new topic. If they clearly changed the subject instead, handle the new thing normally.`);
+  }
+
   // The wrapped memory tiers LAST: preamble → short → medium → flexible (identity/addressing +
   // long doc + directives) in the recency slot; the persona's hard rules stay anchored at the
   // top of the system prompt and outrank all of it.
@@ -224,7 +260,9 @@ export async function buildContextBlockWithHot(
   }, nowMs, { audience: isGroupHandle(handle) ? 'group' : 'individual', currentTurnText, turn });
   parts.push(wrapped.text);
 
-  return { block: parts.join('\n\n'), hotLook: wrapped.hotEntry, turn, gates: wrapped.gates };
+  const gates: MemoryGateReports = { ...wrapped.gates };
+  if (clarification.report) gates.clarification = clarification.report;
+  return { block: parts.join('\n\n'), hotLook: wrapped.hotEntry, turn, gates };
 }
 
 /** The dossier updater's harvest contract — exported so tests can pin the two-family

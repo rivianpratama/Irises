@@ -18,7 +18,8 @@ import {
   renderShortBlockWithHot, renderUserMemory, renderUserMemoryWithHot, splitSections,
   type UserMemoryData,
 } from './wrappers.js';
-import { buildContextBlockWithHot } from './dossier.js';
+import { buildContextBlockWithHot, gatePendingClarification, PENDING_CLARIFICATION_TTL_MS } from './dossier.js';
+import { setPreference } from '../db/repositories/memory.js';
 import { renderTurnFocus, TURN_FOCUS_HIT_SOURCES, TURN_FOCUS_LABEL_CHARS } from '../agents/convo/turnFocus.js';
 import { addShortTerm, type ShortTermEntry } from '../db/repositories/memoryShort.js';
 import { addDirective, addImportantNote } from '../db/repositories/memoryMedium.js';
@@ -753,4 +754,68 @@ test('with no router every directive rides, exactly as it always did', () => {
   const out = renderFlexibleBlockWithGates('', directives, null, {}, 'convo', 'individual');
   assert.equal(directiveLines(out.text).length, 20);
   assert.deepEqual(out.gates, {}, 'no gate ran, so the receipt claims nothing');
+});
+
+// ── the gate table: the steering question she just asked ────────────────────
+// "You asked them to narrow something down" is a strong instruction — delegate again, do not answer
+// from memory — and it stood on a thirty-minute clock alone. Thirty minutes is a long time in a text
+// thread: they can answer it, move on, and ask two new things, all inside the window, and every one
+// of those turns was read as an answer to a question about something else.
+
+const PC = { request: 'cedar lead times from the north supplier', at: NOW - 5 * 60_000 };
+
+test('the steering question stands while the turn is about it, or too thin to tell', () => {
+  const gate = (text: string) => gatePendingClarification(PC, NOW, buildTurnRelevance(text, {}));
+
+  assert.deepEqual(gate('the north supplier, cedar decking'), { keep: true, report: { verdict: 'full', reason: 'all_kept' } });
+  assert.deepEqual(gate('ok'), { keep: true, report: { verdict: 'full', reason: 'short_turn' } }, 'an ack cannot be read as a topic change');
+  assert.deepEqual(gate(''), { keep: true, report: { verdict: 'full', reason: 'short_turn' } }, 'and neither can a media turn');
+  assert.deepEqual(
+    gate('actually forget that, my sister is visiting next weekend and i need somewhere decent to take her for dinner saturday night'),
+    { keep: false, report: { verdict: 'dropped', reason: 'none_kept' } },
+    'a whole new subject, said at length',
+  );
+});
+
+test('the steering question still expires on its own clock, and reports the no-op', () => {
+  const turn = buildTurnRelevance('the north supplier, cedar decking', {});
+  assert.deepEqual(
+    gatePendingClarification({ ...PC, at: NOW - PENDING_CLARIFICATION_TTL_MS - 1 }, NOW, turn),
+    { keep: false, report: { verdict: 'dropped', reason: 'ttl_expired' } },
+  );
+  assert.deepEqual(
+    gatePendingClarification(undefined, NOW, turn),
+    { keep: false, report: { verdict: 'dropped', reason: 'nothing_held' } },
+  );
+  assert.deepEqual(
+    gatePendingClarification(PC, NOW, null),
+    { keep: true, report: null },
+    'no router → the TTL alone, and no receipt because no gate ran',
+  );
+});
+
+test('the context block drops the steering question when they plainly changed the subject', async () => {
+  const h = `+1555410${(handleSeq++).toString().padStart(4, '0')}`;
+  await setPreference(h, 'pending_clarification', { request: 'cedar lead times from the north supplier', at: Date.now() });
+
+  const prior = process.env.CONVO_MEMORY_RELEVANCE;
+  try {
+    delete process.env.CONVO_MEMORY_RELEVANCE;
+    const onTopic = await buildContextBlockWithHot(h, 'which north supplier, the one in bend');
+    assert.ok(onTopic.block.includes('## You just asked them to narrow something down'));
+    assert.deepEqual(onTopic.gates.clarification, { verdict: 'full', reason: 'all_kept' });
+
+    const movedOn = await buildContextBlockWithHot(h, 'forget that, my sister is visiting next weekend and i need somewhere decent for dinner saturday');
+    assert.ok(!movedOn.block.includes('## You just asked them to narrow something down'));
+    assert.deepEqual(movedOn.gates.clarification, { verdict: 'dropped', reason: 'none_kept' });
+
+    // Flag off → the thirty-minute clock alone, exactly as before.
+    process.env.CONVO_MEMORY_RELEVANCE = 'false';
+    const off = await buildContextBlockWithHot(h, 'forget that, my sister is visiting next weekend and i need somewhere decent for dinner saturday');
+    assert.ok(off.block.includes('## You just asked them to narrow something down'));
+    assert.deepEqual(off.gates, {});
+  } finally {
+    if (prior === undefined) delete process.env.CONVO_MEMORY_RELEVANCE;
+    else process.env.CONVO_MEMORY_RELEVANCE = prior;
+  }
 });
