@@ -9,7 +9,8 @@ import { listShortTerm, SHORT_TTL_MS, type ShortTermEntry } from '../db/reposito
 import { getLongDoc, saveLongDoc } from '../db/repositories/memoryLong.js';
 import { loadMediumBundle } from './mediumTerm.js';
 import { PENDING_EMAIL_TTL_MS } from './shortTerm.js';
-import { renderUserMemoryWithHot, splitSections } from './wrappers.js';
+import { renderUserMemoryWithHot, sanitizeLongDoc, splitSections } from './wrappers.js';
+import { sanitizeDirectives } from './preferences.js';
 import { buildTurnRelevance, memoryRelevanceEnabled, type TurnRelevance } from './relevance.js';
 import { scopeHistoryToUser } from './transcript.js';
 import { isGroupHandle } from './identity.js';
@@ -189,11 +190,14 @@ export async function buildContextBlockWithHot(
   // arrive already expired), and the long doc split at the granularity the sanitizer screens at
   // (splitSections), so a hit names a section rather than a line lifted out of one.
   //
-  // The long doc goes in RAW, before sanitizeLongDoc: a section that the sanitizer then drops (a
-  // scope/capability section, an unsafe one) can still be scored, so its heading could be named as
-  // a hit for something the model cannot see. Sanitizing here instead would mean either a second
-  // pass inside the renderer or handing the renderer pre-sanitized markdown, and Task 11 re-plumbs
-  // the long doc's gate anyway — it should sanitize once and hand the kept sections to both.
+  // SCREENED FIRST, through the renderer's own guards, because a hit does not stay inside a data
+  // tag: the turn-focus block prints its label as prose (convo/turnFocus.ts), and the turn receipt
+  // keeps it for 30 days. Handing the router the raw stores would let a directive
+  // `sanitizeDirectives` refuses, or a section `sanitizeLongDoc` refuses (scope/capability, unsafe,
+  // past the length cap) or defuses (a tag breakout in a heading), walk back into the prompt in
+  // INSTRUCTION position by the one route with no screen on it. Same functions the renderer calls,
+  // so "the router can only score what the renderer would show" holds by construction rather than
+  // by two lists agreeing; `quiet` because the renderer's own pass logs the same drops this turn.
   //
   // Built from `currentTurnText`, which on the Convo path is `userMessage` — deliberately, and
   // ahead of transcription/attachments (see convo/client.ts): these reads run inside a Promise.all
@@ -203,8 +207,11 @@ export async function buildContextBlockWithHot(
   const turn = memoryRelevanceEnabled()
     ? buildTurnRelevance(currentTurnText, {
         short: shortForWrapper.filter(e => e.expiresAt > nowMs),
-        medium,
-        longSections: splitSections(longDocMd || (memory?.dossierMd ?? '')),
+        medium: {
+          ...medium,
+          directives: sanitizeDirectives(medium.directives.filter(d => d && typeof d.text === 'string'), { quiet: true }),
+        },
+        longSections: splitSections(sanitizeLongDoc(longDocMd || (memory?.dossierMd ?? ''), { quiet: true })),
       })
     : null;
 

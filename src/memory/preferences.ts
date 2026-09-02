@@ -87,11 +87,19 @@ export async function validateDirective(text: string, handle?: string): Promise<
   return { ok: true };
 }
 
-/** Injection-time backstop: drop any stored directive that matches an unsafe pattern. */
-export function sanitizeDirectives(directives: Directive[]): Directive[] {
+/**
+ * Injection-time backstop: drop any stored directive that matches an unsafe pattern.
+ *
+ * `quiet` silences the tripwire line, and exists for the SECOND screen of the same directives on
+ * the same turn: the turn relevance router screens them so a refused directive can never be named
+ * as a hit (memory/dossier.ts), and the renderer screens them again on its way into the prompt.
+ * One drop is one event — logging it twice would make the count that matters (how many unsafe
+ * directives a user has stored) read double.
+ */
+export function sanitizeDirectives(directives: Directive[], opts: { quiet?: boolean } = {}): Directive[] {
   return directives.filter(d => {
     const bad = looksUnsafe(d.text);
-    if (bad) console.warn(`[preferences] sanitized an unsafe directive at injection time (${bad})`);
+    if (bad && !opts.quiet) console.warn(`[preferences] sanitized an unsafe directive at injection time (${bad})`);
     return !bad;
   });
 }

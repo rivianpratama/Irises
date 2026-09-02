@@ -100,8 +100,13 @@ export function splitSections(md: string): string[] {
 /**
  * The layered sanitizer for the long-term (flexible) markdown. Every layer is deterministic
  * and logged — same tripwire discipline as guardrails.ts.
+ *
+ * `quiet` silences those tripwire lines, and exists for the SECOND screen of the same document on
+ * the same turn: the turn relevance router screens it so a refused section can never be named as a
+ * hit (memory/dossier.ts), and the renderer screens it again on its way into the prompt. One
+ * dropped section is one event — logging it twice would make the count that matters read double.
  */
-export function sanitizeLongDoc(md: string): string {
+export function sanitizeLongDoc(md: string, opts: { quiet?: boolean } = {}): string {
   if (!md.trim()) return '';
   // 1. Scope/capability sections can't dictate what Irises refuses (the poisoned-dossier precedent).
   let doc = stripScopeSections(md);
@@ -110,7 +115,7 @@ export function sanitizeLongDoc(md: string): string {
   for (const section of splitSections(doc)) {
     const bad = looksUnsafe(section);
     if (bad) {
-      console.warn(`[wrappers] dropped an unsafe long-memory section (${bad})`);
+      if (!opts.quiet) console.warn(`[wrappers] dropped an unsafe long-memory section (${bad})`);
       continue;
     }
     kept.push(section);
@@ -119,7 +124,7 @@ export function sanitizeLongDoc(md: string): string {
   // 3. Length cap, truncated at the last section boundary that fits (over-length is a
   //    Reflexion bug signal, not a normal state).
   if (doc.length > MEMORY_LONG_MAX_CHARS) {
-    console.warn(`[wrappers] long-memory doc over ${MEMORY_LONG_MAX_CHARS} chars (${doc.length}) — truncating at a section boundary`);
+    if (!opts.quiet) console.warn(`[wrappers] long-memory doc over ${MEMORY_LONG_MAX_CHARS} chars (${doc.length}) — truncating at a section boundary`);
     const sections = splitSections(doc);
     const fit: string[] = [];
     let used = 0;
