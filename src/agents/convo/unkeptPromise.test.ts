@@ -19,7 +19,7 @@ import { processConvoResult, type ChatContext, type ConvoTurnContext } from './s
 import { REACTION_TOOL, DELEGATE_TO_OPS_TOOL, RECALL_MEMORY_TOOL } from './tools.js';
 import { emptyMedia } from '../../webhook/types.js';
 import { markOpsStart, __resetOpsCoordination } from '../../state/opsCoordination.js';
-import { getTraces, clearTraces } from '../../diagnostics/trace.js';
+import { getTraces, clearTraces, record } from '../../diagnostics/trace.js';
 import type { LlmRequest, LlmResult, LlmToolCall } from '../../llm/types.js';
 
 // The user's own words from the live failure — deliberately a message the routing gate reads as
@@ -134,8 +134,12 @@ function args() {
   };
 }
 
+// The DECISION receipt, not the re-ask's LLM call: in production the seam resolves to
+// callConvoLLM → callLLM, which records the request's own trace label into THIS ring as a
+// `type: 'llm'` entry, so a label-only lookup is only correct while the two labels differ (they do,
+// and the test below pins it). Filtering on the type as well makes the idiom right either way.
 function receipt() {
-  return getTraces().find(e => e.label === 'convo:unkept_promise')?.detail;
+  return getTraces().find(e => e.type === 'event' && e.label === 'convo:unkept_promise')?.detail;
 }
 
 test('an unkept promise gets ONE re-ask showing the model its own reply and the correction', async () => {
@@ -156,6 +160,35 @@ test('an unkept promise gets ONE re-ask showing the model its own reply and the 
     { role: 'assistant', content: original.text },
     { role: 'user', content: renderPromiseCorrection('gue suruh') },
   ], 'its own slip, then the correction');
+});
+
+test('the re-ask\'s call and the decision receipt land under SEPARATE labels in the ring', async () => {
+  // In production `turn.call` resolves to callConvoLLM → callLLM, which records the request's own
+  // `trace.label` into this same ring as `{ type: 'llm', … }` (src/llm/callLLM.ts) — so the fake
+  // seam does that here too, and the ring below is shaped the way a real turn shapes it. Every
+  // consumer in the repo matches by label alone with no type filter
+  // (scripts/convergence/loopBattery.ts), so one label for both entries would make
+  // `find(label === 'convo:unkept_promise')` return the LLM call instead of the decision, and a
+  // label count in a live round double every trigger. Same split as the siblings:
+  // `convo:silent_retry` (the call) vs `convo:silent_turn` (the decision).
+  await processConvoResult({
+    ...args(),
+    res: fabricated(),
+    turn: turnCtx(async req => {
+      const out = makeResult(['gue gabisa jalanin browser dari sini']);
+      record({
+        type: 'llm', role: 'convo', label: req.trace?.label,
+        chatId: req.trace?.chatId, handle: req.trace?.handle, response: out.text,
+      });
+      return out;
+    }),
+  });
+  assert.deepEqual(
+    getTraces().filter(e => (e.label ?? '').startsWith('convo:unkept')).map(e => `${e.type} ${e.label}`),
+    ['llm convo:unkept_retry', 'event convo:unkept_promise'],
+    'the call and the decision are told apart by label alone',
+  );
+  assert.deepEqual(receipt(), { phrase: 'gue suruh', retried: true, resolved: 'honest' });
 });
 
 test('a re-ask that delegates for real is accepted and the delegation is dispatched', async () => {

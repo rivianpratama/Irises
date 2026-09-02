@@ -1087,7 +1087,11 @@ async function enforcePromiseKept(
           { role: 'assistant', content: res.text ?? '' },
           { role: 'user', content: renderPromiseCorrection(phrase) },
         ],
-        trace: { chatId, handle, label: 'convo:unkept_promise' },
+        // The CALL's own label, distinct from the decision receipt's `convo:unkept_promise` below:
+        // callLLM records this label into the same ring as a `type: 'llm'` entry, and repo consumers
+        // match by label alone, so one label for both would hide the decision behind the call and
+        // double every trigger in a label count. Same split as `convo:silent_retry`/`silent_turn`.
+        trace: { chatId, handle, label: 'convo:unkept_retry' },
       });
       const retryBubbles = replyBubbles(parseReply(retry.text));
       if (retry.toolCalls.length) {
