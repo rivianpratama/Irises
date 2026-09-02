@@ -14,7 +14,9 @@ import { retractAllForHandle } from '../../db/repositories/memoryMedium.js';
 import { deleteShortTermForHandle } from '../../db/repositories/memoryShort.js';
 import { purgeArchiveFor } from '../../db/repositories/memoryArchive.js';
 import { getLongDoc, saveLongDoc } from '../../db/repositories/memoryLong.js';
-import { buildContextBlock } from '../../memory/dossier.js';
+import { buildContextBlockWithHot } from '../../memory/dossier.js';
+import { shortEntryLabel } from '../../memory/wrappers.js';
+import type { TurnFocusHit, TurnFocusInput } from './turnFocus.js';
 import { getActiveOps } from '../../state/opsCoordination.js';
 import { getConversation, addMessage, clearConversation, clearUserProfile } from '../../state/conversation.js';
 import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
@@ -157,11 +159,12 @@ export async function chat(
     // must not repoint it, or a member's private delivery lands in the room.
     void ensureChatId(handle, chatId); // so engine-initiated pushes can reach them
   }
-  const [contextBlock, agentTz, climate] = handle
+  const [context, agentTz, climate] = handle
     ? await Promise.all([
         // Pass the current turn text so the short-tier renderer can gate whether the freshest research
         // look renders in full (on-topic follow-up) or collapses to a settled digest line (topic moved on).
-        buildContextBlock(handle, userMessage),
+        // The WithHot variant also reports which look that was, so the turn-focus block can name it.
+        buildContextBlockWithHot(handle, userMessage),
         getPreference<string>(handle, 'agent_tz'),
         // The weeks-scale standing register with THIS identity (climate.ts). Handle-keyed like the
         // memory tiers beside it, unlike the chat-keyed affect read below. Defaults when there's no
@@ -174,7 +177,8 @@ export async function chat(
           ? getRelationshipClimate(handle)
           : Promise.resolve(defaultClimate()),
       ])
-    : ['', undefined, defaultClimate()];
+    : [{ block: '', hotLook: null }, undefined, defaultClimate()];
+  const contextBlock = context.block;
 
   // Irises's hidden affect state: her persisted prior-turn mood/gauges/meta-prompt for THIS chat,
   // plus the clock-computed cycle/circadian baseline for right now (anchored to the user's tz).
@@ -287,9 +291,20 @@ export async function chat(
   // ever, from a cached state read; a group handle never gets it.
   const introWeave = handle ? await pendingIntroWeave(handle) : null;
 
+  // What this turn is ABOUT, for the block that goes last inside <prompt> (convo/turnFocus.ts):
+  // their message, plus the held things that touch it. P0 draws on the two verdicts this turn has
+  // already made and can prove — the standing thread it actually chose to offer, and the research
+  // look the memory stack rendered in FULL because it touched the message. Nothing is re-derived
+  // here; both are read off values computed above. The P2 relevance router widens `hits` (notes,
+  // facts, the long doc, email) and nothing else about the block has to change when it does.
+  const hits: TurnFocusHit[] = [];
+  if (thread.offer) hits.push({ label: thread.offer.label, source: 'thread' });
+  if (context.hotLook) hits.push({ label: shortEntryLabel(context.hotLook), source: 'research' });
+  const turnFocus: TurnFocusInput = { text: textToSend, hits };
+
   // Held in a variable (not inlined): recall_memory's second pass re-invokes the model with this
   // SAME system + messages, minus the recall tool (see processConvoResult).
-  const system = buildSystemPrompt(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined, affectState, computed, capabilitySummary, climate, thread, introWeave);
+  const system = buildSystemPrompt(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined, affectState, computed, capabilitySummary, climate, thread, introWeave, turnFocus);
 
   try {
     const res = await callConvoLLM({
