@@ -3,7 +3,7 @@
 // newest-40 cap, insertion-order ties, and the profile upsert/merge semantics.
 import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { getConversation, addMessage, clearConversation, listActiveChats, hasHistory, pruneMessagesBefore } from './conversations.js';
+import { getConversation, addMessage, clearConversation, listActiveChats, hasHistory, pruneMessagesBefore, convoHistoryMax } from './conversations.js';
 import { listArchiveFor, searchArchive } from './memoryArchive.js';
 import { getUserProfile, listUserProfiles, updateUserProfile, addUserFact, setUserName, clearUserProfile } from './profiles.js';
 import { resetStorageForTests, stmt } from '../sqlite.js';
@@ -45,6 +45,30 @@ test('read cap: only the newest 40 come back, oldest-first', async () => {
   assert.equal(msgs.length, 40);
   assert.equal(msgs[0].content, 'm5');
   assert.equal(msgs[39].content, 'm44');
+});
+
+test('CONVO_HISTORY_MAX resizes the read window, and is read at call time', async () => {
+  for (let i = 0; i < 45; i++) await addMessage('c5', 'user', `m${i}`);
+  assert.equal(convoHistoryMax(), 40, 'unset means the window it has always been');
+
+  process.env.CONVO_HISTORY_MAX = '3';
+  try {
+    assert.equal(convoHistoryMax(), 3);
+    const narrow = await getConversation('c5');
+    assert.equal(narrow.length, 3, 'the same call, already imported, honors the new value');
+    assert.deepEqual(narrow.map(m => m.content), ['m42', 'm43', 'm44'], 'still the newest, oldest-first');
+  } finally {
+    delete process.env.CONVO_HISTORY_MAX;
+  }
+  assert.equal((await getConversation('c5')).length, 40, 'and back to the default when unset');
+});
+
+test('a junk or non-positive CONVO_HISTORY_MAX falls back to the default window', async () => {
+  for (const bad of ['', '  ', 'lots', '0', '-5', 'NaN']) {
+    process.env.CONVO_HISTORY_MAX = bad;
+    assert.equal(convoHistoryMax(), 40, `"${bad}" is not a window size`);
+  }
+  delete process.env.CONVO_HISTORY_MAX;
 });
 
 test('clearConversation deletes only that chat', async () => {

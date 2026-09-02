@@ -5,22 +5,44 @@ import type { StoredMessage } from '../types.js';
 
 export type { StoredMessage } from '../types.js';
 
-// Conversation history retention. Bumped 1h → 24h → 7d: the live context windows still
-// slice to the last ~10-20 messages (cost unchanged), and a week gives deal-relevant
-// facts a wide window to be extracted into the memory tiers.
+// Conversation history retention. Bumped 1h → 24h → 7d: a week gives deal-relevant facts a wide
+// window to be extracted into the memory tiers, and the read cap below — not this window — is what
+// bounds the cost of a turn.
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-const MAX_MESSAGES = 40;
+
+// How many of a chat's newest messages getConversation hands back. This IS the live context
+// window for a Convo turn: the front-line client sends every row it gets (agents/convo/client.ts
+// → formatHistory), so the number below is the transcript the model reads. The other readers
+// narrow it further for their own purpose (the Composer takes the last 10, the group-chat
+// classifier the last 4), which is why this is a cap and not a target.
+const DEFAULT_CONVO_HISTORY_MAX = 40;
+
+/**
+ * The read cap, from `CONVO_HISTORY_MAX` (default 40 — unset is exactly the window this has always
+ * had). Read at CALL time, not module load, so a test or a live retune takes effect without a
+ * restart. A value that isn't a positive whole number is not a window size: fall back to the
+ * default rather than reading zero rows or letting a stray string reach the query.
+ */
+export function convoHistoryMax(): number {
+  const raw = (process.env.CONVO_HISTORY_MAX || '').trim();
+  if (!raw) return DEFAULT_CONVO_HISTORY_MAX;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_CONVO_HISTORY_MAX;
+  return Math.floor(n);
+}
 
 type MessageRow = { role: 'user' | 'assistant'; content: string; handle: string | null; created_at: number };
 
 export async function getConversation(chatId: string): Promise<StoredMessage[]> {
   try {
+    // LIMIT is BOUND, not interpolated: the cap is env-driven now, and env text never belongs in
+    // a SQL string (convoHistoryMax already sanitizes — this is the second lock on the same door).
     const rows = stmt(
       `SELECT role, content, handle, created_at FROM messages
        WHERE chat_id = ? AND created_at > ?
        ORDER BY created_at DESC, id DESC
-       LIMIT ${MAX_MESSAGES}`
-    ).all(chatId, Date.now() - RETENTION_MS) as unknown as MessageRow[];
+       LIMIT ?`
+    ).all(chatId, Date.now() - RETENTION_MS, convoHistoryMax()) as unknown as MessageRow[];
     // id breaks same-millisecond ties, so the reversed list is true insertion order.
     return rows.reverse().map(r => ({
       role: r.role,
@@ -54,9 +76,9 @@ export async function addMessage(
     logDbError('addMessage', error);
   }
   // Keep the chat bounded even if the retention timer dies: prune this chat's rows past the
-  // window (the newest-40 cap is applied on read). Goes through pruneMessagesBefore so the
-  // inline prune archives exactly like the daily sweep does — a bare DELETE here was silently
-  // destroying a week of conversation the archive never saw.
+  // window (the newest-N read cap, convoHistoryMax, is applied on read). Goes through
+  // pruneMessagesBefore so the inline prune archives exactly like the daily sweep does — a bare
+  // DELETE here was silently destroying a week of conversation the archive never saw.
   await pruneMessagesBefore(at - RETENTION_MS, chatId);
   return at;
 }
