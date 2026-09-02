@@ -76,6 +76,23 @@ export function threadingEnabled(): boolean {
   return ['true', '1', 'on', 'yes'].includes(v);
 }
 
+/** The theme TOPIC GATE (env: CONVO_THEME_TOPIC_GATE). Default ON, read at call time, the same parse
+ *  shape as its sibling above — and subordinate to it, since it only means anything while threading
+ *  is on at all.
+ *
+ *  A narrower switch inside the feature: threading keeps running and keeps earning themes, but the
+ *  theme stage stops requiring a candidate to touch the message in hand (persona/threads.ts's
+ *  `selectThreadCandidate`, which takes this as an injected boolean rather than reading env — it is
+ *  a pure module, and it is the module THIS file imports its types from). Off is byte-identical to
+ *  the engine before the gate existed, down to the `off_topic` bucket staying 0. Loops are not
+ *  affected either way: their own present-topic check points the opposite direction and predates
+ *  this flag. */
+export function themeTopicGateEnabled(): boolean {
+  const v = (process.env.CONVO_THEME_TOPIC_GATE || '').trim().toLowerCase();
+  if (v === '') return true;
+  return ['true', '1', 'on', 'yes'].includes(v);
+}
+
 function intOr(v: unknown, dflt: number): number {
   return typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : dflt;
 }

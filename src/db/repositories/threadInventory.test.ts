@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { resetStorageForTests, stmt } from '../sqlite.js';
 import {
   getThreadInventory, saveThreadInventory, clearThreadInventory, listThreadInventoryHandles,
-  threadingEnabled,
+  threadingEnabled, themeTopicGateEnabled,
 } from './threadInventory.js';
 import { bumpForgetEpoch, getForgetEpoch } from './memory.js';
 import {
@@ -317,5 +317,26 @@ test('the threading flag parses like its siblings', () => {
   } finally {
     if (before === undefined) delete process.env.CONVO_THREADING_ENABLED;
     else process.env.CONVO_THREADING_ENABLED = before;
+  }
+});
+
+// The theme topic gate is a second, narrower switch inside the same feature: threading can stay on
+// while the "does this touch what they just said" filter comes off. Same parse shape, same default.
+test('the theme topic-gate flag parses like its siblings', () => {
+  const before = process.env.CONVO_THEME_TOPIC_GATE;
+  try {
+    delete process.env.CONVO_THEME_TOPIC_GATE;
+    assert.equal(themeTopicGateEnabled(), true, 'unset is on');
+    for (const on of ['', '  ', 'true', 'TRUE', '1', 'on', 'ON', 'yes', ' Yes ']) {
+      process.env.CONVO_THEME_TOPIC_GATE = on;
+      assert.equal(themeTopicGateEnabled(), true, `${JSON.stringify(on)} is on`);
+    }
+    for (const off of ['false', '0', 'off', 'no', 'nope', 'disabled']) {
+      process.env.CONVO_THEME_TOPIC_GATE = off;
+      assert.equal(themeTopicGateEnabled(), false, `${JSON.stringify(off)} is off`);
+    }
+  } finally {
+    if (before === undefined) delete process.env.CONVO_THEME_TOPIC_GATE;
+    else process.env.CONVO_THEME_TOPIC_GATE = before;
   }
 });
