@@ -1,7 +1,7 @@
 // Run with: npm test   (TZ=UTC tsx --test — runner pins DATA_BACKEND=memory)
 //
-// The ratchet. Convo's system prompt is ~150k characters of prose that has only ever grown, and
-// every section of it was added by someone with a good reason. This file measures the prompt through
+// The ratchet. Convo's system prompt assembles to ~180k characters — ~146k of it the persona — and
+// it has only ever grown, one well-argued block at a time. This file measures the prompt through
 // the real assembler (buildSystemPromptSections, the Task-1 seam) on five representative turns and
 // holds every part under the ceiling it stands at TODAY (promptPolicy.ts) — so the next block that
 // quietly doubles fails here instead of quietly costing the live thread its share of the context.
@@ -60,7 +60,7 @@ class FrozenDate extends RealDate {
 }
 globalThis.Date = FrozenDate as unknown as DateConstructor;
 
-const MIN = 60_000;
+const MINUTE = 60_000;
 const HANDLE = '+15550001111';
 
 // ── the turn, as a named thing ───────────────────────────────────────────────
@@ -187,7 +187,7 @@ const MATURE_SHORT: ShortTermEntry[] = [
   {
     id: 's1', agentHandle: HANDLE, kind: 'ops_research', request: 'cedar lead times from the north supplier',
     content: 'The north supplier lists 6-8 weeks on cedar right now, up from 4 in the spring; two of the three regional yards quote the same window and the third is quoting 10. The delay is a mill scheduling backlog rather than raw stock, so partial shipments are possible on request. Freight has not moved. If the order was placed in the first week of december the earliest realistic arrival is mid february, and the disputed invoice line is the expedite fee from the last late shipment, which the supplier has waived twice before when asked in writing.',
-    meta: { topicKey: 'cedar' }, createdAt: FROZEN_MS - 12 * MIN, expiresAt: FROZEN_MS + 20 * 3600_000,
+    meta: { topicKey: 'cedar' }, createdAt: FROZEN_MS - 12 * MINUTE, expiresAt: FROZEN_MS + 20 * 3600_000,
   },
   {
     id: 's2', agentHandle: HANDLE, kind: 'ops_research', request: 'irrigation permit renewal window',
@@ -221,7 +221,7 @@ const MEDIA_SHORT: ShortTermEntry[] = [
   {
     id: 'm1', agentHandle: HANDLE, kind: 'media_analysis', request: 'the lease pdf they just sent',
     content: 'A 9-page commercial lease for the second yard. Term is five years from march 1 with one five-year option, notice ninety days. Base rent 4,200/month with a 3% annual escalator, plus a triple-net share of taxes and insurance estimated at 900/month. The option period rent is "market as agreed", which is the line worth pushing on. Personal guarantee on page 7 covers the first two years only. No exclusivity clause; the landlord may lease the adjacent bay to another nursery.',
-    meta: { topicKey: 'lease' }, createdAt: FROZEN_MS - 3 * MIN, expiresAt: FROZEN_MS + 23 * 3600_000,
+    meta: { topicKey: 'lease' }, createdAt: FROZEN_MS - 3 * MINUTE, expiresAt: FROZEN_MS + 23 * 3600_000,
   },
 ];
 
@@ -296,9 +296,10 @@ const MEDIA_NOTE = `[they attached a document — the contents aren't unpacked i
 
 // ── histories ────────────────────────────────────────────────────────────────
 
-/** A real texting exchange, `rows` messages long, ending on whichever role the caller wants last.
- *  The texts cycle through a fixed list so a 40-row history is a plausible transcript rather than
- *  forty copies of one line — the transcript's SIZE is the thing under measurement. */
+/** A real texting exchange, cycled to whatever length a fixture asks for, so a 40-row history is a
+ *  plausible transcript rather than forty copies of one line — the transcript's SIZE is the thing
+ *  under measurement, and it has to be an honest size. Alternating and even-length, so the roles
+ *  keep alternating across the seam when it repeats. */
 const TEXTS: Array<[StoredMessage['role'], string]> = [
   ['user', 'morning, any word on the cedars'],
   ['assistant', 'nothing new since yesterday'],
@@ -322,16 +323,17 @@ const TEXTS: Array<[StoredMessage['role'], string]> = [
   ['assistant', 'and the expedite fee is the disputed line, not the freight'],
 ];
 
-function history(rows: number, endOn: StoredMessage['role'] = 'assistant'): StoredMessage[] {
+function history(rows: number): StoredMessage[] {
   const out: StoredMessage[] = [];
-  // Walk backwards from the most recent message so the LAST row is the requested role and the
-  // stamps land in send order (the timing sections read both).
+  // Built newest-first and unshifted, so the finished array is in send order with the freshest row
+  // last — the shape the store returns, and the shape both timing reads assume. It therefore ends on
+  // one of HER bubbles, which is what gives the reply-order read a run of her own sends to point at.
   for (let i = 0; i < rows; i++) {
-    const [role, content] = TEXTS[(TEXTS.length - 1 - (i % TEXTS.length) + (endOn === 'assistant' ? 0 : 1)) % TEXTS.length];
+    const [role, content] = TEXTS[TEXTS.length - 1 - (i % TEXTS.length)];
     out.unshift({
       role, content,
       handle: role === 'user' ? HANDLE : undefined,
-      at: FROZEN_MS - (20 + i * 7) * MIN,
+      at: FROZEN_MS - (20 + i * 7) * MINUTE,
     });
   }
   return out;
@@ -587,21 +589,26 @@ test('every budget line was measured on a fixture, so no ceiling is invented', (
 
 test('a default install adds no weather and no thread — the no-regression pin', () => {
   // The two features that render nothing until something has actually happened: no computed state
-  // (so no internal weather), a default climate, and an empty thread inventory. This is the shape an
-  // install with neither feature ever engaged assembles, and it must stay byte-for-byte the prompt
-  // that install always had.
-  const { sections } = buildSystemPromptSections(...argsFor({
+  // (so no internal weather), a default climate, and an empty thread inventory. That is the shape an
+  // install where neither feature ever engaged assembles — and the pin is stronger than "no section
+  // was pushed": handing the assembler a default climate and an empty inventory must produce the
+  // SAME BYTES as never passing them at all, which is what makes both features free until used.
+  const base: TurnSpec = {
     chatContext: { isGroupChat: false, participantNames: [], chatName: null, senderHandle: HANDLE, senderProfile: MATURE_PROFILE },
     contextBlock: contextBlockWith(MATURE_STACK),
     tools: TOOLS_1TO1,
     history: HISTORY_12,
     incomingText: MATURE_TURN_TEXT,
-    climate: defaultClimate(),
-    thread: { offer: null, outcomeAsk: null },
     turnFocus: { text: MATURE_TURN_TEXT, hits: [] },
+  };
+  const dormant = buildSystemPromptSections(...argsFor({
+    ...base, climate: defaultClimate(), thread: { offer: null, outcomeAsk: null },
   }));
-  const names = sections.map(s => s.name);
+  const names = dormant.sections.map(s => s.name);
   assert.ok(!names.includes('weather'), 'no computed state and a default climate render no weather block');
   assert.ok(!names.includes('thread'), 'an empty thread inventory renders no thread block');
+
+  const neverHadThem = buildSystemPromptSections(...argsFor(base));
+  assert.equal(dormant.system, neverHadThem.system, 'a dormant climate and inventory cost the prompt nothing');
 });
 

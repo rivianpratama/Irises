@@ -121,7 +121,7 @@ const { system: PROMPT } = buildSystemPromptSections(
   { text: TURN_TEXT, hits: [{ label: 'speed vs craft', source: 'thread' }] },
 );
 
-/** Plain substring occurrences — the same count a reader gets from a search in the file. */
+/** Plain substring occurrences — the same number a reader gets from a plain text search. */
 function occurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
