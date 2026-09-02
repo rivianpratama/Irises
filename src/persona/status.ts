@@ -417,6 +417,35 @@ export function renderStatusForPrompt(
   return lines.join('\n');
 }
 
+/** The contract's heading. Its own section (`status_contract`, agents/convo/promptSections.ts),
+ *  pushed immediately after the weather block, whose last line points at it by this name — and named
+ *  in Context.md's inner-weather section, which now says where the fields are described instead of
+ *  describing them a second time. */
+const STATUS_CONTRACT_HEADER = '## Your hidden status — the contract';
+
+/**
+ * The envelope's hidden `status` field, as PROSE for the model — one bullet per field, in envelope
+ * order, from the same ENVELOPE_FIELDS descriptions that build the response schema, plus the feeling
+ * vocabulary the schema has no room for. Pure, static, and identical on every turn; it rides the
+ * per-turn block rather than the persona because it is the operational contract for THIS reply and
+ * the weather block above it is what asks her to fill it (charter §11.3's recency edge, the same
+ * arrangement the bubble law has: the section teaches, the edge states the law).
+ *
+ * It replaced ~3.7k characters of Context.md (a hand-copied feelings wheel plus a second field list
+ * that had already drifted from the schema). It is not small — the descriptions are the schema's own,
+ * which is the point of one source — so a shorter contract means shortening THEM, in the table, where
+ * both copies change together.
+ */
+export function renderStatusContract(): string {
+  return [
+    STATUS_CONTRACT_HEADER,
+    'Every reply ends with this hidden `status` object — never seen by them, never spoken, never hinted at. It is what keeps you the same person from one turn to the next: read yourself honestly, then fill every field.',
+    ...ENVELOPE_FIELDS.map(f => `- \`${f.key}\` — ${f.description}`),
+    'Your feeling words, by core — pick the one that is actually true, not the flattering one:',
+    feelingVocabulary(),
+  ].join('\n');
+}
+
 /**
  * The Composer's READ-ONLY internal weather. The Composer re-voices the engine's answer on every
  * delegated turn; without this it composes in a mood vacuum, so a delegated reply lands tonally
@@ -462,7 +491,19 @@ export function renderStatusForComposer(
   ].join('\n');
 }
 
-/** The full feeling vocabulary (complete wheel + Irises's extra shades), compact, for teaching. */
+/**
+ * The feeling vocabulary the model picks `mood_label` from: one line per core, the complete Willcox
+ * wheel plus Irises's own shades (mood.ts), and NO valence bands. The bands are guidance for code,
+ * not for her — a number printed beside a feeling is a number to optimize, and the level she reports
+ * carries its own range in its own field description. This is the half of the contract the response
+ * schema has no room for, which is why the contract exists at all.
+ */
+export function feelingVocabulary(): string {
+  return MOOD_CORES.map(core => `${core}: ${feelingWords(core).join(', ')}`).join('\n');
+}
+
+/** The same vocabulary WITH each core's valence band — written for a teaching surface that wants the
+ *  numbers. Nothing calls it; renderStatusContract deliberately uses the band-less version above. */
 export function wheelReference(): string {
   return MOOD_CORES
     .map(core => `${core} [${CORE_VALENCE_BAND[core][0]}-${CORE_VALENCE_BAND[core][1]}]: ${feelingWords(core).join(', ')}`)

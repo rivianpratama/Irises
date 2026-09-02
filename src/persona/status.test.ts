@@ -4,10 +4,12 @@ import {
   coerceStatus, extractStatus, clampGauge, mergeStatus, pushMood, renderStatusForPrompt,
   renderStatusForComposer, sanitizeThreadText,
   ENVELOPE_FIELDS, STATUS_SCHEMA_PROP, MOOD_HISTORY_CAP,
+  renderStatusContract, feelingVocabulary,
   type ComputedState, type EmittedStatus, type MoodPoint,
 } from './status.js';
 import { computeCycle } from './cycle.js';
 import { computeCircadian } from './circadian.js';
+import { MOOD_CORES, WILLCOX_WHEEL, EXTENDED_WORDS } from './mood.js';
 import { defaultClimate, type RelationshipClimate } from './climate.js';
 
 const RAW = {
@@ -237,6 +239,44 @@ test('the table says who reads each field back, and names the four nothing reads
     ['conviction', 'engagement', 'epistemic_trigger', 'profile_note'],
     'if one of these just got a real reader, list it — and if a listed one lost its last reader, say so',
   );
+});
+
+// ── the contract, as the model reads it ──────────────────────────────────────
+
+test('renderStatusContract names every field exactly once, in the table order', () => {
+  const contract = renderStatusContract();
+  // The key AS A KEY — backticked, the way the contract names one. (Some descriptions use their own
+  // field's word in prose: "how much Fe warmth is available" is not a second mention of `warmth`.)
+  const named = (key: string) => contract.split(`\`${key}\``).length - 1;
+  for (const f of ENVELOPE_FIELDS) {
+    assert.equal(
+      named(f.key), 1,
+      `\`${f.key}\` reaches the model ${named(f.key)}× in the contract — a field described twice is a field nobody can edit`,
+    );
+  }
+  const at = ENVELOPE_FIELDS.map(f => contract.indexOf(`\`${f.key}\``));
+  assert.deepEqual(at, [...at].sort((a, b) => a - b), 'the bullets run in the envelope order');
+});
+
+test('the contract states the thread_note precedence rule, once, and drops the old one', () => {
+  const contract = renderStatusContract();
+  assert.equal(contract.split(NEW_PRECEDENCE).length - 1, 1, 'the one precedence rule, stated once');
+  assert.ok(!contract.includes(OLD_PRECEDENCE), 'the half-rule the schema used to carry is gone');
+  assert.ok(!contract.includes('A resolution outranks a fresh theme'), "…and so is Context.md's half");
+});
+
+test('feelingVocabulary teaches every word of the wheel and no valence band', () => {
+  const vocab = feelingVocabulary();
+  for (const core of MOOD_CORES) {
+    assert.ok(vocab.includes(core), `${core} leads its own line`);
+    for (const word of [...WILLCOX_WHEEL[core].secondary, ...WILLCOX_WHEEL[core].tertiary, ...EXTENDED_WORDS[core]]) {
+      assert.match(vocab, new RegExp(`\\b${word}\\b`), `${core}: "${word}" is still offered`);
+    }
+  }
+  // A number beside a feeling is a number to optimize — the valence bands stay in code (mood.ts's
+  // CORE_VALENCE_BAND), and `mood_level` carries its own range in its own description.
+  assert.doesNotMatch(vocab, /\d/, 'no digits in the vocabulary');
+  assert.ok(renderStatusContract().includes(vocab), 'the contract carries it verbatim');
 });
 
 test('renderStatusForPrompt always warns it is internal, and carries prior mood when present', () => {
