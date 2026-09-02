@@ -49,6 +49,7 @@ import { resolveTappedReply, type ResolvedReply } from './state/replyResolution.
 import { createDiagnosticsRouter } from './diagnostics/dashboard.js';
 import { createAdminDashboardRouter } from './diagnostics/adminDashboard.js';
 import { beginTurn } from './diagnostics/trace.js';
+import { recordTurnTrace, type TurnTraceDraft } from './diagnostics/turnTrace.js';
 import { loadContext } from './agents/loadContext.js';
 import { redactInternalTools, stripOpsScaffolding } from './agents/guardrails.js';
 import { splitIntoBubbles, splitIntoBubblesWithSplits } from './pipeline/bubbles.js';
@@ -134,6 +135,10 @@ interface AgentChatResult {
   // Rides the reply itself so the send boundary reports the cap against the reply it ships; optional
   // so an agent that doesn't parse a bubble envelope still satisfies this shape.
   hardCapped?: boolean;
+  // This turn's receipt, minus the bubbles — the send boundary attaches those and files it as one
+  // `turn:trace` event (diagnostics/turnTrace.ts). Optional for the same reason as hardCapped: an
+  // agent that never built a prompt has nothing to attribute.
+  turnTrace?: TurnTraceDraft;
 }
 
 export interface AgentClient {
@@ -696,7 +701,7 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
     arrivals,
   });
   turnOut = out;
-  const { text: responseText, reaction, renameChat, rememberedUser, generatedImage, groupChatIcon, removeMember, delegatedTask, hardCapped } = out;
+  const { text: responseText, reaction, renameChat, rememberedUser, generatedImage, groupChatIcon, removeMember, delegatedTask, hardCapped, turnTrace } = out;
   console.log(`[timing] agent: ${Date.now() - start}ms`);
   console.log(`[debug] responseText: ${responseText ? `"${responseText.substring(0, 50)}..."` : 'null'}, renameChat: ${renameChat || 'null'}, generatedImage: ${generatedImage ? 'yes' : 'null'}, removeMember: ${removeMember || 'null'}`);
   // Send reaction if agent wants to. On a burst the model may target a specific [msg N] via `re` (e.g.
@@ -749,6 +754,11 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
   const gapped = earliestReceivedAt > 0 && countSendsSince(chatId, earliestReceivedAt) > 0;
   const anchorFirstTo = (incomingReplyTo || gapped) ? { message_id: messageId } : undefined;
 
+  // What the bubble law did to this reply — and the last field the turn receipt is missing. Seeded
+  // as "nothing shipped" so every exit below (a reaction-only turn, a turn that produced nothing at
+  // all) still has an honest reading to file: an empty list capped nothing and split nothing.
+  let bubbleReport = buildBubbleReport([], { hardCapped: false, splits: 0 });
+
   if (finalText || generatedImage || groupChatIcon) {
     // Split into bubbles, strip the routing tags, and compute each bubble's native-reply target.
     const split = finalText ? splitIntoBubblesWithSplits(finalText) : { bubbles: [] as string[], splits: 0 };
@@ -762,7 +772,7 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
     // would attach another chat's or another agent's cap to this receipt); `splits` comes from the
     // split above. Also parked per chat (lastBubbleReport) for an out-of-band reader — see the
     // ordering note there; a turn receipt assembled here uses the returned report directly.
-    noteBubbleReport(chatId, buildBubbleReport(bubbles, { hardCapped: hardCapped === true, splits: split.splits }));
+    bubbleReport = noteBubbleReport(chatId, buildBubbleReport(bubbles, { hardCapped: hardCapped === true, splits: split.splits }));
 
     // If we're delegating, thread the LATE Ops follow-up to the message that actually asked, not the
     // last burst message (which may be a "thanks"). Prefer the message a holding bubble quoted; else,
@@ -827,6 +837,17 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
   } else if (reaction) {
     console.log(`[main] Reaction-only response (saved to history for context)`);
   }
+
+  // ── the turn receipt ────────────────────────────────────────────────────────────────────────
+  // ONE `turn:trace` per user-visible turn, filed here and nowhere else. This is the only point
+  // that knows BOTH halves: what was in front of the model (the draft the Convo turn returned —
+  // prompt sections and sizes, the pre-turn gates, the emitted status and what it had to be coerced
+  // into, this turn's focus hits) and what actually came out (the bubble reading above). It sits
+  // AFTER every exit of the send block, so it is unconditional by construction: a normal reply, a
+  // reaction-only turn, a tool-only turn and a turn that shipped nothing all file one — the last of
+  // those with `bubbles.count` 0 and `outcome.silent` true, which is the whole point of firing on
+  // the no-op. Names and numbers only (it persists 30 days), flag and never-throw guard inside.
+  recordTurnTrace(turnTrace, { chatId, handle: from, bubbles: bubbleReport });
 
   // Mark delegated work in-flight AND kick it off, at the END of the critical section (after the
   // holding line has already been sent above — Ops therefore starts once the ack is out, never before

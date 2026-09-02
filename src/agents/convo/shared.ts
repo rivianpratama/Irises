@@ -44,6 +44,9 @@ import type { PromptSection, SectionId } from './promptSections.js';
 import { renderTurnFocus, turnFocusBlockEnabled, type TurnFocusInput } from './turnFocus.js';
 import { callLLM } from '../../llm/callLLM.js';
 import { record } from '../../diagnostics/trace.js';
+import {
+  buildTurnTraceDraft, turnTraceEnabled, type TurnTraceDraft, type TurnTraceTurnInputs,
+} from '../../diagnostics/turnTrace.js';
 import { reportError } from '../../diagnostics/errorLog.js';
 import { voiceOutcome, type Outcome } from '../fallfirm/client.js';
 import { voiceInstant } from '../fallfirm/voiceInstant.js';
@@ -114,6 +117,12 @@ export interface ChatResponse {
    *  surface on another reply's receipt. Absent/false on every path where `text` is not the parsed
    *  reply (a Fallfirm-voiced fallback, a legacy agent). Diagnostics only. */
   hardCapped?: boolean;
+  /** This turn's receipt, minus the one field the turn cannot know: which bubbles actually shipped.
+   *  Rides out to the send boundary (src/index.ts → recordTurnTrace), which attaches the bubble
+   *  reading and files it as ONE `turn:trace` event. Absent when the trace flag is off, and on every
+   *  path that never built a prompt (the command fast paths, the legacy agent) — nothing to
+   *  attribute. Diagnostics only; see diagnostics/turnTrace.ts. */
+  turnTrace?: TurnTraceDraft;
 }
 
 export function emptyExtras() {
@@ -1023,6 +1032,12 @@ export async function processConvoResult(args: {
   // (agents/ops/firstMove.ts). Threaded the same way `computed` is — the recall second pass forwards
   // it via {...args}, so the mark lands exactly once, on the pass that actually reaches the return.
   introWoven?: boolean;
+  // What this turn's PROMPT was made of and which pre-turn gates fired — everything the per-turn
+  // receipt needs that only the caller knows (diagnostics/turnTrace.ts). Optional: a caller that
+  // passes nothing gets no draft, and the send boundary then files no receipt for that turn. The
+  // recall second pass re-passes it with its own longer messages array, so the sizes describe the
+  // pass that actually produced the reply.
+  trace?: TurnTraceTurnInputs;
 }): Promise<ChatResponse> {
   const { res, chatId, handle, chatContext, textToSend, history, media } = args;
 
@@ -1387,6 +1402,10 @@ export async function processConvoResult(args: {
           res: second,
           archivePass: true,
           turn: { ...turn, tools: strippedTools, messages },
+          // The second pass reads one more message than the first (the archive-results turn), and
+          // it is the pass whose reply ships — so the receipt measures ITS transcript, not the
+          // first pass's.
+          trace: args.trace ? { ...args.trace, messages } : undefined,
         });
       } catch (err) {
         console.error('[convo] recall_memory second pass failed', err);
@@ -1768,5 +1787,33 @@ export async function processConvoResult(args: {
     }
   }
 
-  return { text: textResponse, reaction, renameChat, rememberedUser, removeMember, delegatedTask, generatedImage: null, groupChatIcon: null, hardCapped };
+  // ── the turn receipt's draft ─────────────────────────────────────────────────────────────────
+  // Everything this turn knows about itself, measured: what the prompt was made of, which pre-turn
+  // gates fired, what the hidden envelope emitted and what had to be coerced, and what the turn
+  // produced. Built HERE, on the pass that reaches the final return (the recall second pass returns
+  // into its own recursion, the silent retry into its own), so it is one draft per user-visible
+  // turn — and built LAST, so `textResponse`/`reaction` are the final ones.
+  //
+  // The bubbles are deliberately missing: only the send boundary knows the list that actually
+  // ships, so it attaches them and records the event (src/index.ts → recordTurnTrace). A turn that
+  // never reaches the boundary files nothing, which is the honest answer for a reply that never
+  // went out. Flag off (or a caller with no trace inputs) → no draft is built at all.
+  const turnTrace = args.trace && turnTraceEnabled()
+    ? buildTurnTraceDraft({
+        turn: args.trace,
+        // As emitted vs. as read — `emitted` is the same coercion the affect persist and the thread
+        // harvest above ran on, never a second one that could disagree with them.
+        affect: { raw: reply.statusRaw, coerced: emitted },
+        outcome: {
+          wasEnvelope: reply.wasEnvelope,
+          retried: args.silentRetry === true,
+          // The turn's own reading of "nothing the user or the thread can see" — the same condition
+          // the silent-turn tripwire above fires on. The boundary re-checks it against what shipped.
+          silent: !textResponse && !reaction && !renameChat && !rememberedUser && !removeMember && !delegatedTask,
+          toolCalls: res.toolCalls.map(c => c.name),
+        },
+      })
+    : undefined;
+
+  return { text: textResponse, reaction, renameChat, rememberedUser, removeMember, delegatedTask, generatedImage: null, groupChatIcon: null, hardCapped, turnTrace };
 }

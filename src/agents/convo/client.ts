@@ -27,7 +27,7 @@ import {
   getRelationshipClimate, clearRelationshipClimate, relationshipClimateEnabled,
 } from '../../db/repositories/relationshipClimate.js';
 import { clearThreadInventory } from '../../db/repositories/threadInventory.js';
-import { pickThreadForTurn } from '../../memory/threadHarvest.js';
+import { pickThreadForTurn, type ThreadTurn } from '../../memory/threadHarvest.js';
 import { defaultClimate } from '../../persona/climate.js';
 import { computeCycle } from '../../persona/cycle.js';
 import { computeCircadian } from '../../persona/circadian.js';
@@ -36,7 +36,7 @@ import type { ComputedState } from '../../persona/status.js';
 import { hasMedia, type IncomingMedia } from '../../webhook/types.js';
 import { reportError } from '../../diagnostics/errorLog.js';
 import type { LlmMessage, LlmToolDef } from '../../llm/types.js';
-import { buildSystemPrompt, convoPersonaChars, processConvoResult, formatHistory, emptyExtras, callConvoLLM, annotateTappedReply } from './shared.js';
+import { buildSystemPromptSections, convoPersonaChars, processConvoResult, formatHistory, emptyExtras, callConvoLLM, annotateTappedReply } from './shared.js';
 import { voiceOutcome } from '../fallfirm/client.js';
 import { helpText } from '../fallfirm/floor.js';
 import { claimPendingUpdateNote } from '../../update/announce.js';
@@ -279,7 +279,7 @@ export async function chat(
   // history predates the stamps.
   const lastAt = history.length ? history[history.length - 1].at : undefined;
   const gapMs = typeof lastAt === 'number' && Number.isFinite(lastAt) ? nowMs - lastAt : Infinity;
-  const thread = handle && !isGroupHandle(handle)
+  const thread: ThreadTurn = handle && !isGroupHandle(handle)
     ? await pickThreadForTurn(handle, affectState, { incomingText: textToSend, gapMs, chatId })
     : { offer: null, outcomeAsk: null };
 
@@ -304,7 +304,12 @@ export async function chat(
 
   // Held in a variable (not inlined): recall_memory's second pass re-invokes the model with this
   // SAME system + messages, minus the recall tool (see processConvoResult).
-  const system = buildSystemPrompt(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined, affectState, computed, capabilitySummary, climate, thread, introWeave, turnFocus);
+  //
+  // The measuring variant of the assembler, for the same string plus a per-section size table — the
+  // sizes are what the turn receipt reports, and they are free here (`prompt.system` is the byte
+  // identical output buildSystemPrompt returns; see convo/promptSections.ts).
+  const prompt = buildSystemPromptSections(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined, affectState, computed, capabilitySummary, climate, thread, introWeave, turnFocus);
+  const system = prompt.system;
 
   try {
     const res = await callConvoLLM({
@@ -324,6 +329,24 @@ export async function chat(
       turn: { system, messages, tools },
       computed,
       introWoven: !!introWeave,
+      // What was in front of the model this turn, for its one receipt (diagnostics/turnTrace.ts).
+      // Every value here is already computed above — nothing is re-derived, nothing is re-read, and
+      // no prompt text travels: the assembler's own section sizes, the verdicts the pre-turn reads
+      // already made, and the hit labels the turn-focus block rendered.
+      trace: {
+        prompt,
+        messages,
+        gates: {
+          // The selection engine's accounting, straight off the pre-turn read. Null when selection
+          // never ran (threading off, or a group identity — a room has no threads of its own).
+          threads: thread.report ?? null,
+          // Whether the freshest held look is in front of her in FULL (it touched this message), or
+          // only as its settled digest line, or whether no memory rendered at all.
+          memory: { shortHotLook: context.hotLook ? 'full' : contextBlock ? 'digest' : 'none' },
+          extras: { updateNote: !!updateNote, introWeave: !!introWeave, activeOps: activeOps.length },
+        },
+        hits: hits.map(h => h.label),
+      },
     });
     // Stash this turn's media for a LATER text follow-up to recall (delegate_to_mm media_scope
     // "earlier"). Written AFTER processConvoResult so an "earlier" recall THIS turn still resolves to
