@@ -63,7 +63,7 @@ export interface EmittedStatus {
   intent_mode: IntentMode;
   epistemic_trigger: EpistemicTrigger;
   meta_prompt: string;        // ≤~60w self-recursive note: what they'll likely do next + how to meet it
-  profile_note: string;       // one-line running read of the user (feeds the dossier)
+  profile_note: string;       // one-line running read of the user (emitted + persisted; no reader yet)
   terminal_closure: boolean;  // conversation resolved / they're closing → reply minimal or react-only
   // Threading capture. OPTIONAL on purpose: hand-built fixtures keep type-checking, and an absent
   // field is dropped by JSON.stringify instead of persisting an empty string on every affect row.
@@ -117,41 +117,144 @@ function asString(v: unknown, dflt = ''): string {
   return typeof v === 'string' ? v : v == null ? dflt : String(v);
 }
 
+/** One field of the hidden envelope, described ONCE. */
+export interface EnvelopeField {
+  key: keyof EmittedStatus;
+  /** Its JSON-schema `type`, verbatim: a primitive name, or `['string', 'null']` for a field whose
+   *  "not this turn" has to be expressible as null (strict mode wants every field in `required`). */
+  type: string | readonly string[];
+  /** What the field means, in the words the MODEL reads — the only copy. STATUS_SCHEMA_PROP sends it
+   *  on the response schema; renderStatusContract() renders it into the per-turn prompt. */
+  description: string;
+  /** Every field is required (see `type`) — declared per row rather than assumed, so the schema
+   *  reads it off the table instead of hard-coding "all of them". */
+  required: true;
+  /** The code that reads this field BACK to change something — a render, a gate, a stored trail —
+   *  named by function so it is greppable. The receipts are deliberately not listed: `convo:status`
+   *  and the turn trace carry the whole record, so listing them would put the same two names on all
+   *  seventeen rows. An EMPTY list therefore means exactly that: the field is emitted for her own
+   *  reasoning and persisted on the affect row, and nothing branches on it. */
+  consumers: readonly string[];
+}
+
 /**
- * The `status` property to merge into the reply envelope schema. Flat, nullable, strict-safe:
- * every field required when present, additionalProperties:false, no schema enums (allowed values
- * ride in the description, matching the confidence_level / tool-args convention in bubbleJson).
+ * Every field of the hidden `status` envelope: what it means, its schema type, and who reads it.
+ * THE one place it is described — STATUS_SCHEMA_PROP and renderStatusContract() are both generated
+ * from this, so the schema the lanes validate against and the prose the model is taught cannot drift
+ * apart (the THEME_KINDS single-source pattern, persona/threads.ts).
+ *
+ * Order is load-bearing twice: it is the schema's `required` order AND the contract's bullet order.
+ * The two threading fields stay LAST — `status` is the envelope's last property, and these are its
+ * newest, least-often-filled ones.
+ */
+export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
+  {
+    key: 'mood_core', type: 'string', required: true,
+    description: 'one of: mad | scared | joyful | powerful | peaceful | sad',
+    consumers: ['renderStatusForPrompt', 'renderStatusForComposer', 'pushMood'],
+  },
+  {
+    key: 'mood_label', type: 'string', required: true,
+    description: 'one specific feeling word under that core (e.g. hopeful, drained, content, anxious)',
+    consumers: ['renderStatusForPrompt', 'renderStatusForComposer', 'pushMood'],
+  },
+  {
+    key: 'mood_level', type: 'integer', required: true,
+    description: '1-100 valence: low=withdrawn/down, high=delighted/warm',
+    // The most-read field in the envelope: it also floors the thread offer and marks a theme minted
+    // while she was low, so a bad turn can never hand back a named pattern.
+    consumers: ['renderStatusForPrompt', 'renderStatusForComposer', 'pushMood', 'selectThreadCandidate', 'updateThreadInventory'],
+  },
+  {
+    key: 'anxiety', type: 'integer', required: true,
+    description: '1-100, how loud your GAD is running this turn',
+    consumers: ['renderStatusForPrompt', 'renderStatusForComposer', 'pushMood'],
+  },
+  {
+    key: 'warmth', type: 'integer', required: true,
+    description: '1-100, how much Fe warmth is available right now',
+    consumers: ['renderStatusForPrompt', 'renderStatusForComposer', 'pushMood'],
+  },
+  {
+    key: 'social_battery', type: 'integer', required: true,
+    description: '1-100, energy for engaging',
+    consumers: ['renderStatusForPrompt', 'renderStatusForComposer', 'pushMood'],
+  },
+  {
+    key: 'rapport', type: 'integer', required: true,
+    description: '1-100, felt closeness with this person',
+    // Not the Composer's: it re-voices a decided answer, so only the voice-shaping gauges reach it.
+    consumers: ['renderStatusForPrompt', 'pushMood'],
+  },
+  {
+    key: 'conviction', type: 'integer', required: true,
+    description: '1-100, how firmly you hold your current stance',
+    consumers: [],
+  },
+  {
+    key: 'engagement', type: 'integer', required: true,
+    description: '1-100, how invested you are this turn',
+    consumers: [],
+  },
+  {
+    key: 'patience', type: 'integer', required: true,
+    description: '1-100, tolerance; low means keep it minimal',
+    consumers: ['renderStatusForPrompt', 'renderStatusForComposer'],
+  },
+  {
+    key: 'intent_mode', type: 'string', required: true,
+    description: `one of: ${INTENT_MODES.join(' | ')}`,
+    consumers: ['selectThreadCandidate', 'updateThreadInventory'],
+  },
+  {
+    key: 'epistemic_trigger', type: 'string', required: true,
+    description: `one of: ${EPISTEMIC_TRIGGERS.join(' | ')} — did new INFORMATION move you (logic_valid/knowledge_gap) or just PRESSURE (emotional_pressure)`,
+    consumers: [],
+  },
+  {
+    key: 'meta_prompt', type: 'string', required: true,
+    description: 'private note to yourself for next turn: what they will likely do and how to meet it, ~40 words',
+    // The self-recursive loop: last turn's note is re-injected into this turn's weather block.
+    consumers: ['renderStatusForPrompt'],
+  },
+  {
+    key: 'profile_note', type: 'string', required: true,
+    description: 'one line: your running read of who this person is, present tense',
+    consumers: [],
+  },
+  {
+    key: 'terminal_closure', type: 'boolean', required: true,
+    description: 'true when the conversation is resolved / they are closing → reply minimally or react only',
+    consumers: ['selectThreadCandidate'],
+  },
+  {
+    key: 'thread_note', type: ['string', 'null'], required: true,
+    description: 'null most turns. Three uses, one per turn, prefixed: (1) "loop: <thing>" — something pending in their life with a how-did-it-go attached (an interview, a surgery, a launch, a dreaded talk), in their own word for it; one mention is enough. (2) "resolved: <thing>" — a pending thing you were tracking just got its outcome, whatever it was. (3) a recurring theme of theirs as "kind: theme", kind one of value | tension | goal | phrase (e.g. "tension: speed vs craft"); only for things likely to recur, never something they merely CLAIM is a pattern. Precedence when more than one fits: "resolved:" > "loop:" > theme — a resolution outranks a pending loop, a pending loop outranks a fresh theme, one note per turn.',
+    consumers: ['updateThreadInventory'],
+  },
+  {
+    key: 'thread_outcome', type: ['string', 'null'], required: true,
+    description: 'only when your LAST reply tagged a standing thread or asked about something pending of theirs: how they just took it — one of: took (they picked it up) | passed (they let it lie, fine) | pushed_back (they corrected it or bristled). Otherwise null, including when you were offered a thread and chose not to use it.',
+    consumers: ['updateThreadInventory'],
+  },
+];
+
+/**
+ * The `status` property to merge into the reply envelope schema — GENERATED from ENVELOPE_FIELDS, so
+ * a field is added, reworded or re-typed in exactly one place. Flat, nullable, strict-safe: every
+ * field required, additionalProperties:false, no schema enums (allowed values ride in the
+ * description, matching the confidence_level / tool-args convention in bubbleJson).
  */
 export const STATUS_SCHEMA_PROP: Record<string, unknown> = {
   type: ['object', 'null'],
   additionalProperties: false,
-  required: [
-    'mood_core', 'mood_label', 'mood_level', 'anxiety', 'warmth', 'social_battery', 'rapport',
-    'conviction', 'engagement', 'patience', 'intent_mode', 'epistemic_trigger', 'meta_prompt',
-    'profile_note', 'terminal_closure', 'thread_note', 'thread_outcome',
-  ],
-  properties: {
-    mood_core: { type: 'string', description: 'one of: mad | scared | joyful | powerful | peaceful | sad' },
-    mood_label: { type: 'string', description: 'one specific feeling word under that core (e.g. hopeful, drained, content, anxious)' },
-    mood_level: { type: 'integer', description: '1-100 valence: low=withdrawn/down, high=delighted/warm' },
-    anxiety: { type: 'integer', description: '1-100, how loud your GAD is running this turn' },
-    warmth: { type: 'integer', description: '1-100, how much Fe warmth is available right now' },
-    social_battery: { type: 'integer', description: '1-100, energy for engaging' },
-    rapport: { type: 'integer', description: '1-100, felt closeness with this person' },
-    conviction: { type: 'integer', description: '1-100, how firmly you hold your current stance' },
-    engagement: { type: 'integer', description: '1-100, how invested you are this turn' },
-    patience: { type: 'integer', description: '1-100, tolerance; low means keep it minimal' },
-    intent_mode: { type: 'string', description: `one of: ${INTENT_MODES.join(' | ')}` },
-    epistemic_trigger: { type: 'string', description: `one of: ${EPISTEMIC_TRIGGERS.join(' | ')} — did new INFORMATION move you (logic_valid/knowledge_gap) or just PRESSURE (emotional_pressure)` },
-    meta_prompt: { type: 'string', description: 'private note to yourself for next turn: what they will likely do and how to meet it, ~40 words' },
-    profile_note: { type: 'string', description: 'one line: your running read of who this person is, present tense' },
-    terminal_closure: { type: 'boolean', description: 'true when the conversation is resolved / they are closing → reply minimally or react only' },
-    // Threading. Both are nullable strings (strict mode wants them in `required`, so "not this turn"
-    // has to be expressible as null) and both stay LAST — `status` itself is the envelope's last
-    // property, and these are its newest, least-often-filled ones.
-    thread_note: { type: ['string', 'null'], description: 'null most turns. Three uses, one per turn, prefixed: (1) "loop: <thing>" — something pending in their life with a how-did-it-go attached (an interview, a surgery, a launch, a dreaded talk), in their own word for it; one mention is enough. (2) "resolved: <thing>" — a pending thing you were tracking just got its outcome, whatever it was. (3) a recurring theme of theirs as "kind: theme", kind one of value | tension | goal | phrase (e.g. "tension: speed vs craft"); only for things likely to recur, never something they merely CLAIM is a pattern. When a pending thing and a theme both show, the pending thing wins.' },
-    thread_outcome: { type: ['string', 'null'], description: 'only when your LAST reply tagged a standing thread or asked about something pending of theirs: how they just took it — one of: took (they picked it up) | passed (they let it lie, fine) | pushed_back (they corrected it or bristled). Otherwise null, including when you were offered a thread and chose not to use it.' },
-  },
+  required: ENVELOPE_FIELDS.filter(f => f.required).map(f => f.key),
+  properties: Object.fromEntries(ENVELOPE_FIELDS.map(f => [f.key, {
+    // Copied rather than shared: the schema is handed to two lanes' SDKs, and a table row must not be
+    // reachable through it.
+    type: typeof f.type === 'string' ? f.type : [...f.type],
+    description: f.description,
+  }])),
 };
 
 /**

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {
   coerceStatus, extractStatus, clampGauge, mergeStatus, pushMood, renderStatusForPrompt,
   renderStatusForComposer, sanitizeThreadText,
-  STATUS_SCHEMA_PROP, MOOD_HISTORY_CAP, type ComputedState, type EmittedStatus, type MoodPoint,
+  ENVELOPE_FIELDS, STATUS_SCHEMA_PROP, MOOD_HISTORY_CAP,
+  type ComputedState, type EmittedStatus, type MoodPoint,
 } from './status.js';
 import { computeCycle } from './cycle.js';
 import { computeCircadian } from './circadian.js';
@@ -152,6 +153,90 @@ test('STATUS_SCHEMA_PROP is a flat, nullable, strict object', () => {
   assert.deepEqual(Object.keys(p.properties).slice(-2), ['thread_note', 'thread_outcome']);
   assert.deepEqual((p.properties.thread_note as { type: string[] }).type, ['string', 'null']); // "not this turn" = null
   assert.deepEqual(Object.keys(p.properties).sort(), [...p.required].sort()); // every required field is declared
+});
+
+// ── ONE description of the envelope ──────────────────────────────────────────
+//
+// ENVELOPE_FIELDS is the only place the hidden `status` field is described now: STATUS_SCHEMA_PROP is
+// generated from it, and renderStatusContract() renders the SAME descriptions into the prompt, so the
+// schema both lanes validate against and the prose the model is taught can no longer say different
+// things.
+//
+// PRE_CHANGE_SCHEMA below is the literal that used to be that schema, copied verbatim out of
+// status.ts before the table existed. It is the proof the refactor was inert — every byte the lanes
+// see is unchanged except the ONE deliberate edit named beside it, so the diff on this file IS the
+// behaviour change to the schema.
+
+const PRE_CHANGE_SCHEMA = {
+  type: ['object', 'null'],
+  additionalProperties: false,
+  required: [
+    'mood_core', 'mood_label', 'mood_level', 'anxiety', 'warmth', 'social_battery', 'rapport',
+    'conviction', 'engagement', 'patience', 'intent_mode', 'epistemic_trigger', 'meta_prompt',
+    'profile_note', 'terminal_closure', 'thread_note', 'thread_outcome',
+  ],
+  properties: {
+    mood_core: { type: 'string', description: 'one of: mad | scared | joyful | powerful | peaceful | sad' },
+    mood_label: { type: 'string', description: 'one specific feeling word under that core (e.g. hopeful, drained, content, anxious)' },
+    mood_level: { type: 'integer', description: '1-100 valence: low=withdrawn/down, high=delighted/warm' },
+    anxiety: { type: 'integer', description: '1-100, how loud your GAD is running this turn' },
+    warmth: { type: 'integer', description: '1-100, how much Fe warmth is available right now' },
+    social_battery: { type: 'integer', description: '1-100, energy for engaging' },
+    rapport: { type: 'integer', description: '1-100, felt closeness with this person' },
+    conviction: { type: 'integer', description: '1-100, how firmly you hold your current stance' },
+    engagement: { type: 'integer', description: '1-100, how invested you are this turn' },
+    patience: { type: 'integer', description: '1-100, tolerance; low means keep it minimal' },
+    intent_mode: { type: 'string', description: 'one of: questioning | joking | agreeing | thanking | sharing_update | confused | overwhelmed | venting | brainstorming | deflecting | asking_help | off_track' },
+    epistemic_trigger: { type: 'string', description: 'one of: none | knowledge_gap | logic_valid | emotional_pressure — did new INFORMATION move you (logic_valid/knowledge_gap) or just PRESSURE (emotional_pressure)' },
+    meta_prompt: { type: 'string', description: 'private note to yourself for next turn: what they will likely do and how to meet it, ~40 words' },
+    profile_note: { type: 'string', description: 'one line: your running read of who this person is, present tense' },
+    terminal_closure: { type: 'boolean', description: 'true when the conversation is resolved / they are closing → reply minimally or react only' },
+    thread_note: { type: ['string', 'null'], description: 'null most turns. Three uses, one per turn, prefixed: (1) "loop: <thing>" — something pending in their life with a how-did-it-go attached (an interview, a surgery, a launch, a dreaded talk), in their own word for it; one mention is enough. (2) "resolved: <thing>" — a pending thing you were tracking just got its outcome, whatever it was. (3) a recurring theme of theirs as "kind: theme", kind one of value | tension | goal | phrase (e.g. "tension: speed vs craft"); only for things likely to recur, never something they merely CLAIM is a pattern. When a pending thing and a theme both show, the pending thing wins.' },
+    thread_outcome: { type: ['string', 'null'], description: 'only when your LAST reply tagged a standing thread or asked about something pending of theirs: how they just took it — one of: took (they picked it up) | passed (they let it lie, fine) | pushed_back (they corrected it or bristled). Otherwise null, including when you were offered a thread and chose not to use it.' },
+  },
+};
+
+/** The one edit: `thread_note` used to rank a pending thing over a theme and say nothing about a
+ *  resolution, while Context.md ranked a resolution over a theme and said nothing about a loop —
+ *  consistent, but stated twice and complete in neither place. Now the full order is stated once,
+ *  here, and the persona's copy is gone. */
+const OLD_PRECEDENCE = 'When a pending thing and a theme both show, the pending thing wins.';
+const NEW_PRECEDENCE = 'Precedence when more than one fits: "resolved:" > "loop:" > theme — a resolution outranks a pending loop, a pending loop outranks a fresh theme, one note per turn.';
+
+test('STATUS_SCHEMA_PROP is generated from ENVELOPE_FIELDS, byte-identical but for the one edit', () => {
+  const expected = structuredClone(PRE_CHANGE_SCHEMA);
+  const note = expected.properties.thread_note;
+  note.description = note.description.replace(OLD_PRECEDENCE, NEW_PRECEDENCE);
+  assert.ok(note.description.includes(NEW_PRECEDENCE), 'the pinned edit found its sentence');
+
+  assert.deepEqual(STATUS_SCHEMA_PROP, expected);
+});
+
+test('the table describes every field the coercer emits, in the envelope order', () => {
+  // RAW fills both optional threading fields, so this is the widest object coerceStatus can build —
+  // i.e. every key of EmittedStatus. A field added to the type without a row here would reach the
+  // model with no description, and would be missing from `required` on a strict-mode lane.
+  assert.deepEqual(
+    Object.keys(coerceStatus(RAW)!), ENVELOPE_FIELDS.map(f => f.key),
+    'ENVELOPE_FIELDS and the coerced envelope carry the same fields, in the same order',
+  );
+  for (const f of ENVELOPE_FIELDS) {
+    assert.equal(f.required, true, `${f.key}: strict mode wants every field in \`required\``);
+    assert.ok(f.description.trim().length > 0, `${f.key}: has a description for the model`);
+  }
+});
+
+test('the table says who reads each field back, and names the four nothing reads', () => {
+  for (const f of ENVELOPE_FIELDS) {
+    assert.equal(new Set(f.consumers).size, f.consumers.length, `${f.key}: no consumer listed twice`);
+  }
+  // An empty list is a FACT, not a gap: these four are emitted for her own reasoning, persisted on
+  // the affect row, and carried by the receipts — but no render, gate or trail reads them back.
+  assert.deepEqual(
+    ENVELOPE_FIELDS.filter(f => !f.consumers.length).map(f => f.key),
+    ['conviction', 'engagement', 'epistemic_trigger', 'profile_note'],
+    'if one of these just got a real reader, list it — and if a listed one lost its last reader, say so',
+  );
 });
 
 test('renderStatusForPrompt always warns it is internal, and carries prior mood when present', () => {
