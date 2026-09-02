@@ -847,6 +847,13 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
   // reaction-only turn, a tool-only turn and a turn that shipped nothing all file one — the last of
   // those with `bubbles.count` 0 and `outcome.silent` true, which is the whole point of firing on
   // the no-op. Names and numbers only (it persists 30 days), flag and never-throw guard inside.
+  //
+  // The one turn that files nothing: a THROW between the agent call above and this line (sendBubbles,
+  // sendReaction, an image generation). That reply never went out, and the error log plus reportError
+  // already own that story — the receipt is about what the model was shown for a reply that shipped.
+  // Closing it would mean a try/finally around the whole send block, i.e. re-indenting this critical
+  // section for a diagnostic; if a receipt for a died-mid-send turn is ever wanted, that is the shape
+  // it takes and `bubbleReport` already holds the honest "nothing shipped" reading for it.
   recordTurnTrace(turnTrace, { chatId, handle: from, bubbles: bubbleReport });
 
   // Mark delegated work in-flight AND kick it off, at the END of the critical section (after the
