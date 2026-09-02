@@ -291,9 +291,16 @@ test('the table describes every field the coercer emits, in the envelope order',
     'ENVELOPE_FIELDS and the coerced envelope carry the same fields, in the same order',
   );
   for (const f of ENVELOPE_FIELDS) {
-    assert.equal(f.required, true, `${f.key}: strict mode wants every field in \`required\``);
     assert.ok(f.description.trim().length > 0, `${f.key}: has a description for the model`);
   }
+  // Strict mode admits no optional property and `EnvelopeField.required` is the literal `true`, so no
+  // row can opt out and the schema lists the table's keys DIRECTLY — there is no runtime filter
+  // between the two. This is the pin on that: `required` is every key, in table order. (It used to
+  // read `.filter(f => f.required).map(...)`, which the type made incapable of dropping a row.)
+  assert.deepEqual(
+    (STATUS_SCHEMA_PROP as { required: readonly string[] }).required, ENVELOPE_FIELDS.map(f => f.key),
+    'the schema\'s `required` is the whole table, in order — nothing may sit between them and drop a field',
+  );
 });
 
 test('the table says who reads each field back, and names the four nothing reads', () => {

@@ -126,8 +126,10 @@ export interface EnvelopeField {
   /** What the field means, in the words the MODEL reads — the only copy. STATUS_SCHEMA_PROP sends it
    *  on the response schema; renderStatusContract() renders it into the per-turn prompt. */
   description: string;
-  /** Every field is required (see `type`) — declared per row rather than assumed, so the schema
-   *  reads it off the table instead of hard-coding "all of them". */
+  /** Every field is required, and the literal `true` is the whole point: strict mode admits no
+   *  optional property, so "not this turn" has to be expressible in `type` (above) rather than by
+   *  absence. The TYPE is therefore what stops a row opting out — the schema can list every key with
+   *  no runtime filter in between, which is a filter that could never have dropped one anyway. */
   required: true;
   /** The code that reads this field BACK to change something — a render, a gate, a stored trail —
    *  named by function so it is greppable. The receipts are deliberately not listed: `convo:status`
@@ -258,9 +260,10 @@ export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
 export const STATUS_SCHEMA_PROP: Record<string, unknown> = {
   type: ['object', 'null'],
   additionalProperties: false,
-  // Read off the rows rather than assumed: every row says `required: true` today, and a row that
-  // ever says otherwise drops out of this list instead of being silently required anyway.
-  required: ENVELOPE_FIELDS.filter(f => f.required).map(f => f.key),
+  // Every key, in table order. This used to run through `.filter(f => f.required)` and claim a row
+  // could opt out — but `required` is the literal `true` (see EnvelopeField), so the filter could
+  // never drop anything: dead code describing behaviour its own type forbids. The type does that job.
+  required: ENVELOPE_FIELDS.map(f => f.key),
   properties: Object.fromEntries(ENVELOPE_FIELDS.map(f => [f.key, {
     // The type array is COPIED, not shared: this object is handed to the lanes' SDKs, and a table row
     // must not be mutable through it.
