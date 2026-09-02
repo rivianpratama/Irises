@@ -71,6 +71,16 @@ test('a junk or non-positive CONVO_HISTORY_MAX falls back to the default window'
   delete process.env.CONVO_HISTORY_MAX;
 });
 
+test('a fractional CONVO_HISTORY_MAX floors to a whole number of messages', async () => {
+  // A window is a row count: 3.5 messages means 3, never a fractional LIMIT the driver has to guess at.
+  process.env.CONVO_HISTORY_MAX = '3.5';
+  try {
+    assert.equal(convoHistoryMax(), 3);
+  } finally {
+    delete process.env.CONVO_HISTORY_MAX;
+  }
+});
+
 test('clearConversation deletes only that chat', async () => {
   await addMessage('a', 'user', 'keep');
   await addMessage('b', 'user', 'drop');
