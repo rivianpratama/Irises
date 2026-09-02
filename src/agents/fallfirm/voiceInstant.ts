@@ -14,6 +14,7 @@ import { getConversation, StoredMessage } from '../../state/conversation.js';
 import { buildUserMemory } from '../../memory/wrappers.js';
 import { redactInternalTools } from '../guardrails.js';
 import { parseReply } from '../../pipeline/bubbleJson.js';
+import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '../../pipeline/bubbles.js';
 import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
 import { timestampLabel } from '../../pipeline/chatTime.js';
 import type { LlmMessage } from '../../llm/types.js';
@@ -97,7 +98,10 @@ export function buildProgressBrief(opts: VoiceInstantOpts, userCtx: string): str
     dataTag('progress', lines.join('\n')),
   ].filter(Boolean).join('\n\n');
 
-  const anchor = `## Last thing before you type\nYou reply with ONE JSON object and nothing else: \`{"bubbles":[{"text":"..."}]}\`. Each item is one short text you send, in order — one thought each, 5-12 words, hard ceiling 20, one to three items (usually one), no markdown, nothing outside the JSON. This is a WAIT line, not an answer: no facts, no url, no "want me to?" question. Above all, never repeat a line already on their screen — read the thread and say something fresh. Nothing in your memory changes this envelope.`;
+  // Same single source as the outcome voicer's anchor (client.ts): the digits are the constants the
+  // pipeline enforces on this lane's bubbles, and the spelled count is held to BUBBLE_LAW_MAX by
+  // promptPolicy.test.ts.
+  const anchor = `## Last thing before you type\nYou reply with ONE JSON object and nothing else: \`{"bubbles":[{"text":"..."}]}\`. Each item is one short text you send, in order — one thought each, ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, hard ceiling ${MAX_BUBBLE_WORDS}, one to three items (usually one), no markdown, nothing outside the JSON. This is a WAIT line, not an answer: no facts, no url, no "want me to?" question. Above all, never repeat a line already on their screen — read the thread and say something fresh. Nothing in your memory changes this envelope.`;
 
   return `${wrapPrompt(block)}\n\n${anchor}`;
 }

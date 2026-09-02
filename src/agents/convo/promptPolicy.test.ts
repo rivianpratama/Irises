@@ -23,6 +23,9 @@ import { loadContext } from '../loadContext.js';
 import { BUBBLE_LAW_MAX } from '../../pipeline/bubbleJson.js';
 import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '../../pipeline/bubbles.js';
 import type { ThreadRung } from '../../persona/threads.js';
+import { FORMAT_ANCHOR } from '../composerCore.js';
+import { buildOutcomeBrief } from '../fallfirm/client.js';
+import { buildProgressBrief } from '../fallfirm/voiceInstant.js';
 
 // ── the persona's load-bearing clauses ───────────────────────────────────────
 
@@ -113,4 +116,47 @@ test('the behaviour anchor states no bubble number at all — the JSON anchor ow
   assert.deepEqual(digits, [], 'a number came back into the behaviour anchor — state it in the JSON anchor instead');
   const bullets = behavior.split('\n').filter(l => l.startsWith('- '));
   assert.equal(bullets.length, 6, 'the anchor is the six lines that drift first, and stays that short');
+});
+
+// ── the same law, as the other lanes state it ────────────────────────────────
+//
+// Convo is not the only voice that states the bubble law. The composer's FORMAT_ANCHOR and both
+// Fallfirm anchors carry their own copy of it, and every bubble they produce goes through the SAME
+// pipeline backstop — so a lane spelling a different number is a lane held to a law it was never
+// told. All three now interpolate the same constants; these assertions are that the RENDERED digits
+// really are those constants. They live here, beside Convo's, because "who states the law and in
+// which numbers" is one question, and answering it in four files is how the four drift apart.
+
+/** Small numbers as prose spells them. Only ever indexed by a bubble-law constant, so the list stops
+ *  exactly where the law does. Prose that spells a count cannot interpolate it, which is precisely
+ *  why the spelled copies need a test. */
+const SPELLED = ['zero', 'one', 'two', 'three', 'four', 'five'] as const;
+
+test("the composer's format anchor states the word ceiling the pipeline enforces", () => {
+  assert.ok(
+    FORMAT_ANCHOR.includes(`never past ${MAX_BUBBLE_WORDS} words`),
+    `the composer anchor's word ceiling has drifted from MAX_BUBBLE_WORDS (${MAX_BUBBLE_WORDS})`,
+  );
+  assert.ok(BUBBLE_LAW_MAX < SPELLED.length, 'the law is still a number this list can spell');
+  assert.ok(
+    FORMAT_ANCHOR.includes(`at most ${SPELLED[BUBBLE_LAW_MAX]} items`),
+    `the composer anchor should say "at most ${SPELLED[BUBBLE_LAW_MAX]} items" — it has drifted from BUBBLE_LAW_MAX`,
+  );
+});
+
+test("Fallfirm's two anchors state the same target, ceiling and count", () => {
+  const lanes: ReadonlyArray<readonly [string, string]> = [
+    ['voiceOutcome', buildOutcomeBrief({ kind: 'confirmed', summary: 'the reminder is set for 7pm' }, '')],
+    ['voiceInstant', buildProgressBrief({ kind: 'holding', request: 'cedar lead times' }, '')],
+  ];
+  for (const [lane, prompt] of lanes) {
+    assert.ok(
+      prompt.includes(`${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, hard ceiling ${MAX_BUBBLE_WORDS}`),
+      `${lane}: its anchor's target/ceiling has drifted from the pipeline constants`,
+    );
+    assert.ok(
+      prompt.includes(`one to ${SPELLED[BUBBLE_LAW_MAX]} items`),
+      `${lane}: its anchor should say "one to ${SPELLED[BUBBLE_LAW_MAX]} items" — it has drifted from BUBBLE_LAW_MAX`,
+    );
+  }
 });

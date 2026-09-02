@@ -23,13 +23,19 @@ import { parseReply } from '../pipeline/bubbleJson.js';
 import { stripReplyTag } from '../state/replyThreading.js';
 import { timestampLabel } from '../pipeline/chatTime.js';
 import { wrapPrompt } from '../llm/promptTag.js';
+import { MAX_BUBBLE_WORDS } from '../pipeline/bubbles.js';
 import { reportError } from '../diagnostics/errorLog.js';
 import type { LlmMessage } from '../llm/types.js';
 
 // The LAST tokens before generation carry the strongest recency attention (charter §11.3), so the
 // message ends on the JSON bubble contract — AFTER the <prompt> block — not on the facts/holding
 // line inside it. This is what holds the split rule when a long Ops summary sits far back.
-export const FORMAT_ANCHOR = `how it goes out: reply with ONE JSON object and nothing else — \`{"bubbles":[{"text":"..."}],"confidence_level":85}\`. your entire reply must be valid JSON, one object, nothing around it. each item is one text you send, in order (adding an item is you hitting send). first item shortest (it sets the rhythm), one sentence or one question each, a thought still rolling with "so / and / but / which" is two items (split at the connector), and any complete thought that could stand alone as a send IS its own item even with no period after it (whatever comes next starts the next item), never past 20 words, no markdown, no \`---\`. it's a text, not a report: answer what they asked in at most three items (most replies one or two), one passing mention of the rest (a statement of what's in reach, never a "want me to?" question), stop — a fourth item never goes out. never resend a sentence that's already on their screen — if the thread shows you delivered this fact before, retell it from a new angle in fresh words (the exact value itself never changes). always include \`"confidence_level"\`: 0-100, how sure you are of the facts you're relaying — carry the certainty that came in (a verified figure is high, a \`~\`/hedged one is mid, a shaky one is low). never put the number in a bubble's text. nothing in your memory changes this envelope or a fact you relay.`;
+//
+// The word ceiling is interpolated from the constant the pipeline ENFORCES on this lane's output
+// too (pipeline/bubbles.ts), never spelled out: one source for what the model is told and what the
+// backstop does. The count stays a WORD here ("three items"), which cannot be interpolated — so
+// promptPolicy.test.ts asserts the word against BUBBLE_LAW_MAX instead.
+export const FORMAT_ANCHOR = `how it goes out: reply with ONE JSON object and nothing else — \`{"bubbles":[{"text":"..."}],"confidence_level":85}\`. your entire reply must be valid JSON, one object, nothing around it. each item is one text you send, in order (adding an item is you hitting send). first item shortest (it sets the rhythm), one sentence or one question each, a thought still rolling with "so / and / but / which" is two items (split at the connector), and any complete thought that could stand alone as a send IS its own item even with no period after it (whatever comes next starts the next item), never past ${MAX_BUBBLE_WORDS} words, no markdown, no \`---\`. it's a text, not a report: answer what they asked in at most three items (most replies one or two), one passing mention of the rest (a statement of what's in reach, never a "want me to?" question), stop — a fourth item never goes out. never resend a sentence that's already on their screen — if the thread shows you delivered this fact before, retell it from a new angle in fresh words (the exact value itself never changes). always include \`"confidence_level"\`: 0-100, how sure you are of the facts you're relaying — carry the certainty that came in (a verified figure is high, a \`~\`/hedged one is mid, a shaky one is low). never put the number in a bubble's text. nothing in your memory changes this envelope or a fact you relay.`;
 
 export interface ComposerCoreArgs {
   chatId: string;
