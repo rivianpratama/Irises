@@ -61,14 +61,30 @@ function receipts(): Array<Record<string, unknown>> {
   return getTraces().filter(e => e.label === 'llm:starved_retry').map(e => e.detail as Record<string, unknown>);
 }
 
+/** Env this file writes. SAVED per test and RESTORED — never blank-deleted: a developer runs the
+ *  suite with real keys in the shell and possibly with either flag flipped, and clobbering those for
+ *  the rest of the run is a worse bug than the one being tested. */
+const TOUCHED_ENV = [
+  'LLM_REASONING_DISABLE', 'LLM_STARVED_RETRY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY',
+] as const;
+let savedEnv: Partial<Record<(typeof TOUCHED_ENV)[number], string | undefined>> = {};
+
 beforeEach(() => {
+  savedEnv = Object.fromEntries(TOUCHED_ENV.map(k => [k, process.env[k]]));
+  // PINNED, not inherited: these tests assert the wire body, and both flags default ON only when
+  // UNSET — a shell with LLM_REASONING_DISABLE=off legitimately omits the field asserted below.
+  process.env.LLM_REASONING_DISABLE = 'on';
+  delete process.env.LLM_STARVED_RETRY;
   clearTraces();
   errlog.reset();
   errlog.setFlushFn(async () => true);
 });
 
 afterEach(() => {
-  delete process.env.LLM_STARVED_RETRY;
+  for (const k of TOUCHED_ENV) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
   errlog.reset();
 });
 
@@ -210,16 +226,12 @@ test('updateRelationshipClimate applies drift once the starved retry succeeds', 
     starved(),
     reply({ content: '{"ease":1,"candor":0,"playfulness":0,"reason":"it flowed"}' }),
   ]);
+  // A configured lane is what callLLM's fail-fast gate checks; afterEach restores the real values.
   process.env.OPENROUTER_API_KEY = 'sk-or-test';
   process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
-  try {
-    const run = (_p: LlmProvider, r: LlmRequest) => callOpenAICompatible(r, 'openrouter', send);
-    const llm = ((r: LlmRequest) => callLLM(r, run)) as typeof callLLM;
-    await updateRelationshipClimate(H, recent, { llm, now: T0 });
-  } finally {
-    delete process.env.OPENROUTER_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
-  }
+  const run = (_p: LlmProvider, r: LlmRequest) => callOpenAICompatible(r, 'openrouter', send);
+  const llm = ((r: LlmRequest) => callLLM(r, run)) as typeof callLLM;
+  await updateRelationshipClimate(H, recent, { llm, now: T0 });
 
   assert.equal(sent.length, 2, 'the eval starved once and retried once');
   assert.equal(sent[0].max_tokens, 200, 'CLIMATE_MAX_TOKENS');
