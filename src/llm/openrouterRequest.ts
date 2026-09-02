@@ -118,6 +118,12 @@ function toOpenRouterEffort(effort: EffortLevel | null): 'low' | 'medium' | 'hig
  * starvation shape isLengthStarved names below, and the reason the relationship climate never moved
  * in production.
  *
+ * Scope: unarmed roles whose body does NOT set jsonBubbles. A jsonBubbles body also sends
+ * `provider: { require_parameters: true }`, which routes only to providers that support every param
+ * in it, so one more field can narrow routing to nothing — see buildOpenRouterParams. The lane that
+ * actually starves (classify: the climate eval, validateDirective, the dossier) sends no jsonBubbles,
+ * and the roles that do (convo/fallfirm/composer) run four-figure ceilings.
+ *
  * The field: `reasoning: { enabled: false }` — the exact inverse of the `{ enabled: true, effort }`
  * this file already sends, `enabled` being a documented boolean of OpenRouter's unified reasoning
  * param. We deliberately do NOT send the other documented off-switch, `effort: 'none'`: models with
@@ -233,11 +239,18 @@ export function buildOpenRouterParams(
   // inherited reasoning model can't spend a 200-token cap on thinking (see reasoningDisableEnabled).
   // `opts.disableReasoning` is the starved retry, which overrides even an armed role — the whole
   // point of that leg is that thinking is what ate the first budget.
+  // NOT on a jsonBubbles body: those set provider.require_parameters below, which routes only to
+  // providers supporting EVERY param sent — an extra `reasoning` there can leave a non-reasoning
+  // model with no eligible provider, and convo/fallfirm/composer are all jsonBubbles with nothing
+  // armed, so that failure would land on the PRIMARY VOICE call every turn. They also don't need it:
+  // their ceilings are thousands of tokens, not the classify lane's 20-900. The retry leg still
+  // sends it (opts.disableReasoning) — by then the call has already starved, and if routing then
+  // finds nothing the original starvation error surfaces to the cross-lane salvage as before.
   const orEffort = toOpenRouterEffort(EFFORT[req.role]);
   const armed = THINKING[req.role] || !!orEffort;
   if (opts?.disableReasoning) params.reasoning = { enabled: false };
   else if (armed) params.reasoning = { enabled: true, ...(orEffort ? { effort: orEffort } : {}) };
-  else if (reasoningDisableEnabled()) params.reasoning = { enabled: false };
+  else if (reasoningDisableEnabled() && !req.jsonBubbles) params.reasoning = { enabled: false };
 
   // Request-level ceiling on server-tool invocations (OpenRouter's default is 30 — far too loose for
   // a cost-bounded agent, and it applies even with NO web_search tool: a deep-research model browses

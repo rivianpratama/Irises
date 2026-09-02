@@ -53,6 +53,36 @@ test('the flag is read at CALL time, not at module load', () => {
   assert.deepEqual((buildOpenRouterParams(req('classify')) as Any).reasoning, { enabled: false });
 });
 
+test('a jsonBubbles body keeps NO reasoning field — require_parameters narrows routing', () => {
+  // jsonBubbles switches on provider.require_parameters, which routes ONLY to providers supporting
+  // every param in the body (that is why it is there: several deepseek-v4-flash providers accept
+  // response_format but silently drop the schema). Adding `reasoning` under that filter can leave a
+  // non-reasoning model with NO eligible provider — and convo, fallfirm and composer all set
+  // jsonBubbles with nothing armed, so the failure would land on the primary voice call, every turn.
+  // The classify lane — the lane this whole fix exists for — sets no jsonBubbles.
+  const p = buildOpenRouterParams({ ...req('convo'), jsonBubbles: true }) as Any;
+  assert.equal('reasoning' in p, false, 'no extra param to filter providers on');
+  assert.deepEqual(p.provider, { require_parameters: true }, 'the filter itself is untouched');
+  assert.deepEqual(
+    (buildOpenRouterParams(req('classify')) as Any).reasoning, { enabled: false },
+    'and the classify lane still says no-reasoning out loud',
+  );
+});
+
+test('an ARMED role still sends its reasoning under require_parameters (unchanged)', () => {
+  // Unchanged on purpose: this body has always carried `reasoning`, so its routing is not new.
+  const p = buildOpenRouterParams({ ...req('ops'), jsonBubbles: true }) as Any;
+  assert.deepEqual(p.reasoning, { enabled: true, effort: 'high' });
+});
+
+test('the starved retry still disables reasoning on a jsonBubbles body', () => {
+  // The retry IS the salvage path — thinking is what ate the first budget. If require_parameters
+  // then finds no provider, the retry errors, the receipt records the cause, and the original
+  // starvation error surfaces to the cross-lane fallback exactly as before the retry existed.
+  const p = buildOpenRouterParams({ ...req('convo'), jsonBubbles: true }, { disableReasoning: true }) as Any;
+  assert.deepEqual(p.reasoning, { enabled: false });
+});
+
 test('the starved retry still sends nothing on the generic openai lane', () => {
   // `reasoning` is OpenRouter-proprietary; a stock OpenAI-compatible endpoint 400s on it. The
   // generic lane carries no reasoning field in either direction.
