@@ -5,7 +5,8 @@ process.env.TZ = 'UTC';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEngineDiscovery, envFileValue, scanYamlModel, scanYamlProvider, getDiscoveredEngine, isReasoningFamilyModel, type DiscoveryDeps } from './engineDiscovery.js';
+import { readFileSync } from 'node:fs';
+import { applyEngineDiscovery, envFileValue, scanYamlModel, scanYamlProvider, getDiscoveredEngine, isReasoningFamilyModel, THINKING_ON_VALUES, EFFORT_ON_VALUES, type DiscoveryDeps } from './engineDiscovery.js';
 
 const HERMES_ENV = '/home/user/.hermes/.env';
 const HERMES_YAML = '/home/user/.hermes/config.yaml';
@@ -600,6 +601,25 @@ test('scanYamlProvider: the provider sibling, and nothing from the inline scalar
 // The live failure this names: the engine's model lands on every voice role, and a reasoning-family
 // slug thinks BY DEFAULT while CONVO/CLASSIFY/FALLFIRM_THINKING are all off — so the small per-call
 // caps (classify's 20, the climate eval's 200) go to thinking and the call comes back empty.
+
+test('the arming vocabulary this module copies still matches llm/models.ts', () => {
+  // engineDiscovery cannot IMPORT models.ts (it runs from loadEnv between the two dotenv loads and
+  // imports nothing but node builtins — see the note on THINKING_ON_VALUES), so the accepted values
+  // are copied. Read the original's source instead of importing it: importing evaluates models.ts's
+  // module-level env parsing, which both freezes values from the test's env and prints its lane
+  // warnings into this file's output. This guard is what turns a silent drift into a red test.
+  const src = readFileSync(new URL('../../llm/models.ts', import.meta.url), 'utf8');
+  const acceptedBy = (fn: string, until: string): string[] => {
+    const start = src.indexOf(`function ${fn}`);
+    assert.ok(start > 0, `${fn} is gone from models.ts — this guard needs updating`);
+    const body = src.slice(start, src.indexOf(`function ${until}`, start));
+    const literal = body.match(/\[([^\]]*)\]\.includes\(v\)/);
+    assert.ok(literal, `no accepted-value list found in ${fn}`);
+    return literal![1].split(',').map((s) => s.trim().replace(/^'(.*)'$/, '$1'));
+  };
+  assert.deepEqual([...THINKING_ON_VALUES], acceptedBy('parseThinking', 'parseEffort'));
+  assert.deepEqual([...EFFORT_ON_VALUES], acceptedBy('parseEffort', 'parseBoolEnv'));
+});
 
 test('isReasoningFamilyModel: the four families, and the slugs that must NOT match', () => {
   for (const slug of [
