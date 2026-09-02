@@ -9,7 +9,8 @@ import { listShortTerm, SHORT_TTL_MS, type ShortTermEntry } from '../db/reposito
 import { getLongDoc, saveLongDoc } from '../db/repositories/memoryLong.js';
 import { loadMediumBundle } from './mediumTerm.js';
 import { PENDING_EMAIL_TTL_MS } from './shortTerm.js';
-import { renderUserMemoryWithHot } from './wrappers.js';
+import { renderUserMemoryWithHot, splitSections } from './wrappers.js';
+import { buildTurnRelevance, memoryRelevanceEnabled, type TurnRelevance } from './relevance.js';
 import { scopeHistoryToUser } from './transcript.js';
 import { isGroupHandle } from './identity.js';
 import { record } from '../diagnostics/trace.js';
@@ -107,15 +108,21 @@ export async function buildContextBlock(handle: string, currentTurnText?: string
 }
 
 /** The context block, plus which short-tier look rendered HOT inside it (see ShortBlockRender in
- *  wrappers.ts). Identical bytes to buildContextBlock, which is a one-line wrapper over this.
+ *  wrappers.ts) and this turn's relevance router (memory/relevance.ts). Identical bytes to
+ *  buildContextBlock, which is a one-line wrapper over this.
  *
  *  The hot look is the one held thing the memory stack has already proved touches this turn, so the
  *  turn-focus block names it as evidence (agents/convo/turnFocus.ts) — this is the last leg of that
- *  verdict's trip back out to convo/client.ts. `null` whenever no look rendered in full. */
+ *  verdict's trip back out to convo/client.ts. `null` whenever no look rendered in full.
+ *
+ *  `turn` is built HERE and nowhere else, because this is the only place that holds every tier at
+ *  once: the loaders' own results, before anything is rendered. It rides back out because the
+ *  caller needs the same verdict for the turn-focus block and the turn receipt, and rebuilding it
+ *  there would mean re-reading every store. `null` when the feature flag is off. */
 export async function buildContextBlockWithHot(
   handle: string,
   currentTurnText?: string,
-): Promise<{ block: string; hotLook: ShortTermEntry | null }> {
+): Promise<{ block: string; hotLook: ShortTermEntry | null; turn: TurnRelevance | null }> {
   const [memory, profile, shortEntries, medium, longDoc] = await Promise.all([
     getMemory(handle),
     getUserProfile(handle),
@@ -173,16 +180,36 @@ export async function buildContextBlockWithHot(
     ...(emailEntries.length ? emailEntries : legacyFlags),
   ].sort((a, b) => b.createdAt - a.createdAt);
 
+  const nowMs = Date.now();
+  const longDocMd = longDoc?.docMd ?? '';
+
+  // ONE relevance verdict for the turn, over exactly what the loaders came back with — the router
+  // is pure, so it can only see what it is handed. The short tier is filtered the way the renderer
+  // filters it (a legacy synthetic entry can arrive already expired), and the long doc is split at
+  // the granularity the sanitizer uses, so a hit can never name something the model cannot see.
+  //
+  // Built from `currentTurnText`, which on the Convo path is `userMessage` — deliberately, and
+  // ahead of transcription/attachments (see convo/client.ts): these reads run inside a Promise.all
+  // that has to start before the media work, and moving them after it would cost a turn's latency
+  // to buy nothing. A caption-less media turn therefore reaches the router with no text at all,
+  // which is exactly why every gate reads `whenEmpty: 'touch'` and fails OPEN.
+  const turn = memoryRelevanceEnabled()
+    ? buildTurnRelevance(currentTurnText, {
+        short: shortForWrapper.filter(e => e.expiresAt > nowMs),
+        medium,
+        longSections: splitSections(longDocMd || (memory?.dossierMd ?? '')),
+      })
+    : null;
+
   // The wrapped memory tiers LAST: preamble → short → medium → flexible (identity/addressing +
   // long doc + directives) in the recency slot; the persona's hard rules stay anchored at the
   // top of the system prompt and outrank all of it.
   const wrapped = renderUserMemoryWithHot('convo', {
-    profile, memory, medium, short: shortForWrapper,
-    longDocMd: longDoc?.docMd ?? '',
-  }, Date.now(), { audience: isGroupHandle(handle) ? 'group' : 'individual', currentTurnText });
+    profile, memory, medium, short: shortForWrapper, longDocMd,
+  }, nowMs, { audience: isGroupHandle(handle) ? 'group' : 'individual', currentTurnText, turn });
   parts.push(wrapped.text);
 
-  return { block: parts.join('\n\n'), hotLook: wrapped.hotEntry };
+  return { block: parts.join('\n\n'), hotLook: wrapped.hotEntry, turn };
 }
 
 /** The dossier updater's harvest contract — exported so tests can pin the two-family

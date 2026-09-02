@@ -31,7 +31,7 @@ import { getUserProfile } from '../db/repositories/profiles.js';
 import { listShortTerm, type ShortTermEntry } from '../db/repositories/memoryShort.js';
 import { RECENT_RESEARCH_TTL_MS, DIGEST_LINE_CHARS } from './shortTerm.js';
 import { touchesTurn } from './topicality.js';
-import { shortEntryAsk } from './relevance.js';
+import { shortEntryAsk, type TurnRelevance } from './relevance.js';
 import { getLongDoc } from '../db/repositories/memoryLong.js';
 import { loadMediumBundle, renderFactsBlock, type MediumBundle } from './mediumTerm.js';
 import { looksUnsafe, sanitizeDirectives } from './preferences.js';
@@ -76,8 +76,12 @@ export function neutralizeTagBreakouts(text: string): string {
 
 /** Split a markdown doc into heading-delimited sections (preamble before the first heading
  *  is its own section). Granularity rationale: a whole-doc screen would nuke a legitimate
- *  profile over one poisoned line; a per-line screen misses multi-line jailbreaks. */
-function splitSections(md: string): string[] {
+ *  profile over one poisoned line; a per-line screen misses multi-line jailbreaks.
+ *
+ *  Exported because it is also the granularity the turn relevance router scores the long doc at
+ *  (memory/relevance.ts: a section that touches the turn is evidence, the rest is not), and the
+ *  router must see the same sections the sanitizer does. */
+export function splitSections(md: string): string[] {
   const lines = md.split('\n');
   const sections: string[] = [];
   let current: string[] = [];
@@ -239,12 +243,20 @@ export function renderShortBlock(
 }
 
 /** The block, plus WHICH entry rendered hot — see ShortBlockRender. Identical bytes to
- *  renderShortBlock, which is a one-line wrapper over this. */
+ *  renderShortBlock, which is a one-line wrapper over this.
+ *
+ *  `turn` is this turn's relevance router (memory/relevance.ts), when the caller built one. It
+ *  answers the hot-look gate's question — "does what they just said touch this look?" — in the one
+ *  place every P2 gate asks it, instead of here; against the same turn text it is the same verdict
+ *  by construction (`topicallyRelated` is `touchesTurn` over `shortEntryAsk`, which is exactly what
+ *  the router delegates to), and relevance.test.ts pins that on a fixture. Absent → the pre-P2
+ *  path, byte for byte. */
 export function renderShortBlockWithHot(
   entries: ShortTermEntry[],
   nowMs: number = Date.now(),
   engine: 'hermes' | 'openclaw' | null = getEngineBackend()?.name ?? null,
   currentTurnText?: string,
+  turn?: TurnRelevance | null,
 ): ShortBlockRender {
   const visible = entries.filter(e => e.expiresAt > nowMs);
   if (!visible.length) return NO_SHORT_BLOCK;
@@ -263,7 +275,7 @@ export function renderShortBlockWithHot(
   const freshest = research[0];
   const freshestIsHot = !!freshest
     && (nowMs - freshest.createdAt) <= RECENT_RESEARCH_TTL_MS
-    && topicallyRelated(currentTurnText, freshest);
+    && (turn ? turn.touches(shortEntryAsk(freshest), 'touch') : topicallyRelated(currentTurnText, freshest));
 
   const lines: string[] = [];
   if (freshest && freshestIsHot) {
@@ -740,12 +752,17 @@ export interface UserMemoryData {
 }
 
 /** What the caller may tune about a render: whose memory it is (individual vs the group's shared
- *  identity), whether to force the medium tier on for an agent whose matrix excludes it, and this
- *  turn's text — which is what gates the short tier's hot look. */
+ *  identity), whether to force the medium tier on for an agent whose matrix excludes it, this
+ *  turn's text — which is what gates the short tier's hot look — and this turn's relevance router,
+ *  which answers that gate's question for every held channel at once (memory/relevance.ts).
+ *
+ *  `turn` is optional and additive: without it the stack runs its pre-P2 path byte for byte, which
+ *  is what the relay lanes (composer/fallfirm, via buildUserMemory) and the string wrappers do. */
 export interface UserMemoryOpts {
   audience?: MemoryAudience;
   includeMedium?: boolean;
   currentTurnText?: string;
+  turn?: TurnRelevance | null;
 }
 
 /**
@@ -770,7 +787,7 @@ export function renderUserMemoryWithHot(agent: MemoryAgent, data: UserMemoryData
   if (matrix.short !== 'none') {
     // currentTurnText gates whether the freshest look renders full or collapses to a digest line — see
     // renderShortBlock. Undefined (composer/fallfirm don't render short anyway) defaults to "related".
-    const short = renderShortBlockWithHot(data.short, nowMs, getEngineBackend()?.name ?? null, opts.currentTurnText);
+    const short = renderShortBlockWithHot(data.short, nowMs, getEngineBackend()?.name ?? null, opts.currentTurnText, opts.turn);
     if (short.text) blocks.push(short.text);
     hotEntry = short.hotEntry;
   }

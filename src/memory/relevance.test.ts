@@ -12,10 +12,17 @@ import {
   buildTurnRelevance, threadHit, memoryRelevanceEnabled, shortEntryLabel, shortEntryAsk,
   RELEVANCE_HIT_KINDS, RELEVANCE_HITS_MAX,
 } from './relevance.js';
-import type { ShortTermEntry } from '../db/repositories/memoryShort.js';
+import {
+  renderShortBlockWithHot, renderUserMemory, renderUserMemoryWithHot, splitSections,
+  type UserMemoryData,
+} from './wrappers.js';
+import { buildContextBlockWithHot } from './dossier.js';
+import { addShortTerm, type ShortTermEntry } from '../db/repositories/memoryShort.js';
+import { addImportantNote } from '../db/repositories/memoryMedium.js';
 import type { MediumBundle } from './mediumTerm.js';
 
 const NOW = Date.parse('2026-07-14T12:00:00Z');
+let handleSeq = 0;
 
 function shortEntry(over: Partial<ShortTermEntry> = {}): ShortTermEntry {
   return {
@@ -206,6 +213,73 @@ test('shortEntryLabel names a look the way the user asked for it; shortEntryAsk 
   assert.equal(shortEntryLabel(shortEntry({ request: '  ', meta: { topicKey: 42 } })), '', 'a non-string topicKey is not a label');
   assert.equal(shortEntryAsk(shortEntry({ request: 'bitcoin price', meta: { topicKey: 'general:btc' } })), 'bitcoin price general:btc');
   assert.equal(shortEntryAsk(shortEntry({ request: undefined, meta: {} })), ' ', 'nothing to match by');
+});
+
+// ── the seam: the memory stack reads the router ──────────────────────────────
+// The short tier's hot-look gate was the original of this logic, so handing it the router has to be
+// a no-op on the bytes: same verdict, same block, on-topic and moved-on alike. That equivalence is
+// what makes the widening safe to land ahead of the gates that will actually use it (Task 11).
+
+test('the short-tier hot-look gate lands on the same verdict through the router', () => {
+  const hot = shortEntry({ id: 'hot', request: 'bitcoin price today', content: 'x'.repeat(300), createdAt: NOW - 60_000 });
+  const older = shortEntry({ id: 'old', request: 'weather in tokyo', content: 'y'.repeat(300), createdAt: NOW - 90 * 60_000 });
+  const entries = [hot, older];
+  for (const text of ['what about bitcoin now', 'help me plan dinner tonight', 'ok thanks', '']) {
+    const plain = renderShortBlockWithHot(entries, NOW, null, text);
+    const routed = renderShortBlockWithHot(entries, NOW, null, text, buildTurnRelevance(text, { short: entries }));
+    assert.equal(routed.text, plain.text, `same bytes: "${text}"`);
+    assert.equal(routed.hotEntry?.id ?? null, plain.hotEntry?.id ?? null, `same verdict: "${text}"`);
+  }
+});
+
+test('the memory stack renders the same bytes with a router as without', () => {
+  const data: UserMemoryData = {
+    profile: { handle: '+15550005555', name: 'Jordan', facts: ['fixing up a lake cabin'], firstSeen: 0, lastSeen: 0 },
+    memory: null,
+    medium: medium({ notes: ['the shack rewiring is booked for august'], facts: { comms_style: 'lowercase' }, directives: [{ id: 'd1', text: 'always reply in lowercase', createdAt: NOW }] }),
+    short: [shortEntry({ request: 'cedar lead times', content: 'z'.repeat(300) })],
+    longDocMd: '## Who they are\nJordan, print shop owner\n\n## Their world\nthe shack',
+  };
+  for (const text of ['any word on cedar yet', 'what should i cook for dinner']) {
+    const opts = { audience: 'individual' as const, currentTurnText: text };
+    const plain = renderUserMemory('convo', data, NOW, opts);
+    const routed = renderUserMemoryWithHot('convo', data, NOW, { ...opts, turn: buildTurnRelevance(text, { short: data.short, medium: data.medium, longSections: splitSections(data.longDocMd) }) });
+    assert.equal(routed.text, plain, `same bytes: "${text}"`);
+  }
+});
+
+test('buildContextBlockWithHot builds the router when the flag is on, and the block is byte-identical either way', async () => {
+  const h = `+1555410${(handleSeq++).toString().padStart(4, '0')}`;
+  await addShortTerm({ agentHandle: h, kind: 'ops_research', request: 'cedar lead times', content: 'x'.repeat(300) });
+  await addImportantNote(h, 'the shack rewiring is booked for august');
+
+  const prior = process.env.CONVO_MEMORY_RELEVANCE;
+  try {
+    for (const text of ['any word on cedar for the shack yet', 'what should i cook for dinner']) {
+      delete process.env.CONVO_MEMORY_RELEVANCE;
+      const on = await buildContextBlockWithHot(h, text);
+      process.env.CONVO_MEMORY_RELEVANCE = 'false';
+      const off = await buildContextBlockWithHot(h, text);
+
+      assert.equal(on.block, off.block, `byte-identical block: "${text}"`);
+      assert.equal(on.hotLook?.request ?? null, off.hotLook?.request ?? null, `same hot look: "${text}"`);
+      assert.equal(off.turn, null, 'flag off → no router is built');
+      assert.ok(on.turn, 'flag on → the router rode along');
+      assert.ok(on.turn!.tokens.size > 0, 'carrying this turn\'s own tokens');
+    }
+    // …and with the flag on, the held things that touch the turn are named off the real stores.
+    delete process.env.CONVO_MEMORY_RELEVANCE;
+    const named = await buildContextBlockWithHot(h, 'any word on cedar for the shack yet');
+    assert.deepEqual(
+      named.turn!.hits.map(hit => hit.kind).sort(),
+      ['note', 'research'],
+      'a look and a note, straight off the loaders',
+    );
+    assert.deepEqual(await buildContextBlockWithHot(h, 'what should i cook for dinner').then(r => r.turn!.hits), []);
+  } finally {
+    if (prior === undefined) delete process.env.CONVO_MEMORY_RELEVANCE;
+    else process.env.CONVO_MEMORY_RELEVANCE = prior;
+  }
 });
 
 // ── the flag ─────────────────────────────────────────────────────────────────
