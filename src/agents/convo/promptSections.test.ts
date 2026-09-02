@@ -16,6 +16,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSystemPrompt, buildSystemPromptSections } from './shared.js';
 import { SECTION_IDS, DYN_SECTION_IDS, sectionsTotalChars, type SectionId } from './promptSections.js';
+import { BUBBLE_LAW_MAX } from '../../pipeline/bubbleJson.js';
+import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '../../pipeline/bubbles.js';
 import { loadContext } from '../loadContext.js';
 import { coerceStatus, mergeStatus, type AffectState, type ComputedState } from '../../persona/status.js';
 import { computeCycle } from '../../persona/cycle.js';
@@ -273,6 +275,30 @@ test('every reported section carries a real size, and the frame sections match t
   const other = buildSystemPromptSections(...FIXTURES[2].args);
   assert.equal(other.anchorChars, anchorChars);
   assert.equal(other.sections.find(s => s.name === 'behavior_anchor')?.chars, by('behavior_anchor'));
+});
+
+// ── the bubble law inside the JSON anchor ────────────────────────────────────
+// The anchor STATES the law ("target 5-12 words, hard ceiling 20, at most 3 items"); pipeline/
+// bubbles.ts and pipeline/bubbleJson.ts ENFORCE it. Both now read the same constants, so the
+// sentence and its backstop can no longer drift apart — and since the numbers themselves didn't
+// change, the golden above still passes byte-for-byte, which is the proof the refactor was inert.
+
+test("the anchor's bubble law is interpolated from the pipeline constants", () => {
+  const { system } = buildSystemPromptSections(...FIXTURES[0].args);
+  const anchor = system.slice(system.lastIndexOf('## Last thing before you type'));
+  assert.ok(
+    anchor.includes(`target ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, hard ceiling ${MAX_BUBBLE_WORDS}, never exceeded, at most ${BUBBLE_LAW_MAX} items per reply`),
+    'the law sentence reads off the constants',
+  );
+
+  // And no bare bubble number is left in that paragraph: every digit in it is one of the four
+  // constants, or the "most replies 1-2" ideal (prose about typical replies, not a cap).
+  const law = anchor.slice(anchor.indexOf('Each item in `bubbles`'), anchor.indexOf('No markdown'));
+  const allowed = new Set([BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI, MAX_BUBBLE_WORDS, BUBBLE_LAW_MAX, 1, 2]);
+  assert.ok(law.length > 0, 'found the bubble-law paragraph');
+  for (const m of law.matchAll(/\d+/g)) {
+    assert.ok(allowed.has(Number(m[0])), `bare number ${m[0]} left in the bubble-law paragraph`);
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

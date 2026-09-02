@@ -51,7 +51,8 @@ import { createAdminDashboardRouter } from './diagnostics/adminDashboard.js';
 import { beginTurn } from './diagnostics/trace.js';
 import { loadContext } from './agents/loadContext.js';
 import { redactInternalTools, stripOpsScaffolding } from './agents/guardrails.js';
-import { splitIntoBubbles } from './pipeline/bubbles.js';
+import { splitIntoBubbles, splitIntoBubblesWithSplits } from './pipeline/bubbles.js';
+import { buildBubbleReport, noteBubbleReport, takeHardCapHits } from './pipeline/bubbleJson.js';
 import type { OpsTask } from './agents/types.js';
 
 // Short, stable fingerprint of a persona body so /health can confirm which version is live.
@@ -746,9 +747,16 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
 
   if (finalText || generatedImage || groupChatIcon) {
     // Split into bubbles, strip the routing tags, and compute each bubble's native-reply target.
+    const split = finalText ? splitIntoBubblesWithSplits(finalText) : { bubbles: [] as string[], splits: 0 };
     const { bubbles, targets } = finalText
-      ? resolveOutboundBubbles(splitIntoBubbles(finalText), incomingMessageIds, { isBurst, anchorFirstTo })
+      ? resolveOutboundBubbles(split.bubbles, incomingMessageIds, { isBurst, anchorFirstTo })
       : { bubbles: [] as string[], targets: [] as (ReplyTo | undefined)[] };
+
+    // What the bubble law did to this reply, read ONCE, here: this is the only place the list that
+    // actually ships is known, and both caps are otherwise invisible (each only logs). Parked per
+    // chat (lastBubbleReport) for the turn receipt to fold in, so nothing has to be threaded back
+    // up through the agent layers. takeHardCapHits is read-and-reset — this is its one reader.
+    noteBubbleReport(chatId, buildBubbleReport(bubbles, { hardCapped: takeHardCapHits() > 0, splits: split.splits }));
 
     // If we're delegating, thread the LATE Ops follow-up to the message that actually asked, not the
     // last burst message (which may be a "thanks"). Prefer the message a holding bubble quoted; else,
