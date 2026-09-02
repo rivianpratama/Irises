@@ -88,3 +88,37 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
  * ratchets down.
  */
 export const MIN_TRANSCRIPT_SHARE = 0.0065;
+
+/**
+ * Phrases that must exist in the persona, verbatim — the rules whose deletion would be silent.
+ *
+ * Every one of these was ADDED to Context.md deliberately (see the commits behind "Predict, don't
+ * interview", the banter frame and the three-check gate), and every one of them is a behaviour the
+ * live thread depends on. Prose has no test, so a rewrite that drops a clause looks like a tidy-up in
+ * review. These strings are that test: promptPolicy.test.ts checks each one against
+ * `loadContext('convo')` and names the id that went missing.
+ *
+ * A phrase here is an ANCHOR, not a quotation of the whole rule: the shortest fragment that could
+ * only come from that clause. Rewording the paragraph around it is fine and expected; losing the
+ * anchor means the rule itself is gone, or has been paraphrased into something that no longer says
+ * the same thing. If you meant to change it, change it here in the same commit.
+ */
+export const RULE_ANCHORS: Array<{ id: string; personaAnchor: string }> = [
+  // Guess before you ask — the default for every open turn (Context.md ~581).
+  { id: 'predict_dont_interview', personaAnchor: "Predict, don't interview — a guess from your model of them is how knowing them shows." },
+  // …and when something genuinely must be resolved, it still lands as a statement (~589).
+  { id: 'probe_as_statement', personaAnchor: "The probe wears a statement's clothes." },
+  // The three-check gate every remembered thing passes before it reaches a bubble (~572).
+  { id: 'three_check_gate', personaAnchor: 'The gate — run three checks before any memory enters a bubble' },
+  // The play frame: a tease carries the real layer AND the play layer (~652).
+  { id: 'banter_play_frame', personaAnchor: 'Banter — the play frame.' },
+  // The four safe bends, which is what keeps teasing off their wound (~654).
+  { id: 'four_safe_bends', personaAnchor: 'Four bends that stay safe' },
+  // Their read of the joke outranks hers, immediately (~662).
+  { id: 'response_overrules', personaAnchor: 'Their response overrules your framing, instantly.' },
+  // Rich memory plus "hey" still equals "hey" (~667).
+  { id: 'greeting_gets_greeting', personaAnchor: 'A greeting gets a greeting.' },
+  // The threading default, stated as a default rather than a fallback (~648).
+  { id: 'when_unsure_dont', personaAnchor: "When unsure, don't" },
+];
+
