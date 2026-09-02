@@ -103,7 +103,11 @@ export interface EngineBackend {
    *  named it — for the `engine:*:start` receipt, so a degraded run can be attributed to the
    *  transcript it ran inside (engine sessions rotate: `engineSession.ts`). MUST be synchronous,
    *  pure-ish and cheap (it runs per dispatch). Optional: an adapter without it simply records no
-   *  session on the receipt, exactly as before. */
+   *  session on the receipt, exactly as before.
+   *
+   *  Asked here, at dispatch — a hair before the adapter stamps its own request — so a run that
+   *  straddles a rotation boundary can record the window either side of it. The adapters say so at
+   *  their own implementation; nothing downstream should treat this as a proof of what was sent. */
   sessionDescriptor?(chatId: string): { session: string; rotation: string };
   /** Deliver the engine-mode doctrine ONCE, as a chat message the engine folds into its own durable
    *  instructions by its own hand (Irises never edits engine files). `version` is the doctrine's

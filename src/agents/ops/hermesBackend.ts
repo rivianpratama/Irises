@@ -359,19 +359,39 @@ export class HermesBackend implements EngineBackend {
       // Every caller of headers() shares this, so a run and the memory note that follows it land in
       // the same session, and a code-owned tag ('onboarding', 'first-move') gets a fresh transcript
       // on the same schedule.
-      h['X-Hermes-Session-Id'] = this.sessionDescriptor(chatId).session;
-      h['X-Hermes-Session-Key'] = hermesSessionKey(chatId);
+      const { session, key } = this.sessionNow(chatId);
+      h['X-Hermes-Session-Id'] = session;
+      h['X-Hermes-Session-Key'] = key;
     }
     return h;
+  }
+
+  /** The two session strings for a chat as of NOW, from ONE key build and ONE clock read: the id's
+   *  head IS the memory key, so building it twice per request was both wasted work (a chat id over
+   *  64 sanitized chars costs a sha256) and a way for the two headers to disagree. `headers()` and
+   *  `sessionDescriptor()` both come through here. */
+  private sessionNow(chatId: string): { session: string; key: string; rotation: SessionRotation } {
+    const key = hermesSessionKey(chatId);
+    const rotation = hermesSessionRotation();
+    return { session: engineSessionId(key, this.deps.now(), rotation), key, rotation };
   }
 
   /** Which engine session this chat/tag speaks into RIGHT NOW, and the window policy that named it.
    *  On the `engine:hermes:start` receipt, so a degraded run can be attributed to the transcript it
    *  ran inside (`engineBackend.ts` reads it through the optional `sessionDescriptor` seam). The
-   *  window adds at most 10 chars to a ≤71-char key — still far inside hermes's 256-char header cap. */
+   *  window adds at most 10 chars to a ≤71-char key — still far inside hermes's 256-char header cap.
+   *
+   *  The memory key is deliberately NOT returned: this object is spread straight into a trace
+   *  detail, and the transcript is what a degraded run needs attributing to.
+   *
+   *  It reads the clock ITSELF, at dispatch, microseconds before `headers()` reads it again for the
+   *  request — so a dispatch that straddles a window boundary can name the adjacent transcript on
+   *  the receipt. Accepted rather than fixed: pinning one instant per dispatch would mean threading
+   *  it through `runTask` and every other caller of `headers()`, which is a lot of plumbing to buy
+   *  microseconds of attribution on a window that lasts a week. */
   sessionDescriptor(chatId: string): { session: string; rotation: SessionRotation } {
-    const rotation = hermesSessionRotation();
-    return { session: engineSessionId(hermesSessionKey(chatId), this.deps.now(), rotation), rotation };
+    const { session, rotation } = this.sessionNow(chatId);
+    return { session, rotation };
   }
 
   /**

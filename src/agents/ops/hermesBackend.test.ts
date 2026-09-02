@@ -548,6 +548,46 @@ test('HERMES_SESSION_ROTATION=never: the session id is byte-identical to the pre
   });
 });
 
+test('HERMES_SESSION_ROTATION=daily: the day reaches the real header, not just the parse', async () => {
+  // `daily` was only ever pinned as a parse result and a pure token; this drives it through a
+  // captured request so the composition (env → policy → id → header) is held end to end.
+  await withRotation('daily', async () => {
+    const captured: Captured[] = [];
+    const body = { choices: [{ message: { content: 'OK' } }] };
+    const be = new HermesBackend({ fetchFn: fakeFetch(200, body, captured), now: () => IN_WEEK_36 });
+    await be.runTask('the prompt', mkTask(), {});
+    await be.remember('web:debug', 'h', 'a note');
+    assert.equal(sessionIdOf(captured, 0), 'irises-web-debug-d20260902', 'the transcript session carries this DAY');
+    assert.equal(sessionIdOf(captured, 1), sessionIdOf(captured, 0), 'the note rides the same day');
+    const keys = new Set(captured.map(c => (c.init.headers as Record<string, string>)['X-Hermes-Session-Key']));
+    assert.deepEqual([...keys], [hermesSessionKey('web:debug')], 'the memory scope still does not rotate');
+    // Tomorrow is a different transcript, and the receipt says which one.
+    const tomorrow = new HermesBackend({ fetchFn: fakeFetch(200, body, captured), now: () => Date.parse('2026-09-03T00:00:00Z') });
+    await tomorrow.runTask('the prompt', mkTask(), {});
+    assert.equal(sessionIdOf(captured, 2), 'irises-web-debug-d20260903');
+    assert.deepEqual(be.sessionDescriptor('web:debug'), { session: 'irises-web-debug-d20260902', rotation: 'daily' });
+  });
+});
+
+test('one session key per request: the id is the key plus the window, even for a hashed long id', async () => {
+  // The id's head IS the memory key — built once per request now (a chat id over 64 sanitized chars
+  // costs a sha256, and it used to be computed twice). This is what says the two headers cannot
+  // drift apart, whichever way the key was derived.
+  await withRotation(undefined, async () => {
+    const chatId = `eng:telegram:${'9'.repeat(60)}`; // 73 sanitized chars → hashed key
+    const captured: Captured[] = [];
+    const be = new HermesBackend({ fetchFn: fakeFetch(200, { choices: [{ message: { content: 'OK' } }] }, captured), now: () => IN_WEEK_36 });
+    await be.runTask('the prompt', mkTask({ chatId }), {});
+    const h = captured[0].init.headers as Record<string, string>;
+    const key = hermesSessionKey(chatId);
+    assert.equal(h['X-Hermes-Session-Key'], key);
+    assert.equal(h['X-Hermes-Session-Id'], `${key}-w2026-36`);
+    assert.ok(h['X-Hermes-Session-Id'].startsWith(h['X-Hermes-Session-Key']), 'the key is the id’s head');
+    // And the receipt's descriptor is built the same way, off the same key.
+    assert.equal(be.sessionDescriptor(chatId).session, h['X-Hermes-Session-Id']);
+  });
+});
+
 test('sessionDescriptor / engine:hermes:start: the receipt names the session the run used', async () => {
   await withRotation(undefined, async () => {
     const be = new HermesBackend({ fetchFn: fakeFetch(200, { choices: [{ message: { content: 'ANSWER: 42' } }] }), now: () => IN_WEEK_36 });
