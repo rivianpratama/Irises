@@ -14,7 +14,6 @@ import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
 import { OPS_RETRY_ENABLED, walledUrlHintEnabled } from '../../llm/models.js';
 import { getEngineBackend } from './engineBackend.js';
 import { decideWalledTooling, walledScanText, browserRetryDirective } from './walledUrls.js';
-import type { CapabilitySummary } from './engineBackend.js';
 import type { OpsResult, OpsTask, OpsFailureCause } from '../types.js';
 
 // What triage decides to do with a failed run:
@@ -147,7 +146,7 @@ async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
 /**
  * Decide why an empty miss came back empty. One small `classify`-role call, bounded and defensive:
  * ANY failure (parse, timeout, throw) returns `action: 'none'` so the follow-up degrades to today's
- * generic steering question. `llm` and `capabilities` are injectable for tests.
+ * generic steering question. `llm` and `browser` are injectable for tests.
  *
  * One case never reaches that call: a walled URL the engine could have opened in a browser and
  * didn't (see the branch below).
@@ -156,8 +155,8 @@ export async function splitMiss(
   result: OpsResult,
   task: OpsTask,
   llm: typeof callLLM = callLLM,
-  // The same non-blocking cached read the task prompt uses — null while the cache is cold.
-  capabilities: CapabilitySummary | null = getEngineBackend()?.getCapabilitySummary?.() ?? null,
+  // The same non-blocking read the task prompt uses — undefined while discovery is cold.
+  browser: boolean | undefined = getEngineBackend()?.hasBrowserTooling?.(),
 ): Promise<TriageDecision> {
   const cause: OpsFailureCause = 'empty_miss';
   const attempt = task.attempt ?? 1;
@@ -173,9 +172,11 @@ export async function splitMiss(
   // by then the browser route has been tried and a soft give-up is the honest answer.
   //
   // `walled.line` is non-null on exactly the three conditions that put the `tooling:` line into the
-  // first pass's prompt — flag on, a walled URL in the ask or the brief, an engine with a browser —
-  // so the prompt and the escalation can never drift apart on what "walled" means.
-  const walled = decideWalledTooling({ text: walledScanText(task), capabilities, enabled: walledUrlHintEnabled() });
+  // first pass's prompt — flag on, a walled URL in the ask or the brief, an engine that reported a
+  // real browser — so the prompt and the escalation can never drift apart on what "walled" means.
+  // The precise probe matters most HERE: this branch spends a whole engine leg, so a box with
+  // web_search and no browser must fall through to the honest give-up it reaches today.
+  const walled = decideWalledTooling({ text: walledScanText(task), browser, enabled: walledUrlHintEnabled() });
   if (attempt === 1 && walled.line && canRetry(task)) {
     return { cause, action: 'retry', deterministic: true, directive: browserRetryDirective(walled.urls[0]) };
   }

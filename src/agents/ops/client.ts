@@ -10,7 +10,6 @@ import { getEngineBackend, runViaEngine } from './engineBackend.js';
 import { decideWalledTooling, walledScanText } from './walledUrls.js';
 import { walledUrlHintEnabled } from '../../llm/models.js';
 import { hasMedia } from '../../webhook/types.js';
-import type { CapabilitySummary } from './engineBackend.js';
 import type { OpsTask, OpsResult, OpsDebrief, OpsDebriefSink } from '../types.js';
 
 /** Does a final text read as an empty miss? The engine declares empty-handedness with the exact
@@ -37,10 +36,11 @@ const OUTPUT_CONTRACT = [
  *  itself (inline image blocks where the transport supports them, fetchable URLs otherwise); this
  *  only tells the engine the files exist so it knows to use them. Exported for unit tests.
  *
- *  `extras.capabilities` is the caller's non-blocking cached read of what the engine can do (see
- *  runTask below). It is the ONLY thing that can add the walled-URL `tooling:` line — a caller that
- *  passes none gets a prompt byte-identical to the one before that hint existed. */
-export function buildTaskPrompt(task: OpsTask, extras: { now?: number; tz?: string; capabilities?: CapabilitySummary | null } = {}): string {
+ *  `extras.browser` is the caller's non-blocking read of the engine's browser probe (see runTask
+ *  below). It is the ONLY thing that can add the walled-URL `tooling:` line — a caller that passes
+ *  none, or an engine that cannot say, gets a prompt byte-identical to the one before that hint
+ *  existed. */
+export function buildTaskPrompt(task: OpsTask, extras: { now?: number; tz?: string; browser?: boolean } = {}): string {
   // Anchor the clock once — the engine is routinely asked relative-time questions ("is anything
   // overdue", "how long ago"), and must never guess today's date.
   const nowMs = extras.now ?? Date.now();
@@ -61,7 +61,7 @@ export function buildTaskPrompt(task: OpsTask, extras: { now?: number; tz?: stri
   // own flag read lives here so EVERY caller gets the off path, not just runTask.
   const tooling = decideWalledTooling({
     text: walledScanText(task),
-    capabilities: extras.capabilities ?? null,
+    browser: extras.browser,
     enabled: walledUrlHintEnabled(),
   }).line;
   const fields = [
@@ -86,16 +86,23 @@ export async function runTask(task: OpsTask, onProgress?: (milestoneKey: string)
   const debrief: OpsDebrief = { steps: 0, toolsRun: [], corpus: [], startedAt: Date.now(), endedAt: 0 };
   if (sink) sink.debrief = debrief;
   const engine = getEngineBackend();
-  // What the engine can do, read the same non-blocking cached way the convo prompt reads it
-  // (src/agents/convo/client.ts) — never a fetch on the task path, null until the cache is warm.
-  const capabilities = engine?.getCapabilitySummary?.() ?? null;
+  // Whether this engine can open a page, read the same non-blocking cached way the convo prompt
+  // reads capabilities (src/agents/convo/client.ts) — never a fetch on the task path, and undefined
+  // until discovery has answered.
+  const browser = engine?.hasBrowserTooling?.();
   // Decided here as well as inside buildTaskPrompt (same pure call, same inputs) so the receipt
   // states what the engine was actually told, including on the no-op.
-  const tooling = decideWalledTooling({ text: walledScanText(task), capabilities, enabled: walledUrlHintEnabled() });
+  const tooling = decideWalledTooling({ text: walledScanText(task), browser, enabled: walledUrlHintEnabled() });
   record({
     type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
     label: `${tracePrefix}:kickoff`,
-    detail: { gapMs: Date.now() - task.createdAt, kind: task.kind, walledHosts: tooling.hosts, toolingHint: !!tooling.line },
+    // browserTooling keeps the no-op reasons disjoint: no walled link (empty walledHosts), a box
+    // with no browser (false), discovery that hasn't answered yet — the fresh-process case (null),
+    // or the flag off (everything present, toolingHint still false).
+    detail: {
+      gapMs: Date.now() - task.createdAt, kind: task.kind,
+      walledHosts: tooling.hosts, toolingHint: !!tooling.line, browserTooling: browser ?? null,
+    },
   });
   const done = (r: OpsResult): OpsResult => {
     debrief.endedAt = Date.now();
@@ -114,7 +121,7 @@ export async function runTask(task: OpsTask, onProgress?: (milestoneKey: string)
     return done({ taskId: task.id, kind: task.kind, status: 'error', summary: 'ran into a problem completing that' });
   }
 
-  let prompt = buildTaskPrompt(task, { capabilities });
+  let prompt = buildTaskPrompt(task, { browser });
   if (seedCorpus?.length) {
     prompt += `\n\nEarlier findings from a prior pass at this task (verify before reusing; treat as leads, not ground truth):\n${dataTag('prior_findings', seedCorpus.join('\n---\n').slice(0, 8000))}`;
   }

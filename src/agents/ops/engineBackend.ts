@@ -54,7 +54,15 @@ export const CAP_ORDER: readonly CapabilityClass[] = ['web', 'inbox', 'files', '
 /** What the active engine can actually do THIS deployment, as the closed-vocabulary set above.
  *  Consumed ONLY to shape Convo's per-turn brief (so it never promises what the engine lacks); it
  *  is deliberately never fed into the engine-facing task prompt — Hermes knows its own tools, and a
- *  stale cache must not contradict it mid-run. */
+ *  stale cache must not contradict it mid-run.
+ *
+ *  That rule survived the walled-URL hint (see ./walledUrls.ts), which DOES gate bytes in the task
+ *  prompt: it reads `hasBrowserTooling()` below, not this summary. Two reasons, both worth keeping
+ *  if a third such gate ever shows up. (a) Grain: `web` here is a superset — the class table folds
+ *  browser, fetch, http, crawl and scrape into it — so this summary cannot answer "is there a
+ *  browser" at all. (b) Blast radius: a gate on the closed vocabulary would make every prompt-shape
+ *  question depend on the cache that Convo's phrasing already depends on. Keep engine-facing gates
+ *  on their own narrow probes. */
 export interface CapabilitySummary {
   classes: CapabilityClass[];
   /** `false` when the manifest carried tokens the adapter could not classify — i.e. the class list is
@@ -99,6 +107,24 @@ export interface EngineBackend {
    *  any latency here lands on a user turn. The adapter refreshes the cache in the background.
    *  Optional: a backend that hasn't wired capability discovery simply omits it. */
   getCapabilitySummary?(): CapabilitySummary | null;
+  /**
+   * Does this deployment have a REAL browser toolset — one that can navigate to a URL and read the
+   * rendered page? `true`/`false` when the adapter has seen a manifest that answers; `undefined`
+   * when nobody can say yet (a cold discovery cache, an engine that is down, an adapter with no
+   * probe). Same synchronous NON-BLOCKING contract as getCapabilitySummary above.
+   *
+   * Deliberately NOT a seventh CapabilityClass: `web` there is a superset by design (it folds
+   * fetch/http/crawl in with browser), and Convo's brief neither needs nor should carry the finer
+   * grain. This exists because ONE engine-facing decision does need it — the walled-URL `tooling:`
+   * hint and its retry escalation (./walledUrls.ts), which name browser_navigate / browser_snapshot
+   * and are worthless (the hint) or wasteful (a whole extra engine leg) on a box with only
+   * web_search. `undefined` is never a promise: it degrades to the pre-hint behavior.
+   *
+   * A stale answer is tolerable in BOTH directions, which is what makes this safe to read into a
+   * task prompt at all: stale-false only suppresses a suggestion (today's bytes), and stale-true
+   * leaves a suggestion the engine can ignore — neither contradicts the engine about its own tools.
+   */
+  hasBrowserTooling?(): boolean | undefined;
   /** Which engine session a call for this chat would ride right now, and the rotation window that
    *  named it — for the `engine:*:start` receipt, so a degraded run can be attributed to the
    *  transcript it ran inside (engine sessions rotate: `engineSession.ts`). MUST be synchronous,

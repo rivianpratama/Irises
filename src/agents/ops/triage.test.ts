@@ -6,7 +6,6 @@ import { detectCause, decide, splitMiss, retryTaskFor, type TriageDecision } fro
 import { browserRetryDirective } from './walledUrls.js';
 import { buildTaskPrompt } from './client.js';
 import type { OpsResult, OpsTask, OpsDebrief } from '../types.js';
-import type { CapabilitySummary } from './engineBackend.js';
 import type { LlmResult } from '../../llm/types.js';
 
 // NOTE: OPS_RETRY_ENABLED defaults to true when the env var is unset (the test env). The engine IS
@@ -140,8 +139,6 @@ test('splitMiss: missing fields are capped at 3 items and 120 chars each', async
 
 const REEL = 'https://www.instagram.com/reel/DcJg4VkgMT0/';
 const REEL_ASK = `who is the girl in ${REEL}`;
-const WITH_BROWSER: CapabilitySummary = { classes: ['web', 'code'] };
-const NO_BROWSER: CapabilitySummary = { classes: ['code', 'files'] };
 const UNANSWERABLE = '{"verdict":"UNANSWERABLE","missing":[],"directive":""}';
 
 function countingLlm(text: string): { llm: never; calls: () => number } {
@@ -161,7 +158,7 @@ function withHintFlag(value: string | undefined, fn: () => Promise<void>): Promi
 
 test('splitMiss: a walled URL the engine could have browsed retries deterministically, no LLM call', async () => {
   const { llm, calls } = countingLlm(UNANSWERABLE);
-  const d = await splitMiss(mkResult(), mkTask({ request: REEL_ASK }), llm, WITH_BROWSER);
+  const d = await splitMiss(mkResult(), mkTask({ request: REEL_ASK }), llm, true);
   assert.equal(d.cause, 'empty_miss');
   assert.equal(d.action, 'retry');
   assert.equal(d.deterministic, true);
@@ -170,44 +167,46 @@ test('splitMiss: a walled URL the engine could have browsed retries deterministi
 });
 
 test('splitMiss: the walled URL can ride in the brief instead of the ask', async () => {
-  const d = await splitMiss(mkResult(), mkTask({ request: 'who is the girl', metaPrompt: `akses ${REEL} itu, cepet` }), fakeLlm(UNANSWERABLE) as never, WITH_BROWSER);
+  const d = await splitMiss(mkResult(), mkTask({ request: 'who is the girl', metaPrompt: `akses ${REEL} itu, cepet` }), fakeLlm(UNANSWERABLE) as never, true);
   assert.equal(d.action, 'retry');
   assert.match(d.directive!, /browser_navigate to https:/);
 });
 
 test('splitMiss: attempt 2 falls through to today’s verdict (the escalation is a first-look move)', async () => {
-  const d = await splitMiss(mkResult(), mkTask({ request: REEL_ASK, attempt: 2 }), fakeLlm(UNANSWERABLE) as never, WITH_BROWSER);
+  const d = await splitMiss(mkResult(), mkTask({ request: REEL_ASK, attempt: 2 }), fakeLlm(UNANSWERABLE) as never, true);
   assert.equal(d.action, 'give_up');
   assert.equal(d.deterministic, false);
   assert.equal(d.directive, undefined);
 });
 
 test('splitMiss: no browser to escalate TO → today’s verdict stands', async () => {
-  for (const caps of [NO_BROWSER, null] as const) {
-    const d = await splitMiss(mkResult(), mkTask({ request: REEL_ASK }), fakeLlm(UNANSWERABLE) as never, caps);
-    assert.equal(d.action, 'give_up', `caps ${JSON.stringify(caps)} should not escalate`);
+  // false = the engine reported its toolsets and has no browser; undefined = nobody could say yet
+  // (a cold capability cache). Neither is a promise, so neither buys a leg.
+  for (const browser of [false, undefined] as const) {
+    const d = await splitMiss(mkResult(), mkTask({ request: REEL_ASK }), fakeLlm(UNANSWERABLE) as never, browser);
+    assert.equal(d.action, 'give_up', `browser=${browser} should not escalate`);
     assert.equal(d.deterministic, false);
   }
 });
 
 test('splitMiss: a retry leg never escalates again — one browser leg per attempt', async () => {
-  const d = await splitMiss(mkResult(), mkTask({ request: REEL_ASK, retryOf: 't1' }), fakeLlm(UNANSWERABLE) as never, WITH_BROWSER);
+  const d = await splitMiss(mkResult(), mkTask({ request: REEL_ASK, retryOf: 't1' }), fakeLlm(UNANSWERABLE) as never, true);
   assert.equal(d.action, 'give_up');
 });
 
 test('splitMiss: an ask with no walled URL is untouched by the escalation', async () => {
-  const d = await splitMiss(mkResult(), mkTask({ request: 'who is the girl in https://example.com/gallery/7' }), fakeLlm(UNANSWERABLE) as never, WITH_BROWSER);
+  const d = await splitMiss(mkResult(), mkTask({ request: 'who is the girl in https://example.com/gallery/7' }), fakeLlm(UNANSWERABLE) as never, true);
   assert.equal(d.action, 'give_up');
 });
 
 test('splitMiss: OPS_WALLED_URL_HINT off → the escalation never arms', async () => {
   await withHintFlag('false', async () => {
-    const d = await splitMiss(mkResult(), mkTask({ request: REEL_ASK }), fakeLlm(UNANSWERABLE) as never, WITH_BROWSER);
+    const d = await splitMiss(mkResult(), mkTask({ request: REEL_ASK }), fakeLlm(UNANSWERABLE) as never, true);
     assert.equal(d.action, 'give_up');
     assert.equal(d.deterministic, false);
   });
   await withHintFlag('true', async () => {
-    const d = await splitMiss(mkResult(), mkTask({ request: REEL_ASK }), fakeLlm(UNANSWERABLE) as never, WITH_BROWSER);
+    const d = await splitMiss(mkResult(), mkTask({ request: REEL_ASK }), fakeLlm(UNANSWERABLE) as never, true);
     assert.equal(d.action, 'retry');
   });
 });
@@ -235,8 +234,8 @@ test('retryTaskFor: the browser directive rides into the retry brief — and cha
   assert.ok(retry.metaPrompt!.includes(`browser_navigate to ${REEL}`), 'and the directive is appended to it');
   // The point of the whole fix: the second pass is NOT the first prompt again.
   assert.notEqual(
-    buildTaskPrompt(retry, { ...AT, capabilities: WITH_BROWSER }),
-    buildTaskPrompt(task, { ...AT, capabilities: WITH_BROWSER }),
+    buildTaskPrompt(retry, { ...AT, browser: true }),
+    buildTaskPrompt(task, { ...AT, browser: true }),
     'the escalated leg must not re-send byte-identical bytes',
   );
 });

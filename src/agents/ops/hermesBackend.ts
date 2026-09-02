@@ -245,6 +245,28 @@ function classifyToken(token: string): CapabilityClass | null {
   return null;
 }
 
+// The tokens that mean "this box can navigate to a URL and read the RENDERED page" — a strictly
+// narrower question than the `web` class above, which folds web_search/fetch/crawl in with browser
+// and therefore cannot answer it (see EngineBackend.hasBrowserTooling). Anchored on the browser
+// toolset's own names: `browser` (the CONFIGURABLE_TOOLSETS key) and every browser_* tool under it
+// (`browse` covers both), plus computer_use, which drives a real screen and so can open a page.
+// web_search / web_extract / http / crawl deliberately match NOTHING here — that is the whole point.
+const BROWSER_TOKENS: readonly string[] = ['browser', 'browse', 'computer_use'];
+
+/** Does a capability manifest report a real browser toolset? Same tolerated body shapes (and the
+ *  same enabled:false / configured:false exclusion) as normalizeCapabilities — it reads the very
+ *  same tokens, just asks a different question of them. Pure; never throws.
+ *
+ *  Tested in ./walledUrls.test.ts: the walled-URL hint is this probe's only consumer, so its cases
+ *  live with the feature that needs them. */
+export function manifestHasBrowser(body: unknown): boolean {
+  if (body == null || typeof body !== 'object') return false;
+  return extractCapabilityTokens(body).some(token => {
+    const t = token.toLowerCase();
+    return BROWSER_TOKENS.some(kw => t.includes(kw));
+  });
+}
+
 /** Pull candidate capability tokens out of ONE unknown body shape (does not classify them). Handles
  *  the shapes a Hermes-ish engine might answer with, in one tolerant pass:
  *   - array of strings                       → the strings
@@ -334,6 +356,9 @@ export class HermesBackend implements EngineBackend {
   private capFetchedAt = 0;
   private capPartial = false;
   private capRefreshing = false;
+  // The browser probe (hasBrowserTooling), kept beside the class cache and filled by the same
+  // refresh. `undefined` means no manifest has answered yet — never "no browser".
+  private capBrowser: boolean | undefined;
   // Read ONCE at construction: getCapabilitySummary() sits on the per-turn prompt path, so it must
   // not re-parse (or re-read the environment) per turn.
   private readonly declaredCapabilities: CapabilitySummary | null;
@@ -736,6 +761,18 @@ export class HermesBackend implements EngineBackend {
     return this.capCache ?? this.declaredCapabilities;
   }
 
+  /** Whether a real browser toolset was in the last manifest discovery actually read — `undefined`
+   *  until one has been (see EngineBackend.hasBrowserTooling for why this is not a class).
+   *
+   *  Deliberately NOT answered from HERMES_CAPABILITIES: that declaration speaks the closed class
+   *  vocabulary, in which `browser` cannot be said, so an operator declaring `web` has told us
+   *  nothing about a browser. Unknown, not false — the caller degrades to today's behavior either
+   *  way, and this keeps the two meanings apart on the receipt. Kicks no fetch of its own: every
+   *  caller reads getCapabilitySummary() on the same path, which owns the refresh schedule. */
+  hasBrowserTooling(): boolean | undefined {
+    return this.capBrowser;
+  }
+
   /** GET one capability-manifest path. Returns `undefined` for a transport failure, a non-2xx, OR a
    *  body that won't parse (an HTML error page answered at 200 by a proxy is a FAILED read, not an
    *  empty manifest — treating it as a usable body used to wipe a good cache). Never throws — this
@@ -795,10 +832,19 @@ export class HermesBackend implements EngineBackend {
         complete = false;
       }
 
+      // The browser probe rides the same read (hasBrowserTooling), off the same raw tokens. Same
+      // never-SUBTRACT rule as the classes: a degraded read cannot demote a known browser to "no".
+      let browser = answered.some(body => manifestHasBrowser(body));
+      if (partial && this.capBrowser) browser = true;
+
       if (classes.size) {
         this.capCache = { classes: CAP_ORDER.filter(c => classes.has(c)), ...(complete ? {} : { complete: false }) };
+        this.capBrowser = browser;
       } else if (!partial) {
         this.capCache = null; // a clean read that recognized nothing → honestly unknown
+        // …and so is the browser: `false` here would be a positive claim about a manifest we could
+        // not read at all, which is exactly the fail-open the class set above refuses to make.
+        this.capBrowser = undefined;
       }
       this.capPartial = partial;
       this.capFetchedAt = this.deps.now();

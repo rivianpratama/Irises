@@ -10,9 +10,8 @@
 // reading the caption. The capability was present; nothing told the engine this host needs it.
 //
 // Everything here is pure and env-free: both callers (the task prompt in ./client.ts and the retry
-// escalation in ./triage.ts) inject the capability summary and their own flag read, so the same
+// escalation in ./triage.ts) inject the engine's browser probe and their own flag read, so the same
 // inputs always produce the same decision and the off path is a caller-side `enabled: false`.
-import type { CapabilitySummary } from './engineBackend.js';
 
 /** Hosts that serve a login/consent shell to anything but a real browser. Single source: the
  *  prompt's `tooling:` line, the `ops:kickoff` receipt and the retry escalation all read this. */
@@ -78,20 +77,6 @@ export function walledScanText(task: { request: string; metaPrompt?: string }): 
   return `${task.request}\n${task.metaPrompt ?? ''}`;
 }
 
-/**
- * Does this capability summary promise a BROWSER?
- *
- * `web` is the answer because of the class table in ./hermesBackend.ts (CLASS_KEYWORDS): every
- * browser token an engine can report — the `browser` toolset name, `browser_navigate`, `browse` —
- * normalizes into the `web` class, and CapabilityClass has no finer grain. So this is the strongest
- * available signal, not a precise one: an engine with only `web_search`/fetch and no browser also
- * reports `web`. That asymmetry is deliberate and cheap — the hint is a routing suggestion, and an
- * engine without the tools simply cannot follow it. A null/unknown summary is NOT a promise.
- */
-export function hasBrowserClass(summary: CapabilitySummary | null | undefined): boolean {
-  return !!summary && summary.classes.includes('web');
-}
-
 /** The `tooling:` line for a set of walled hosts. One line — the task prompt joins its fields with
  *  newlines. */
 function toolingHintLine(hosts: readonly string[]): string {
@@ -114,15 +99,24 @@ export interface WalledToolingDecision {
   line: string | null;
 }
 
-/** The whole walled-URL tooling decision in one pure call, so the prompt and the `ops:kickoff`
- *  receipt can never disagree about whether the hint went in. */
+/**
+ * The whole walled-URL tooling decision in one pure call, so the prompt, the `ops:kickoff` receipt
+ * and the retry escalation can never disagree about whether the hint was warranted.
+ *
+ * `browser` is the engine's own browser probe (`EngineBackend.hasBrowserTooling()`): true/false when
+ * the adapter has read a manifest that answers, `undefined` when nobody can say yet. Only `true`
+ * arms — an undiscovered toolset is not a promise, and both halves of this feature are worthless
+ * (the hint) or wasteful (a whole extra engine leg) on a box that cannot open a page. Deliberately
+ * NOT the `web` capability class: that class folds web_search/fetch/crawl in with browser, so it
+ * armed engines that could not follow the hint it produced.
+ */
 export function decideWalledTooling(input: {
   text: string;
-  capabilities: CapabilitySummary | null | undefined;
+  browser: boolean | undefined;
   enabled: boolean;
 }): WalledToolingDecision {
   const found = findWalledUrls(input.text);
   const hosts = [...new Set(found.map(f => f.host))];
-  const armed = input.enabled && hosts.length > 0 && hasBrowserClass(input.capabilities);
+  const armed = input.enabled && hosts.length > 0 && input.browser === true;
   return { hosts, urls: found.map(f => f.url), line: armed ? toolingHintLine(hosts) : null };
 }

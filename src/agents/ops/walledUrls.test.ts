@@ -3,16 +3,14 @@ process.env.TZ = 'UTC';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  WALLED_HOSTS, findWalledUrls, hasBrowserClass, decideWalledTooling, browserRetryDirective, walledScanText,
+  WALLED_HOSTS, findWalledUrls, decideWalledTooling, browserRetryDirective, walledScanText,
 } from './walledUrls.js';
 import { buildTaskPrompt, runTask } from './client.js';
-import { resetEngineBackendCache, type CapabilitySummary, type EngineBackend } from './engineBackend.js';
+import { resetEngineBackendCache, type EngineBackend } from './engineBackend.js';
+import { HermesBackend, manifestHasBrowser } from './hermesBackend.js';
 import { getTraces, clearTraces } from '../../diagnostics/trace.js';
 import { emptyMedia } from '../../webhook/types.js';
 import type { OpsTask } from '../types.js';
-
-const WITH_BROWSER: CapabilitySummary = { classes: ['web', 'code'] };
-const NO_BROWSER: CapabilitySummary = { classes: ['code', 'files'] };
 
 // A URL shape that is actually walled for each single-source host: youtube.com is only walled on its
 // watch/shorts players, so it needs a real player path rather than the bare host.
@@ -90,14 +88,87 @@ test('walledScanText: scans the ask AND the front-line brief (Convo restates the
   assert.equal(walledScanText({ request: 'a' }), 'a\n', 'no brief → the ask plus an empty line, never "undefined"');
 });
 
-// ── hasBrowserClass ───────────────────────────────────────────────────────────
+// ── the browser signal itself (review r1 / Important #2) ──────────────────────
+//
+// The arming predicate used to be `summary.classes.includes('web')`, and `web` is a SUPERSET: the
+// closed CapabilityClass vocabulary folds browser, browse, http, fetch, url, crawl and scrape into
+// that one class, so a deployment with web_search and NO browser toolset armed both halves — it got
+// a `tooling:` line naming tools it does not have and (once the escalation had a reader) a silent
+// extra engine leg before reaching the same give-up it reaches immediately today.
+//
+// The gate now reads a precise probe, `EngineBackend.hasBrowserTooling()`, off the raw manifest
+// tokens the adapter already holds. That ALSO keeps CapabilitySummary out of the engine-facing task
+// prompt, which is what its own docstring promises (review r1 / Important #3).
+//
+// manifestHasBrowser lives in hermesBackend.ts, next to the token extractor and the class table it
+// shares; its tests live here because the walled-URL hint is its only consumer.
 
-test('hasBrowserClass: the web class is the browser signal; nothing else is', () => {
-  assert.equal(hasBrowserClass(WITH_BROWSER), true);
-  assert.equal(hasBrowserClass(NO_BROWSER), false);
-  assert.equal(hasBrowserClass({ classes: [] }), false);
-  assert.equal(hasBrowserClass(null), false);
-  assert.equal(hasBrowserClass(undefined), false);
+test('manifestHasBrowser: a real browser toolset says yes; web_search/fetch alone says no', () => {
+  // The live evidence shape (VPS /v1/toolsets) — this is the deployment the whole feature is for.
+  assert.equal(manifestHasBrowser({
+    object: 'list', platform: 'api_server', data: [
+      { name: 'web', enabled: true, configured: true, tools: ['web_search', 'web_extract'] },
+      { name: 'browser', enabled: true, configured: true, tools: ['browser_navigate', 'browser_snapshot', 'browser_vision'] },
+    ],
+  }), true);
+  // The regression case: web class present, no browser anywhere.
+  assert.equal(manifestHasBrowser({
+    object: 'list', platform: 'api_server', data: [
+      { name: 'web', enabled: true, configured: true, tools: ['web_search', 'web_extract'] },
+      { name: 'terminal', enabled: true, configured: true, tools: ['run_command'] },
+    ],
+  }), false, 'web_search is not a browser — this is exactly the box that must NOT arm');
+  // A browser toolset present but switched off is not a live capability (same rule as the classes).
+  assert.equal(manifestHasBrowser({ data: [{ name: 'browser', enabled: false, configured: true, tools: ['browser_navigate'] }] }), false);
+  assert.equal(manifestHasBrowser({ data: [{ name: 'browser', enabled: true, configured: false, tools: ['browser_navigate'] }] }), false);
+  // The other tolerated shapes the normalizer accepts.
+  assert.equal(manifestHasBrowser(['web_search', 'browse_page']), true);
+  assert.equal(manifestHasBrowser({ features: { computer_use: true } }), true, 'computer_use can open a page');
+  assert.equal(manifestHasBrowser({ features: { web_search: true, terminal: true } }), false);
+  // Garbage never throws and never promises.
+  for (const bad of [null, undefined, 42, 'a string', '<html>502</html>', {}, []]) {
+    assert.equal(manifestHasBrowser(bad as unknown), false, `${JSON.stringify(bad)} is not a promise`);
+  }
+});
+
+const json200 = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+/** A /v1/toolsets fake; /v1/capabilities answers the real API-surface shape (no class tokens). */
+function toolsetFetch(toolsets: unknown[]): typeof fetch {
+  return (async (url: RequestInfo | URL) => String(url).endsWith('/v1/toolsets')
+    ? json200({ object: 'list', platform: 'api_server', data: toolsets })
+    : json200({ features: { chat_completions: true } })) as typeof fetch;
+}
+
+async function settle(be: HermesBackend, until: () => boolean): Promise<void> {
+  const start = Date.now();
+  while (!until() && Date.now() - start < 500) await new Promise(r => setTimeout(r, 5));
+}
+
+test('hasBrowserTooling: undefined until discovery answers, then the manifest’s own truth', async () => {
+  const withBrowser = new HermesBackend({
+    fetchFn: toolsetFetch([
+      { name: 'web', enabled: true, configured: true, tools: ['web_search'] },
+      { name: 'browser', enabled: true, configured: true, tools: ['browser_navigate'] },
+    ]),
+  });
+  assert.equal(withBrowser.hasBrowserTooling(), undefined, 'a cold cache cannot promise a browser');
+  withBrowser.getCapabilitySummary();                       // kicks the background refresh
+  await settle(withBrowser, () => withBrowser.hasBrowserTooling() !== undefined);
+  assert.equal(withBrowser.hasBrowserTooling(), true);
+
+  const webOnly = new HermesBackend({
+    fetchFn: toolsetFetch([{ name: 'web', enabled: true, configured: true, tools: ['web_search', 'web_extract'] }]),
+  });
+  webOnly.getCapabilitySummary();
+  await settle(webOnly, () => webOnly.hasBrowserTooling() !== undefined);
+  assert.equal(webOnly.hasBrowserTooling(), false, 'the web class is reported, a browser is not');
+  assert.deepEqual(webOnly.getCapabilitySummary(), { classes: ['web'] }, 'and the summary itself is unchanged by any of this');
+
+  const away = new HermesBackend({ fetchFn: (async () => { throw new TypeError('ECONNREFUSED'); }) as typeof fetch });
+  away.getCapabilitySummary();
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(away.hasBrowserTooling(), undefined, 'engine away → unknown, never a false negative');
 });
 
 // ── decideWalledTooling ───────────────────────────────────────────────────────
@@ -105,7 +176,7 @@ test('hasBrowserClass: the web class is the browser signal; nothing else is', ()
 const ASK = 'who is the girl in https://www.instagram.com/reel/DcJg4VkgMT0/';
 
 test('decideWalledTooling: walled URL + browser + flag on → the tooling line, hosts and urls', () => {
-  const d = decideWalledTooling({ text: ASK, capabilities: WITH_BROWSER, enabled: true });
+  const d = decideWalledTooling({ text: ASK, browser: true, enabled: true });
   assert.deepEqual(d.hosts, ['instagram.com']);
   assert.deepEqual(d.urls, ['https://www.instagram.com/reel/DcJg4VkgMT0/']);
   assert.equal(d.line?.startsWith('tooling: instagram.com pages are JavaScript/login-walled'), true);
@@ -118,25 +189,25 @@ test('decideWalledTooling: walled URL + browser + flag on → the tooling line, 
 test('decideWalledTooling: the host list is deduped and reads in first-seen order', () => {
   const d = decideWalledTooling({
     text: 'https://www.tiktok.com/@a/video/1 https://www.instagram.com/p/AAA/ https://m.tiktok.com/@b/video/2',
-    capabilities: WITH_BROWSER, enabled: true,
+    browser: true, enabled: true,
   });
   assert.deepEqual(d.hosts, ['tiktok.com', 'instagram.com']);
   assert.equal(d.line?.startsWith('tooling: tiktok.com, instagram.com pages are'), true);
 });
 
 test('decideWalledTooling: no line when the engine has no browser, when nothing is walled, or when the flag is off', () => {
-  const noBrowser = decideWalledTooling({ text: ASK, capabilities: NO_BROWSER, enabled: true });
+  const noBrowser = decideWalledTooling({ text: ASK, browser: false, enabled: true });
   assert.equal(noBrowser.line, null);
   assert.deepEqual(noBrowser.hosts, ['instagram.com'], 'the hosts are still reported — the receipt wants the fact');
 
-  const unknownCaps = decideWalledTooling({ text: ASK, capabilities: null, enabled: true });
-  assert.equal(unknownCaps.line, null, 'an unknown capability set is not a promise of a browser');
+  const unknown = decideWalledTooling({ text: ASK, browser: undefined, enabled: true });
+  assert.equal(unknown.line, null, 'an undiscovered toolset is not a promise of a browser');
 
-  const nothingWalled = decideWalledTooling({ text: 'find the date on that invoice', capabilities: WITH_BROWSER, enabled: true });
+  const nothingWalled = decideWalledTooling({ text: 'find the date on that invoice', browser: true, enabled: true });
   assert.equal(nothingWalled.line, null);
   assert.deepEqual(nothingWalled.hosts, []);
 
-  const off = decideWalledTooling({ text: ASK, capabilities: WITH_BROWSER, enabled: false });
+  const off = decideWalledTooling({ text: ASK, browser: true, enabled: false });
   assert.equal(off.line, null);
   assert.deepEqual(off.hosts, ['instagram.com'], 'the flag gates the PROMPT, not the receipt');
 });
@@ -171,7 +242,7 @@ function withFlag(value: string | undefined, fn: () => void): void {
 }
 
 test('buildTaskPrompt: the tooling line sits immediately after `task kind:`, exactly once', () => {
-  const lines = buildTaskPrompt(mkTask(), { ...AT, capabilities: WITH_BROWSER }).split('\n');
+  const lines = buildTaskPrompt(mkTask(), { ...AT, browser: true }).split('\n');
   const kindAt = lines.findIndex(l => l.startsWith('task kind: '));
   assert.ok(kindAt >= 0, 'the task kind line is still there');
   assert.equal(lines.filter(l => l.startsWith('tooling: ')).length, 1, 'one hint, not two');
@@ -179,33 +250,33 @@ test('buildTaskPrompt: the tooling line sits immediately after `task kind:`, exa
     `expected the hint right after the kind line, got: ${lines[kindAt + 1]}`);
 });
 
-test('buildTaskPrompt: no hint without a walled URL, without a browser, or with no capabilities read', () => {
-  const plain = buildTaskPrompt(mkTask({ request: 'find the date on that invoice' }), { ...AT, capabilities: WITH_BROWSER });
+test('buildTaskPrompt: no hint without a walled URL, without a browser, or with no probe read', () => {
+  const plain = buildTaskPrompt(mkTask({ request: 'find the date on that invoice' }), { ...AT, browser: true });
   assert.doesNotMatch(plain, /^tooling: /m);
-  assert.doesNotMatch(buildTaskPrompt(mkTask(), { ...AT, capabilities: NO_BROWSER }), /^tooling: /m);
-  assert.doesNotMatch(buildTaskPrompt(mkTask(), { ...AT, capabilities: null }), /^tooling: /m);
-  assert.doesNotMatch(buildTaskPrompt(mkTask(), AT), /^tooling: /m, 'a caller that reads no capabilities gets today’s prompt');
+  assert.doesNotMatch(buildTaskPrompt(mkTask(), { ...AT, browser: false }), /^tooling: /m);
+  assert.doesNotMatch(buildTaskPrompt(mkTask(), { ...AT, browser: undefined }), /^tooling: /m);
+  assert.doesNotMatch(buildTaskPrompt(mkTask(), AT), /^tooling: /m, 'a caller that reads no probe gets today’s prompt');
 });
 
 test('buildTaskPrompt: the URL can ride in the front-line brief instead of the ask', () => {
-  const p = buildTaskPrompt(mkTask({ request: 'who is the girl', metaPrompt: 'akses https://www.instagram.com/reel/DcJg4VkgMT0/ itu, cepet' }), { ...AT, capabilities: WITH_BROWSER });
+  const p = buildTaskPrompt(mkTask({ request: 'who is the girl', metaPrompt: 'akses https://www.instagram.com/reel/DcJg4VkgMT0/ itu, cepet' }), { ...AT, browser: true });
   assert.match(p, /^tooling: instagram\.com pages are/m);
 });
 
 test('buildTaskPrompt: OPS_WALLED_URL_HINT off → byte-identical to the pre-hint prompt', () => {
   const task = mkTask();
-  const before = buildTaskPrompt(task, AT); // no capabilities read == today's bytes
+  const before = buildTaskPrompt(task, AT); // no browser probe read == today's bytes
   withFlag('false', () => {
-    assert.equal(buildTaskPrompt(task, { ...AT, capabilities: WITH_BROWSER }), before);
+    assert.equal(buildTaskPrompt(task, { ...AT, browser: true }), before);
   });
   withFlag('true', () => {
-    assert.notEqual(buildTaskPrompt(task, { ...AT, capabilities: WITH_BROWSER }), before, 'and on, it really does change the bytes');
+    assert.notEqual(buildTaskPrompt(task, { ...AT, browser: true }), before, 'and on, it really does change the bytes');
   });
 });
 
 // ── the ops:kickoff receipt ───────────────────────────────────────────────────
 
-function stubEngine(summary: CapabilitySummary | null, onPrompt: (p: string) => void): EngineBackend {
+function stubEngine(browser: boolean | undefined, onPrompt: (p: string) => void): EngineBackend {
   return {
     name: 'hermes',
     runTask: async (prompt: string) => { onPrompt(prompt); return 'ANSWER: her name is on the caption\nSOURCE: the reel page\nFLAGS: none'; },
@@ -215,13 +286,13 @@ function stubEngine(summary: CapabilitySummary | null, onPrompt: (p: string) => 
     async remember() { /* noop */ },
     async probe() { return { ok: true }; },
     async channelSend() { return {}; },
-    getCapabilitySummary() { return summary; },
+    hasBrowserTooling() { return browser; },
   };
 }
 
-async function kickoffDetail(task: OpsTask, summary: CapabilitySummary | null): Promise<{ detail: Record<string, unknown>; prompt: string }> {
+async function kickoffDetail(task: OpsTask, browser: boolean | undefined): Promise<{ detail: Record<string, unknown>; prompt: string }> {
   let prompt = '';
-  resetEngineBackendCache(stubEngine(summary, p => { prompt = p; }));
+  resetEngineBackendCache(stubEngine(browser, p => { prompt = p; }));
   clearTraces();
   try {
     await runTask(task);
@@ -234,20 +305,30 @@ async function kickoffDetail(task: OpsTask, summary: CapabilitySummary | null): 
 }
 
 test('runTask: ops:kickoff reports the walled hosts and whether the hint went in', async () => {
-  const armed = await kickoffDetail(mkTask(), WITH_BROWSER);
+  const armed = await kickoffDetail(mkTask(), true);
   assert.deepEqual(armed.detail.walledHosts, ['instagram.com']);
   assert.equal(armed.detail.toolingHint, true);
+  assert.equal(armed.detail.browserTooling, true);
   assert.match(armed.prompt, /^tooling: instagram\.com pages are/m, 'and the engine actually received it');
   assert.equal(armed.detail.kind, 'web_research', 'the fields it already carried are untouched');
 });
 
-test('runTask: ops:kickoff carries both fields on the no-op too — a walled URL with no browser', async () => {
-  const noBrowser = await kickoffDetail(mkTask(), NO_BROWSER);
+test('runTask: ops:kickoff tells the three no-ops apart — no browser, none reported, nothing walled', async () => {
+  const noBrowser = await kickoffDetail(mkTask(), false);
   assert.deepEqual(noBrowser.detail.walledHosts, ['instagram.com'], 'the URL was walled; only the capability was missing');
   assert.equal(noBrowser.detail.toolingHint, false);
+  assert.equal(noBrowser.detail.browserTooling, false, 'the engine said it has no browser');
   assert.doesNotMatch(noBrowser.prompt, /^tooling: /m);
 
-  const plain = await kickoffDetail(mkTask({ request: 'find the date on that invoice' }), WITH_BROWSER);
+  // The cold-cache case: discovery has not answered yet, so nothing is known either way. Without
+  // this field a fresh-process no-op is indistinguishable from "no browser on this box".
+  const unknown = await kickoffDetail(mkTask(), undefined);
+  assert.deepEqual(unknown.detail.walledHosts, ['instagram.com']);
+  assert.equal(unknown.detail.toolingHint, false);
+  assert.equal(unknown.detail.browserTooling, null, 'null = the engine could not say (cold cache / no probe)');
+
+  const plain = await kickoffDetail(mkTask({ request: 'find the date on that invoice' }), true);
   assert.deepEqual(plain.detail.walledHosts, []);
   assert.equal(plain.detail.toolingHint, false);
+  assert.equal(plain.detail.browserTooling, true, 'the browser was there — the ask simply had no walled link');
 });
