@@ -50,7 +50,9 @@ export interface RelevanceHit {
   score: number;
   /** Which held item this is, within its channel: the short-tier row id, the fact key, the
    *  directive id, the long section's heading, `note:<index>` for a note (notes are stored as bare
-   *  strings and have no id). Stable enough to dedupe by and to trace a hit back to its row. */
+   *  strings and have no id). For tracing a hit back to what produced it. NOT a key: the channels
+   *  with real ids give one each, but a long section falls back to its HEADING, so two sections
+   *  under the same heading report the same source. */
   source: string;
 }
 
