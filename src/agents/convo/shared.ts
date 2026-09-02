@@ -748,6 +748,14 @@ export function buildSystemPromptSections(
   // ENVELOPE_FIELDS table that builds the response schema, so the prose and the schema cannot say
   // different things). Same guard on purpose: with no computed state nothing asks her to re-report,
   // and a spec for a field nobody prompted is just weight.
+  //
+  // ONE asymmetry to know about: the persona points at the contract UNCONDITIONALLY ("…arrive in your
+  // per-turn context under 'Your hidden status — the contract'", Context.md's inner-weather section),
+  // so a build with no `computed` leaves that pointer dangling at a block that never rendered. Not
+  // reachable in production — client.ts builds `computed` on every turn and is the only caller — so
+  // the guard is the cheaper invariant to keep. If a lane ever calls this without computed state and
+  // still wants the envelope filled, the pointer is what has to move, not this condition.
+  // (internalWeather.test.ts's "no computed state" case is what pins the off path.)
   if (computed) {
     push('weather', renderStatusForPrompt(affectState, computed, climate));
     push('status_contract', renderStatusContract());
