@@ -123,20 +123,18 @@ test('every label normalizeMoodLabel accepts has a core, and every core has a ba
 // ── the gauge table ──────────────────────────────────────────────────────────
 
 test('the gauge table mirrors DIALS: 1-100 bounds, a default inside them, asymmetric steps', () => {
+  // An exact list, so it pins two things at once: the order (load-bearing — the turn cap truncates
+  // in exactly it) and the closed set, which is where the three deleted envelope gauges
+  // (`conviction`, `engagement`, `profile_note`) would have to reappear to come back.
   assert.deepEqual(
     GAUGE_SPECS.map(s => s.key),
     ['mood_level', 'anxiety', 'warmth', 'social_battery', 'patience', 'rapport'],
-    'order is load-bearing — the turn cap truncates in exactly this order',
   );
   for (const spec of GAUGE_SPECS) {
     assert.equal(spec.floor, 1, `${spec.key} floor`);
     assert.equal(spec.ceiling, 100, `${spec.key} ceiling`);
     assert.ok(spec.floor <= spec.dflt && spec.dflt <= spec.ceiling, `${spec.key} default outside its band`);
     assert.ok(spec.up >= 1 && spec.down >= 1, `${spec.key} has a zero step`);
-  }
-  // The three deleted envelope gauges are gone, not quietly kept: the field-set shrink is the point.
-  for (const dead of ['conviction', 'engagement', 'profile_note']) {
-    assert.ok(!GAUGE_SPECS.some(s => (s.key as string) === dead), `${dead} should not be a gauge`);
   }
   assert.deepEqual(MOOD_SHIFTS, ['lifted', 'steady', 'dipped', 'broke']);
 });
