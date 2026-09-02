@@ -25,7 +25,7 @@
 
 import { getForgetEpoch } from '../db/repositories/memory.js';
 import {
-  getThreadInventory, saveThreadInventory, threadingEnabled,
+  getThreadInventory, saveThreadInventory, threadingEnabled, themeTopicGateEnabled,
 } from '../db/repositories/threadInventory.js';
 import {
   applyThreadHarvest, selectThreadCandidate,
@@ -191,8 +191,10 @@ export async function pickThreadForTurn(
     // Selection reads only the last-turn affect record, and only four of its fields (ThreadAffect) —
     // the gauges she was carrying when she last spoke, which is what "were they venting an hour ago"
     // actually means. A chat with no affect row yet passes null and every mode/mood gate stands down.
+    // The engine is pure, so the ONE env read the selection needs happens here and is injected.
     const { candidate, next, report } = selectThreadCandidate(
       inventory, affect?.last ?? null, opts.incomingText, opts.gapMs, now,
+      { topicGate: themeTopicGateEnabled() },
     );
 
     if (candidate) {

@@ -98,17 +98,26 @@ function deepFreeze<T>(v: T): T {
   return v;
 }
 
-/** Selection with the boring arguments filled in: a wide opening, nothing overlapping. */
+/**
+ * Selection with the boring arguments filled in: a wide opening, and a turn that is ON TOPIC for the
+ * `theme()` fixture (it shares `speed`/`craft` with the label and `fast`/`seams` with the note, so
+ * the label-only shorthand path matches too) while sharing NOTHING with the `loop()` fixture. Both
+ * halves are load-bearing, because the two gates read this text in opposite directions: a theme has
+ * to touch it to be offered, and a loop has to NOT touch it.
+ */
 function pick(
   inventory: ThreadInventory,
-  opts: { affect?: ThreadAffect | null; text?: string; gapMs?: number; now?: number } = {},
+  opts: {
+    affect?: ThreadAffect | null; text?: string; gapMs?: number; now?: number; topicGate?: boolean;
+  } = {},
 ) {
   return selectThreadCandidate(
     inventory,
     opts.affect === undefined ? null : opts.affect,
-    opts.text ?? 'so anyway the bus was late again this morning',
+    opts.text ?? 'shipped it fast again and the seams show, speed over craft as usual',
     opts.gapMs ?? 12 * HOUR,
     opts.now ?? T0,
+    { topicGate: opts.topicGate },
   );
 }
 
@@ -630,7 +639,8 @@ test('an eligible loop wins outright; the theme stage never runs', () => {
   }));
   assert.equal(r.report.reason, 'offered_loop');
   assert.equal(r.candidate?.material, 'loop');
-  assert.deepEqual(r.report.filtered.themes, { open: 0, sore: 0, retired: 0, stale: 0, cooldown: 0 });
+  assert.deepEqual(r.report.filtered.themes,
+    { open: 0, sore: 0, retired: 0, stale: 0, cooldown: 0, off_topic: 0 });
   // The billed ledger entry carries the loop id, and the theme's own stamp is untouched.
   assert.equal(r.next.offers.at(-1)?.material, 'loop');
   assert.equal(r.next.themes[0].lastOfferedAt, 0);
@@ -850,14 +860,15 @@ test('themes rank by confidence, shorthand bonus, and days since last seen — t
   }));
   assert.equal(decayed.candidate?.id, 'th-fresh');
 
-  // The shorthand bonus: shared language outranks a same-confidence guessed pattern.
+  // The shorthand bonus: shared language outranks a same-confidence guessed pattern. Both have to be
+  // on topic to be ranked at all, and shorthand is matched on its LABEL, so the turn names it.
   const bonus = pick(inv({
     turnsSinceOffer: 40,
     themes: [
       theme({ id: 'th-tag', label: 'alpha ridge', confidence: 70, lastSeenAt: T0 - HOUR }),
       theme({ id: 'th-short', label: 'bravo tide', status: 'shorthand', confidence: 60, lastSeenAt: T0 - HOUR }),
     ],
-  }));
+  }), { text: 'bravo tide again, and the seams are showing' });
   assert.equal(bonus.candidate?.id, 'th-short');
 
   // A dead-even tie goes to whichever waited longest since it was last put forward.
@@ -869,6 +880,122 @@ test('themes rank by confidence, shorthand bonus, and days since last seen — t
     ],
   }));
   assert.equal(tie.candidate?.id, 'th-patient');
+});
+
+// ══ 6b. The theme topic gate ═════════════════════════════════════════════════
+
+// The structural cause of off-topic drift, fixed: confidence, recency and a cooldown said WHETHER a
+// theme was worth saying, and nothing said whether it had anything to do with the message in hand.
+test('a theme that does not touch this turn lands in off_topic, and nothing is offered', () => {
+  const held = inv({ themes: [theme()], turnsSinceOffer: 40 });
+  const r = pick(held, { text: 'what time is the standup tomorrow' });
+  assert.equal(r.candidate, null);
+  assert.equal(r.report.reason, 'no_eligible');
+  assert.deepEqual(r.report.filtered.themes,
+    { open: 0, sore: 0, retired: 0, stale: 0, cooldown: 0, off_topic: 1 });
+  assert.deepEqual(r.next, held, 'and a theme nobody offered was not billed for');
+});
+
+// THE positive control, and — deliberately in the same test — the pin on the LOOP gate's opposite
+// direction. The two stages read the same message and want opposite answers:
+//   • a THEME must TOUCH what they just said. A pattern named out of nowhere is the drift bug.
+//   • a LOOP must NOT already be the topic. Asking how the seams review went while they are telling
+//     you how the seams review went is the stored-question-read-off-a-list bug.
+// So one message that touches both filters the LOOP out (`present_topic`) and lets the THEME
+// through. Nobody should ever "fix" either gate into the other: the inversion is the design.
+test('the theme topic gate is the INVERSE of the loop present-topic gate', () => {
+  const r = pick(
+    inv({
+      themes: [theme({ label: 'the seams', note: 'ships fast then hates the seams', lastSeenAt: T0 - HOUR })],
+      loops: [loop({ label: 'the seams review', note: 'the seams review on thursday' })],
+      turnsSinceOffer: 40,
+    }),
+    { text: 'the seams on the review came back rough' },
+  );
+  assert.equal(r.report.reason, 'offered_theme');
+  assert.equal(r.candidate?.material, 'theme');
+  assert.equal(r.report.filtered.themes.off_topic, 0, 'one shared salient token ("seams") is enough');
+  assert.equal(r.report.filtered.loops.present_topic, 1, 'and the SAME overlap is what filters the loop');
+});
+
+// Shorthand is THEIR two words, and its note is a paraphrase of how the label was earned rather than
+// of what it is about — so the label is what has to land.
+test('a shorthand theme is gated on its label alone', () => {
+  const onLabel = pick(
+    inv({
+      themes: [theme({
+        status: 'shorthand', label: 'seam week', note: 'nothing whatsoever to do with it',
+        lastSeenAt: T0 - HOUR,
+      })],
+      turnsSinceOffer: 40,
+    }),
+    { text: 'feels like seam week again' },
+  );
+  assert.equal(onLabel.report.reason, 'offered_theme', 'the label matched; the note never had to');
+  assert.equal(onLabel.candidate?.rungCeiling, 'shorthand');
+
+  // The discriminator, the other way round: a note-only match is NOT enough for shorthand, while the
+  // same theme as `taggable` goes through, because that one is matched by label AND note.
+  const noteOnly = theme({ label: 'seam week', note: 'the standup runs long every tuesday', lastSeenAt: T0 - HOUR });
+  const asShorthand = pick(
+    inv({ themes: [{ ...noteOnly, status: 'shorthand' }], turnsSinceOffer: 40 }),
+    { text: 'the standup ran long again' },
+  );
+  assert.equal(asShorthand.candidate, null);
+  assert.equal(asShorthand.report.filtered.themes.off_topic, 1);
+  const asTaggable = pick(inv({ themes: [noteOnly], turnsSinceOffer: 40 }), { text: 'the standup ran long again' });
+  assert.equal(asTaggable.report.reason, 'offered_theme');
+});
+
+test('among on-topic themes at equal rank, the tighter topical match takes the tie', () => {
+  const held = inv({
+    turnsSinceOffer: 40,
+    themes: [
+      // Both on topic and dead level on confidence and recency — and `th-both` has waited TEN DAYS
+      // longer, so the pre-existing lastOfferedAt tiebreak would have taken it. The topical score
+      // is asked first: `th-tight` is entirely about what they just said, `th-both` half about it.
+      theme({ id: 'th-both', label: 'alpha ridge', note: 'bravo tide', confidence: 60, lastSeenAt: T0 - HOUR, lastOfferedAt: T0 - 40 * DAY }),
+      theme({ id: 'th-tight', label: 'bravo tide', note: 'bravo tide', confidence: 60, lastSeenAt: T0 - HOUR, lastOfferedAt: T0 - 30 * DAY }),
+    ],
+  });
+  const r = pick(held, { text: 'bravo tide again' });
+  assert.equal(r.report.reason, 'offered_theme');
+  assert.equal(r.candidate?.id, 'th-tight');
+  assert.equal(r.report.filtered.themes.off_topic, 0, 'both were on topic — this was a real tie');
+
+  // Flag off and the tie falls back to the longest wait, exactly as before the gate existed.
+  assert.equal(pick(held, { text: 'bravo tide again', topicGate: false }).candidate?.id, 'th-both');
+});
+
+// The off path, pinned against output captured from the engine BEFORE the gate was written (commit
+// 811642b). The one and only difference is the new always-zero `off_topic` bucket, which is a key
+// the pre-change report did not have — everything else, candidate and billing included, is equal.
+test('CONVO_THEME_TOPIC_GATE off: an off-topic theme is selected exactly as it was pre-gate', () => {
+  const r = pick(inv({ themes: [theme()], turnsSinceOffer: 40 }), {
+    text: 'what time is the standup tomorrow', topicGate: false,
+  });
+  assert.deepEqual(r, {
+    candidate: {
+      material: 'theme', rungCeiling: 'fact', label: 'speed vs craft',
+      note: 'ships fast, then hates the seams', kind: 'tension', id: 'th-1',
+    },
+    next: {
+      ...inv(),
+      themes: [theme({ lastOfferedAt: T0 })],
+      offers: [{ at: T0, themeId: 'th-1', material: 'theme' }],
+      pending: { themeId: 'th-1', at: T0, phase: 'offered', material: 'theme' },
+      turnsSinceOffer: 0,
+    },
+    report: {
+      reason: 'offered_theme',
+      filtered: {
+        loops: { quiet: 0, cooldown: 0, present_topic: 0, no_opening: 0, asked: 0, budget: 0 },
+        themes: { open: 0, sore: 0, retired: 0, stale: 0, cooldown: 0, off_topic: 0 },
+      },
+      turnsSinceOffer: 40,
+      offersLast24h: 0,
+    },
+  });
 });
 
 // ══ 7. The rung ceiling ══════════════════════════════════════════════════════
@@ -943,12 +1070,14 @@ test('every candidate that vanished lands in exactly ONE bucket', () => {
     theme({ id: 'c', label: 'charlie kiln', status: 'retired' }),
     theme({ id: 'd', label: 'delta moss', lastSeenAt: T0 - THEME_RECENCY_MS - DAY }),
     theme({ id: 'e', label: 'echo vault', lastOfferedAt: T0 - HOUR, lastSeenAt: T0 - HOUR }),
+    // Perfectly eligible and simply not what this turn is about — the last bucket in the loop.
+    theme({ id: 'f', label: 'foxtrot dune', note: 'foxtrot dune' }),
   ];
   const loops = [
     loop({ id: 'p', label: 'papa meadow', note: 'papa meadow', status: 'asked', askedAt: T0 - HOUR }),
     loop({ id: 'q', label: 'quebec ferry', note: 'quebec ferry', capturedAt: T0 - HOUR, lastSeenAt: T0 - HOUR }),
     loop({ id: 'r', label: 'romeo lantern', note: 'romeo lantern', offeredAt: T0 - HOUR }),
-    loop({ id: 's', label: 'sierra bus was late this morning', note: 'sierra bus was late this morning' }),
+    loop({ id: 's', label: 'sierra seams show fast', note: 'sierra seams show fast' }),
     loop({ id: 't', label: 'tango kiln', note: 'tango kiln', passes: 2 }),
     loop({ id: 'u', label: 'uniform vault', note: 'uniform vault' }),
   ];
@@ -957,8 +1086,9 @@ test('every candidate that vanished lands in exactly ONE bucket', () => {
   const l = r.report.filtered.loops;
   const th = r.report.filtered.themes;
   assert.equal(l.quiet + l.cooldown + l.present_topic + l.no_opening + l.asked + l.budget, loops.length);
-  assert.equal(th.open + th.sore + th.retired + th.stale + th.cooldown, themes.length);
+  assert.equal(th.open + th.sore + th.retired + th.stale + th.cooldown + th.off_topic, themes.length);
   assert.deepEqual(l, { quiet: 1, cooldown: 1, present_topic: 1, no_opening: 1, asked: 1, budget: 1 });
+  assert.deepEqual(th, { open: 1, sore: 1, retired: 1, stale: 1, cooldown: 1, off_topic: 1 });
 });
 
 test('topStandingThread reads without spending: no budget, no cooldown, no state change', () => {
@@ -1128,7 +1258,9 @@ test('selectThreadCandidate is pure, and a no-offer turn hands the inventory str
 // rolling 24h cap of LOOP_OFFER_DAY_CAP and the shared turn gate pace the rest — an offer costs its
 // own turn plus the awaiting turn that follows it. Twelve offers, all loops: with a loop always
 // eligible, the theme stage never gets the four consecutive quiet turns it needs, which is the
-// designed asymmetry (facts over themes) showing up as arithmetic.
+// designed asymmetry (facts over themes) showing up as arithmetic. The turn text is `''` throughout,
+// which is also the media-only case — an empty turn closes the theme gate (`whenEmpty: 'no_touch'`)
+// and leaves the loop gate open, so the bound has to hold with the themes doubly shut out.
 test('40 turns of maximal emission stay bounded — 12 offers, 16 themes, 8 loops', () => {
   const LOOPS = [
     'dentist appointment', 'kitchen renovation', 'passport renewal', 'marathon registration',
@@ -1183,11 +1315,15 @@ test('40 turns of maximal emission stay bounded — 12 offers, 16 themes, 8 loop
 // still short of the tenure the pattern rung asks for.
 test('40 turns of theme-only emission: 7 offers, every one at the bottom rung', () => {
   const THEMES = ['speed versus craft', 'money anxiety spiral', 'hates asking for help'];
+  // Every turn is on topic for all three themes, and equally so — each one's whole label is
+  // contained in it — so the topic gate opens for all of them and its ranking tiebreak is a wash.
+  // Budgets are the thing under test here, and this keeps them the only thing that moves.
+  const TEXT = THEMES.join(', ');
   let current = defaultThreadInventory();
   const rungs: string[] = [];
   for (let turn = 0; turn < 40; turn++) {
     const now = T0 + turn * 5 * HOUR;
-    const sel = selectThreadCandidate(current, null, '', 5 * HOUR, now);
+    const sel = selectThreadCandidate(current, null, TEXT, 5 * HOUR, now);
     if (sel.candidate) rungs.push(sel.candidate.rungCeiling);
     current = sel.next;
     current = applyThreadHarvest(current, `tension: ${THEMES[turn % THEMES.length]}`, 'took', now).next;

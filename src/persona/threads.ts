@@ -30,6 +30,7 @@
 import type { AffectStatus, ThreadOutcome } from './status.js';
 import { sanitizeThreadText } from './status.js';
 import { simScore, tokenSet } from '../memory/textSim.js';
+import { touchesTurn } from '../memory/topicality.js';
 export type { ThreadOutcome };
 
 /** How a theme was tagged by the model. `pattern` is the unprefixed fallback — she noticed a shape
@@ -872,7 +873,9 @@ export interface ThreadSelectReport {
    *  quiet turn has to be able to say WHY it was quiet. */
   filtered: {
     loops: { quiet: number; cooldown: number; present_topic: number; no_opening: number; asked: number; budget: number };
-    themes: { open: number; sore: number; retired: number; stale: number; cooldown: number };
+    /** `off_topic` is the theme stage's mirror of `loops.present_topic`, and it points the OTHER
+     *  way on purpose — see the topic gate in `selectThreadCandidate`. */
+    themes: { open: number; sore: number; retired: number; stale: number; cooldown: number; off_topic: number };
   };
   turnsSinceOffer: number;
   offersLast24h: number;
@@ -881,7 +884,7 @@ export interface ThreadSelectReport {
 function emptyFiltered(): ThreadSelectReport['filtered'] {
   return {
     loops: { quiet: 0, cooldown: 0, present_topic: 0, no_opening: 0, asked: 0, budget: 0 },
-    themes: { open: 0, sore: 0, retired: 0, stale: 0, cooldown: 0 },
+    themes: { open: 0, sore: 0, retired: 0, stale: 0, cooldown: 0, off_topic: 0 },
   };
 }
 
@@ -905,8 +908,19 @@ function themeCooldownMs(t: ThreadTheme): number {
  *      surgery went is care, not analysis, and a venting turn is often exactly when it belongs. What
  *      loops need instead is an OPENING (a real gap before the message) and the thing not already
  *      being the topic — both read from this turn, not from a stale gauge.
- *   3. THEME STAGE — the mode/mood gates, the turn gate, the day cap, then per-theme eligibility.
+ *   3. THEME STAGE — the mode/mood gates, the turn gate, the day cap, then per-theme eligibility,
+ *      whose LAST check is the topic gate: a theme has to touch the message in hand.
  *   4. The rung ceiling on whoever won.
+ *
+ * The two stages read the incoming text in OPPOSITE directions, and that inversion is the design:
+ * a theme must TOUCH this turn (a pattern named out of nowhere is drift), while a loop must NOT
+ * already be the topic (asking how it went while they are telling you how it went is a stored
+ * question read off a list). Neither is a bug in need of the other's shape.
+ *
+ * `opts.topicGate` is the CONVO_THEME_TOPIC_GATE flag, read by the caller
+ * (`themeTopicGateEnabled()`, beside the store) and injected rather than read here: this module is
+ * pure — `now` in, no clock, no DB, no env — and the store it would import from imports this file.
+ * Omitted means ON, matching the flag's default. Off is byte-identical to the pre-gate engine.
  */
 export function selectThreadCandidate(
   inventory: ThreadInventory,
@@ -914,7 +928,9 @@ export function selectThreadCandidate(
   incomingText: string,
   gapMs: number,
   now: number,
+  opts: { topicGate?: boolean } = {},
 ): { candidate: ThreadCandidate | null; next: ThreadInventory; report: ThreadSelectReport } {
+  const topicGate = opts.topicGate ?? true;
   const filtered = emptyFiltered();
   const offersLast24h = offersInWindow(inventory.offers, now);
   const base = {
@@ -981,6 +997,16 @@ export function selectThreadCandidate(
     const recency = t.status === 'shorthand' ? SHORTHAND_RECENCY_MS : THEME_RECENCY_MS;
     if (now - t.lastSeenAt > recency) { filtered.themes.stale++; continue; }
     if (t.lastOfferedAt > 0 && now - t.lastOfferedAt < themeCooldownMs(t)) { filtered.themes.cooldown++; continue; }
+    // THE TOPIC GATE, last so the buckets above keep their pre-gate counts. Whether a theme is worth
+    // saying is everything above; whether it has anything to do with what they just said is this.
+    // A token-less turn (media only, a bare ack) closes it — `whenEmpty: 'no_touch'` — because a turn
+    // that said nothing topical is not the turn to name a pattern in someone.
+    // SHORTHAND is matched on its LABEL alone: it is their own two words, and its note is a
+    // paraphrase of how the label was earned rather than of what it is about.
+    if (topicGate) {
+      const against = t.status === 'shorthand' ? t.label : matchText(t);
+      if (!touchesTurn(incomingText, against, { whenEmpty: 'no_touch' })) { filtered.themes.off_topic++; continue; }
+    }
     eligibleThemes.push(t);
   }
   if (!eligibleThemes.length) return nothing('no_eligible');
@@ -989,10 +1015,19 @@ export function selectThreadCandidate(
     t.confidence
     + (t.status === 'shorthand' ? THEME_SHORTHAND_RANK_BONUS : 0)
     - Math.floor(Math.max(0, now - t.lastSeenAt) / DAY);
+  // How tightly an already-on-topic theme matches this turn — the graded second opinion on top of
+  // the gate's yes/no. `null` (below the similarity thresholds) sorts under every real score, and
+  // with the gate off it is a flat 0, which leaves the comparison below exactly as it was.
+  const topicRank = (t: ThreadTheme) =>
+    topicGate ? (matchScore(probe, tokenSet(matchText(t))) ?? -1) : 0;
   const winner = eligibleThemes.reduce((a, b) => {
     const d = rank(b) - rank(a);
-    // Ties go to whichever has waited longest since it was last put forward.
-    return d > 0 || (d === 0 && b.lastOfferedAt < a.lastOfferedAt) ? b : a;
+    if (d !== 0) return d > 0 ? b : a;
+    // A tie on standing goes to the better topical fit…
+    const topical = topicRank(b) - topicRank(a);
+    if (topical !== 0) return topical > 0 ? b : a;
+    // …and a tie on both to whichever has waited longest since it was last put forward.
+    return b.lastOfferedAt < a.lastOfferedAt ? b : a;
   });
 
   const candidate: ThreadCandidate = {

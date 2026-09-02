@@ -237,7 +237,7 @@ test('an offered theme is billed into the row and reported on the receipt', asyn
   await seed(H, { themes: [taggableTheme(T0)], turnsSinceOffer: THREAD_MIN_TURNS_BETWEEN_OFFERS + 1 });
 
   const picked = await pickThreadForTurn(H, affect(T0 - 60_000), {
-    incomingText: 'anyway how was your weekend', gapMs: 5 * 60_000, now: T0,
+    incomingText: 'anyway how was the weekend, still shipping fast?', gapMs: 5 * 60_000, now: T0,
   });
   assert.equal(picked.offer?.id, 't1');
   assert.equal(picked.offer?.material, 'theme');
@@ -257,6 +257,43 @@ test('an offered theme is billed into the row and reported on the receipt', asyn
   assert.equal(d.material, 'theme');
   assert.equal(d.rungCeiling, 'fact');
   assert.equal(d.label, 'speed vs craft');
+});
+
+// The gate that fixes off-topic drift, through the real read path — and the receipt it leaves. The
+// bucket rides along for free because `pickThreadForTurn` spreads the whole ThreadSelectReport into
+// the event, which is exactly why the report is the shape it is.
+test('an off-topic theme is not offered, and threads:select names the new bucket', async () => {
+  await seed(H, { themes: [taggableTheme(T0)], turnsSinceOffer: THREAD_MIN_TURNS_BETWEEN_OFFERS + 1 });
+
+  const picked = await pickThreadForTurn(H, affect(T0 - 60_000), {
+    incomingText: 'what time is the standup tomorrow', gapMs: 5 * 60_000, now: T0,
+  });
+  assert.deepEqual(picked, { offer: null, outcomeAsk: null });
+
+  const d = detail(trace('threads:select'));
+  assert.equal(d.reason, 'no_eligible');
+  assert.equal((d.filtered as { themes: { off_topic: number } }).themes.off_topic, 1);
+  // Nothing was billed, so the theme is still there for the turn that IS about it.
+  assert.equal((await getThreadInventory(H)).themes[0].lastOfferedAt, 0);
+});
+
+// CONVO_THEME_TOPIC_GATE is the narrower switch inside CONVO_THREADING_ENABLED: threading stays on,
+// the topicality filter comes off, and the same off-topic theme is offered exactly as it was before
+// the gate existed.
+test('CONVO_THEME_TOPIC_GATE=false restores the pre-gate selection', async () => {
+  process.env.CONVO_THEME_TOPIC_GATE = 'false';
+  try {
+    await seed(H, { themes: [taggableTheme(T0)], turnsSinceOffer: THREAD_MIN_TURNS_BETWEEN_OFFERS + 1 });
+    const picked = await pickThreadForTurn(H, affect(T0 - 60_000), {
+      incomingText: 'what time is the standup tomorrow', gapMs: 5 * 60_000, now: T0,
+    });
+    assert.equal(picked.offer?.id, 't1');
+    const d = detail(trace('threads:select'));
+    assert.equal(d.reason, 'offered_theme');
+    assert.equal((d.filtered as { themes: { off_topic: number } }).themes.off_topic, 0);
+  } finally {
+    delete process.env.CONVO_THEME_TOPIC_GATE;
+  }
 });
 
 // The turn AFTER an offer: the pending slot has been walked to `awaiting` by that turn's harvest, so
@@ -297,7 +334,7 @@ test('offer → harvest → ask → outcome walks the pending slot end to end', 
   await seed(H, { themes: [taggableTheme(T0)], turnsSinceOffer: THREAD_MIN_TURNS_BETWEEN_OFFERS + 1 });
 
   const first = await pickThreadForTurn(H, affect(T0 - 60_000), {
-    incomingText: 'anyway how was your weekend', gapMs: 5 * 60_000, now: T0,
+    incomingText: 'anyway how was the weekend, still shipping fast?', gapMs: 5 * 60_000, now: T0,
   });
   assert.ok(first.offer);
 
