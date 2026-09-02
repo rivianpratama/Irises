@@ -1757,12 +1757,23 @@ export async function processConvoResult(args: {
   // can cross a handle boundary. A group's notes crowd each other out exactly like a person's.
   if (handle && noteSaved) void groomNotes(handle);
 
-  // Tripwire: a turn that produced NOTHING the user or the thread can see — no bubble, no reaction,
-  // no action — is the silent-turn failure mode. The floor above now RECOVERS the no-tool-call
-  // variant, so what still reaches here is the tool-bearing one (a tool-only envelope whose tool has
-  // no acknowledgment floor was the original bug) — plus any turn with no inbound text of its own.
-  // Leave a diagnostic event so the dashboard surfaces the next variant instead of it vanishing.
-  if (!textResponse && !reaction && !renameChat && !rememberedUser && !removeMember && !delegatedTask) {
+  // Nothing the user or the thread can see: no bubble, no tapback, and no action taken on their
+  // behalf. ONE predicate with two readers — the tripwire immediately below and the turn receipt's
+  // `outcome.silent` at the bottom of this function — because a receipt that claims parity with an
+  // event has to be reading the same sentence, not a copy of it. A new visible-action channel (the
+  // next tool that acts for them) belongs HERE and is then true of both.
+  //
+  // Deliberately NOT shared with the silent-turn floor above, which tests the same six terms at an
+  // earlier moment — before it voices — and would read `false` here afterwards. Same words, a
+  // different question ("did the model produce nothing" vs "did this turn end with nothing").
+  const producedNothingVisible = !textResponse && !reaction && !renameChat && !rememberedUser && !removeMember && !delegatedTask;
+
+  // Tripwire: that state is the silent-turn failure mode. The floor above now RECOVERS the
+  // no-tool-call variant, so what still reaches here is the tool-bearing one (a tool-only envelope
+  // whose tool has no acknowledgment floor was the original bug) — plus any turn with no inbound
+  // text of its own. Leave a diagnostic event so the dashboard surfaces the next variant instead of
+  // it vanishing.
+  if (producedNothingVisible) {
     console.warn('[convo] turn produced no user-visible output — nothing sent');
     record({ type: 'event', label: 'convo:silent_turn', chatId, handle });
   }
@@ -1817,9 +1828,10 @@ export async function processConvoResult(args: {
           // The one extra call, spent on this turn either way: this pass IS the retry, or the retry
           // was tried on this pass and its call died into the voiced floor.
           retried: retrySpent,
-          // The turn's own reading of "nothing the user or the thread can see" — the same condition
-          // the silent-turn tripwire above fires on. The boundary re-checks it against what shipped.
-          silent: !textResponse && !reaction && !renameChat && !rememberedUser && !removeMember && !delegatedTask,
+          // The turn's own reading of "nothing the user or the thread can see" — literally the
+          // predicate the silent-turn tripwire above fires on, not a second copy of it. The
+          // boundary re-checks it against what shipped.
+          silent: producedNothingVisible,
           toolCalls: res.toolCalls.map(c => c.name),
         },
       })

@@ -377,6 +377,28 @@ test('a silent-turn retry that was spent and died still reads as retried', async
   assert.ok(out.text && out.text.trim().length, 'and the user is still not left on read');
 });
 
+test('the tool-only turn the receipt calls silent is the same turn the tripwire flags', async () => {
+  clearTraces();
+  const base = convoArgs();
+  // A `remember_user` the cross-user guard REFUSES (the handle is neither the sender nor a
+  // participant) with no bubbles: a tool-BEARING turn that put nothing on their screen and did
+  // nothing on their behalf. The silent-turn floor cannot recover it — `!res.toolCalls.length` is
+  // its whole guard — so this is exactly the variant the `convo:silent_turn` tripwire still exists
+  // to surface, and the receipt claims parity with that tripwire. ONE predicate, both readers: this
+  // is what would break if a future visible-action channel were added to only one of them.
+  const out = await processConvoResult({
+    ...base,
+    res: envelope([], GOOD_STATUS, [{ name: 'remember_user', input: { handle: '+15559998888', fact: 'likes cedars' } }]),
+  });
+
+  const d = out.turnTrace!;
+  assert.deepEqual(d.outcome.toolCalls, ['remember_user'], 'names only, and the tool did run');
+  const flagged = getTraces().some(e => e.label === 'convo:silent_turn' && e.chatId === base.chatId);
+  assert.equal(d.outcome.silent, flagged, 'the receipt and the tripwire read the SAME predicate');
+  assert.equal(d.outcome.silent, true, 'and on this turn both of them say silent');
+  clearTraces();
+});
+
 test('the flag off returns no draft, so the boundary has nothing to file', async () => {
   process.env.TURN_TRACE_ENABLED = 'off';
   try {
