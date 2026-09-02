@@ -2,19 +2,20 @@
 //
 // How many times the model is told the same thing.
 //
-// Several of Convo's load-bearing clauses reach it TWICE on every turn — once in the persona's own
-// section, once in the behaviour anchor at the recency edge. The second copy is deliberate (a 146k
-// prompt loses its middle, so the anchor re-states what decays), but a retelling can drift from its
-// source, and a rule stated three times is a rule nobody can edit. Nothing has ever counted them.
+// Four of Convo's load-bearing clauses used to reach it TWICE on every turn — once in the persona's
+// own section, once in the behaviour anchor at the recency edge. The second copy was deliberate (a
+// 146k prompt loses its middle, so the anchor re-stated what decays), but a retelling can drift from
+// its source, and a rule stated twice is a rule nobody can edit. Nothing had ever counted them.
 //
-// This file counts them against the assembled prompt and pins today's numbers, which live in ONE
-// exported table (CLAUSE_INVENTORY, promptPolicy.ts) so that P1's collapse of a duplicate is a
-// one-line diff there rather than a hunt through a test. It also holds the one structural rule that
-// falls out of the same reading: no `## ` heading appears twice in the prompt — a duplicated heading
-// is how two blocks end up claiming to be the same section.
+// This file counts them against the assembled prompt and pins the numbers, which live in ONE
+// exported table (CLAUSE_INVENTORY, promptPolicy.ts) so that collapsing a duplicate is a one-line
+// diff there rather than a hunt through a test. P1 did exactly that: the behaviour anchor's copies
+// are gone and every row is pinned at ONE. It also holds the one structural rule that falls out of
+// the same reading: no `## ` heading appears twice in the prompt — a duplicated heading is how two
+// blocks end up claiming to be the same section.
 //
-// It changes nothing and shrinks nothing. A count that MOVES is the failure, in either direction:
-// up means a third copy arrived, down means a rule was deleted without anyone deciding to.
+// It changes nothing and shrinks nothing itself. A count that MOVES is the failure, in either
+// direction: up means a copy came back, down means a rule was deleted without anyone deciding to.
 process.env.TZ = 'UTC';
 
 import { test } from 'node:test';
@@ -152,8 +153,8 @@ test('the inventory is a usable table — unique ids, every clause actually pres
 
 test('each count splits between the persona and the anchors exactly as the table says', () => {
   // This is what turns the table's prose into a fact: a clause stated once and retold at the recency
-  // edge reads 2/1, and a clause duplicated INSIDE Context.md reads 2/0. P1 needs the difference —
-  // the first is a deliberate anchor, the second is the thing to collapse.
+  // edge reads 2/1, and a clause duplicated INSIDE Context.md reads 2/0. P1 needed the difference —
+  // the first was a deliberate anchor, the second was the thing to collapse.
   const anchorAt = PROMPT.lastIndexOf('## Still the same Irises');
   assert.ok(anchorAt > 0, 'found the behaviour anchor, where the two static bookends begin');
   const body = PROMPT.slice(0, anchorAt);

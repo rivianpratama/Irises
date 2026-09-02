@@ -6,11 +6,13 @@
 // rewrite that drops one of them looks like a tidy-up in review and shows up as drift in production
 // weeks later. This file makes that deletion fail immediately, by id.
 //
-// Its other half is the same job pointed the other way: the two anchors at the recency edge RESTATE
-// the bubble law, and the pipeline ENFORCES it (pipeline/bubbleJson.ts, pipeline/bubbles.ts). Those
-// two statements of the same numbers must agree, or the model is told one law and held to another.
+// Its other half is the same job pointed the other way: the JSON anchor at the recency edge STATES
+// the bubble law, and the pipeline ENFORCES it (pipeline/bubbleJson.ts, pipeline/bubbles.ts). The
+// statement and the backstop must agree, or the model is told one law and held to another.
 // promptSections.test.ts pins the prompt's exact bytes; this pins the RELATIONSHIP between the words
-// and the constants, so changing a constant fails here instead of silently disagreeing.
+// and the constants, so changing a constant fails here instead of silently disagreeing. Since P1 the
+// JSON anchor is the ONLY place in Convo's prompt that states the numbers, and the check below holds
+// it that way.
 process.env.TZ = 'UTC';
 
 import { test } from 'node:test';
@@ -64,18 +66,14 @@ test('the JSON anchor states the bubble law in the numbers the pipeline enforces
   assert.ok(json.includes(String(BUBBLE_LAW_MAX)), 'the count the model is told is the exported one');
 });
 
-/** Small numbers as the anchors spell them. Only ever indexed by a bubble-law constant, so the list
- *  stops exactly where the law does. */
-const SPELLED = ['zero', 'one', 'two', 'three', 'four', 'five'] as const;
-
-test("the behaviour anchor's retelling of the law agrees with the same constants", () => {
-  // The retelling writes the count as a WORD ("three at most"), so it cannot be interpolated the way
-  // the JSON anchor's sentence is — which is exactly why it needs a test: raising BUBBLE_LAW_MAX
-  // would leave this line quietly telling her the old number.
+test('the behaviour anchor states no bubble number at all — the JSON anchor owns the law', () => {
+  // Until P1 the behaviour anchor retold the law in its own words ("5-12 words, three at most"), so
+  // raising a constant left it quietly telling her the old number. The fix was not a better
+  // interpolation but a deletion: the law is stated ONCE, in the JSON anchor above. This holds that —
+  // any digit reappearing here is a second statement of a number, which is how the two drift apart.
   const { behavior } = anchors();
-  assert.ok(BUBBLE_LAW_MAX < SPELLED.length, 'the law is still a number this list can spell');
-  assert.ok(
-    behavior.includes(`${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, ${SPELLED[BUBBLE_LAW_MAX]} at most`),
-    `the behaviour anchor says "${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, ${SPELLED[BUBBLE_LAW_MAX]} at most" — it has drifted from the pipeline constants`,
-  );
+  const digits = behavior.match(/\d+/g) ?? [];
+  assert.deepEqual(digits, [], 'a number came back into the behaviour anchor — state it in the JSON anchor instead');
+  const bullets = behavior.split('\n').filter(l => l.startsWith('- '));
+  assert.equal(bullets.length, 6, 'the anchor is the six lines that drift first, and stays that short');
 });

@@ -69,7 +69,7 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
   reply_order: 640,            // 613 — renderArrivalGap (the backward-order variant, the larger one)
   extra: 610,                  // 583 — the pending version note (update/announce.ts)
   turn_focus: 570,             // 544 — a 400-char restatement plus two hits
-  behavior_anchor: 1_740,      // 1,659 — the persona retelling at the recency edge
+  behavior_anchor: 705,        // 699 — P1: six lines that drift first (was 1,740 for 1,659 / 14 lines)
   json_anchor: 3_050,          // 2,908 — the envelope contract, last in the prompt
   memory_stack: 12_500,        // 12,290 — the cold stack (discovery + default stance), the biggest measured
 };
@@ -144,12 +144,12 @@ export interface ClauseCount {
 /**
  * How many times each load-bearing clause reaches the model on one turn.
  *
- * Several of these arrive TWICE — once in the persona's own section and once in the behaviour anchor
- * at the recency edge — which is not an accident: the anchor is a deliberate retelling of rules that
- * decay across a 146k-character prompt (charter §11.3, and the anchor's own comment in shared.ts
- * says so). But a retelling that has drifted from its source is worse than no retelling, and a rule
- * stated three times is a rule nobody can edit. So the counts are pinned rather than judged, and P1
- * tightens the ones it decides to collapse — a one-line edit per row, right here.
+ * P0 measured four of these arriving TWICE — once in the persona's own section, once in the
+ * behaviour anchor at the recency edge. The second copy was a deliberate retelling of rules that
+ * decay across a 146k-character prompt (charter §11.3), but a retelling can drift from its source,
+ * and a rule stated twice is a rule nobody can edit. P1 collapsed those four: the behaviour anchor
+ * now holds six identity lines and states no rule that has its own section, so every row below is
+ * pinned at exactly ONE copy, in the one place that owns it.
  *
  * Read `anchorCopies` and `where` before changing a `count`. `predict_named` in particular is 2/0
  * for a reason that is NOT duplication: both copies are in Context.md because the second one is a
@@ -159,9 +159,9 @@ export const CLAUSE_INVENTORY: readonly ClauseCount[] = [
   {
     id: 'predict_clause',
     phrase: 'from your model of them',
-    count: 2,
-    anchorCopies: 1,
-    where: "Context.md's \"Predict, don't interview\" header + the behaviour anchor's retelling of it",
+    count: 1,
+    anchorCopies: 0,
+    where: "Context.md's \"Predict, don't interview\" header — P1 deleted the behaviour anchor's retelling",
   },
   {
     id: 'predict_named',
@@ -173,9 +173,9 @@ export const CLAUSE_INVENTORY: readonly ClauseCount[] = [
   {
     id: 'probe_clause',
     phrase: "probe wears a statement's clothes",
-    count: 2,
-    anchorCopies: 1,
-    where: 'its own section header + the behaviour anchor',
+    count: 1,
+    anchorCopies: 0,
+    where: "its own section header in Context.md — P1 deleted the behaviour anchor's copy",
   },
   {
     id: 'four_bends_clause',
@@ -187,9 +187,9 @@ export const CLAUSE_INVENTORY: readonly ClauseCount[] = [
   {
     id: 'tease_wound_clause',
     phrase: 'never their wound',
-    count: 2,
-    anchorCopies: 1,
-    where: "the four-bends parenthetical + the behaviour anchor's tease line",
+    count: 1,
+    anchorCopies: 0,
+    where: "the four-bends parenthetical — P1 deleted the behaviour anchor's tease line",
   },
   {
     id: 'response_overrules_clause',
@@ -208,9 +208,9 @@ export const CLAUSE_INVENTORY: readonly ClauseCount[] = [
   {
     id: 'greeting_clause',
     phrase: 'A greeting gets a greeting.',
-    count: 2,
-    anchorCopies: 1,
-    where: 'the "what you never do with what you know" list + the behaviour anchor',
+    count: 1,
+    anchorCopies: 0,
+    where: 'the "what you never do with what you know" list — P1 deleted the behaviour anchor\'s copy',
   },
   {
     id: 'greeting_example_wrong',
