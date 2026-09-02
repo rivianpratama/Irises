@@ -72,7 +72,12 @@ const HISTORY: StoredMessage[] = [
 const CONTEXT_BLOCK = '## Who you are talking to\nSam, three months in. Runs a nursery.\n\n<user_notes>\nthe cedar order is late\n</user_notes>';
 
 /** A REAL assembled prompt, measured — the affect state is passed so the internal-weather block
- *  actually renders, which is what the leak guard needs something to find. */
+ *  actually renders, which is what the leak guard needs something to find.
+ *
+ *  Two calls are NOT interchangeable, and any test comparing a recorded size against a prompt must
+ *  measure ONE build: the `current_time` section embeds a wall-clock `Intl` string whose LENGTH
+ *  moves at hour and day boundaries ("9:59" → "10:00", "Jan 9" → "Jan 10"), so two builds either
+ *  side of such an instant differ by a character. */
 function realPrompt() {
   const chatContext: ChatContext = {
     isGroupChat: false, participantNames: [], chatName: null,
@@ -85,10 +90,11 @@ function realPrompt() {
   );
 }
 
-/** The turn inputs convo/client.ts hands processConvoResult, over that real prompt. */
-function turnInputs(): TurnTraceTurnInputs {
+/** The turn inputs convo/client.ts hands processConvoResult, over that real prompt. Takes the build
+ *  so a test that also asserts against `prompt.system.length` can hand in the one it measured. */
+function turnInputs(prompt = realPrompt()): TurnTraceTurnInputs {
   return {
-    prompt: realPrompt(),
+    prompt,
     messages: [
       { content: 'any word on the cedars' },
       { content: 'checking now' },
@@ -106,12 +112,12 @@ function turnInputs(): TurnTraceTurnInputs {
 const SPOKE: TurnTraceOutcome = { wasEnvelope: true, retried: false, silent: false, toolCalls: [] };
 const SAID_NOTHING: TurnTraceOutcome = { wasEnvelope: false, retried: true, silent: true, toolCalls: [] };
 
-function draft(outcome: TurnTraceOutcome = SPOKE, raw: Record<string, unknown> | null = GOOD_STATUS): TurnTraceDraft {
-  return buildTurnTraceDraft({
-    turn: turnInputs(),
-    affect: { raw, coerced: coerceStatus(raw) },
-    outcome,
-  });
+function draft(
+  outcome: TurnTraceOutcome = SPOKE,
+  raw: Record<string, unknown> | null = GOOD_STATUS,
+  turn: TurnTraceTurnInputs = turnInputs(),
+): TurnTraceDraft {
+  return buildTurnTraceDraft({ turn, affect: { raw, coerced: coerceStatus(raw) }, outcome });
 }
 
 const NO_BUBBLES = buildBubbleReport([], { hardCapped: false, splits: 0 });
@@ -179,8 +185,10 @@ test('an emitted status rides along coerced, with its raw copy', () => {
 // ── the prompt measurement ───────────────────────────────────────────────────
 
 test('the measured sections add back up to the prompt they came from', () => {
+  // ONE build, measured and recorded — see realPrompt: a second build can differ by a character
+  // across an hour or day boundary, which would make this assertion a clock-dependent flake.
   const prompt = realPrompt();
-  const detail = buildTurnTrace({ draft: draft(), bubbles: TWO_BUBBLES });
+  const detail = buildTurnTrace({ draft: draft(SPOKE, GOOD_STATUS, turnInputs(prompt)), bubbles: TWO_BUBBLES });
 
   assert.equal(detail.prompt.systemChars, prompt.system.length);
   // The exhaustiveness check, in Task 1's own arithmetic — every character of the assembled prompt
@@ -207,9 +215,10 @@ test('the section list is capped, and the cap sits above the whole section vocab
   assert.ok(SECTION_IDS.length < TRACE_SECTIONS_CAP, `${SECTION_IDS.length} sections < cap ${TRACE_SECTIONS_CAP}`);
 
   const many = Array.from({ length: 40 }, () => ({ name: 'extra' as const, chars: 10 }));
+  const turn = turnInputs();
   const detail = buildTurnTrace({
     draft: buildTurnTraceDraft({
-      turn: { ...turnInputs(), prompt: { ...realPrompt(), sections: many } },
+      turn: { ...turn, prompt: { ...turn.prompt, sections: many } },
       affect: { raw: GOOD_STATUS, coerced: coerceStatus(GOOD_STATUS) },
       outcome: SPOKE,
     }),
@@ -332,7 +341,9 @@ function envelope(bubbles: string[], status?: Record<string, unknown>, toolCalls
 }
 
 let seq = 0;
-function convoArgs() {
+/** Takes the trace inputs so a test can hold on to the exact prompt build the turn was handed —
+ *  the only build whose `system.length` a recorded `systemChars` is allowed to be compared with. */
+function convoArgs(trace: TurnTraceTurnInputs = turnInputs()) {
   __resetOpsCoordination();
   const sender = `+1555710${(seq++).toString().padStart(4, '0')}`;
   const chatContext: ChatContext = { isGroupChat: false, participantNames: [], chatName: null, senderHandle: sender };
@@ -343,12 +354,13 @@ function convoArgs() {
     history: [],
     media: emptyMedia(),
     textToSend: ASK,
-    trace: turnInputs(),
+    trace,
   };
 }
 
 test('a Convo turn hands the send boundary a draft of everything but the bubbles', async () => {
-  const out = await processConvoResult({ ...convoArgs(), res: envelope(['ha', 'ok one cat joke'], GOOD_STATUS) });
+  const trace = turnInputs();   // the one build this turn was handed, and the one it is measured against
+  const out = await processConvoResult({ ...convoArgs(trace), res: envelope(['ha', 'ok one cat joke'], GOOD_STATUS) });
 
   const d = out.turnTrace!;
   assert.ok(d, 'the draft rides the ChatResponse');
@@ -357,7 +369,7 @@ test('a Convo turn hands the send boundary a draft of everything but the bubbles
   assert.deepEqual(d.outcome, { wasEnvelope: true, retried: false, silent: false, toolCalls: [] });
   assert.deepEqual(d.hits, ['the cedar order'], 'the turn-focus hits ride through');
   assert.equal(d.gates.memory.shortHotLook, 'full');
-  assert.equal(d.prompt.systemChars, realPrompt().system.length);
+  assert.equal(d.prompt.systemChars, trace.prompt.system.length);
 
   // The bubbles are the one thing it does NOT have — the boundary owns that.
   assert.equal('bubbles' in d, false);

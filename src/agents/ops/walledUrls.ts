@@ -17,23 +17,59 @@
  *  prompt's `tooling:` line, the `ops:kickoff` receipt and the retry escalation all read this. */
 export const WALLED_HOSTS: readonly string[] = [
   'instagram.com', 'tiktok.com', 'x.com', 'twitter.com', 'facebook.com', 'fb.watch',
-  'linkedin.com', 'threads.net', 'youtube.com', 'pinterest.com', 'reddit.com',
+  'linkedin.com', 'threads.net', 'youtube.com', 'youtu.be', 'pinterest.com', 'reddit.com',
 ];
 
-/** Hosts walled on SOME paths only, keyed by their WALLED_HOSTS entry. youtube.com is the one:
- *  its watch/shorts players render title, channel and description in JS (and increasingly gate them
- *  behind a consent/sign-in interstitial), while a channel, search or home URL is simply not the
- *  shape this hint is about. */
+/** Hosts walled on SOME paths only, keyed by their WALLED_HOSTS entry. YouTube in both its forms is
+ *  the case: its watch/shorts players render title, channel and description in JS (and increasingly
+ *  gate them behind a consent/sign-in interstitial), while a channel, search or home URL is simply
+ *  not the shape this hint is about. `youtu.be` is the share form YouTube itself hands out and the
+ *  one most likely to be pasted into a chat — every path on it IS a player, so its gate only has to
+ *  exclude the bare host. */
 const PATH_GATES: ReadonlyArray<readonly [string, RegExp]> = [
   ['youtube.com', /^\/(shorts\/|watch\b)/i],
+  ['youtu.be', /^\/[^/]/],
 ];
 
 // Only http(s) links count — a scheme-less mention ("instagram.com/reel/x") is not something the
 // engine can be told to open, and a non-http scheme is not a page. Stops at whitespace and at the
-// delimiters that wrap links in prose, markdown and HTML so those never end up inside the URL.
-const URL_RE = /https?:\/\/[^\s<>"'`)\]}]+/gi;
+// quote/angle delimiters that wrap links in HTML and prose, which never appear inside one.
+const URL_RE = /https?:\/\/[^\s<>"'`]+/gi;
 // Sentence punctuation that trails a URL in prose ("see …/reel/X/.") is not part of it.
 const TRAILING_PUNCT = /[.,;:!?…]+$/;
+// Wrapper pairs prose puts AROUND a link: "(…)", a markdown "[text](…)", a "{…}" in code. Their
+// closers are deliberately NOT excluded from URL_RE above — a real post path can contain one
+// ("…/comments/1/some_title_(2026)/"), and excluding the character truncated the URL mid-string,
+// which is what the retry directive would then have told the engine to navigate to. Only an
+// UNBALANCED closer belongs to the prose; a matched pair belongs to the URL.
+const WRAPPERS: ReadonlyArray<readonly [string, string]> = [['(', ')'], ['[', ']'], ['{', '}']];
+
+function charCount(text: string, ch: string): number {
+  let n = 0;
+  for (const c of text) if (c === ch) n += 1;
+  return n;
+}
+
+/** Strip ONE layer of trailing prose — sentence punctuation, or an unbalanced wrapper closer.
+ *  Returns the input unchanged when there is nothing left to take. */
+function dropOneTail(url: string): string {
+  const unpunctuated = url.replace(TRAILING_PUNCT, '');
+  if (unpunctuated !== url) return unpunctuated;
+  const pair = WRAPPERS.find(([, close]) => url.endsWith(close));
+  if (pair && charCount(url, pair[1]) > charCount(url, pair[0])) return url.slice(0, -1);
+  return url;
+}
+
+/** The URL as the author meant it: prose punctuation and wrappers peeled off, in any order and any
+ *  depth ("(see …/status/1)." → "…/status/1"), and nothing the URL owns removed. */
+function trimUrlTail(raw: string): string {
+  let url = raw;
+  for (;;) {
+    const next = dropOneTail(url);
+    if (next === url) return url;
+    url = next;
+  }
+}
 
 export interface WalledUrl {
   /** The URL exactly as written in the ask (trailing prose punctuation trimmed). */
@@ -57,7 +93,7 @@ export function findWalledUrls(text: string): WalledUrl[] {
   const out: WalledUrl[] = [];
   const seen = new Set<string>();
   for (const match of (text ?? '').matchAll(URL_RE)) {
-    const url = match[0].replace(TRAILING_PUNCT, '');
+    const url = trimUrlTail(match[0]);
     let parsed: URL;
     try { parsed = new URL(url); } catch { continue; }
     const host = walledHostFor(parsed.hostname);

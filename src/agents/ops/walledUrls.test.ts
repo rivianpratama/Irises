@@ -16,6 +16,7 @@ import type { OpsTask } from '../types.js';
 // watch/shorts players, so it needs a real player path rather than the bare host.
 function sampleUrl(host: string): string {
   if (host === 'youtube.com') return `https://www.${host}/watch?v=abc123`;
+  if (host === 'youtu.be') return `https://${host}/abc123`;
   return `https://www.${host}/some/post/123`;
 }
 
@@ -68,13 +69,31 @@ test('findWalledUrls: trailing sentence punctuation is not part of the URL', () 
     ['https://x.com/someone/status/12345']);
   assert.deepEqual(findWalledUrls('[the reel](https://www.instagram.com/reel/DcJg4VkgMT0/)').map(f => f.url),
     ['https://www.instagram.com/reel/DcJg4VkgMT0/'], 'a markdown link is not swallowed whole');
+  assert.deepEqual(findWalledUrls('(see https://x.com/someone/status/12345).').map(f => f.url),
+    ['https://x.com/someone/status/12345'], 'a wrapper AND sentence punctuation both come off');
 });
 
-test('findWalledUrls: youtube is walled on watch/shorts players only', () => {
+test('findWalledUrls: a bracket the URL itself owns survives (review r1 / minor #3)', () => {
+  // The scanner used to exclude ) ] } ANYWHERE, not just trailing, so a real bracket in a post path
+  // truncated the URL mid-string — and that truncated string is what browserRetryDirective would
+  // hand the engine to navigate to. Only an UNBALANCED closer is prose; a balanced pair is the URL's.
+  const parenPath = 'https://www.reddit.com/r/x/comments/1/some_title_(2026)/';
+  assert.deepEqual(findWalledUrls(`have a look at ${parenPath} for me`).map(f => f.url), [parenPath]);
+  assert.deepEqual(findWalledUrls(`[thread](${parenPath})`).map(f => f.url), [parenPath],
+    'wrapped in markdown, the wrapper comes off and the URL’s own pair stays');
+  assert.deepEqual(findWalledUrls(`(${parenPath})`).map(f => f.url), [parenPath]);
+});
+
+test('findWalledUrls: youtube is walled on watch/shorts players only, in both its forms', () => {
   assert.deepEqual(findWalledUrls('https://www.youtube.com/watch?v=abc').map(f => f.host), ['youtube.com']);
   assert.deepEqual(findWalledUrls('https://youtube.com/shorts/abc').map(f => f.host), ['youtube.com']);
   assert.deepEqual(findWalledUrls('https://www.youtube.com/@somechannel'), [], 'a channel page is not the walled shape');
   assert.deepEqual(findWalledUrls('https://www.youtube.com/'), []);
+  // youtu.be is the share form YouTube itself hands out — the one most likely to be pasted into a
+  // chat — and it redirects to the very watch page above (review r1 / minor #2).
+  assert.deepEqual(findWalledUrls('who is in https://youtu.be/DcJg4VkgMT0').map(f => f.host), ['youtu.be']);
+  assert.deepEqual(findWalledUrls('https://youtu.be/DcJg4VkgMT0?t=42').map(f => f.url), ['https://youtu.be/DcJg4VkgMT0?t=42']);
+  assert.deepEqual(findWalledUrls('https://youtu.be/'), [], 'the bare host is not a player, same as youtube.com/');
 });
 
 test('findWalledUrls: an open host and an empty ask find nothing', () => {
