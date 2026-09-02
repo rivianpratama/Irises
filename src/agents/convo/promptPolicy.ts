@@ -69,7 +69,7 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
   burst: 1_160,                // 1,110 — three messages, group-labelled
   current_time: 305,           // 291 — fixed prose plus the formatted instant
   weather: 2_700,              // 2,581 — affect + cycle + circadian + a moved climate
-  status_contract: 4_000,      // 3,944 — STATIC (ENVELOPE_FIELDS + the wheel), the same on every turn (was 3,650 for 3,591; +353 re-homed three capture rules onto the two threading descriptions)
+  status_contract: 4_000,      // 3,976 — STATIC (ENVELOPE_FIELDS + the wheel), the same on every turn (was 3,650 for 3,591; +353 re-homed three capture rules onto the two threading descriptions, +32 said whose mode `intent_mode` reads)
   thread: 1_270,               // 1,211 — a pattern-rung theme offer plus a loop outcome ask
   conversation_timing: 278,    // 266 — the widest of the gap/regime readings on these fixtures
   reply_order: 640,            // 613 — renderArrivalGap (the backward-order variant, the larger one)

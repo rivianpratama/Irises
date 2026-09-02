@@ -247,13 +247,38 @@ const RESCUED_CAPTURE_RULES: ReadonlyArray<{
   },
 ];
 
+/**
+ * `intent_mode` is the ONE field of the envelope that is not a self-report, and nothing in the
+ * contract said so. Its bullet was just the enum — and the contract's lead line ("read yourself
+ * honestly, then fill every field") primes every bullet as a reading of HER, while five of the twelve
+ * modes (`confused`, `overwhelmed`, `venting`, `deflecting`, `off_track`) describe her own state just
+ * as naturally as the user's. Two places used to say whose mode it is: Context.md's deleted bullet
+ * ("`intent_mode` — what THEY are doing") and the weather block's deleted re-report tail ("what they
+ * are doing (intent)"). P1 part 2 deleted both, so the description says it now.
+ *
+ * This is not a wording nicety: the value is a code GATE on both of its consumers.
+ * `THREAD_BLOCKING_MODES` (persona/threads.ts) suppresses the whole thread offer on
+ * venting/overwhelmed/confused/deflecting, and `DISTRESSED_MODES` (memory/threadHarvest.ts) pins a
+ * theme minted this turn to the fact rung for the rest of its life. A mode read off HER instead of
+ * them therefore closes threading on turns where the person is perfectly fine — and, the other way
+ * round, hands back a named pattern on a turn they were falling apart.
+ */
+const INTENT_MODE_SUBJECT = 'what THEY are doing this turn';
+
 /** Every deliberate edit to a description since PRE_CHANGE_SCHEMA was copied out of status.ts, as an
  *  anchor → replacement pair applied in order. The expected schema is that literal with exactly these
  *  applied, so the diff on THIS FILE stays the whole behaviour change to the schema both lanes
- *  validate against. */
-const SCHEMA_EDITS: ReadonlyArray<{ id: string; field: 'thread_note' | 'thread_outcome'; from: string; to: string }> = [
+ *  validate against. `field` is any envelope key, not just the threading pair: the last edit below is
+ *  on `intent_mode`. */
+const SCHEMA_EDITS: ReadonlyArray<{
+  id: string; field: keyof typeof PRE_CHANGE_SCHEMA['properties']; from: string; to: string;
+}> = [
   { id: 'precedence', field: 'thread_note', from: OLD_PRECEDENCE, to: NEW_PRECEDENCE },
   ...RESCUED_CAPTURE_RULES.map(r => ({ id: r.id, field: r.field, from: r.anchor, to: `${r.anchor} ${r.clause}` })),
+  {
+    id: 'intent_mode_is_theirs', field: 'intent_mode',
+    from: 'one of: questioning', to: `${INTENT_MODE_SUBJECT} — one of: questioning`,
+  },
 ];
 
 test('STATUS_SCHEMA_PROP is generated from ENVELOPE_FIELDS, byte-identical but for the pinned edits', () => {
@@ -281,6 +306,29 @@ test('the two threading descriptions carry every capture rule rescued from the p
       `${r.id}: reaches the model ${contract.split(r.clause).length - 1}× in the contract, not once`,
     );
   }
+});
+
+test('`intent_mode` says whose mode it is, before it lists the modes', () => {
+  const row = ENVELOPE_FIELDS.find(f => f.key === 'intent_mode')!;
+  assert.ok(
+    row.description.startsWith(INTENT_MODE_SUBJECT),
+    `\`intent_mode\`'s description opens with the enum and never says whose mode it is: ${JSON.stringify(row.description.slice(0, 60))}. It is the only field of the envelope that reads the USER, the contract's lead line asks her to read HERSELF, and five of the twelve modes fit her just as well — so it has to say "${INTENT_MODE_SUBJECT}" here or nowhere. Both consumers gate on the value: THREAD_BLOCKING_MODES (persona/threads.ts) and DISTRESSED_MODES (memory/threadHarvest.ts).`,
+  );
+  assert.deepEqual(
+    row.consumers, ['selectThreadCandidate', 'updateThreadInventory'],
+    'the two gates that read this field are still the reason the definition matters',
+  );
+
+  // And it reaches the model that way — on the bullet for the field, once.
+  const contract = renderStatusContract();
+  assert.equal(
+    contract.split(INTENT_MODE_SUBJECT).length - 1, 1,
+    `the contract states whose mode it is ${contract.split(INTENT_MODE_SUBJECT).length - 1}×, not once`,
+  );
+  assert.ok(
+    contract.includes(`- \`intent_mode\` — ${INTENT_MODE_SUBJECT} — one of: `),
+    'the definition sits on `intent_mode`\'s own bullet, ahead of the enum',
+  );
 });
 
 test('the table describes every field the coercer emits, in the envelope order', () => {

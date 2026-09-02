@@ -205,7 +205,14 @@ export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
   },
   {
     key: 'intent_mode', type: 'string', required: true,
-    description: `one of: ${INTENT_MODES.join(' | ')}`,
+    // "what THEY are doing" is the only field in this table that is NOT a self-report, and it has to
+    // say so here: the contract's lead line asks her to read HERSELF, and `confused`, `overwhelmed`,
+    // `venting`, `deflecting` and `off_track` all describe her own state as naturally as the user's.
+    // Context.md's deleted bullet and the deleted re-report tail were the only two places that named
+    // the subject. It matters because both consumers GATE on the value (THREAD_BLOCKING_MODES in
+    // threads.ts, DISTRESSED_MODES in memory/threadHarvest.ts): a mode read off her closes threading
+    // on a turn the person is fine, and pins a theme to the fact rung for a distress that was hers.
+    description: `what THEY are doing this turn — one of: ${INTENT_MODES.join(' | ')}`,
     consumers: ['selectThreadCandidate', 'updateThreadInventory'],
   },
   {
