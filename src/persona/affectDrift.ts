@@ -28,6 +28,8 @@
 
 import { clampToSpec, signOf, spentInWindow } from './climate.js';
 import { CORE_VALENCE_BAND, coreForLabel } from './mood.js';
+// TYPE-ONLY, and it has to stay that way: status.ts is what will call this engine, so a value
+// import here would close a runtime import cycle. These three types are erased at compile time.
 import type { ComputedState, EpistemicTrigger, ThreadOutcome } from './status.js';
 
 /** The shape of a row in the gauge table — `DialSpec`'s counterpart (`climate.ts:37-46`). */
@@ -187,7 +189,7 @@ function moodDelta(
 ): { delta: number; downgraded: boolean } {
   const sign = signOf(MOOD_SHIFT_SIGN[input.moodShift]);
   const downgraded = input.moodShift === 'broke' && brokeSpent;
-  const multiplier = input.moodShift === 'broke' && !brokeSpent ? BROKE_STEP_MULTIPLIER : 1;
+  const multiplier = input.moodShift === 'broke' && !downgraded ? BROKE_STEP_MULTIPLIER : 1;
   const widening = WIDENING_TRIGGERS.includes(input.epistemic) ? EPISTEMIC_STEP_WIDENING : 1;
   const step = sign === 0 ? 0 : Math.round((sign > 0 ? spec.up : spec.down) * multiplier * widening);
   const gap = target - (cur + sign * step);

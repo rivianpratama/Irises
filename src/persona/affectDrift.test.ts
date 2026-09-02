@@ -34,13 +34,14 @@ function clock(load: number, energy: number): ComputedState {
   };
 }
 
-// Four fixture clocks. The energies are picked so every target below lands on a whole number —
-// a target sitting exactly on .5 would make the expected values in these tests depend on a
-// rounding tie-break rather than on the coefficients.
-const NEUTRAL = clock(40, 50);   // mood 55 · anxiety 53 · warmth 60 · battery 45 · patience 61
-const PEAK = clock(25, 92);      // mood 70 · anxiety 36 · warmth 76 · battery 78 · patience 73
-const HARD = clock(85, 32);      // mood 37 · anxiety 78 · warmth 46 · battery 21 · patience 43
-const RESTED = clock(10, 90);    // mood 74 · anxiety 30 · warmth 78 · battery 81 · patience 78
+// Four fixture clocks — a plain day, her best window, a late-luteal dead-night, and a rested one.
+// The energies are picked so each one's MOOD target lands on a whole number: mood is what the
+// hand-computed steps below are built around, and a target sitting exactly on .5 would make those
+// expected values depend on a rounding tie-break rather than on the coefficients.
+const NEUTRAL = clock(40, 50);
+const PEAK = clock(25, 92);
+const HARD = clock(85, 32);
+const RESTED = clock(10, 90);
 
 function shift(moodShift: MoodShift, moodLabel: string): AffectInput {
   return { moodShift, moodLabel, epistemic: 'none' };
@@ -159,6 +160,25 @@ test('a missing or garbled gauge seeds from its default rather than corrupting t
     assert.ok(r.next[spec.key] >= 1 && r.next[spec.key] <= 100, `${spec.key} out of range`);
   }
   assert.equal(r.next.rapport, 40, 'an absent gauge is its default, not 0');
+});
+
+// Every coefficient, pinned at four points — and the one place a coefficient change is meant to
+// fail first, before it surfaces as a confusing off-by-three in a step test further down.
+test('the clock targets are what the fixtures below assume', () => {
+  assert.deepEqual(affectTargets(NEUTRAL), { mood_level: 55, anxiety: 53, warmth: 60, social_battery: 45, patience: 61 });
+  assert.deepEqual(affectTargets(PEAK), { mood_level: 70, anxiety: 36, warmth: 76, social_battery: 78, patience: 73 });
+  assert.deepEqual(affectTargets(HARD), { mood_level: 37, anxiety: 78, warmth: 46, social_battery: 21, patience: 43 });
+  assert.deepEqual(affectTargets(RESTED), { mood_level: 74, anxiety: 30, warmth: 78, social_battery: 81, patience: 78 });
+
+  // Rapport has no clock target: nothing about the hour or the cycle day is evidence about how
+  // close these two are, so it is the one gauge the clock cannot touch.
+  assert.ok(!('rapport' in affectTargets(NEUTRAL)));
+  // And a target is always a usable gauge value, however extreme the clock gets.
+  for (const c of [clock(1, 1), clock(100, 100), clock(1, 100), clock(100, 1)]) {
+    for (const v of Object.values(affectTargets(c))) {
+      assert.ok(Number.isInteger(v) && v >= 1 && v <= 100, `target ${v} out of range`);
+    }
+  }
 });
 
 // ── the mood step: a direction and nothing else ──────────────────────────────
@@ -348,6 +368,24 @@ test("a second 'broke' inside six hours is treated as a dip, and says so in `sho
   assert.ok(Math.abs(third.next.mood_level - 45) > Math.abs(plainDip.next.mood_level - 45),
     'the break moved further than a dip would have');
   assert.deepEqual(third.moves.map(m => m.at), [T0], 'and the aged-out break was pruned');
+});
+
+// The allowance is spent by a break that LANDED, not by one that was asked for: if the hour's mood
+// budget was already gone, the break bought nothing, and charging it six hours would be charging
+// her for a step she never got.
+test('a break the budget refused outright does not spend the next six hours', () => {
+  const usedUpHour: AffectMove[] = [{ at: T0 - 60_000, k: 'mood_level', d: -AFFECT_MOOD_WINDOW_CAP }];
+  const g = settled(PEAK, { mood_level: 45 });
+  const refused = applyAffectDrift(g, shift('broke', 'irritated'), PEAK, usedUpHour, T0);
+  assert.deepEqual(refused.report.capped, ['mood_level'], 'the hour had nothing left to give');
+  assert.deepEqual(refused.report.changed, []);
+  assert.ok(refused.moves.every(m => !m.broke), 'and nothing claimed the window');
+
+  // So once the hour rolls, the 3x step is still there to be had.
+  const later = T0 + AFFECT_MOOD_WINDOW_MS + 60_000;
+  const r = applyAffectDrift(g, shift('broke', 'irritated'), PEAK, refused.moves, later);
+  assert.ok(r.moves.some(m => m.at === later && m.broke === true));
+  assert.equal(Math.abs(r.next.mood_level - 45), AFFECT_TURN_CAP, 'a full break, taking the whole turn');
 });
 
 // ── epistemic_trigger: information may move her further than pressure ────────
