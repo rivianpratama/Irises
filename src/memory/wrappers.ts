@@ -31,6 +31,7 @@ import { getUserProfile } from '../db/repositories/profiles.js';
 import { listShortTerm, type ShortTermEntry } from '../db/repositories/memoryShort.js';
 import { RECENT_RESEARCH_TTL_MS, DIGEST_LINE_CHARS } from './shortTerm.js';
 import { touchesTurn } from './topicality.js';
+import { shortEntryAsk } from './relevance.js';
 import { getLongDoc } from '../db/repositories/memoryLong.js';
 import { loadMediumBundle, renderFactsBlock, type MediumBundle } from './mediumTerm.js';
 import { looksUnsafe, sanitizeDirectives } from './preferences.js';
@@ -163,22 +164,14 @@ const SHORT_ENTRY_CHARS = 600;
  * the thread engine's theme gate.
  */
 export function topicallyRelated(currentTurnText: string | undefined, entry: ShortTermEntry): boolean {
-  return touchesTurn(currentTurnText, `${entry.request ?? ''} ${entryTopicKey(entry)}`, { whenEmpty: 'touch' });
+  return touchesTurn(currentTurnText, shortEntryAsk(entry), { whenEmpty: 'touch' });
 }
 
-/** The entry's stored topic key, when it has a readable one. */
-function entryTopicKey(entry: ShortTermEntry): string {
-  const raw = (entry.meta as { topicKey?: unknown } | undefined)?.topicKey;
-  return typeof raw === 'string' ? raw : '';
-}
-
-/** What to CALL a short-tier look in one line: what they asked for, which is how a person would name
- *  it, falling back to the stored topic key and then to nothing at all. Used by the turn-focus block
- *  to name the hot look it was handed (agents/convo/turnFocus.ts); '' means "no name", and a hit
- *  with no name is dropped there rather than rendered blank. */
-export function shortEntryLabel(entry: ShortTermEntry): string {
-  return (entry.request ?? '').trim() || entryTopicKey(entry).trim();
-}
+// What a short-tier row is CALLED and what it is MATCHED by now live in relevance.ts, beside the
+// router that scores every held channel by them — one implementation, so the hot-look gate here and
+// the research hit there can never disagree about what a look is about. Re-exported to keep the
+// historical import path working (same pattern as dossier.ts's re-exports).
+export { shortEntryLabel } from './relevance.js';
 
 // ── The wrapper prose (RIGID, code-authored) ─────────────────────────────────
 
