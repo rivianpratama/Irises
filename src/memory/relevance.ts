@@ -6,7 +6,7 @@
 // email flags and the long doc all rendered in full on every turn regardless of the message. The
 // gates that P2 adds all need the same answer, and the turn-focus block needs the answer WITH the
 // evidence attached ("here is what touches this, and nothing else does"). Computing it once, in one
-// pure place, is what stops six gates drifting apart on what "about the same thing" means.
+// pure place, is what stops a gate per block drifting apart on what "about the same thing" means.
 //
 // Two answers, deliberately pulling opposite ways on the same edge case:
 //
@@ -77,8 +77,8 @@ export interface TurnRelevance {
 }
 
 /**
- * How many hits survive. The turn-focus block renders two; this larger number is what the turn
- * receipt carries, and it exists because that receipt persists for 30 days
+ * How many hits survive. The turn-focus block prints only TURN_FOCUS_MAX_HITS of them; this larger
+ * number is what the turn receipt carries, and it exists because that receipt persists for 30 days
  * (diagnostics/turnTrace.ts) — an unbounded list of labels off a 40-note bundle is a storage leak,
  * not a diagnostic.
  */
@@ -194,7 +194,7 @@ function collect(held: HeldItems): Candidate[] {
  *     bundle must not be able to put 40 note bodies into that store;
  *   • so the receipt says exactly what the model was shown, not a longer version of it.
  */
-function oneLine(text: string): string {
+function displayLabel(text: string): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   return flat.length <= TURN_FOCUS_LABEL_CHARS ? flat : `${flat.slice(0, TURN_FOCUS_LABEL_CHARS - 1)}…`;
 }
@@ -225,7 +225,7 @@ export function buildTurnRelevance(turnText: string | undefined, held: HeldItems
   if (tokens.size) {
     const probe = tokenSet(turnText ?? '');
     for (const c of collect(held)) {
-      const label = oneLine(c.label);
+      const label = displayLabel(c.label);
       if (!label) continue;                        // a hit with no name is not evidence
       const score = sharedTokens(tokens, c.text);
       if (!score) continue;                        // evidence needs a real shared token
@@ -259,14 +259,9 @@ export function buildTurnRelevance(turnText: string | undefined, held: HeldItems
  * offered precisely when it is NOT the current topic (persona/threads.ts inverts the check there on
  * purpose), and what she was handed has to be shown as what she was handed.
  */
-export function threadHit(turn: TurnRelevance | null, label: string): RelevanceHit {
-  const clean = oneLine(label);
-  return {
-    kind: 'thread',
-    label: clean,
-    score: turn ? sharedTokens(turn.tokens, clean) : 0,
-    source: clean,
-  };
+export function threadHit(turn: TurnRelevance, label: string): RelevanceHit {
+  const clean = displayLabel(label);
+  return { kind: 'thread', label: clean, score: sharedTokens(turn.tokens, clean), source: clean };
 }
 
 /**

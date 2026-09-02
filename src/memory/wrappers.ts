@@ -79,8 +79,8 @@ export function neutralizeTagBreakouts(text: string): string {
  *  profile over one poisoned line; a per-line screen misses multi-line jailbreaks.
  *
  *  Exported because it is also the granularity the turn relevance router scores the long doc at
- *  (memory/relevance.ts: a section that touches the turn is evidence, the rest is not), and the
- *  router must see the same sections the sanitizer does. */
+ *  (memory/relevance.ts: a section that touches the turn is evidence, the rest is not) — the same
+ *  granularity this sanitizer screens at, so a hit names a section rather than a stray line. */
 export function splitSections(md: string): string[] {
   const lines = md.split('\n');
   const sections: string[] = [];

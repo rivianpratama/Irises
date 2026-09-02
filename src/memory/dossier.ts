@@ -186,9 +186,14 @@ export async function buildContextBlockWithHot(
   // ONE relevance verdict for the turn, over exactly what the loaders came back with — the router
   // is pure, so it can only see what it is handed. Handed the same things the renderers are: the
   // short tier filtered for expiry the way the renderer filters it (a legacy synthetic entry can
-  // arrive already expired), and the long doc split at the granularity the sanitizer uses. So a
-  // named hit is something the model can see — a look as its full body or as its settled digest
-  // line, a long section as its own text.
+  // arrive already expired), and the long doc split at the granularity the sanitizer screens at
+  // (splitSections), so a hit names a section rather than a line lifted out of one.
+  //
+  // The long doc goes in RAW, before sanitizeLongDoc: a section that the sanitizer then drops (a
+  // scope/capability section, an unsafe one) can still be scored, so its heading could be named as
+  // a hit for something the model cannot see. Sanitizing here instead would mean either a second
+  // pass inside the renderer or handing the renderer pre-sanitized markdown, and Task 11 re-plumbs
+  // the long doc's gate anyway — it should sanitize once and hand the kept sections to both.
   //
   // Built from `currentTurnText`, which on the Convo path is `userMessage` — deliberately, and
   // ahead of transcription/attachments (see convo/client.ts): these reads run inside a Promise.all

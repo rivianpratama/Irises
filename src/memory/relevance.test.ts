@@ -170,7 +170,7 @@ test('threadHit scores the offer against the same tokens and is never score-gate
   // A LOOP is offered precisely when it is NOT the current topic (persona/threads.ts inverts the
   // check there on purpose), so an off-topic offer still has to be shown as what she was handed.
   assert.equal(threadHit(turn, 'how did the interview go').score, 0);
-  assert.equal(threadHit(null, 'speed vs craft').score, 0);
+  assert.equal(threadHit(buildTurnRelevance('', {}), 'speed vs craft').score, 0, 'a turn with no tokens shares none');
   assert.equal(threadHit(turn, '  speed   vs craft ').label, 'speed vs craft');
 });
 

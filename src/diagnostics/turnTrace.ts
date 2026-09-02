@@ -200,8 +200,9 @@ export interface TurnTraceTurnInputs {
   messages: readonly TranscriptMessage[];
   gates: TurnTraceGates;
   /** The turn-focus block's hit labels — the held things the PROMPT said touch the message, in the
-   *  order and number it printed them. Distinct from `gates.memory.hits`, which is everything the
-   *  router found: this is what she was actually shown, that is what was available to show. */
+   *  order and number it printed them (convo/client.ts slices to TURN_FOCUS_MAX_HITS). Distinct
+   *  from `gates.memory.hits`, which is everything the router found: this is what she was actually
+   *  shown, that is what there was to show. */
   hits: readonly string[];
 }
 

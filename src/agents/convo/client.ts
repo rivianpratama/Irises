@@ -16,7 +16,7 @@ import { purgeArchiveFor } from '../../db/repositories/memoryArchive.js';
 import { getLongDoc, saveLongDoc } from '../../db/repositories/memoryLong.js';
 import { buildContextBlockWithHot } from '../../memory/dossier.js';
 import { shortEntryLabel, threadHit } from '../../memory/relevance.js';
-import type { TurnFocusHit, TurnFocusInput } from './turnFocus.js';
+import { TURN_FOCUS_MAX_HITS, type TurnFocusHit, type TurnFocusInput } from './turnFocus.js';
 import { getActiveOps } from '../../state/opsCoordination.js';
 import { getConversation, addMessage, clearConversation, clearUserProfile } from '../../state/conversation.js';
 import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
@@ -364,7 +364,10 @@ export async function chat(
           },
           extras: { updateNote: !!updateNote, introWeave: !!introWeave, activeOps: activeOps.length },
         },
-        hits: hits.map(h => h.label),
+        // What the block actually PRINTED, which is why it is sliced: the whole ranked set rides
+        // on gates.memory.hits above, and the two receipts read as a pair — what she was shown,
+        // against what there was to show.
+        hits: hits.slice(0, TURN_FOCUS_MAX_HITS).map(h => h.label),
       },
     });
     // Stash this turn's media for a LATER text follow-up to recall (delegate_to_mm media_scope
