@@ -229,12 +229,22 @@ export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
   },
   {
     key: 'thread_note', type: ['string', 'null'], required: true,
-    description: 'null most turns. Three uses, one per turn, prefixed: (1) "loop: <thing>" — something pending in their life with a how-did-it-go attached (an interview, a surgery, a launch, a dreaded talk), in their own word for it; one mention is enough. (2) "resolved: <thing>" — a pending thing you were tracking just got its outcome, whatever it was. (3) a recurring theme of theirs as "kind: theme", kind one of value | tension | goal | phrase (e.g. "tension: speed vs craft"); only for things likely to recur, never something they merely CLAIM is a pattern. Precedence when more than one fits: "resolved:" > "loop:" > theme — a resolution outranks a pending loop, a pending loop outranks a fresh theme, one note per turn.',
+    // Two of the sentences here are CAPTURE rules re-homed from the field list P1 deleted out of
+    // Context.md — the venting clause and the bare-fact exclusion. They were in the persona only, so
+    // the deletion would have taken them with it: nothing else in the prose tells her to mint a loop
+    // on a heavy turn (Context.md's other word on venting closes theme READS, which is the opposite
+    // instruction one paragraph away), and nothing else keeps a diary entry out of the inventory. A
+    // rule that governs one field belongs on that field, where both channels carry it.
+    description: 'null most turns. Three uses, one per turn, prefixed: (1) "loop: <thing>" — something pending in their life with a how-did-it-go attached (an interview, a surgery, a launch, a dreaded talk), in their own word for it; one mention is enough. Catch a loop even on a venting or overwhelmed turn — a loop is asked about later, never in the moment. (2) "resolved: <thing>" — a pending thing you were tracking just got its outcome, whatever it was. (3) a recurring theme of theirs as "kind: theme", kind one of value | tension | goal | phrase (e.g. "tension: speed vs craft"); only for things likely to recur, never something they merely CLAIM is a pattern. A loop is an unanswered outcome and a theme is a because — neither is ever a bare fact ("has a meeting friday" belongs to your memory tools, not here). Precedence when more than one fits: "resolved:" > "loop:" > theme — a resolution outranks a pending loop, a pending loop outranks a fresh theme, one note per turn.',
     consumers: ['updateThreadInventory'],
   },
   {
     key: 'thread_outcome', type: ['string', 'null'], required: true,
-    description: 'only when your LAST reply tagged a standing thread or asked about something pending of theirs: how they just took it — one of: took (they picked it up) | passed (they let it lie, fine) | pushed_back (they corrected it or bristled). Otherwise null, including when you were offered a thread and chose not to use it.',
+    // The anti-optimism clause is the third of those re-homed rules, and it is the one with teeth in
+    // code: a `took` steps the theme's confidence up and counts an uptake, and two uptakes promote it
+    // taggable → shorthand (threads.ts). The per-turn ask prose de-biases the same reading ("passed
+    // if they let it lie (that is fine)"), but only on the turn it renders.
+    description: 'only when your LAST reply tagged a standing thread or asked about something pending of theirs: how they just took it — one of: took (they picked it up) | passed (they let it lie, fine) | pushed_back (they corrected it or bristled). Read it from their message alone, never from hope — a pass reported as a take poisons the thread. Otherwise null, including when you were offered a thread and chose not to use it.',
     consumers: ['updateThreadInventory'],
   },
 ];

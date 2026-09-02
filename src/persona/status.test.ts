@@ -198,20 +198,88 @@ const PRE_CHANGE_SCHEMA = {
   },
 };
 
-/** The one edit: `thread_note` used to rank a pending thing over a theme and say nothing about a
- *  resolution, while Context.md ranked a resolution over a theme and said nothing about a loop —
+/** The precedence edit: `thread_note` used to rank a pending thing over a theme and say nothing about
+ *  a resolution, while Context.md ranked a resolution over a theme and said nothing about a loop —
  *  consistent, but stated twice and complete in neither place. Now the full order is stated once,
  *  here, and the persona's copy is gone. */
 const OLD_PRECEDENCE = 'When a pending thing and a theme both show, the pending thing wins.';
 const NEW_PRECEDENCE = 'Precedence when more than one fits: "resolved:" > "loop:" > theme — a resolution outranks a pending loop, a pending loop outranks a fresh theme, one note per turn.';
 
-test('STATUS_SCHEMA_PROP is generated from ENVELOPE_FIELDS, byte-identical but for the one edit', () => {
+/**
+ * The three CAPTURE rules that used to live on Context.md's `thread_note` / `thread_outcome` bullets,
+ * re-homed onto the descriptions that own those fields. P1 deleted that bullet list as a duplicate of
+ * the schema, but these three clauses were in the persona ONLY — no description said them — so the
+ * deletion took three behaviours with it. Each is now a clause on the field it governs, which means it
+ * reaches the model on both channels the description does (the response schema and the contract).
+ *
+ * `field` is where it belongs and `why` is what breaks without it; the assertions below print both.
+ */
+const RESCUED_CAPTURE_RULES: ReadonlyArray<{
+  id: string; field: 'thread_note' | 'thread_outcome'; anchor: string; clause: string; why: string;
+}> = [
+  {
+    // THE one that had no surviving home at all: Context.md's only other word on venting
+    // ("Venting or distress → theme reads stay closed completely") is about SURFACING and reads as a
+    // blanket close, so a heavy turn plausibly minted no loop — losing exactly the turns the threading
+    // engine exists to catch, since a loop is never asked about in the moment it is captured.
+    id: 'capture_when_heavy',
+    field: 'thread_note',
+    anchor: 'in their own word for it; one mention is enough.',
+    clause: 'Catch a loop even on a venting or overwhelmed turn — a loop is asked about later, never in the moment.',
+    why: 'a venting turn about next tuesday\'s surgery mints no loop, so no how-did-it-go ever happens',
+  },
+  {
+    id: 'bare_fact_exclusion',
+    field: 'thread_note',
+    anchor: 'never something they merely CLAIM is a pattern.',
+    clause: 'A loop is an unanswered outcome and a theme is a because — neither is ever a bare fact ("has a meeting friday" belongs to your memory tools, not here).',
+    why: 'bare facts route to a `pattern` theme that can never earn evidence, filling the inventory with noise',
+  },
+  {
+    // A `took` steps a theme's confidence up and counts an uptake, and two uptakes promote it
+    // taggable → shorthand (persona/threads.ts) — so optimism here really does move stored state.
+    id: 'read_not_hope',
+    field: 'thread_outcome',
+    anchor: 'pushed_back (they corrected it or bristled).',
+    clause: 'Read it from their message alone, never from hope — a pass reported as a take poisons the thread.',
+    why: 'a pass read as a take promotes a theme on two turns of wishful reading',
+  },
+];
+
+/** Every deliberate edit to a description since PRE_CHANGE_SCHEMA was copied out of status.ts, as an
+ *  anchor → replacement pair applied in order. The expected schema is that literal with exactly these
+ *  applied, so the diff on THIS FILE stays the whole behaviour change to the schema both lanes
+ *  validate against. */
+const SCHEMA_EDITS: ReadonlyArray<{ id: string; field: 'thread_note' | 'thread_outcome'; from: string; to: string }> = [
+  { id: 'precedence', field: 'thread_note', from: OLD_PRECEDENCE, to: NEW_PRECEDENCE },
+  ...RESCUED_CAPTURE_RULES.map(r => ({ id: r.id, field: r.field, from: r.anchor, to: `${r.anchor} ${r.clause}` })),
+];
+
+test('STATUS_SCHEMA_PROP is generated from ENVELOPE_FIELDS, byte-identical but for the pinned edits', () => {
   const expected = structuredClone(PRE_CHANGE_SCHEMA);
-  const note = expected.properties.thread_note;
-  note.description = note.description.replace(OLD_PRECEDENCE, NEW_PRECEDENCE);
-  assert.ok(note.description.includes(NEW_PRECEDENCE), 'the pinned edit found its sentence');
+  for (const e of SCHEMA_EDITS) {
+    const prop: { description: string } = expected.properties[e.field];
+    assert.ok(prop.description.includes(e.from), `${e.id}: its anchor is still in the pre-change description`);
+    prop.description = prop.description.replace(e.from, e.to);
+    assert.ok(prop.description.includes(e.to), `${e.id}: the pinned edit found its sentence`);
+  }
 
   assert.deepEqual(STATUS_SCHEMA_PROP, expected);
+});
+
+test('the two threading descriptions carry every capture rule rescued from the persona', () => {
+  const contract = renderStatusContract();
+  for (const r of RESCUED_CAPTURE_RULES) {
+    const row = ENVELOPE_FIELDS.find(f => f.key === r.field)!;
+    assert.ok(
+      row.description.includes(r.clause),
+      `${r.id}: gone from \`${r.field}\`'s description, and Context.md no longer says it either — ${r.why}. It has to live on the description or nowhere.`,
+    );
+    assert.equal(
+      contract.split(r.clause).length - 1, 1,
+      `${r.id}: reaches the model ${contract.split(r.clause).length - 1}× in the contract, not once`,
+    );
+  }
 });
 
 test('the table describes every field the coercer emits, in the envelope order', () => {

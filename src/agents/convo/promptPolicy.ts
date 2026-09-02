@@ -69,7 +69,7 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
   burst: 1_160,                // 1,110 — three messages, group-labelled
   current_time: 305,           // 291 — fixed prose plus the formatted instant
   weather: 2_700,              // 2,581 — affect + cycle + circadian + a moved climate
-  status_contract: 3_650,      // 3,591 — STATIC (ENVELOPE_FIELDS + the wheel), the same on every turn
+  status_contract: 4_000,      // 3,944 — STATIC (ENVELOPE_FIELDS + the wheel), the same on every turn (was 3,650 for 3,591; +353 re-homed three capture rules onto the two threading descriptions)
   thread: 1_270,               // 1,211 — a pattern-rung theme offer plus a loop outcome ask
   conversation_timing: 278,    // 266 — the widest of the gap/regime readings on these fixtures
   reply_order: 640,            // 613 — renderArrivalGap (the backward-order variant, the larger one)
@@ -97,9 +97,11 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
  * both counts. Almost all of that rise is P1's persona deletions (the two restated envelope
  * paragraphs, the collapsed behaviour anchor, the copied feelings wheel and field list); the status
  * contract that replaced the last of those is generated prose of very nearly the same size, so P1
- * part 2 moved this fixture's whole prompt by −98 characters and this number by four millionths.
- * Raising the floor is one line, and it belongs to whoever next accounts for the phase rather than to
- * the task that happened to re-measure it.
+ * part 2 moved this fixture's whole prompt by **+255 characters** — −3,372 of persona and −319 of
+ * weather tail against +3,946 of contract — and this number not at all at four decimal places. Read
+ * that as the honest accounting of the phase's second half: it bought ONE editable description of the
+ * envelope, and it did not buy size. Raising the floor is one line, and it belongs to whoever next
+ * accounts for the phase rather than to the task that happened to re-measure it.
  */
 export const MIN_TRANSCRIPT_SHARE = 0.0065;
 
@@ -278,5 +280,17 @@ export const CLAUSE_INVENTORY: readonly ClauseCount[] = [
     count: 1,
     anchorCopies: 0,
     where: "the status contract's thread_note bullet (ENVELOPE_FIELDS, persona/status.ts) — the persona's half-rule is gone",
+  },
+  {
+    // The capture rule with no other home. P1 deleted Context.md's `thread_note` bullet as a duplicate
+    // of the schema, but this clause was in the persona ONLY — and the nearest surviving line pushes
+    // the other way ("Venting or distress → theme reads stay closed completely", about SURFACING). So
+    // its deletion would have quietly stopped loops being minted on exactly the turns worth catching.
+    // Pinned here for the same reason a RULE_ANCHORS phrase is: the next tidy-up fails out loud.
+    id: 'thread_note_capture_when_heavy',
+    phrase: 'Catch a loop even on a venting or overwhelmed turn',
+    count: 1,
+    anchorCopies: 0,
+    where: "the status contract's thread_note bullet — and, off-prompt, the response schema built from the same description (ENVELOPE_FIELDS, persona/status.ts)",
   },
 ];
