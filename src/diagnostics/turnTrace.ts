@@ -132,6 +132,11 @@ export interface TurnTraceOutcome {
   retried: boolean;
   /** The turn put nothing on their screen and did nothing on their behalf. */
   silent: boolean;
+  /** The unkept-promise guard fired on this turn (convo/unkeptPromise.ts): the reply promised work
+   *  with no tool call and nothing running, so it got its one corrective re-ask. Set ONLY when it
+   *  fired — absence means it did not, and the receipt that carries the phrase and how the re-ask
+   *  landed is the always-on `convo:unkept_promise` event, not this field. */
+  unkeptPromise?: boolean;
   /** Tool names the model called this turn, in order. Names only — never their arguments. */
   toolCalls: string[];
 }

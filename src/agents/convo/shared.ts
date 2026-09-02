@@ -1059,14 +1059,14 @@ function replyBubbles(reply: { legacyText: string | null }): string[] {
 async function enforcePromiseKept(
   args: { res: LlmResult; chatId: string; handle: string | undefined; turn?: ConvoTurnContext },
   bubbles: string[],
-): Promise<LlmResult> {
-  if (!unkeptPromiseGuardEnabled()) return args.res;
+): Promise<{ res: LlmResult; fired: boolean }> {
+  if (!unkeptPromiseGuardEnabled()) return { res: args.res, fired: false };
   const { res, chatId, handle, turn } = args;
   // Live, synchronous read of what Ops is doing for this chat RIGHT NOW — the same source the
   // prompt's active-ops block was built from, re-read here because a run can settle mid-turn.
   const active = getActiveOps(chatId).length;
   const verdict = detectUnkeptPromise(bubbles, res.toolCalls, active);
-  if (!verdict.unkept || !verdict.phrase) return res;
+  if (!verdict.unkept || !verdict.phrase) return { res, fired: false };
   const phrase = verdict.phrase;
   // chatId in the line, not just the trace event: a live convergence round attributes the failure
   // per-chat from the instance log when the trace buffer isn't reachable.
@@ -1108,7 +1108,7 @@ async function enforcePromiseKept(
     }
   }
   record({ type: 'event', label: 'convo:unkept_promise', chatId, handle, detail: { phrase, retried: !!turn, resolved } });
-  return out;
+  return { res: out, fired: true };
 }
 
 /**
@@ -1159,7 +1159,8 @@ export async function processConvoResult(args: {
   // The honesty backstop, BEFORE anything is dispatched or persisted: a reply that promised work
   // while calling no tool with nothing running for them gets one corrective re-ask, and whatever
   // stands after it is the reply this whole function then processes (convo/unkeptPromise.ts).
-  const res = await enforcePromiseKept(args, replyBubbles(firstReply));
+  const guard = await enforcePromiseKept(args, replyBubbles(firstReply));
+  const res = guard.res;
   // Re-parsed only when the re-ask actually replaced the reply — parseReply logs a line for a
   // non-envelope reply, and parsing the same one twice would double it.
   const reply = res === args.res ? firstReply : parseReply(res.text);
@@ -1949,6 +1950,8 @@ export async function processConvoResult(args: {
           // boundary re-checks it against what shipped.
           silent: producedNothingVisible,
           toolCalls: res.toolCalls.map(c => c.name),
+          // Only when the honesty backstop actually fired — see the field's note in turnTrace.ts.
+          ...(guard.fired ? { unkeptPromise: true } : {}),
         },
       })
     : undefined;

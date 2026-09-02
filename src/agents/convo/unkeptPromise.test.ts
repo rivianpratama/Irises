@@ -247,6 +247,37 @@ test('a kept promise (the reply called the tool itself) never reaches the guard'
   assert.ok(out.delegatedTask);
 });
 
+// The per-turn receipt only needs a prompt it can measure — the sizes are not what this pins.
+const TRACE_INPUTS = {
+  prompt: { system: 'SYSTEM PROMPT (persona + this turn)', sections: [], personaChars: 0, anchorChars: 0 },
+  messages: [{ content: ASK }],
+  gates: {
+    threads: null,
+    memory: { shortHotLook: 'none' as const },
+    extras: { updateNote: false, introWeave: false, activeOps: 0 },
+  },
+  hits: [],
+};
+
+test('the turn receipt says the guard fired on this turn', async () => {
+  const out = await processConvoResult({
+    ...args(),
+    res: fabricated(),
+    trace: TRACE_INPUTS,
+    turn: turnCtx(async () => makeResult(['gue gabisa jalanin browser dari sini'])),
+  });
+  assert.equal(out.turnTrace?.outcome.unkeptPromise, true);
+});
+
+test('and says nothing about it on a turn that promised nothing', async () => {
+  const out = await processConvoResult({
+    ...args(),
+    res: makeResult(['haha yeah cats do that']),
+    trace: TRACE_INPUTS,
+  });
+  assert.equal('unkeptPromise' in out.turnTrace!.outcome, false, 'absent = the guard never fired');
+});
+
 test('flag off: the fabricated reply ships exactly as it did before the guard existed', async () => {
   let calls = 0;
   const a = args();
