@@ -218,9 +218,28 @@ export function isReasoningFamilyModel(slug: string): boolean {
   return REASONING_FAMILY.some(re => re.test(s));
 }
 
-/** Values of `<ROLE>_THINKING` that ARM thinking (mirrors models.ts parseThinking; every voice role
- *  defaults off, so anything else — unset included — means off). */
-const THINKING_ON_VALUES = ['adaptive', 'on', 'true', '1', 'enabled', 'yes'];
+/** Values of `<ROLE>_THINKING` that ARM thinking, and of `<ROLE>_EFFORT` that arm reasoning by
+ *  effort — the request builder treats either as armed (`THINKING[role] || effort` in
+ *  llm/openrouterRequest.buildOpenRouterParams). Every voice role defaults off, so anything else
+ *  (unset, `off`, `none`, a typo) means off, which for a log-only heads-up is the safe reading;
+ *  models.ts warns about the typo itself when it parses the same var at load.
+ *
+ *  COPIED from llm/models.ts's parseThinking/parseEffort ON PURPOSE, not imported: this module runs
+ *  from loadEnv BETWEEN the deploy/app.env baseline and the local .env override, so it imports
+ *  nothing but node builtins. Importing models.ts here would evaluate its module-level env parsing
+ *  (MODELS/PROVIDERS/THINKING/EFFORT) before either load has happened, freezing the wrong models and
+ *  warning about lanes that are about to be configured. Exported so a test pins the copy against the
+ *  original (engineDiscovery.test.ts) rather than letting the two drift in silence. */
+export const THINKING_ON_VALUES = ['adaptive', 'on', 'true', '1', 'enabled', 'yes'];
+export const EFFORT_ON_VALUES = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+/** Did this deploy arm reasoning for `<ROLE>` itself, by thinking or by effort? Reads the env map
+ *  discovery is filling, not models.ts's parsed tables (which do not exist yet — see above). */
+function roleArmedReasoning(env: Record<string, string | undefined>, role: string): boolean {
+  const val = (k: string): string => (env[k] || '').trim().toLowerCase();
+  return THINKING_ON_VALUES.includes(val(`${role}_THINKING`))
+    || EFFORT_ON_VALUES.includes(val(`${role}_EFFORT`));
+}
 
 /** Core discovery — pure over its injected deps. Mutates `deps.env` in place. */
 export function applyEngineDiscovery(deps: DiscoveryDeps): void {
@@ -351,9 +370,7 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
      *  nothing here changes what was inherited. */
     function noteReasoningInherit(lane: 'openrouter' | 'openai' | 'anthropic', model: string): void {
       if (!isReasoningFamilyModel(model)) return;
-      const unarmed = VOICE_ROLES.filter(
-        r => !THINKING_ON_VALUES.includes((env[`${r}_THINKING`] || '').trim().toLowerCase()),
-      );
+      const unarmed = VOICE_ROLES.filter(r => !roleArmedReasoning(env, r));
       if (!unarmed.length) return;
       deps.log(
         `inherited model "${model}" is a reasoning-family slug, but ${unarmed.join(', ')}_THINKING `

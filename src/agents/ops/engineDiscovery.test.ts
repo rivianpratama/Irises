@@ -686,6 +686,34 @@ test('the heads-up promises only the mitigations the inherited LANE actually has
   for (const l of [orLine, oaiLine, antLine]) assert.match(l, /ENGINE_MODEL_INHERIT=off/, 'every lane names the opt-out');
 });
 
+test('a role whose <ROLE>_EFFORT arms reasoning is not called "thinking off" either', () => {
+  // The request builder treats effort as ARMING (THINKING || effort → { enabled: true, effort }), and
+  // models.ts already warns separately about effort on a tiny cap. Reading only <ROLE>_THINKING made
+  // the line list CONVO as at-risk on the live deploy, where CONVO_EFFORT is set and every convo
+  // request therefore asks for reasoning on purpose.
+  const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key', CONVO_EFFORT: 'medium', CLASSIFY_EFFORT: 'none' });
+  const { deps, logs } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: { 'hermes config get model.default': 'deepseek/deepseek-v4-flash' },
+  });
+  applyEngineDiscovery(deps);
+  const line = logs.find((l) => l.includes('reasoning-family'))!;
+  assert.ok(line);
+  assert.match(line, /CLASSIFY, FALLFIRM/, 'CLASSIFY_EFFORT=none is parseEffort\'s OFF value — still at risk');
+  assert.equal(/CONVO/.test(line), false, 'a role that armed effort asked for reasoning');
+
+  // Every role armed one way or the other → nothing to warn about.
+  const all = baselineEnv({
+    OPENROUTER_API_KEY: 'or-key', CONVO_EFFORT: 'low', CLASSIFY_THINKING: 'on', FALLFIRM_EFFORT: 'max',
+  });
+  const every = mkDeps(all, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: { 'hermes config get model.default': 'deepseek/deepseek-v4-flash' },
+  });
+  applyEngineDiscovery(every.deps);
+  assert.equal(every.logs.filter((l) => l.includes('reasoning-family')).length, 0);
+});
+
 test('the heads-up skips a role whose own <ROLE>_THINKING is armed, and goes silent when all are', () => {
   const armed = baselineEnv({ OPENROUTER_API_KEY: 'or-key', CLASSIFY_THINKING: 'on' });
   const one = mkDeps(armed, {
