@@ -22,6 +22,7 @@ import { RULE_ANCHORS } from './promptPolicy.js';
 import { loadContext } from '../loadContext.js';
 import { BUBBLE_LAW_MAX } from '../../pipeline/bubbleJson.js';
 import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '../../pipeline/bubbles.js';
+import type { ThreadRung } from '../../persona/threads.js';
 
 // ── the persona's load-bearing clauses ───────────────────────────────────────
 
@@ -44,6 +45,42 @@ test('the anchor list is a usable index — unique ids, real phrases', () => {
     // Long enough that the match means the CLAUSE is present, not a coincidence of common words.
     assert.ok(personaAnchor.trim().length >= 18, `${id}: the anchor is specific enough to be evidence`);
   }
+});
+
+// ── the threading ladder, as taught vs as deliverable ────────────────────────
+//
+// The selector can only ever hand her a `fact`, a `pattern` or a `shorthand` offer (ThreadRung,
+// persona/threads.ts) — three rungs. The persona taught FIVE, splitting fact into question and
+// connection and pattern into soft and named, so two of the rungs it asked her to climb do not
+// exist downstream and no code could ever confirm one had been earned. Now it teaches three, and
+// this holds the two ladders in step.
+
+/** The rungs lowest-first. A Record keyed by ThreadRung, so renaming or adding a rung in
+ *  persona/threads.ts breaks THIS LINE — which is the point: the type is the source, and the
+ *  persona's prose has to follow it. */
+const RUNG_ORDER: Record<ThreadRung, number> = { fact: 0, pattern: 1, shorthand: 2 };
+const RUNGS = (Object.keys(RUNG_ORDER) as ThreadRung[]).sort((a, b) => RUNG_ORDER[a] - RUNG_ORDER[b]);
+
+test('the persona teaches exactly the rungs the engine can deliver, in the same order', () => {
+  const persona = loadContext('convo');
+  const at = persona.indexOf('**The ladder — enter one rung lower than you could.**');
+  assert.ok(at > 0, 'found the ladder paragraph in "Connect the dots"');
+  const ladder = persona.slice(at, persona.indexOf('\n', at));
+
+  assert.ok(ladder.includes('Three rungs'), `the ladder still claims a different height: ${ladder.slice(0, 120)}`);
+  const positions = RUNGS.map(rung => ({ rung, at: ladder.indexOf(rung) }));
+  for (const { rung, at: found } of positions) {
+    assert.ok(found >= 0, `the ${rung} rung is missing from the ladder — the engine can still offer one`);
+  }
+  assert.deepEqual(
+    [...positions].sort((a, b) => a.at - b.at).map(p => p.rung), RUNGS,
+    'the ladder climbs in the order the rung ceiling drops through: fact → pattern → shorthand',
+  );
+
+  // The five-rung version is gone, not just outnumbered: its two extra rungs were "a fact
+  // connection" and "a named theme", neither of which the selector can express.
+  assert.ok(!/[Ff]ive rungs/.test(persona), 'the five-rung ladder is still in the persona');
+  assert.ok(!persona.includes('a named theme ("the perfectionism loop again?")'), 'the named-theme rung is still listed');
 });
 
 // ── the bubble law, as stated vs as enforced ─────────────────────────────────
