@@ -26,7 +26,7 @@
 // PURE by construction: no DB, no LLM, no clock reads. `now` is always passed in, and neither the
 // gauges nor the ledger handed in is ever mutated.
 
-import { clampToSpec, signOf, spentInWindow } from './climate.js';
+import { clampToSpec, pruneLedger, signOf, spentInWindow } from './climate.js';
 import { CORE_VALENCE_BAND, coreForLabel } from './mood.js';
 // TYPE-ONLY, and it has to stay that way: status.ts is what will call this engine, so a value
 // import here would close a runtime import cycle. These three types are erased at compile time.
@@ -305,21 +305,15 @@ export function applyAffectDrift(
     report.changed.push(spec.key);
   }
 
-  const from = now - LEDGER_WINDOW_MS;
-  const pruned = moves.filter(m => m.at > from);
-  // The rows the two budgets above are counted from, kept whatever the cap says: dropping one does
-  // not just shorten an audit trail, it hands a spent budget back.
-  const readByABudget = (m: AffectMove) =>
-    (m.broke === true && m.at > now - AFFECT_BROKE_WINDOW_MS)
-    || (m.k === 'mood_level' && m.at > now - AFFECT_MOOD_WINDOW_MS);
-  let over = pruned.filter(m => !readByABudget(m)).length - AFFECT_MOVES_CAP;
   return {
     next,
-    // Oldest-first among the rows nothing reads, so the ledger keeps its newest-last order.
-    moves: over <= 0 ? pruned : pruned.filter(m => {
-      if (over > 0 && !readByABudget(m)) { over--; return false; }
-      return true;
-    }),
+    // The pin is the two budgets read above: an in-window break, and a mood row inside the hour.
+    // Dropping one of those would not just shorten an audit trail, it would hand a spent budget back.
+    moves: pruneLedger(
+      moves, now, LEDGER_WINDOW_MS, AFFECT_MOVES_CAP,
+      m => (m.broke === true && m.at > now - AFFECT_BROKE_WINDOW_MS)
+        || (m.k === 'mood_level' && m.at > now - AFFECT_MOOD_WINDOW_MS),
+    ),
     report,
   };
 }

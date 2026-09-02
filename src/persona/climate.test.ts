@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import {
   DIALS, CLIMATE_WINDOW_MS, CLIMATE_WINDOW_CAP, CLIMATE_MOVES_CAP,
   defaultClimate, coerceDials, applyDrift, climateLines, climateLinesForComposer,
-  clampToSpec, signOf, spentInWindow,
+  clampToSpec, signOf, spentInWindow, pruneLedger,
   type DialKey, type RelationshipClimate,
 } from './climate.js';
 
@@ -234,6 +234,29 @@ test('the shared bound helpers are exported and behave identically through the w
   assert.equal(spentInWindow(moves, 'ease', T0, 2000), 2);
   assert.equal(spentInWindow(moves, 'ease', T0, 500), 0, 'a shorter window sees less');
   assert.equal(spentInWindow(moves, 'ease', T0, CLIMATE_WINDOW_MS), spentInWindow(moves, 'ease', T0));
+});
+
+// `pruneLedger` is the tail BOTH step functions end on: drop what the window has aged out, then
+// bound the array by dropping the oldest rows nothing still reads. Climate pins nothing — its prune
+// window IS its budget's window, so every row that survives the prune is one `spentInWindow` can
+// still count, and the cap is a plain oldest-first trim. `affectDrift.ts` passes a predicate,
+// because it prunes on six hours while two shorter budgets read particular rows out of that.
+test('pruneLedger prunes to the window, then trims the oldest rows nothing pinned', () => {
+  const rows = Array.from({ length: 10 }, (_, i) => ({ at: T0 - (9 - i), k: 'ease' as DialKey, d: 1 }));
+  const stale = { at: T0 - WEEK - 1, k: 'ease' as DialKey, d: 1 };
+
+  // Everything past the window goes, whatever the cap allows.
+  assert.deepEqual(pruneLedger([stale, ...rows], T0, CLIMATE_WINDOW_MS, 100), rows);
+  // Under the cap the pruned array comes back as it is.
+  assert.deepEqual(pruneLedger(rows, T0, CLIMATE_WINDOW_MS, 10), rows);
+  // Over it, the OLDEST rows go and the survivors keep their newest-last order.
+  assert.deepEqual(pruneLedger(rows, T0, CLIMATE_WINDOW_MS, 4), rows.slice(6));
+  // A pinned row is kept on top of the cap, in place — this is the whole reason the seam exists.
+  assert.deepEqual(
+    pruneLedger(rows, T0, CLIMATE_WINDOW_MS, 2, m => m.at === rows[0].at),
+    [rows[0], ...rows.slice(8)],
+  );
+  assert.equal(rows.length, 10, 'the ledger handed in is never mutated');
 });
 
 // ── 9: purity ────────────────────────────────────────────────────────────────

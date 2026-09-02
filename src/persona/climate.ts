@@ -133,6 +133,35 @@ export function spentInWindow<K extends string>(
 }
 
 /**
+ * The tail every step function in this pair ends on: drop the rows the window has aged out, then
+ * bound the array by dropping the OLDEST rows nothing reads any more, keeping at most `cap` of them.
+ * Oldest-first, because the ledger is kept newest-last and a rolling budget is counted backwards
+ * from `now`.
+ *
+ * `pinned` names the rows a budget still reads, and they are kept regardless of the cap — dropping
+ * one of those does not shorten an audit trail, it hands a spent budget back. Climate pins nothing,
+ * and cannot need to: its prune window IS its budget's window, so every row that survives the prune
+ * is already one `spentInWindow` can count. `affectDrift.ts` prunes on six hours while two shorter
+ * budgets read particular rows out of that, which is the whole reason the parameter exists.
+ */
+export function pruneLedger<M extends { at: number }>(
+  moves: readonly M[],
+  now: number,
+  windowMs: number,
+  cap: number,
+  pinned: (m: M) => boolean = () => false,
+): M[] {
+  const from = now - windowMs;
+  const pruned = moves.filter(m => m.at > from);
+  let over = pruned.filter(m => !pinned(m)).length - cap;
+  if (over <= 0) return pruned;
+  return pruned.filter(m => {
+    if (over > 0 && !pinned(m)) { over--; return false; }
+    return true;
+  });
+}
+
+/**
  * Fold one suggestion into the climate. Every clamp is here, in this order:
  *   1. sign() of the suggested value — `+7`, `"3"`, `true` all mean "one step up"; `null`, `0`,
  *      `"soon"` mean no step at all. Magnitude is never read, so a model that answers `{"ease":99}`
@@ -207,12 +236,10 @@ export function applyDrift(
     changed.push(spec.key);
   }
 
-  const from = now - CLIMATE_WINDOW_MS;
-  const pruned = moves.filter(m => m.at > from);
   return {
     next: {
       dials,
-      moves: pruned.length > CLIMATE_MOVES_CAP ? pruned.slice(pruned.length - CLIMATE_MOVES_CAP) : pruned,
+      moves: pruneLedger(moves, now, CLIMATE_WINDOW_MS, CLIMATE_MOVES_CAP),
       lastEvalAt: now,
       evalCount: current.evalCount + 1,
     },
