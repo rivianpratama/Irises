@@ -57,8 +57,12 @@ export interface TranscriptMessage {
 
 /** How the freshest held research look reached the model this turn (memory/wrappers.ts):
  *  - `full` — its whole body is in the prompt; the one held thing the stack PROVED touches this turn.
- *  - `digest` — a memory block rendered, but no look is in front of her in full (every held look, if
- *    there was one, collapsed to its settled one-liner).
+ *  - `digest` — a memory block rendered and no look is in front of her in full. Read it as exactly
+ *    that and no more: the call site (convo/client.ts) sees only whether the assembled context block
+ *    came back non-empty — dossier plus tiers — which it is on essentially every turn with a memory
+ *    identity, so this is NOT a claim that a look was held and collapsed to its one-liner.
+ *    Distinguishing those needs `buildContextBlockWithHot` to report the short tier's own verdict; it
+ *    is a two-line widening in memory/wrappers.ts, for whenever a task owns that file.
  *  - `none` — no memory block at all this turn (no memory identity, or nothing held). */
 export type ShortHotLook = 'full' | 'digest' | 'none';
 
@@ -106,7 +110,13 @@ export interface StatusCoercion {
  *  capture, the meta-prompt) ran on defaults — invisible in a bubble, obvious in a receipt. */
 export interface TurnTraceAffect {
   source: 'emitted' | 'defaulted';
+  /** The status object VERBATIM, whatever the model put there — including keys the schema never
+   *  named. Nothing here bounds its size: `trunc` in trace.ts is governed by DIAGNOSTICS_STR_CAP,
+   *  whose default is 0 = unlimited, so a model that writes a 10k `meta_prompt` (or invents fields)
+   *  persists all of it for 30 days. The cap is available rather than applied; if
+   *  diagnostic_turn_history ever grows unexpectedly, this and `hits` are the two places to look. */
   rawEmitted: Record<string, unknown> | null;
+  /** The same status as READ — every string here is already capped by coerceStatus (600/400). */
   coerced: EmittedStatus | null;
   coercions: StatusCoercion[];
 }
