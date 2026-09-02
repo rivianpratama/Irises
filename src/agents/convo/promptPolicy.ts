@@ -92,6 +92,14 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
  *
  * It rises as the prose shrinks, so this line ratchets UP in the later phases while PROMPT_BUDGET
  * ratchets down.
+ *
+ * It stands at **0.0068** today and the floor has NOT been raised to match, which is deliberate on
+ * both counts. Almost all of that rise is P1's persona deletions (the two restated envelope
+ * paragraphs, the collapsed behaviour anchor, the copied feelings wheel and field list); the status
+ * contract that replaced the last of those is generated prose of very nearly the same size, so P1
+ * part 2 moved this fixture's whole prompt by −98 characters and this number by four millionths.
+ * Raising the floor is one line, and it belongs to whoever next accounts for the phase rather than to
+ * the task that happened to re-measure it.
  */
 export const MIN_TRANSCRIPT_SHARE = 0.0065;
 
