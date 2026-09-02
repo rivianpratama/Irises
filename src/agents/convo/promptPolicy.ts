@@ -1,8 +1,8 @@
 // What the Convo prompt is ALLOWED to be — today's sizes, today's rule statements, today's
 // duplication, all written down in one place.
 //
-// Convo's system prompt is ~180k characters, of which ~146k is the persona. Every block in it was
-// added by someone with a good reason, and nothing has ever said no. This module is the "no": a set
+// Convo's system prompt is ~177k characters, of which ~138k is the persona. Every block in it was
+// added by someone with a good reason, and nothing had ever said no. This module is the "no": a set
 // of numbers and phrases measured against the live assembler, held by three tests
 // (promptBudget.test.ts, promptPolicy.test.ts, clauseInventory.test.ts).
 //

@@ -1,13 +1,16 @@
 // Run with: npm test   (TZ=UTC tsx --test — runner pins DATA_BACKEND=memory)
 //
-// The ratchet. Convo's system prompt assembles to ~180k characters — ~146k of it the persona — and
-// it has only ever grown, one well-argued block at a time. This file measures the prompt through
+// The ratchet. Convo's system prompt assembles to ~177k characters — ~138k of it the persona — and
+// it had only ever grown, one well-argued block at a time. This file measures the prompt through
 // the real assembler (buildSystemPromptSections, the Task-1 seam) on five representative turns and
 // holds every part under the ceiling it stands at TODAY (promptPolicy.ts) — so the next block that
 // quietly doubles fails here instead of quietly costing the live thread its share of the context.
 //
-// It shrinks NOTHING. Every number in PROMPT_BUDGET was measured on these exact fixtures; the test's
-// only claim is "no bigger than today", and the later phases tighten the numbers, not the test.
+// It shrinks NOTHING itself. Every number in PROMPT_BUDGET was measured on these exact fixtures, and
+// the test makes two claims about them, one in each direction: nothing is bigger than its ceiling,
+// and no ceiling sits more than 2% above what these fixtures measure. The second claim is what stops
+// a phase that deletes prose from leaving its old ceiling behind as slack for the next arrival — the
+// phases tighten the numbers, not the test.
 //
 // Two things every fixture must do, both learned from Task 1:
 //   • pass `agentTz: 'UTC'` (argsFor does it for all of them, so it cannot be forgotten) — the
