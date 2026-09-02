@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { MODELS, MAX_TOKENS, PROVIDERS, THINKING, EFFORT, CACHE_SYSTEM, TEMPERATURE } from './models.js';
 import { BUBBLE_ENVELOPE_SCHEMA, buildEnvelopeSchema, parseReply } from '../pipeline/bubbleJson.js';
-import { buildOpenRouterParams, buildOpenAIParams, hasDocument, hasNativeMedia, isLengthStarved } from './openrouterRequest.js';
+import { buildOpenRouterParams, buildOpenAIParams, hasDocument, hasNativeMedia, isLengthStarved, starvedRetryEnabled, type OpenRouterParams } from './openrouterRequest.js';
 import { renderTimestamps } from './timedMessages.js';
 import { inlineImageBlocks } from './inlineImages.js';
 import { inlineMediaBlocks } from './inlineMedia.js';
@@ -10,7 +10,7 @@ import { record } from '../diagnostics/trace.js';
 import { recordTokenUsage } from '../db/repositories/tokenUsage.js';
 import { fromAnthropicContent, fromOpenRouterMessage } from './serverToolText.js';
 import { shouldFallback } from './fallbackPolicy.js';
-import { isTruncatedStop, starvedError, isStarvedError, bumpStarvedBudget } from './truncation.js';
+import { isTruncatedStop, starvedError, isStarvedError, bumpStarvedBudget, starvedRetryCap } from './truncation.js';
 import { reportError } from '../diagnostics/errorLog.js';
 import { checkCallBudgets, reportTaskUsage } from './budget.js';
 import { isLaneConfigured, laneEnvVar, laneKey, laneBaseUrl, laneUnconfiguredError, noLaneConfiguredError } from './laneKeys.js';
@@ -322,28 +322,88 @@ async function callAnthropic(req: LlmRequest): Promise<LlmResult> {
 // Request shaping lives in the pure, unit-tested ./openrouterRequest module: buildOpenRouterParams
 // (openrouter.ai + proprietary extras) vs buildOpenAIParams (generic body, any OpenAI-compatible
 // base URL). Here we only make the call + parse the reply. Both lanes are the same OpenAI SDK.
-async function callOpenAICompatible(req: LlmRequest, provider: 'openrouter' | 'openai'): Promise<LlmResult> {
-  const client = provider === 'openrouter' ? openrouterClient() : openaiClient();
-  if (!client) throw laneUnconfiguredError(provider);
+
+/** The one SDK method these lanes use. Injectable into callOpenAICompatible ONLY so the starvation
+ *  policy (does it retry, with which cap, with reasoning off) is unit-testable against a fake
+ *  provider — no key, no network. Production callers pass nothing. */
+export type ChatSender = (
+  params: OpenRouterParams,
+  opts: { signal?: AbortSignal; maxRetries?: number },
+) => Promise<OpenAI.Chat.Completions.ChatCompletion>;
+
+export async function callOpenAICompatible(
+  req: LlmRequest,
+  provider: 'openrouter' | 'openai',
+  sendOverride?: ChatSender,
+): Promise<LlmResult> {
+  let send = sendOverride;
+  if (!send) {
+    const client = provider === 'openrouter' ? openrouterClient() : openaiClient();
+    if (!client) throw laneUnconfiguredError(provider);
+    send = (p, o) => client.chat.completions.create(p, o);
+  }
   // Inline remote media as base64 first — providers (esp. Google/Gemini) can't reliably fetch remote
   // image/audio/video URLs, and messaging-CDN links are often not publicly retrievable. Each inliner
   // only touches its own block types, so the order is irrelevant.
   const prepared = await inlineMediaBlocks(await inlineImageBlocks(req));
-  const params = provider === 'openrouter' ? buildOpenRouterParams(prepared) : buildOpenAIParams(prepared);
+  /** This request's body. `maxTokens`/`disableReasoning` are the starved retry's two changes; the
+   *  rest of the body is rebuilt identically, so nothing else about the call drifts between legs. */
+  const build = (opts?: { maxTokens?: number; disableReasoning?: boolean }): OpenRouterParams => {
+    const r = opts?.maxTokens !== undefined ? { ...prepared, maxTokens: opts.maxTokens } : prepared;
+    return provider === 'openrouter'
+      ? buildOpenRouterParams(r, { disableReasoning: opts?.disableReasoning })
+      : buildOpenAIParams(r) as OpenRouterParams;   // the generic lane never carries `reasoning`
+  };
+  let params = build();
   const model = params.model;
 
   // signal: cancel the in-flight HTTP request, not just the loop around it (see LlmRequest.signal).
   // Document requests get one retry, not the default two — a retry re-uploads the full base64 body.
-  const resp = await client.chat.completions.create(params, { signal: req.signal, ...(hasDocument(req) ? { maxRetries: 1 } : {}) });
+  const sendOpts = { signal: req.signal, ...(hasDocument(req) ? { maxRetries: 1 } : {}) };
+  let resp = await send(params, sendOpts);
+  let choice = resp.choices[0];
 
-  const choice = resp.choices[0];
   // Reasoning starvation: the whole max_tokens budget went to chain-of-thought and the reply carries
-  // no content/tool call at all. Returning it as a normal result would look like an "empty reply"
-  // downstream and callers would retry with identical params (starving identically). Throw instead —
-  // a status-less error is retryable per shouldFallback, so callLLM salvages the turn on a fallback
-  // lane, and the message lands in traces via the ERROR record path. starvedError also MARKS the
-  // error, which is how callLLM knows to retry with a BIGGER budget rather than re-sending the same
-  // cap to a second model that would starve on it too.
+  // no content/tool call at all. An identical retry starves identically, so it gets ONE same-lane
+  // retry with a real budget (starvedRetryCap: 3x, floored at 600) and reasoning switched off — the
+  // two things that were wrong. This is the live classify-lane failure: a 200-token climate eval on
+  // an inherited deepseek-v4 spent the whole cap thinking, so the relationship climate never moved.
+  // Cheaper and more faithful than the cross-lane salvage below it: same model, same prompt, just
+  // room to answer. Flag LLM_STARVED_RETRY; off → straight to the throw, as before.
+  if (isLengthStarved(choice) && starvedRetryEnabled()) {
+    const cap = params.max_tokens ?? MAX_TOKENS[req.role];
+    const retriedCap = starvedRetryCap(cap);
+    let ok = false;
+    let error: string | undefined;
+    let starvedCap = cap;
+    try {
+      const retryParams = build({ maxTokens: retriedCap, disableReasoning: true });
+      const retryResp = await send(retryParams, sendOpts);
+      const retryChoice = retryResp.choices[0];
+      ok = !isLengthStarved(retryChoice);
+      if (ok) { resp = retryResp; choice = retryChoice; params = retryParams; }
+      else starvedCap = retriedCap;   // the budget that actually failed last
+    } catch (err) {
+      // A 3x cap can exceed what a provider accepts, and a retry can hit any transport failure. Keep
+      // the ORIGINAL starvation error as the one that surfaces: it is statusless and marked, which is
+      // what makes callLLM's cross-lane salvage (with bumpStarvedBudget) still run. The cause is not
+      // lost — it rides on the receipt below.
+      error = String((err as Error)?.message ?? err).slice(0, 300);
+    }
+    // Fires on EVERY starvation, retry landed or not — a starving lane is a pattern, and `ok: false`
+    // twice in a row is what says the cap was never the whole story.
+    record({
+      type: 'event', label: 'llm:starved_retry', role: req.role,
+      chatId: req.trace?.chatId, handle: req.trace?.handle, taskId: req.trace?.taskId,
+      detail: { role: req.role, model, cap, retriedCap, ok, ...(error ? { error } : {}) },
+    });
+    if (!ok) throw starvedError(provider, model, starvedCap);
+  }
+  // The unretried throw (flag off), and the shape callers have always seen: a status-less error is
+  // retryable per shouldFallback, so callLLM salvages the turn on a fallback lane, and the message
+  // lands in traces via the ERROR record path. starvedError also MARKS the error, which is how
+  // callLLM knows to retry with a BIGGER budget rather than re-sending the same cap to a second
+  // model that would starve on it too.
   if (isLengthStarved(choice)) {
     throw starvedError(provider, model, params.max_tokens ?? MAX_TOKENS[req.role]);
   }
