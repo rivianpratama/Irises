@@ -263,6 +263,35 @@ test('a level stored outside the band comes back INSIDE it, as a coercion rather
   assert.equal(down.next.mood_level, CORE_VALENCE_BAND[coreForLabel('miserable')][1]);
 });
 
+// The snap is deliberately absent from the four movement buckets — it is not a step she took — but
+// something downstream still has to know the level changed. `coerced` says so outright, so a caller
+// never has to diff `current` against `next` and guess which of the two did it.
+test('the report names the gauges the seed clamp snapped, so nobody has to diff for them', () => {
+  const [lo] = CORE_VALENCE_BAND[coreForLabel('delightful')];
+  const snapped = applyAffectDrift(settled(PEAK, { mood_level: 30 }), shift('steady', 'delightful'), PEAK, [], T0);
+  assert.deepEqual(snapped.report.coerced, ['mood_level']);
+  assert.equal(snapped.next.mood_level, lo);
+  assert.deepEqual(snapped.report.changed, [], 'and it is still not counted as a step');
+  assert.deepEqual(snapped.moves, [], 'nor charged to a budget');
+
+  // A level already inside the reported word's band was not snapped by anything.
+  const inside = applyAffectDrift(settled(PEAK, { mood_level: 75 }), shift('steady', 'delightful'), PEAK, [], T0);
+  assert.deepEqual(inside.report.coerced, []);
+
+  // Mood's band is the common case, but the event is "a bound moved the stored level", and every
+  // gauge has bounds — so every gauge can appear here.
+  const wild = applyAffectDrift({ ...settled(PEAK), anxiety: 150 }, shift('steady', 'content'), PEAK, [], T0);
+  assert.deepEqual(wild.report.coerced, ['anxiety']);
+  assert.equal(wild.next.anxiety, 95, 'clamped to 100, then one down step toward the target');
+
+  // A gauge that had no usable level was SEEDED from its default, not snapped: nothing was moved.
+  const legacy = { ...settled(PEAK) } as Partial<AffectGauges>;
+  delete legacy.rapport;
+  const seeded = applyAffectDrift(legacy as AffectGauges, shift('steady', 'content'), PEAK, [], T0);
+  assert.deepEqual(seeded.report.coerced, []);
+  assert.equal(seeded.next.rapport, 40);
+});
+
 // ── the per-turn cap, truncating in spec order ───────────────────────────────
 
 // AFFECT_TURN_CAP is the answer to "how much can one message change her": 18 points of total
@@ -368,6 +397,37 @@ test("a second 'broke' inside six hours is treated as a dip, and says so in `sho
   assert.ok(Math.abs(third.next.mood_level - 45) > Math.abs(plainDip.next.mood_level - 45),
     'the break moved further than a dip would have');
   assert.deepEqual(third.moves.map(m => m.at), [T0], 'and the aged-out break was pruned');
+});
+
+// `shortened` can only speak for a step that actually moved, so on the turns where the downgraded
+// dip was itself refused it says nothing at all — and "a break was served as a dip" is a fact about
+// the TURN either way. `brokeDowngraded` is that fact, independent of how the dip then landed.
+test('`brokeDowngraded` reports the downgrade however the dip that replaced it landed', () => {
+  const recent: AffectMove[] = [{ at: T0 - 2 * HOUR, k: 'mood_level', d: -18, broke: true }];
+  const g = settled(PEAK, { mood_level: 45 });
+
+  const landed = applyAffectDrift(g, shift('broke', 'irritated'), PEAK, recent, T0);
+  assert.equal(landed.report.brokeDowngraded, true, 'the dip landed');
+
+  // The hour's budget refused the dip outright: nothing in `shortened`, still a downgrade.
+  const hourGone: AffectMove[] = [...recent, { at: T0 - 60_000, k: 'mood_level', d: -AFFECT_MOOD_WINDOW_CAP }];
+  const refused = applyAffectDrift(g, shift('broke', 'irritated'), PEAK, hourGone, T0);
+  assert.deepEqual(refused.report.capped, ['mood_level']);
+  assert.deepEqual(refused.report.shortened, []);
+  assert.equal(refused.report.brokeDowngraded, true);
+
+  // Mood parked on the band floor: nowhere to go, still a downgrade.
+  const floored = applyAffectDrift(
+    settled(PEAK, { mood_level: CORE_VALENCE_BAND.sad[0] }), shift('broke', 'miserable'), PEAK, recent, T0,
+  );
+  assert.deepEqual(floored.report.atBound, ['mood_level']);
+  assert.equal(floored.report.brokeDowngraded, true);
+
+  // And it is false for the two turns that are not a downgrade at all.
+  assert.equal(applyAffectDrift(g, shift('broke', 'irritated'), PEAK, [], T0).report.brokeDowngraded, false,
+    'a break with the six hours free is not a downgrade');
+  assert.equal(applyAffectDrift(g, shift('dipped', 'irritated'), PEAK, recent, T0).report.brokeDowngraded, false,
+    'an honest dip inside the window was never a break');
 });
 
 // The allowance is spent by a break that LANDED, not by one that was asked for: if the hour's mood

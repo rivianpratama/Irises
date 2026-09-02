@@ -104,12 +104,25 @@ export interface AffectInput {
  *                   is reported separately.
  *   • `shortened` — it moved, but by less than the rule asked for: a budget truncated the step,
  *                   or a second `broke` inside six hours was downgraded to a plain dip.
+ *
+ * The last two fields are about the turn rather than about a step, and they exist so a caller never
+ * has to diff `current` against `next` and guess which rule did it.
  */
 export interface AffectDriftReport {
   changed: GaugeKey[];
   capped: GaugeKey[];
   atBound: GaugeKey[];
   shortened: GaugeKey[];
+  /** Gauges whose STORED level a bound moved during seeding, before the turn asked for anything —
+   *  for mood the reported word's valence band, for the rest their 1-100 range. A COERCION, not a
+   *  step: it appears in none of the four buckets above and spends none of the turn's budget. A
+   *  gauge that had no usable level at all is not here — it was seeded from its `dflt`, and there
+   *  was no level to snap. */
+  coerced: GaugeKey[];
+  /** A `broke` arrived with the six hours already spent, so it was served as an ordinary dip. True
+   *  whatever became of that dip afterwards — landed, truncated, refused by a budget, or swallowed
+   *  by a bound — because `shortened` can only speak for a step that actually moved. */
+  brokeDowngraded: boolean;
 }
 
 /** How far the clock may pull mood in one turn. Deliberately tiny next to a 6-8 point shift: the
@@ -193,16 +206,15 @@ function boundsFor(spec: GaugeSpec, moodLabel: string): { floor: number; ceiling
 /** The mood rule: the shift's sign × its (possibly widened, possibly tripled) step, then a pull of
  *  at most `MOOD_TARGET_PULL` toward the clock. `downgraded` says the 3× step was refused. */
 function moodDelta(
-  spec: GaugeSpec, cur: number, input: AffectInput, target: number, brokeSpent: boolean,
-): { delta: number; downgraded: boolean } {
+  spec: GaugeSpec, cur: number, input: AffectInput, target: number, downgraded: boolean,
+): number {
   const sign = signOf(MOOD_SHIFT_SIGN[input.moodShift]);
-  const downgraded = input.moodShift === 'broke' && brokeSpent;
   const multiplier = input.moodShift === 'broke' && !downgraded ? BROKE_STEP_MULTIPLIER : 1;
   const widening = WIDENING_TRIGGERS.includes(input.epistemic) ? EPISTEMIC_STEP_WIDENING : 1;
   const step = sign === 0 ? 0 : Math.round((sign > 0 ? spec.up : spec.down) * multiplier * widening);
   const gap = target - (cur + sign * step);
   const pull = signOf(gap) * Math.min(Math.abs(gap), MOOD_TARGET_PULL);
-  return { delta: sign * step + pull, downgraded };
+  return sign * step + pull;
 }
 
 /** What one gauge's own rule asks for this turn, before any bound or budget touches it. */
@@ -211,18 +223,18 @@ function wantedFor(
   cur: number,
   input: AffectInput,
   targets: Record<TargetedGaugeKey, number>,
-  brokeSpent: boolean,
-): { delta: number; downgraded: boolean } {
+  brokeDowngraded: boolean,
+): number {
   const key: GaugeKey = spec.key;
-  if (key === 'mood_level') return moodDelta(spec, cur, input, targets.mood_level, brokeSpent);
+  if (key === 'mood_level') return moodDelta(spec, cur, input, targets.mood_level, brokeDowngraded);
   if (key === 'rapport') {
     const sign = signOf(input.threadOutcome ? THREAD_OUTCOME_SIGN[input.threadOutcome] : 0);
-    return { delta: sign > 0 ? spec.up : sign < 0 ? -spec.down : 0, downgraded: false };
+    return sign > 0 ? spec.up : sign < 0 ? -spec.down : 0;
   }
   // The four clock-driven gauges: toward the target, by at most one spec step.
   const gap = targets[key] - cur;
   const sign = signOf(gap);
-  return { delta: sign * Math.min(Math.abs(gap), sign > 0 ? spec.up : spec.down), downgraded: false };
+  return sign * Math.min(Math.abs(gap), sign > 0 ? spec.up : spec.down);
 }
 
 /**
@@ -230,8 +242,8 @@ function wantedFor(
  * reasons, as `applyDrift` (`climate.ts:118-144`):
  *   0. seed: a missing or garbled gauge starts from its `dflt`, and every gauge is clamped into its
  *      bounds before anything is asked of it. For mood that is the word's valence band, so a level
- *      stored outside it comes back inside — a COERCION, not a step: it is reported in none of the
- *      buckets and spends none of the turn's budget.
+ *      stored outside it comes back inside — a COERCION, not a step: it spends none of the turn's
+ *      budget and appears in none of the four movement buckets, only in `report.coerced`.
  *   1. the gauge's own rule (above): a sign × an asymmetric step for mood and rapport, a bounded
  *      pull toward the clock target for the four in between.
  *   2. clamp to [floor, ceiling] FIRST, so a gauge already parked on a bound asks the budget for
@@ -251,27 +263,36 @@ export function applyAffectDrift(
   now: number,
 ): { next: AffectGauges; moves: AffectMove[]; report: AffectDriftReport } {
   const targets = affectTargets(computed);
-  const bounds = {} as Record<GaugeKey, { floor: number; ceiling: number }>;
-  const next = {} as AffectGauges;
-  for (const spec of GAUGE_SPECS) {
-    bounds[spec.key] = boundsFor(spec, input.moodLabel);
-    const raw = (current as Partial<AffectGauges> | undefined)?.[spec.key];
-    const seed = typeof raw === 'number' && Number.isFinite(raw) ? raw : spec.dflt;
-    next[spec.key] = clampToSpec(seed, bounds[spec.key]);
-  }
-
-  const moves: AffectMove[] = [...ledger];
-  const report: AffectDriftReport = { changed: [], capped: [], atBound: [], shortened: [] };
-  // Read off the ledger handed in, before this turn appends to it.
+  // Both budgets are read off the ledger handed in, before this turn appends to it.
   const brokeSpent = ledger.some(m => m.broke === true && m.at > now - AFFECT_BROKE_WINDOW_MS);
+  const brokeDowngraded = input.moodShift === 'broke' && brokeSpent;
   const moodWindowLeft = Math.max(
     0, AFFECT_MOOD_WINDOW_CAP - spentInWindow(ledger, 'mood_level', now, AFFECT_MOOD_WINDOW_MS),
   );
+
+  const bounds = {} as Record<GaugeKey, { floor: number; ceiling: number }>;
+  const next = {} as AffectGauges;
+  const coerced: GaugeKey[] = [];
+  for (const spec of GAUGE_SPECS) {
+    bounds[spec.key] = boundsFor(spec, input.moodLabel);
+    const raw = (current as Partial<AffectGauges> | undefined)?.[spec.key];
+    const stored = typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+    const seeded = clampToSpec(stored ?? spec.dflt, bounds[spec.key]);
+    next[spec.key] = seeded;
+    // A BOUND moving the stored level is the coercion; rounding it is not, and a gauge with no
+    // usable level was seeded from its default rather than snapped away from one.
+    if (stored !== null && seeded !== Math.round(stored)) coerced.push(spec.key);
+  }
+
+  const moves: AffectMove[] = [...ledger];
+  const report: AffectDriftReport = {
+    changed: [], capped: [], atBound: [], shortened: [], coerced, brokeDowngraded,
+  };
   let spent = 0;
 
   for (const spec of GAUGE_SPECS) {
     const cur = next[spec.key];
-    const { delta, downgraded } = wantedFor(spec, cur, input, targets, brokeSpent);
+    const delta = wantedFor(spec, cur, input, targets, brokeDowngraded);
     if (delta === 0) continue;
 
     const wanted = clampToSpec(cur + delta, bounds[spec.key]) - cur;
@@ -293,12 +314,14 @@ export function applyAffectDrift(
     // A step the budget cut down, or a `broke` refused its 3× — either way it landed smaller than
     // the rule asked for, and a step that quietly shrank is indistinguishable from a smaller
     // suggestion unless it says so.
-    if (applied !== wanted || downgraded) report.shortened.push(spec.key);
+    if (applied !== wanted || (spec.key === 'mood_level' && brokeDowngraded)) {
+      report.shortened.push(spec.key);
+    }
 
     next[spec.key] = cur + applied;
     spent += Math.abs(applied);
     // Only a break that actually LANDED claims the next six hours.
-    const claimsBreak = spec.key === 'mood_level' && input.moodShift === 'broke' && !downgraded;
+    const claimsBreak = spec.key === 'mood_level' && input.moodShift === 'broke' && !brokeDowngraded;
     moves.push(claimsBreak
       ? { at: now, k: spec.key, d: applied, broke: true }
       : { at: now, k: spec.key, d: applied });
