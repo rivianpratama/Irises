@@ -433,6 +433,25 @@ export const CHECKS: Record<CheckId, FocusCheck> = {
       if (s.reason === 'offered_loop') {
         return { status: 'warn', detail: 'a loop took the turn instead — the theme could not be offered behind it' };
       }
+      // A theme can be eaten BEFORE the topic gate ever sees it. Staleness and the per-theme
+      // cooldown are checked earlier in the same loop (persona/threads.ts: `stale` at the recency
+      // window, then `cooldown` at themeCooldownMs), and the receipt counts buckets without naming
+      // which theme landed in which — so an `off_topic` of 0 beside a non-zero pre-gate count is not
+      // evidence that the gate refused anything. The round that hits this: f4 PASSES, its offer
+      // stamps lastOfferedAt, and the next round the same day finds that very theme inside its
+      // cooldown. Failing a healthy engine there is worse than declining to score it.
+      if (s.filtered.themes.off_topic === 0 && s.filtered.themes.cooldown + s.filtered.themes.stale > 0) {
+        const first = s.filtered.themes.stale > 0 ? 'stale' : 'cooldown';
+        return {
+          status: 'unscored',
+          detail: `'${s.reason}' with nothing filtered off_topic, but ${s.filtered.themes.stale} theme(s) `
+            + `were stale and ${s.filtered.themes.cooldown} were in cooldown — both checked BEFORE the topic `
+            + `gate, and the receipt does not say which theme landed where, so the theme this ask touches `
+            + `(${ev.touchedThemes.join(', ')}) may never have reached the gate. '${first}' got there first. `
+            + `A theme offered in an earlier round is in cooldown for a day or more; re-run later, or aim `
+            + '--positive-ask at another surfaceable label',
+        };
+      }
       return {
         status: 'fail',
         detail: `'${s.reason}' while the inventory holds ${ev.touchedThemes.length} theme(s) this ask touches `
@@ -836,7 +855,9 @@ ${BATTERY.length} probes, ${SENDABLE.length} of them sendable from here. Read th
     (multiturn-threading-test.md). Nothing here writes to the row.
   • f4, THE ONE POSITIVE CONTROL. It needs a taggable or shorthand theme its ask touches; the
     summary prints the labels, and --positive-ask lets you aim at them. Without one it goes
-    UNSCORED, never PASS.
+    UNSCORED, never PASS. Note that an offer HERE puts that theme in cooldown for a day or more, so
+    a second round the same day scores f4 UNSCORED (the cooldown ate the theme before the topic gate
+    saw it) rather than failing — aim --positive-ask elsewhere, or wait the cooldown out.
   • THE PENDING ITEMS. They are not passes and not failures: the evidence they need is not written
     yet (f7 needs a media channel this lane does not have; f8's cap check needs P3's affect.drift on
     the receipt). Listed under the table, every time.

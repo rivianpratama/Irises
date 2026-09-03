@@ -311,6 +311,44 @@ test('f4: a closed turn gate is UNSCORED and says so by name', () => {
   assert.match(r.evidence, new RegExp(String(THREAD_MIN_TURNS_BETWEEN_OFFERS)));
 });
 
+test('f4: a theme eaten by a PRE-GATE bucket is UNSCORED, not a missed connection', () => {
+  // The engine checks staleness and the per-theme cooldown BEFORE the topic gate
+  // (persona/threads.ts, the theme eligibility loop), and neither bucket says WHICH theme it ate.
+  // So an `off_topic` of 0 beside a non-zero cooldown/stale count is not evidence the topic gate
+  // refused anything: the theme this ask touches may never have reached it. The concrete round that
+  // used to fail here: f4 offers on round N, and round N+1 the same day finds that theme in its 24h
+  // cooldown.
+  const cooled = score(item('f4'), {
+    select: select({
+      reason: 'no_eligible',
+      filtered: { ...select().filtered, themes: { ...select().filtered.themes, cooldown: 1 } },
+    }),
+    touchedThemes: ['speed over polish'],
+  });
+  assert.equal(cooled.verdict, 'UNSCORED');
+  assert.match(cooled.evidence, /cooldown/);
+
+  const stale = score(item('f4'), {
+    select: select({
+      reason: 'no_eligible',
+      filtered: { ...select().filtered, themes: { ...select().filtered.themes, stale: 2 } },
+    }),
+    touchedThemes: ['speed over polish'],
+  });
+  assert.equal(stale.verdict, 'UNSCORED');
+  assert.match(stale.evidence, /stale/);
+
+  // …but a theme the gate DID see and refuse is still the missed connection, pre-gate buckets or not.
+  const refused = score(item('f4'), {
+    select: select({
+      reason: 'no_eligible',
+      filtered: { ...select().filtered, themes: { ...select().filtered.themes, cooldown: 1, off_topic: 1 } },
+    }),
+    touchedThemes: ['speed over polish'],
+  });
+  assert.equal(refused.verdict, 'CONNECTION_MISSED');
+});
+
 test('f5: a bare greeting answered with a wall is the dump', () => {
   const r = score(item('f5'), {
     trace: trace({ bubbles: { count: 3, maxWords: 12 } }),
