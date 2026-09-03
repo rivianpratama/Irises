@@ -429,7 +429,16 @@ export const CHECKS: Record<CheckId, FocusCheck> = {
       if (!ev.select) return { status: 'unscored', detail: `no ${THREADS_SELECT_LABEL} receipt for this chat` };
       const s = ev.select;
       if (s.reason === 'offered_theme') {
-        return { status: 'pass', detail: `offered_theme with off_topic ${s.filtered.themes.off_topic}` };
+        // What this pass proves and what it does not: `threads:select` says a theme was offered, not
+        // WHICH theme. So a theme minted earlier in the round, or a run with CONVO_THEME_TOPIC_GATE
+        // off, reads identically from out here. The item's handRead is where that is caught, and the
+        // cheap fix upstream is for the receipt to carry the winner's label.
+        return {
+          status: 'pass',
+          detail: `offered_theme with off_topic ${s.filtered.themes.off_topic} — the receipt does not name `
+            + `which theme won, so read the tag: this says the gate CONNECTS, not that it connected on `
+            + `${ev.touchedThemes.join(', ') || 'a theme this ask touches'}`,
+        };
       }
       if (!ev.touchedThemes.length) {
         return {
@@ -943,7 +952,8 @@ function detailAs<T>(r: Receipt | undefined): T | null {
  * `diagnostic_turn_history` keeps one row per orchestration turn for 30 days with every event's
  * `detail` inside `turn_json`, which is the right source for a battery whose round outlives the
  * 500-event ring: the ring rolls, this does not. json_each unpacks the events server-side so only
- * the three labels this file reads come back over the wire, instead of ten turns of full prompts.
+ * the two labels this file reads (RECEIPT_LABELS) come back over the wire, instead of ten turns of
+ * full prompts.
  */
 function readHistoryReceipts(db: string, chatIds: string[], since: number): { receipts: Receipt[]; error: string | null } {
   const labels = RECEIPT_LABELS.map(quote).join(',');

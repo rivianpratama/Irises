@@ -336,6 +336,9 @@ test('f4: the positive control passes only on an actual offer', () => {
     touchedThemes: ['speed over polish'],
   });
   assert.equal(offered.verdict, 'PASS');
+  // …and it says how far the pass reaches: the receipt names no winner, so an offer of some OTHER
+  // theme (one minted mid-round, or any theme at all with the topic gate off) reads the same here.
+  assert.match(offered.evidence, /does not name/);
 
   const missed = score(item('f4'), {
     select: select({ reason: 'no_eligible' }),
