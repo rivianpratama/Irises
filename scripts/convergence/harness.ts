@@ -61,9 +61,21 @@ export function expand(p: string): string {
  */
 export const SH_MAX_BUFFER = 256 * 1024 * 1024;
 
-/** One command, no shell, output trimmed. */
+/**
+ * One command, no shell, output trimmed.
+ *
+ * `stdio` is pinned rather than left to the default, where execFileSync passes the child's stderr
+ * straight through to the operator's terminal: a `sqlite3` that cannot find a table printed its own
+ * error line ABOVE the report, and then the battery said the same thing again, properly, inside the
+ * line that explains what it means for the round. Piped, the message is still on the thrown Error —
+ * which is where every caller here reads it from — and the report is the only thing on the terminal.
+ */
 export function sh(bin: string, args: string[]): string {
-  return execFileSync(bin, args, { encoding: 'utf8', maxBuffer: SH_MAX_BUFFER }).trim();
+  return execFileSync(bin, args, {
+    encoding: 'utf8',
+    maxBuffer: SH_MAX_BUFFER,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
 }
 
 /** A GET whose body is JSON, or null for anything that did not arrive as JSON. */
