@@ -6,8 +6,9 @@
 //
 // So two things are pinned here, on one live path each:
 //   • the gate STANDS DOWN when something she holds touches the ask and she wrote an answer off it;
-//   • and when a delegation does happen, the brief carries her own words for those things, so the
-//     engine can never have to ask which Dana.
+//   • and when a delegation does happen, it carries her own words for those things — in the task's
+//     own `heldMemory` field, beside the brief rather than inside it — so the engine can never have
+//     to ask which Dana.
 //
 // The relevance router is the real one (memory/relevance.ts) built off real held items, so the hit
 // kinds and labels under test are the ones a live turn produces. Runs end-to-end against the
@@ -335,7 +336,7 @@ test('a walled URL sitting in a held note arms nothing — the ASK decides that,
   }
 });
 
-test('CONVO_ROUTING_GATE_MEMORY_AWARE=off carries nothing into either brief', async () => {
+test('CONVO_ROUTING_GATE_MEMORY_AWARE=off carries nothing on either delegation', async () => {
   process.env.CONVO_ROUTING_GATE_MEMORY_AWARE = 'off';
   try {
     const forced = await processConvoResult({ ...args(), res: makeResult([]), relevance: relevance(ASK, { notes: [NOTE] }) });

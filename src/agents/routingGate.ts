@@ -431,10 +431,11 @@ export function routingGateHitReceipt(hits: readonly HeldHit[]): { hitKinds: str
  * call time so flipping it needs no restart — the same parse shape as every sibling flag
  * (threadingEnabled, themeTopicGateEnabled, memoryRelevanceEnabled, turnTraceEnabled).
  *
- * Off means the gate never stands down for a memory hit and no delegation's brief carries what she
- * holds: the same delegation, the same meta prompt, byte for byte, as an install that never had
- * this. The receipt still names the decision and the hits behind it, so the flag can be measured
- * off a live ring before it is trusted. ROUTING_GATE=off remains the switch for the whole floor.
+ * Off means the gate never stands down for a memory hit and no delegation carries what she holds
+ * (the block that rides beside the brief, in the task's own field): the same delegation, the same
+ * meta prompt, byte for byte, as an install that never had this. The receipt still names the
+ * decision and the hits behind it, so the flag can be measured off a live ring before it is
+ * trusted. ROUTING_GATE=off remains the switch for the whole floor.
  */
 export function routingGateMemoryAwareEnabled(): boolean {
   const v = (process.env.CONVO_ROUTING_GATE_MEMORY_AWARE || '').trim().toLowerCase();

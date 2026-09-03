@@ -358,8 +358,8 @@ function reasonFor(from: unknown, to: unknown): StatusCoercionReason {
  * so it can never disagree with the coercion that actually ran.
  *
  * An unusable envelope (no `status`, or a non-object one) reports the whole-object default as a
- * single `status` entry rather than seventeen field entries: nothing was emitted, so no field was
- * coerced — the object was.
+ * single `status` entry rather than one per ENVELOPE_FIELDS key: nothing was emitted, so no field
+ * was coerced — the object was.
  */
 export function describeStatusCoercions(
   raw: Record<string, unknown> | null | undefined,

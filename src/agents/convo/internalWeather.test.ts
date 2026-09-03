@@ -47,8 +47,9 @@ test('the internal-weather block is injected when computed state is present', ()
 
 test('a prior mood + meta-prompt carry forward into the block', () => {
   const prompt = buildSystemPrompt(ctx, '', [], undefined, undefined, [], 'hey', undefined, affect(), COMPUTED);
-  // 'hopeful' is a `powerful` word on the chart, and the core is derived from the word now
-  // (coreForLabel) rather than reported beside it, so a fixture can no longer file it under `joyful`.
+  // The core is derived from the word (persona/mood.ts coreForLabel) rather than reported beside it,
+  // and 'hopeful' is a `powerful` word on the chart — so that is the core the block prints, and a
+  // fixture cannot file the same word under a different one.
   assert.match(prompt, /hopeful \(powerful, 72\/100\)/);    // carried mood
   assert.match(prompt, /keep it light and follow their lead/); // carried meta-prompt
 });

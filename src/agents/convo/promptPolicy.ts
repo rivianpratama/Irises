@@ -163,7 +163,8 @@ export const MIN_TRANSCRIPT_SHARE = 0.0077;
  * interview", the banter frame and the three-check gate), and every one of them is a behaviour the
  * live thread depends on. Prose has no test, so a rewrite that drops a clause looks like a tidy-up in
  * review. These strings are that test: promptPolicy.test.ts checks each one against
- * `loadContext('convo')` and names the id that went missing.
+ * `convoPersonaWithCraft()` — the whole corpus, see the note below — and names the id that went
+ * missing.
  *
  * A phrase here is an ANCHOR, not a quotation of the whole rule: the shortest fragment that could
  * only come from that clause. Rewording the paragraph around it is fine and expected; losing the
@@ -230,12 +231,14 @@ export interface ClauseCount {
   id: string;
   /** Counted as a plain substring of the assembled prompt (`String.split(phrase).length - 1`). */
   phrase: string;
-  /** TODAY's total. This number is the ratchet: P1 deletes a duplicate and drops the count by one. */
+  /** TODAY's total. This number is the ratchet: deleting a duplicate drops the count by one, in the
+   *  same commit as the deletion. */
   count: number;
   /** How many of those copies live in the behaviour/JSON anchors rather than ahead of them — i.e.
-   *  how many are the recency-edge RETELLING rather than the clause's own home in Context.md. The
-   *  remainder (`count - anchorCopies`) is what the persona itself carries, so a 2/1 row is a rule
-   *  plus its anchor and a 2/0 row is two copies inside Context.md. Checked rather than annotated:
+   *  how many are the recency-edge RETELLING rather than the clause's own home in the persona
+   *  corpus (Context.md, or the craft page P4a moved its section to). The remainder
+   *  (`count - anchorCopies`) is what the persona itself carries, so a 2/1 row is a rule plus its
+   *  anchor and a 2/0 row is two copies inside the corpus. Checked rather than annotated:
    *  clauseInventory.test.ts counts both halves. */
   anchorCopies: number;
   /** Which copies make up `count`, so a later pass tightens the right one — and any copy the count
@@ -290,7 +293,7 @@ export const CLAUSE_INVENTORY: readonly ClauseCount[] = [
     phrase: 'Four bends that stay safe',
     count: 1,
     anchorCopies: 0,
-    where: 'Context.md only — the behaviour anchor carries the same rule in its own words',
+    where: "Context.md only — P1 deleted the behaviour anchor's tease line, which had retold this one",
   },
   {
     id: 'tease_wound_clause',

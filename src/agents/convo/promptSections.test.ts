@@ -10,8 +10,9 @@
 //
 // GOLDEN_TAIL has since been regenerated TWICE, deliberately. First: P1 collapsed the behaviour
 // anchor from fourteen lines to six (1,659 → 699 chars), deleting the eight lines that restated a
-// rule owning a section of its own — the bubble numbers, "answer first", predict/probe, the tease
-// line, "you concede to information", "settled ground is settled", "a greeting gets a greeting". The
+// rule owning a section of its own — the bubble numbers, "answer first", the reply-order line
+// ("Their message gets met before anything of yours rides along"), predict/probe, the tease line,
+// "you concede to information", "settled ground is settled", "a greeting gets a greeting". The
 // JSON anchor's bytes did not move. Second: P3's envelope shrink took the "1-100 gauges" out of the
 // anchor's one-line description of `status` (+20 chars), because after the shrink the anchor — the
 // LAST thing the model reads before it types — was asking for eight numbers the response schema no

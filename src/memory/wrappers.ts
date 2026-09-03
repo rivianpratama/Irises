@@ -775,22 +775,6 @@ export interface IdentityCardRender {
 }
 
 /**
- * The identity card: the one always-on block at the top of the memory stack.
- *
- * It says who this person is (name, what to call them, how they text, where they are, how long
- * you've known them), the standing rules they have asked for, and the three laws that govern every
- * tier below it — and it says each of those things ONCE. It replaces the shared preamble and four
- * stance/ladder renderers that each restated some of the same precedence in their own words while
- * none of them ever said the user's name.
- *
- * Ungated: every turn renders the whole card. The only thing on it a gate touches is the directive
- * list, which uses Task 11's recency window unchanged.
- *
- * `prefs` is the addressing header's prefs-wins fact view (medium facts under the legacy prefs), so
- * a curated `address_as`/`comms_style` living only in the medium tier still reaches the card and a
- * rare failed medium write can never mask a newer prefs value.
- */
-/**
  * Does THIS render put an identity card above the tiers?
  *
  * Two conditions, and both are load-bearing. A relevance router, because the card is the P2 render
@@ -805,6 +789,22 @@ export function hasIdentityCard(agent: MemoryAgent, turn?: TurnRelevance | null)
   return !!turn && agent === 'convo';
 }
 
+/**
+ * The identity card: the one always-on block at the top of the memory stack.
+ *
+ * It says who this person is (name, what to call them, how they text, where they are, how long
+ * you've known them), the standing rules they have asked for, and the three laws that govern every
+ * tier below it — and it says each of those things ONCE. It replaces the shared preamble and four
+ * stance/ladder renderers that each restated some of the same precedence in their own words while
+ * none of them ever said the user's name.
+ *
+ * Ungated: every turn renders the whole card. The only thing on it a gate touches is the directive
+ * list, which uses the gate table's recency window unchanged (selectDirectives below).
+ *
+ * `prefs` is the addressing header's prefs-wins fact view (medium facts under the legacy prefs), so
+ * a curated `address_as`/`comms_style` living only in the medium tier still reaches the card and a
+ * rare failed medium write can never mask a newer prefs value.
+ */
 export function renderIdentityCard(
   data: UserMemoryData,
   prefs: Record<string, unknown>,
@@ -1094,11 +1094,6 @@ const TEXTURE_FACTS_ENOUGH = 3;
  *  has a number to hold it to (it was 5,530 characters on the same input before P2). */
 export const DISCOVERY_BLOCK_MAX_CHARS = 1_650;
 
-/**
- * The what-you-don't-know-YET section for the front line: the open slots with their tradecraft, the
- * fill-over-time note when the day-to-day picture is empty, and the never-say-it closing. Returns
- * '' once there is nothing left on the list — every slot closed and a day-to-day picture on file.
- */
 /** The two structural reads the scaffold turns on: which identity slots are still open, and whether
  *  the day-to-day picture is empty. Shared with profileIsThin below so the scaffold and the craft
  *  module that teaches how to close a slot cannot disagree about which slots are open. */
@@ -1126,6 +1121,12 @@ export function profileIsThin(data: UserMemoryData): boolean {
   return unknown.length > 0 || mediumEmpty || (data.profile?.facts?.length ?? 0) < TEXTURE_FACTS_ENOUGH;
 }
 
+/**
+ * The what-you-don't-know-YET section for the front line: the open slots, the fill-over-time note
+ * when the day-to-day picture is empty, and the never-say-it closing. Returns '' once there is
+ * nothing left on the list — every slot closed and a day-to-day picture on file. The tradecraft for
+ * closing a slot is not here: it is the onboarding craft page, gated on `profileIsThin` above.
+ */
 export function renderDiscoveryBlock(data: UserMemoryData): string {
   const { unknown, mediumEmpty } = discoveryState(data);
   if (!unknown.length && !mediumEmpty) return '';

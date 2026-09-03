@@ -43,7 +43,7 @@ test('every rule anchor is still in the persona, verbatim', () => {
   for (const { id, personaAnchor } of RULE_ANCHORS) {
     assert.ok(
       persona.includes(personaAnchor),
-      `the "${id}" rule is gone from Context.md — its anchor no longer appears: ${JSON.stringify(personaAnchor)}. If the rewrite was deliberate, update RULE_ANCHORS in the same commit.`,
+      `the "${id}" rule is gone from the persona corpus (Context.md + every craft page) — its anchor no longer appears: ${JSON.stringify(personaAnchor)}. If the rewrite was deliberate, update RULE_ANCHORS in the same commit.`,
     );
   }
 });
