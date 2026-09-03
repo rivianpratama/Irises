@@ -181,7 +181,13 @@ function clip(text: string, max: number): string {
 
 /** Is this flag's stored deadline inside the window? A deadline already PAST counts as inside it —
  *  a missed cutoff is the most live a flagged mail ever gets. An unparseable or absent date is not
- *  a deadline at all (the judge stores free text there often enough to matter). */
+ *  a deadline at all (the judge stores free text there often enough to matter).
+ *
+ *  The judge writes a date-only `YYYY-MM-DD`, which Date.parse reads as UTC midnight whatever the
+ *  user's timezone is — so west of UTC the window can open a few hours to a day earlier than their
+ *  calendar would say. Left as is deliberately: the error runs in the direction of keeping a flag
+ *  whole for longer, never of dropping one early, and the row leaves the block on the tier's own
+ *  expiry regardless. */
 function deadlineWithin(entry: ShortTermEntry, nowMs: number, windowMs: number): boolean {
   const raw = (entry.meta as { deadlineDate?: unknown } | undefined)?.deadlineDate;
   if (typeof raw !== 'string' || !raw.trim()) return false;
