@@ -61,6 +61,12 @@ export const SEED_NOTE = 'your first picture of them came from the engine you fr
  *  they really did state. */
 export const LEGACY_FACT_PROV: Provenance = 'stated';
 
+/** Is this one of the three? The guard for a stored attribute or a hand edit — an unknown value is
+ *  dropped rather than trusted, and never fatal to the row carrying it. */
+export function isProvenance(v: unknown): v is Provenance {
+  return typeof v === 'string' && (PROVENANCES as readonly string[]).includes(v);
+}
+
 /** Text → its claimed provenance and its body. `prov: null` means the text claims nothing (an
  *  unprefixed row); the body is then the text itself, untouched. */
 export function parseProvenance(text: string): { prov: Provenance | null; body: string } {

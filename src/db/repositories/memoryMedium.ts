@@ -33,6 +33,9 @@ import { memoriesDir } from '../stateDir.js';
 import { atomicWriteText, readTextIfExists, appendText } from '../files.js';
 import { withHandleLock, getForgetEpoch } from './memory.js';
 import { archiveEntries, type ArchiveSource } from './memoryArchive.js';
+import {
+  isProvenance, promote, provFromSource, provenanceEnabled, type Provenance,
+} from '../../memory/provenance.js';
 
 export type MediumKind = 'fact' | 'directive' | 'important_note';
 export type MediumStatus = 'active' | 'superseded' | 'retracted';
@@ -51,6 +54,26 @@ export interface MediumEntry {
   /** The ids this entry was synthesized FROM (mergeNotes). The reverse edge of the sources'
    *  supersededBy, so the lineage reads both ways. Optional — only merge targets carry it. */
   mergedFrom?: string[];
+  /** Who says so (memory/provenance.ts). ABSENT means the row claims nothing: either it predates
+   *  the feature or it was written with `MEMORY_PROVENANCE_ENABLED` off, and `entryProvenance`
+   *  answers for it off its `source`. Never defaulted onto the row itself — a materialized default
+   *  would rewrite every legacy annotation the first time its file was touched. */
+  prov?: Provenance;
+}
+
+/** What this row's provenance IS, claimed or defaulted — the one reader every consumer should use.
+ *  A row with no `prov=` attribute answers off its source (the engine seed's own source means
+ *  imported, anything else means testimony). */
+export function entryProvenance(e: Pick<MediumEntry, 'prov' | 'source'>): Provenance {
+  return e.prov ?? provFromSource(e.source);
+}
+
+/** The provenance to STAMP on a write: the caller's basis, or what the write's source means, and
+ *  nothing at all while the feature is off (so the annotation, and the file, stay byte-identical
+ *  to what they were before it existed). */
+function stampFor(source: string, prov?: Provenance): Provenance | undefined {
+  if (!provenanceEnabled()) return undefined;
+  return prov ?? provFromSource(source);
 }
 
 /** Thrown when a durable medium-tier write fails. Callers turn this into a user-visible
@@ -105,6 +128,8 @@ function renderEntry(e: MediumEntry): string {
   const attrs = [`id=${enc(e.id)}`, `kind=${e.kind}`];
   if (e.key) attrs.push(`key=${enc(e.key)}`);
   attrs.push(`source=${enc(e.source)}`);
+  // Written only when the row actually claims one, right after the source it qualifies.
+  if (e.prov) attrs.push(`prov=${e.prov}`);
   attrs.push(`created=${new Date(e.createdAt).toISOString()}`, `updated=${new Date(e.updatedAt).toISOString()}`);
   if (e.status !== 'active') {
     attrs.push(`status=${e.status}`);
@@ -144,6 +169,10 @@ function parseSegment(segment: string, handle: string): MediumEntry | null {
   const mergedFrom = mergedFromRaw
     ? mergedFromRaw.split(',').map(decodePart).filter(Boolean)
     : undefined;
+  // A prov the vocabulary does not know is DROPPED, never obeyed and never fatal: a hand edit that
+  // invents a fourth provenance leaves the row readable and falls back to entryProvenance.
+  const provRaw = attrs.get('prov');
+  const prov = isProvenance(provRaw) ? provRaw : undefined;
   return {
     id,
     agentHandle: handle,
@@ -156,6 +185,7 @@ function parseSegment(segment: string, handle: string): MediumEntry | null {
     createdAt: created,
     updatedAt: updated,
     ...(mergedFrom?.length ? { mergedFrom } : {}),
+    ...(prov ? { prov } : {}),
   };
 }
 
@@ -368,10 +398,12 @@ function enforceCap(file: ActiveFile, kind: MediumKind, cap: number, retired: Me
 }
 
 /** Append a directive entry. Returns the created entry, or null when it duplicates an
- *  active directive (case-insensitive, like the old lower(body) unique index). */
-export async function addDirective(handle: string, text: string, source = 'convo'): Promise<MediumEntry | null> {
+ *  active directive (case-insensitive, like the old lower(body) unique index).
+ *  `prov` is who says so (memory/provenance.ts); omitted, it defaults from `source`. */
+export async function addDirective(handle: string, text: string, source = 'convo', prov?: Provenance): Promise<MediumEntry | null> {
   const clean = text.trim();
   if (!clean) return null;
+  const stamp = stampFor(source, prov);
   return withHandleLock(handle, async () => {
     let archived: Promise<void> = Promise.resolve();
     const entry = durably('addDirective', () => {
@@ -384,6 +416,7 @@ export async function addDirective(handle: string, text: string, source = 'convo
       const created: MediumEntry = {
         id: randomUUID(), agentHandle: handle, kind: 'directive', body: clean,
         status: 'active', source, createdAt: now, updatedAt: now,
+        ...(stamp ? { prov: stamp } : {}),
       };
       file.entries.push(created);
       const retired: MediumEntry[] = [];
@@ -557,9 +590,10 @@ export async function retractAllForHandle(handle: string): Promise<void> {
 /** Append an important note (deduped case-insensitively, FIFO-capped like the legacy
  *  ledger). Returns the stored text — including on dedupe, so the caller's confirmation
  *  stands either way. */
-export async function addImportantNote(handle: string, note: string, source = 'convo'): Promise<string | null> {
+export async function addImportantNote(handle: string, note: string, source = 'convo', prov?: Provenance): Promise<string | null> {
   const clean = note.trim();
   if (!clean) return null;
+  const stamp = stampFor(source, prov);
   return withHandleLock(handle, async () => {
     let archived: Promise<void> = Promise.resolve();
     const stored = durably('addImportantNote', () => {
@@ -572,6 +606,7 @@ export async function addImportantNote(handle: string, note: string, source = 'c
       const entry: MediumEntry = {
         id: randomUUID(), agentHandle: handle, kind: 'important_note', body: clean,
         status: 'active', source, createdAt: now, updatedAt: now,
+        ...(stamp ? { prov: stamp } : {}),
       };
       file.entries.push(entry);
       const retired: MediumEntry[] = [];
@@ -585,21 +620,41 @@ export async function addImportantNote(handle: string, note: string, source = 'c
   });
 }
 
-/** Set a structured fact slot (supersede-then-insert in one rewrite). No-op when the
- *  value is unchanged. */
-export async function upsertFact(handle: string, key: string, body: string, source = 'convo'): Promise<void> {
+/**
+ * Set a structured fact slot (supersede-then-insert in one rewrite). No-op when the value is
+ * unchanged.
+ *
+ * `prov` is who says so (memory/provenance.ts); omitted, it defaults from `source`. Two rules:
+ *   • an UNCHANGED value can still be PROMOTED — they finally said out loud what she had guessed,
+ *     so the row's provenance rises in place (same id, no supersede: the value never changed).
+ *     A provenance that would not rise writes nothing at all, so the no-op stays a no-op.
+ *   • a CHANGED value carries its OWN basis, not the slot's. Provenance rides a claim, and a new
+ *     value is a new claim — `promote` guards the same fact against demotion, never the slot.
+ */
+export async function upsertFact(handle: string, key: string, body: string, source = 'convo', prov?: Provenance): Promise<void> {
   const clean = body.trim();
   if (!clean) return;
+  const stamp = stampFor(source, prov);
   return withHandleLock(handle, async () => {
     let archived: Promise<void> = Promise.resolve();
     durably('upsertFact', () => {
       const file = loadActive(handle);
       const existing = file.entries.find(e => e.status === 'active' && e.kind === 'fact' && e.key === key);
-      if (existing && existing.body === clean) return;
+      if (existing && existing.body === clean) {
+        if (!stamp) return;
+        const prior = entryProvenance(existing);
+        const merged = promote(prior, stamp);
+        if (merged === prior) return;
+        existing.prov = merged;
+        existing.updatedAt = Date.now();
+        writeActive(handle, file);
+        return;
+      }
       const now = Date.now();
       const entry: MediumEntry = {
         id: randomUUID(), agentHandle: handle, kind: 'fact', key, body: clean,
         status: 'active', source, createdAt: now, updatedAt: now,
+        ...(stamp ? { prov: stamp } : {}),
       };
       const retired: MediumEntry[] = [];
       if (existing) {

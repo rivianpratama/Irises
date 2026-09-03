@@ -12,8 +12,9 @@ import {
   listMediumActive, listMediumAll, listMediumPreserved, addDirective, updateDirective, retractEntry,
   retractAllForHandle, addImportantNote, upsertFact, mergeNotes,
   MAX_ACTIVE_DIRECTIVES, MAX_ACTIVE_NOTES, CAP_EVICTED, MERGED_NOTE_MAX_CHARS,
-  MEDIUM_ARCHIVE_MAX_BYTES, MEDIUM_ARCHIVE_KEEP,
+  MEDIUM_ARCHIVE_MAX_BYTES, MEDIUM_ARCHIVE_KEEP, entryProvenance,
 } from './memoryMedium.js';
+import { SEED_SOURCE } from '../../memory/provenance.js';
 import { listArchiveFor, __setArchiveEntriesDelayForTests } from './memoryArchive.js';
 import { getForgetEpoch, bumpForgetEpoch } from './memory.js';
 import { memoriesDir } from '../stateDir.js';
@@ -409,4 +410,137 @@ test('mergeNotes with a matching forget epoch writes normally', async () => {
   });
   assert.ok(merged);
   assert.deepEqual((await listMediumActive(h, ['important_note'])).map(n => n.body), ['the bus to town is the 42']);
+});
+
+// ── Fact provenance (MEMORY_PROVENANCE_ENABLED) ────────────────────────────────────────────────
+// The `prov=` attribute on the entry annotation. No schema change: parseSegment already ignores
+// attributes it does not know, so a file written before the feature parses unchanged and reads its
+// provenance off its `source` instead.
+
+async function withProvenance<T>(on: boolean, fn: () => Promise<T>): Promise<T> {
+  const prior = process.env.MEMORY_PROVENANCE_ENABLED;
+  process.env.MEMORY_PROVENANCE_ENABLED = on ? 'true' : 'false';
+  try {
+    return await fn();
+  } finally {
+    if (prior === undefined) delete process.env.MEMORY_PROVENANCE_ENABLED;
+    else process.env.MEMORY_PROVENANCE_ENABLED = prior;
+  }
+}
+
+function fileFor(h: string): string {
+  return fs.readFileSync(path.join(memoriesDir(h), 'MEDIUM.md'), 'utf8');
+}
+
+test('with provenance ON, every kind stamps prov= and parses it back', async () => {
+  const h = freshHandle();
+  await withProvenance(true, async () => {
+    await upsertFact(h, 'brokerage', 'Compass', 'convo', 'stated');
+    await addImportantNote(h, 'gate code is 88', 'convo', 'stated');
+    await addDirective(h, 'keep replies short', 'convo', 'inferred');
+  });
+
+  const raw = fileFor(h);
+  assert.ok(raw.includes('prov=stated'), 'rendered into the annotation');
+  assert.ok(raw.includes('prov=inferred'));
+
+  const rows = await listMediumActive(h);
+  assert.deepEqual(
+    rows.map(r => [r.kind, r.prov]),
+    [['fact', 'stated'], ['important_note', 'stated'], ['directive', 'inferred']],
+  );
+  for (const r of rows) assert.equal(entryProvenance(r), r.prov);
+});
+
+test('with provenance ON but no basis given, the write falls back to what its source means', async () => {
+  const h = freshHandle();
+  await withProvenance(true, async () => {
+    await upsertFact(h, 'brokerage', 'Compass');                          // a live turn → testimony
+    await upsertFact(h, 'engine_seed_details', 'runs a lake cabin', SEED_SOURCE); // installer → imported
+  });
+  const rows = await listMediumActive(h, ['fact']);
+  assert.deepEqual(rows.map(r => [r.key, r.prov]), [['brokerage', 'stated'], ['engine_seed_details', 'seeded']]);
+});
+
+test('with provenance OFF the annotation is what it always was, and the row reads its legacy default', async () => {
+  const h = freshHandle();
+  await withProvenance(false, async () => {
+    await upsertFact(h, 'brokerage', 'Compass', 'convo', 'inferred'); // basis offered and IGNORED
+    await upsertFact(h, 'engine_seed_details', 'runs a lake cabin', SEED_SOURCE);
+  });
+
+  assert.ok(!fileFor(h).includes('prov='), 'nothing new in the file — byte for byte the old shape');
+  const rows = await listMediumActive(h, ['fact']);
+  for (const r of rows) assert.equal(r.prov, undefined, 'the row claims nothing');
+  // …and the reader still answers, off the source alone.
+  assert.equal(entryProvenance(rows.find(r => r.key === 'brokerage')!), 'stated');
+  assert.equal(entryProvenance(rows.find(r => r.key === 'engine_seed_details')!), 'seeded');
+});
+
+test('a legacy row keeps its exact bytes through a rewrite it did not cause', async () => {
+  const h = freshHandle();
+  await withProvenance(false, async () => { await upsertFact(h, 'brokerage', 'Compass'); });
+  const before = fileFor(h);
+  await withProvenance(false, async () => { await addImportantNote(h, 'a note that forces a full rewrite'); });
+  const after = fileFor(h);
+  assert.ok(after.startsWith(before.replace(/\n$/, '')), 'the fact entry re-rendered identically');
+  assert.ok(!after.includes('prov='));
+});
+
+test('a hand-edited prov= that is not one of the three is ignored, not obeyed', async () => {
+  const h = freshHandle();
+  await withProvenance(true, async () => { await upsertFact(h, 'brokerage', 'Compass', 'convo', 'inferred'); });
+  const p = path.join(memoriesDir(h), 'MEDIUM.md');
+  fs.writeFileSync(p, fileFor(h).replace('prov=inferred', 'prov=probably'));
+
+  const rows = await listMediumActive(h, ['fact']);
+  assert.equal(rows.length, 1, 'the entry still parses — one bad attribute is not a corrupt row');
+  assert.equal(rows[0].prov, undefined);
+  assert.equal(entryProvenance(rows[0]), 'stated', 'and falls back to what its source means');
+});
+
+test('a stated write PROMOTES a same-bodied inferred fact in place — no supersede, no twin', async () => {
+  const h = freshHandle();
+  await withProvenance(true, async () => {
+    await upsertFact(h, 'brokerage', 'Compass', 'convo', 'inferred');
+    const before = await listMediumActive(h, ['fact']);
+    await upsertFact(h, 'brokerage', 'Compass', 'convo', 'stated');   // they finally said it
+
+    const rows = await listMediumActive(h, ['fact']);
+    assert.equal(rows.length, 1, 'the same row, not a second one');
+    assert.equal(rows[0].id, before[0].id, 'and the same entry — promotion is in place');
+    assert.equal(rows[0].prov, 'stated');
+    assert.equal((await listMediumAll(h)).length, 1, 'nothing was superseded — the value never changed');
+  });
+});
+
+test('promote never demotes, and an unchanged provenance is still a no-op', async () => {
+  const h = freshHandle();
+  await withProvenance(true, async () => {
+    await upsertFact(h, 'brokerage', 'Compass', 'convo', 'stated');
+    const before = fileFor(h);
+
+    await upsertFact(h, 'brokerage', 'Compass', 'convo', 'inferred'); // a later guess
+    assert.equal(fileFor(h), before, 'the file is untouched — their own words stand');
+    assert.equal((await listMediumActive(h, ['fact']))[0].prov, 'stated');
+
+    await upsertFact(h, 'brokerage', 'Compass', 'convo', 'stated');   // the same claim again
+    assert.equal(fileFor(h), before, 'and saying it twice writes nothing');
+  });
+});
+
+test('a NEW value carries its own basis — provenance rides the value, not the slot', async () => {
+  const h = freshHandle();
+  await withProvenance(true, async () => {
+    await upsertFact(h, 'brokerage', 'Compass', 'convo', 'stated');
+    await upsertFact(h, 'brokerage', 'eXp Realty', 'convo', 'inferred');
+
+    const active = await listMediumActive(h, ['fact']);
+    assert.equal(active.length, 1);
+    assert.equal(active[0].body, 'eXp Realty');
+    assert.equal(active[0].prov, 'inferred', 'a changed value is a new claim, ranked on its own');
+    const old = (await listMediumAll(h)).find(e => e.body === 'Compass')!;
+    assert.equal(old.status, 'superseded', 'the superseded row keeps what it said');
+    assert.equal(old.prov, 'stated');
+  });
 });
