@@ -12,7 +12,7 @@ import { PENDING_EMAIL_TTL_MS } from './shortTerm.js';
 import { renderUserMemoryWithHot, sanitizeLongDoc, splitSections } from './wrappers.js';
 import { sanitizeDirectives } from './preferences.js';
 import { buildTurnRelevance, memoryRelevanceEnabled, type TurnRelevance } from './relevance.js';
-import type { MemoryGateReport, MemoryGateReports } from '../diagnostics/turnTrace.js';
+import type { MemoryGateReason, MemoryGateReport, MemoryGateReports } from '../diagnostics/turnTrace.js';
 import { scopeHistoryToUser } from './transcript.js';
 import { isGroupHandle } from './identity.js';
 import { record } from '../diagnostics/trace.js';
@@ -64,14 +64,19 @@ export function gatePendingClarification(
   nowMs: number,
   turn: TurnRelevance | null,
 ): { keep: boolean; report: MemoryGateReport | null } {
-  if (!pc?.request || typeof pc.at !== 'number') return { keep: false, report: { verdict: 'dropped', reason: 'nothing_held' } };
-  if (nowMs - pc.at > PENDING_CLARIFICATION_TTL_MS) return { keep: false, report: { verdict: 'dropped', reason: 'ttl_expired' } };
-  if (!turn) return { keep: true, report: null };
+  // One shape for every answer, so "no router → no receipt" cannot be forgotten on a branch.
+  const decide = (keep: boolean, reason: MemoryGateReason) => ({
+    keep,
+    report: turn ? { verdict: keep ? 'full' as const : 'dropped' as const, reason } : null,
+  });
+  if (!pc?.request || typeof pc.at !== 'number') return decide(false, 'nothing_held');
+  if (nowMs - pc.at > PENDING_CLARIFICATION_TTL_MS) return decide(false, 'ttl_expired');
+  if (!turn) return decide(true, 'all_kept');
   // `no_touch` on the empty turn deliberately: the fail-open lives in the thin-turn branch below, so
   // a turn the router could not read is reported as what it is rather than as a match it never made.
-  if (turn.touches(pc.request, 'no_touch')) return { keep: true, report: { verdict: 'full', reason: 'all_kept' } };
-  if (turn.tokens.size < CLARIFICATION_THIN_TURN_TOKENS) return { keep: true, report: { verdict: 'full', reason: 'short_turn' } };
-  return { keep: false, report: { verdict: 'dropped', reason: 'none_kept' } };
+  if (turn.touches(pc.request, 'no_touch')) return decide(true, 'all_kept');
+  if (turn.tokens.size < CLARIFICATION_THIN_TURN_TOKENS) return decide(true, 'short_turn');
+  return decide(false, 'none_kept');
 }
 interface PendingEmailContext {
   emailId?: string; from?: string; subject?: string; summary?: string; severity?: string;

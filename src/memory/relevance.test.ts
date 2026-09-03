@@ -13,7 +13,8 @@ import {
   RELEVANCE_HIT_KINDS, RELEVANCE_HITS_MAX,
 } from './relevance.js';
 import {
-  renderFlexibleBlock, renderFlexibleBlockWithGates, LONG_ANCHOR_CHARS, DIRECTIVES_RECENT_MAX, sanitizeLongDoc,
+  renderFlexibleBlock, renderFlexibleBlockWithGates, LONG_ANCHOR_CHARS, DIRECTIVES_RECENT_MAX,
+  sanitizeLongDoc, MEMORY_LONG_MAX_CHARS,
   renderMediumBlock, renderMediumBlockWithGates,
   renderShortBlockWithHot, renderUserMemory, renderUserMemoryWithHot, splitSections,
   type UserMemoryData,
@@ -311,10 +312,14 @@ test('handing the stack a router is what turns every gate on', () => {
   assert.ok(!routed.text.includes('## How they work'), 'the long doc kept only its anchor');
 });
 
-test('buildContextBlockWithHot builds the router when the flag is on, and the block is byte-identical either way', async () => {
+test('the flag decides whether a router is built, and with it whether any gate runs', async () => {
+  // Task 10 pinned "the block is byte-identical either way" here, and that was true while the router
+  // only ANSWERED questions. Now it gates, so this reads the honest version: flag off is the pre-P2
+  // block against real stores — every held thing whole, uncapped — and flag on is the gated one.
   const h = `+1555410${(handleSeq++).toString().padStart(4, '0')}`;
   await addShortTerm({ agentHandle: h, kind: 'ops_research', request: 'cedar lead times', content: 'x'.repeat(300) });
   await addImportantNote(h, 'the shack rewiring is booked for august');
+  for (let i = 0; i < 14; i++) await addDirective(h, `standing rule number ${i}`);
 
   const prior = process.env.CONVO_MEMORY_RELEVANCE;
   try {
@@ -324,11 +329,13 @@ test('buildContextBlockWithHot builds the router when the flag is on, and the bl
       process.env.CONVO_MEMORY_RELEVANCE = 'false';
       const off = await buildContextBlockWithHot(h, text);
 
-      assert.equal(on.block, off.block, `byte-identical block: "${text}"`);
-      assert.equal(on.hotLook?.request ?? null, off.hotLook?.request ?? null, `same hot look: "${text}"`);
-      assert.equal(off.turn, null, 'flag off → no router is built');
-      assert.ok(on.turn, 'flag on → the router rode along');
+      assert.equal(off.turn, null, `flag off → no router is built: "${text}"`);
+      assert.deepEqual(off.gates, {}, 'and no gate ran, so the receipt claims nothing');
+      assert.equal(off.block.split('- standing rule number').length - 1, 14, 'every rule, exactly as before');
+      assert.ok(on.turn, `flag on → the router rode along: "${text}"`);
       assert.ok(on.turn!.tokens.size > 0, 'carrying this turn\'s own tokens');
+      assert.equal(on.block.split('- standing rule number').length - 1, 12, 'and the gates ran');
+      assert.equal(on.hotLook?.request ?? null, off.hotLook?.request ?? null, `the hot look is unchanged: "${text}"`);
     }
     // …and with the flag on, the held things that touch the turn are named off the real stores.
     delete process.env.CONVO_MEMORY_RELEVANCE;
@@ -343,6 +350,23 @@ test('buildContextBlockWithHot builds the router when the flag is on, and the bl
     if (prior === undefined) delete process.env.CONVO_MEMORY_RELEVANCE;
     else process.env.CONVO_MEMORY_RELEVANCE = prior;
   }
+});
+
+test('a caption-less media turn keeps everything the stack holds', () => {
+  // The fail-open case, at the level of the gate table rather than the router: the turn text on the
+  // Convo path is `userMessage`, which is EMPTY when they send a photo with no caption, so a gate
+  // that read that as "touches nothing" would strip the whole stack on the one turn she needs it.
+  // Every touch gate reads `whenEmpty: 'touch'`; only the caps still apply.
+  const data = richData();
+  const stack = renderUserMemoryWithHot('convo', data, NOW, {
+    audience: 'individual',
+    currentTurnText: '',
+    turn: buildTurnRelevance('', { short: data.short, medium: data.medium, longSections: splitSections(data.longDocMd) }),
+  }).text;
+
+  assert.equal(stack.split('a flagged mail body that runs on for well over a hundred and fifty characters so that a digest').length - 1, 4, 'flags whole, up to the cap');
+  assert.ok(stack.includes('a standing note number 0 that runs on well past the eighty characters'), 'notes whole');
+  assert.ok(stack.includes('## How they work'), 'and the long doc entire');
 });
 
 // ── the safety screens the renderer applies, applied to the router too ───────
@@ -628,13 +652,17 @@ function longPayload(block: string): string {
 }
 
 const SECTION_BODY = (topic: string) =>
-  `${topic}. ${'and the section runs on for a good while after that, the way a real dossier section does. '.repeat(5)}`;
+  `${topic}. ${'and the section runs on for a good while after that, the way a real dossier section does. '.repeat(10)}`;
 
+/** A dossier at the size the sanitizer caps it: MEMORY_LONG_MAX_CHARS is 6,000 and this sits just
+ *  under, so the gate is measured against a full-length doc rather than a stub. */
 const RICH_LONG_DOC = [
   `## Who they are\n${SECTION_BODY('Sam, runs a plant nursery outside bend')}`,
   `## How they work\n${SECTION_BODY('mornings in the yard, desk work after four')}`,
+  `## How to text them\n${SECTION_BODY('casual, lowercase, reads on the phone between rows')}`,
   `## Their world\n${SECTION_BODY('the cedar order from the north supplier is late and disputed')}`,
   `## Running jokes\n${SECTION_BODY('the budget committee, her own phrase for a third round of price comparisons')}`,
+  `## Their people\n${SECTION_BODY('ada does the deliveries, theo covers weekends')}`,
 ].join('\n\n');
 
 const flexible = (text: string | null) => renderFlexibleBlockWithGates(
@@ -643,6 +671,7 @@ const flexible = (text: string | null) => renderFlexibleBlockWithGates(
 );
 
 test('the long doc renders the sections this turn touches, plus who they are', () => {
+  assert.ok(RICH_LONG_DOC.length > 5_000 && RICH_LONG_DOC.length <= MEMORY_LONG_MAX_CHARS, `a full-length dossier: ${RICH_LONG_DOC.length} chars`);
   const out = flexible('any word on the cedar order');
   const payload = longPayload(out.text);
 
@@ -651,8 +680,8 @@ test('the long doc renders the sections this turn touches, plus who they are', (
   assert.ok(payload.includes('…'), 'and rides clipped');
   assert.ok(!payload.includes('mornings in the yard'), 'a section this turn does not touch stays out');
   assert.ok(!payload.includes('the budget committee'));
-  assert.ok(payload.length < 1_500, `${payload.length} chars, down from ${RICH_LONG_DOC.length}`);
-  assert.deepEqual(out.gates.long, { verdict: 'digest', reason: 'partly_kept', dropped: 2 });
+  assert.ok(payload.length >= 400 && payload.length < 1_500, `${payload.length} chars, down from ${RICH_LONG_DOC.length}`);
+  assert.deepEqual(out.gates.long, { verdict: 'digest', reason: 'partly_kept', dropped: 4 });
 });
 
 test('a turn that touches nothing still gets who they are, and only that', () => {
@@ -662,7 +691,7 @@ test('a turn that touches nothing still gets who they are, and only that', () =>
   assert.ok(payload.startsWith('## Who they are'));
   assert.ok(payload.length <= LONG_ANCHOR_CHARS + 40, `the anchor is ${payload.length} chars`);
   assert.ok(!payload.includes('the cedar order'));
-  assert.deepEqual(out.gates.long, { verdict: 'digest', reason: 'none_kept', dropped: 3 });
+  assert.deepEqual(out.gates.long, { verdict: 'digest', reason: 'none_kept', dropped: 5 });
 
   // …and the wrapper prose still reads as a person who HAS a standing profile: the gate trims the
   // payload, it never turns a known person back into a stranger.
