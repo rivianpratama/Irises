@@ -396,7 +396,7 @@ export function keyedFactsForDossier(profile: UserProfile | null, medium: Medium
  * PREFIX that names the subject, the VALUE it states, and whatever closes it — so a correction can
  * swap the value and leave the sentence.
  *
- * DELIBERATELY NARROW, in three ways, because a false positive rewrites a sentence about the user's
+ * DELIBERATELY NARROW, in four ways, because a false positive rewrites a sentence about the user's
  * life into a fact she was told:
  *   • the prefix has to name its subject ("goes by", "Name:", "comms style is") on a word boundary;
  *   • the value has to run to a clause end (`.,;:)` or the end of the line), so a match cannot stop
@@ -407,11 +407,17 @@ export function keyedFactsForDossier(profile: UserProfile | null, medium: Medium
  *     second allowed three tokens and rewrote "the shop staff all call him something else". The
  *     price is that an unquoted two-word nickname ("goes by Big Mike") is not corrected, which is
  *     the right side to miss on: this function edits durable memory in place.
+ *   • the SECTION has to be one whose subject is the user (`KEYED_FACT_SECTIONS`). A dossier says
+ *     plenty about other people — "## Their world" is where their partner and their sister live —
+ *     and a "goes by" line under that heading is somebody else's nickname, not a contradiction.
  * A line that merely mentions a name ("his brother Mike came up") has no prefix and is left alone.
  *
  * `key` is what the change is REPORTED as; `value` is which confirmed fact the line is checked
- * against. The addressing line answers to `address_as` and falls back to `name`, which is the
- * precedence the renderers already use (wrappers.ts renderAddressingHeader: address_as > name).
+ * against. The addressing line answers to `address_as` ONLY — never to `name`. A stored name says
+ * what they are called on paper; a "goes by" line is the dossier LEARNING what they want to be
+ * called, which is new information, not a disagreement. (The renderers' address_as > name fallback,
+ * wrappers.ts renderAddressingHeader, is about which value to USE when addressing them — a
+ * different question from whether this sentence is wrong.)
  */
 const KEYED_FACT_LINES: ReadonlyArray<{
   key: KeyedFactKey;
@@ -428,7 +434,7 @@ const KEYED_FACT_LINES: ReadonlyArray<{
   {
     key: 'address_as',
     re: /(\b(?:go(?:es)? by|likes? to be called|prefers? to be called|addressed as|call (?:them|him|her))\s+)("[^"\n]{1,40}"|[\p{L}\p{N}][\p{L}\p{N}'’-]{0,39})(\s*(?=[.,;:)]|$))/iu,
-    value: c => c.address_as ?? c.name,
+    value: c => c.address_as,
   },
   {
     // The style value IS a phrase ("clipped, lowercase, no exclamation marks"), so commas stay in
@@ -439,6 +445,29 @@ const KEYED_FACT_LINES: ReadonlyArray<{
   },
 ];
 
+/**
+ * Which sections each rule is allowed to read, by the headings DOSSIER_SYSTEM_PROMPT mandates
+ * (above): the identity lines under "## Who they are", and the style line under either that or
+ * "## How to text them" — where a merge legitimately puts it. Every OTHER section is prose whose
+ * subject may be somebody else, and the two lines that made this necessary both came out of
+ * "## Their world": "Her partner goes by Sam." and "Their sister prefers to be called Liz, never
+ * Elizabeth." — third parties the guard turned into the user.
+ */
+const KEYED_FACT_SECTIONS: Readonly<Record<KeyedFactKey, readonly string[]>> = {
+  name: ['who they are'],
+  address_as: ['who they are'],
+  comms_style: ['who they are', 'how to text them'],
+};
+
+/** Every heading any rule answers to, for the "does this document have sections at all?" read. */
+const SUBJECT_SECTIONS: ReadonlySet<string> = new Set(Object.values(KEYED_FACT_SECTIONS).flat());
+
+/** A markdown heading's title, folded for comparison — or null for a line that is not a heading. */
+function headingTitle(line: string): string | null {
+  const m = /^#{1,6}\s(.*)$/.exec(line);
+  return m ? m[1].trim().replace(/\s+/g, ' ').toLowerCase() : null;
+}
+
 /** Two values that mean the same stored fact. Casing, stray space and the quotes a dossier line
  *  wraps a nickname in — a DIFFERENT wording of the same nickname is a different value, and
  *  correcting it is the point. */
@@ -448,19 +477,39 @@ function sameValue(a: string, b: string): boolean {
 }
 
 /**
- * Correct the keyed lines, and say which ones needed it. LINE-LEVEL AND VALUE-LEVEL: each line is
- * tested against the patterns above and, on a match whose captured value disagrees with the
- * confirmed one, ONLY that captured value is replaced. The rest of the line — its voice, its
- * second clause, its punctuation — is the model's and stays the model's. At most one correction per
- * line, so a line that somehow reads as two keyed facts cannot be rewritten twice.
+ * Correct the keyed lines, and say which ones needed it. SECTION-LEVEL, LINE-LEVEL AND VALUE-LEVEL:
+ * the document is walked heading by heading, only the sections `KEYED_FACT_SECTIONS` names for a
+ * rule are offered to it, and inside those each line is tested against the patterns above — on a
+ * match whose captured value disagrees with the confirmed one, ONLY that captured value is replaced.
+ * The rest of the line — its voice, its second clause, its punctuation — is the model's and stays
+ * the model's. At most one correction per line, so a line that somehow reads as two keyed facts
+ * cannot be rewritten twice.
+ *
+ * A document carrying NONE of those headings (a legacy dossier, or a merge that dropped them) has
+ * no sections to scope by, so it keeps the original whole-document scan: the guard still runs, which
+ * is the point of having it.
  *
  * Pure; `md` in, `md` out. A line that agrees is byte-identical, so a clean document comes back
  * exactly as it went in.
  */
 export function enforceKeyedFactsWithChanges(md: string, confirmed: ConfirmedFacts): { md: string; changed: KeyedFactKey[] } {
   const changed: KeyedFactKey[] = [];
-  const lines = md.split('\n').map(line => {
+  const lines = md.split('\n');
+
+  // Which section each line sits in, running down the document. A heading belongs to the section it
+  // opens; anything before the first heading belongs to none.
+  let current: string | null = null;
+  const sectionOf: (string | null)[] = [];
+  for (const line of lines) {
+    current = headingTitle(line) ?? current;
+    sectionOf.push(current);
+  }
+  const scoped = sectionOf.some(s => s !== null && SUBJECT_SECTIONS.has(s));
+
+  const out = lines.map((line, i) => {
     for (const rule of KEYED_FACT_LINES) {
+      const section = sectionOf[i];
+      if (scoped && !(section !== null && KEYED_FACT_SECTIONS[rule.key].includes(section))) continue;
       const want = rule.value(confirmed);
       if (!want) continue;
       const m = rule.re.exec(line);
@@ -471,7 +520,7 @@ export function enforceKeyedFactsWithChanges(md: string, confirmed: ConfirmedFac
     }
     return line;
   });
-  return { md: lines.join('\n'), changed };
+  return { md: out.join('\n'), changed };
 }
 
 /** The narrow form: the corrected document alone. `enforceKeyedFactsWithChanges` beside it reports

@@ -304,11 +304,45 @@ test('enforceKeyedFacts corrects a Name: line off the confirmed name', () => {
   assert.equal(out.md, '## Who they are\nName: Riv\nThey go by Chief.');
 });
 
-test('an address line falls back to the confirmed NAME when no address_as is stored', () => {
-  // The addressing precedence the renderers already use (wrappers.ts): address_as > name.
-  const out = enforceKeyedFactsWithChanges('They go by Mike.', { name: 'Riv' });
+test('an address line is NOT checked against the profile name — a nickname is new information', () => {
+  // A stored `name` says what they are called on paper; it says nothing about what they want to be
+  // called. "They go by Mike." with only `name: Michael` held is the dossier LEARNING the nickname,
+  // not contradicting anything — so the addressing rule answers to `address_as` alone.
+  const md = '## Who they are\nThey go by Mike.';
+  const out = enforceKeyedFactsWithChanges(md, { name: 'Michael' });
+  assert.deepEqual(out.changed, [], 'nothing was contradicted');
+  assert.equal(out.md, md, 'byte-identical');
+});
+
+test('the keyed rules only read the section whose subject IS the user', () => {
+  // "## Their world" is where the OTHER people in their life live, and a nickname line there is
+  // about one of them. Scanning it turned their partner and their sister into the user.
+  const md = [
+    '## Who they are',
+    'They go by Mike.',
+    '',
+    '## Their world',
+    'Her partner goes by Sam.',
+    'Their sister prefers to be called Liz, never Elizabeth.',
+  ].join('\n');
+  const out = enforceKeyedFactsWithChanges(md, { name: 'Michael', address_as: 'Chief' });
   assert.deepEqual(out.changed, ['address_as']);
-  assert.equal(out.md, 'They go by Riv.');
+  assert.equal(out.md, [
+    '## Who they are',
+    'They go by Chief.',
+    '',
+    '## Their world',
+    'Her partner goes by Sam.',                                  // untouched: not the user
+    'Their sister prefers to be called Liz, never Elizabeth.',   // untouched: not the user
+  ].join('\n'));
+});
+
+test('a heading-less legacy doc still gets the whole-document guard', () => {
+  // The sections are what scopes the rules, so a doc that has none of them (an old dossier, or a
+  // merge that dropped its headings) keeps the original whole-document scan rather than no guard.
+  const out = enforceKeyedFactsWithChanges('Goes by Mike.', { address_as: 'Chief' });
+  assert.deepEqual(out.changed, ['address_as']);
+  assert.equal(out.md, 'Goes by Chief.');
 });
 
 test('enforceKeyedFacts is line-level: it never touches a line it cannot read a value out of', () => {
