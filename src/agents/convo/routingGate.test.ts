@@ -27,6 +27,7 @@ import { clearTraces, getTraces } from '../../diagnostics/trace.js';
 import { runTask } from '../ops/client.js';
 import { resetEngineBackendCache, type EngineBackend } from '../ops/engineBackend.js';
 import type { LlmResult, LlmToolCall } from '../../llm/types.js';
+import type { TurnTraceTurnInputs } from '../../diagnostics/turnTrace.js';
 
 // The live turn, verbatim. `needsGrounding` reads it 'yes' on "how many".
 const ASK = "how many days till dana's wedding again";
@@ -248,6 +249,43 @@ test('a delegation the MODEL made never re-enters the gate, so there is no secon
   });
   assert.ok(out.delegatedTask);
   assert.equal(getTraces().find(e => e.label === 'convo:routing_gate'), undefined, 'the gate was never evaluated');
+});
+
+// ── the decision on the turn receipt ────────────────────────────────────────
+
+/** The smallest honest `trace` a caller can hand in — the receipt's other fields are pinned by
+ *  turnTrace.test.ts; this is only here so the gate's decision has somewhere to land. */
+const traceInputs = (): TurnTraceTurnInputs => ({
+  prompt: { system: 'x', sections: [], personaChars: 0, anchorChars: 0 },
+  messages: [],
+  gates: {
+    threads: null,
+    memory: { shortHotLook: 'none', hits: [], blocks: {} },
+    extras: { updateNote: false, introWeave: false, activeOps: 0 },
+  },
+  hits: [],
+});
+
+test('the gate’s decision rides the turn receipt, and only when the gate ran', async () => {
+  const stood = await processConvoResult({
+    ...args(),
+    res: makeResult(ANSWER),
+    relevance: relevance(ASK, { notes: [NOTE] }),
+    trace: traceInputs(),
+  });
+  assert.equal(stood.turnTrace!.outcome.routingGate, 'skipped_memory_hit');
+
+  const forced = await processConvoResult({ ...args(), res: makeResult([]), relevance: relevance(ASK, {}), trace: traceInputs() });
+  assert.equal(forced.turnTrace!.outcome.routingGate, 'delegated');
+
+  // A turn the gate never reached claims nothing rather than a defaulted decision.
+  const modelLed = await processConvoResult({
+    ...args(),
+    res: makeResult(['one sec'], [{ name: 'delegate_to_ops', input: { kind: 'general', request: ASK } }]),
+    relevance: relevance(ASK, { notes: [NOTE] }),
+    trace: traceInputs(),
+  });
+  assert.equal('routingGate' in modelLed.turnTrace!.outcome, false);
 });
 
 // ── the far end of the brief ─────────────────────────────────────────────────

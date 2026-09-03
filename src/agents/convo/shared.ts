@@ -2037,6 +2037,9 @@ export async function processConvoResult(args: {
           toolCalls: res.toolCalls.map(c => c.name),
           // Only when the honesty backstop actually fired — see the field's note in turnTrace.ts.
           ...(guard.fired ? { unkeptPromise: true } : {}),
+          // And only when the routing floor was actually evaluated: a turn that never reached it
+          // must claim no decision rather than a defaulted one.
+          ...(routingGate ? { routingGate } : {}),
         },
       })
     : undefined;

@@ -26,6 +26,7 @@ import { TURN_TRACE_LABEL } from './traceLabels.js';
 import type { BubbleReport } from '../pipeline/bubbleJson.js';
 import type { EmittedStatus } from '../persona/status.js';
 import type { RelevanceHitKind } from '../memory/relevance.js';
+import type { RoutingGateDecision } from '../agents/routingGate.js';
 import type { ThreadSelectReport } from '../persona/threads.js';
 
 /**
@@ -219,6 +220,12 @@ export interface TurnTraceOutcome {
    *  fired — absence means it did not, and the receipt that carries the phrase and how the re-ask
    *  landed is the always-on `convo:unkept_promise` event, not this field. */
   unkeptPromise?: boolean;
+  /** Which way the routing floor went on this turn (agents/routingGate.ts), set on every turn it was
+   *  EVALUATED on and absent on the turns that never reached it (a delegation the model already
+   *  built, the recall second pass, no memory identity). One name, so a scan of the ring can bucket
+   *  a month of turns by it; the always-on `convo:routing_gate` event carries the hits behind the
+   *  decision, which is where "she held two notes about this and it delegated anyway" is read. */
+  routingGate?: RoutingGateDecision;
   /** Tool names the model called this turn, in order. Names only — never their arguments. */
   toolCalls: string[];
 }

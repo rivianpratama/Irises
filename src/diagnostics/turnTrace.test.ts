@@ -417,7 +417,9 @@ test('a Convo turn hands the send boundary a draft of everything but the bubbles
   assert.ok(d, 'the draft rides the ChatResponse');
   assert.equal(d.affect.source, 'emitted');
   assert.equal(d.affect.coerced?.mood_core, 'joyful');
-  assert.deepEqual(d.outcome, { wasEnvelope: true, retried: false, silent: false, toolCalls: [] });
+  // `routingGate` is on every turn the routing floor was evaluated on — a social ask needs no
+  // grounding, and that decision is a reading too (agents/routingGate.ts).
+  assert.deepEqual(d.outcome, { wasEnvelope: true, retried: false, silent: false, toolCalls: [], routingGate: 'not_needed' });
   assert.deepEqual(d.hits, ['the cedar order'], 'the turn-focus hits ride through');
   assert.equal(d.gates.memory.shortHotLook, 'full');
   // What the memory stack itself found touching this turn — the whole ranked set, by channel, not
