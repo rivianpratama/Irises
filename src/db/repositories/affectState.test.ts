@@ -98,7 +98,7 @@ test('a legacy row written before the shrink loads with her gauges intact', asyn
   assert.equal(s.last?.mood_core, 'powerful', 'derived from the word she reported');
   assert.equal(s.last?.mood_shift, 'steady', 'v1 had no shift to report');
   assert.deepEqual(s.last?.moves, []);
-  for (const spec of GAUGE_SPECS) assert.ok((s.last as Record<string, number>)[spec.key] >= 1);
+  for (const spec of GAUGE_SPECS) assert.ok(s.last![spec.key] >= 1, `${spec.key} came back below 1`);
   // The dead keys are gone from the record — not carried along as ballast on every save from here on.
   for (const dead of ['conviction', 'engagement', 'profile_note']) {
     assert.equal(dead in (s.last as object), false, `${dead} survived the read`);

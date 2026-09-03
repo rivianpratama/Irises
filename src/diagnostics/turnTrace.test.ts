@@ -165,7 +165,7 @@ test('the coercion diff names the field, what the model wrote, and what it becam
 
   // An over-long note is truncated, an unknown enum is replaced, and a missing field is named as
   // absent rather than silently defaulted.
-  const messy = { ...GOOD_STATUS, meta_prompt: 'x'.repeat(300), intent_mode: 'vibing' };
+  const messy: Record<string, unknown> = { ...GOOD_STATUS, meta_prompt: 'x'.repeat(300), intent_mode: 'vibing' };
   delete messy.mood_shift;
   const coercions = describeStatusCoercions(messy, coerceStatus(messy));
   assert.deepEqual(coercions, [
