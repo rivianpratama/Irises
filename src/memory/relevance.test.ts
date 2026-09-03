@@ -173,7 +173,8 @@ test('a hit with no name is not evidence', () => {
 
 test('threadHit scores the offer against the same tokens and is never score-gated', () => {
   const turn = buildTurnRelevance('any word on cedar yet', {});
-  assert.deepEqual(threadHit(turn, 'cedar lead times'), { kind: 'thread', label: 'cedar lead times', score: 1, source: 'cedar lead times' });
+  // An offer is a label and nothing else — nobody handed over a body — so its text IS its label.
+  assert.deepEqual(threadHit(turn, 'cedar lead times'), { kind: 'thread', label: 'cedar lead times', text: 'cedar lead times', score: 1, source: 'cedar lead times' });
   // A LOOP is offered precisely when it is NOT the current topic (persona/threads.ts inverts the
   // check there on purpose), so an off-topic offer still has to be shown as what she was handed.
   assert.equal(threadHit(turn, 'how did the interview go').score, 0);
@@ -207,6 +208,21 @@ test('a label is one line, and short enough for a 30-day receipt', () => {
   // The same clip the renderer would apply, so the receipt says exactly what the model was shown —
   // and a 40-note bundle can never put 40 note bodies into diagnostic_turn_history.
   assert.equal(renderTurnFocus({ text: 'cedar', hits: [{ label: turn.hits[0].label, source: 'note' }] }).includes(turn.hits[0].label), true);
+});
+
+test('a hit carries the held TEXT beside its name, because the two differ where it matters', () => {
+  // The prompt shows her the NAME (the turn-focus block clips labels hard); a reader who holds none
+  // of her memory needs the substance. For a long-doc section those are not the same string at all:
+  // the label is the heading. agents/routingGate.ts's delegation brief is the reader in question.
+  const turn = buildTurnRelevance('cedar cabin', {
+    medium: medium({ notes: ['the cedar shack needs a new roof'] }),
+    longSections: ['## Cabin\ntwo hours north, cedar, no cell service'],
+  });
+  const note = turn.hits.find(h => h.kind === 'note')!;
+  assert.equal(note.text, 'the cedar shack needs a new roof', 'a note is its own text either way');
+  const long = turn.hits.find(h => h.kind === 'long')!;
+  assert.equal(long.label, 'Cabin', 'named by its heading…');
+  assert.equal(long.text, '## Cabin\ntwo hours north, cedar, no cell service', '…and carried in full');
 });
 
 test('every relevance kind is something the turn-focus block can render', () => {

@@ -295,12 +295,16 @@ function subjectClasses(text: string): CapabilityClass[] {
  */
 export const HELD_MEMORY_KINDS = ['note', 'fact', 'long', 'research', 'email'] as const;
 
-/** One hit off the turn relevance router (memory/relevance.ts), as this module reads it: what the
- *  thing is called in her own words, and which channel it came off. Structural on purpose — `kind`
- *  is a plain string so the router's vocabulary stays the router's. */
+/** One hit off the turn relevance router (memory/relevance.ts), as this module reads it: which
+ *  channel it came off, what it is CALLED (bounded — this is what the receipt carries), and the held
+ *  text itself (unbounded — this is what the engine is handed). Both are needed because they differ
+ *  where it matters most: a long-doc section's label is its heading alone, and "Family" tells a
+ *  reader who holds none of her memory nothing at all. Structural on purpose — `kind` is a plain
+ *  string, so the router's vocabulary stays the router's. */
 export interface HeldHit {
   kind: string;
   label: string;
+  text: string;
 }
 
 /**
@@ -338,26 +342,36 @@ const HELD_MEMORY_LEAD = 'What she already holds about this:';
 
 /** How much held text rides along, counted over the listed lines. Small on purpose: this is the
  *  engine's "who and what do they mean", not a memory dump — the brief above it is still the
- *  instruction, and every line here is already clipped to one label's width by the router. */
+ *  instruction. */
 export const OPS_HELD_MEMORY_CHARS = 400;
+/** And how much of any ONE held thing. A note or a fact is a sentence, but a long-doc section is a
+ *  paragraph of her dossier: without a per-line clip a single section would overrun the cap and be
+ *  dropped whole, which loses the very hit that touched the ask. */
+export const OPS_HELD_LINE_CHARS = 200;
+
+/** One held thing on one line: flattened, clipped, and with our own payload tags defused
+ *  (`neutralizeTagBreakouts`) — this is the user's OWN stored text, and without that a note could
+ *  close `</prompt>` and promote itself out of data position in the ops prompt. */
+function heldLine(text: string): string {
+  const flat = neutralizeTagBreakouts(text.replace(/\s+/g, ' ').trim());
+  return `- ${flat.length <= OPS_HELD_LINE_CHARS ? flat : `${flat.slice(0, OPS_HELD_LINE_CHARS - 1)}…`}`;
+}
 
 /**
- * What she holds about this ask, for the brief a delegation carries — her own words for each thing,
- * as DATA (the repo's dataTag convention), plus how many made it in.
+ * What she holds about this ask, for the brief a delegation carries — the held text itself for each
+ * thing, as DATA (the repo's dataTag convention), plus how many made it in. The TEXT and not the
+ * label: the engine holds none of her memory, and a heading ("Family") is not an answer to "which
+ * dana is this?".
  *
  * `{ block: '', count: 0 }` when she holds nothing about it, which is what keeps the brief
- * byte-identical on every turn this changes nothing about.
- *
- * Each label is flattened to one line and has our own payload tags defused (`neutralizeTagBreakouts`),
- * because these are the user's OWN stored notes: without that, a note could close `</prompt>` and
- * promote itself out of data position in the ops prompt. Whole lines are dropped at the cap rather
- * than cut, so the engine never reads half a note as the whole of one. Pure.
+ * byte-identical on every turn this changes nothing about. Whole lines are dropped at the total cap
+ * rather than cut, so the last thing the engine reads is a whole held thing. Pure.
  */
 export function heldMemoryBrief(hits: readonly HeldHit[]): { block: string; count: number } {
   const lines: string[] = [];
   let used = 0;
   for (const hit of heldMemory(hits)) {
-    const line = `- ${neutralizeTagBreakouts(hit.label.replace(/\s+/g, ' ').trim())}`;
+    const line = heldLine(hit.text);
     const next = used + line.length + (lines.length ? 1 : 0);
     if (next > OPS_HELD_MEMORY_CHARS) break;
     lines.push(line);

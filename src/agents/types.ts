@@ -33,6 +33,11 @@ export interface OpsTask {
   // turn, so no memory tier could hold it truthfully). The composer reads it to decide whether to
   // weave a light "i read that as X — say the word if you meant another" caveat into the answer.
   originConfidence?: number;
+  // How many held things about this ask rode along inside `metaPrompt`'s "what she already holds"
+  // block (agents/routingGate.ts). In-flight only, never persisted — it describes this brief, not
+  // the user. The `ops:kickoff` receipt reports it so a live round can tell a look that went out
+  // knowing who "Dana" is from one that went out blind.
+  memoryHits?: number;
   // The exact holding line Convo just sent the agent ("pulling that up, one sec"). The composer
   // continues straight from it so the follow-up reads as one seamless thread, not a fresh reply.
   holdingText?: string;

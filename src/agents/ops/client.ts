@@ -140,6 +140,9 @@ export async function runTask(task: OpsTask, onProgress?: (milestoneKey: string)
       gapMs: Date.now() - task.createdAt, kind: task.kind,
       walledHosts: tooling.hosts, toolingHint: !!tooling.line, browserTooling: browser ?? null,
       budgetMs: browserBudget ?? standardLegBudgetMs(process.env),
+      // How many of her held things the brief carried (agents/routingGate.ts). Always a number, so
+      // a look that went out blind reads as 0 rather than as a missing field.
+      memoryHits: task.memoryHits ?? 0,
     },
   });
   const done = (r: OpsResult): OpsResult => {

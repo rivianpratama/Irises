@@ -46,6 +46,12 @@ export interface RelevanceHit {
   /** What to CALL it, the way a person would: their own words for the thing. Rendered by the
    *  turn-focus block, which clips and flattens it, and carried into the turn receipt. */
   label: string;
+  /** The text this hit was MATCHED by — the held thing as the memory stack has it, unclipped. Where
+   *  `label` is a name (a long doc's section is named by its heading alone), this is the substance,
+   *  which is what a reader who holds none of her memory needs: the routing gate's delegation brief
+   *  carries it so the engine cannot come back asking which Dana (agents/routingGate.ts). Never
+   *  recorded — the 30-day receipt carries `label`, whose width is bounded. */
+  text: string;
   /** How many of the turn's salient tokens this candidate shares. Always ≥1 for a real hit. */
   score: number;
   /** Which held item this is, within its channel: the short-tier row id, the fact key, the
@@ -247,7 +253,7 @@ export function buildTurnRelevance(turnText: string | undefined, held: HeldItems
       if (!score) continue;                        // evidence needs a real shared token
       const { jaccard, containment } = simScore(probe, tokenSet(c.text));
       scored.push({
-        hit: { kind: c.kind, label, score, source: c.source },
+        hit: { kind: c.kind, label, text: c.text, score, source: c.source },
         overlap: jaccard * 1000 + containment,
         rank: KIND_RANK[c.kind],
       });
@@ -277,7 +283,7 @@ export function buildTurnRelevance(turnText: string | undefined, held: HeldItems
  */
 export function threadHit(turn: TurnRelevance, label: string): RelevanceHit {
   const clean = displayLabel(label);
-  return { kind: 'thread', label: clean, score: sharedTokens(turn.tokens, clean), source: clean };
+  return { kind: 'thread', label: clean, text: clean, score: sharedTokens(turn.tokens, clean), source: clean };
 }
 
 /**

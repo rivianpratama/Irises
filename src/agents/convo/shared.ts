@@ -26,12 +26,13 @@ import { updateThreadInventory, type ThreadTurn } from '../../memory/threadHarve
 import { groomNotes } from '../../memory/noteGroomer.js';
 import { expandRecallQuery, recallExpansionEnabled } from '../../memory/recallExpansion.js';
 import { isGroupHandle } from '../../memory/identity.js';
-import type { TurnRelevance } from '../../memory/relevance.js';
+import type { TurnRelevance, RelevanceHit } from '../../memory/relevance.js';
 import { isDuplicateDelegation, getActiveOps, hasInFlightRequest, requestOpsCancel, type ActiveOps } from '../../state/opsCoordination.js';
 import { etaStatus, estimateOpsEta } from '../etaEstimate.js';
 import {
   needsGrounding, salvageHoldingText, refusedCapabilities,
-  holdsTheAnswer, routingGateHitReceipt, routingGateMemoryAwareEnabled, type RoutingGateDecision,
+  holdsTheAnswer, heldMemoryBrief, briefWithHeldMemory, routingGateHitReceipt,
+  routingGateMemoryAwareEnabled, type RoutingGateDecision,
 } from '../routingGate.js';
 import { addMessage, setUserName, addUserFact, UserProfile, StoredMessage } from '../../state/conversation.js';
 import { redactInternalTools } from '../guardrails.js';
@@ -1011,6 +1012,7 @@ function buildForcedTask(opts: {
   metaPrompt: string;
   replyToMessageId?: string;
   originConfidence?: number;
+  memoryHits?: number;
 }): OpsTask {
   return {
     id: randomUUID(),
@@ -1026,6 +1028,7 @@ function buildForcedTask(opts: {
     replyToMessageId: opts.replyToMessageId,
     attempt: 1,
     originConfidence: opts.originConfidence,
+    memoryHits: opts.memoryHits ?? 0,
     createdAt: Date.now(),
   };
 }
@@ -1168,6 +1171,10 @@ export async function processConvoResult(args: {
   // Read ONCE for the turn: the routing gate and the delegation brief must not be able to disagree
   // because someone flipped the env between the two reads.
   const memoryAwareGate = routingGateMemoryAwareEnabled();
+  /** What she holds about this ask, for the brief a delegation carries — or nothing at all with the
+   *  memory-aware half off, which is what keeps that brief byte-identical there. One place, so the
+   *  gate's forced brief and the model's own `delegate_to_ops` brief cannot drift apart. */
+  const heldForOps = (hits: readonly RelevanceHit[]) => (memoryAwareGate ? heldMemoryBrief(hits) : { block: '', count: 0 });
 
   // The model now replies with a JSON bubble envelope; parseReply turns it back into the legacy
   // `[[re:N]]…\n---\n…` wire format the rest of this function (and the send path) already speak, and
@@ -1389,6 +1396,11 @@ export async function processConvoResult(args: {
       if (suppressedDuplicate) continue;
 
       modelDelegated = true;
+      // What she holds about this ask goes out WITH the look, after the model's own brief (which
+      // stays the primary instruction) — the engine keeps no part of her memory, so anything the
+      // request refers to by first name is otherwise a question it has to come back and ask.
+      const held = heldForOps(args.relevance?.hits ?? []);
+      metaPrompt = metaPrompt ? briefWithHeldMemory(metaPrompt, held.block) : (held.block || undefined);
       delegatedTask = {
         id: randomUUID(),
         chatId,
@@ -1396,6 +1408,7 @@ export async function processConvoResult(args: {
         kind: opsKind,
         request: opsRequest,
         metaPrompt,
+        memoryHits: held.count,
         addressHint: input.address ? String(input.address) : undefined,
         dealHint: input.deal_ref ? String(input.deal_ref) : undefined,
         replyToMessageId: chatContext?.incomingMessageId,
@@ -1663,11 +1676,16 @@ export async function processConvoResult(args: {
         decision = 'skipped_memory_hit';
         console.log(`[convo] routing gate stood down — she holds ${turnHits.length} thing(s) touching this ask (chat ${chatId})`);
       } else {
+        // The look goes out KNOWING what she holds about the ask. The engine keeps no part of her
+        // memory, so without this the same live turn produced a correct "39 days" here and a "which
+        // dana is this?" from the engine a minute later.
+        const held = heldForOps(turnHits);
         delegatedTask = buildForcedTask({
           chatId, agentHandle: chatContext.senderHandle, request: lastUser,
-          metaPrompt: `The user asked: "${lastUser}". This needs real, grounded data (the web, their own email, or their own past chats) — do NOT answer from general knowledge. Use the right tools and return only grounded facts; if you can't find it, say so.`,
+          metaPrompt: briefWithHeldMemory(`The user asked: "${lastUser}". This needs real, grounded data (the web, their own email, or their own past chats) — do NOT answer from general knowledge. Use the right tools and return only grounded facts; if you can't find it, say so.`, held.block),
           replyToMessageId: chatContext?.incomingMessageId,
           originConfidence: reply.confidenceLevel,
+          memoryHits: held.count,
         });
         // Keep Irises's own words wherever they're safe: the draft's leading holding-style bubbles
         // ("lemme check your records for martinez", "give me one sec") survive as the holding text —

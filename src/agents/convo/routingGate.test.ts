@@ -24,6 +24,8 @@ import { buildTurnRelevance, threadHit, type TurnRelevance } from '../../memory/
 import { emptyMedia } from '../../webhook/types.js';
 import { __resetOpsCoordination, markOpsStart } from '../../state/opsCoordination.js';
 import { clearTraces, getTraces } from '../../diagnostics/trace.js';
+import { runTask } from '../ops/client.js';
+import { resetEngineBackendCache, type EngineBackend } from '../ops/engineBackend.js';
 import type { LlmResult, LlmToolCall } from '../../llm/types.js';
 
 // The live turn, verbatim. `needsGrounding` reads it 'yes' on "how many".
@@ -178,6 +180,64 @@ test('the same ask already running leaves its own receipt, and is never stacked 
   assert.equal(gateReceipt().decision, 'skipped_in_flight');
 });
 
+// ── and when a delegation DOES happen, it carries what she holds ─────────────
+
+/** The block, as the ops brief carries it — her own rendered text for each thing, as data. */
+const heldBlock = (lines: string[]) => `What she already holds about this:\n<held_memory>\n${lines.map(l => `- ${l}`).join('\n')}\n</held_memory>`;
+/** Her long-doc section as the memory stack rendered it, flattened onto one line. */
+const LONG_LINE = "## Family Rivian's sister Dana's wedding is Oct 12, he's doing a toast";
+
+test('a forced look carries her own words, so the engine can never ask which dana', async () => {
+  const out = await processConvoResult({
+    ...args(),
+    // No answer of her own, so the look genuinely has to happen — and it goes out knowing who Dana is.
+    res: makeResult([]),
+    relevance: relevance(ASK, { notes: [NOTE], longSections: [LONG] }),
+  });
+  assert.ok(out.delegatedTask);
+  assert.equal(out.delegatedTask!.metaPrompt, `${gateBrief(ASK)}\n\n${heldBlock([NOTE, LONG_LINE])}`);
+  assert.equal(out.delegatedTask!.memoryHits, 2, 'and the count rides along for the kickoff receipt');
+});
+
+test('with nothing held, the forced brief is byte-identical to what it always was', async () => {
+  const out = await processConvoResult({
+    ...args(),
+    res: makeResult([]),
+    relevance: relevance(ASK, { notes: ['the cedar cabin electrician is booked for thursday'] }),
+  });
+  assert.equal(out.delegatedTask!.metaPrompt, gateBrief(ASK));
+  assert.equal(out.delegatedTask!.memoryHits, 0);
+});
+
+test('the model’s OWN delegate_to_ops brief carries it too, after the model’s instruction', async () => {
+  // The brief the model wrote stays the primary instruction (ops/client.ts labels it that way);
+  // what she holds follows it as context.
+  const out = await processConvoResult({
+    ...args(),
+    res: makeResult(['lemme pull the exact date'], [{ name: 'delegate_to_ops', input: { kind: 'general', request: ASK, meta_prompt: 'get the exact date off her calendar' } }]),
+    relevance: relevance(ASK, { notes: [NOTE] }),
+  });
+  assert.equal(out.delegatedTask!.metaPrompt, `get the exact date off her calendar\n\n${heldBlock([NOTE])}`);
+  assert.equal(out.delegatedTask!.memoryHits, 1);
+});
+
+test('CONVO_ROUTING_GATE_MEMORY_AWARE=off carries nothing into either brief', async () => {
+  process.env.CONVO_ROUTING_GATE_MEMORY_AWARE = 'off';
+  try {
+    const forced = await processConvoResult({ ...args(), res: makeResult([]), relevance: relevance(ASK, { notes: [NOTE] }) });
+    assert.equal(forced.delegatedTask!.metaPrompt, gateBrief(ASK));
+    const model = await processConvoResult({
+      ...args(),
+      res: makeResult(['one sec'], [{ name: 'delegate_to_ops', input: { kind: 'general', request: ASK, meta_prompt: 'get the exact date off her calendar' } }]),
+      relevance: relevance(ASK, { notes: [NOTE] }),
+    });
+    assert.equal(model.delegatedTask!.metaPrompt, 'get the exact date off her calendar');
+    assert.equal(model.delegatedTask!.memoryHits, 0);
+  } finally {
+    delete process.env.CONVO_ROUTING_GATE_MEMORY_AWARE;
+  }
+});
+
 test('a delegation the MODEL made never re-enters the gate, so there is no second receipt', async () => {
   // The structural fence: `delegatedTask` being set is what makes the whole block skip, and a turn
   // with no evaluation must claim no decision rather than a defaulted one.
@@ -188,4 +248,35 @@ test('a delegation the MODEL made never re-enters the gate, so there is no secon
   });
   assert.ok(out.delegatedTask);
   assert.equal(getTraces().find(e => e.label === 'convo:routing_gate'), undefined, 'the gate was never evaluated');
+});
+
+// ── the far end of the brief ─────────────────────────────────────────────────
+// The kickoff receipt is where a live round reads back whether a look went out blind. Same stub-
+// engine pattern as ops/walledUrls.test.ts, kept here because it is the other end of the block above.
+
+test('ops:kickoff says how much of her memory rode along', async () => {
+  const engine: EngineBackend = {
+    name: 'hermes',
+    async runTask() { return 'ANSWER: oct 12\nSOURCE: her calendar\nFLAGS: none'; },
+    async createReminder() { return { id: 'r', title: 't', schedule: 's' }; },
+    async listReminders() { return []; },
+    async cancelReminder() { return false; },
+    async remember() { /* not under test */ },
+    async probe() { return { ok: true }; },
+    async channelSend() { return {}; },
+  };
+  const task = { id: 't1', chatId: 'c1', agentHandle: '+15558000000', kind: 'general' as const, request: ASK, metaPrompt: 'brief', attempt: 1, createdAt: Date.now() };
+  resetEngineBackendCache(engine);
+  try {
+    clearTraces();
+    await runTask({ ...task, memoryHits: 2 });
+    assert.equal((getTraces().find(e => e.label === 'ops:kickoff')!.detail as Record<string, unknown>).memoryHits, 2);
+    // A look that carried nothing reports zero, not nothing: "the engine was handed none of her
+    // memory" has to be a reading, not an absence.
+    clearTraces();
+    await runTask(task);
+    assert.equal((getTraces().find(e => e.label === 'ops:kickoff')!.detail as Record<string, unknown>).memoryHits, 0);
+  } finally {
+    resetEngineBackendCache(undefined);
+  }
 });
