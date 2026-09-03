@@ -148,6 +148,29 @@ export function starvedRetryEnabled(): boolean {
   return ['true', '1', 'on', 'yes'].includes(v);
 }
 
+/** The hard wall clock on ONE voice-lane call: 120 seconds. Nothing conversational is worth more —
+ *  a reply nobody is still waiting for is not a reply. */
+export const LLM_CALL_TIMEOUT_DEFAULT_MS = 120_000;
+
+/**
+ * How long a single voice call may take before it is aborted and treated as a provider failure
+ * (env LLM_CALL_TIMEOUT_MS, default on at LLM_CALL_TIMEOUT_DEFAULT_MS, read at call time, parsed
+ * like the two flags above). `null` = no wall clock at all, which is what the code did before:
+ * a local Convo call hung 25 minutes on the OpenRouter lane (`agent: 1516078ms`) because the only
+ * bounds in play were the SDK's own 600s timeout times its retries.
+ *
+ * `0`/`off`/`false`/`no` is that old behavior back, byte for byte; a positive number is taken as
+ * written; junk falls back to the default rather than removing the bound. Lives beside its siblings,
+ * and applies to every lane (the hang was on OpenRouter, but nothing here is lane-specific).
+ */
+export function llmCallTimeoutMs(env: NodeJS.ProcessEnv = process.env): number | null {
+  const raw = (env.LLM_CALL_TIMEOUT_MS || '').trim().toLowerCase();
+  if (raw === '') return LLM_CALL_TIMEOUT_DEFAULT_MS;
+  if (['0', 'off', 'false', 'no'].includes(raw)) return null;
+  const ms = Number(raw);
+  return Number.isFinite(ms) && ms > 0 ? ms : LLM_CALL_TIMEOUT_DEFAULT_MS;
+}
+
 /**
  * The GENERIC OpenAI Chat Completions body, shared by both OpenAI-compatible lanes (`openrouter`
  * and `openai`). Nothing OpenRouter-proprietary here — no cache_control, no `openrouter:web_search`

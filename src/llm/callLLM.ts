@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { MODELS, MAX_TOKENS, PROVIDERS, THINKING, EFFORT, CACHE_SYSTEM, TEMPERATURE } from './models.js';
 import { BUBBLE_ENVELOPE_SCHEMA, buildEnvelopeSchema, parseReply } from '../pipeline/bubbleJson.js';
-import { buildOpenRouterParams, buildOpenAIParams, hasDocument, hasNativeMedia, isLengthStarved, starvedRetryEnabled, type OpenRouterParams } from './openrouterRequest.js';
+import { buildOpenRouterParams, buildOpenAIParams, hasDocument, hasNativeMedia, isLengthStarved, starvedRetryEnabled, llmCallTimeoutMs, type OpenRouterParams } from './openrouterRequest.js';
 import { renderTimestamps } from './timedMessages.js';
 import { inlineImageBlocks } from './inlineImages.js';
 import { inlineMediaBlocks } from './inlineMedia.js';
@@ -14,7 +14,7 @@ import { isTruncatedStop, starvedError, isStarvedError, bumpStarvedBudget, starv
 import { reportError } from '../diagnostics/errorLog.js';
 import { checkCallBudgets, reportTaskUsage } from './budget.js';
 import { isLaneConfigured, laneEnvVar, laneKey, laneBaseUrl, laneUnconfiguredError, noLaneConfiguredError } from './laneKeys.js';
-import type { LlmRequest, LlmResult, LlmContentBlock, LlmProvider } from './types.js';
+import type { LlmRequest, LlmResult, LlmContentBlock, LlmProvider, LlmRole } from './types.js';
 
 // Clients are built LAZILY and rebuilt when the key changes. A lane whose key is unset or BLANK
 // (`ANTHROPIC_API_KEY=` — see laneKeys.ts) must end up with NO client at all: `new Anthropic()`
@@ -477,6 +477,66 @@ function runOn(provider: LlmProvider, req: LlmRequest): Promise<LlmResult> {
   return callOpenAICompatible(req, provider);
 }
 
+/** The VOICE roles: every call that sits on a live turn — Convo, the composer (which runs on the
+ *  convo role), the classify lane and Fallfirm. `ops` is deliberately absent: a deep-work role call
+ *  is a research run bounded by the orchestrator's own per-leg deadline (agents/orchestrator.ts),
+ *  and a conversational window would cut it in half. */
+const VOICE_ROLES: ReadonlySet<LlmRole> = new Set<LlmRole>(['convo', 'classify', 'fallfirm']);
+
+/** A voice call that never came back. Deliberately shaped like the transient provider failures
+ *  fallbackPolicy already salvages — statusless, and nothing an abort sniff would catch — so the
+ *  other lane gets its own window, and when that fails too the throw reaches the caller, where the
+ *  Fallfirm floor voices it. */
+function laneTimeoutError(provider: LlmProvider, model: string, ms: number): Error {
+  return new Error(`${provider} call timed out after ${ms}ms (model=${model}) — nothing came back inside the per-call limit`);
+}
+
+/**
+ * One lane dispatch under a hard wall clock (LLM_CALL_TIMEOUT_MS, 120s by default).
+ *
+ * Why a RACE and not just an abort: the found hang was a local Convo call sitting on the OpenRouter
+ * lane for ~25 minutes (`agent: 1516078ms`) — the SDK's own 600s timeout times its retries, with
+ * nothing above it. An abort alone trusts the lane to reject when asked; the race is what guarantees
+ * the TURN comes back, whether or not anything downstream honours the signal. Both happen: the
+ * controller fires first (a real socket is released, not abandoned), then the race rejects.
+ *
+ * The timer is deliberately NOT unref'd, for the reason engineBackend.ts's queue wait gives: an
+ * unref'd timer is skipped exactly when the loop has nothing else holding it, which is precisely the
+ * hang this exists to end. It is cleared on every path, so it holds the loop at most one window and
+ * only while a call is genuinely in flight.
+ *
+ * Off (or a non-voice role) → `run` is called with the caller's own request object, untouched.
+ */
+async function runWithCallTimeout(run: LaneRunner, provider: LlmProvider, req: LlmRequest): Promise<LlmResult> {
+  const ms = VOICE_ROLES.has(req.role) ? llmCallTimeoutMs() : null;
+  if (ms === null) return run(provider, req);
+  const ctl = new AbortController();
+  const signal = req.signal ? AbortSignal.any([req.signal, ctl.signal]) : ctl.signal;
+  let timer: NodeJS.Timeout | undefined;
+  const expiry = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      ctl.abort();
+      const model = req.modelOverride || MODELS[req.role][provider];
+      record({
+        type: 'event', label: 'llm:timeout', role: req.role,
+        chatId: req.trace?.chatId, handle: req.trace?.handle, taskId: req.trace?.taskId,
+        detail: { role: req.role, model, ms },
+      });
+      reject(laneTimeoutError(provider, model, ms));
+    }, ms);
+  });
+  const call = run(provider, { ...req, signal });
+  // The race's loser must never surface as an unhandled rejection: that is FATAL in this process
+  // (diagnostics/errorLog.ts exits(1) on one), so a lane that rejects late — with its abort error,
+  // after we already gave up — would take the whole VM down with it.
+  call.catch(() => { /* the race already settled this call */ });
+  try {
+    return await Promise.race([call, expiry]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Which lane actually runs a request. Injectable into callLLM ONLY so the lane policy (is the
  *  fallback attempted, which error surfaces) is unit-testable without touching a provider —
  *  production callers pass nothing. */
@@ -582,7 +642,7 @@ export async function callLLM(req: LlmRequest, run: LaneRunner = runOn): Promise
   let result: LlmResult;
   let fellBack = false;
   try {
-    result = await run(primary, req);
+    result = await runWithCallTimeout(run, primary, req);
   } catch (err) {
     // The caller's own signal is the authoritative abort check — SDK abort errors are unreliable
     // to sniff (Anthropic's APIUserAbortError never sets .name, so it reads as a generic Error).
@@ -629,7 +689,7 @@ export async function callLLM(req: LlmRequest, run: LaneRunner = runOn): Promise
         trace: false,
       });
       try {
-        result = await run(fallback, fbReq);
+        result = await runWithCallTimeout(run, fallback, fbReq);
         fellBack = true;
         if (retryMaxTokens !== undefined) servedMaxTokens = retryMaxTokens;
       } catch (fbErr) {
