@@ -251,10 +251,14 @@ test('the short-tier hot-look gate lands on the same verdict through the router'
   const hot = shortEntry({ id: 'hot', request: 'bitcoin price today', content: 'x'.repeat(300), createdAt: NOW - 60_000 });
   const older = shortEntry({ id: 'old', request: 'weather in tokyo', content: 'y'.repeat(300), createdAt: NOW - 90 * 60_000 });
   const entries = [hot, older];
+  // The PAYLOAD, not the whole block: Task 12 replaced this tier's handling ladder with three lines
+  // when a router is in hand, so the two paths deliberately differ outside the tag. What has to
+  // agree is which entry rendered hot inside it — that is the verdict this test is about.
+  const payload = (block: string) => block.slice(block.indexOf('<memory_short>'), block.indexOf('</memory_short>'));
   for (const text of ['what about bitcoin now', 'help me plan dinner tonight', 'ok thanks', '']) {
     const plain = renderShortBlockWithHot(entries, NOW, null, text);
     const routed = renderShortBlockWithHot(entries, NOW, null, text, buildTurnRelevance(text, { short: entries }));
-    assert.equal(routed.text, plain.text, `same bytes: "${text}"`);
+    assert.equal(payload(routed.text), payload(plain.text), `same bytes: "${text}"`);
     assert.equal(routed.hotEntry?.id ?? null, plain.hotEntry?.id ?? null, `same verdict: "${text}"`);
   }
 });

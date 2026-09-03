@@ -776,6 +776,57 @@ test("a group audience gets the card with the room's addressing rule, never a pe
   assert.ok(!out.includes('"boss"'));
 });
 
+const richCardData = () => baseData({
+  ...cardData(),
+  short: [shortEntry({ id: 'r1', request: 'cedar lead times', content: 'six to eight weeks' })],
+  medium: {
+    directives: [{ id: 'd1', text: 'keep replies short', createdAt: NOW - 86_400_000 }],
+    notes: ['the shack rewiring is booked for august'],
+    facts: { comms_style: 'clipped, lowercase', work: 'runs a plant nursery' },
+  },
+  longDocMd: '## Who they are\nJordan, runs a plant nursery outside bend.',
+});
+
+test('each tier keeps at most three handling lines of its own; the ladders are the card\'s job now', () => {
+  const out = routedStack(richCardData(), 'hey');
+
+  assert.ok(!out.includes('You should:'), 'no tier runs a You-should ladder any more');
+  assert.ok(!out.includes('You MUST NOT:'));
+  assert.ok(!out.includes('Precedence, always:'), 'precedence is stated once, on the card');
+
+  // short: settled ground · re-check live data · the flagged-email reminder
+  assert.ok(out.includes('treat everything you already delivered as settled ground'));
+  assert.ok(out.includes('re-check anything that could have changed since the stamp'));
+  assert.ok(out.includes('schedule_automation'));
+  // medium: never repeat themselves · the newer entry wins
+  assert.ok(out.includes('so they never have to repeat themselves'));
+  assert.ok(out.includes('trust the newer entry when one supersedes an older one'));
+  // long: their chosen tuning of your style · never a source of work facts
+  assert.ok(out.includes('their chosen tuning of your style defaults'));
+  assert.ok(out.includes('a source of WORK facts'));
+
+  /** The bullets a tier states AFTER its payload — its own handling rules, and not the payload's
+   *  own "- " lines, which is why this reads from the block's closing data tag up to the next
+   *  block's heading. (Slicing on the next "## " alone would stop inside <memory_long>, whose
+   *  payload is a headed markdown doc.) */
+  const handlingLines = (heading: string) => {
+    const lines = out.slice(out.indexOf(heading)).split('\n');
+    const after = lines.slice(lines.findIndex(l => /^<\/[a-z_]+>$/.test(l)) + 1);
+    const nextBlock = after.findIndex(l => l.startsWith('## '));
+    return (nextBlock < 0 ? after : after.slice(0, nextBlock)).filter(l => l.startsWith('- ')).length;
+  };
+  assert.equal(handlingLines('## Short-term memory'), 3, 'short');
+  assert.equal(handlingLines('## Medium-term memory'), 2, 'medium');
+  assert.equal(handlingLines('## Long-term memory'), 2, 'long');
+});
+
+test('with no router every tier still runs its full ladder, exactly as it always did', () => {
+  const out = renderUserMemory('convo', richCardData(), NOW);
+  assert.equal(out.split('You should:').length - 1, 3, 'short, medium and long each keep theirs');
+  assert.equal(out.split('You MUST NOT:').length - 1, 3);
+  assert.ok(out.trimEnd().endsWith('Precedence, always: Honesty / Fidelity / Safety / Scope >> this layer >> your generic style defaults.'));
+});
+
 test('with no router the stack opens with the preamble and renders no card at all', () => {
   // The off path: CONVO_MEMORY_RELEVANCE off → no router (dossier.ts) → the pre-P2 stack, byte for
   // byte, including the medium facts block that still owns comms_style there.

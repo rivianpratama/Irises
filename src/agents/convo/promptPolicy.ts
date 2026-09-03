@@ -67,7 +67,7 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
   model_map: 800,              // 387 on a bare checkout — HOST-DEPENDENT, see above
   name_nudge: 165,             // 163 — fixed prose (was 171)
   intro_weave: 770,            // 760 — INTRO_WEAVE_BLOCK (agents/ops/firstMove.ts) (was 795)
-  context_block: 9_320,        // 9,192 — the cold fixture (was 12,500 for 12,290; P2 sent the discovery scaffold's craft coaching to craft/onboarding.md, gated every memory block on the turn, then folded the plain tenure section into the identity card's one line)
+  context_block: 6_700,        // 6,584 — the cold fixture (was 12,500 for 12,290; P2 sent the discovery scaffold's craft coaching to craft/onboarding.md, gated every memory block on the turn, folded the plain tenure section into the identity card, and replaced each tier's You-should/You-MUST-NOT ladder with two or three lines that tier alone decides)
   active_ops: 1_980,           // 1,946 — two looks in flight, one queued (was 2,040)
   group: 105,                  // 104 — a named group, three participants (was 109)
   tapped_reply: 2_230,         // 2,190 — kind 'assistant' beyond the visible window (the largest of the four) (was 2,290)
@@ -82,7 +82,7 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
   turn_focus: 550,             // 544 — a 400-char restatement plus two hits (was 570)
   behavior_anchor: 705,        // 699 — P1: six lines that drift first (was 1,740 for 1,659 / 14 lines)
   json_anchor: 2_950,          // 2,908 — the envelope contract, last in the prompt (was 3,050)
-  memory_stack: 9_320,         // 9,192 — the cold stack (discovery + default stance), still the biggest measured (was 12,500 for 12,290; the identity card is +43 on the preamble it replaced, and it absorbed the tenure section out of context_block)
+  memory_stack: 6_700,         // 6,584 — the cold stack (discovery + default stance), still the biggest measured (was 12,500 for 12,290; the card is +43 on the preamble it replaced and absorbed the tenure section, then the three ladders came off)
 };
 
 /**
@@ -109,15 +109,14 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
  *
  * P2 re-measured it at **0.0068** and it stayed there through parts 1 and 2. Those deletions are
  * real — the discovery scaffold's craft coaching, and the memory gate table — but they come off the
- * memory stack, which is nine thousand characters of a hundred and seventy-seven thousand. Part 3's
- * identity card moves it to **0.0069**, one four-decimal point, for the same reason in the other
- * direction: five stance/ladder renderers collapsing into one card is the largest single deletion
- * this phase makes and it is still small against the persona. The persona is what stands between
- * this number and anything better, and P2 never touched it. Worth stating plainly rather than
- * letting a barely-moved floor read as a phase that did nothing: this phase bought RELEVANCE, not
- * size.
+ * memory stack, which is nine thousand characters of a hundred and seventy-seven thousand. Part 3
+ * takes the stack to **6,584** and moves this to **0.0070**: two four-decimal points for five
+ * renderers and three ladders, which is the honest exchange rate. The persona is what stands
+ * between this number and anything better, and P2 never touched it. Worth stating plainly rather
+ * than letting a barely-moved floor read as a phase that did nothing: this phase bought RELEVANCE,
+ * not size.
  */
-export const MIN_TRANSCRIPT_SHARE = 0.0068;
+export const MIN_TRANSCRIPT_SHARE = 0.0070;
 
 /**
  * Phrases that must exist in the persona, verbatim — the rules whose deletion would be silent.
