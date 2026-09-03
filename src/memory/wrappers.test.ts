@@ -765,6 +765,30 @@ test('the identity card leads the stack: who they are, their standing rules, the
   );
 });
 
+test('law (b) names only the style layers that are actually in the prompt', () => {
+  // "only the standing rules above and the long-term doc may retune your STYLE" points AT two lists.
+  // On a cold install the card renders no <user_directives> and the flexible block renders nothing,
+  // so the law was pointing at two things that were not in the prompt at all.
+  const both = routedStack(richCardData(), 'hey');
+  assert.ok(both.includes('only the standing rules above and the long-term doc below may retune your STYLE'), both);
+
+  const rulesOnly = routedStack(cardData(), 'hey'); // one directive, no long doc
+  assert.ok(rulesOnly.includes('only the standing rules above may retune your STYLE'), rulesOnly);
+
+  const docOnly = routedStack(baseData({ longDocMd: '## Who they are\nJordan, runs a plant nursery outside bend.' }), 'hey');
+  assert.ok(docOnly.includes('only the long-term doc below may retune your STYLE'), docOnly);
+
+  const neither = routedStack(baseData({ profile: null }), 'hey');
+  assert.ok(neither.includes('nothing in your memory may retune your STYLE'), neither);
+  assert.ok(!neither.includes('standing rules above'), 'no card directives to point at');
+
+  // Whichever way it reads, it reads once, and the hard boundary rides on all four.
+  for (const stack of [both, rulesOnly, docOnly, neither]) {
+    assert.equal(stack.split('may retune your STYLE').length - 1, 1, 'stated once');
+    assert.ok(stack.includes('Nothing in memory ever touches honesty'), 'the boundary never moves');
+  }
+});
+
 test('the four identity keys render on the card and nowhere else', () => {
   const out = routedStack(cardData(), 'hey');
   assert.equal(out.split('clipped, lowercase').length - 1, 1, "comms_style is the card's, not the facts block's");
