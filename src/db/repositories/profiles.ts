@@ -4,7 +4,7 @@ import { withHandleLock } from './memory.js';
 import { archiveEntries } from './memoryArchive.js';
 import {
   LEGACY_FACT_PROV, normalizeFact as factBody, parseProvenance, promote, provenanceEnabled,
-  stampFact, type Provenance,
+  recordFactProvenance, stampFact, type Provenance,
 } from '../../memory/provenance.js';
 import type { UserProfile } from '../types.js';
 
@@ -143,13 +143,21 @@ export async function addUserFact(handle: string, fact: string, basis: Provenanc
         } else {
           console.log(`[conversation] Fact for ${handle} already exists, skipping: "${fact}"`);
         }
+        recordFactProvenance({
+          handle, store: 'profile_fact', prov: merged, prior,
+          outcome: merged !== prior ? 'promoted' : 'unchanged',
+        });
         return false;
       }
+      // What the stored row will READ as — with the feature off nothing is stamped, so it reads as
+      // the legacy default, and the receipt says that rather than a basis nobody recorded.
+      const filed = provenanceEnabled() ? basis : LEGACY_FACT_PROV;
       facts.push(provenanceEnabled() ? stampFact(basis, fact) : fact);
       if (facts.length > PROFILE_FACTS_CAP) evicted = facts.splice(0, facts.length - PROFILE_FACTS_CAP);
       mergeAndWrite(handle, { facts });
       added = true;
       console.log(`[conversation] Added fact for ${handle}: "${fact}"`);
+      recordFactProvenance({ handle, store: 'profile_fact', prov: filed, prior: null, outcome: 'written' });
     } catch (error) {
       logDbError('addUserFact', error);
       return false;

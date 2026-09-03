@@ -34,7 +34,8 @@ import { atomicWriteText, readTextIfExists, appendText } from '../files.js';
 import { withHandleLock, getForgetEpoch } from './memory.js';
 import { archiveEntries, type ArchiveSource } from './memoryArchive.js';
 import {
-  isProvenance, promote, provFromSource, provenanceEnabled, type Provenance,
+  isProvenance, promote, provFromSource, provenanceEnabled, recordFactProvenance,
+  type FactProvOutcome, type Provenance,
 } from '../../memory/provenance.js';
 
 export type MediumKind = 'fact' | 'directive' | 'important_note';
@@ -406,12 +407,18 @@ export async function addDirective(handle: string, text: string, source = 'convo
   const stamp = stampFor(source, prov);
   return withHandleLock(handle, async () => {
     let archived: Promise<void> = Promise.resolve();
+    let outcome: FactProvOutcome = 'written';
+    let prior: Provenance | null = null;
     const entry = durably('addDirective', () => {
       const file = loadActive(handle);
       const dup = file.entries.find(
         e => e.status === 'active' && e.kind === 'directive' && e.body.trim().toLowerCase() === clean.toLowerCase(),
       );
-      if (dup) return null;
+      if (dup) {
+        outcome = 'unchanged';
+        prior = entryProvenance(dup);
+        return null;
+      }
       const now = Date.now();
       const created: MediumEntry = {
         id: randomUUID(), agentHandle: handle, kind: 'directive', body: clean,
@@ -426,6 +433,10 @@ export async function addDirective(handle: string, text: string, source = 'convo
       return created;
     });
     await archived; // still inside the lock — the lineage insert lands before this call resolves
+    recordFactProvenance({
+      handle, store: 'medium_directive', outcome,
+      prov: prior ?? entryProvenance({ prov: stamp, source }), prior,
+    });
     return entry;
   });
 }
@@ -596,12 +607,18 @@ export async function addImportantNote(handle: string, note: string, source = 'c
   const stamp = stampFor(source, prov);
   return withHandleLock(handle, async () => {
     let archived: Promise<void> = Promise.resolve();
+    let outcome: FactProvOutcome = 'written';
+    let prior: Provenance | null = null;
     const stored = durably('addImportantNote', () => {
       const file = loadActive(handle);
       const dup = file.entries.find(
         e => e.status === 'active' && e.kind === 'important_note' && e.body.trim().toLowerCase() === clean.toLowerCase(),
       );
-      if (dup) return clean;
+      if (dup) {
+        outcome = 'unchanged';
+        prior = entryProvenance(dup);
+        return clean;
+      }
       const now = Date.now();
       const entry: MediumEntry = {
         id: randomUUID(), agentHandle: handle, kind: 'important_note', body: clean,
@@ -616,6 +633,10 @@ export async function addImportantNote(handle: string, note: string, source = 'c
       return clean;
     });
     await archived;
+    recordFactProvenance({
+      handle, store: 'medium_note', outcome,
+      prov: prior ?? entryProvenance({ prov: stamp, source }), prior,
+    });
     return stored;
   });
 }
@@ -637,14 +658,18 @@ export async function upsertFact(handle: string, key: string, body: string, sour
   const stamp = stampFor(source, prov);
   return withHandleLock(handle, async () => {
     let archived: Promise<void> = Promise.resolve();
+    let outcome: FactProvOutcome = 'written';
+    let prior: Provenance | null = null;
+    let filed = entryProvenance({ prov: stamp, source });
     durably('upsertFact', () => {
       const file = loadActive(handle);
       const existing = file.entries.find(e => e.status === 'active' && e.kind === 'fact' && e.key === key);
       if (existing && existing.body === clean) {
-        if (!stamp) return;
-        const prior = entryProvenance(existing);
-        const merged = promote(prior, stamp);
-        if (merged === prior) return;
+        prior = entryProvenance(existing);
+        const merged = stamp ? promote(prior, stamp) : prior;
+        outcome = merged === prior ? 'unchanged' : 'promoted';
+        filed = merged;
+        if (outcome === 'unchanged') return;
         existing.prov = merged;
         existing.updatedAt = Date.now();
         writeActive(handle, file);
@@ -658,6 +683,7 @@ export async function upsertFact(handle: string, key: string, body: string, sour
       };
       const retired: MediumEntry[] = [];
       if (existing) {
+        prior = entryProvenance(existing);   // what the value it replaces was standing on
         existing.status = 'superseded';
         existing.supersededBy = entry.id;
         existing.updatedAt = now;
@@ -669,5 +695,6 @@ export async function upsertFact(handle: string, key: string, body: string, sour
       writeActive(handle, file);
     });
     await archived;
+    recordFactProvenance({ handle, store: 'medium_fact', key, outcome, prov: filed, prior });
   });
 }

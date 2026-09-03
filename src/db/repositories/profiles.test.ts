@@ -13,6 +13,7 @@ import {
   PROFILE_FACTS_CAP,
 } from './profiles.js';
 import { listArchiveFor } from './memoryArchive.js';
+import { getTraces, clearTraces } from '../../diagnostics/trace.js';
 
 let seq = 0;
 function freshHandle(): string {
@@ -160,6 +161,43 @@ test('dedupe reads the BODY, so a prefixed row and a bare one are never twins', 
   await withProvenance(false, async () => {
     assert.equal(await addUserFact(h, 'drives a green truck'), false);
     assert.deepEqual((await getUserProfile(h))?.facts, ['inferred: drives a green truck']);
+  });
+});
+
+test('every fact write leaves a memory:fact_provenance receipt — the no-op dedupe included', async () => {
+  const h = freshHandle();
+  await withProvenance(true, async () => {
+    clearTraces();
+    await addUserFact(h, 'trains for a marathon', 'inferred');
+    await addUserFact(h, 'trains for a marathon', 'inferred');   // the no-op
+    await addUserFact(h, 'trains for a marathon', 'stated');     // the promotion
+
+    const receipts = getTraces()
+      .filter(e => e.label === 'memory:fact_provenance')
+      .map(e => e.detail as Record<string, unknown>);
+    assert.equal(receipts.length, 3, 'one per write attempt, including the one that wrote nothing');
+    assert.deepEqual(receipts.map(d => d.outcome), ['written', 'unchanged', 'promoted']);
+    assert.deepEqual(receipts.map(d => d.prov), ['inferred', 'inferred', 'stated']);
+    assert.deepEqual(receipts.map(d => d.prior), [null, 'inferred', 'inferred']);
+    for (const d of receipts) {
+      assert.equal(d.store, 'profile_fact');
+      assert.equal(d.enabled, true);
+      // Never the fact itself: the ring keeps 30 days of turns and a stored fact is their life.
+      assert.ok(!JSON.stringify(d).includes('marathon'));
+    }
+    assert.equal(getTraces().find(e => e.label === 'memory:fact_provenance')?.handle, h);
+  });
+});
+
+test('the receipt fires with the feature OFF too, and says so', async () => {
+  const h = freshHandle();
+  await withProvenance(false, async () => {
+    clearTraces();
+    await addUserFact(h, 'keeps bees', 'inferred');
+    const d = (getTraces().find(e => e.label === 'memory:fact_provenance')?.detail ?? {}) as Record<string, unknown>;
+    assert.equal(d.outcome, 'written');
+    assert.equal(d.enabled, false, 'so a reader can tell "filed as a guess" from "nothing was filed"');
+    assert.equal(d.prov, 'stated', 'and the row really does read as testimony — that is the legacy default');
   });
 });
 

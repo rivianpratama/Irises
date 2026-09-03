@@ -15,6 +15,7 @@ import {
   MEDIUM_ARCHIVE_MAX_BYTES, MEDIUM_ARCHIVE_KEEP, entryProvenance,
 } from './memoryMedium.js';
 import { SEED_SOURCE } from '../../memory/provenance.js';
+import { getTraces, clearTraces } from '../../diagnostics/trace.js';
 import { listArchiveFor, __setArchiveEntriesDelayForTests } from './memoryArchive.js';
 import { getForgetEpoch, bumpForgetEpoch } from './memory.js';
 import { memoriesDir } from '../stateDir.js';
@@ -526,6 +527,50 @@ test('promote never demotes, and an unchanged provenance is still a no-op', asyn
 
     await upsertFact(h, 'brokerage', 'Compass', 'convo', 'stated');   // the same claim again
     assert.equal(fileFor(h), before, 'and saying it twice writes nothing');
+  });
+});
+
+test('every medium write leaves a memory:fact_provenance receipt, the no-ops included', async () => {
+  const h = freshHandle();
+  await withProvenance(true, async () => {
+    clearTraces();
+    await upsertFact(h, 'brokerage', 'Compass', 'convo', 'inferred');   // written
+    await upsertFact(h, 'brokerage', 'Compass', 'convo', 'inferred');   // unchanged
+    await upsertFact(h, 'brokerage', 'Compass', 'convo', 'stated');     // promoted
+    await addImportantNote(h, 'gate code is 88');                       // written
+    await addImportantNote(h, 'GATE CODE 88');                          // written (a different note)
+    await addImportantNote(h, 'gate code is 88');                       // unchanged (dedupe)
+    await addDirective(h, 'keep replies short');                        // written
+    await addDirective(h, 'Keep Replies Short');                        // unchanged (dedupe)
+
+    const receipts = getTraces()
+      .filter(e => e.label === 'memory:fact_provenance')
+      .map(e => e.detail as Record<string, unknown>);
+    assert.deepEqual(receipts.map(d => [d.store, d.outcome]), [
+      ['medium_fact', 'written'], ['medium_fact', 'unchanged'], ['medium_fact', 'promoted'],
+      ['medium_note', 'written'], ['medium_note', 'written'], ['medium_note', 'unchanged'],
+      ['medium_directive', 'written'], ['medium_directive', 'unchanged'],
+    ]);
+    assert.deepEqual(receipts.slice(0, 3).map(d => [d.key, d.prior, d.prov]), [
+      ['brokerage', null, 'inferred'],
+      ['brokerage', 'inferred', 'inferred'],
+      ['brokerage', 'inferred', 'stated'],
+    ]);
+    assert.equal(receipts[3].key, undefined, 'a note has no slot to name');
+    // Never a body: the ring keeps 30 days of turns and a stored note is their life.
+    assert.ok(!JSON.stringify(receipts).includes('88'));
+  });
+});
+
+test('the medium receipt fires with the feature OFF too, and says so', async () => {
+  const h = freshHandle();
+  await withProvenance(false, async () => {
+    clearTraces();
+    await upsertFact(h, 'brokerage', 'Compass', 'convo', 'inferred');
+    const d = (getTraces().find(e => e.label === 'memory:fact_provenance')?.detail ?? {}) as Record<string, unknown>;
+    assert.equal(d.outcome, 'written');
+    assert.equal(d.enabled, false);
+    assert.equal(d.prov, 'stated', 'the row reads off its source, which is what it will report');
   });
 });
 
