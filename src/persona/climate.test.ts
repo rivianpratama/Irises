@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import {
   DIALS, CLIMATE_WINDOW_MS, CLIMATE_WINDOW_CAP, CLIMATE_MOVES_CAP,
   defaultClimate, coerceDials, applyDrift, climateLines, climateLinesForComposer,
+  clampToSpec, signOf, spentInWindow, pruneLedger,
   type DialKey, type RelationshipClimate,
 } from './climate.js';
 
@@ -197,6 +198,65 @@ test('moves that age out of the window free the budget again', () => {
   assert.deepEqual(r.changed, ['candor']);
   assert.equal(r.next.dials.candor, 45 + CLIMATE_WINDOW_CAP + 2);
   assert.deepEqual(r.next.moves.map(m => m.at), [later], 'aged-out moves are pruned');
+});
+
+// ── 8b: the three shared helpers ─────────────────────────────────────────────
+
+// `clampToSpec`, `signOf` and `spentInWindow` are exported so `affectDrift.ts` can REUSE the
+// bound arithmetic rather than grow a second, drifting copy of it. Their signatures are widened
+// (a structural spec, a generic move key, an overridable window) precisely so a second gauge
+// table with its own keys and its own shorter window can borrow them unchanged — this pins that
+// the widening kept climate's own behavior exactly.
+test('the shared bound helpers are exported and behave identically through the wider signatures', () => {
+  const ease = DIALS.find(d => d.key === 'ease')!;
+  assert.equal(clampToSpec(999, ease), ease.ceiling);
+  assert.equal(clampToSpec(-999, ease), ease.floor);
+  assert.equal(clampToSpec(35.6, ease), 36, 'rounds, it does not truncate');
+  // A bare {floor, ceiling} is enough — no DialKey needed, which is what lets another table reuse it.
+  assert.equal(clampToSpec(150, { floor: 1, ceiling: 100 }), 100);
+
+  assert.equal(signOf(7), 1);
+  assert.equal(signOf('-4'), -1);
+  assert.equal(signOf(true), 1);
+  assert.equal(signOf(false), 0);
+  assert.equal(signOf(null), 0);
+  assert.equal(signOf('later'), 0);
+
+  const moves = [
+    { at: T0 - 1000, k: 'ease' as DialKey, d: 2 },
+    { at: T0 - 1000, k: 'candor' as DialKey, d: -1 },
+    { at: T0 - WEEK - 1000, k: 'ease' as DialKey, d: 2 }, // outside the window
+  ];
+  assert.equal(spentInWindow(moves, 'ease', T0), 2, '|movement| inside the window only');
+  assert.equal(spentInWindow(moves, 'candor', T0), 1, 'a down-step spends its magnitude');
+  assert.equal(spentInWindow(moves, 'playfulness', T0), 0);
+  // The window is overridable, and defaults to climate's own week.
+  assert.equal(spentInWindow(moves, 'ease', T0, 2000), 2);
+  assert.equal(spentInWindow(moves, 'ease', T0, 500), 0, 'a shorter window sees less');
+  assert.equal(spentInWindow(moves, 'ease', T0, CLIMATE_WINDOW_MS), spentInWindow(moves, 'ease', T0));
+});
+
+// `pruneLedger` is the tail BOTH step functions end on: drop what the window has aged out, then
+// bound the array by dropping the oldest rows nothing still reads. Climate pins nothing — its prune
+// window IS its budget's window, so every row that survives the prune is one `spentInWindow` can
+// still count, and the cap is a plain oldest-first trim. `affectDrift.ts` passes a predicate,
+// because it prunes on six hours while two shorter budgets read particular rows out of that.
+test('pruneLedger prunes to the window, then trims the oldest rows nothing pinned', () => {
+  const rows = Array.from({ length: 10 }, (_, i) => ({ at: T0 - (9 - i), k: 'ease' as DialKey, d: 1 }));
+  const stale = { at: T0 - WEEK - 1, k: 'ease' as DialKey, d: 1 };
+
+  // Everything past the window goes, whatever the cap allows.
+  assert.deepEqual(pruneLedger([stale, ...rows], T0, CLIMATE_WINDOW_MS, 100), rows);
+  // Under the cap the pruned array comes back as it is.
+  assert.deepEqual(pruneLedger(rows, T0, CLIMATE_WINDOW_MS, 10), rows);
+  // Over it, the OLDEST rows go and the survivors keep their newest-last order.
+  assert.deepEqual(pruneLedger(rows, T0, CLIMATE_WINDOW_MS, 4), rows.slice(6));
+  // A pinned row is kept on top of the cap, in place — this is the whole reason the seam exists.
+  assert.deepEqual(
+    pruneLedger(rows, T0, CLIMATE_WINDOW_MS, 2, m => m.at === rows[0].at),
+    [rows[0], ...rows.slice(8)],
+  );
+  assert.equal(rows.length, 10, 'the ledger handed in is never mutated');
 });
 
 // ── 9: purity ────────────────────────────────────────────────────────────────
