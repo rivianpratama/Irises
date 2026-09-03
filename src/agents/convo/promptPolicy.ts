@@ -67,7 +67,7 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
   model_map: 800,              // 387 on a bare checkout — HOST-DEPENDENT, see above
   name_nudge: 165,             // 163 — fixed prose (was 171)
   intro_weave: 770,            // 760 — INTRO_WEAVE_BLOCK (agents/ops/firstMove.ts) (was 795)
-  context_block: 5_950,        // 5,837 — the cold fixture (was 12,500 for 12,290; P2 sent the discovery scaffold's craft coaching to craft/onboarding.md, gated every memory block on the turn, folded the plain tenure section into the identity card, replaced each tier's You-should/You-MUST-NOT ladder with the two or three lines that tier alone decides, and retired the three seed stances)
+  context_block: 5_950,        // 5,837 — the MATURE fixture, which overtook the cold one in P2 (the cold stack is now 2,873: a card and a slot list). Was 12,500 for 12,290; P2 sent the discovery scaffold's craft coaching to craft/onboarding.md, gated every memory block on the turn, folded the plain tenure section into the identity card, replaced each tier's You-should/You-MUST-NOT ladder with the two or three lines that tier alone decides, and retired the three seed stances
   active_ops: 1_980,           // 1,946 — two looks in flight, one queued (was 2,040)
   group: 105,                  // 104 — a named group, three participants (was 109)
   tapped_reply: 2_230,         // 2,190 — kind 'assistant' beyond the visible window (the largest of the four) (was 2,290)
@@ -82,7 +82,7 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
   turn_focus: 550,             // 544 — a 400-char restatement plus two hits (was 570)
   behavior_anchor: 705,        // 699 — P1: six lines that drift first (was 1,740 for 1,659 / 14 lines)
   json_anchor: 2_950,          // 2,908 — the envelope contract, last in the prompt (was 3,050)
-  memory_stack: 5_950,         // 5,837 — the cold stack (card + discovery scaffold), still the biggest measured (was 12,500 for 12,290; the card is +43 on the preamble it replaced and absorbed the tenure section, then the three ladders and the three seed stances came off)
+  memory_stack: 5_950,         // 5,837 — the mature stack, card through long doc, on a turn that touches none of it (was 12,500 for 12,290; the card is +43 on the preamble it replaced and absorbed the tenure section, then the three ladders and the three seed stances came off)
 };
 
 /**
