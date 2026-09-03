@@ -6,7 +6,8 @@
 // the word limit. The tag survives splitIntoBubbles/cleanResponse (those touch only ---, newlines,
 // spaced dashes, markdown, and number ranges — none touch `[[re:N]]`).
 //
-// See src/agents/convo/Context.md ("Which incoming message each bubble answers") for the model side.
+// See src/agents/convo/craft/burst-re.md ("Which incoming message each bubble answers") for the
+// model side — a craft page now, loaded only on a real burst (agents/convo/personaModules.ts).
 
 import type { ReplyTo } from '../webhook/types.js';
 

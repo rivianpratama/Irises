@@ -773,7 +773,8 @@ export function buildSystemPromptSections(
 
   // Burst: hand the model the numbered incoming messages so it can quote the SPECIFIC one a bubble
   // picks up by setting `"re": N` on that bubble — sparingly, only where a quote clarifies which
-  // message it's answering (see "Which incoming message each bubble answers" in Context.md). The raw
+  // message it's answering (see "Which incoming message each bubble answers", craft/burst-re.md — the
+  // craft page this same condition loads, so the two always arrive together). The raw
   // messages are external data, so they're sub-tagged. Injected only on a real burst.
   if (chatContext?.burstManifest && chatContext.burstManifest.length > 1) {
     const isGroup = chatContext.isGroupChat;
