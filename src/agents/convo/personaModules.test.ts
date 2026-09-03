@@ -61,17 +61,19 @@ const PRE_CHANGE_SHA256 = 'ac0faa6f9ce66afa216f860327b12a6b0567c3b606831912b1c29
  * between the two. Three modules were consecutive ahead of "When to delegate", two ahead of "Quick
  * math", which is why the reconstruction walks this list in order.
  *
- * `slice` is for a page assembled out of MORE than one home: P4b's threading craft came from two
- * places inside "Connect the dots" — the long run of thread paragraphs, and the automations
- * paragraph eighteen lines further down — so it has a row each.
+ * `slice` is for a page assembled out of MORE than one home. P4b cut two runs out of "Connect the
+ * dots": the long run of thread paragraphs, which became craft/threading.md, and the automations
+ * paragraph eighteen lines further down — which reads on reminder-edit turns, not thread turns, and
+ * so lives at the end of craft/reminders.md instead. That page therefore has a row each: its
+ * original section, and this tail.
  *
  * This table exists for ONE commit's worth of evidence. It is not part of the registry: nothing at
  * runtime needs to know where a module used to live (personaModules.ts), and the day this test is
  * the only reader left is the day the relocation is finished being checked.
  */
 const RELOCATION: ReadonlyArray<{ id: CraftModuleId; before: string; rule: boolean; slice?: 'head' | 'tail' }> = [
-  { id: 'threading', before: "**When unsure, don't — that's the default, not a fallback.**", rule: false, slice: 'head' },
-  { id: 'threading', before: '**What you never do with what you know:**', rule: false, slice: 'tail' },
+  { id: 'threading', before: "**When unsure, don't — that's the default, not a fallback.**", rule: false },
+  { id: 'reminders', before: '**What you never do with what you know:**', rule: false, slice: 'tail' },
   { id: 'tapped_reply', before: '## When to delegate (and how)', rule: true },
   { id: 'send_order', before: '## When to delegate (and how)', rule: true },
   { id: 'burst_re', before: '## When to delegate (and how)', rule: true },
@@ -221,11 +223,12 @@ const DELETED_PROSE: ReadonlyArray<{ id: string; gone: string; at: string; side:
 const ONBOARDING_LOCAL_HALF = '# Getting to know a new person (the onboarding craft)';
 
 /** craft/threading.md's own heading, which no section of Context.md ever had (the prose lived under
- *  "Connect the dots"), and the paragraph that opens its second relocated half. */
+ *  "Connect the dots"), and the paragraph craft/reminders.md carries at its end — the second run
+ *  P4b cut out of that same section. */
 const THREADING_HEADING = '## Picking up a thread of theirs (you are carrying one this turn)\n\n';
-const THREADING_TAIL = '**Tweaking automations — their history is the spec.**';
+const AUTOMATIONS_TAIL = '**Tweaking automations — their history is the spec.**';
 
-/** The part of a module that came out of Context.md: all of it for the five single-home pages, and
+/** The part of a module that came out of Context.md: all of it for the six single-home pages, and
  *  the named half for the two that are assembled out of more than their relocated prose. */
 function relocatedPart(id: CraftModuleId, slice?: 'head' | 'tail'): string {
   const text = craftModuleText(id);
@@ -235,11 +238,14 @@ function relocatedPart(id: CraftModuleId, slice?: 'head' | 'tail'): string {
     return text.slice(0, at).trimEnd();
   }
   if (id === 'threading') {
+    // The heading is the page's own; everything under it is relocated prose.
     assert.ok(text.startsWith(THREADING_HEADING), 'craft/threading.md still opens on its own heading');
-    const body = text.slice(THREADING_HEADING.length);
-    const at = body.indexOf(THREADING_TAIL);
-    assert.ok(at > 0, 'craft/threading.md still carries the automations paragraph it took from further down');
-    return slice === 'tail' ? body.slice(at) : body.slice(0, at).trimEnd();
+    return text.slice(THREADING_HEADING.length);
+  }
+  if (id === 'reminders') {
+    const at = text.indexOf(AUTOMATIONS_TAIL);
+    assert.ok(at > 0, 'craft/reminders.md still ends on the automations paragraph it took from further up');
+    return slice === 'tail' ? text.slice(at) : text.slice(0, at).trimEnd();
   }
   return text;
 }
