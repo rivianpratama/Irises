@@ -371,6 +371,11 @@ export async function chat(
       turn: { system, messages, tools },
       computed,
       introWoven: !!introWeave,
+      // The turn's ONE relevance verdict, already built during the memory read above — the routing
+      // gate reads it so it can stop discarding an answer she held the source for, and a delegation
+      // carries those hits into its brief. Null with CONVO_MEMORY_RELEVANCE off, which is the gate's
+      // pre-P2 text-only behavior.
+      relevance: context.turn,
       // What was in front of the model this turn, for its one receipt (diagnostics/turnTrace.ts).
       // Every value here is already computed above — nothing is re-derived, nothing is re-read, and
       // no prompt text travels: the assembler's own section sizes, the verdicts the pre-turn reads

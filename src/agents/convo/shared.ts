@@ -26,9 +26,13 @@ import { updateThreadInventory, type ThreadTurn } from '../../memory/threadHarve
 import { groomNotes } from '../../memory/noteGroomer.js';
 import { expandRecallQuery, recallExpansionEnabled } from '../../memory/recallExpansion.js';
 import { isGroupHandle } from '../../memory/identity.js';
+import type { TurnRelevance } from '../../memory/relevance.js';
 import { isDuplicateDelegation, getActiveOps, hasInFlightRequest, requestOpsCancel, type ActiveOps } from '../../state/opsCoordination.js';
 import { etaStatus, estimateOpsEta } from '../etaEstimate.js';
-import { needsGrounding, salvageHoldingText, refusedCapabilities } from '../routingGate.js';
+import {
+  needsGrounding, salvageHoldingText, refusedCapabilities,
+  holdsTheAnswer, routingGateHitReceipt, routingGateMemoryAwareEnabled, type RoutingGateDecision,
+} from '../routingGate.js';
 import { addMessage, setUserName, addUserFact, UserProfile, StoredMessage } from '../../state/conversation.js';
 import { redactInternalTools } from '../guardrails.js';
 import { stripReplyTag } from '../../state/replyThreading.js';
@@ -1152,8 +1156,18 @@ export async function processConvoResult(args: {
   // recall second pass re-passes it with its own longer messages array, so the sizes describe the
   // pass that actually produced the reply.
   trace?: TurnTraceTurnInputs;
+  // What she holds that touches THIS message, as the turn relevance router scored it before the
+  // call (memory/relevance.ts, built in convo/client.ts where every tier is in hand). Read by the
+  // routing gate below — which was text-only until it could see this — and carried into any
+  // delegation's brief. Null/absent when CONVO_MEMORY_RELEVANCE is off, or from a caller that has
+  // no router; both read as "nothing of hers touches this". Forwarded by the recall second pass
+  // via {...args}, like `computed`.
+  relevance?: TurnRelevance | null;
 }): Promise<ChatResponse> {
   const { chatId, handle, chatContext, textToSend, history, media } = args;
+  // Read ONCE for the turn: the routing gate and the delegation brief must not be able to disagree
+  // because someone flipped the env between the two reads.
+  const memoryAwareGate = routingGateMemoryAwareEnabled();
 
   // The model now replies with a JSON bubble envelope; parseReply turns it back into the legacy
   // `[[re:N]]…\n---\n…` wire format the rest of this function (and the send path) already speak, and
@@ -1190,6 +1204,10 @@ export async function processConvoResult(args: {
   // already running / just answered, so we skipped building the task. Used as a last-resort
   // fallback so the turn is never silent if the model also wrote no text.
   let suppressedDuplicate = false;
+  // Which way the routing floor went, set on every turn it was EVALUATED on and left undefined on
+  // the turns that never reached it (a delegation already built, the recall second pass, no memory
+  // identity). Rides the turn receipt so a month of turns can be bucketed by it.
+  let routingGate: RoutingGateDecision | undefined;
   // Tool OUTCOMES appended after the model's text (an automations list, or a correction note when a
   // schedule/cancel/directive couldn't be carried out) — the model couldn't foresee these (it's
   // single-shot), so Fallfirm voices each in Irises's tone at assembly time.
@@ -1611,7 +1629,22 @@ export async function processConvoResult(args: {
     // kind, while the gate would key its check as 'general' and miss it. hasInFlightRequest is the
     // shared source of truth for that match (same normalization + freshness/cancel filters).
     const alreadyRunning = hasInFlightRequest(chatId, lastUser);
-    if (needsGrounding(lastUser) === 'yes' && !alreadyRunning && isDuplicateDelegation(chatId, 'general', lastUser) !== 'in_flight') {
+    // What she holds that touches THIS message, as the turn relevance router scored it before the
+    // call (memory/relevance.ts, threaded in from convo/client.ts). Empty with
+    // CONVO_MEMORY_RELEVANCE off and on a turn the router could not read — both of which read as
+    // "nothing of hers touches this", which is the pre-P2 answer and the gate's old behavior.
+    const turnHits = args.relevance?.hits ?? [];
+    // ONE decision per evaluation, so the receipt below fires whichever way this goes — a gate that
+    // only left a receipt when it FIRED is exactly why the live failure had to be reconstructed from
+    // the turn trace. Buckets are disjoint and ordered cheapest-first: the freshness read still
+    // happens only on a grounded ask nothing is already answering.
+    let decision: RoutingGateDecision;
+    let salvagedDraft = false;
+    if (needsGrounding(lastUser) !== 'yes') {
+      decision = 'not_needed';
+    } else if (alreadyRunning || isDuplicateDelegation(chatId, 'general', lastUser) === 'in_flight') {
+      decision = 'skipped_in_flight';
+    } else {
       // Tier-first freshness: the newest short-term research/media row; legacy prefs stash as
       // the soak-window fallback. Both kinds — the running task may have been either.
       const fresh = await latestShortTerm(chatContext.senderHandle, ['ops_research', 'media_analysis']);
@@ -1620,7 +1653,16 @@ export async function processConvoResult(args: {
         const rr = await getPreference<{ at?: number }>(chatContext.senderHandle, 'recent_research');
         freshCache = !!(rr && typeof rr.at === 'number' && Date.now() - rr.at <= ROUTING_RECENT_TTL_MS);
       }
-      if (!freshCache) {
+      if (freshCache) {
+        decision = 'not_needed';
+      } else if (memoryAwareGate && holdsTheAnswer({ hits: turnHits, bubbles: replyBubbles(reply).length, toolCalls: res.toolCalls.length })) {
+        // She holds something about this and answered off it, so the answer is NOT the fabrication
+        // this floor exists to catch — it has a source, and it is hers. Discarding it and asking an
+        // engine that holds none of her memory is how a correct "39 days" became "which dana is
+        // this?". Nothing is touched here: her reply ships exactly as parsed.
+        decision = 'skipped_memory_hit';
+        console.log(`[convo] routing gate stood down — she holds ${turnHits.length} thing(s) touching this ask (chat ${chatId})`);
+      } else {
         delegatedTask = buildForcedTask({
           chatId, agentHandle: chatContext.senderHandle, request: lastUser,
           metaPrompt: `The user asked: "${lastUser}". This needs real, grounded data (the web, their own email, or their own past chats) — do NOT answer from general knowledge. Use the right tools and return only grounded facts; if you can't find it, say so.`,
@@ -1635,12 +1677,21 @@ export async function processConvoResult(args: {
         const salvaged = salvageHoldingText(normalizedText, lastUser);
         textParts.length = 0;
         if (salvaged) textParts.push(salvaged);
+        salvagedDraft = !!salvaged;
+        decision = 'delegated';
         // chatId rides along so a live round can attribute this line to the chat it fired on — the
         // battery harness reads it back per-chat when the trace buffer isn't reachable.
         console.log(`[convo] routing gate forced delegation for a grounded query (chat ${chatId})${salvaged ? ' (kept the draft’s own holding opener)' : ''}`);
-        record({ type: 'event', label: 'convo:routing_gate', chatId, handle, detail: { salvaged: !!salvaged } });
       }
     }
+    routingGate = decision;
+    // The hits ride along on EVERY decision, including with the memory-aware half switched off:
+    // "she held two notes about this and it delegated anyway" is the reading the live failure needed
+    // and did not have, and it is what makes the flag measurable before it is trusted.
+    record({
+      type: 'event', label: 'convo:routing_gate', chatId, handle,
+      detail: { decision, ...routingGateHitReceipt(turnHits), salvaged: salvagedDraft },
+    });
   }
 
   // ── False-capability-refusal floor ──────────────────────────────────────────────────────────────
