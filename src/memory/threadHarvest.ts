@@ -94,7 +94,11 @@ const NOTHING: ThreadTurn = { offer: null, outcomeAsk: null };
 export async function updateThreadInventory(
   handle: string,
   emitted: EmittedStatus | undefined,
-  opts: { chatId?: string; now?: number } = {},
+  /** `moodLevel` is the gauge THIS turn settled on (persona/affectDrift.ts through mergeStatus).
+   *  It arrives as an argument because it left the envelope in the v2 shrink: the model reports a
+   *  direction, code owns the number. Absent — a caller with no clock state, so no record was
+   *  folded — reads as "not low", and the `intent_mode` half of the distress gate still holds. */
+  opts: { chatId?: string; now?: number; moodLevel?: number } = {},
 ): Promise<void> {
   if (!threadingEnabled()) return;
   if (!handle || isGroupHandle(handle)) return;
@@ -114,7 +118,8 @@ export async function updateThreadInventory(
     // of the four conditions that hold a theme at the fact rung, so what she captured in a hard
     // moment can only ever be handed back as a plain question, never as a named pattern.
     const distressed = !!emitted
-      && (DISTRESSED_MODES.includes(emitted.intent_mode) || emitted.mood_level < DISTRESS_MOOD_FLOOR);
+      && (DISTRESSED_MODES.includes(emitted.intent_mode)
+        || (opts.moodLevel !== undefined && opts.moodLevel < DISTRESS_MOOD_FLOOR));
 
     const { next, report } = applyThreadHarvest(
       inventory, emitted?.thread_note, emitted?.thread_outcome, now, { distressed },

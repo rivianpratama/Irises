@@ -292,13 +292,18 @@ const COMPUTED: ComputedState = {
 
 function affect(): AffectState {
   const emitted = coerceStatus({
-    mood_core: 'joyful', mood_label: 'hopeful', mood_level: 72,
-    anxiety: 30, warmth: 80, social_battery: 65, rapport: 55, conviction: 60,
-    engagement: 70, patience: 75, intent_mode: 'sharing_update', epistemic_trigger: 'logic_valid',
+    mood_label: 'hopeful', mood_shift: 'lifted', intent_mode: 'sharing_update',
+    terminal_closure: false, epistemic_trigger: 'logic_valid',
     meta_prompt: 'they seem upbeat, keep it light and follow their lead',
-    profile_note: 'warm, forward-looking', terminal_closure: false,
   })!;
-  return { last: mergeStatus(emitted, COMPUTED, 0), moodHistory: [{ level: 72, core: 'joyful', label: 'hopeful', at: 0 }] };
+  // The gauges left the envelope in v2 — they are code's answer now (persona/affectDrift.ts) — so the
+  // row she carried IN is STATED here rather than emitted into place. A prompt fixture is about what
+  // the weather block renders, not about the drift arithmetic (persona/affectDrift.test.ts owns that).
+  const last = {
+    ...mergeStatus(emitted, COMPUTED, 0),
+    mood_level: 72, anxiety: 30, warmth: 80, social_battery: 65, rapport: 55, patience: 75,
+  };
+  return { last, moodHistory: [{ level: 72, core: 'powerful', label: 'hopeful', at: 0 }] };
 }
 
 /** A climate that has actually moved — at defaults the weather block renders no climate lines. */

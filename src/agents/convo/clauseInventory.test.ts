@@ -93,11 +93,16 @@ const COMPUTED: ComputedState = {
 
 const AFFECT: AffectState = (() => {
   const emitted = coerceStatus({
-    mood_core: 'joyful', mood_label: 'hopeful', mood_level: 72, anxiety: 30, warmth: 80,
-    social_battery: 65, rapport: 55, patience: 75, intent_mode: 'sharing_update',
+    mood_label: 'hopeful', mood_shift: 'lifted', intent_mode: 'sharing_update',
     meta_prompt: 'they seem upbeat, keep it light and follow their lead',
   })!;
-  return { last: mergeStatus(emitted, COMPUTED, 0), moodHistory: [] };
+  // The gauges are code's answer now (persona/affectDrift.ts), so the row she carried IN is STATED
+  // rather than emitted into place — a clause count is about prose, not about the arithmetic.
+  const last = {
+    ...mergeStatus(emitted, COMPUTED, 0),
+    mood_level: 72, anxiety: 30, warmth: 80, social_battery: 65, rapport: 55, patience: 75,
+  };
+  return { last, moodHistory: [] };
 })();
 
 const MOVED_CLIMATE: RelationshipClimate = {

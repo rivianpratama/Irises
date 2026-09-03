@@ -54,10 +54,12 @@ export type BudgetKey = SectionId | 'memory_stack';
  * plain part a routed block can still have, and the thread-offer fixture carries one so that the two
  * numbers keep measuring two things.
  *
- * `status_contract` is prose too, but GENERATED prose: the seventeen ENVELOPE_FIELDS descriptions plus
+ * `status_contract` is prose too, but GENERATED prose: the eight ENVELOPE_FIELDS descriptions plus
  * the feeling wheel (persona/status.ts), identical on every turn. It is the one line here that cannot
  * be tightened in the prompt alone — those descriptions are also the response schema both lanes
  * validate against, so shrinking this number means editing the table and moving both copies at once.
+ * P3 is what that looks like from this side: the envelope shrank from seventeen fields to eight, and
+ * the two copies moved together in the same commit.
  *
  * The data-shaped sections (`context_block`, `memory_stack`, `burst`, `group`, `active_ops`,
  * `tapped_reply`) are measured on their fixture's data, so changing a fixture re-measures the number
@@ -77,8 +79,8 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
   tapped_reply: 2_230,         // 2,190 — kind 'assistant' beyond the visible window (the largest of the four) (was 2,290)
   burst: 1_130,                // 1,110 — three messages, group-labelled (was 1,160)
   current_time: 295,           // 291 — fixed prose plus the formatted instant (was 305)
-  weather: 2_300,              // 2,262 — affect + cycle + circadian + a moved climate (was 2,700 for 2,581, before P1 pointed the block's tail at the status contract instead of re-listing the fields)
-  status_contract: 4_000,      // 3,976 — STATIC (ENVELOPE_FIELDS + the wheel), the same on every turn (was 3,650 for 3,591; +353 re-homed three capture rules onto the two threading descriptions, +32 said whose mode `intent_mode` reads)
+  weather: 2_300,              // 2,264 — affect + cycle + circadian + a moved climate (+2 in P3: the mood core is derived from the word now, and 'powerful' is two characters longer than the 'joyful' this fixture used to claim). Was 2,700 for 2,581, before P1 pointed the block's tail at the status contract instead of re-listing the fields
+  status_contract: 3_690,      // 3,627 — STATIC (ENVELOPE_FIELDS + the wheel), the same on every turn. P3's envelope shrink took −349: ten bullets deleted (`mood_core`, the eight self-graded gauges, `profile_note`), one added (`mood_shift`), `mood_label` reworded off the core it can no longer point at. Was 4,000 for 3,976; was 3,650 for 3,591 before +353 re-homed three capture rules onto the two threading descriptions and +32 said whose mode `intent_mode` reads
   thread: 1_230,               // 1,211 — a pattern-rung theme offer plus a loop outcome ask (was 1,270)
   conversation_timing: 270,    // 266 — the widest of the gap/regime readings on these fixtures (was 278)
   reply_order: 620,            // 613 — renderArrivalGap (the backward-order variant, the larger one) (was 640)

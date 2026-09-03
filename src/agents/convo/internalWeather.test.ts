@@ -22,14 +22,18 @@ const COMPUTED: ComputedState = {
 
 function affect(): AffectState {
   const emitted = coerceStatus({
-    mood_core: 'joyful', mood_label: 'hopeful', mood_level: 72,
-    anxiety: 30, warmth: 80, social_battery: 65, rapport: 55, conviction: 60,
-    engagement: 70, patience: 75, intent_mode: 'sharing_update', epistemic_trigger: 'logic_valid',
+    mood_label: 'hopeful', mood_shift: 'lifted', intent_mode: 'sharing_update',
+    terminal_closure: false, epistemic_trigger: 'logic_valid',
     meta_prompt: 'they seem upbeat, keep it light and follow their lead',
-    profile_note: 'warm, forward-looking', terminal_closure: false,
   })!;
-  const last = mergeStatus(emitted, COMPUTED, 0);
-  return { last, moodHistory: [{ level: 72, core: 'joyful', label: 'hopeful', at: 0 }] };
+  // The gauges left the envelope in v2 — they are code's answer now (persona/affectDrift.ts) — so the
+  // row she carried IN is STATED here rather than emitted into place. A prompt fixture is about what
+  // the weather block renders, not about the drift arithmetic (persona/affectDrift.test.ts owns that).
+  const last = {
+    ...mergeStatus(emitted, COMPUTED, 0),
+    mood_level: 72, anxiety: 30, warmth: 80, social_battery: 65, rapport: 55, patience: 75,
+  };
+  return { last, moodHistory: [{ level: 72, core: 'powerful', label: 'hopeful', at: 0 }] };
 }
 
 test('the internal-weather block is injected when computed state is present', () => {
@@ -41,7 +45,9 @@ test('the internal-weather block is injected when computed state is present', ()
 
 test('a prior mood + meta-prompt carry forward into the block', () => {
   const prompt = buildSystemPrompt(ctx, '', [], undefined, undefined, [], 'hey', undefined, affect(), COMPUTED);
-  assert.match(prompt, /hopeful \(joyful, 72\/100\)/);      // carried mood
+  // 'hopeful' is a `powerful` word on the chart, and the core is derived from the word now
+  // (coreForLabel) rather than reported beside it, so a fixture can no longer file it under `joyful`.
+  assert.match(prompt, /hopeful \(powerful, 72\/100\)/);    // carried mood
   assert.match(prompt, /keep it light and follow their lead/); // carried meta-prompt
 });
 

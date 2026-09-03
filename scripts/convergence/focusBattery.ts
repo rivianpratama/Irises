@@ -579,7 +579,9 @@ export const CHECKS: Record<CheckId, FocusCheck> = {
       const trail = [...ev.seedTraces, t]
         .map(x => x.affect.coerced)
         .filter((c): c is NonNullable<typeof c> => !!c)
-        .map(c => `mood ${c.mood_level}/warmth ${c.warmth}/engagement ${c.engagement}/rapport ${c.rapport}`);
+        // The envelope stopped carrying numbers in P3 (persona/status.ts, envelope v2): what a probe
+        // can read off the coerced status is the WORD she reported and which way she says it moved.
+        .map(c => `${c.mood_label}/${c.mood_shift}`);
       // TODO(P3/Task 14): read `affect.drift` off turn:trace instead — `drift.capped` / `drift.shortened`
       // and the per-turn movement against AFFECT_TURN_CAP (persona/affectDrift.ts). Until the drift
       // engine is WIRED into the turn, the receipt carries the gauges as emitted and nothing about

@@ -42,14 +42,13 @@ import type { StoredMessage, UserProfile } from '../db/types.js';
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
 
-/** A status exactly as the persona asks for it — every field valid, both threading fields the
+/** A status exactly as the persona asks for it — all eight fields valid, both threading fields the
  *  sanctioned "not this turn" null. Nothing here should read as a coercion. */
 const GOOD_STATUS: Record<string, unknown> = {
-  mood_core: 'joyful', mood_label: 'hopeful', mood_level: 72,
-  anxiety: 30, warmth: 80, social_battery: 65, rapport: 55, conviction: 60,
-  engagement: 70, patience: 75, intent_mode: 'sharing_update', epistemic_trigger: 'logic_valid',
-  meta_prompt: 'they seem upbeat, keep it light', profile_note: 'warm, forward-looking',
-  terminal_closure: false, thread_note: null, thread_outcome: null,
+  mood_label: 'hopeful', mood_shift: 'lifted', intent_mode: 'sharing_update',
+  terminal_closure: false, epistemic_trigger: 'logic_valid',
+  meta_prompt: 'they seem upbeat, keep it light',
+  thread_note: null, thread_outcome: null,
 };
 
 const COMPUTED: ComputedState = {
@@ -59,7 +58,13 @@ const COMPUTED: ComputedState = {
 
 function affect(): AffectState {
   const emitted = coerceStatus(GOOD_STATUS)!;
-  return { last: mergeStatus(emitted, COMPUTED, 0), moodHistory: [{ level: 72, core: 'joyful', label: 'hopeful', at: 0 }] };
+  // The gauges are code's answer now (persona/affectDrift.ts), so the row she carried IN is stated
+  // rather than emitted into place — this fixture is here to make the prompt real, nothing more.
+  const last = {
+    ...mergeStatus(emitted, COMPUTED, 0),
+    mood_level: 72, anxiety: 30, warmth: 80, social_battery: 65, rapport: 55, patience: 75,
+  };
+  return { last, moodHistory: [{ level: 72, core: 'powerful', label: 'hopeful', at: 0 }] };
 }
 
 const PROFILE: UserProfile = {
@@ -142,9 +147,12 @@ test('a status the persona would recognize records no coercions at all', () => {
 });
 
 test('the coercion diff names the field, what the model wrote, and what it became', () => {
-  const raw = { ...GOOD_STATUS, mood_level: 'very high' };
+  // A mood word that is not on the chart: nothing can place it, so 'peaceful' takes it and its first
+  // word stands in. (v2's envelope carries no numbers at all, so `clamped` / `parsed` /
+  // `not_a_number` are reasons this vocabulary keeps for a field it does not have today.)
+  const raw = { ...GOOD_STATUS, mood_label: 'very high' };
   assert.deepEqual(describeStatusCoercions(raw, coerceStatus(raw)), [
-    { field: 'mood_level', from: 'very high', to: 50, reason: 'not_a_number' },
+    { field: 'mood_label', from: 'very high', to: 'content', reason: 'replaced' },
   ]);
 
   // The two threading fields are the only ones the coercer can REFUSE outright (a wrong guess there
@@ -154,16 +162,15 @@ test('the coercion diff names the field, what the model wrote, and what it becam
     { field: 'thread_outcome', from: 'delighted', to: null, reason: 'dropped' },
   ]);
 
-  // An out-of-range integer is clamped, a numeric string is parsed, an unknown enum is replaced,
-  // and a missing field is named as absent rather than silently defaulted.
-  const messy = { ...GOOD_STATUS, patience: 900, warmth: '64', intent_mode: 'vibing' };
-  delete messy.rapport;
+  // An over-long note is truncated, an unknown enum is replaced, and a missing field is named as
+  // absent rather than silently defaulted.
+  const messy = { ...GOOD_STATUS, meta_prompt: 'x'.repeat(300), intent_mode: 'vibing' };
+  delete messy.mood_shift;
   const coercions = describeStatusCoercions(messy, coerceStatus(messy));
   assert.deepEqual(coercions, [
-    { field: 'warmth', from: '64', to: 64, reason: 'parsed' },
-    { field: 'rapport', from: null, to: 50, reason: 'absent' },
-    { field: 'patience', from: 900, to: 100, reason: 'clamped' },
+    { field: 'mood_shift', from: null, to: 'steady', reason: 'absent' },
     { field: 'intent_mode', from: 'vibing', to: 'questioning', reason: 'replaced' },
+    { field: 'meta_prompt', from: 'x'.repeat(300), to: 'x'.repeat(240), reason: 'truncated' },
   ]);
   // Every reason comes from the closed vocabulary, so a scan of the ring can bucket them.
   for (const c of coercions) assert.ok(STATUS_COERCION_REASONS.includes(c.reason), c.reason);
@@ -190,7 +197,7 @@ test('an emitted status rides along coerced, with its raw copy', () => {
   const detail = buildTurnTrace({ draft: draft(), bubbles: TWO_BUBBLES });
   assert.equal(detail.affect.source, 'emitted');
   assert.equal(detail.affect.coerced?.mood_label, 'hopeful');
-  assert.equal((detail.affect.rawEmitted as Record<string, unknown>).mood_level, 72);
+  assert.equal((detail.affect.rawEmitted as Record<string, unknown>).mood_shift, 'lifted');
   assert.deepEqual(detail.affect.coercions, []);
 });
 
@@ -416,7 +423,7 @@ test('a Convo turn hands the send boundary a draft of everything but the bubbles
   const d = out.turnTrace!;
   assert.ok(d, 'the draft rides the ChatResponse');
   assert.equal(d.affect.source, 'emitted');
-  assert.equal(d.affect.coerced?.mood_core, 'joyful');
+  assert.equal(d.affect.coerced?.mood_label, 'hopeful');   // the core is derived off the record, not emitted
   // `routingGate` is on every turn the routing floor was evaluated on — a social ask needs no
   // grounding, and that decision is a reading too (agents/routingGate.ts).
   assert.deepEqual(d.outcome, { wasEnvelope: true, retried: false, silent: false, toolCalls: [], routingGate: 'not_needed' });

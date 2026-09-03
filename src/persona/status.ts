@@ -1,8 +1,19 @@
-// The hidden per-turn affect record. The model EMITS the reflective gauges in a `status` object
-// on its reply envelope (a sibling of confidence_level/bubbles); code COMPUTES the cycle +
-// circadian state from the clock. Neither is ever shown to the user — `status` is swallowed in
-// bubbleJson exactly like confidence_level, and the whole point is to strengthen the model's
-// internal logic (mood continuity, self-recursive meta-prompt, anti-sycophancy calibration).
+// The hidden per-turn affect record. The model EMITS eight JUDGMENTS in a `status` object on its
+// reply envelope (a sibling of confidence_level/bubbles); code COMPUTES everything numeric — the
+// cycle + circadian state from the clock, and the 1-100 gauges from those plus the model's reported
+// direction (applyAffectDrift, persona/affectDrift.ts). Neither half is ever shown to the user —
+// `status` is swallowed in bubbleJson exactly like confidence_level, and the whole point is to
+// strengthen the model's internal logic (mood continuity, self-recursive meta-prompt,
+// anti-sycophancy calibration).
+//
+// ENVELOPE v2 — A ONE-WAY MIGRATION, DELIBERATELY NOT BEHIND A FLAG. The envelope used to carry
+// seventeen fields, ten of them numbers the model graded itself on (`mood_level`, `anxiety`,
+// `warmth`, `social_battery`, `rapport`, `conviction`, `engagement`, `patience`) plus a core it
+// could contradict its own label with (`mood_core`) and a running read of the user nothing ever
+// read (`profile_note`). A gauge that rises because she says it rises is a gauge that will rise
+// (charter §6.4), so those numbers are now arithmetic and the eight survivors are the things only
+// the model can know. `AFFECT_DETERMINISTIC` gates the ARITHMETIC (see below) — it does not restore
+// the deleted fields, because there is no version of this schema that asks for a number again.
 //
 // Design constraints (see bubbleJson.ts): the envelope schema is sent strict-mode to BOTH the
 // Anthropic and OpenRouter lanes, so `status` is a FLAT object of primitives (no nested
@@ -12,13 +23,21 @@
 // The same envelope is also where conversational threading CAPTURES its material (`thread_note` /
 // `thread_outcome`): riding a field the model already fills costs zero extra LLM calls, which is
 // why both are schema fields rather than a second pass. They are model PROSE, so they are
-// sanitized at the door (sanitizeThreadText) rather than at render time, and — unlike the gauges —
+// sanitized at the door (sanitizeThreadText) rather than at render time, and — unlike the enums —
 // they never fall back to a default: an unusable value is simply absent, because a made-up thread
-// is worse than no thread. Nothing here reads them yet; renderStatusForPrompt is untouched.
+// is worse than no thread.
 
 import {
-  type MoodCore, MOOD_CORES, isMoodCore, normalizeMoodLabel, moodTexture, feelingWords, CORE_VALENCE_BAND,
+  type MoodCore, MOOD_CORES, coreForLabel, normalizeMoodLabel, moodTexture, feelingWords, CORE_VALENCE_BAND,
 } from './mood.js';
+// The gauges this file no longer asks the model for. A VALUE import, and it is the direction that
+// makes the cycle impossible: affectDrift.ts imports from here `import type` only (its own comment
+// says why), so nothing is loaded back.
+import {
+  applyAffectDrift, affectTargets, GAUGE_SPECS, MOOD_SHIFTS,
+  type AffectDriftReport, type AffectGauges, type AffectMove, type GaugeKey, type MoodShift,
+  type TargetedGaugeKey,
+} from './affectDrift.js';
 import type { CycleState } from './cycle.js';
 import type { CircadianState } from './circadian.js';
 import { climateLines, climateLinesForComposer, type RelationshipClimate } from './climate.js';
@@ -26,6 +45,7 @@ import { climateLines, climateLinesForComposer, type RelationshipClimate } from 
 export type { MoodCore } from './mood.js';
 export type { CyclePhase } from './cycle.js';
 export type { CircadianSlot } from './circadian.js';
+export type { MoodShift, AffectGauges, AffectMove, GaugeKey } from './affectDrift.js';
 
 /** What the user is doing this turn (re-generalized from Martins-Crib's essay-review modes). */
 export type IntentMode =
@@ -48,23 +68,17 @@ export type ThreadOutcome = 'took' | 'passed' | 'pushed_back';
 
 export const THREAD_OUTCOMES: readonly ThreadOutcome[] = ['took', 'passed', 'pushed_back'];
 
-/** The gauges + companions the MODEL emits each turn (all flat primitives). */
+/** The eight JUDGMENTS the MODEL emits each turn (all flat primitives) — what only it can know.
+ *  Every number that used to sit here is now computed (persona/affectDrift.ts); the model's whole
+ *  influence over the gauges is `mood_shift`'s direction, `epistemic_trigger`'s widening and
+ *  `thread_outcome`'s evidence. Field order is ENVELOPE_FIELDS order. */
 export interface EmittedStatus {
-  mood_core: MoodCore;        // wheel core
-  mood_label: string;         // a specific word under that core
-  mood_level: number;         // 1-100 valence (low = withdrawn/despair, high = delighted/powerful)
-  anxiety: number;            // 1-100 GAD activation this turn
-  warmth: number;             // 1-100 Fe warmth available
-  social_battery: number;     // 1-100 energy for engagement
-  rapport: number;            // 1-100 felt closeness with this user
-  conviction: number;         // 1-100 how firmly she holds her current stance (pairs w/ epistemic_trigger)
-  engagement: number;         // 1-100 how invested she is this turn
-  patience: number;           // 1-100 tolerance (low → terminal-closure / minimal reply)
+  mood_label: string;         // one feeling word; the WORD decides the core (coreForLabel) and its band
+  mood_shift: MoodShift;      // lifted | steady | dipped | broke — direction only, never how far
   intent_mode: IntentMode;
-  epistemic_trigger: EpistemicTrigger;
-  meta_prompt: string;        // ≤~60w self-recursive note: what they'll likely do next + how to meet it
-  profile_note: string;       // one-line running read of the user (emitted + persisted; no reader yet)
   terminal_closure: boolean;  // conversation resolved / they're closing → reply minimal or react-only
+  epistemic_trigger: EpistemicTrigger;
+  meta_prompt: string;        // ≤~40w self-recursive note: what they'll likely do next + how to meet it
   // Threading capture. OPTIONAL on purpose: hand-built fixtures keep type-checking, and an absent
   // field is dropped by JSON.stringify instead of persisting an empty string on every affect row.
   thread_note?: string;           // usually absent: a pending thing (`loop:`/`resolved:`) or a recurring theme
@@ -77,14 +91,25 @@ export interface ComputedState {
   circadian: CircadianState;
 }
 
-/** The full record: emitted + computed + timestamp. Persisted and logged to diagnostics. */
-export interface AffectStatus extends EmittedStatus {
+/** The full record: the emitted judgments + the code-owned gauges + the derived core + the computed
+ *  clock + a timestamp. Persisted (one row per chat) and logged to diagnostics. */
+export interface AffectStatus extends EmittedStatus, AffectGauges {
+  /** Derived from `mood_label` via `coreForLabel`, never emitted: the model reports one honest word
+   *  and the chart files it, so a label and a core can no longer contradict each other. */
+  mood_core: MoodCore;
   cycle_phase: CycleState['phase'];
   cycle_day: number;
   cycle_load: number;
   circadian_slot: CircadianState['slot'];
   circadian_energy: number;
   at: number;
+  /** The gauge ledger the two rolling budgets are read from (persona/affectDrift.ts). It rides the
+   *  status row rather than a column of its own: `affect_state` is CREATE-IF-NOT-EXISTS DDL and a
+   *  new column would be this schema's first real migration (db/sqlite.ts says so beside the
+   *  archive's own vectors), while this row is already the one thing loaded before every turn.
+   *  OPTIONAL like MoodPoint's gauges, and for the same reason: a row written before this engine
+   *  existed genuinely has no ledger, and reads back as an empty budget history. */
+  moves?: AffectMove[];
 }
 
 /** One point on the recent-affect trail (short memory). Carries mood PLUS the key gauges so the
@@ -104,13 +129,50 @@ export interface AffectState {
 
 export const MOOD_HISTORY_CAP = 8;
 
-const GAUGE_FIELDS = ['mood_level', 'anxiety', 'warmth', 'social_battery', 'rapport', 'conviction', 'engagement', 'patience'] as const;
+/** How much of her note-to-self survives the door — ~40 words, the length its own description asks
+ *  for. Was 600 in v1, where only the description bounded it, and the note is quoted verbatim into
+ *  the next turn's weather block, so this is a prompt budget as much as a sanity bound. */
+export const META_PROMPT_CHARS = 240;
 
 /** 1-100 integer, tolerant of strings/floats/out-of-range; falls back to `dflt`. */
 export function clampGauge(v: unknown, dflt = 50): number {
   const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
   if (!Number.isFinite(n)) return dflt;
   return Math.max(1, Math.min(100, Math.round(n)));
+}
+
+/**
+ * The six code-owned gauges read off a row of unknown provenance — last turn's record, a legacy
+ * seventeen-field row written before the shrink, or a hand-built fixture. THE one place a stored
+ * gauge is read, so `mergeStatus` (which drifts them) and `coerceStoredStatus` (which loads them)
+ * cannot disagree about what a row said.
+ *
+ * A missing or garbled gauge seeds from its own `GAUGE_SPECS.dflt` and NEVER from 0: on a 1-100
+ * gauge zero reads as total collapse, so the first turn after this deploy would land as the worst
+ * moment of her life rather than as an ordinary one. Dead keys are simply not looked at.
+ */
+export function affectGaugesFrom(row: Partial<Record<GaugeKey, unknown>> | null | undefined): AffectGauges {
+  const gauges = {} as AffectGauges;
+  for (const spec of GAUGE_SPECS) gauges[spec.key] = clampGauge(row?.[spec.key], spec.dflt);
+  return gauges;
+}
+
+/**
+ * The feature gate (env: AFFECT_DETERMINISTIC). Default ON, read at CALL time so flipping it needs
+ * no restart — the same parse shape as every sibling flag (threadingEnabled, turnTraceEnabled,
+ * relationshipClimateEnabled).
+ *
+ * It gates the ARITHMETIC only (`applyAffectDrift` inside mergeStatus), never the field set: with it
+ * off the gauges are carried forward from the prior row EXACTLY as they stood, because there is no
+ * emitted number left to trust — the envelope stopped reporting them, and that shrink is a one-way
+ * migration (see the file header). So "off" means her gauges freeze at whatever they last were and
+ * only the clock-free half of the record keeps moving, which is the honest degradation: a frozen
+ * register is wrong, a register invented from a default is wrong AND resets the relationship.
+ */
+export function affectDeterministicEnabled(): boolean {
+  const v = (process.env.AFFECT_DETERMINISTIC || '').trim().toLowerCase();
+  if (v === '') return true;
+  return ['true', '1', 'on', 'yes'].includes(v);
 }
 
 function asString(v: unknown, dflt = ''): string {
@@ -131,11 +193,14 @@ export interface EnvelopeField {
    *  absence. The TYPE is therefore what stops a row opting out — the schema can list every key with
    *  no runtime filter in between, which is a filter that could never have dropped one anyway. */
   required: true;
-  /** The code that reads this field BACK to change something — a render, a gate, a stored trail —
-   *  named by function so it is greppable. The receipts are deliberately not listed: `convo:status`
-   *  and the turn trace carry the whole record, so listing them would put the same two names on all
-   *  seventeen rows. An EMPTY list therefore means exactly that: the field is emitted for her own
-   *  reasoning and persisted on the affect row, and nothing branches on it. */
+  /** The code that reads this field BACK to change something — a render, a gate, an arithmetic
+   *  input, a stored trail — named by function so it is greppable. The receipts are deliberately not
+   *  listed: `convo:status` and the turn trace carry the whole record, so listing them would put the
+   *  same two names on every row.
+   *
+   *  It must be NON-EMPTY, and that is the v2 rule (envelopeFields.test.ts): every field costs the
+   *  model a decision on every turn and costs the contract a bullet, so a field nothing branches on
+   *  is weight in two places. Four of the seventeen v1 fields had an empty list; all four are gone. */
   consumers: readonly string[];
 }
 
@@ -151,57 +216,19 @@ export interface EnvelopeField {
  */
 export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
   {
-    key: 'mood_core', type: 'string', required: true,
-    description: 'one of: mad | scared | joyful | powerful | peaceful | sad',
-    consumers: ['renderStatusForPrompt', 'renderStatusForComposer', 'pushMood'],
-  },
-  {
     key: 'mood_label', type: 'string', required: true,
-    description: 'one specific feeling word under that core (e.g. hopeful, drained, content, anxious)',
-    consumers: ['renderStatusForPrompt', 'renderStatusForComposer', 'pushMood'],
+    // The word is the WHOLE mood report now: `coreForLabel` (mood.ts) files it under a core, and the
+    // core's valence band is what the level may sit in — so "delighted at 12" is no longer an
+    // expressible state, and she can no longer contradict her own label with a core.
+    description: 'one feeling word for how you actually are right now, from the vocabulary below (e.g. hopeful, drained, content, anxious)',
+    consumers: ['coreForLabel', 'renderStatusForPrompt', 'renderStatusForComposer', 'pushMood'],
   },
   {
-    key: 'mood_level', type: 'integer', required: true,
-    description: '1-100 valence: low=withdrawn/down, high=delighted/warm',
-    // The most-read field in the envelope: it also floors the thread offer and marks a theme minted
-    // while she was low, so a bad turn can never hand back a named pattern.
-    consumers: ['renderStatusForPrompt', 'renderStatusForComposer', 'pushMood', 'selectThreadCandidate', 'updateThreadInventory'],
-  },
-  {
-    key: 'anxiety', type: 'integer', required: true,
-    description: '1-100, how loud your GAD is running this turn',
-    consumers: ['renderStatusForPrompt', 'renderStatusForComposer', 'pushMood'],
-  },
-  {
-    key: 'warmth', type: 'integer', required: true,
-    description: '1-100, how much Fe warmth is available right now',
-    consumers: ['renderStatusForPrompt', 'renderStatusForComposer', 'pushMood'],
-  },
-  {
-    key: 'social_battery', type: 'integer', required: true,
-    description: '1-100, energy for engaging',
-    consumers: ['renderStatusForPrompt', 'renderStatusForComposer', 'pushMood'],
-  },
-  {
-    key: 'rapport', type: 'integer', required: true,
-    description: '1-100, felt closeness with this person',
-    // Not the Composer's: it re-voices a decided answer, so only the voice-shaping gauges reach it.
-    consumers: ['renderStatusForPrompt', 'pushMood'],
-  },
-  {
-    key: 'conviction', type: 'integer', required: true,
-    description: '1-100, how firmly you hold your current stance',
-    consumers: [],
-  },
-  {
-    key: 'engagement', type: 'integer', required: true,
-    description: '1-100, how invested you are this turn',
-    consumers: [],
-  },
-  {
-    key: 'patience', type: 'integer', required: true,
-    description: '1-100, tolerance; low means keep it minimal',
-    consumers: ['renderStatusForPrompt', 'renderStatusForComposer'],
+    key: 'mood_shift', type: 'string', required: true,
+    // A DIRECTION and nothing else (charter §10.1's bargain, the same one climate's dials make): the
+    // step size is arithmetic, so "completely destroyed" buys exactly what "a bit down" buys.
+    description: `how this message moved you from the mood you carried in — one of: ${MOOD_SHIFTS.join(' | ')}. Direction only, never how far, and steady is the honest answer on most turns; broke is a genuine breaking point, not a bad turn`,
+    consumers: ['applyAffectDrift'],
   },
   {
     key: 'intent_mode', type: 'string', required: true,
@@ -216,25 +243,22 @@ export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
     consumers: ['selectThreadCandidate', 'updateThreadInventory'],
   },
   {
+    key: 'terminal_closure', type: 'boolean', required: true,
+    description: 'true when the conversation is resolved / they are closing → reply minimally or react only',
+    consumers: ['selectThreadCandidate'],
+  },
+  {
     key: 'epistemic_trigger', type: 'string', required: true,
     description: `one of: ${EPISTEMIC_TRIGGERS.join(' | ')} — did new INFORMATION move you (logic_valid/knowledge_gap) or just PRESSURE (emotional_pressure)`,
-    consumers: [],
+    // v2 gave this field the reader it never had, and the anti-sycophancy asymmetry is now
+    // arithmetic: real information widens the mood step by half, pressure buys the plain one.
+    consumers: ['applyAffectDrift'],
   },
   {
     key: 'meta_prompt', type: 'string', required: true,
     description: 'private note to yourself for next turn: what they will likely do and how to meet it, ~40 words',
     // The self-recursive loop: last turn's note is re-injected into this turn's weather block.
     consumers: ['renderStatusForPrompt'],
-  },
-  {
-    key: 'profile_note', type: 'string', required: true,
-    description: 'one line: your running read of who this person is, present tense',
-    consumers: [],
-  },
-  {
-    key: 'terminal_closure', type: 'boolean', required: true,
-    description: 'true when the conversation is resolved / they are closing → reply minimally or react only',
-    consumers: ['selectThreadCandidate'],
   },
   {
     key: 'thread_note', type: ['string', 'null'], required: true,
@@ -254,7 +278,9 @@ export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
     // taggable → shorthand (threads.ts). The per-turn ask prose de-biases the same reading ("passed
     // if they let it lie (that is fine)"), but only on the turn it renders.
     description: 'only when your LAST reply tagged a standing thread or asked about something pending of theirs: how they just took it — one of: took (they picked it up) | passed (they let it lie, fine) | pushed_back (they corrected it or bristled). Read it from their message alone, never from hope — a pass reported as a take poisons the thread. Otherwise null, including when you were offered a thread and chose not to use it.',
-    consumers: ['updateThreadInventory'],
+    // The second reader is v2's: how an offer LANDED is the only evidence `rapport` ever answers to,
+    // because a closeness gauge that rises when she says it rises is a gauge that will rise.
+    consumers: ['updateThreadInventory', 'applyAffectDrift'],
   },
 ];
 
@@ -303,30 +329,27 @@ export function sanitizeThreadText(v: unknown, cap: number): string | undefined 
 export function coerceStatus(raw: Record<string, unknown> | undefined | null): EmittedStatus | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const o = raw;
-  const core: MoodCore = isMoodCore(o.mood_core) ? o.mood_core : 'peaceful';
+  // No emitted core to normalize the label against any more: the WORD is the report, and
+  // `coreForLabel` is what files it. A word off the chart lands exactly where it did before — nothing
+  // can place it, so 'peaceful' takes it and its first secondary ('content') stands in.
+  const label = normalizeMoodLabel(coreForLabel(asString(o.mood_label)), o.mood_label);
+  const shift = (MOOD_SHIFTS as readonly string[]).includes(o.mood_shift as string) ? o.mood_shift as MoodShift : 'steady';
   const intent = (INTENT_MODES as readonly string[]).includes(o.intent_mode as string) ? o.intent_mode as IntentMode : 'questioning';
   const epistemic = (EPISTEMIC_TRIGGERS as readonly string[]).includes(o.epistemic_trigger as string) ? o.epistemic_trigger as EpistemicTrigger : 'none';
-  // Threading has NO default: unlike the gauges, a wrong guess here would invent a fact about the
+  // Threading has NO default: unlike the enums, a wrong guess here would invent a fact about the
   // person's life, so anything outside the exact three words (or an empty note) drops the field.
   const rawOutcome = typeof o.thread_outcome === 'string' ? o.thread_outcome.trim().toLowerCase() : '';
   const outcome = (THREAD_OUTCOMES as readonly string[]).includes(rawOutcome) ? rawOutcome as ThreadOutcome : undefined;
   const note = sanitizeThreadText(o.thread_note, 200); // a thread is a phrase, not a paragraph
+  // Any dead v1 key on the object (a gauge, `mood_core`, `profile_note`) is simply never read: this
+  // is what makes a legacy affect row and a legacy model reply both load without a migration.
   return {
-    mood_core: core,
-    mood_label: normalizeMoodLabel(core, o.mood_label),
-    mood_level: clampGauge(o.mood_level),
-    anxiety: clampGauge(o.anxiety),
-    warmth: clampGauge(o.warmth),
-    social_battery: clampGauge(o.social_battery),
-    rapport: clampGauge(o.rapport),
-    conviction: clampGauge(o.conviction),
-    engagement: clampGauge(o.engagement),
-    patience: clampGauge(o.patience),
+    mood_label: label,
+    mood_shift: shift,
     intent_mode: intent,
-    epistemic_trigger: epistemic,
-    meta_prompt: asString(o.meta_prompt).slice(0, 600),
-    profile_note: asString(o.profile_note).slice(0, 400),
     terminal_closure: o.terminal_closure === true || o.terminal_closure === 'true',
+    epistemic_trigger: epistemic,
+    meta_prompt: asString(o.meta_prompt).slice(0, META_PROMPT_CHARS),
     // Spread rather than assigned: an absent field must not exist as an `undefined` key, or every
     // silent turn would persist two dead keys onto the affect row.
     ...(note ? { thread_note: note } : {}),
@@ -339,17 +362,145 @@ export function extractStatus(v: Record<string, unknown> | undefined | null): Em
   return coerceStatus((v?.status as Record<string, unknown> | undefined) ?? undefined);
 }
 
-/** Combine the emitted gauges with the computed clock state into the full record. */
-export function mergeStatus(emitted: EmittedStatus, computed: ComputedState, at: number): AffectStatus {
+/** What the drift engine did this turn, for the receipt — the whole of `applyAffectDrift`'s report
+ *  plus the two things a reader would otherwise have to re-derive. Null on a turn where no
+ *  arithmetic ran at all (`AFFECT_DETERMINISTIC` off). */
+export interface AffectDriftOutcome {
+  /** `changed` / `capped` / `atBound` / `shortened` / `coerced` / `brokeDowngraded`, verbatim. */
+  report: AffectDriftReport;
+  /** What actually LANDED, per gauge — read off the ledger rows this turn stamped, which is the only
+   *  place the applied magnitude exists (the four buckets carry names, not numbers). */
+  applied: Partial<Record<GaugeKey, number>>;
+  /** Where the clock said each targeted gauge belonged, and the two clock numbers behind them, so a
+   *  receipt does not have to re-derive five coefficients to read one turn. */
+  targets: {
+    fromCycleLoad: number;
+    fromCircadianEnergy: number;
+    gauges: Record<TargetedGaugeKey, number>;
+  };
+}
+
+/**
+ * Fold this turn into the full record: the emitted judgments, the gauges the code owns, the core the
+ * word implies, the computed clock, and a timestamp.
+ *
+ * `prior` is the last persisted row — the gauges this turn drifts FROM and the ledger its budgets
+ * are read from. Absent (a cold chat, or a caller with no stored state) starts every gauge at its
+ * own `GAUGE_SPECS.dflt`, never at 0.
+ *
+ * With `AFFECT_DETERMINISTIC` off, no arithmetic runs and the prior gauges and ledger are carried
+ * forward BYTE FOR BYTE. That is deliberately not "recompute them from the envelope": there is no
+ * emitted number left to trust, since the shrink that deleted those fields is a one-way migration.
+ */
+export function mergeStatusWithDrift(
+  emitted: EmittedStatus,
+  computed: ComputedState,
+  at: number,
+  prior?: AffectStatus,
+): { status: AffectStatus; drift: AffectDriftOutcome | null } {
+  const carried = affectGaugesFrom(prior);
+  const ledger = prior?.moves ?? [];
+  const drifted = affectDeterministicEnabled()
+    ? applyAffectDrift(carried, {
+        moodShift: emitted.mood_shift,
+        moodLabel: emitted.mood_label,
+        epistemic: emitted.epistemic_trigger,
+        threadOutcome: emitted.thread_outcome ?? null,
+      }, computed, ledger, at)
+    : null;
+  return {
+    status: {
+      ...emitted,
+      mood_core: coreForLabel(emitted.mood_label),
+      ...(drifted ? drifted.next : carried),
+      cycle_phase: computed.cycle.phase,
+      cycle_day: computed.cycle.day,
+      cycle_load: computed.cycle.load,
+      circadian_slot: computed.circadian.slot,
+      circadian_energy: computed.circadian.energy,
+      at,
+      // Persisted WHOLE: the returned ledger can run past AFFECT_MOVES_CAP by the rows the two
+      // rolling budgets still read (an in-window break, the hour's mood rows), and dropping one of
+      // those hands a spent budget back (task-14-report.md, fix 1).
+      moves: drifted ? drifted.moves : [...ledger],
+    },
+    drift: drifted && {
+      report: drifted.report,
+      // Every row a turn writes carries the same `at`, which is what makes this readable at all.
+      applied: Object.fromEntries(drifted.moves.filter(m => m.at === at).map(m => [m.k, m.d])),
+      targets: {
+        fromCycleLoad: computed.cycle.load,
+        fromCircadianEnergy: computed.circadian.energy,
+        gauges: affectTargets(computed),
+      },
+    },
+  };
+}
+
+/** The full record alone — every caller that does not file a receipt (the same relationship
+ *  `buildSystemPrompt` has to `buildSystemPromptSections`). */
+export function mergeStatus(
+  emitted: EmittedStatus, computed: ComputedState, at: number, prior?: AffectStatus,
+): AffectStatus {
+  return mergeStatusWithDrift(emitted, computed, at, prior).status;
+}
+
+/**
+ * Read a PERSISTED affect row back — the migration path, and the only reader of `status_json`.
+ *
+ * A row written before the v2 shrink carries ten fields nothing looks at any more and is missing
+ * both `mood_shift` and the ledger. It loads anyway: the dead keys are never read, the gauges it
+ * DOES carry are kept as they stood (that is the whole point — her state survives the deploy), and
+ * anything missing seeds from `GAUGE_SPECS.dflt`, never from 0. So the first turn after this ships
+ * continues from Tuesday's mood instead of reading as a collapse.
+ */
+export function coerceStoredStatus(raw: unknown): AffectStatus | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const o = raw as Record<string, unknown>;
+  const emitted = coerceStatus(o);
+  if (!emitted) return undefined;
   return {
     ...emitted,
-    cycle_phase: computed.cycle.phase,
-    cycle_day: computed.cycle.day,
-    cycle_load: computed.cycle.load,
-    circadian_slot: computed.circadian.slot,
-    circadian_energy: computed.circadian.energy,
-    at,
+    mood_core: coreForLabel(emitted.mood_label),
+    ...affectGaugesFrom(o as Partial<Record<GaugeKey, unknown>>),
+    // The clock half is carried as stored. Nothing branches on it — the `convo:status` receipt is its
+    // only reader — and a phase name recomputed here would be this turn's, not the one the row was
+    // written under, which is the one fact it is there to remember.
+    cycle_phase: o.cycle_phase as CycleState['phase'],
+    cycle_day: asNumber(o.cycle_day),
+    cycle_load: asNumber(o.cycle_load),
+    circadian_slot: o.circadian_slot as CircadianState['slot'],
+    circadian_energy: asNumber(o.circadian_energy),
+    // A row with no usable timestamp reads as epoch, i.e. as stale as a row can be — the direction
+    // that drops a mood rather than dressing a reply in one of unknown age.
+    at: asNumber(o.at),
+    moves: coerceMoves(o.moves),
   };
+}
+
+function asNumber(v: unknown): number {
+  const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Stored ledger → moves, row by row: one malformed entry is dropped, not the whole ledger, and
+ *  anything that is not an array at all yields [] (an empty budget history, never a throw). The
+ *  shape `coerceMoves` in db/repositories/relationshipClimate.ts reads climate's ledger with. */
+function coerceMoves(raw: unknown): AffectMove[] {
+  if (!Array.isArray(raw)) return [];
+  const keys: ReadonlySet<string> = new Set(GAUGE_SPECS.map(s => s.key));
+  const out: AffectMove[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const m = item as { at?: unknown; k?: unknown; d?: unknown; broke?: unknown };
+    if (typeof m.at !== 'number' || !Number.isFinite(m.at)) continue;
+    if (typeof m.k !== 'string' || !keys.has(m.k)) continue;
+    if (typeof m.d !== 'number' || !Number.isFinite(m.d)) continue;
+    out.push(m.broke === true
+      ? { at: m.at, k: m.k as GaugeKey, d: m.d, broke: true }
+      : { at: m.at, k: m.k as GaugeKey, d: m.d });
+  }
+  return out;
 }
 
 /** Append this turn's status to the recent-affect trail, capped newest-last. */
@@ -435,9 +586,9 @@ export function renderStatusForPrompt(
   // relationship has actually moved.
   lines.push(...climateLines(climate));
 
-  // The tail stays last (it is the instruction the reply obeys) and is now one POINTER: it used to
-  // re-list six of the seventeen fields in its own words, which was a fourth description of the
-  // envelope and the one nobody could edit — the contract block right below it is the list.
+  // The tail stays last (it is the instruction the reply obeys) and is one POINTER: it used to
+  // re-list six of the fields in its own words, which was a fourth description of the envelope and
+  // the one nobody could edit — the contract block right below it is the list.
   lines.push('- Re-report your `status` per the contract below; never spoken.');
   return lines.join('\n');
 }
@@ -487,10 +638,10 @@ export function renderStatusContract(): string {
  * racing Convo's saveAffectState).
  *
  * Only the voice-SHAPING fields are subset (mood + warmth/patience/social_battery/anxiety). The
- * rest is deliberately excluded: conviction/engagement/intent_mode/epistemic_trigger are about
- * FORMING a stance (the Composer forms none — it relays given facts), and meta_prompt/profile_note
- * are Convo's private notes-to-self that could contradict the compose instruction. No cycle/
- * circadian machinery and no "re-report your status" line either.
+ * rest is deliberately excluded: intent_mode/epistemic_trigger are about FORMING a stance (the
+ * Composer forms none — it relays given facts), and meta_prompt is Convo's private note-to-self,
+ * which could contradict the compose instruction. No cycle/circadian machinery, no gauge the voice
+ * does not bend, and no "re-report your status" line either.
  *
  * TWO INDEPENDENT PARTS, and this is the point of the split. The MOOD part keeps its staleness gate
  * (>45min): the proactive path is a delivery no one just asked for, and dressing it in an hours-old

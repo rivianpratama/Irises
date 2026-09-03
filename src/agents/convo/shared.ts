@@ -42,11 +42,11 @@ import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '
 import { timestampLabel, renderConversationTiming, describeGap } from '../../pipeline/chatTime.js';
 import { DEFAULT_TZ } from '../../pipeline/zonedTime.js';
 import {
-  renderStatusForPrompt, renderStatusContract, coerceStatus, mergeStatus,
+  renderStatusForPrompt, renderStatusContract, coerceStatus, mergeStatusWithDrift,
   type AffectState, type ComputedState,
 } from '../../persona/status.js';
 import { renderThreadForPrompt } from '../../persona/threads.js';
-import { saveAffectState } from '../../db/repositories/affectState.js';
+import { getAffectState, saveAffectState } from '../../db/repositories/affectState.js';
 import type { RelationshipClimate } from '../../persona/climate.js';
 import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
 import type { PromptSection, SectionId } from './promptSections.js';
@@ -1924,13 +1924,27 @@ export async function processConvoResult(args: {
     await addMessage(chatId, 'assistant', `[reacted with ${d}]`);
   }
 
-  // The model's hidden status for this turn, coerced ONCE. Two readers below need it — the thread
-  // harvest (which runs for every 1:1 turn) and the affect persist (which only runs when the clock
-  // state came along) — and coercing it twice would let the two disagree about what she emitted after
-  // a schema change. Hoisted here rather than into either block: this is the pass that reaches the
-  // final return (the recall second pass returns into its own recursion), so everything below runs
-  // exactly once per user-visible turn, same as updateDossier.
+  // The model's hidden status for this turn, coerced ONCE. Three readers below need it — the thread
+  // harvest (which runs for every 1:1 turn), the affect record (which only runs when the clock state
+  // came along) and the turn receipt — and coercing it twice would let them disagree about what she
+  // emitted after a schema change. Hoisted here rather than into any of the blocks: this is the pass
+  // that reaches the final return (the recall second pass returns into its own recursion), so
+  // everything below runs exactly once per user-visible turn, same as updateDossier.
   const emitted = coerceStatus(reply.statusRaw);
+
+  // …and this turn's FULL affect record, folded once, for the same reason. The gauges are code's
+  // answer now (persona/affectDrift.ts through mergeStatusWithDrift), and two readers want the
+  // number it settled on: the harvest's distress read, which used to take `mood_level` off the
+  // envelope, and the persist + `convo:status` receipt below. Computing it twice would let the row
+  // she is saved with disagree with the row the harvest judged her by.
+  //
+  // The prior row is READ HERE rather than threaded in from the caller: it is what the gauges drift
+  // from, and a call site that forgot to pass it would silently reset her state to the defaults on
+  // every single turn. The read is the same cheap one `saveAffectState` already does to push the
+  // mood trail, and the turn is serialized per chat (withChatLock), so nothing can land between them.
+  const affect = args.computed && emitted
+    ? mergeStatusWithDrift(emitted, args.computed, Date.now(), (await getAffectState(chatId)).last)
+    : null;
 
   // Refresh the durable memory dossier in the background (throttled; never blocks).
   // Reuse the already-loaded history plus this turn's messages instead of re-querying
@@ -1959,7 +1973,9 @@ export async function processConvoResult(args: {
     // own: what a person keeps circling back to, and what they left hanging, are properties of a
     // PERSON, and a room has no such thing. Runs on EVERY turn, note or not: the tick that ages
     // loops and paces her budgets has to see every turn selection could have run on.
-    void updateThreadInventory(handle, emitted, { chatId });
+    // `moodLevel` is the gauge this turn settled on: it left the envelope in v2, so the harvest is
+    // handed the number instead of reading a field the model no longer reports.
+    void updateThreadInventory(handle, emitted, { chatId, moodLevel: affect?.status.mood_level });
   }
 
   // Fold near-duplicate saved notes (throttled 6h per handle; never blocks, never surfaces).
@@ -1995,27 +2011,29 @@ export async function processConvoResult(args: {
   // pass returns above (its recursion lands here), so a normal turn persists once and a recall turn
   // persists its FINAL status once. Live-reply path, so it's non-blocking (void) and swallows errors.
   // Also logged as a `convo:status` trace event → the turn record → the diagnostic dashboard.
-  if (args.computed) {
-    if (emitted) {
-      const full = mergeStatus(emitted, args.computed, Date.now());
-      void saveAffectState(chatId, full);
-      record({
-        type: 'event', label: 'convo:status', chatId, handle,
-        detail: {
-          mood: `${full.mood_label} (${full.mood_core})`, mood_level: full.mood_level,
-          anxiety: full.anxiety, warmth: full.warmth, social_battery: full.social_battery,
-          rapport: full.rapport, conviction: full.conviction, engagement: full.engagement,
-          patience: full.patience, intent: full.intent_mode, epistemic: full.epistemic_trigger,
-          cycle: `${full.cycle_phase} d${full.cycle_day} (load ${full.cycle_load})`,
-          circadian: `${full.circadian_slot} (energy ${full.circadian_energy})`,
-          terminal_closure: full.terminal_closure, meta_prompt: full.meta_prompt,
-          // The threading capture, as EMITTED — usually both absent. This is the per-turn view of
-          // what she noticed; where it LANDED (minted, evidence, same-day, dropped) is the separate
-          // `threads:harvest` receipt, which only fires when something actually moved.
-          thread_note: full.thread_note, thread_outcome: full.thread_outcome,
-        },
-      });
-    }
+  if (affect) {
+    const full = affect.status;
+    void saveAffectState(chatId, full);
+    record({
+      type: 'event', label: 'convo:status', chatId, handle,
+      detail: {
+        // The surviving fields, in the same names the dashboard already reads. `conviction` and
+        // `engagement` are gone with the shrink — nothing ever read them back — and `mood_shift` is
+        // new: it is now the whole of what she reported about the mood the gauges beside it drifted to.
+        mood: `${full.mood_label} (${full.mood_core})`, mood_shift: full.mood_shift,
+        mood_level: full.mood_level,
+        anxiety: full.anxiety, warmth: full.warmth, social_battery: full.social_battery,
+        rapport: full.rapport,
+        patience: full.patience, intent: full.intent_mode, epistemic: full.epistemic_trigger,
+        cycle: `${full.cycle_phase} d${full.cycle_day} (load ${full.cycle_load})`,
+        circadian: `${full.circadian_slot} (energy ${full.circadian_energy})`,
+        terminal_closure: full.terminal_closure, meta_prompt: full.meta_prompt,
+        // The threading capture, as EMITTED — usually both absent. This is the per-turn view of
+        // what she noticed; where it LANDED (minted, evidence, same-day, dropped) is the separate
+        // `threads:harvest` receipt, which only fires when something actually moved.
+        thread_note: full.thread_note, thread_outcome: full.thread_outcome,
+      },
+    });
   }
 
   // ── the turn receipt's draft ─────────────────────────────────────────────────────────────────
