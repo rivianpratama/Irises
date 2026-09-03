@@ -116,6 +116,9 @@ function trace(patch: TracePatch = {}): TurnTraceDetail {
       // that is the point of the phase. A fifteenth over whatever the floor is, rounded so the
       // number a report prints stays readable.
       transcriptShare: patch.transcriptShare ?? Number((MIN_TRANSCRIPT_SHARE * 1.15).toFixed(4)),
+      // No craft page weighed and no cache breakpoint declared: this fixture is a hand-built
+      // receipt for the battery's verdict logic, and neither field is one the verdicts read.
+      craft: [],
     },
     gates: {
       threads: null,
@@ -131,6 +134,10 @@ function trace(patch: TracePatch = {}): TurnTraceDetail {
       rawEmitted: { mood_level: patch.moodLevel ?? 60 },
       coerced: { mood_level: patch.moodLevel ?? 60 } as unknown as TurnTraceDetail['affect']['coerced'],
       coercions: [],
+      // No arithmetic ran on this hand-built row, which is what null means on both of these
+      // (never an empty report — see TurnTraceAffect.drift).
+      drift: null,
+      targets: null,
     },
     hits: ['sourdough starter'],
     outcome: { wasEnvelope: true, retried: false, silent: false, toolCalls: [] },
