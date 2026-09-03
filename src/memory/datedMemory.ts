@@ -11,7 +11,10 @@
 // counts whole days between the two dates' NOON in the user's own zone (so a DST day cannot shift
 // the count), and otherwise hands the text back untouched. Nothing here parses free text into a
 // meaning — a wrong suffix on a note is a false fact in front of the model, so every doubtful case
-// declines.
+// declines. Three things are doubtful and all three decline: a line another renderer already cut
+// (the cut can take half a day or half a year and leave a date that still parses), a yearless date
+// more than YEARLESS_MAX_DAYS off in the direction its own sentence points, and anything that is not
+// a real calendar day.
 //
 // Reuse, not a new dependency: `dateTimeInZone` (pipeline/zonedTime.ts, which chatTime.ts is built
 // on) is the repo's tz-correct calendar parser and already rejects impossible dates, and `dayKey`
@@ -35,9 +38,27 @@ const MONTHS: Record<string, number> = {
 const DATE_RE = /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?\b(?!\s*(?:year|month|week|day|hour|minute)s?\b)/i;
 
 /** Past this many days either way the count stops being an answer and starts being noise — nobody
- *  reads "in 1,830 days". A date with no year can never reach it (the nearest occurrence is at most
- *  half a year away); one with a year can. */
+ *  reads "in 1,830 days". Only a date that states its own year can reach it. */
 export const DATED_MEMORY_MAX_DAYS = 400;
+
+/** …and a date with NO year gets a much shorter rope. Its two candidate occurrences are a year
+ *  apart, so half a year out they are equally close and the suffix stops being a count and becomes a
+ *  guess about which year they meant. */
+export const YEARLESS_MAX_DAYS = 180;
+
+/**
+ * Does the sentence in front of the date say the thing already happened?
+ *
+ * Deliberately over-eager, and deliberately one-directional: a cue can only ever move the read
+ * BACKWARD, onto the occurrence that has already been, and a backward occurrence nearly a year away
+ * declines on YEARLESS_MAX_DAYS. So a false positive costs at most a suffix — while the false
+ * negative is the failure this exists to stop: "mom's surgery was january 8", read as the nearest
+ * occurrence, counts forward to next january and announces a finished operation as a plan.
+ *
+ * Regular past tense is any -ed word with a real stem in front of it; the rest are the irregulars a
+ * person actually writes in a note about their own life.
+ */
+const PAST_CUE_RE = /\b(?:ago|last|since|back in|was|were|had|did|went|came|got|took|gave|made|saw|told|said|left|sent|met|broke|bought|sold|fell|lost|spent|wrote|won|began|held|kept|ran|[a-z]{3,}ed)\b/i;
 
 /** Whole days from today to `ymd`, both read as NOON in `timeZone` so a 23- or 25-hour DST day
  *  cannot round the count off by one. `null` when either date is not a real calendar date, or the
@@ -83,25 +104,30 @@ function annotateLine(line: string, nowMs: number, timeZone: string): string {
   if (!m) return line;
   const month = MONTHS[m[1].slice(0, 3).toLowerCase()];
   const day = Number(m[2]);
-
-  // With a year, that year and no other. Without one, the NEAREST occurrence in either direction —
-  // "the january 5 filing" written in September means the coming January, and "the deck came down
-  // august 2" means the one that just passed. Guessing forward-only would put a recent past event
-  // eleven months in the future, which is a false fact rather than a missing one.
-  const years = m[3]
-    ? [Number(m[3])]
-    : (() => {
-        const here = Number(dayKey(nowMs, timeZone).slice(0, 4));
-        return Number.isFinite(here) ? [here - 1, here, here + 1] : [];
-      })();
+  const daysTo = (year: number) => daysFromToday(`${year}-${pad(month)}-${pad(day)}`, nowMs, timeZone);
 
   let best: number | null = null;
-  for (const year of years) {
-    const days = daysFromToday(`${year}-${pad(month)}-${pad(day)}`, nowMs, timeZone);
-    if (days === null) continue;
-    if (best === null || Math.abs(days) < Math.abs(best)) best = days;
+  let limit = DATED_MEMORY_MAX_DAYS;
+  if (m[3]) {
+    // A year of their own: that year and no other, whichever way it falls.
+    best = daysTo(Number(m[3]));
+  } else {
+    // No year, so the sentence around the date is the only evidence for which occurrence they meant.
+    // Past tense means the one that has already been — "the deck came down august 2" is the august
+    // that just passed, never the one eleven months out. Anything else takes the NEAREST occurrence
+    // either way, which is what a note like "the january 5 filing" or "renewal on sept 4th" means.
+    // Then the short rope: a yearless date more than half a year off in the direction the sentence
+    // points is a guess about the year, and it declines.
+    const here = Number(dayKey(nowMs, timeZone).slice(0, 4));
+    if (!Number.isFinite(here)) return line;
+    const occurrences = [here - 1, here, here + 1]
+      .map(daysTo)
+      .filter((days): days is number => days !== null);
+    const pool = PAST_CUE_RE.test(line.slice(0, m.index)) ? occurrences.filter(d => d <= 0) : occurrences;
+    for (const days of pool) if (best === null || Math.abs(days) < Math.abs(best)) best = days;
+    limit = YEARLESS_MAX_DAYS;
   }
-  if (best === null || Math.abs(best) > DATED_MEMORY_MAX_DAYS) return line;
+  if (best === null || Math.abs(best) > limit) return line;
   return `${line.slice(0, m.index + m[0].length)}${suffix(best)}${line.slice(m.index + m[0].length)}`;
 }
 

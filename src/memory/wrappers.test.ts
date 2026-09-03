@@ -915,6 +915,22 @@ test('a line the gate already clipped carries no date — the clip may have take
   );
 });
 
+test('a stored past event is never announced as upcoming', () => {
+  // A yearless date states no year, so the only evidence for WHICH occurrence they meant is the
+  // sentence around it. Read as "the nearest occurrence either way", a past event whose month-day
+  // falls in the coming half year comes back as a plan — "mom's surgery was january 8" counted
+  // forward to next january — asserting a year the note never states, inside the tag the model reads
+  // as their own words.
+  assert.equal(annotateDates("mom's surgery was january 8", SEP3, DENVER), "mom's surgery was january 8");
+  assert.equal(annotateDates('we signed the lease october 20', SEP3, DENVER), 'we signed the lease october 20');
+  assert.equal(annotateDates('the closing happened february 14', SEP3, DENVER), 'the closing happened february 14');
+  // …and a past-tense line whose own occurrence is near enough to be sure of still counts.
+  assert.equal(annotateDates('the deck came down august 2', SEP3, DENVER), 'the deck came down august 2 (32 days ago)');
+  assert.equal(annotateDates('we signed the lease august 20', SEP3, DENVER), 'we signed the lease august 20 (14 days ago)');
+  // A year of their own says which one they meant, past-tense or not — that is the confident parse.
+  assert.equal(annotateDates("mom's surgery was january 8, 2026", SEP3, DENVER), "mom's surgery was january 8, 2026 (238 days ago)");
+});
+
 test('it counts against THEIR midnight, not the host\'s', () => {
   // 04:00 UTC on the 4th is 22:00 on the 3rd in Denver, so the same stored date is today in one
   // zone and tomorrow in the other.
