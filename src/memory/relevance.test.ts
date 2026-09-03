@@ -822,12 +822,13 @@ test('with no router every directive rides, exactly as it always did', () => {
 test('the flexible block hands <user_directives> to the card, and keeps it without one', () => {
   // The two homes, in one place: exactly one block renders the tag on each path.
   const directives = [{ id: 'a', text: 'keep replies short', createdAt: NOW }];
-  const turn = buildTurnRelevance('hey', { medium: { directives, notes: [], facts: {} } });
-  const routed = renderFlexibleBlockWithGates('', directives, null, {}, 'convo', 'individual', turn);
+  const doc = '## Who they are\nJordan, runs a plant nursery outside bend.';
+  const turn = buildTurnRelevance('hey', { medium: { directives, notes: [], facts: {} }, longSections: splitSections(doc) });
+  const routed = renderFlexibleBlockWithGates(doc, directives, null, {}, 'convo', 'individual', turn);
   assert.equal(directiveLines(routed.text).length, 0, 'the card carries them once a router is in hand');
   assert.equal(routed.gates.directives, undefined, 'and reports them, so this block does not');
   assert.ok(routed.text.includes("Here's what little you've got on them so far"), 'the intro still knows they have rules');
-  assert.equal(directiveLines(renderFlexibleBlockWithGates('', directives, null, {}, 'convo', 'individual').text).length, 1);
+  assert.equal(directiveLines(renderFlexibleBlockWithGates(doc, directives, null, {}, 'convo', 'individual').text).length, 1);
 });
 
 // ── the gate table: the steering question she just asked ────────────────────

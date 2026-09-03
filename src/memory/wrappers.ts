@@ -909,9 +909,18 @@ export function renderFlexibleBlockWithGates(
   // Still-early ONLY on the 1:1 convo lane: relay lanes and groups never get the bubbly stance.
   const earlyRelationship = isConvoIndividual && factCount < TEXTURE_FACTS_ENOUGH && !docIsSubstantial;
 
+  // With the card in the stack this block has exactly one payload left, so an empty long doc means
+  // an empty block: the addressing rule that used to justify rendering it regardless is on the card
+  // now, and a heading over nothing is the wrapper prose this phase exists to stop shipping. The
+  // gate row above is already computed, so the receipt still says what happened.
+  if (cardOwnsIdentity && !hasProfileDoc) return { text: '', gates };
+
   const introParts: string[] = [];
   if (earlyRelationship) {
-    introParts.push(renderDefaultStance());
+    // The seed stance is the card's job now: "who they are to you" and the register to meet them
+    // with are persona, and the card states the laws the stance used to restate. What is left is
+    // the one line that frames a thin doc honestly.
+    if (!cardOwnsIdentity) introParts.push(renderDefaultStance());
     // A thin dossier stub or a stray early preference can coexist with the stance — frame it as
     // the little that's surfaced so far, not as a standing profile.
     if (hasProfileDoc || hasDirectives) introParts.push("Here's what little you've got on them so far:");
@@ -1127,9 +1136,11 @@ export function renderUserMemoryWithHot(agent: MemoryAgent, data: UserMemoryData
     const mediumBlock = medium.text;
     if (mediumBlock) {
       blocks.push(mediumBlock);
-    } else if (agent === 'convo' && audience === 'individual' && !data.medium.directives.length) {
+    } else if (!card && agent === 'convo' && audience === 'individual' && !data.medium.directives.length) {
       // Medium block empty (no facts/notes) AND no saved directives → no working preferences yet:
-      // seed the medium slot with the default operating stance until the first one lands.
+      // seed the medium slot with the default operating stance until the first one lands. Retired
+      // by the card, which says what to run on and what to catch without filling an empty tier
+      // with a page about it; the discovery scaffold below is where the catching lives.
       blocks.push(renderMediumDefaultStance());
     }
   }
@@ -1141,13 +1152,14 @@ export function renderUserMemoryWithHot(agent: MemoryAgent, data: UserMemoryData
     const discovery = renderDiscoveryBlock(data);
     if (discovery) blocks.push(discovery);
   }
-  // Flexible always renders (the addressing rule alone justifies it — "boss" fallback included).
-  // Both flexible inputs fall back to the legacy stores during the soak window: memory_long →
-  // dossier_md, medium directive rows → prefs.directives.
+  // Flexible renders whenever it has something to wrap — before the card that was always (the
+  // addressing rule alone justified it, "boss" fallback included); with the card it is the long doc
+  // alone. Both flexible inputs fall back to the legacy stores during the soak window: memory_long
+  // → dossier_md, medium directive rows → prefs.directives.
   const longDoc = data.longDocMd || (data.memory?.dossierMd ?? '');
   const flexible = renderFlexibleBlockWithGates(longDoc, resolveDirectives(data, factView), data.profile, factView, agent, audience, opts.turn);
   Object.assign(gates, flexible.gates);
-  blocks.push(flexible.text);
+  if (flexible.text) blocks.push(flexible.text);
 
   return { text: [card ? card.text : renderMemoryPreamble(), ...blocks].join('\n\n'), hotEntry, gates };
 }

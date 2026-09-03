@@ -762,9 +762,9 @@ test('the four identity keys render on the card and nowhere else', () => {
 });
 
 test('the card is the only home of <user_directives> once a router is in hand', () => {
-  const out = routedStack(cardData(), 'hey');
-  assert.equal(out.split('<user_directives>').length - 1, 1);
-  assert.ok(out.indexOf('<user_directives>') < out.indexOf('## Long-term memory'));
+  const out = routedStack(richCardData(), 'hey');
+  assert.equal(out.split('<user_directives>').length - 1, 1, 'exactly one home');
+  assert.ok(out.indexOf('<user_directives>') < out.indexOf('## Long-term memory'), 'and it is the card');
 });
 
 test("a group audience gets the card with the room's addressing rule, never a personal one", () => {
@@ -825,6 +825,35 @@ test('with no router every tier still runs its full ladder, exactly as it always
   assert.equal(out.split('You should:').length - 1, 3, 'short, medium and long each keep theirs');
   assert.equal(out.split('You MUST NOT:').length - 1, 3);
   assert.ok(out.trimEnd().endsWith('Precedence, always: Honesty / Fidelity / Safety / Scope >> this layer >> your generic style defaults.'));
+});
+
+test('a cold profile gets the card and the discovery slots, and no seed stance anywhere', () => {
+  const out = routedStack(baseData({ profile: null }), 'hey');
+  assert.ok(out.startsWith("## Who you're talking to"));
+  assert.ok(!out.includes('### Your default way of being with them'), 'the 1:1 seed stance');
+  assert.ok(!out.includes('nothing learned yet'), 'the medium default operating stance');
+  assert.ok(!out.includes('## Long-term memory'), 'an empty long tier has nothing left to wrap');
+  assert.ok(out.includes("## What you don't know about them YET"), 'the slot list is where getting-to-know-you lives');
+});
+
+test('a routed group with nothing stored gets the card, never the neutral stance line', () => {
+  const out = routedStack(baseData({ profile: null }), 'hey', 'group');
+  assert.ok(!out.includes('Nothing is stored in this layer for them yet'), 'the neutral stance');
+  assert.ok(out.includes('GROUP chat with its own shared memory'), 'the room\'s own addressing rule');
+});
+
+test('a real long doc still renders its block, with its intro', () => {
+  const out = routedStack(richCardData(), 'hey');
+  assert.ok(out.includes('## Long-term memory'));
+  assert.ok(out.includes('<memory_long>'));
+  assert.ok(out.includes("Here's what little you've got on them so far:"));
+});
+
+test('with no router the seed stances still fill their slots, exactly as they always did', () => {
+  const out = renderUserMemory('convo', baseData({ profile: null }), NOW);
+  assert.ok(out.includes('### Your default way of being with them (the seed — it retires itself)'));
+  assert.ok(out.includes('## Medium-term memory — how they want you to work (nothing learned yet)'));
+  assert.ok(renderUserMemory('composer', baseData(), NOW).includes('Nothing is stored in this layer for them yet'));
 });
 
 test('with no router the stack opens with the preamble and renders no card at all', () => {
