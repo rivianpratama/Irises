@@ -1027,6 +1027,11 @@ export const RECEIPT_SLOP_MS = 1_000;
  * last seed's window and the probe's overlap by that much — deliberately, because a receipt in that
  * millisecond band genuinely could belong to either and the seed gaps are what hold them apart.
  *
+ * "The first receipt in the window" means the EARLIEST, so this sorts its own copy by `ts` rather
+ * than trusting the order it was handed: `mergeReceipts` happens to sort, but nothing in the type
+ * says so, and on a list that arrived newest-first (an `ORDER BY ts DESC`, a ring read) `find` would
+ * quietly take whichever receipt sat earliest in the ARRAY and score the item against the wrong turn.
+ *
  * The exposure worth naming, unchanged by the extraction: an ASYNC delivery belonging to a seed turn
  * (f2's look) that filed its receipt after the probe went out is picked up here as the probe's. Same
  * exposure threadBattery carries, and for the same reason — a receipt says which chat it belongs to
@@ -1039,7 +1044,7 @@ export function attributeReceipts(
   sentAt: number,
   seedStamps: readonly number[] = [],
 ): { probe: Receipt | undefined; seeds: Array<Receipt | undefined> } {
-  const mine = receipts.filter(r => r.chatId === chatId && r.label === label);
+  const mine = receipts.filter(r => r.chatId === chatId && r.label === label).sort((a, b) => a.ts - b.ts);
   const first = (from: number, to: number) => mine.find(r => r.ts >= from - RECEIPT_SLOP_MS && r.ts < to);
   return {
     probe: first(sentAt, Infinity),

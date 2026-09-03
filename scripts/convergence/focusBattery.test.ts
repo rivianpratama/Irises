@@ -613,6 +613,25 @@ test("a receipt from another chat is never attributed to this item's turn", () =
   assert.equal(attributeReceipts(receipts, 'c3', TRACE, 1_000).probe, undefined);
 });
 
+test('attribution puts the receipts in time order itself, whatever order they arrive in', () => {
+  // "FIRST at or after the send" is a claim about TIME, and the only reason it used to be a claim
+  // about array position is that `mergeReceipts` happens to sort. Every other way into this function
+  // — a caller that reads one store, a test, the next reader who merges after attributing — hands it
+  // whatever order the store returned, and `find` on an unsorted list picks the receipt that happens
+  // to be earliest in the ARRAY. Here the two receipts are handed over newest-first, which is what
+  // `ORDER BY ts DESC` (or a ring read) looks like: the probe must still take the 10_500 one.
+  const newestFirst = [rc('c1', TRACE, 20_000, { turn: 'a later turn' }), rc('c1', TRACE, 10_500, { turn: 'the probe' })];
+  const got = attributeReceipts(newestFirst, 'c1', TRACE, 10_000);
+  assert.equal(got.probe?.detail?.turn, 'the probe');
+  // Same for a seed's window, which closes at the next send: unsorted, the seed borrowed a receipt
+  // from later in its own window and the probe's stayed unread.
+  const seeded = attributeReceipts(
+    [rc('c1', TRACE, 4_500, { turn: 'late in the seed window' }), rc('c1', TRACE, 1_100, { turn: 'the seed' })],
+    'c1', TRACE, 10_000, [1_000],
+  );
+  assert.equal(seeded.seeds[0]?.detail?.turn, 'the seed');
+});
+
 test('the probe takes the FIRST receipt at or after its send, and nothing from before it', () => {
   const receipts = mergeReceipts([
     rc('c1', TRACE, 5_000),   // an earlier turn in the same chat -- before the window
