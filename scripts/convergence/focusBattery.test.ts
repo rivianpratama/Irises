@@ -86,6 +86,8 @@ interface TracePatch {
   shortHotLook?: TurnTraceDetail['gates']['memory']['shortHotLook'];
   hits?: TurnTraceDetail['gates']['memory']['hits'];
   blocksOver?: MemoryGateReports;
+  /** The transcript's share of the context, for the branch that reads it against the floor. */
+  transcriptShare?: number;
   affectSource?: TurnTraceDetail['affect']['source'];
   moodLevel?: number;
 }
@@ -107,7 +109,7 @@ function trace(patch: TracePatch = {}): TurnTraceDetail {
       // turns every `verdict === 'PASS'` case in this file (nine of them) red for a prose deletion
       // that is the point of the phase. A fifteenth over whatever the floor is, rounded so the
       // number a report prints stays readable.
-      transcriptShare: Number((MIN_TRANSCRIPT_SHARE * 1.15).toFixed(4)),
+      transcriptShare: patch.transcriptShare ?? Number((MIN_TRANSCRIPT_SHARE * 1.15).toFixed(4)),
     },
     gates: {
       threads: null,
@@ -287,6 +289,29 @@ test("the plain fixture's transcript share stays over whatever the floor is", ()
   );
   const line = score(item('f1')).checks.find(c => c.startsWith('memory_ceiling:'));
   assert.match(line ?? '', /memory_ceiling: pass/);
+});
+
+test('a memory_ceiling warn still prints the share reading its pass line prints', () => {
+  // The two things this check reports are the section sizes and the transcript's share of the
+  // context, and the warn line carried only the first: an overshoot in a data section HID the share
+  // reading, which is the one number a reader of an oversized prompt most wants. Both branches say
+  // both things now.
+  const over = score(item('f1'), { trace: trace({ sectionsExtra: { burst: PROMPT_BUDGET.burst * 2 } }) });
+  const overLine = over.checks.find(c => c.startsWith('memory_ceiling:')) ?? '';
+  assert.match(overLine, /warn/);
+  assert.match(overLine, /transcript share/);
+  assert.match(overLine, /system \d+ chars over \d+ rows/);
+
+  // The other way this check warns: the share itself under the floor. Named as its own reason AND
+  // still carrying the full reading.
+  const under = score(item('f1'), { trace: trace({ transcriptShare: MIN_TRANSCRIPT_SHARE / 2 }) });
+  const underLine = under.checks.find(c => c.startsWith('memory_ceiling:')) ?? '';
+  assert.match(underLine, /warn/);
+  assert.match(underLine, new RegExp(`below the ${MIN_TRANSCRIPT_SHARE} floor`));
+  assert.match(underLine, /system \d+ chars over \d+ rows/);
+  // A share under the floor is reported, never failed — the prompt being prose-heavy is the phase's
+  // subject, not this turn's defect.
+  assert.notEqual(under.verdict, 'MEMORY_DUMP');
 });
 
 test('MEMORY_DUMP: nothing touched the turn and the notes still rendered whole', () => {

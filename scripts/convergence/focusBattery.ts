@@ -313,7 +313,10 @@ export const CHECKS: Record<CheckId, FocusCheck> = {
       const notes: string[] = [];
       if (over.length) notes.push(`${over.join('; ')} — read the gates before calling it a defect`);
       if (p.transcriptShare < MIN_TRANSCRIPT_SHARE) notes.push(`transcript share ${p.transcriptShare} below the ${MIN_TRANSCRIPT_SHARE} floor`);
-      if (notes.length) return { status: 'warn', detail: `${notes.join('; ')} · weighed ${read}` };
+      // `share` rides on BOTH lines. It used to be on the pass line only, so the one turn whose
+      // context a reader would want the share of — the one with a section over its ceiling — was
+      // the turn that did not print it.
+      if (notes.length) return { status: 'warn', detail: `${notes.join('; ')} · weighed ${read} · ${share}` };
       return { status: 'pass', detail: `${read} · ${share}` };
     },
   },
