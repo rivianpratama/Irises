@@ -96,3 +96,78 @@ test('setUserName is a no-op (false) when the name is unchanged; clear removes t
   assert.equal(await getUserProfile(h), null);
   assert.equal(await clearUserProfile(h), false);
 });
+
+// ── Fact provenance (MEMORY_PROVENANCE_ENABLED) ────────────────────────────────────────────────
+// facts_json is a JSON array of strings, so there is nowhere to put an attribute: the provenance
+// rides IN BAND, as a prefix on the fact itself ("stated: likes golf"). Dedupe therefore compares
+// BODIES, which is exactly what lets their own words promote a guess in place instead of stacking
+// a near-twin beside it. No DDL.
+
+async function withProvenance<T>(on: boolean, fn: () => Promise<T>): Promise<T> {
+  const prior = process.env.MEMORY_PROVENANCE_ENABLED;
+  process.env.MEMORY_PROVENANCE_ENABLED = on ? 'true' : 'false';
+  try {
+    return await fn();
+  } finally {
+    if (prior === undefined) delete process.env.MEMORY_PROVENANCE_ENABLED;
+    else process.env.MEMORY_PROVENANCE_ENABLED = prior;
+  }
+}
+
+test('with provenance ON the basis rides in band; with it OFF the fact is stored exactly as given', async () => {
+  const on = freshHandle();
+  await withProvenance(true, async () => {
+    assert.equal(await addUserFact(on, 'likes golf', 'inferred'), true);
+    assert.equal(await addUserFact(on, 'has a dog named biscuit', 'stated'), true);
+  });
+  assert.deepEqual((await getUserProfile(on))?.facts, ['inferred: likes golf', 'stated: has a dog named biscuit']);
+
+  const off = freshHandle();
+  await withProvenance(false, async () => {
+    assert.equal(await addUserFact(off, 'likes golf', 'inferred'), true);
+  });
+  assert.deepEqual((await getUserProfile(off))?.facts, ['likes golf'], 'the basis is offered and ignored');
+});
+
+test('a stated write PROMOTES a same-bodied inferred fact in place', async () => {
+  const h = freshHandle();
+  await withProvenance(true, async () => {
+    await addUserFact(h, 'plays golf on thursdays', 'inferred');
+    await addUserFact(h, 'keeps odd hours', 'stated');
+    // They say it themselves. Same fact, stronger footing — and NOT a new fact, so the turn's
+    // confirmation beat stays what it was for something she already knew.
+    assert.equal(await addUserFact(h, 'Plays  golf on Thursdays ', 'stated'), false);
+
+    const facts = (await getUserProfile(h))?.facts ?? [];
+    assert.deepEqual(facts, ['stated: plays golf on thursdays', 'stated: keeps odd hours']);
+  });
+});
+
+test('promote never demotes: a later guess leaves their own words alone', async () => {
+  const h = freshHandle();
+  await withProvenance(true, async () => {
+    await addUserFact(h, 'lives in austin', 'stated');
+    assert.equal(await addUserFact(h, 'lives in austin', 'inferred'), false);
+    assert.deepEqual((await getUserProfile(h))?.facts, ['stated: lives in austin']);
+  });
+});
+
+test('dedupe reads the BODY, so a prefixed row and a bare one are never twins', async () => {
+  const h = freshHandle();
+  await withProvenance(true, async () => { await addUserFact(h, 'drives a green truck', 'inferred'); });
+  // The flag goes off (or never came on for this install) — the stored prefix must still be
+  // recognised, or the very next write would stack a duplicate.
+  await withProvenance(false, async () => {
+    assert.equal(await addUserFact(h, 'drives a green truck'), false);
+    assert.deepEqual((await getUserProfile(h))?.facts, ['inferred: drives a green truck']);
+  });
+});
+
+test('an unprefixed legacy fact reads as testimony, so a stated write is a plain no-op', async () => {
+  const h = freshHandle();
+  await withProvenance(false, async () => { await addUserFact(h, 'runs a lake cabin'); });
+  await withProvenance(true, async () => {
+    assert.equal(await addUserFact(h, 'runs a lake cabin', 'stated'), false);
+    assert.deepEqual((await getUserProfile(h))?.facts, ['runs a lake cabin'], 'nothing to promote, nothing rewritten');
+  });
+});

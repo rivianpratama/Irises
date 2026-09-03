@@ -2,6 +2,10 @@ import { logDbError } from '../client.js';
 import { stmt } from '../sqlite.js';
 import { withHandleLock } from './memory.js';
 import { archiveEntries } from './memoryArchive.js';
+import {
+  LEGACY_FACT_PROV, normalizeFact as factBody, parseProvenance, promote, provenanceEnabled,
+  stampFact, type Provenance,
+} from '../../memory/provenance.js';
 import type { UserProfile } from '../types.js';
 
 export type { UserProfile } from '../types.js';
@@ -99,12 +103,24 @@ export async function updateUserProfile(
 }
 
 /** Compare form for fact dedupe: casing and stray whitespace must not create a second copy
- *  of the same fact ("Likes  Golf " vs "likes golf"). */
+ *  of the same fact ("Likes  Golf " vs "likes golf"), and neither must the provenance prefix
+ *  (memory/provenance.ts) — two rows differing only in WHO SAYS SO are the same fact, which is
+ *  what lets a stated write promote an inferred row in place. The strip runs whether the feature
+ *  is on or off, so an install that tried it and turned it off cannot stack a duplicate. */
 function normalizeFact(fact: string): string {
-  return fact.trim().toLowerCase().replace(/\s+/g, ' ');
+  return factBody(fact).trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-export async function addUserFact(handle: string, fact: string): Promise<boolean> {
+/**
+ * Append a fact, deduped by body. `basis` is who says so; it is stored as an in-band prefix while
+ * `MEMORY_PROVENANCE_ENABLED` is on and ignored entirely while it is off (the column then holds the
+ * exact bytes it always did).
+ *
+ * Returns whether a NEW fact landed. A promotion returns **false**: the fact was already known, so
+ * the turn's confirmation beat must stay what it was for something she already had — the write is
+ * on the `memory:fact_provenance` receipt instead.
+ */
+export async function addUserFact(handle: string, fact: string, basis: Provenance = LEGACY_FACT_PROV): Promise<boolean> {
   return withHandleLock(handle, async () => {
     let evicted: string[] = [];
     let added = false;
@@ -112,11 +128,24 @@ export async function addUserFact(handle: string, fact: string): Promise<boolean
       const existing = readRow(handle);
       const facts = [...(existing?.facts ?? [])];
       const target = normalizeFact(fact);
-      if (facts.some(f => normalizeFact(f) === target)) {
-        console.log(`[conversation] Fact for ${handle} already exists, skipping: "${fact}"`);
+      const at = facts.findIndex(f => normalizeFact(f) === target);
+      if (at >= 0) {
+        // The dedupe path — and the one write it can still make. Their own words about a fact she
+        // had guessed raise it IN PLACE: same slot in the array, the row's ORIGINAL wording kept
+        // (that is what a re-statement confirms), only the prefix changes. A basis that would not
+        // rise writes nothing at all, so the no-op stays a no-op.
+        const prior = parseProvenance(facts[at]).prov ?? LEGACY_FACT_PROV;
+        const merged = provenanceEnabled() ? promote(prior, basis) : prior;
+        if (merged !== prior) {
+          facts[at] = stampFact(merged, facts[at]);
+          mergeAndWrite(handle, { facts });
+          console.log(`[conversation] Promoted fact for ${handle} to ${merged}: "${fact}"`);
+        } else {
+          console.log(`[conversation] Fact for ${handle} already exists, skipping: "${fact}"`);
+        }
         return false;
       }
-      facts.push(fact);
+      facts.push(provenanceEnabled() ? stampFact(basis, fact) : fact);
       if (facts.length > PROFILE_FACTS_CAP) evicted = facts.splice(0, facts.length - PROFILE_FACTS_CAP);
       mergeAndWrite(handle, { facts });
       added = true;
