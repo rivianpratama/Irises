@@ -8,6 +8,7 @@ import { ERRORS_CSS, ERRORS_HTML, ERRORS_JS } from './views/errors.js';
 import { USERS_CSS, USERS_HTML, USERS_JS } from './views/users.js';
 import { HISTORY_CSS, HISTORY_HTML, HISTORY_JS } from './views/history.js';
 import { MEMORY_CSS, MEMORY_HTML, MEMORY_JS } from './views/memory.js';
+import { AFFECT_CSS, AFFECT_HTML, AFFECT_JS } from './views/affect.js';
 
 // Assembles the single-page app served at /dashboard from the per-view template
 // modules: one <style>, one section per view, one <script> (core first, then
@@ -31,6 +32,7 @@ export const VIEWS: ViewDef[] = [
   { id: 'users',    label: 'Users',         nopad: false, css: USERS_CSS,    html: USERS_HTML,    js: USERS_JS },
   { id: 'history',  label: 'History',       nopad: false, css: HISTORY_CSS,  html: HISTORY_HTML,  js: HISTORY_JS },
   { id: 'memory',   label: 'Memory',        nopad: true,  css: MEMORY_CSS,   html: MEMORY_HTML,   js: MEMORY_JS },
+  { id: 'affect',   label: 'Inner state',   nopad: true,  css: AFFECT_CSS,   html: AFFECT_HTML,   js: AFFECT_JS },
 ];
 
 export function buildAppPage(): string {

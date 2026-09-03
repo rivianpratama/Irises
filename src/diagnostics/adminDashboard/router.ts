@@ -9,13 +9,15 @@ import { registerErrorRoutes } from './api/errors.js';
 import { registerMemoryRoutes } from './api/memory.js';
 import { registerUserRoutes } from './api/users.js';
 import { registerTurncostRoutes } from './api/turncost.js';
+import { registerAffectRoutes } from './api/affect.js';
 
 // ---------------------------------------------------------------------------
 // /dashboard — password-gated admin GUI. Views: system-health Overview, the
 // ORCHESTRATION GRAPH (every prompt sent/received between the agents, rendered
 // as a live flow diagram with full payload drill-down), LLM analytics, the
-// agent-wide error log, user roster, full turn history + search, and a per-user
-// memory inspector.
+// agent-wide error log, user roster, full turn history + search, a per-user
+// memory inspector, and the per-user INNER STATE panel (the affect trail, the
+// climate dials, the thread inventory, and the last twenty turn:trace receipts).
 // Every turn is persisted (diagnosticTurnHistory) so history survives restarts.
 // ---------------------------------------------------------------------------
 
@@ -44,6 +46,7 @@ export function createAdminDashboardRouter(): Router {
   registerMemoryRoutes(router);
   registerUserRoutes(router);
   registerTurncostRoutes(router);
+  registerAffectRoutes(router);
 
   // Assembled once at boot — the page is static; all data flows through the API.
   const APP_PAGE = buildAppPage();
