@@ -183,12 +183,15 @@ function sqlExec(db: string, sql: string): void {
 // ── Types read back from the instance ───────────────────────────────────────────────────────────
 
 interface Row { chatId: string; role: string; content: string; at: number }
-interface TraceEvent { id: number; ts: number; type: string; chatId?: string; label?: string }
+interface TraceEvent { id: number; ts: number; type: string; chatId?: string; label?: string; detail?: Record<string, unknown> }
 
 /** A trace event that means THIS chat actually reached the engine, or was pushed toward it. */
 function isDelegationEvent(e: TraceEvent): boolean {
   return e.type === 'delegation'
-    || e.label === 'convo:routing_gate'
+    // The routing gate leaves a receipt on EVERY evaluation now (convo/shared.ts), so its presence
+    // alone no longer means a look went out — only `delegated` does. Reading it as delegation would
+    // score every `local` control OVER_DELEGATION, since the gate evaluates on those turns too.
+    || (e.label === 'convo:routing_gate' && e.detail?.decision === 'delegated')
     || e.label === 'convo:false_refusal'
     || (e.label ?? '').startsWith('delegate:');
 }
