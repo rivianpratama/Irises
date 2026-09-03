@@ -1,0 +1,17 @@
+{
+  // Type-checking for scripts/ — the CLIs and the live-instance batteries, which the main
+  // tsconfig deliberately leaves out (its `include` is src/**/* and its `outDir`/`rootDir` are for
+  // the shipped build). Nothing here is emitted; `npm run typecheck:scripts` is the whole purpose.
+  //
+  // It matters because the convergence batteries assert against types imported from src/: without
+  // this, a renamed receipt field upstream is caught only in an editor. `npm test` runs tsx, which
+  // strips types instead of checking them, so it catches a renamed VALUE at import time and a
+  // renamed TYPE not at all.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["scripts/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

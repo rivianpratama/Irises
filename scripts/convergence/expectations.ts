@@ -5,8 +5,12 @@
 // compares against is a claim about code it cannot see. Retyped, those claims rot silently: a
 // renamed receipt field or a tightened ceiling turns into a mis-scored round that still exits 0,
 // which is worse than no battery at all. Everything a battery asserts against therefore comes
-// through here, and here imports it from `src/` — so a rename upstream is a compile error in an
-// editor (and in the batteries' own `*.test.ts`) rather than a quiet pass.
+// through here, and here imports it from `src/` — so a rename upstream breaks something loudly
+// instead of passing quietly. Exactly what breaks, because half-true guarantees are how this rots:
+// a renamed VALUE fails `npm test` at import time, and a renamed TYPE fails
+// `npm run typecheck:scripts` (tsconfig.scripts.json). Plain `npx tsc --noEmit` does NOT see this
+// file — the repo tsconfig's `include` is `src/**/*` — and `npm test` runs tsx, which strips types
+// rather than checking them, so neither of those two catches a renamed type on its own.
 //
 // TYPE-ONLY where the battery only needs the SHAPE of a receipt, VALUE where it has to compare a
 // number. That split is the whole design: a type-only re-export costs nothing at runtime, and a
