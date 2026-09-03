@@ -98,7 +98,6 @@ import {
   TURN_TRACE_LABEL,
   type BudgetKey,
   type MemoryGateBlock,
-  type SectionId,
   type ThreadSelectReport,
   type ThreadTheme,
   type TurnTraceDetail,
@@ -166,6 +165,10 @@ export interface FocusCheck {
   verdict: FocusFailure;
   /** Why this check exists — printed in the JSON so a failed round explains itself. */
   why: string;
+  /** PRECONDITION: `scoreItem` returns UNSCORED before it runs any check on a turn with no
+   *  `turn:trace`, so every `run` here may read `ev.trace!` without asking again. Nothing else on
+   *  the evidence is guaranteed: `select` is null whenever threading did not report, and the bubble
+   *  rows can be empty on a turn that produced a receipt and no text. */
   run(ev: TurnEvidence): CheckOutcome;
 }
 
@@ -552,9 +555,11 @@ export interface FocusItem {
   /** Sent FIRST on the same clientId, a gap earlier, to put the probe turn in a state one message
    *  cannot reach: a delivered look (f2), a saved directive (f9), two turns of pressure (f8). */
   seeds?: string[];
-  /** How long to wait after each seed. Defaults to SEED_GAP_MS; f2's seed has to survive a whole
-   *  engine round trip AND the delivery, so it sets its own. */
-  seedGapMs?: number;
+  /** This item's seed is not finished when the reply lands: it has to be DELEGATED, run, and
+   *  delivered before the probe means anything, so the harness waits LOOK_GAP_MS after it instead of
+   *  the ordinary SEED_GAP_MS. Declared rather than given as a number because the numbers live with
+   *  the other timing knobs, below the battery. */
+  seedNeedsDelivery?: boolean;
   ask: string;
   expect: FocusExpect;
   /** The checks scored for this item, in the order their failures take precedence. */
@@ -585,6 +590,7 @@ export const BATTERY: readonly FocusItem[] = [
   {
     id: 'f2',
     seeds: ['can you look up what the current visa rules are for indonesians visiting japan?'],
+    seedNeedsDelivery: true,
     ask: 'different thing — my knee has been aching since this morning, any idea why that happens in the cold?',
     expect: 'no_leak',
     checks: ['bubble_law', 'prose_budget', 'memory_ceiling', 'hot_look_cooled', 'no_re_delivery'],
@@ -607,9 +613,10 @@ export const BATTERY: readonly FocusItem[] = [
   },
   {
     id: 'f4',
-    // Deliberately last-but-not-least in the send order: every quiet probe ahead of it raises
-    // turnsSinceOffer, and if this one DOES offer, the reset lands after the never-event items have
-    // already had their turn.
+    // Sits AFTER f3 in the send order on purpose, and the order is load-bearing both ways: every
+    // quiet probe ahead of it raises turnsSinceOffer, which is what opens the turn gate for it, and
+    // an offer HERE resets that counter — ahead of f3 it would leave f3's turn ending before the
+    // theme loop, where off_topic is 0 by construction and the item can only go UNSCORED.
     ask: 'been thinking about how i keep choosing speed over polish on this stuff',
     expect: 'connect',
     checks: ['bubble_law', 'prose_budget', 'memory_ceiling', 'theme_connected'],
@@ -771,7 +778,7 @@ const RECEIPT_LABELS: readonly string[] = [TURN_TRACE_LABEL, THREADS_SELECT_LABE
  * round, not to the turn that happened to reveal it. Pure.
  */
 export function unknownSections(trace: TurnTraceDetail): string[] {
-  const known: ReadonlySet<string> = new Set<string>(SECTION_IDS as readonly SectionId[]);
+  const known: ReadonlySet<string> = new Set<string>(SECTION_IDS);
   return [...new Set(trace.prompt.sections.map(s => s.name).filter(n => !known.has(n)))];
 }
 
@@ -1126,7 +1133,7 @@ async function main(): Promise<number> {
         '-H', 'Content-Type: application/json', '-d', payload]);
     };
     try {
-      const gap = p.seedGapMs ?? SEED_GAP_MS;
+      const gap = p.seedNeedsDelivery ? LOOK_GAP_MS : SEED_GAP_MS;
       const stamps: number[] = [];
       for (const seed of p.seeds ?? []) {
         stamps.push(Date.now());
@@ -1194,6 +1201,12 @@ async function main(): Promise<number> {
     const inWindow = (from: number, to: number, label: string) =>
       mine.filter(r => r.label === label && r.ts >= from - 1_000 && r.ts < to);
 
+    // The receipts are ordered by ts, so [0] in a window is the first receipt of that kind at or
+    // after the send — the probe's own. The exposure worth naming: an ASYNC delivery belonging to a
+    // seed turn (f2's look) that filed a receipt after the probe went out would be picked up here as
+    // the probe's. Same exposure threadBattery carries, and for the same reason — a receipt says
+    // which chat it belongs to but not which message — held down by the seed gaps rather than by a
+    // guess. A `turn:trace` that disagrees with its item's ask is the shape to look for.
     const trace = detailAs<TurnTraceDetail>(inWindow(t0, Infinity, TURN_TRACE_LABEL)[0]);
     const select = detailAs<ThreadSelectReport>(inWindow(t0, Infinity, THREADS_SELECT_LABEL)[0]);
     // One seed window per seed: from its send to the next send (the following seed, or the probe).

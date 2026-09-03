@@ -12,6 +12,10 @@
 // number. That split is the whole design: a type-only re-export costs nothing at runtime, and a
 // value re-export is a deliberate statement that some battery does arithmetic with it.
 //
+// Everything below is imported by a battery or by focusBattery.test.ts. A surface nobody reads from
+// is how a re-export outlives the thing it was for, so when a name here stops being used, delete it
+// — the import it stands in for is one line away in `src/`.
+//
 // This file holds no logic and no thresholds of its own. The one thing it adds is the PROSE / DATA
 // split over `PROMPT_BUDGET` (below), which is not a new number — it is a reading of promptPolicy's
 // own comment about which of its ceilings a LIVE turn may legitimately exceed.
@@ -23,12 +27,10 @@
 // `BubbleReport` is what the send boundary files on every delivered reply; the two constants are
 // what the model was TOLD. A battery compares the report against them.
 export { BUBBLE_LAW_MAX, BUBBLE_HARD_CAP } from '../../src/pipeline/bubbleJson.js';
-export type { BubbleReport } from '../../src/pipeline/bubbleJson.js';
 export { MAX_BUBBLE_WORDS } from '../../src/pipeline/bubbles.js';
 
 // ── the prompt's shape and its ceilings (agents/convo/promptSections.ts, promptPolicy.ts) ────────
 export { SECTION_IDS } from '../../src/agents/convo/promptSections.js';
-export type { SectionId, PromptSection } from '../../src/agents/convo/promptSections.js';
 export { PROMPT_BUDGET, MIN_TRANSCRIPT_SHARE } from '../../src/agents/convo/promptPolicy.js';
 export type { BudgetKey } from '../../src/agents/convo/promptPolicy.js';
 
@@ -50,16 +52,7 @@ export type { ThreadSelectReport, ThreadHarvestReport, ThreadTheme, OpenLoop } f
 // battery prints the driver line. Worth it: the label is the string the SQL and the ring filter
 // match on, and a battery that retypes it scores an empty round as clean.
 export { TURN_TRACE_LABEL } from '../../src/diagnostics/turnTrace.js';
-export type {
-  TurnTraceDetail,
-  MemoryGateBlock,
-  MemoryGateReason,
-  MemoryGateReport,
-  MemoryGateReports,
-  MemoryGateVerdict,
-  MemoryHit,
-  ShortHotLook,
-} from '../../src/diagnostics/turnTrace.js';
+export type { TurnTraceDetail, MemoryGateBlock, MemoryGateReports } from '../../src/diagnostics/turnTrace.js';
 
 import { PROMPT_BUDGET, type BudgetKey } from '../../src/agents/convo/promptPolicy.js';
 
