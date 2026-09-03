@@ -10,6 +10,8 @@
 // the assertion — if that guard ever breaks, this test file starts a live round.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   BATTERY,
   CHECKS,
@@ -681,4 +683,36 @@ test('attribution reads one label at a time', () => {
   const receipts = mergeReceipts([rc('c1', SELECT, 10_100), rc('c1', TRACE, 10_200)]);
   assert.equal(attributeReceipts(receipts, 'c1', TRACE, 10_000).probe?.ts, 10_200);
   assert.equal(attributeReceipts(receipts, 'c1', SELECT, 10_000).probe?.ts, 10_100);
+});
+
+// ── the source pin ──────────────────────────────────────────────────────────────────────────────
+// One claim about THIS file that no runtime test can reach, so it is read off the file's own text.
+// It lives here, in the test file of the file it reads, rather than beside the helper it is about
+// (it was written in harness.test.ts, which is the wrong home: harness.test.ts is about harness.ts).
+
+test('every failed shell-out in this battery reports its reason', () => {
+  // A battery that shells out through `sh` may not read a caught Error by hand: the piping decided
+  // where the reason lives (harness.ts, `whyFailed`), and reading it by hand is how three of five
+  // sites came to print the command instead. Those three are `console.error` calls inside `main()`
+  // and the network readers — unreachable from a test that may not touch a service.
+  //
+  // `__dirname`, not `import.meta.url`: this project compiles to CommonJS (see
+  // src/agents/loadContext.ts), and `npm run typecheck:scripts` DOES check this file.
+  const src = readFileSync(join(__dirname, 'focusBattery.ts'), 'utf8');
+  assert.deepEqual(
+    src.match(/\.(?:message|stderr)\b/g) ?? [], [],
+    'focusBattery.ts reads a caught Error apart by hand — use whyFailed(err) from harness.ts, or the '
+    + 'line prints "Command failed: <the command>", or a caret, instead of what actually failed',
+  );
+  // And every catch that BINDS the error says why: a swallowed reason turns a failed durable read
+  // into a round reporting "the read failed" without the sentence that says what to fix. Both sides
+  // are counted off the source rather than pinned to a number, so a NEW reader that forgets is
+  // caught by the same assertion — this pinned the literal 5 before, which a sixth silent catch
+  // satisfied, and it said nothing about why 5 was the number.
+  const bound = (src.match(/catch \(err\)/g) ?? []).length;
+  const reported = (src.match(/whyFailed\(err\)/g) ?? []).length;
+  assert.ok(bound > 0, 'no `catch (err)` in focusBattery.ts at all — has the shelling out moved?');
+  assert.equal(reported, bound,
+    `${bound} catch block(s) bind the error and ${reported} report it through whyFailed — a catch `
+    + 'that binds `err` and then does not print the reason leaves the operator with "it failed"');
 });

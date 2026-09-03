@@ -9,9 +9,8 @@
 // and had already drifted (a markdown cell truncated at two different widths). One home, one test.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { CELL_WIDTH, arg, cell, expand, flag, num, quote, truncate, whyFailed } from './harness.js';
 
 /** argv is process-global, so every case that reads it says what it is reading. */
@@ -152,21 +151,7 @@ test('whyFailed still has something to say for the shapes that are not that', ()
   'Error: in prepare, no such table: nope');
 });
 
-// `whyFailed` existing is not the fix; every site USING it is. The three that regressed were
-// `console.error` calls inside `main()` and the network readers — unreachable from a test that may
-// not touch a service — so what is pinned instead is the source: a battery that shells out through
-// `sh` may not read a caught Error's `.message` by hand, because the piping decided where the reason
-// lives and doing it by hand is how three of five sites came to print the command instead.
-test('the battery reports a failed sh call only through whyFailed', () => {
-  // `__dirname`, not `import.meta.url`: this project compiles to CommonJS (see
-  // src/agents/loadContext.ts), and `npm run typecheck:scripts` DOES check this file.
-  const src = readFileSync(join(__dirname, 'focusBattery.ts'), 'utf8');
-  assert.deepEqual(
-    src.match(/\.message\b/g) ?? [], [],
-    'focusBattery.ts reads a caught Error\'s .message directly — use whyFailed(err) from harness.ts, '
-    + "or the line prints \"Command failed: <the command>\" and drops the reason with the stderr piped",
-  );
-  // And it does report them: five catch blocks, five reasons. A rewrite that stopped reporting
-  // altogether would satisfy the assertion above.
-  assert.equal((src.match(/whyFailed\(err\)/g) ?? []).length, 5);
-});
+// `whyFailed` existing is not the fix; every site USING it is — and that claim is about a battery's
+// source, not about this module, so it is pinned in the test file of the battery it reads
+// (focusBattery.test.ts, 'every failed shell-out in this battery reports its reason'). Nothing here
+// reads another file.
