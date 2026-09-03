@@ -290,7 +290,10 @@ export async function chat(
   // forth spends it on the turn where "by the way, you have an upgrade waiting" arrives instead of
   // an answer. Mid-conversation the claim is left unconsumed and the note waits — it is still there
   // at the next real opening, which comes around within the hour.
-  const updateOpening = !memoryRelevanceEnabled() || updateNoteOpening(gapMs, history.length);
+  // Read ONCE for the turn: the gate and the receipt that reports it must not be able to disagree
+  // because someone flipped the env between two calls.
+  const gatesOn = memoryRelevanceEnabled();
+  const updateOpening = !gatesOn || updateNoteOpening(gapMs, history.length);
   const updateNote = updateOpening ? claimPendingUpdateNote(chatId) : null;
 
   // What the active engine can actually do this deployment (closed vocabulary). Read INSTANTLY from
@@ -389,7 +392,7 @@ export async function chat(
             // What the gate table did with each block it rendered, straight off the renderers that
             // decided it (memory/wrappers.ts). Empty with CONVO_MEMORY_RELEVANCE off — no gate ran.
             // The version note's row is added here because this is where that one is decided.
-            blocks: memoryRelevanceEnabled()
+            blocks: gatesOn
               ? {
                   ...context.gates,
                   update_note: updateOpening

@@ -629,6 +629,12 @@ test('medium facts are not gated on the turn, and say so', () => {
 
   const empty = renderMediumBlockWithGates({ directives: [], notes: ['x'], facts: {} }, buildTurnRelevance(text, {}));
   assert.deepEqual(empty.gates.facts, { verdict: 'dropped', reason: 'nothing_held' });
+
+  // A tier holding ONLY address_as renders no fact lines at all — the addressing header owns that
+  // key — so the row reads what the block printed, not what the bundle happened to hold.
+  const addressOnly = renderMediumBlockWithGates({ directives: [], notes: ['x'], facts: { address_as: 'Chief' } }, buildTurnRelevance(text, {}));
+  assert.ok(!addressOnly.text.includes('address as: Chief'));
+  assert.deepEqual(addressOnly.gates.facts, { verdict: 'dropped', reason: 'nothing_held' });
 });
 
 test('with no router the medium block renders every note in full, exactly as it always did', () => {

@@ -78,6 +78,7 @@ export function gatePendingClarification(
   if (turn.tokens.size < CLARIFICATION_THIN_TURN_TOKENS) return decide(true, 'short_turn');
   return decide(false, 'none_kept');
 }
+
 interface PendingEmailContext {
   emailId?: string; from?: string; subject?: string; summary?: string; severity?: string;
   category?: string; deadlineDate?: string | null; deadlineLabel?: string | null;

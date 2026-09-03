@@ -446,7 +446,9 @@ export function renderMediumBlockWithGates(bundle: MediumBundle, turn?: TurnRele
     const gated = gateItems(bundle.notes, NOTE_LINES_MAX, n => typeof n === 'string' && turn.touches(n, 'touch'));
     noteLines = gated.kept.map(({ item, full }) => `- ${full ? item : clip(String(item), NOTE_DIGEST_CHARS)}`);
     gates.notes = gateReport(bundle.notes.length, gated.fullCount, gated.dropped);
-    gates.facts = Object.keys(bundle.facts).length && facts
+    // Keyed off what renderFactsBlock actually produced, not off the bundle: a tier holding only
+    // `address_as` renders no fact lines at all (the addressing header owns that one).
+    gates.facts = facts
       ? { verdict: 'full', reason: 'kept_always' }
       : { verdict: 'dropped', reason: 'nothing_held' };
   } else {
@@ -737,8 +739,9 @@ export function renderFlexibleBlockWithGates(
   // set most recently are how they want to be talked to right now, whatever this turn is about. An
   // older one rides only when the turn is about it — which is how a year-old "call it the north
   // order" is there on the one turn that says "order" and nowhere else.
-  const shownDirectives = turn ? gateDirectives(safeDirectives, turn) : safeDirectives;
+  let shownDirectives = safeDirectives;
   if (turn) {
+    shownDirectives = gateDirectives(safeDirectives, turn);
     gates.directives = gateReport(safeDirectives.length, shownDirectives.length, safeDirectives.length - shownDirectives.length);
   }
   const directiveList = shownDirectives.map(d => `- ${neutralizeTagBreakouts(d.text.trim())}`).join('\n');
