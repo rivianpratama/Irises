@@ -27,16 +27,22 @@ import type { OpsTask, OpsResult, OpsDebrief, OpsDebriefSink } from './types.js'
 // deliberate outcome, not a failure).
 export type SendFollowUp = (chatId: string, content: SpeakContent, opts?: SpeakOpts) => Promise<SpeakResult>;
 
-// Hard deadline on one Ops run. Without it, a hung tool HTTP call or a slow multi-step Opus loop
-// leaves the user's holding text dangling FOREVER — they sit waiting until they ask "how's it
-// going?". Kept under opsCoordination's 5-min STALE_MS so "still on it" wording and the in-flight
-// dedup stay truthful for the task's whole actual lifetime. On timeout the normal catch below
-// sends the honest snag line and `finally` clears the in-flight marker, so a re-ask runs fresh.
+// Hard deadline on one Ops run — `legBudgetFor(task)` below, read once per leg. Without a deadline
+// a hung tool HTTP call or a slow multi-step loop leaves the user's holding text dangling FOREVER —
+// they sit waiting until they ask "how's it going?". On timeout the normal catch below sends the
+// honest snag line and `finally` clears the in-flight marker, so a re-ask runs fresh.
 //
 // PER LEG, not per process: legBudgetFor (ops/client.ts) reads OPS_TASK_TIMEOUT_MS for an ordinary
 // task and the wider walled-URL browser budget for a task the engine was told to open a page for —
-// browser work that legitimately runs 6-15 minutes must not be abandoned at 4, with the answer
-// already on its way back. Unarmed, that call returns exactly the number this constant used to be.
+// browser work that legitimately runs 6-15 minutes must not be abandoned at 4 with the answer
+// already on its way back. Unarmed, it returns the same OPS_TASK_TIMEOUT_MS reading as before.
+//
+// One known consequence of arming it: the ordinary deadline sits UNDER opsCoordination's 5-min
+// STALE_MS, which is what keeps "still on it" wording and the in-flight dedup truthful for a task's
+// whole lifetime. A browser budget wider than that leaves a run genuinely in flight past the point
+// the coordination map calls it stale, so past five minutes Convo stops saying "still on it" and a
+// duplicate re-ask is no longer suppressed. That is the trade the operator makes by setting the env
+// (unset, nothing changes); the fix, if it matters, is to derive STALE_MS from the widest leg budget.
 
 /** Combine the user-cancel signal with an internal one (a per-leg timeout abort) so aborting EITHER
  *  stops the run. Used so a timed-out primary Ops leg is actually torn down at its next step check —
@@ -327,12 +333,12 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
     // BEFORE a retry leg starts — otherwise two Ops loops on the same task.id would run tools
     // concurrently for minutes. Combined with the user-cancel signal so cancel_research still reaches it.
     const primaryAbort = new AbortController();
+    // This leg's deadline, decided before the leg starts and read only here: the same number runTask
+    // hands the engine transport, and the one its ops:kickoff receipt reports as budgetMs.
+    const legMs = legBudgetFor(task);
     // Keep the promise: on timeout we must WAIT for the aborted leg to actually settle before a
     // second leg starts, or the two legs bill tools + LLM steps concurrently.
     const primaryRun = runTask(task, milestoneKey => { noteOpsProgress(task.chatId, task.id, milestoneKey); void primary.voiceAndPing('progress', milestoneKey); }, combineSignals(signal, primaryAbort.signal), sink);
-    // Read once per leg, and the same number runTask hands the engine transport (its ops:kickoff
-    // receipt reports it as budgetMs).
-    const legMs = legBudgetFor(task);
     try {
       result = await withDeadline(primaryRun, legMs, `ops task ${task.id}`);
     } catch (err) {
