@@ -154,3 +154,33 @@ Relevant source: `src/memory/recallExpansion.ts` (the call + the word filter), `
 Saved "remember this" notes are capped at 20, evicted oldest-first, and rendered verbatim into every turn, so a user who restates one fact three times over a month spends three slots on it and ages out three older, distinct ones. mark-agent's "Hippocampus" pass was the model for the fix, and the implementation keeps its shape while taking Irises' own doctrine on everything else: a pure Jaccard/containment check decides whether a model is called at all (most turns never reach one), the LLM is a **suggester** whose every proposed cluster is re-validated locally — same fact only, disjoint clusters, high confidence only, literals preserved character-for-character, and the replacement strictly shorter than what it replaces — and the retired notes land in the cold archive like every other supersession. Throttled to one pass per handle per 6h (`NOTE_GROOM_THROTTLE_MS`), off with `NOTE_GROOM_ENABLED=false`, fenced against a mid-pass `/forget` by the same epoch mechanism, and a total no-op on any failure.
 
 Relevant source: `src/memory/noteGroomer.ts` (the gate, the prompt, the validation), `src/db/repositories/memoryMedium.ts` (`mergeNotes`, which does the writing under the handle lock).
+
+---
+
+## Addendum (2026-09-03): the conversation-first pass
+
+§5's "Recall mechanism: mostly unconditional injection, not retrieval" is now only half true, and the four changes below are why. None of them adds a tier, a graph, or a per-turn provider call — the architecture in §5 is unchanged; what changed is what reaches the prompt, and what a stored fact says about itself.
+
+### Relevance gating — the render side became conditional
+
+`buildTurnRelevance(turnText, held)` (`src/memory/relevance.ts`) builds ONE pure `TurnRelevance` per turn out of the incoming message and what the memory loaders already fetched — no extra query, no LLM. It carries the message's salient tokens, its shape, and a ranked list of hits (`note | fact | long | research | email | directive | thread`), and every memory block then reads that one object instead of deciding for itself.
+
+Each block renders **full**, as a **digest**, or **dropped**, per a fixed table in `src/memory/wrappers.ts` / `src/memory/dossier.ts`: touching medium notes ride whole and off-topic ones collapse to 80 characters, with at most six note lines in a turn (the cap fills from the touching ones first, and the count it left out is on the receipt); at most four email flags render, in full when they touch the turn or when a deadline is inside 48h or the flag is under 2h old, and as a 150-character digest otherwise; `<memory_long>` is split on `^## ` and only touching sections plus a capped `## Who they are` survive; the 12 most recent standing directives always render, plus any older one that touches. The verdict for every block that ran a gate — including the ones that changed nothing — is on the turn's receipt at `turn:trace.gates.memory.blocks`, so "she never saw the note" and "there was no note" read differently.
+
+A turn with no readable text (a caption-less voice memo, an image alone) fails **open**: every gate keeps what it holds, because "nothing touches this turn" and "there is no turn text to touch" are not the same claim. Flag `CONVO_MEMORY_RELEVANCE`, default on; off, no router is built and the stack renders exactly as it did before, byte for byte.
+
+### The identity card — one block instead of five restatements
+
+`renderIdentityCard` (`src/memory/wrappers.ts`) is an always-on block at the top of the memory stack: who this person is (name, what to call them, how they text, their zone, how long she has known them), their standing directives, and the three precedence laws that govern every tier below it — persona and hard rules outrank all memory; only the card's directives and the long doc may retune style; everything else is data about their world, connected when the moment touches it and never recited. It replaced five stance/ladder renderers that each restated some of that precedence in their own words while none of them ever said the user's name. Ungated by design; the only gated thing on it is the directive list.
+
+### Dated memories — the subtraction happens in code
+
+A stored calendar date is answered without a delegated look. `src/memory/datedMemory.ts` finds an unambiguous month-name-plus-day in a rendered note or fact and appends ` (in 39 days)` / ` (32 days ago)` / ` (today)`, counted between the two dates' noon in the user's own zone (`dateTimeInZone`, `src/pipeline/zonedTime.ts`) so a DST day cannot shift the count. Deliberately timid: a line another renderer already clipped carries no suffix (a cut can land inside the day and leave a real, wrong date), a yearless date declines past `YEARLESS_MAX_DAYS = 180`, everything declines past `DATED_MEMORY_MAX_DAYS = 400`, and a past-tense cue in the sentence can only move the read backward. Deterministic, pure, and covered against a frozen clock.
+
+### Provenance — who says so, per fact
+
+Every durable fact is now stamped `stated` (their own words, in a message she read), `seeded` (handed over by the engine she fronts at install), or `inferred` (she worked it out), and the renders group them so a guess is never cited as testimony. `PROV_RANK` is `stated 3 > seeded 2 > inferred 1` and `promote` takes the max, so a fact can only ever get stronger — their own words replace a guess, a guess never unseats their words.
+
+No schema change in either store: MEDIUM.md entries carry a `prov=` attribute on their existing `<!-- mm … -->` annotation (an older file still parses, and a row written before the feature defaults from its `source`), and `user_profiles.facts_json` — a JSON array of strings — carries an in-band `stated: ` prefix that the read boundary always strips, which is what lets a stated write promote an inferred row in place instead of stacking a twin. `MEMORY_PROVENANCE_ENABLED` is **off by default**: it changes what a durable memory file contains, so it earns its way on, and the parse/strip runs either way so an install that ran it on and then off still reads its own rows.
+
+Relevant source: `src/memory/relevance.ts` (the router), `src/memory/wrappers.ts` + `src/memory/dossier.ts` (the gate table, the identity card), `src/memory/datedMemory.ts` (the date arithmetic), `src/memory/provenance.ts` (the grammar and its receipt), `src/diagnostics/turnTrace.ts` (the per-turn receipt every gate reports on).
