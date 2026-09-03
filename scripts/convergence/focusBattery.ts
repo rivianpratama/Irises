@@ -83,7 +83,7 @@ import { webChatId, WEB_DEBUG_HANDLE } from '../../src/channels/web/identity.js'
 // file's `main()` is behind an entry-point guard, but the older two run theirs at module scope, so
 // importing FROM them would start a round. See harness.ts.
 import {
-  arg, cell, curlJson, expand, flag, num, quote, sh, sleep, sqlExec, sqlJson, truncate,
+  arg, cell, curlJson, expand, flag, num, quote, sh, sleep, sqlExec, sqlJson, truncate, whyFailed,
 } from './harness.js';
 // The engine's OWN topic predicates, imported rather than reimplemented (the loopBattery precedent):
 // `touchesTurn` is the very function the theme topic gate runs, so f4's precondition is computed with
@@ -969,7 +969,7 @@ function readHistoryReceipts(db: string, chatIds: string[], since: number): { re
         AND json_extract(e.value, '$.label') IN (${labels});`);
     return { receipts: rows, error: null };
   } catch (err) {
-    return { receipts: [], error: (err as Error).message.split('\n').filter(Boolean).pop() ?? 'sqlite3 failed' };
+    return { receipts: [], error: whyFailed(err) };
   }
 }
 
@@ -1010,7 +1010,7 @@ function readInventory(db: string, handle: string): InventoryRead {
       'themes', themes_json, 'turnsSinceOffer', turns_since_offer))
       FROM thread_inventory WHERE handle = ${quote(handle)};`);
   } catch (err) {
-    return { themes: null, turnsSinceOffer: 0, error: (err as Error).message.split('\n').filter(Boolean).pop() ?? 'sqlite3 failed' };
+    return { themes: null, turnsSinceOffer: 0, error: whyFailed(err) };
   }
   if (!raw.length) return { themes: null, turnsSinceOffer: 0, error: null };
   try {
@@ -1119,7 +1119,7 @@ async function main(): Promise<number> {
       sqlExec(db, `DELETE FROM memory_short WHERE agent_handle = ${quote(handle)};`);
       console.error(`[foc] reset memory_short for ${handle}`);
     } catch (err) {
-      console.error(`[foc] freshness reset FAILED (${(err as Error).message.split('\n')[0]}) — continuing`);
+      console.error(`[foc] freshness reset FAILED (${whyFailed(err)}) — continuing`);
     }
   }
 
@@ -1150,7 +1150,7 @@ async function main(): Promise<number> {
       post(p.ask);
       console.error(`[foc] ${i + 1}/${live.length} sent ${p.id} (${p.chatId}) — ${truncate(p.ask, 44)}`);
     } catch (err) {
-      console.error(`[foc] ${p.id} SEND FAILED: ${(err as Error).message.split('\n')[0]}`);
+      console.error(`[foc] ${p.id} SEND FAILED: ${whyFailed(err)}`);
     }
   }
 
@@ -1165,7 +1165,7 @@ async function main(): Promise<number> {
       FROM messages WHERE chat_id IN (${chatIds.map(quote).join(',')}) AND created_at >= ${floor};`)
       .sort((a, b) => a.at - b.at);
   } catch (err) {
-    console.error(`[foc] could not read ${db}: ${(err as Error).message.split('\n')[0]}`);
+    console.error(`[foc] could not read ${db}: ${whyFailed(err)}`);
     return 2;
   }
 

@@ -9,9 +9,10 @@
 // and had already drifted (a markdown cell truncated at two different widths). One home, one test.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { resolve } from 'node:path';
-import { CELL_WIDTH, arg, cell, expand, flag, num, quote, truncate } from './harness.js';
+import { join, resolve } from 'node:path';
+import { CELL_WIDTH, arg, cell, expand, flag, num, quote, truncate, whyFailed } from './harness.js';
 
 /** argv is process-global, so every case that reads it says what it is reading. */
 function withArgv<T>(argv: string[], fn: () => T): T {
@@ -77,4 +78,45 @@ test('a markdown cell keeps the row intact and is one width everywhere', () => {
 test('truncate is inclusive of the ellipsis it adds', () => {
   assert.equal(truncate('abcdef', 6), 'abcdef');
   assert.equal(truncate('abcdef', 4), 'abc…');
+});
+
+test('whyFailed reads the reason off a piped child, not the command that failed', () => {
+  // `sh` pipes the child's stderr, so execFileSync's Error carries "Command failed: <the whole
+  // command>" on line 1 and the child's own words BELOW it. This is the exact message a table-less
+  // sqlite3 throws, and line 1 is the useless half: it names what was run, never why it failed.
+  const err = new Error(
+    "Command failed: sqlite3 /tmp/irises.db SELECT * FROM thread_inventory;\n"
+    + 'Error: in prepare, no such table: thread_inventory\n',
+  );
+  assert.equal(whyFailed(err), 'Error: in prepare, no such table: thread_inventory');
+});
+
+test('whyFailed still has something to say for the shapes that are not that', () => {
+  assert.equal(whyFailed(new Error('curl: (7) Failed to connect to 127.0.0.1 port 3000')),
+    'curl: (7) Failed to connect to 127.0.0.1 port 3000');
+  // Nothing readable at all — an Error with no message, or something that was never an Error —
+  // still gets a sentence rather than the word "undefined" inside a report line.
+  assert.equal(whyFailed(new Error('')), 'command failed');
+  assert.equal(whyFailed(new Error('   \n  \n')), 'command failed');
+  assert.equal(whyFailed(undefined), 'command failed');
+  assert.equal(whyFailed('sqlite3 is not installed'), 'sqlite3 is not installed');
+});
+
+// `whyFailed` existing is not the fix; every site USING it is. The three that regressed were
+// `console.error` calls inside `main()` and the network readers — unreachable from a test that may
+// not touch a service — so what is pinned instead is the source: a battery that shells out through
+// `sh` may not read a caught Error's `.message` by hand, because the piping decided where the reason
+// lives and doing it by hand is how three of five sites came to print the command instead.
+test('the battery reports a failed sh call only through whyFailed', () => {
+  // `__dirname`, not `import.meta.url`: this project compiles to CommonJS (see
+  // src/agents/loadContext.ts), and `npm run typecheck:scripts` DOES check this file.
+  const src = readFileSync(join(__dirname, 'focusBattery.ts'), 'utf8');
+  assert.deepEqual(
+    src.match(/\.message\b/g) ?? [], [],
+    'focusBattery.ts reads a caught Error\'s .message directly — use whyFailed(err) from harness.ts, '
+    + "or the line prints \"Command failed: <the command>\" and drops the reason with the stderr piped",
+  );
+  // And it does report them: five catch blocks, five reasons. A rewrite that stopped reporting
+  // altogether would satisfy the assertion above.
+  assert.equal((src.match(/whyFailed\(err\)/g) ?? []).length, 5);
 });
