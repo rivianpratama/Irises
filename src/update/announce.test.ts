@@ -132,7 +132,9 @@ test('the weave waits for an opening rather than landing mid-conversation', () =
 
 test('a note left unclaimed mid-conversation is still there at the next opening', () => {
   _setUpdateStatusForTests({ remoteSha: 'sha9', updateAvailable: true });
-  // The mid-conversation turn does not call claim at all, so nothing is consumed…
+  // The mid-conversation turn does not call claim at all — that half is by INSPECTION, not by this
+  // test: convo/client.ts guards the claim behind this helper, and chat() cannot be driven without
+  // reaching a model. What runs here is the helper alone: it refuses the mid-conversation turn…
   assert.equal(updateNoteOpening(60_000, 12), false);
   // …and the next turn with a real opening still gets it.
   assert.ok(updateNoteOpening(45 * 60_000, 12));

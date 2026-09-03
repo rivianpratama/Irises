@@ -704,7 +704,8 @@ test('a turn that touches nothing still gets who they are, and only that', () =>
   const payload = longPayload(out.text);
 
   assert.ok(payload.startsWith('## Who they are'));
-  assert.ok(payload.length <= LONG_ANCHOR_CHARS + 40, `the anchor is ${payload.length} chars`);
+  // clipSection cuts at max - 1 and appends the ellipsis, so the cap is exact — no slack to hide in.
+  assert.ok(payload.length <= LONG_ANCHOR_CHARS, `the anchor is ${payload.length} chars`);
   assert.ok(!payload.includes('the cedar order'));
   assert.deepEqual(out.gates.long, { verdict: 'digest', reason: 'none_kept', dropped: 5 });
 
@@ -719,7 +720,7 @@ test('a doc with no "who they are" heading keeps its opening section as the anch
   const out = renderFlexibleBlockWithGates(doc, [], null, {}, 'convo', 'individual', buildTurnRelevance('what should i cook for dinner', { longSections: splitSections(doc) }));
   const payload = longPayload(out.text);
   assert.ok(payload.startsWith('## Their world'), 'the flexible layer never renders an empty promise');
-  assert.ok(payload.length <= LONG_ANCHOR_CHARS + 40);
+  assert.ok(payload.length <= LONG_ANCHOR_CHARS, `the fallback anchor is ${payload.length} chars`);
 });
 
 test('a doc whose every section touches the turn renders exactly as it always did', () => {
