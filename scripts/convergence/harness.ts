@@ -67,8 +67,8 @@ export const SH_MAX_BUFFER = 256 * 1024 * 1024;
  * `stdio` is pinned rather than left to the default, where execFileSync passes the child's stderr
  * straight through to the operator's terminal: a `sqlite3` that cannot find a table printed its own
  * error line ABOVE the report, and then the battery said the same thing again, properly, inside the
- * line that explains what it means for the round. Piped, the message is still on the thrown Error —
- * read it with `whyFailed` below, which is the other half of this decision and not optional.
+ * line that explains what it means for the round. Piped, what the child said is still on the thrown
+ * Error — read it with `whyFailed` below, the other half of this decision and not optional.
  */
 export function sh(bin: string, args: string[]): string {
   return execFileSync(bin, args, {
@@ -82,15 +82,32 @@ export function sh(bin: string, args: string[]): string {
  * Why a `sh` call failed, in one line fit to print.
  *
  * This is a property of the piping above, not a caller's taste, which is why it lives here. With
- * stderr piped, execFileSync builds its message as `Command failed: <the whole command>` followed by
- * everything the child said — so line ONE names what was run and never why, and the reason is the
- * last line. A caller reading `.split('\n')[0]` gets `Command failed: curl -sS … /api/web/message`
- * and drops `curl: (7) Failed to connect to 127.0.0.1 port 3000`, which is the entire content of the
- * failure and used to reach the terminal on its own before the stderr was piped.
+ * stderr piped, execFileSync ALSO hangs the child's own stderr on the Error it throws, as a string
+ * because of the `utf8` encoding — and that is what this reads, because it is the only rule that
+ * survives all four real shapes. Digging the reason out of `.message` does not: the message is
+ * `Command failed: <the whole command>` and then everything the child said, so
+ *
+ *   • line 1 names what ran and never why (`.split('\n')[0]` printed the curl invocation and dropped
+ *     `curl: (7) Failed to connect to 127.0.0.1 port 3000`, which was the whole content);
+ *   • the LAST line is not it either — sqlite3 answers a bad statement with three lines, the reason
+ *     then the statement then a caret pointing into it, and `^--- error here` carries nothing. Not a
+ *     corner case: a sqlite3 built without JSON1 fails the durable read exactly that way;
+ *   • and "line 2" is not it either, because these commands are multi-line themselves. The inventory
+ *     query spans three lines, so lines 2 and 3 of that message are still the SQL.
+ *
+ * The child's first word is the reason for both tools. The rest of a multi-line stderr is dropped
+ * rather than joined, since what it repeats is the statement, and these statements are whole queries.
+ * Two shapes have no stderr to read and fall back to the message, which in both cases IS the reason:
+ * a missing binary (`spawnSync sqlite3-nope ENOENT`, thrown before any child existed) and a child
+ * that failed without a word (`Command failed: false` — then the command is the only fact there is).
  */
 export function whyFailed(err: unknown): string {
-  const message = err instanceof Error ? err.message : typeof err === 'string' ? err : '';
-  return message.split('\n').map(l => l.trim()).filter(Boolean).pop() ?? 'command failed';
+  const said = (text: string) => text.split('\n').map(l => l.trim()).filter(Boolean);
+  const stderr = (err as { stderr?: unknown } | null | undefined)?.stderr;
+  const child = said(typeof stderr === 'string' ? stderr : Buffer.isBuffer(stderr) ? stderr.toString('utf8') : '');
+  if (child.length) return child[0];
+  const message = said(err instanceof Error ? err.message : typeof err === 'string' ? err : '');
+  return message[0] ?? 'command failed';
 }
 
 /** A GET whose body is JSON, or null for anything that did not arrive as JSON. */
