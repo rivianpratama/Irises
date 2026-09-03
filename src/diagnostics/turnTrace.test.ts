@@ -276,6 +276,12 @@ test('the measured sections add back up to the prompt they came from', () => {
   assert.equal(detail.prompt.anchorChars, prompt.anchorChars);
   assert.ok(detail.prompt.personaChars > detail.prompt.dynChars, 'the persona is still the bulk of it');
 
+  // How many cache-reusable prefixes this prompt declared for the lane (llm/callLLM.ts
+  // buildAnthropicSystem) — a count, not the offsets, because the offsets are sizes this receipt
+  // already carries. This turn loads craft pages, so it declares two: the persona and that slot.
+  assert.equal(prompt.cacheBreakpoints.length, 2, 'the build itself offered two');
+  assert.equal(detail.prompt.cacheBreakpoints, 2);
+
   // The transcript's share of everything the model reads.
   assert.equal(detail.prompt.transcriptRows, 3);
   assert.equal(detail.prompt.messagesChars, 'any word on the cedars'.length + 'checking now'.length + 'any news on the cedars?'.length);

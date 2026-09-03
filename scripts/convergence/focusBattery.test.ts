@@ -119,6 +119,7 @@ function trace(patch: TracePatch = {}): TurnTraceDetail {
       // No craft page weighed and no cache breakpoint declared: this fixture is a hand-built
       // receipt for the battery's verdict logic, and neither field is one the verdicts read.
       craft: [],
+      cacheBreakpoints: 0,
     },
     gates: {
       threads: null,

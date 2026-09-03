@@ -56,6 +56,10 @@ export interface MeasuredPrompt {
   sections: readonly PromptSection[];
   personaChars: number;
   anchorChars: number;
+  /** Where the system string's cache-reusable prefixes end (agents/convo/promptSections.ts
+   *  promptCacheBreakpoints). Only the COUNT is recorded — the offsets themselves are section sizes
+   *  the receipt already carries. */
+  cacheBreakpoints: readonly number[];
   /** The craft pages the assembler weighed this turn (agents/convo/personaModules.ts) — a type-only
    *  import, so the diagnostics layer still pulls nothing new at runtime. */
   craft: readonly CraftModuleTrace[];
@@ -270,6 +274,17 @@ export interface TurnTracePrompt {
   /** messagesChars / (systemChars + messagesChars), to four decimals. */
   transcriptShare: number;
   /**
+   * How many cache-reusable prefixes the prompt declared for the lane — 2 on a turn that carries
+   * tool docs or craft pages (the persona head, then that stable-within-a-chat slot), 1 when it
+   * carries neither, and 0 only from a caller that declared none, which a caching lane then bills as
+   * one whole-system cache write (llm/callLLM.ts buildAnthropicSystem).
+   *
+   * The count, not the offsets: each offset is a running sum of section sizes this receipt already
+   * lists, so the only thing it adds is how many spans the lane was asked to cache — the number that
+   * says whether a turn's craft pages were re-billed at full price or read back from the cache.
+   */
+  cacheBreakpoints: number;
+  /**
    * The `craft_modules` section, itemised: every craft page in the registry, whether it loaded, what
    * it cost, and the structural fact that decided it (agents/convo/personaModules.ts). The section's
    * own size answers "how much"; this answers the question the gates raise — WHICH pages, and why
@@ -395,6 +410,7 @@ function measurePrompt(prompt: MeasuredPrompt, messages: readonly TranscriptMess
     messagesChars,
     transcriptRows: messages.length,
     transcriptShare: total > 0 ? Math.round((messagesChars / total) * 10_000) / 10_000 : 0,
+    cacheBreakpoints: prompt.cacheBreakpoints.length,
     craft: prompt.craft.map(c => ({ ...c })),
   };
 }
