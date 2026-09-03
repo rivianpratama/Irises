@@ -2050,9 +2050,9 @@ export async function processConvoResult(args: {
   const turnTrace = args.trace && turnTraceEnabled()
     ? buildTurnTraceDraft({
         turn: args.trace,
-        // As emitted vs. as read — `emitted` is the same coercion the affect persist and the thread
-        // harvest above ran on, never a second one that could disagree with them.
-        affect: { raw: reply.statusRaw, coerced: emitted },
+        // As emitted vs. as read vs. what the arithmetic then did with it — all three off the SAME
+        // fold above, never a second one that could disagree with the row she was saved with.
+        affect: { raw: reply.statusRaw, coerced: emitted, drift: affect?.drift },
         outcome: {
           wasEnvelope: reply.wasEnvelope,
           // The one extra call, spent on this turn either way: this pass IS the retry, or the retry

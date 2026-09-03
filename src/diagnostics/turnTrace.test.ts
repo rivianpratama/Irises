@@ -31,7 +31,8 @@ import { getTraces, clearTraces } from './trace.js';
 import { buildSystemPromptSections, processConvoResult, type ChatContext } from '../agents/convo/shared.js';
 import { SECTION_IDS, sectionsTotalChars, isDynSection } from '../agents/convo/promptSections.js';
 import { loadContext } from '../agents/loadContext.js';
-import { coerceStatus, mergeStatus, type AffectState, type ComputedState } from '../persona/status.js';
+import { coerceStatus, mergeStatus, mergeStatusWithDrift, type AffectState, type ComputedState } from '../persona/status.js';
+import { AFFECT_TURN_CAP } from '../persona/affectDrift.js';
 import { computeCycle } from '../persona/cycle.js';
 import { computeCircadian } from '../persona/circadian.js';
 import { buildBubbleReport } from '../pipeline/bubbleJson.js';
@@ -191,6 +192,60 @@ test('a garbled envelope files a receipt naming the whole-object default', () =>
   assert.equal(detail.outcome.retried, true);
   assert.equal(detail.bubbles.count, 0);
   assert.ok(detail.prompt.systemChars > 1000, 'the prompt it measured is the real one');
+});
+
+// The gauges are code's answer now, so the receipt has to say what the arithmetic did — otherwise a
+// turn where three flattering messages moved her nowhere reads exactly like a turn where they moved
+// her a lot. The report is `applyAffectDrift`'s own (persona/affectDrift.ts), plus the magnitudes,
+// which live only in the ledger rows the turn wrote.
+test('the receipt says what the drift did to the gauges, and where the clock was pulling them', () => {
+  const emitted = coerceStatus({ ...GOOD_STATUS, mood_shift: 'lifted', thread_outcome: 'took' })!;
+  const prior = { ...mergeStatus(emitted, COMPUTED, 0), mood_level: 72, rapport: 55 };
+  const { status, drift } = mergeStatusWithDrift(emitted, COMPUTED, 1000, prior);
+
+  const detail = buildTurnTrace({
+    draft: buildTurnTraceDraft({
+      turn: turnInputs(), affect: { raw: GOOD_STATUS, coerced: emitted, drift }, outcome: SPOKE,
+    }),
+    bubbles: TWO_BUBBLES,
+  });
+
+  assert.deepEqual(detail.affect.drift!.changed, drift!.report.changed);
+  assert.deepEqual(detail.affect.drift!.capped, drift!.report.capped);
+  assert.deepEqual(detail.affect.drift!.atBound, drift!.report.atBound);
+  assert.deepEqual(detail.affect.drift!.shortened, drift!.report.shortened);
+  assert.deepEqual(detail.affect.drift!.coerced, drift!.report.coerced);
+  assert.equal(detail.affect.drift!.brokeDowngraded, false);
+  // The magnitudes, read off the rows this turn stamped — and they agree with the record saved.
+  // Generic on purpose: which gauges got a share of the turn's cap is the engine's business, and a
+  // receipt that only added up for the ones this fixture happens to move would be no receipt at all.
+  assert.ok(detail.affect.drift!.changed.includes('mood_level'), 'a lift with room moves the level');
+  const applied = detail.affect.drift!.applied;
+  for (const k of detail.affect.drift!.changed) {
+    assert.equal(applied[k], status[k] - prior[k], `${k}: the magnitude is what the record moved by`);
+    assert.notEqual(applied[k], 0, `${k}: a row was written for a step that landed`);
+  }
+  for (const k of [...detail.affect.drift!.capped, ...detail.affect.drift!.atBound]) {
+    assert.equal(applied[k], undefined, `${k} did not move, so it has no magnitude`);
+    assert.equal(status[k], prior[k], `${k} really did not move`);
+  }
+  assert.ok(
+    Object.values(applied).reduce((n, d) => n + Math.abs(d!), 0) <= AFFECT_TURN_CAP,
+    'and one message cannot buy more than the turn cap, whatever it says',
+  );
+  // …and the two clock numbers every target is computed from, so a receipt can be read on its own.
+  assert.equal(detail.affect.targets!.fromCycleLoad, COMPUTED.cycle.load);
+  assert.equal(detail.affect.targets!.fromCircadianEnergy, COMPUTED.circadian.energy);
+  assert.equal(detail.affect.targets!.gauges.mood_level, drift!.targets.gauges.mood_level);
+});
+
+// A turn with no clock state folded no record, and AFFECT_DETERMINISTIC off runs no arithmetic at
+// all: both must read as "nothing to report" rather than as a report full of empty buckets, which
+// would be indistinguishable from a turn where every gauge sat on a bound.
+test('a turn that ran no arithmetic reports no drift at all, not an empty one', () => {
+  const detail = buildTurnTrace({ draft: draft(), bubbles: TWO_BUBBLES });
+  assert.equal(detail.affect.drift, null);
+  assert.equal(detail.affect.targets, null);
 });
 
 test('an emitted status rides along coerced, with its raw copy', () => {

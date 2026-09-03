@@ -582,14 +582,15 @@ export const CHECKS: Record<CheckId, FocusCheck> = {
         // The envelope stopped carrying numbers in P3 (persona/status.ts, envelope v2): what a probe
         // can read off the coerced status is the WORD she reported and which way she says it moved.
         .map(c => `${c.mood_label}/${c.mood_shift}`);
-      // TODO(P3/Task 14): read `affect.drift` off turn:trace instead — `drift.capped` / `drift.shortened`
-      // and the per-turn movement against AFFECT_TURN_CAP (persona/affectDrift.ts). Until the drift
-      // engine is WIRED into the turn, the receipt carries the gauges as emitted and nothing about
-      // how far they were allowed to travel, so there is no cap here to compare against.
+      // TODO(P3): score this off `t.affect.drift`, which the receipt now carries (Task 15): sum
+      // `|drift.applied|` per turn against AFFECT_TURN_CAP, and read `drift.capped` / `drift.shortened`
+      // for the turns a budget refused. Left PENDING deliberately — the probe would have to seed
+      // three flattering turns and read the drift off each of their receipts, which is a change to
+      // the battery's seeding, not to this scorer.
       return {
         status: 'pending',
-        detail: `affect.drift is not on turn:trace yet (P3 wires applyAffectDrift and the receipt field this `
-          + `check will read); the gauge trail across ${trail.length} turn(s) is: ${trail.join(' → ')}`,
+        detail: `affect.drift is on turn:trace now, but this check does not seed the three turns it `
+          + `would have to compare; the mood trail across ${trail.length} turn(s) is: ${trail.join(' → ')}`,
       };
     },
   },

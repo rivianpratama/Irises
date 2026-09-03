@@ -24,7 +24,8 @@ import { isDynSection, type PromptSection } from '../agents/convo/promptSections
 import { record } from './trace.js';
 import { TURN_TRACE_LABEL } from './traceLabels.js';
 import type { BubbleReport } from '../pipeline/bubbleJson.js';
-import type { EmittedStatus } from '../persona/status.js';
+import type { AffectDriftOutcome, EmittedStatus } from '../persona/status.js';
+import type { AffectDriftReport, GaugeKey } from '../persona/affectDrift.js';
 import type { RelevanceHitKind } from '../memory/relevance.js';
 import type { RoutingGateDecision } from '../agents/routingGate.js';
 import type { ThreadSelectReport } from '../persona/threads.js';
@@ -186,6 +187,18 @@ export interface StatusCoercion {
   reason: StatusCoercionReason;
 }
 
+/** What the arithmetic did to the gauges this turn: `applyAffectDrift`'s own four buckets plus the
+ *  two fields that speak for the turn rather than for a step, and the magnitudes that landed.
+ *
+ *  The buckets carry NAMES, not numbers, which is deliberate there — a gauge lands in exactly one of
+ *  `changed` / `capped` / `atBound`, so a step that vanished can always be explained. `applied` is
+ *  the other half: how far each one that moved actually went, read off the ledger rows this turn
+ *  stamped. Without it a receipt cannot answer the question the whole engine exists for — did three
+ *  flattering messages in a row move her, and by how much. */
+export type TurnTraceDrift = AffectDriftReport & {
+  applied: Partial<Record<GaugeKey, number>>;
+};
+
 /** The hidden affect envelope as it arrived and as it was read. `defaulted` is the interesting case:
  *  the reply carried no usable `status`, so everything downstream (mood continuity, the threading
  *  capture, the meta-prompt) ran on defaults — invisible in a bubble, obvious in a receipt. */
@@ -199,9 +212,17 @@ export interface TurnTraceAffect {
    *  labels beside it are bounded at both ends (RELEVANCE_HITS_MAX entries, each clipped to
    *  TURN_FOCUS_LABEL_CHARS by the router that produces them). */
   rawEmitted: Record<string, unknown> | null;
-  /** The same status as READ — every string here is already capped by coerceStatus (600/400). */
+  /** The same status as READ — every string here is already capped by coerceStatus. */
   coerced: EmittedStatus | null;
   coercions: StatusCoercion[];
+  /** What the drift engine did to the code-owned gauges. NULL means no arithmetic ran at all: the
+   *  envelope carried no usable status, the turn had no clock state to fold, or AFFECT_DETERMINISTIC
+   *  is off. Deliberately not an empty report — a report full of empty buckets is exactly what a turn
+   *  where every gauge sat on a bound looks like, and those are different turns. */
+  drift: TurnTraceDrift | null;
+  /** Where the clock said each targeted gauge belonged, and the two numbers behind them (cycle load,
+   *  circadian energy) — the consumers those two never had, now visible per turn. Null with `drift`. */
+  targets: AffectDriftOutcome['targets'] | null;
 }
 
 /** What the turn actually did. `silent` is settled at the boundary — see buildTurnTrace. */
@@ -362,10 +383,17 @@ function measurePrompt(prompt: MeasuredPrompt, messages: readonly TranscriptMess
  */
 export function buildTurnTraceDraft(inputs: {
   turn: TurnTraceTurnInputs;
-  affect: { raw: Record<string, unknown> | null | undefined; coerced: EmittedStatus | null | undefined };
+  affect: {
+    raw: Record<string, unknown> | null | undefined;
+    coerced: EmittedStatus | null | undefined;
+    /** The turn's finished drift, from mergeStatusWithDrift (persona/status.ts). Absent/null on a
+     *  turn that folded no affect record — see TurnTraceAffect.drift. */
+    drift?: AffectDriftOutcome | null;
+  };
   outcome: TurnTraceOutcome;
 }): TurnTraceDraft {
   const { turn, affect, outcome } = inputs;
+  const drift = affect.drift ?? null;
   return {
     prompt: measurePrompt(turn.prompt, turn.messages),
     gates: turn.gates,
@@ -374,6 +402,8 @@ export function buildTurnTraceDraft(inputs: {
       rawEmitted: affect.raw && typeof affect.raw === 'object' ? affect.raw : null,
       coerced: affect.coerced ?? null,
       coercions: describeStatusCoercions(affect.raw, affect.coerced),
+      drift: drift && { ...drift.report, applied: drift.applied },
+      targets: drift && drift.targets,
     },
     hits: [...turn.hits],
     outcome: { ...outcome, toolCalls: [...outcome.toolCalls] },
@@ -392,9 +422,10 @@ export function buildTurnTraceDraft(inputs: {
  * (prompt, its section list, gates and both of its leaves, affect and its coercion list, hits,
  * outcome), so a draft mutated afterwards can never change a detail already built from it. Three
  * payloads pass through by reference — `gates.threads` (the selection engine's finished report),
- * `affect.rawEmitted` and `affect.coerced` (the model's own status objects) — because they are
- * settled values owned elsewhere and deep-cloning a foreign shape here would go stale the moment
- * that shape changed. Nothing downstream aliases them either way: `record` (diagnostics/trace.ts)
+ * `affect.rawEmitted` and `affect.coerced` (the model's own status objects), and `affect.drift` /
+ * `affect.targets` (the drift engine's, built once by mergeStatusWithDrift and read by nobody else)
+ * — because they are settled values owned elsewhere and deep-cloning a foreign shape here would go
+ * stale the moment that shape changed. Nothing downstream aliases them either way: `record` (diagnostics/trace.ts)
  * rebuilds the whole detail through `trunc` before it enters the ring.
  */
 export function buildTurnTrace(inputs: { draft: TurnTraceDraft; bubbles: BubbleReport }): TurnTraceDetail {
