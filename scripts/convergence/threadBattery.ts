@@ -61,12 +61,24 @@ import { writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { webChatId, WEB_DEBUG_HANDLE } from '../../src/channels/web/identity.js';
-import type { ThreadHarvestReport, ThreadSelectReport, ThreadTheme, OpenLoop } from '../../src/persona/threads.js';
+// The receipt shapes AND the offer clocks come through ./expectations.ts — the one import surface
+// both batteries share, so a rename or a retuned clock in persona/threads.ts lands here as a compile
+// error instead of as stale prose in this file's own comments (see OFFER_CLOCKS below).
+import {
+  LOOP_OPENING_GAP_MS,
+  LOOP_QUIET_MS,
+  THREAD_MIN_TURNS_BETWEEN_OFFERS,
+  type ThreadHarvestReport,
+  type ThreadSelectReport,
+  type ThreadTheme,
+  type OpenLoop,
+} from './expectations.js';
 
 // ── The battery ─────────────────────────────────────────────────────────────────────────────────
 // Every item is a NEGATIVE control. There are no positives here on purpose: an offer is made by the
-// engine only when its own clocks say so (quiet ≥36h, an opening gap ≥4h, evidence on two distinct
-// UTC days), none of which a battery can manufacture inside one twenty-minute round without seeding
+// engine only when its own clocks say so (OFFER_CLOCKS below — imported from persona/threads.ts
+// rather than retyped — plus evidence on two distinct UTC days), none of which a battery can
+// manufacture inside one twenty-minute round without seeding
 // the row by hand — which would then be testing the seed. The positive side is the hand-run
 // transcript next door; this file measures the quiet.
 //
@@ -189,6 +201,13 @@ const SETTLE_MS = num('THREAD_SETTLE_MS', 180_000);   // grace after the LAST se
 // Longer than SILENT_MS on purpose: a seed that was merely LATE has still finished by the time the
 // probe goes out.
 const SEED_GAP_MS = num('THREAD_SEED_GAP_MS', 120_000);
+
+// The engine's own clocks, in the engine's own numbers: why this file holds no positive controls.
+// Printed with the plan so a reader can check them against the row rather than against a comment
+// that was true when it was written.
+const HOUR_MS = 3_600_000;
+const OFFER_CLOCKS = `loop quiet ≥${LOOP_QUIET_MS / HOUR_MS}h · loop opening gap ≥${LOOP_OPENING_GAP_MS / HOUR_MS}h`
+  + ` · theme turn gate ${THREAD_MIN_TURNS_BETWEEN_OFFERS} turns since the last offer`;
 
 // ── CLI ─────────────────────────────────────────────────────────────────────────────────────────
 
@@ -471,6 +490,7 @@ async function main(): Promise<number> {
     const seeds = plan.filter(p => p.seed).length;
     console.log(`\n${plan.length} items (${seeds} seeded) · stagger ${STAGGER_MS / 1000}s · seed gap ${SEED_GAP_MS / 1000}s · settle ${SETTLE_MS / 1000}s`);
     console.log(`db ${db} · base ${base} · handle ${handle}`);
+    console.log(`offer clocks: ${OFFER_CLOCKS} — none of them reachable inside one round, which is why every item here is a negative control`);
     console.log(`\npre-round inventory: ${summarize(readInventory(db, handle))}`);
     console.log('(a dry run reads the row but sends nothing — this line is what a real round would be measured against)');
     return 0;
