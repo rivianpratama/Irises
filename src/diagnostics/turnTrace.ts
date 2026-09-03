@@ -79,14 +79,16 @@ export interface MemoryHit {
 /**
  * The memory blocks the gate table decides about, one receipt each. Single-sourced array → type
  * (the THEME_KINDS pattern). Where each is decided:
- *   `emails` `notes` `facts` `discovery` `long` `directives` — memory/wrappers.ts, while rendering;
+ *   `emails` `notes` `facts` `long` `directives` — memory/wrappers.ts, while rendering;
  *   `clarification` — memory/dossier.ts (the steering-question marker);
  *   `update_note` — agents/convo/client.ts (whether the pending version note was claimed at all).
- * The short tier's research look is NOT here: it has had its own gate since before this table, and
- * it reports through `shortHotLook` above.
+ *
+ * Two memory blocks are deliberately absent. The short tier's research look has had its own gate
+ * since before this table and reports through `shortHotLook` above. The discovery scaffold has no
+ * gate at all: what it renders is a function of which slots are still open, never of the turn.
  */
 export const MEMORY_GATE_BLOCKS = [
-  'emails', 'notes', 'facts', 'discovery', 'long', 'directives', 'clarification', 'update_note',
+  'emails', 'notes', 'facts', 'long', 'directives', 'clarification', 'update_note',
 ] as const;
 export type MemoryGateBlock = typeof MEMORY_GATE_BLOCKS[number];
 
@@ -102,14 +104,13 @@ export type MemoryGateVerdict = 'full' | 'digest' | 'dropped';
  *  - `all_kept` — everything it holds qualified and rendered in full;
  *  - `partly_kept` — some of it qualified; the rest was shortened or left out;
  *  - `none_kept` — nothing it holds qualified, so all of it is standing in as a digest;
- *  - `slots_only` — the discovery scaffold rendered its open slots without the craft coaching;
  *  - `short_turn` — kept because the turn was too thin to gate on (the fail-open path);
  *  - `ttl_expired` — the marker aged out before the gate was reached;
  *  - `gap_open` — a real opening in the conversation, so the note was claimed;
  *  - `mid_conversation` — no opening, so the claim was left for a later turn. */
 export const MEMORY_GATE_REASONS = [
   'nothing_held', 'kept_always', 'all_kept', 'partly_kept', 'none_kept',
-  'slots_only', 'short_turn', 'ttl_expired', 'gap_open', 'mid_conversation',
+  'short_turn', 'ttl_expired', 'gap_open', 'mid_conversation',
 ] as const;
 export type MemoryGateReason = typeof MEMORY_GATE_REASONS[number];
 

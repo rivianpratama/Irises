@@ -304,6 +304,9 @@ test('buildTurnTrace is pure', () => {
   assert.notEqual(first.gates, d.gates, 'gates');
   assert.notEqual(first.gates.memory, d.gates.memory, 'gates.memory');
   assert.notEqual(first.gates.memory.hits, d.gates.memory.hits, 'gates.memory.hits');
+  assert.notEqual(first.gates.memory.blocks, d.gates.memory.blocks, 'gates.memory.blocks');
+  assert.notEqual(first.gates.memory.blocks.emails, d.gates.memory.blocks.emails, 'each block report');
+  assert.deepEqual(first.gates.memory.blocks, d.gates.memory.blocks, 'copied, not changed');
   assert.notEqual(first.gates.extras, d.gates.extras, 'gates.extras');
   assert.notEqual(first.affect, d.affect, 'affect');
   assert.notEqual(first.affect.coercions, d.affect.coercions, 'affect.coercions');
@@ -423,6 +426,12 @@ test('a Convo turn hands the send boundary a draft of everything but the bubbles
     { label: 'the cedar order', kind: 'research' },
     { label: 'the shack rewiring', kind: 'note' },
   ], 'the router\'s hits are the memory gate\'s receipt');
+  // …and what each gated block did with what it held, which is the other half of that reading: an
+  // empty hits list beside `emails: none_kept` says the flags were held, shown, and about nothing.
+  assert.deepEqual(d.gates.memory.blocks, {
+    emails: { verdict: 'digest', reason: 'none_kept', dropped: 1 },
+    notes: { verdict: 'full', reason: 'all_kept', dropped: 0 },
+  });
   assert.equal(d.prompt.systemChars, trace.prompt.system.length);
 
   // The bubbles are the one thing it does NOT have — the boundary owns that.

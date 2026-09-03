@@ -20,6 +20,7 @@ import {
 } from './wrappers.js';
 import { buildContextBlockWithHot, gatePendingClarification, PENDING_CLARIFICATION_TTL_MS } from './dossier.js';
 import { setPreference } from '../db/repositories/memory.js';
+import { MEMORY_GATE_REASONS } from '../diagnostics/turnTrace.js';
 import { renderTurnFocus, TURN_FOCUS_HIT_SOURCES, TURN_FOCUS_LABEL_CHARS } from '../agents/convo/turnFocus.js';
 import { addShortTerm, type ShortTermEntry } from '../db/repositories/memoryShort.js';
 import { addDirective, addImportantNote } from '../db/repositories/memoryMedium.js';
@@ -792,6 +793,33 @@ test('the steering question still expires on its own clock, and reports the no-o
     { keep: true, report: null },
     'no router → the TTL alone, and no receipt because no gate ran',
   );
+});
+
+test('the gate table produces every reason the receipt names, and no other', () => {
+  // Both directions at once. A reason the table can never produce is dead vocabulary in a store
+  // somebody will try to query; a reason it produces that the vocabulary does not name would slip
+  // past `tsc` the moment one of these reports is built somewhere less typed.
+  const seen = new Set<string>();
+  const collect = (gates: Record<string, { reason: string } | undefined>) => {
+    for (const report of Object.values(gates)) if (report) seen.add(report.reason);
+  };
+
+  const cold = [emailFlag({ id: 'c', meta: { from: 'a@x.example', subject: 'catalogue' } })];
+  const fresh = [emailFlag({ id: 'f', createdAt: NOW - 60_000, meta: { from: 'a@x.example', subject: 'cedar' } })];
+  const dinner = 'what should i cook for dinner tonight with my sister visiting saturday';
+  const lookOnly = [shortEntry({ id: 'r', request: 'cedar lead times', content: 'z'.repeat(300) })];
+  collect(renderShortBlockWithHot(lookOnly, NOW, null, dinner, buildTurnRelevance(dinner, { short: lookOnly })).gates); // nothing_held
+  collect(renderShortBlockWithHot(cold, NOW, null, dinner, buildTurnRelevance(dinner, { short: cold })).gates);   // none_kept
+  collect(renderShortBlockWithHot(fresh, NOW, null, dinner, buildTurnRelevance(dinner, { short: fresh })).gates); // all_kept
+  collect(renderShortBlockWithHot([...fresh, ...cold], NOW, null, dinner, buildTurnRelevance(dinner, { short: [...fresh, ...cold] })).gates); // partly_kept
+  collect(renderMediumBlockWithGates({ directives: [], notes: ['x'], facts: { comms_style: 'clipped' } }, buildTurnRelevance(dinner, {})).gates); // kept_always
+  collect({ clarification: gatePendingClarification(PC, NOW, buildTurnRelevance('ok', {})).report ?? undefined });          // short_turn
+  collect({ clarification: gatePendingClarification({ ...PC, at: 0 }, NOW, buildTurnRelevance(dinner, {})).report ?? undefined }); // ttl_expired
+
+  // `gap_open` and `mid_conversation` are the version note's, decided in agents/convo/client.ts and
+  // covered in update/announce.test.ts — the only two rows of the table this module cannot reach.
+  const clientSide = ['gap_open', 'mid_conversation'];
+  assert.deepEqual([...seen].sort(), MEMORY_GATE_REASONS.filter(r => !clientSide.includes(r)).sort());
 });
 
 test('the context block drops the steering question when they plainly changed the subject', async () => {
