@@ -7,6 +7,10 @@
 #   bash scripts/update.sh --restart       # also stop + relaunch the running server (uses the pidfile)
 #   bash scripts/update.sh --no-restart    # never touch the running server (default is: instruct)
 #
+# IRISES_SKIP_WEB_BUILD=1 skips the optional web-client rebuild (a small box, or no web UI in use).
+# That step never blocks an update either way: if it fails, you get a warning and the server half
+# still lands — receipt written, restart offered.
+#
 # Docker installs update by rebuilding the image, not with this script — see docs/DEPLOY.md § 5.
 #
 # Safe by design: fast-forward only (never auto-merges divergent local commits), refuses a dirty
@@ -22,7 +26,7 @@ while [ $# -gt 0 ]; do
     --yes|-y)     ASSUME_YES=1; shift ;;
     --restart)    DO_RESTART=1; shift ;;
     --no-restart) DO_RESTART=0; shift ;;
-    -h|--help)    sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1 (try --help)"; exit 2 ;;
   esac
 done
@@ -148,6 +152,37 @@ restart_now() {
   if server_up; then say "restarted — health OK on :$PORT"; else warn "server did not answer /health on :$PORT — check $STATE_DIR/logs/server.log"; fi
 }
 
+# The web client rebuild — the ONE optional step, and the only one allowed to fail.
+#
+# It is a separate npm project with its own (heavy) toolchain, and on a small box `next build` dies
+# of memory rather than of anything wrong with this update: on the 408 MB VPS it took a bus error
+# mid-build, and under `set -e` that aborted the whole updater — server updated on disk, never
+# restarted, no receipt, nothing voiced in chat. The server half is what people run Irises for, so a
+# failure here warns and the update carries on to the receipt + restart. Always returns 0.
+#
+# IRISES_SKIP_WEB_BUILD=1 skips it outright, for a box that cannot afford the build at all.
+build_web() {
+  if [ "${IRISES_SKIP_WEB_BUILD:-}" = "1" ]; then
+    say "IRISES_SKIP_WEB_BUILD=1 — skipping the web client rebuild"
+    return 0
+  fi
+  # Rebuild only if this install actually serves it.
+  if [ ! -d "$ROOT/web/node_modules" ] && [ ! -d "$ROOT/web/out" ]; then
+    say "web client not installed here — skipping (enable it later: npm run install:web && npm run build:web)"
+    return 0
+  fi
+  PHASE="web"
+  say "rebuilding the web client (npm run install:web && npm run build:web)"
+  # One `if`, so neither command's failure trips set -e: the whole point is that this step cannot
+  # take the update down with it.
+  if npm run install:web && npm run build:web; then
+    return 0
+  fi
+  warn "web client build failed — server updated; web UI not rebuilt"
+  warn "rebuild it when the box has room:  npm run install:web && npm run build:web   (or skip it: IRISES_SKIP_WEB_BUILD=1)"
+  return 0
+}
+
 write_receipt() { # $1=OLD $2=NEW  (OLD==NEW for a rebuild-only heal → empty changelog)
   PHASE="receipt"; mkdir -p "$STATE_DIR"
   if git --no-pager log --oneline "$1..$2" | node "$ROOT/scripts/write-update-receipt.js" "$1" "$2" "$BRANCH" > "$STATE_DIR/update-receipt.json"; then
@@ -227,7 +262,7 @@ if [ "$OLD" = "$NEW" ]; then
     # go through the normal restart/announce path so the healed build actually gets loaded.
     warn "code is at ${NEW:0:7} but the built version is ${BUILT:0:7} — a previous build didn't finish. rebuilding."
     PHASE="build"; npm ci --include=dev; npm run build
-    if [ -d "$ROOT/web/node_modules" ] || [ -d "$ROOT/web/out" ]; then PHASE="web"; npm run install:web; npm run build:web; fi
+    build_web
     write_receipt "$NEW" "$NEW"   # empty changelog; lets the boot announce fire once the restart lands
     COUNT=0
     finish
@@ -277,15 +312,8 @@ say "installing dependencies + building (npm ci --include=dev && npm run build)"
 npm ci --include=dev
 npm run build
 
-# Web client is a separate npm project; rebuild only if this install actually serves it.
-if [ -d "$ROOT/web/node_modules" ] || [ -d "$ROOT/web/out" ]; then
-  PHASE="web"
-  say "rebuilding the web client (npm run install:web && npm run build:web)"
-  npm run install:web
-  npm run build:web
-else
-  say "web client not installed here — skipping (enable it later: npm run install:web && npm run build:web)"
-fi
+# Web client: a separate npm project, and the one step allowed to fail (see build_web).
+build_web
 
 # Bridge plugin is COPIED out of the repo at setup, so a repo update leaves a stale copy on the engine.
 # Refresh it only when bridge/ actually changed between old and new.
