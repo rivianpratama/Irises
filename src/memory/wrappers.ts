@@ -277,8 +277,18 @@ export interface ShortBlockRender {
 }
 
 /** The "nothing to render" answer, shared by the two early returns. Built fresh each time so no
- *  caller can reach into a shared `gates` object and change what the next turn reports. */
-const noShortBlock = (): ShortBlockRender => ({ text: '', hotEntry: null, gates: {} });
+ *  caller can reach into a shared `gates` object and change what the next turn reports — and it
+ *  takes the receipt from its caller, because rendering nothing is still a decision to report. */
+const noShortBlock = (gates: MemoryGateReports): ShortBlockRender => ({ text: '', hotEntry: null, gates });
+
+/** What the email row says on a turn whose short tier is empty — which the block answers above the
+ *  gate, so the gate never runs and would otherwise report nothing at all. Every other block says
+ *  `nothing_held` on an empty channel; a row that goes missing on exactly the turns that held
+ *  nothing is the one shape that makes the receipt lie by omission, because anything counting
+ *  `emails` rows across the ring would find fewer than there were turns. Still empty with no
+ *  router, where the claim really is "no gate ran". */
+const noEmailsHeld = (turn?: TurnRelevance | null): MemoryGateReports =>
+  turn ? { emails: { verdict: 'dropped', reason: 'nothing_held' } } : {};
 
 /** Short-term wrapper (Convo's 24h view). Returns the string; renderShortBlockWithHot beneath it
  *  returns the same string plus the hot-look verdict.
@@ -319,7 +329,7 @@ export function renderShortBlockWithHot(
   turn?: TurnRelevance | null,
 ): ShortBlockRender {
   const visible = entries.filter(e => e.expiresAt > nowMs);
-  if (!visible.length) return noShortBlock();
+  if (!visible.length) return noShortBlock(noEmailsHeld(turn));
 
   // Split the re-recitation hazard (research/media looks) from the fact channel (email flags, which
   // feed follow-ups like "yes, remind me"). Research is capped and already newest-first.
@@ -367,7 +377,9 @@ export function renderShortBlockWithHot(
     }
   }
 
-  if (!lines.length) return noShortBlock();
+  // Nothing rendered after all (a tier holding only kinds this block doesn't print): the block is
+  // gone, the receipt is not — `gates` already says what the email row decided about it.
+  if (!lines.length) return noShortBlock(gates);
   const payload = lines.join('\n');
 
   const reminderBullet = engine === 'openclaw'

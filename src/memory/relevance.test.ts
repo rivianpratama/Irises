@@ -541,6 +541,15 @@ test('the email gate reports the no-op too: nothing held, and everything live', 
     renderShortBlockWithHot(live, NOW, null, text, buildTurnRelevance(text, { short: live })).gates.emails,
     { verdict: 'full', reason: 'all_kept', dropped: 0 },
   );
+
+  // …and a tier holding nothing at all, which the block answers before it reaches the gate. Every
+  // other gated block reports `nothing_held` on an empty channel, and a row missing on exactly the
+  // turns that held nothing is the one shape that makes the receipt lie by omission: a reader
+  // bucketing this block across the ring would find fewer `emails` rows than there were turns.
+  assert.deepEqual(
+    renderShortBlockWithHot([], NOW, null, text, buildTurnRelevance(text, {})).gates.emails,
+    { verdict: 'dropped', reason: 'nothing_held' },
+  );
 });
 
 test('with no router the short tier renders every email flag in full, exactly as it always did', () => {
