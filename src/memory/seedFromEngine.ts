@@ -34,6 +34,7 @@ import {
 } from '../db/repositories/threadInventory.js';
 import { applyThreadHarvest, THREAD_NOTE_PREFIX_RE, type ThreadInventory } from '../persona/threads.js';
 import { persistDossierMerge } from './dossier.js';
+import { SEED_NOTE, SEED_SOURCE } from './provenance.js';
 import type { EngineProfile } from '../agents/ops/firstMoveProfile.js';
 
 /** What was actually written. `facts` counts MEDIUM-TIER ENTRIES (the details fact + the
@@ -49,13 +50,15 @@ export interface SeedCounts {
  *  so re-running the seed rewrites one row instead of stacking five near-duplicates. */
 export const SEED_FACT_KEY = 'engine_seed_details';
 
-/** The `source` stamped on every medium entry written here, so a later groom (or a human reading
- *  MEDIUM.md) can tell seeded material from something she was actually told. */
-export const SEED_SOURCE = 'engine_seed';
-
-/** The one note that keeps everything else here honest. Byte-pinned by the test: this sentence is
- *  what stops her citing a seeded detail as something they said to her. */
-export const SEED_NOTE = 'your first picture of them came from the engine you front, at install — hold it lightly, verify it naturally in conversation, and never cite it as something they told you';
+/** The `source` stamped on every medium entry written here (so a later groom, or a human reading
+ *  MEDIUM.md, can tell seeded material from something she was actually told), and the one note that
+ *  keeps everything else here honest.
+ *
+ *  Both moved to memory/provenance.ts, unchanged, and are re-exported here under their historical
+ *  names: `provFromSource` reads the source from the db layer and the "imported" render group is
+ *  wrapped in the note, and neither can import THIS module (seedFromEngine → dossier → mediumTerm
+ *  would close a cycle). The same move `stripScopeSections` made into userContext.ts. */
+export { SEED_SOURCE, SEED_NOTE };
 
 /** Two themes, never more. Threading earns its patterns over weeks; seeding more than a couple
  *  would fill an empty inventory with guesses that then compete for airtime against things she
