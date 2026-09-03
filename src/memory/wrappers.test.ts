@@ -7,6 +7,7 @@ process.env.TZ = 'UTC';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import {
   sanitizeLongDoc, neutralizeTagBreakouts, renderUserMemory, renderShortBlock, topicallyRelated,
   renderMediumBlock, renderFlexibleBlock, AGENT_MEMORY_MATRIX, MEMORY_LONG_MAX_CHARS,
@@ -838,6 +839,31 @@ test('with no router every tier still runs its full ladder, exactly as it always
   assert.equal(out.split('You should:').length - 1, 3, 'short, medium and long each keep theirs');
   assert.equal(out.split('You MUST NOT:').length - 1, 3);
   assert.ok(out.trimEnd().endsWith('Precedence, always: Honesty / Fidelity / Safety / Scope >> this layer >> your generic style defaults.'));
+});
+
+/** A whole stack as `<length>:<sha256 head>` — short enough to keep in the file, total enough that
+ *  any byte moves it. Length leads because it is the half a human can read: a failure says "9,124
+ *  characters became 9,010" before it says which hash. */
+const stackPrint = (text: string) => `${text.length}:${createHash('sha256').update(text).digest('hex').slice(0, 16)}`;
+
+test('the flag-off stack is byte-for-byte the one P2 inherited', () => {
+  // The landmark assertions above (the heading it opens with, three ladder counts, one trailing
+  // line) are what the "byte-identical off path" claim rested on, and an accidental edit to the
+  // shared `should` array or to any ladder line between the landmarks would pass all of them. This
+  // is the whole string. When it fails: either the edit belongs on the routed side only — put the
+  // off-path bytes back — or the change is deliberate, in which case re-take the print in the same
+  // commit and say so. Both stacks, because the relay lanes have no card and no router and are the
+  // path most likely to be edited by accident from the routed side.
+  assert.equal(
+    stackPrint(renderUserMemory('convo', richCardData(), NOW)),
+    '9034:b16ff2946ed65552',
+    'the pre-router convo stack changed bytes — CONVO_MEMORY_RELEVANCE off must render what it always did',
+  );
+  assert.equal(
+    stackPrint(renderUserMemory('composer', richCardData(), NOW)),
+    '3706:3719309e0966c854',
+    'the composer stack changed bytes — the relay lanes render the pre-card path on every turn',
+  );
 });
 
 test('a cold profile gets the card and the discovery slots, and no seed stance anywhere', () => {
