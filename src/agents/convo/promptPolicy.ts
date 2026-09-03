@@ -67,7 +67,7 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
   model_map: 800,              // 387 on a bare checkout — HOST-DEPENDENT, see above
   name_nudge: 165,             // 163 — fixed prose (was 171)
   intro_weave: 770,            // 760 — INTRO_WEAVE_BLOCK (agents/ops/firstMove.ts) (was 795)
-  context_block: 10_800,       // 10,644 — the cold fixture (was 12,500 for 12,290, before P2 sent the discovery scaffold's craft coaching to craft/onboarding.md)
+  context_block: 9_550,        // 9,414 — the cold fixture (was 12,500 for 12,290; P2 sent the discovery scaffold's craft coaching to craft/onboarding.md, then gated every memory block on the turn)
   active_ops: 1_980,           // 1,946 — two looks in flight, one queued (was 2,040)
   group: 105,                  // 104 — a named group, three participants (was 109)
   tapped_reply: 2_230,         // 2,190 — kind 'assistant' beyond the visible window (the largest of the four) (was 2,290)
@@ -82,7 +82,7 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
   turn_focus: 550,             // 544 — a 400-char restatement plus two hits (was 570)
   behavior_anchor: 705,        // 699 — P1: six lines that drift first (was 1,740 for 1,659 / 14 lines)
   json_anchor: 2_950,          // 2,908 — the envelope contract, last in the prompt (was 3,050)
-  memory_stack: 10_500,        // 10,379 — the cold stack (discovery + default stance), still the biggest measured (was 12,500 for 12,290 — same deletion)
+  memory_stack: 9_280,         // 9,149 — the cold stack (discovery + default stance), still the biggest measured (was 12,500 for 12,290 — same two changes)
 };
 
 /**
@@ -106,6 +106,12 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
  * this number not at all at four decimal places. That is the honest accounting: part 2 bought ONE
  * editable description of the envelope, and it did not buy size. Every four-decimal point of the floor
  * above came from part 1.
+ *
+ * P2 re-measured it at **0.0068** and it stays. Its two deletions are real — the discovery scaffold's
+ * craft coaching, and the memory gate table — but they come off the memory stack, which is nine
+ * thousand characters of a hundred and seventy-seven thousand. The persona is what stands between
+ * this number and anything better, and P2 never touched it. Worth stating plainly rather than
+ * letting an unmoved floor read as a phase that did nothing: this phase bought RELEVANCE, not size.
  */
 export const MIN_TRANSCRIPT_SHARE = 0.0067;
 

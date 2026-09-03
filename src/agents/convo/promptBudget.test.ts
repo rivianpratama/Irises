@@ -32,7 +32,11 @@ import {
   UPDATE_MEMORY_TOOL, RECALL_MEMORY_TOOL, RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL,
 } from './tools.js';
 import { INTRO_WEAVE_BLOCK } from '../ops/firstMove.js';
-import { renderUserMemory } from '../../memory/wrappers.js';
+import {
+  renderUserMemoryWithHot, sanitizeLongDoc, splitSections,
+  type MemoryAudience, type UserMemoryData,
+} from '../../memory/wrappers.js';
+import { buildTurnRelevance } from '../../memory/relevance.js';
 import { coerceStatus, mergeStatus, type AffectState, type ComputedState } from '../../persona/status.js';
 import { computeCycle } from '../../persona/cycle.js';
 import { computeCircadian } from '../../persona/circadian.js';
@@ -114,10 +118,23 @@ const TOOLS_GROUP: LlmToolDef[] = [...TOOLS_1TO1, RENAME_CHAT_TOOL, REMOVE_MEMBE
 // ── memory stacks, rendered by the real renderer ─────────────────────────────
 // The memory stack is the wrapped tier block (preamble → short → medium → discovery → flexible) that
 // buildContextBlock puts LAST inside the context block, and it is the fastest-growing part of the
-// prompt — hence its own budget line. Rendered here through renderUserMemory (the same pure function
-// dossier.ts calls) so `memory_stack` is a measured production string, and spliced into the context
-// block exactly the way buildContextBlockWithHot splices it: plain Convo sections first, joined
-// with a blank line.
+// prompt — hence its own budget line. Rendered here through the same pure function dossier.ts calls
+// so `memory_stack` is a measured production string, and spliced into the context block exactly the
+// way buildContextBlockWithHot splices it: plain Convo sections first, joined with a blank line.
+//
+// WITH this turn's relevance router, because a live turn has one: CONVO_MEMORY_RELEVANCE defaults
+// ON, so the gate table (memory/wrappers.ts) is what a real prompt is measured through. Handed the
+// same things dossier.ts hands it — the loaders' rows, and the long doc split at the granularity
+// the sanitizer screens at.
+
+function stack(data: UserMemoryData, turnText: string, audience: MemoryAudience = 'individual'): string {
+  const turn = buildTurnRelevance(turnText, {
+    short: data.short,
+    medium: data.medium,
+    longSections: splitSections(sanitizeLongDoc(data.longDocMd, { quiet: true })),
+  });
+  return renderUserMemoryWithHot('convo', data, FROZEN_MS, { audience, currentTurnText: turnText, turn }).text;
+}
 
 const EMPTY_MEDIUM: MediumBundle = { directives: [], notes: [], facts: {} };
 
@@ -209,16 +226,16 @@ const MATURE_SHORT: ShortTermEntry[] = [
  *  when it shares a salient token with what they just said (memory/topicality.ts). */
 const MATURE_TURN_TEXT = 'so are the cedars coming or not';
 
-const MATURE_STACK = renderUserMemory('convo', {
+const MATURE_STACK = stack({
   profile: MATURE_PROFILE, memory: MATURE_LEGACY, medium: MATURE_MEDIUM,
   short: MATURE_SHORT, longDocMd: MATURE_LONG_DOC,
-}, FROZEN_MS, { audience: 'individual', currentTurnText: MATURE_TURN_TEXT });
+}, MATURE_TURN_TEXT);
 
-/** Nothing on file at all — the cold install. Renders the biggest version of the discovery scaffold
- *  and the default operating stance, which is the point: a thin profile is not a small prompt. */
-const COLD_STACK = renderUserMemory('convo', {
+/** Nothing on file at all — the cold install. Renders the discovery scaffold and the default
+ *  operating stance, which is the point: a thin profile is not a small prompt. */
+const COLD_STACK = stack({
   profile: null, memory: null, medium: EMPTY_MEDIUM, short: [], longDocMd: '',
-}, FROZEN_MS, { audience: 'individual', currentTurnText: 'hey' });
+}, 'hey');
 
 const MEDIA_SHORT: ShortTermEntry[] = [
   {
@@ -228,16 +245,16 @@ const MEDIA_SHORT: ShortTermEntry[] = [
   },
 ];
 
-const MEDIA_STACK = renderUserMemory('convo', {
+const MEDIA_STACK = stack({
   profile: MATURE_PROFILE, memory: MATURE_LEGACY, medium: MATURE_MEDIUM,
   short: MEDIA_SHORT, longDocMd: MATURE_LONG_DOC,
-}, FROZEN_MS, { audience: 'individual', currentTurnText: 'the lease pdf, can you read it' });
+}, 'the lease pdf, can you read it');
 
-const GROUP_STACK = renderUserMemory('convo', {
+const GROUP_STACK = stack({
   profile: { handle: 'group:nursery', name: null, facts: [], firstSeen: MATURE_PROFILE.firstSeen, lastSeen: MATURE_PROFILE.lastSeen },
   memory: null, medium: { directives: [], notes: ['the crew agreed no yard photos in the chat'], facts: {} },
   short: [], longDocMd: '## Who they are\nThe nursery crew: Sam (owner), Ada (deliveries), Theo (weekends).',
-}, FROZEN_MS, { audience: 'group', currentTurnText: 'did the cedars land' });
+}, 'did the cedars land', 'group');
 
 /** The plain Convo section that leads the context block ("## How long you've known them" — dossier.ts
  *  renderTenure). Written out because renderTenure is module-private; the stack below it is what the
