@@ -17,18 +17,23 @@
 // with the fact they read. Those are unit assertions over `renderCraftModules`, plus the placement
 // check through the real assembler at the bottom.
 process.env.TZ = 'UTC';
+// The last test runs a whole turn through the front door, which reads and writes the stores.
+process.env.DATA_BACKEND = 'memory';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   CRAFT_MODULES, renderCraftModules, craftModuleText, convoPersonaWithCraft, personaModulesEnabled,
   type CraftModuleId, type ModuleGateInput,
 } from './personaModules.js';
-import { buildSystemPromptSections, convoPersonaChars } from './shared.js';
+import { buildSystemPromptSections, convoPersonaChars, type ChatContext } from './shared.js';
+import { chat } from './client.js';
+import { addShortTerm } from '../../db/repositories/memoryShort.js';
+import { emptyMedia } from '../../webhook/types.js';
 import { loadContext } from '../loadContext.js';
 import { SCHEDULE_AUTOMATION_TOOL, REACTION_TOOL, REMEMBER_USER_TOOL } from './tools.js';
-import type { LlmToolDef } from '../../llm/types.js';
+import type { LlmResult, LlmToolDef } from '../../llm/types.js';
 import type { StoredMessage, UserProfile } from '../../db/types.js';
 
 // ── the relocation golden ────────────────────────────────────────────────────
@@ -327,4 +332,64 @@ test('on the default path the cached prefix is the shrunken Context.md alone', (
   assert.equal(convoPersonaChars(), loadContext('convo').length);
   assert.ok(system.startsWith(`${loadContext('convo')}\n\n`));
   assert.ok(personaChars < PRE_CHANGE_CHARS, 'the persona really shrank — that is what P4a bought');
+});
+
+// ── the plumbing, through the front door ─────────────────────────────────────
+//
+// Four of the seven gates read facts the assembler computes for itself, and a test against
+// `renderCraftModules` covers those completely. The other three arrive from the caller — the
+// attachment note convo/client.ts folded into the turn text, and the two reads memory/dossier.ts
+// answered — and NOTHING above can see that wiring: hand the assembler a `craftFacts` object and it
+// will happily gate on it whether or not any live turn ever fills it in. So this runs a real turn
+// through `chat` with the model faked at the lane seam (the routingGate.test.ts pattern) and reads
+// the system prompt the lane was handed.
+
+/** A schema-valid envelope, so the turn completes without a retry ladder. */
+const fakeReply = (text: string): LlmResult => ({
+  text: JSON.stringify({ confidence_level: 90, tool_calls: null, bubbles: [{ text, re: null }] }),
+  toolCalls: [], stopReason: 'end_turn', provider: 'anthropic', model: 'test',
+});
+
+/** The turn as the front door runs it, returning the system prompt the lane got. */
+async function systemFromRealTurn(handle: string, message: string, media = emptyMedia()): Promise<string> {
+  const ctx: ChatContext = { isGroupChat: false, participantNames: [], chatName: null, senderHandle: handle };
+  let system = '';
+  await chat(randomUUID(), message, media, ctx, async req => {
+    system = system || req.system;
+    return fakeReply('one sec');
+  });
+  assert.ok(system.length > 1000, 'the lane really got a prompt');
+  return system;
+}
+
+test('a media turn on a cold profile loads the two pages only the caller can gate', async () => {
+  const handle = '+15558030001';
+  const media = { ...emptyMedia(), images: [{ url: 'https://example.test/lease.jpg', mimeType: 'image/jpeg' }] };
+  const system = await systemFromRealTurn(handle, 'whats this say', media);
+
+  assert.ok(
+    system.includes(craftModuleText('attachments')),
+    'a file arrived and client.ts folded its note into the turn text, so the attachment page should be in front of her',
+  );
+  assert.ok(
+    system.includes(craftModuleText('onboarding')),
+    'nothing is on file for this handle, so getting to know them is still the job',
+  );
+  assert.ok(
+    !system.includes(craftModuleText('email_flag')),
+    'nothing is flagged in her short tier, so that page stays out',
+  );
+});
+
+test('a flagged email in the short tier is what loads the email page, on a turn with no file', async () => {
+  const handle = '+15558030002';
+  await addShortTerm({
+    agentHandle: handle, kind: 'email_flag', request: 'invoice 4471',
+    content: 'the supplier wants an answer on the disputed expedite fee before friday',
+    meta: { from: 'accounts@northsupplier.example', subject: 'RE: invoice 4471' },
+  });
+  const system = await systemFromRealTurn(handle, 'did anything come in');
+
+  assert.ok(system.includes(craftModuleText('email_flag')), 'a flag is live, so the page comes with it');
+  assert.ok(!system.includes(craftModuleText('attachments')), 'and no file arrived, so that one does not');
 });

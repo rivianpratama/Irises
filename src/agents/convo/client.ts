@@ -69,11 +69,15 @@ export function updateNoteOpening(gapMs: number, historyRows: number): boolean {
 
 /**
  * The Convo model doesn't receive the file bytes itself, so a media turn gets a bracketed text note
- * telling it a file arrived and to open it via a delegated look (its own eyes — see the Attachments
- * section of Context.md). The note is framed as "open it to look", NEVER "you can't see it": Irises
- * must never tell the user she can't see/read a file. Audio is folded in as a transcript (the cheap
- * fast path) UNLESS transcription failed, in which case the note flags the voice memo for a listen.
- * The note rides textToSend so it persists in history and the model sees it every turn.
+ * telling it a file arrived and to open it via a delegated look (its own eyes — see the attachments
+ * craft page, convo/craft/attachments.md). The note is framed as "open it to look", NEVER "you can't
+ * see it": Irises must never tell the user she can't see/read a file. Audio is folded in as a
+ * transcript (the cheap fast path) UNLESS transcription failed, in which case the note flags the
+ * voice memo for a listen. The note rides textToSend so it persists in history and the model sees it
+ * every turn.
+ *
+ * Whether this note came back is ALSO the gate on that craft page (personaModules.ts), plumbed
+ * through `craftFacts` at the assembler call below: the page and the note arrive together.
  */
 function describeAttachments(media: IncomingMedia, opts: { transcriptionFailed: boolean }): string {
   const bits: string[] = [];
