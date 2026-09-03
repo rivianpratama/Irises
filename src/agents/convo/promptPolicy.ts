@@ -88,7 +88,7 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
   intro_weave: 770,            // 760 — INTRO_WEAVE_BLOCK (agents/ops/firstMove.ts) (was 795)
   context_block: 6_700,        // 6,623 — the thread-offer fixture: the mature stack (5,973) plus the one plain section a routed block still carries, a steering question outstanding. Was 6,050 for 5,967 while no fixture carried a plain part at all, and 5,950 for 5,837 before the medium tier took back the hard-personal-rules line the ladder deletion dropped with nowhere to land. Was 12,500 for 12,290; P2 sent the discovery scaffold's craft coaching to craft/onboarding.md, gated every memory block on the turn, folded the plain tenure section into the identity card, replaced each tier's You-should/You-MUST-NOT ladder with the two or three lines that tier alone decides, and retired the three seed stances
   active_ops: 1_980,           // 1,946 — two looks in flight, one queued (was 2,040)
-  group: 105,                  // 104 — a named group, three participants (was 109)
+  group: 225,                  // 222 — a named group, three participants, plus the sentence that gives a fact about ANOTHER participant its write route (their handle from the list this section prints, never the sender's — remember_user's own doc is written for the 1:1 case). Was 105 for 104 (and 109 before that)
   tapped_reply: 2_230,         // 2,190 — kind 'assistant' beyond the visible window (the largest of the four) (was 2,290)
   burst: 1_130,                // 1,110 — three messages, group-labelled (was 1,160)
   current_time: 295,           // 291 — fixed prose plus the formatted instant (was 305)

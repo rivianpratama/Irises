@@ -740,10 +740,16 @@ export function buildSystemPromptSections(
   const activeOpsSection = renderActiveOps(activeOps).trim();
   if (activeOpsSection) push('active_ops', activeOpsSection);
 
+  // The participant list is printed here and nowhere else, which is what makes this the only place
+  // the write route for a fact about SOMEONE ELSE can be stated. remember_user's own `handle` doc is
+  // written for the 1:1 case it is almost always used in ("the sender's messaging handle … omit to
+  // use the current sender"); in a group the handler also accepts a listed participant, and without
+  // that sentence a fact about another person either lands on the sender's profile (wrong person) or
+  // arrives as a name and is dropped by the guard (lost fact) — both of which happened live.
   if (chatContext?.isGroupChat) {
     const participants = chatContext.participantNames.join(', ');
     const chatName = chatContext.chatName ? `"${chatContext.chatName}"` : 'an unnamed group';
-    push('group', `## Group chat\nYou're in ${chatName} with: ${participants}. Address people by name; keep replies tight.`);
+    push('group', `## Group chat\nYou're in ${chatName} with: ${participants}. Address people by name; keep replies tight. When you save a fact about someone else here, pass THEIR handle from that list to remember_user — never the sender's.`);
   }
 
   // Tapped-reply context. `repliedTo` is the thread-aware resolution; the deprecated `repliedToText`
