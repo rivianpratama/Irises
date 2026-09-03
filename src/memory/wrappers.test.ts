@@ -409,6 +409,19 @@ test('the coaching that left the scaffold is intact in the onboarding craft modu
   }
 });
 
+test('the onboarding craft module is prompt-ready: nothing in it is written to a developer', () => {
+  // P4 loads craft modules by reading the file, so every visible line of it is text the model gets.
+  // A note about where the text came from and which phase wires it up is for whoever reads the repo,
+  // not for her — so it lives in an HTML comment, and this pins that it stays in one.
+  const md = readFileSync(new URL('../agents/convo/craft/onboarding.md', import.meta.url), 'utf8');
+  const visible = md.replace(/<!--[\s\S]*?-->/g, '');
+  for (const devNote of ['memory/wrappers.ts', 'P4', 'craft module', 'Nothing below is edited']) {
+    assert.ok(!visible.includes(devNote), `provenance leaks into the prompt: ${devNote}`);
+  }
+  assert.ok(visible.trimStart().startsWith('# Getting to know a new person'), 'the heading still opens the file');
+  assert.ok(visible.includes('Getting to know them IS the job right now'), 'and the craft itself is untouched');
+});
+
 test('known slots disappear one by one; a mature profile renders no scaffold at all', () => {
   const partial = renderUserMemory('convo', baseData({
     medium: { directives: [], notes: [], facts: { agent_tz: 'America/Chicago' } },

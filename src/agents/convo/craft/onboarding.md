@@ -1,12 +1,15 @@
 # Getting to know a new person (the onboarding craft)
 
+<!--
 Where this came from: it used to render inside the discovery scaffold (memory/wrappers.ts) on
 every single turn of a thin profile — about three thousand five hundred characters of standing
 coaching in front of a message it had nothing to do with. It is not wrong, it is just not per-turn:
 it teaches a habit, and a habit belongs in a craft module that loads when the moment calls for it,
 not in the volatile block. Nothing below is edited; it is the text as it stood.
 
-Not loaded by anything yet — P4 wires the craft modules.
+Not loaded by anything yet — P4 wires the craft modules. It loads by reading this file, so keep
+every note to a developer inside a comment like this one: anything visible here is text she gets.
+-->
 
 Getting to know them IS the job right now, and there is a craft to it. You learn a person
 the way a sharp detective reads a new client or the way someone genuinely good on a first
