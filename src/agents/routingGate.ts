@@ -333,7 +333,16 @@ function heldMemory(hits: readonly HeldHit[]): HeldHit[] {
  * Pure.
  */
 export function holdsTheAnswer(input: { hits: readonly HeldHit[]; bubbles: number; toolCalls: number }): boolean {
-  return input.bubbles > 0 && input.toolCalls === 0 && heldMemory(input.hits).length > 0;
+  return input.bubbles > 0 && input.toolCalls === 0 && heldMemoryCount(input.hits) > 0;
+}
+
+/** How many of a turn's hits are things she HOLDS about the ask — the count the decision above
+ *  turns on, and so the only honest count for the line that reports it. Its own export because the
+ *  gate's stand-down log said "she holds N thing(s)" off `hits.length`, which counts the directives
+ *  and thread offers that were explicitly disqualified: one note plus three of those read as four.
+ *  Pure. */
+export function heldMemoryCount(hits: readonly HeldHit[]): number {
+  return heldMemory(hits).length;
 }
 
 /** The lead line of the held-memory block, outside the data tag — the same shape the ops prompt

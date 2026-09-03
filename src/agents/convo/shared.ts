@@ -31,7 +31,7 @@ import { isDuplicateDelegation, getActiveOps, hasInFlightRequest, requestOpsCanc
 import { etaStatus, estimateOpsEta } from '../etaEstimate.js';
 import {
   needsGrounding, salvageHoldingText, refusedCapabilities,
-  holdsTheAnswer, heldMemoryBrief, routingGateHitReceipt,
+  holdsTheAnswer, heldMemoryBrief, heldMemoryCount, routingGateHitReceipt,
   routingGateMemoryAwareEnabled, type RoutingGateDecision,
 } from '../routingGate.js';
 import { addMessage, setUserName, addUserFact, UserProfile, StoredMessage } from '../../state/conversation.js';
@@ -1680,7 +1680,9 @@ export async function processConvoResult(args: {
         // engine that holds none of her memory is how a correct "39 days" became "which dana is
         // this?". Nothing is touched here: her reply ships exactly as parsed.
         decision = 'skipped_memory_hit';
-        console.log(`[convo] routing gate stood down — she holds ${turnHits.length} thing(s) touching this ask (chat ${chatId})`);
+        // The QUALIFYING count, not `turnHits.length`: the line and the decision have to agree, and
+        // a live round reads these lines whenever the trace ring has rolled past the receipt.
+        console.log(`[convo] routing gate stood down — she holds ${heldMemoryCount(turnHits)} thing(s) touching this ask (chat ${chatId})`);
       } else {
         // The look goes out KNOWING what she holds about the ask. The engine keeps no part of her
         // memory, so without this the same live turn produced a correct "39 days" here and a "which

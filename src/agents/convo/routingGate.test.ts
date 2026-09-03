@@ -116,6 +116,31 @@ test('she holds the answer and wrote it, so the gate stands down and her words s
   assert.equal(detail.salvaged, false, 'nothing was salvaged because nothing was discarded');
 });
 
+test('the stand-down line counts what actually bought the pass, not every hit', async () => {
+  // A live ring is read through these lines when the trace buffer has rolled. "4 thing(s)" on one
+  // note plus three disqualified hits says the decision turned on evidence it did not have.
+  const turn = relevance(ASK, { notes: [NOTE], directives: ["dana's wedding is a sore subject", 'always call me riv'] });
+  const lines: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => { lines.push(a.map(String).join(' ')); };
+  try {
+    const out = await processConvoResult({
+      ...args(),
+      res: makeResult(ANSWER),
+      relevance: { ...turn, hits: [threadHit(turn, "dana's wedding"), ...turn.hits] },
+    });
+    assert.ok(!out.delegatedTask);
+  } finally {
+    console.log = orig;
+  }
+  const stoodDown = lines.find(l => l.includes('routing gate stood down'));
+  assert.ok(stoodDown, `no stand-down line in: ${lines.join(' | ')}`);
+  assert.match(stoodDown!, /she holds 1 thing\(s\) touching this ask/);
+  // Three hits reached the gate (the second directive shares no token with the ask), and the
+  // receipt still names all three — it is the LINE that has to agree with the decision.
+  assert.deepEqual(gateReceipt().hitKinds, ['thread', 'directive', 'note'], 'while the receipt still names every hit');
+});
+
 // ── and every reason it still fires ──────────────────────────────────────────
 
 test('nothing of hers touches the ask, so the gate forces the look exactly as before', async () => {
