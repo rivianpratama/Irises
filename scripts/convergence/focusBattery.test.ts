@@ -419,10 +419,9 @@ test('f4: a closed turn gate is UNSCORED and says so by name', () => {
 test('f4: a theme eaten by a PRE-GATE bucket is UNSCORED, not a missed connection', () => {
   // The engine checks staleness and the per-theme cooldown BEFORE the topic gate
   // (persona/threads.ts, the theme eligibility loop), and neither bucket says WHICH theme it ate.
-  // So an `off_topic` of 0 beside a non-zero cooldown/stale count is not evidence the topic gate
-  // refused anything: the theme this ask touches may never have reached it. The concrete round that
-  // used to fail here: f4 offers on round N, and round N+1 the same day finds that theme in its 24h
-  // cooldown.
+  // So a non-zero cooldown/stale count is not evidence the topic gate refused anything: the theme
+  // this ask touches may never have reached it. The concrete round that used to fail here: f4 offers
+  // on round N, and round N+1 the same day finds that theme in its 24h cooldown.
   const cooled = score(item('f4'), {
     select: select({
       reason: 'no_eligible',
@@ -443,15 +442,36 @@ test('f4: a theme eaten by a PRE-GATE bucket is UNSCORED, not a missed connectio
   assert.equal(stale.verdict, 'UNSCORED');
   assert.match(stale.evidence, /stale/);
 
-  // …but a theme the gate DID see and refuse is still the missed connection, pre-gate buckets or not.
-  const refused = score(item('f4'), {
+  // A pre-gate bucket beside an off_topic count is the NORMAL shape of a second round of the day on
+  // the warm inventory f3 and f4 need: the unrelated themes go off_topic on every turn, and the
+  // touched one sits in the cooldown that f4's own previous PASS billed. `off_topic ≥ 1` says
+  // nothing about WHICH theme reached the gate, so it cannot be what turns this into a failure.
+  const cooledAmongOthers = score(item('f4'), {
     select: select({
       reason: 'no_eligible',
       filtered: { ...select().filtered, themes: { ...select().filtered.themes, cooldown: 1, off_topic: 1 } },
     }),
     touchedThemes: ['speed over polish'],
   });
-  assert.equal(refused.verdict, 'CONNECTION_MISSED');
+  assert.equal(cooledAmongOthers.verdict, 'UNSCORED');
+  assert.match(cooledAmongOthers.evidence, /cooldown/);
+});
+
+test('f4: nothing filtered before the gate, and still no offer, IS the missed connection', () => {
+  // The other side of the branch above, and the reason it is a branch rather than a blanket
+  // pass: with `stale` and `cooldown` both 0, every theme in the row DID reach the topic gate, so a
+  // theme this ask touches going unoffered is the engine failing to connect — which is the whole
+  // point of the positive control. off_topic ≥ 1 here says the gate refused things; the touched
+  // theme was among what it saw.
+  const missed = score(item('f4'), {
+    select: select({
+      reason: 'no_eligible',
+      filtered: { ...select().filtered, themes: { ...select().filtered.themes, off_topic: 3 } },
+    }),
+    touchedThemes: ['speed over polish'],
+  });
+  assert.equal(missed.verdict, 'CONNECTION_MISSED');
+  assert.match(missed.evidence, /speed over polish/);
 });
 
 test('f5: a bare greeting answered with a wall is the dump', () => {

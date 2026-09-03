@@ -466,26 +466,32 @@ export const CHECKS: Record<CheckId, FocusCheck> = {
       // A theme can be eaten BEFORE the topic gate ever sees it. Staleness and the per-theme
       // cooldown are checked earlier in the same loop (persona/threads.ts: `stale` at the recency
       // window, then `cooldown` at themeCooldownMs), and the receipt counts buckets without naming
-      // which theme landed in which — so an `off_topic` of 0 beside a non-zero pre-gate count is not
-      // evidence that the gate refused anything. The round that hits this: f4 PASSES, its offer
-      // stamps lastOfferedAt, and the next round the same day finds that very theme inside its
-      // cooldown. Failing a healthy engine there is worse than declining to score it.
-      if (s.filtered.themes.off_topic === 0 && s.filtered.themes.cooldown + s.filtered.themes.stale > 0) {
-        const first = s.filtered.themes.stale > 0 ? 'stale' : 'cooldown';
+      // which theme landed in which — so a non-zero pre-gate count is not evidence that the theme
+      // this ask touches ever reached the gate, and a non-zero `off_topic` is not evidence that it
+      // did. Both together are in fact the ORDINARY shape of a second round of the day: the warm
+      // inventory f3 and f4 need holds unrelated themes, which go off_topic on every turn, while the
+      // touched one sits in the 24h offer cooldown that f4's own previous PASS billed. Requiring
+      // `off_topic === 0` here failed a healthy engine on every round after the first, which is worse
+      // than declining to score it.
+      if (s.filtered.themes.cooldown + s.filtered.themes.stale > 0) {
+        const t = s.filtered.themes;
+        const first = t.stale > 0 ? 'stale' : 'cooldown';
         return {
           status: 'unscored',
-          detail: `'${s.reason}' with nothing filtered off_topic, but ${s.filtered.themes.stale} theme(s) `
-            + `were stale and ${s.filtered.themes.cooldown} were in cooldown — both checked BEFORE the topic `
-            + `gate, and the receipt does not say which theme landed where, so the theme this ask touches `
-            + `(${ev.touchedThemes.join(', ')}) may never have reached the gate. '${first}' got there first. `
-            + `A theme offered in an earlier round is in cooldown for a day or more; re-run later, or aim `
-            + '--positive-ask at another surfaceable label',
+          detail: `'${s.reason}' with ${t.stale} theme(s) stale and ${t.cooldown} in cooldown (off_topic `
+            + `${t.off_topic}) — stale and cooldown are both checked BEFORE the topic gate, and the receipt `
+            + `does not say which theme landed where, so the theme this ask touches `
+            + `(${ev.touchedThemes.join(', ')}) may never have reached the gate; '${first}' got there first, `
+            + `and the off_topic count could be any of the other themes. A theme offered in an earlier round `
+            + `is in cooldown for a day or more; re-run later, or aim --positive-ask at another surfaceable `
+            + 'label',
         };
       }
       return {
         status: 'fail',
         detail: `'${s.reason}' while the inventory holds ${ev.touchedThemes.length} theme(s) this ask touches `
-          + `(${ev.touchedThemes.join(', ')}) — off_topic ${s.filtered.themes.off_topic}`,
+          + `(${ev.touchedThemes.join(', ')}) and NOTHING was filtered before the topic gate (stale 0, `
+          + `cooldown 0), so every theme in the row reached it — off_topic ${s.filtered.themes.off_topic}`,
       };
     },
   },
