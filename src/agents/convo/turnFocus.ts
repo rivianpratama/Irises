@@ -77,10 +77,22 @@ const HITS_LABEL = 'What you hold that touches it: ';
 const NO_HITS = 'nothing here touches it; answer from the thread above.';
 const CLOSER = 'Answer THIS. Everything above is background — it may shape HOW you answer, never WHAT.';
 
-/** Clip to at most `max` characters, marking the cut so a clipped restatement never reads as the
- *  whole message. Exactly `max` at the widest — the caps above are ceilings, not targets. */
+/**
+ * Clip to at most `max` characters, marking the cut so a clipped restatement never reads as the
+ * whole message. Exactly `max` at the widest — the caps above are ceilings, not targets.
+ *
+ * The caps count UTF-16 units, and the text being clipped is a text message: an astral emoji is TWO
+ * of them, so a boundary can fall between a surrogate pair and leave the high half stranded. That
+ * lone surrogate is not a character — it renders as a replacement box, and it is what reaches the
+ * model inside `<their_message>`. So when the last unit kept is a high surrogate, one more unit
+ * comes off and the whole emoji goes rather than half of it (a character short of the cap is free;
+ * the caps are ceilings).
+ */
 function clip(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+  if (text.length <= max) return text;
+  const cut = max - 1;                                       // one unit spent on the ellipsis
+  const end = /[\uD800-\uDBFF]/.test(text[cut - 1] ?? '') ? cut - 1 : cut;
+  return `${text.slice(0, end)}…`;
 }
 
 // ── the shape classifier ─────────────────────────────────────────────────────

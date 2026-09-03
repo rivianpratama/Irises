@@ -172,6 +172,21 @@ test('renderTurnFocus caps the restated message at TURN_FOCUS_TEXT_CHARS', () =>
   assert.ok(payload.endsWith('…'), 'and it is marked as clipped');
 });
 
+test('the cap never cuts an emoji in half', () => {
+  // The cap counts UTF-16 units, and an astral emoji is two of them. Land one across the boundary
+  // and a naive slice keeps the high surrogate alone — a character that is not a character, sent to
+  // the model inside <their_message>.
+  const text = `${'a'.repeat(TURN_FOCUS_TEXT_CHARS - 2)}🌲 and the rest of what they said`;
+  const block = renderTurnFocus({ text, hits: [] });
+  const payload = block.slice(
+    block.indexOf('<their_message>\n') + '<their_message>\n'.length,
+    block.indexOf('\n</their_message>'),
+  );
+  assert.ok(payload.length <= TURN_FOCUS_TEXT_CHARS, `payload is ${payload.length}, cap is ${TURN_FOCUS_TEXT_CHARS}`);
+  const lone = [...payload].filter(c => c.length === 1 && c.charCodeAt(0) >= 0xd800 && c.charCodeAt(0) <= 0xdfff);
+  assert.deepEqual(lone, [], 'a lone surrogate survived the clip');
+});
+
 test('renderTurnFocus caps a hit label and keeps it on one line', () => {
   const block = renderTurnFocus({
     text: 'any word on the cedars',
