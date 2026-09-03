@@ -87,7 +87,7 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
   extra: 590,                  // 583 — the pending version note (update/announce.ts) (was 610)
   turn_focus: 550,             // 544 — a 400-char restatement plus two hits (was 570)
   behavior_anchor: 705,        // 699 — P1: six lines that drift first (was 1,740 for 1,659 / 14 lines)
-  json_anchor: 2_950,          // 2,908 — the envelope contract, last in the prompt (was 3,050)
+  json_anchor: 2_950,          // 2,928 — the envelope contract, last in the prompt (+20 in P3: the one-line description of `status` stopped asking for the gauges the schema no longer carries). Was 3,050 for 2,908
   memory_stack: 6_050,         // 5,973 — the mature stack, card through long doc, on a turn that touches none of it (+6 when law (b) started naming the layers that are really in the prompt). Was 5,950 for 5,837; +130 gave the medium tier back its hard-personal-rules line. Was 12,500 for 12,290; the card is +43 on the preamble it replaced and absorbed the tenure section, then the three ladders and the three seed stances came off)
 };
 
