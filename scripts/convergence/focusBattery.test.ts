@@ -37,17 +37,25 @@ import {
 // A receipt from a healthy turn, with the knobs each test needs to move. Written out rather than
 // captured from a live round on purpose: a fixture nobody can read is a fixture nobody can change.
 
+/**
+ * The sections a plain 1:1 turn reports, each a little UNDER its ceiling.
+ *
+ * Derived from `PROMPT_BUDGET` rather than copied from this month's measurements on purpose: the
+ * ratchet exists to pull those ceilings DOWN in the later phases, and a fixture holding today's
+ * numbers would then sit ABOVE them — failing "a healthy on-topic turn passes" and half the cases
+ * below for a prose deletion that is the whole point of the phase. What these tests are about is the
+ * SCORER, so the fixture says "inside its ceiling" and lets the ceiling be whatever it is.
+ */
+const UNDER_CEILING = 50;
 function sections(over?: Partial<Record<BudgetKey, number>>): TurnTraceDetail['prompt']['sections'] {
-  const base: Array<[BudgetKey, number]> = [
-    ['persona', 138_102],
-    ['status_contract', 3_976],
-    ['context_block', 6_000],
-    ['current_time', 291],
-    ['turn_focus', 544],
-    ['behavior_anchor', 699],
-    ['json_anchor', 2_908],
+  const present: BudgetKey[] = [
+    'persona', 'status_contract', 'context_block', 'current_time', 'turn_focus',
+    'behavior_anchor', 'json_anchor',
   ];
-  return base.map(([name, chars]) => ({ name, chars: over?.[name] ?? chars })) as TurnTraceDetail['prompt']['sections'];
+  return present.map(name => ({
+    name,
+    chars: over?.[name] ?? Math.max(1, PROMPT_BUDGET[name] - UNDER_CEILING),
+  })) as TurnTraceDetail['prompt']['sections'];
 }
 
 function blocks(over?: MemoryGateReports): MemoryGateReports {
