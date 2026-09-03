@@ -22,13 +22,19 @@
 
 import { isDynSection, type PromptSection } from '../agents/convo/promptSections.js';
 import { record } from './trace.js';
+import { TURN_TRACE_LABEL } from './traceLabels.js';
 import type { BubbleReport } from '../pipeline/bubbleJson.js';
 import type { EmittedStatus } from '../persona/status.js';
 import type { RelevanceHitKind } from '../memory/relevance.js';
 import type { ThreadSelectReport } from '../persona/threads.js';
 
-/** The trace label, in one place — the dashboard and any later reader match on this string. */
-export const TURN_TRACE_LABEL = 'turn:trace';
+/**
+ * The trace label, in one place — the dashboard and any later reader match on this string. It is
+ * DEFINED in ./traceLabels.js, a module with no imports, and re-exported here so that every reader
+ * of this file keeps naming it in the same place: importing the label alone should not pull `record`
+ * and the two db repositories behind it (see that file's header).
+ */
+export { TURN_TRACE_LABEL };
 
 /**
  * Hard bound on the recorded section list. A build can carry at most one entry per section id

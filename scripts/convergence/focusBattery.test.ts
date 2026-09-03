@@ -11,7 +11,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import {
   BATTERY,
   CHECKS,
@@ -175,6 +175,25 @@ function item(id: string): FocusItem {
   assert.ok(found, `no battery item ${id}`);
   return found;
 }
+
+// ── the import surface ──────────────────────────────────────────────────────────────────────────
+
+test('importing the battery does not open a database', () => {
+  // The header above says importing this battery must be side-effect free, and for a long time it
+  // was not: `expectations.ts` value-imported TURN_TRACE_LABEL from diagnostics/turnTrace.ts, which
+  // imports `record`, which reaches db/client and db/sqlite — so `npm test` printed the driver
+  // banner and an ExperimentalWarning for a battery that never touches a store. The label now comes
+  // from a leaf module (diagnostics/traceLabels.ts) that imports nothing.
+  //
+  // Asserted off `require.cache` rather than by capturing stdout, because what the banner is
+  // EVIDENCE of is the thing to hold: a battery import that connects to the engine's database. This
+  // project compiles to CommonJS (see src/agents/loadContext.ts), which is what makes the cache
+  // readable here — the same reason the source pin at the end of this file uses `__dirname`.
+  const db = Object.keys(require.cache)
+    .filter(p => p.includes(`${sep}src${sep}db${sep}`))
+    .map(p => p.slice(p.lastIndexOf(`${sep}src${sep}`) + 1));
+  assert.deepEqual(db, [], `importing focusBattery.ts loaded ${db.length} db module(s) — ${db.join(', ')}`);
+});
 
 // ── the table itself ────────────────────────────────────────────────────────────────────────────
 

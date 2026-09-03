@@ -51,11 +51,13 @@ export {
 export type { ThreadSelectReport, ThreadHarvestReport, ThreadTheme, OpenLoop } from '../../src/persona/threads.js';
 
 // ── the per-turn receipt (diagnostics/turnTrace.ts) ──────────────────────────────────────────────
-// NOTE: this is the one VALUE import here that pulls a runtime chain behind it —
-// diagnostics/turnTrace.js imports `record`, which reaches the db layer, so merely importing a
-// battery prints the driver line. Worth it: the label is the string the SQL and the ring filter
-// match on, and a battery that retypes it scores an empty round as clean.
-export { TURN_TRACE_LABEL } from '../../src/diagnostics/turnTrace.js';
+// The label is the string the SQL and the ring filter match on, so it is imported rather than
+// retyped — a battery that retypes it scores an empty round as clean. From the LEAF module that
+// defines it (diagnostics/traceLabels.ts), not from turnTrace.ts, which re-exports it: turnTrace
+// imports `record`, which reaches db/client and db/sqlite, and taking the label from there made
+// `npm test` print the driver banner and a SQLite warning for a battery that opens no store.
+// focusBattery.test.ts pins that, off require.cache.
+export { TURN_TRACE_LABEL } from '../../src/diagnostics/traceLabels.js';
 export type { TurnTraceDetail, MemoryGateBlock, MemoryGateReports } from '../../src/diagnostics/turnTrace.js';
 
 import { PROMPT_BUDGET, type BudgetKey } from '../../src/agents/convo/promptPolicy.js';
