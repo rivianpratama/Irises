@@ -55,15 +55,26 @@ export function renderNotesBlock(notes: string[]): string {
   return `## Things they told you to remember (keep these top of mind, they asked explicitly)\n${clean.map(n => `- ${n}`).join('\n')}`;
 }
 
+/** The keys the identity card renders itself (memory/wrappers.ts renderIdentityCard): what to call
+ *  them, how they text, where they are. `address_as` was always the addressing header's; the other
+ *  two join it once the card is in the stack, so no identity value reaches the model twice. */
+export const CARD_FACT_KEYS: ReadonlySet<string> = new Set([
+  'address_as', 'comms_style', 'agent_tz',
+]);
+
 /** Structured facts the user told us about themselves (not operational flags). The canonical
- *  slots render first, in a fixed order; any other minted durable fact renders after. */
-export function renderFactsBlock(facts: Record<string, string>): string {
+ *  slots render first, in a fixed order; any other minted durable fact renders after.
+ *
+ *  `omitCardKeys` drops the identity keys the card above this block already states. Off by
+ *  default, so the pre-card path renders exactly the bytes it always did. */
+export function renderFactsBlock(facts: Record<string, string>, opts: { omitCardKeys?: boolean } = {}): string {
   const lines: string[] = [];
-  if (facts.comms_style) lines.push(`comms style: ${facts.comms_style}`);
+  if (facts.comms_style && !opts.omitCardKeys) lines.push(`comms style: ${facts.comms_style}`);
   // Descriptive slots beyond the canonical ones — render them too so a
   // durable fact never goes unseen. address_as is rendered by the addressing header, not here.
   for (const [key, value] of Object.entries(facts)) {
     if (key === 'comms_style' || key === 'address_as' || !value) continue;
+    if (opts.omitCardKeys && CARD_FACT_KEYS.has(key)) continue;
     lines.push(`${key.replace(/_/g, ' ')}: ${value}`);
   }
   return lines.join('\n');

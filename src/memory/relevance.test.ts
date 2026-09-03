@@ -17,11 +17,12 @@ import {
   sanitizeLongDoc, MEMORY_LONG_MAX_CHARS,
   renderMediumBlock, renderMediumBlockWithGates,
   renderShortBlockWithHot, renderUserMemory, renderUserMemoryWithHot, splitSections,
+  renderIdentityCardWithGates,
   type UserMemoryData,
 } from './wrappers.js';
 import { buildContextBlockWithHot, gatePendingClarification, PENDING_CLARIFICATION_TTL_MS } from './dossier.js';
-import { setPreference } from '../db/repositories/memory.js';
-import { MEMORY_GATE_REASONS } from '../diagnostics/turnTrace.js';
+import { setPreference, type Directive } from '../db/repositories/memory.js';
+import { MEMORY_GATE_REASONS, type MemoryGateReports } from '../diagnostics/turnTrace.js';
 import { renderTurnFocus, TURN_FOCUS_HIT_SOURCES, TURN_FOCUS_LABEL_CHARS } from '../agents/convo/turnFocus.js';
 import { addShortTerm, type ShortTermEntry } from '../db/repositories/memoryShort.js';
 import { addDirective, addImportantNote } from '../db/repositories/memoryMedium.js';
@@ -631,19 +632,21 @@ test('medium facts are not gated on the turn, and say so', () => {
   const text = 'what should i cook for dinner';
   const facts = { comms_style: 'clipped, lowercase', work: 'runs a plant nursery' };
   const out = renderMediumBlockWithGates({ directives: [], notes: [], facts }, buildTurnRelevance(text, { medium: { directives: [], notes: [], facts } }));
-  assert.ok(out.text.includes('comms style: clipped, lowercase'));
-  assert.ok(out.text.includes('work: runs a plant nursery'), 'every fact still renders');
+  assert.ok(!out.text.includes('comms style'), "the identity card owns comms_style once a router is in hand");
+  assert.ok(out.text.includes('work: runs a plant nursery'), 'every other fact still renders');
   assert.deepEqual(out.gates.facts, { verdict: 'full', reason: 'kept_always' });
   assert.deepEqual(out.gates.notes, { verdict: 'dropped', reason: 'nothing_held' });
 
   const empty = renderMediumBlockWithGates({ directives: [], notes: ['x'], facts: {} }, buildTurnRelevance(text, {}));
   assert.deepEqual(empty.gates.facts, { verdict: 'dropped', reason: 'nothing_held' });
 
-  // A tier holding ONLY address_as renders no fact lines at all — the addressing header owns that
-  // key — so the row reads what the block printed, not what the bundle happened to hold.
-  const addressOnly = renderMediumBlockWithGates({ directives: [], notes: ['x'], facts: { address_as: 'Chief' } }, buildTurnRelevance(text, {}));
-  assert.ok(!addressOnly.text.includes('address as: Chief'));
-  assert.deepEqual(addressOnly.gates.facts, { verdict: 'dropped', reason: 'nothing_held' });
+  // A tier holding ONLY the card's own keys renders no fact lines at all, so the row reads what the
+  // block printed rather than what the bundle happened to hold.
+  for (const facts of [{ address_as: 'Chief' }, { comms_style: 'clipped' }, { agent_tz: 'America/Denver' }]) {
+    const cardOnly = renderMediumBlockWithGates({ directives: [], notes: ['x'], facts }, buildTurnRelevance(text, {}));
+    assert.ok(!cardOnly.text.includes(Object.values(facts)[0]), `${Object.keys(facts)[0]} is the card's`);
+    assert.deepEqual(cardOnly.gates.facts, { verdict: 'dropped', reason: 'nothing_held' });
+  }
 });
 
 test('with no router the medium block renders every note in full, exactly as it always did', () => {
@@ -748,6 +751,10 @@ test('an empty long doc reports the gate table no-op', () => {
 // A directive is a rule they asked for, so recency is the gate, not topicality: the ones they set
 // most recently are how they want to be talked to right now, whatever the turn is about. An older
 // one only rides when the turn is about it.
+//
+// <user_directives> has two homes, one per path, and the gate is the same on both: the identity
+// card carries it once a router is in hand (Task 12 — law (b) on the card points AT the list), the
+// flexible block carries it before that. The helper below renders whichever one this turn has.
 
 /** Everything inside <user_directives>, as a list. */
 function directiveLines(block: string): string[] {
@@ -764,10 +771,20 @@ function manyDirectives() {
   ];
 }
 
+/** The block that owns <user_directives> on this turn's path: the card with a router, the flexible
+ *  block without one. Same directive rows, same gate, whichever renders them. */
+function directiveHome(directives: Directive[], text: string | null): { text: string; gates: MemoryGateReports } {
+  const turn = text === null ? null : buildTurnRelevance(text, { medium: { directives, notes: [], facts: {} } });
+  if (!turn) return renderFlexibleBlockWithGates('', directives, null, {}, 'convo', 'individual');
+  return renderIdentityCardWithGates(
+    { profile: null, memory: null, medium: { directives, notes: [], facts: {} }, short: [], longDocMd: '' },
+    {}, 'individual', NOW, turn,
+  );
+}
+
 test('the twelve most recent directives always ride, and an older one only when the turn is about it', () => {
   const directives = manyDirectives();
-  const text = 'any word on the cedar order';
-  const out = renderFlexibleBlockWithGates('', directives, null, {}, 'convo', 'individual', buildTurnRelevance(text, { medium: { directives, notes: [], facts: {} } }));
+  const out = directiveHome(directives, 'any word on the cedar order');
 
   const lines = directiveLines(out.text);
   assert.equal(lines.length, DIRECTIVES_RECENT_MAX + 1, 'the recent window plus the one that touches');
@@ -778,28 +795,35 @@ test('the twelve most recent directives always ride, and an older one only when 
 });
 
 test('a turn about nothing held gets the recent window and nothing else', () => {
-  const directives = manyDirectives();
-  const text = 'what should i cook for dinner';
-  const out = renderFlexibleBlockWithGates('', directives, null, {}, 'convo', 'individual', buildTurnRelevance(text, { medium: { directives, notes: [], facts: {} } }));
+  const out = directiveHome(manyDirectives(), 'what should i cook for dinner');
   assert.equal(directiveLines(out.text).length, DIRECTIVES_RECENT_MAX);
   assert.deepEqual(out.gates.directives, { verdict: 'digest', reason: 'partly_kept', dropped: 8 });
 });
 
 test('a directive list inside the window rides whole, and says so', () => {
   const directives = [{ id: 'a', text: 'keep replies short', createdAt: NOW }, { id: 'b', text: 'no calls before ten', createdAt: NOW - 86_400_000 }];
-  const out = renderFlexibleBlockWithGates('', directives, null, {}, 'convo', 'individual', buildTurnRelevance('hey', { medium: { directives, notes: [], facts: {} } }));
+  const out = directiveHome(directives, 'hey');
   assert.equal(directiveLines(out.text).length, 2);
   assert.deepEqual(out.gates.directives, { verdict: 'full', reason: 'all_kept', dropped: 0 });
 
-  const none = renderFlexibleBlockWithGates('', [], null, {}, 'convo', 'individual', buildTurnRelevance('hey', {}));
-  assert.deepEqual(none.gates.directives, { verdict: 'dropped', reason: 'nothing_held' });
+  assert.deepEqual(directiveHome([], 'hey').gates.directives, { verdict: 'dropped', reason: 'nothing_held' });
 });
 
 test('with no router every directive rides, exactly as it always did', () => {
-  const directives = manyDirectives();
-  const out = renderFlexibleBlockWithGates('', directives, null, {}, 'convo', 'individual');
+  const out = directiveHome(manyDirectives(), null);
   assert.equal(directiveLines(out.text).length, 20);
   assert.deepEqual(out.gates, {}, 'no gate ran, so the receipt claims nothing');
+});
+
+test('the flexible block hands <user_directives> to the card, and keeps it without one', () => {
+  // The two homes, in one place: exactly one block renders the tag on each path.
+  const directives = [{ id: 'a', text: 'keep replies short', createdAt: NOW }];
+  const turn = buildTurnRelevance('hey', { medium: { directives, notes: [], facts: {} } });
+  const routed = renderFlexibleBlockWithGates('', directives, null, {}, 'convo', 'individual', turn);
+  assert.equal(directiveLines(routed.text).length, 0, 'the card carries them once a router is in hand');
+  assert.equal(routed.gates.directives, undefined, 'and reports them, so this block does not');
+  assert.ok(routed.text.includes("Here's what little you've got on them so far"), 'the intro still knows they have rules');
+  assert.equal(directiveLines(renderFlexibleBlockWithGates('', directives, null, {}, 'convo', 'individual').text).length, 1);
 });
 
 // ── the gate table: the steering question she just asked ────────────────────
@@ -857,7 +881,8 @@ test('the gate table produces every reason the receipt names, and no other', () 
   collect(renderShortBlockWithHot(cold, NOW, null, dinner, buildTurnRelevance(dinner, { short: cold })).gates);   // none_kept
   collect(renderShortBlockWithHot(fresh, NOW, null, dinner, buildTurnRelevance(dinner, { short: fresh })).gates); // all_kept
   collect(renderShortBlockWithHot([...fresh, ...cold], NOW, null, dinner, buildTurnRelevance(dinner, { short: [...fresh, ...cold] })).gates); // partly_kept
-  collect(renderMediumBlockWithGates({ directives: [], notes: ['x'], facts: { comms_style: 'clipped' } }, buildTurnRelevance(dinner, {})).gates); // kept_always
+  // A fact the identity card does NOT own, or the facts row reads `nothing_held` instead.
+  collect(renderMediumBlockWithGates({ directives: [], notes: ['x'], facts: { work: 'runs a nursery' } }, buildTurnRelevance(dinner, {})).gates); // kept_always
   collect({ clarification: gatePendingClarification(PC, NOW, buildTurnRelevance('ok', {})).report ?? undefined });          // short_turn
   collect({ clarification: gatePendingClarification({ ...PC, at: 0 }, NOW, buildTurnRelevance(dinner, {})).report ?? undefined }); // ttl_expired
 

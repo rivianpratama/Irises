@@ -10,6 +10,7 @@ import { getLongDoc, saveLongDoc } from '../db/repositories/memoryLong.js';
 import { loadMediumBundle } from './mediumTerm.js';
 import { PENDING_EMAIL_TTL_MS } from './shortTerm.js';
 import { renderUserMemoryWithHot, sanitizeLongDoc, splitSections } from './wrappers.js';
+import { renderTenureBlock } from './tenure.js';
 import { sanitizeDirectives } from './preferences.js';
 import { buildTurnRelevance, memoryRelevanceEnabled, type TurnRelevance } from './relevance.js';
 import type { MemoryGateReason, MemoryGateReport, MemoryGateReports } from '../diagnostics/turnTrace.js';
@@ -24,6 +25,10 @@ import type { StoredMessage, UserProfile } from '../db/types.js';
 // short-tier TTLs, which moved to shortTerm.ts with their renderers.
 export { stripScopeSections } from './userContext.js';
 export { RECENT_RESEARCH_TTL_MS, RECENT_RESEARCH_MAX_CHARS, PENDING_EMAIL_TTL_MS } from './shortTerm.js';
+// The coarse relationship clock moved to tenure.ts, where the identity card can reach it without
+// closing a cycle (wrappers.ts imports it, and dossier.ts imports wrappers.ts). Same re-export
+// pattern: climateDrift.ts imports formatDaySpan from here.
+export { formatDaySpan } from './tenure.js';
 
 const THROTTLE_MS = 2 * 60 * 1000; // refresh a dossier at most this often
 const lastUpdate = new Map<string, number>();
@@ -86,62 +91,11 @@ interface PendingEmailContext {
 }
 
 /**
- * The coarse day → week → month → year ladder, with no "ago" on it. THE one place this arithmetic
- * lives: formatAgo below wears it as "~3 weeks ago", and the climate eval's tenure label wears the
- * same string as "you have known this person: ~3 weeks" (climateDrift.ts). They were two copies and
- * they carried the same bug — `Math.floor(days / 365)` reads 0 for days 360-364, which the month
- * branch has already stopped covering, so a year-old relationship rendered "~0 years". The years
- * branch is only ever reached past 360 days, so its smallest honest answer is one.
- *
- * `days` is whole days elapsed, >= 0. Pure.
- */
-export function formatDaySpan(days: number): string {
-  if (days < 7) return `${days} day${days === 1 ? '' : 's'}`;
-  const wk = Math.floor(days / 7);
-  if (wk < 5) return `~${wk} week${wk === 1 ? '' : 's'}`;
-  const mo = Math.floor(days / 30);
-  if (mo < 12) return `~${mo} month${mo === 1 ? '' : 's'}`;
-  const yr = Math.max(1, Math.floor(days / 365));
-  return `~${yr} year${yr === 1 ? '' : 's'}`;
-}
-
-/** Coarse "how long ago" from an epoch-seconds timestamp, for relationship warmth (not facts). */
-function formatAgo(epochSeconds: number | undefined): string | null {
-  if (!epochSeconds || !Number.isFinite(epochSeconds)) return null;
-  const sec = Math.floor(Date.now() / 1000) - epochSeconds;
-  if (sec < 60) return 'just now';
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min} minute${min === 1 ? '' : 's'} ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr} hour${hr === 1 ? '' : 's'} ago`;
-  const day = Math.floor(hr / 24);
-  if (day === 1) return 'yesterday';
-  return `${formatDaySpan(day)} ago`;
-}
-
-/**
- * Convo-only: how long you've known them (tenure) and roughly when you last saw them — so the
- * front line can treat a long-time contact like a regular and welcome a brand-new one lightly.
- * NOT injected into the other agents. "last seen" tracks the last time we saved something about
- * them, so keep it soft context, never a hard fact.
- */
-function renderTenure(profile: UserProfile | null): string {
-  if (!profile) return '';
-  const first = formatAgo(profile.firstSeen);
-  if (!first) return '';
-  // Only mention "last seen" when it's meaningfully more recent than first contact (> ~1 day).
-  const last = formatAgo(profile.lastSeen);
-  const showLast = last && profile.lastSeen - profile.firstSeen > 86400;
-  const line = showLast ? `First seen ${first}; last seen ${last}.` : `First seen ${first}.`;
-  return `## How long you've known them\n${line}\nThis is soft context for warmth only — a long-time contact is a regular, a brand-new one gets a lighter touch. Don't recite these dates back to them.`;
-}
-
-/**
  * Assemble the full context block injected into the Convo system prompt: the Convo-only PLAIN
- * sections (tenure, pending-clarification — system-derived operational
- * data, not memory tiers) followed by the WRAPPED memory tiers (wrappers.ts: preamble → short →
- * medium → flexible LAST for recency). The wrapped part carries its own data tags + handling
- * prose, so the caller injects this string bare — no dataTag('user_context') around it.
+ * sections (pending-clarification, and the tenure section on the pre-card path — system-derived
+ * operational data, not memory tiers) followed by the WRAPPED memory tiers (wrappers.ts: identity
+ * card → short → medium → discovery → flexible LAST for recency). The wrapped part carries its own
+ * data tags + handling prose, so the caller injects this string bare — no dataTag('user_context').
  */
 export async function buildContextBlock(handle: string, currentTurnText?: string): Promise<string> {
   return (await buildContextBlockWithHot(handle, currentTurnText)).block;
@@ -174,10 +128,6 @@ export async function buildContextBlockWithHot(
   const prefs = memory?.prefs ?? {};
 
   const parts: string[] = [];
-
-  // Convo-only: how long you've known them (tenure/recency), for relationship warmth.
-  const tenure = renderTenure(profile);
-  if (tenure) parts.push(tenure);
 
   // Short-tier payload: memory_short rows are the source; the legacy prefs stashes
   // (recent_research / pending_email_contexts) map into synthetic entries so the soak-window
@@ -244,6 +194,15 @@ export async function buildContextBlockWithHot(
         longSections: splitSections(sanitizeLongDoc(longDocMd || (memory?.dossierMd ?? ''), { quiet: true })),
       })
     : null;
+
+  // Convo-only: how long you've known them (tenure/recency), for relationship warmth. With a router
+  // the identity card carries the same clock as one line at the top of the memory stack
+  // (wrappers.ts renderIdentityCard), so this plain section is the pre-card path only — two copies
+  // of "first seen ~9 months ago" would be exactly the duplication the card exists to end.
+  if (!turn) {
+    const tenure = renderTenureBlock(profile, nowMs);
+    if (tenure) parts.push(tenure);
+  }
 
   // Pending clarification: you recently asked the agent a steering question because a look came
   // back thin (they never heard it was thin). Their next message is almost certainly them

@@ -262,12 +262,12 @@ const GROUP_STACK = stack({
   short: [], longDocMd: '## Who they are\nThe nursery crew: Sam (owner), Ada (deliveries), Theo (weekends).',
 }, 'did the cedars land', 'group');
 
-/** The plain Convo section that leads the context block ("## How long you've known them" — dossier.ts
- *  renderTenure). Written out because renderTenure is module-private; the stack below it is what the
- *  memory_stack budget line covers. */
-const TENURE = `## How long you've known them\nYou've been talking with them for about 9 months, and you last spoke earlier today.\nThis is soft context for warmth only — a long-time contact is a regular, a brand-new one gets a lighter touch. Don't recite these dates back to them.`;
-
-const contextBlockWith = (stack: string) => `${TENURE}\n\n${stack}`;
+/** The context block a routed turn assembles around its memory stack. It used to lead with a plain
+ *  "## How long you've known them" section; the identity card at the top of the stack now carries
+ *  that clock as one of its own lines (memory/tenure.ts), so on the path these fixtures measure —
+ *  every one of them builds a router — the stack IS the context block. The pending-clarification
+ *  section is the only other plain part, and no fixture holds one. */
+const contextBlockWith = (stack: string) => stack;
 
 // ── the rest of the per-turn inputs ──────────────────────────────────────────
 

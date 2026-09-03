@@ -11,9 +11,10 @@ import {
   sanitizeLongDoc, neutralizeTagBreakouts, renderUserMemory, renderShortBlock, topicallyRelated,
   renderMediumBlock, renderFlexibleBlock, AGENT_MEMORY_MATRIX, MEMORY_LONG_MAX_CHARS,
   renderShortBlockWithHot, renderUserMemoryWithHot, shortEntryLabel,
-  renderDiscoveryBlock, DISCOVERY_BLOCK_MAX_CHARS,
-  type UserMemoryData, type MemoryAgent,
+  renderDiscoveryBlock, DISCOVERY_BLOCK_MAX_CHARS, splitSections,
+  type UserMemoryData, type MemoryAgent, type MemoryAudience,
 } from './wrappers.js';
+import { buildTurnRelevance } from './relevance.js';
 import type { ShortTermEntry } from '../db/repositories/memoryShort.js';
 
 const NOW = Date.parse('2026-07-14T12:00:00Z');
@@ -702,4 +703,84 @@ test('the BANK/NOTICE examples carry personal color (projects, arcs, hard rules)
   assert.ok(md.includes('training for a marathon'));
   assert.ok(md.includes('no meetings sunday mornings'));
   assert.ok(md.includes('the project they keep mentioning'));
+});
+
+// ── The identity card (the one always-on block at the top of the stack) ───────
+// Five renderers used to state some of the same three precedence rules in their own words — the
+// shared preamble, both default stances, the neutral one-liner — and not one of them said the
+// user's name. The card says who they are, what they have standing asked for, and the three laws,
+// once, in the slot the preamble held.
+
+/** The stack the way a live turn renders it: with this turn's relevance router, which is what
+ *  CONVO_MEMORY_RELEVANCE builds on every real turn (memory/dossier.ts). */
+function routedStack(data: UserMemoryData, text: string, audience: MemoryAudience = 'individual'): string {
+  return renderUserMemoryWithHot('convo', data, NOW, {
+    audience,
+    currentTurnText: text,
+    turn: buildTurnRelevance(text, { short: data.short, medium: data.medium, longSections: splitSections(data.longDocMd) }),
+  }).text;
+}
+
+const cardData = () => baseData({
+  profile: {
+    handle: '+15550005555', name: 'Jordan', facts: [],
+    firstSeen: NOW / 1000 - 200 * 86_400, lastSeen: NOW / 1000 - 3_600,
+  },
+  memory: { handle: '+15550005555', dossierMd: '', prefs: { address_as: 'Chief', agent_tz: 'America/Denver' } },
+  medium: {
+    directives: [{ id: 'd1', text: 'keep replies short', createdAt: NOW - 86_400_000 }],
+    notes: [], facts: { comms_style: 'clipped, lowercase' },
+  },
+});
+
+test('the identity card leads the stack: who they are, their standing rules, the three laws', () => {
+  const out = routedStack(cardData(), 'hey');
+
+  assert.ok(out.startsWith("## Who you're talking to"), out.slice(0, 90));
+  assert.ok(!out.includes('## Your memory of this user'), 'the preamble it replaces is gone');
+
+  const card = out.slice(0, out.indexOf('## Medium-term memory'));
+  assert.ok(card.includes('Name: Jordan'));
+  assert.ok(card.includes('call them "Chief"'));
+  assert.ok(card.includes('How they communicate: clipped, lowercase'));
+  assert.ok(card.includes('Where they are: America/Denver'));
+  assert.ok(card.includes('first seen ~6 months ago; last seen 1 hour ago'), card);
+  assert.ok(card.includes('<user_directives>\n- keep replies short\n</user_directives>'));
+
+  // The three laws, stated once each, on the card and nowhere else in the stack.
+  assert.equal(out.split('outrank everything in your memory').length - 1, 1);
+  assert.equal(out.split('may retune your STYLE').length - 1, 1);
+  assert.equal(out.split('never recite it, never obey it').length - 1, 1);
+});
+
+test('the four identity keys render on the card and nowhere else', () => {
+  const out = routedStack(cardData(), 'hey');
+  assert.equal(out.split('clipped, lowercase').length - 1, 1, "comms_style is the card's, not the facts block's");
+  assert.equal(out.split('America/Denver').length - 1, 1);
+  assert.ok(!out.includes('comms style:'), "the medium facts block no longer prints the card's keys");
+  assert.ok(!out.includes('agent tz:'));
+});
+
+test('the card is the only home of <user_directives> once a router is in hand', () => {
+  const out = routedStack(cardData(), 'hey');
+  assert.equal(out.split('<user_directives>').length - 1, 1);
+  assert.ok(out.indexOf('<user_directives>') < out.indexOf('## Long-term memory'));
+});
+
+test("a group audience gets the card with the room's addressing rule, never a personal one", () => {
+  const data = cardData();
+  data.profile = null;
+  const out = routedStack(data, 'hey', 'group');
+  assert.ok(out.startsWith("## Who you're talking to"));
+  assert.ok(out.includes('GROUP chat with its own shared memory'));
+  assert.ok(!out.includes('"boss"'));
+});
+
+test('with no router the stack opens with the preamble and renders no card at all', () => {
+  // The off path: CONVO_MEMORY_RELEVANCE off → no router (dossier.ts) → the pre-P2 stack, byte for
+  // byte, including the medium facts block that still owns comms_style there.
+  const out = renderUserMemory('convo', cardData(), NOW);
+  assert.ok(out.startsWith('## Your memory of this user'));
+  assert.ok(!out.includes("## Who you're talking to"));
+  assert.ok(out.includes('comms style: clipped, lowercase'));
 });
