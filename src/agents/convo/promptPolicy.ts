@@ -48,7 +48,11 @@ export type BudgetKey = SectionId | 'memory_stack';
  * `memory_stack` is the wrapped memory tiers inside `context_block` (memory/wrappers.ts:
  * identity card → short → medium → discovery → flexible). It has its own line because it is the part that
  * grows with USE rather than with editing — every look, note and directive lands in it — and because
- * a `context_block` ceiling alone cannot say whether the dossier or the tiers moved.
+ * a `context_block` ceiling alone cannot say whether the dossier or the tiers moved. That second
+ * reason is only true while some fixture carries a context block that is MORE than its stack: P2
+ * folded the plain tenure section into the card, which left the steering-question section as the one
+ * plain part a routed block can still have, and the thread-offer fixture carries one so that the two
+ * numbers keep measuring two things.
  *
  * `status_contract` is prose too, but GENERATED prose: the seventeen ENVELOPE_FIELDS descriptions plus
  * the feeling wheel (persona/status.ts), identical on every turn. It is the one line here that cannot
@@ -67,7 +71,7 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
   model_map: 800,              // 387 on a bare checkout — HOST-DEPENDENT, see above
   name_nudge: 165,             // 163 — fixed prose (was 171)
   intro_weave: 770,            // 760 — INTRO_WEAVE_BLOCK (agents/ops/firstMove.ts) (was 795)
-  context_block: 6_050,        // 5,967 — the MATURE fixture, which overtook the cold one in P2 (the cold stack is now 2,873: a card and a slot list). Was 5,950 for 5,837 before the medium tier took back the hard-personal-rules line the ladder deletion dropped with nowhere to land. Was 12,500 for 12,290; P2 sent the discovery scaffold's craft coaching to craft/onboarding.md, gated every memory block on the turn, folded the plain tenure section into the identity card, replaced each tier's You-should/You-MUST-NOT ladder with the two or three lines that tier alone decides, and retired the three seed stances
+  context_block: 6_700,        // 6,617 — the thread-offer fixture: the mature stack (5,967) plus the one plain section a routed block still carries, a steering question outstanding. Was 6,050 for 5,967 while no fixture carried a plain part at all, and 5,950 for 5,837 before the medium tier took back the hard-personal-rules line the ladder deletion dropped with nowhere to land. Was 12,500 for 12,290; P2 sent the discovery scaffold's craft coaching to craft/onboarding.md, gated every memory block on the turn, folded the plain tenure section into the identity card, replaced each tier's You-should/You-MUST-NOT ladder with the two or three lines that tier alone decides, and retired the three seed stances
   active_ops: 1_980,           // 1,946 — two looks in flight, one queued (was 2,040)
   group: 105,                  // 104 — a named group, three participants (was 109)
   tapped_reply: 2_230,         // 2,190 — kind 'assistant' beyond the visible window (the largest of the four) (was 2,290)

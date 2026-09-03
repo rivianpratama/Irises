@@ -84,6 +84,22 @@ export function gatePendingClarification(
   return decide(false, 'none_kept');
 }
 
+/**
+ * The steering-question section: a recent look came back thin, she asked them to narrow it down
+ * instead of telling them it was thin, and their next message is almost certainly the answer.
+ *
+ * Its own function because it is the ONE plain section a routed context block still carries — the
+ * tenure section folded into the identity card in P2 — which makes it the only thing keeping
+ * `context_block` and `memory_stack` two measurements rather than two ceilings over one string. The
+ * ratchet (convo/promptBudget.test.ts) measures it through here rather than through a mirror of it:
+ * the hand-written tenure mirror that used to sit in that file had drifted from the real renderer by
+ * the time anyone looked.
+ */
+export function renderPendingClarification(pc: PendingClarificationCtx): string {
+  const asked = pc.missingFields?.length ? `\nYou specifically asked them for: ${pc.missingFields.join('; ')}.` : '';
+  return `## You just asked them to narrow something down (their next reply likely answers it)\nA recent look at "${pc.request}" came back thin, so you asked them a quick steering question instead of telling them.${asked}\nWhen they reply, treat it as them narrowing THAT ask. delegate_to_ops again with the original ask plus what they just clarified, combined. Do NOT answer it from memory, and do NOT treat it as a brand-new topic. If they clearly changed the subject instead, handle the new thing normally.`;
+}
+
 interface PendingEmailContext {
   emailId?: string; from?: string; subject?: string; summary?: string; severity?: string;
   category?: string; deadlineDate?: string | null; deadlineLabel?: string | null;
@@ -211,11 +227,7 @@ export async function buildContextBlockWithHot(
   // router cannot be built until every loader has answered; it still leads the wrapped tiers, which
   // is the order this block has always read in.
   const clarification = gatePendingClarification(prefs.pending_clarification as PendingClarificationCtx | undefined, nowMs, turn);
-  if (clarification.keep) {
-    const pc = prefs.pending_clarification as PendingClarificationCtx;
-    const asked = pc.missingFields?.length ? `\nYou specifically asked them for: ${pc.missingFields.join('; ')}.` : '';
-    parts.push(`## You just asked them to narrow something down (their next reply likely answers it)\nA recent look at "${pc.request}" came back thin, so you asked them a quick steering question instead of telling them.${asked}\nWhen they reply, treat it as them narrowing THAT ask. delegate_to_ops again with the original ask plus what they just clarified, combined. Do NOT answer it from memory, and do NOT treat it as a brand-new topic. If they clearly changed the subject instead, handle the new thing normally.`);
-  }
+  if (clarification.keep) parts.push(renderPendingClarification(prefs.pending_clarification as PendingClarificationCtx));
 
   // The wrapped memory tiers LAST: preamble → short → medium → flexible (identity/addressing +
   // long doc + directives) in the recency slot; the persona's hard rules stay anchored at the

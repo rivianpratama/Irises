@@ -36,6 +36,7 @@ import {
   renderUserMemoryWithHot, sanitizeLongDoc, splitSections,
   type MemoryAudience, type UserMemoryData,
 } from '../../memory/wrappers.js';
+import { renderPendingClarification } from '../../memory/dossier.js';
 import { buildTurnRelevance } from '../../memory/relevance.js';
 import { sanitizeDirectives } from '../../memory/preferences.js';
 import { coerceStatus, mergeStatus, type AffectState, type ComputedState } from '../../persona/status.js';
@@ -262,12 +263,25 @@ const GROUP_STACK = stack({
   short: [], longDocMd: '## Who they are\nThe nursery crew: Sam (owner), Ada (deliveries), Theo (weekends).',
 }, 'did the cedars land', 'group');
 
-/** The context block a routed turn assembles around its memory stack. It used to lead with a plain
- *  "## How long you've known them" section; the identity card at the top of the stack now carries
- *  that clock as one of its own lines (memory/tenure.ts), so on the path these fixtures measure —
- *  every one of them builds a router — the stack IS the context block. The pending-clarification
- *  section is the only other plain part, and no fixture holds one. */
-const contextBlockWith = (stack: string) => stack;
+/** The one PLAIN section a routed context block still carries — a look came back thin, so she asked
+ *  them to narrow it down and their next message is probably the answer. Rendered through the real
+ *  renderer (memory/dossier.ts), never mirrored here: the hand-written tenure mirror that used to
+ *  sit in this file had drifted from its renderer by the time anyone compared them. */
+const CLARIFICATION = renderPendingClarification({
+  request: 'replacing the warped dock boards',
+  missingFields: ['which supplier the pallet came from', 'whether you want the whole pallet returned or the six boards swapped'],
+  at: FROZEN_MS - 4 * MINUTE,
+});
+
+/** The context block a routed turn assembles: the plain Convo sections first, the wrapped memory
+ *  stack last, joined with a blank line the way buildContextBlockWithHot joins them.
+ *
+ *  It used to lead with a plain "## How long you've known them" section on every turn; the identity
+ *  card at the top of the stack carries that clock now (memory/tenure.ts), so a turn with no
+ *  steering question outstanding assembles a context block that IS its memory stack. One fixture
+ *  carries one, which is what keeps `context_block` and `memory_stack` two measurements: without it
+ *  they are two ceilings over one string, and nothing measures the plain part at all. */
+const contextBlockWith = (stack: string, ...plain: string[]) => [...plain, stack].join('\n\n');
 
 // ── the rest of the per-turn inputs ──────────────────────────────────────────
 
@@ -497,13 +511,15 @@ const FIXTURES: Fixture[] = [
   {
     // 5. THREAD-OFFER turn: her weather carries one standing theme to (maybe) tag, last turn's offer
     // is still owed a bookkeeping answer, and a version note is riding along as the caller addendum.
+    // It is also the one fixture with a steering question outstanding — their message reads like the
+    // answer to it — so this is where the context block's plain part is measured.
     name: 'thread offer with an outcome ask',
     spec: {
       chatContext: {
         isGroupChat: false, participantNames: [], chatName: null,
         senderHandle: HANDLE, senderProfile: MATURE_PROFILE,
       },
-      contextBlock: contextBlockWith(MATURE_STACK),
+      contextBlock: contextBlockWith(MATURE_STACK, CLARIFICATION),
       extraSection: UPDATE_NOTE,
       tools: TOOLS_1TO1,
       history: HISTORY_12,
