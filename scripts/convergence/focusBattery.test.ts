@@ -47,15 +47,21 @@ import {
  * SCORER, so the fixture says "inside its ceiling" and lets the ceiling be whatever it is.
  */
 const UNDER_CEILING = 50;
-function sections(over?: Partial<Record<BudgetKey, number>>): TurnTraceDetail['prompt']['sections'] {
+function sections(
+  over?: Partial<Record<BudgetKey, number>>,
+  extra?: Partial<Record<BudgetKey, number>>,
+): TurnTraceDetail['prompt']['sections'] {
   const present: BudgetKey[] = [
     'persona', 'status_contract', 'context_block', 'current_time', 'turn_focus',
     'behavior_anchor', 'json_anchor',
   ];
-  return present.map(name => ({
+  const rows = present.map(name => ({
     name,
     chars: over?.[name] ?? Math.max(1, PROMPT_BUDGET[name] - UNDER_CEILING),
-  })) as TurnTraceDetail['prompt']['sections'];
+  }));
+  // Sections a plain 1:1 turn does not carry at all — a burst, a group header, the ops in flight.
+  for (const [name, chars] of Object.entries(extra ?? {})) rows.push({ name: name as BudgetKey, chars: chars as number });
+  return rows as TurnTraceDetail['prompt']['sections'];
 }
 
 function blocks(over?: MemoryGateReports): MemoryGateReports {
@@ -73,6 +79,8 @@ function blocks(over?: MemoryGateReports): MemoryGateReports {
 
 interface TracePatch {
   sectionsOver?: Partial<Record<BudgetKey, number>>;
+  /** Sections the plain fixture does not carry, added at whatever size the case needs. */
+  sectionsExtra?: Partial<Record<BudgetKey, number>>;
   bubbles?: Partial<TurnTraceDetail['bubbles']>;
   shortHotLook?: TurnTraceDetail['gates']['memory']['shortHotLook'];
   hits?: TurnTraceDetail['gates']['memory']['hits'];
@@ -84,7 +92,7 @@ interface TracePatch {
 function trace(patch: TracePatch = {}): TurnTraceDetail {
   return {
     prompt: {
-      sections: sections(patch.sectionsOver),
+      sections: sections(patch.sectionsOver, patch.sectionsExtra),
       personaChars: 138_102,
       dynChars: 11_000,
       anchorChars: 2_908,
@@ -236,6 +244,27 @@ test('a prose section over its ceiling fails and names the key; a data section o
   const data = score(item('f1'), { trace: trace({ sectionsOver: { context_block: PROMPT_BUDGET.context_block * 3 } }) });
   assert.notEqual(data.verdict, 'BUDGET_BREACH');
   assert.ok(data.checks.some(c => /memory_ceiling: warn/.test(c)), data.checks.join(' | '));
+});
+
+test('every data section is weighed by name, not just the dossier', () => {
+  // expectations.ts promises that a DATA key's overshoot is "REPORTED with the number and never
+  // failed". It was only half true: context_block was the one key any check looked at, so a burst
+  // or a tapped reply over its ceiling appeared in no check line and no cell.
+  const r = score(item('f1'), { trace: trace({ sectionsExtra: { burst: PROMPT_BUDGET.burst * 2 } }) });
+  assert.notEqual(r.verdict, 'BUDGET_BREACH');
+  const line = r.checks.find(c => c.startsWith('memory_ceiling:'));
+  assert.ok(line, r.checks.join(' | '));
+  assert.match(line, /warn/);
+  assert.match(line, new RegExp(`burst ${PROMPT_BUDGET.burst * 2}`));
+  assert.match(line, new RegExp(String(PROMPT_BUDGET.burst)));
+
+  // …and on a clean turn the check says which data sections it weighed, with their ceilings, so a
+  // reader can see that a section was READ rather than skipped.
+  const clean = score(item('f1'), { trace: trace({ sectionsExtra: { burst: 100, tapped_reply: 200 } }) });
+  const cleanLine = clean.checks.find(c => c.startsWith('memory_ceiling:'));
+  assert.ok(cleanLine, clean.checks.join(' | '));
+  assert.match(cleanLine, /memory_ceiling: pass/);
+  for (const k of ['context_block', 'burst', 'tapped_reply']) assert.match(cleanLine, new RegExp(k));
 });
 
 test('MEMORY_DUMP: nothing touched the turn and the notes still rendered whole', () => {

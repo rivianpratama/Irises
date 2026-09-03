@@ -77,7 +77,10 @@ export const THREADS_SELECT_LABEL = 'threads:select';
  *     it). Those are scored.
  *   • DATA keys grow with the person, not with the editing: the dossier and its memory stack, a
  *     burst of three messages, two looks in flight, a tapped reply. A live turn legitimately carries
- *     more than a fixture, so an overshoot is REPORTED with the number and never failed.
+ *     more than a fixture, so an overshoot is REPORTED with the number and never failed. Reported
+ *     where: focusBattery's `memory_ceiling` prints every one of these keys that the receipt carries,
+ *     with its ceiling beside it, and warns (never fails) on an overshoot. A promise like this one is
+ *     worth nothing unless some check keeps it — it used to read `context_block` alone.
  *
  * `memory_stack` sits with the data keys and is not readable from the receipt at all — it is a part
  * of `context_block`, not a section of its own — so nothing reads it out here; it stays in the union

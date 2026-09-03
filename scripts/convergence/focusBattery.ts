@@ -92,6 +92,7 @@ import { salientTokens, touchesTurn } from '../../src/memory/topicality.js';
 import {
   BUBBLE_HARD_CAP,
   BUBBLE_LAW_MAX,
+  DATA_BUDGET_KEYS,
   LOOP_OPENING_GAP_MS,
   MAX_BUBBLE_WORDS,
   MIN_TRANSCRIPT_SHARE,
@@ -289,19 +290,31 @@ export const CHECKS: Record<CheckId, FocusCheck> = {
   // MEMORY_DUMP verdict is carried by no_memory_dump below, which reads the gates instead of a size.
   memory_ceiling: {
     verdict: 'MEMORY_DUMP',
-    why: "the memory stack's size and the transcript's share of the context, both reported against "
-      + 'the fixture numbers rather than failed on them',
+    why: 'the size of every turn-shaped section — the dossier, a burst, the ops in flight, a tapped '
+      + "reply — and the transcript's share of the context: all reported against the fixture numbers "
+      + 'rather than failed on them',
     run(ev) {
       const p = ev.trace!.prompt;
-      const block = p.sections.find(s => s.name === 'context_block');
-      const notes: string[] = [];
-      const share = `transcript share ${p.transcriptShare} (floor ${MIN_TRANSCRIPT_SHARE}), system ${p.systemChars} chars over ${p.transcriptRows} rows`;
-      if (block && block.chars > PROMPT_BUDGET.context_block) {
-        notes.push(`context_block ${block.chars} chars over the ${PROMPT_BUDGET.context_block} fixture ceiling — read the gates before calling it a defect`);
+      // EVERY data key, not just the dossier. The prose half is scored by prose_budget and skips
+      // these deliberately, so if this check read one key the rest would be measured nowhere at all
+      // — which is not what expectations.ts promises about them. (`memory_stack` is in the key list
+      // and never in the receipt: it is a part of context_block rather than a section.)
+      const weighed: string[] = [];
+      const over: string[] = [];
+      for (const s of p.sections) {
+        const key = s.name as BudgetKey;
+        if (!DATA_BUDGET_KEYS.includes(key)) continue;
+        const ceiling = PROMPT_BUDGET[key];
+        weighed.push(`${key} ${s.chars}/${ceiling}`);
+        if (s.chars > ceiling) over.push(`${key} ${s.chars} over the ${ceiling} fixture ceiling`);
       }
+      const share = `transcript share ${p.transcriptShare} (floor ${MIN_TRANSCRIPT_SHARE}), system ${p.systemChars} chars over ${p.transcriptRows} rows`;
+      const read = weighed.length ? weighed.join(', ') : 'no turn-shaped section in the receipt';
+      const notes: string[] = [];
+      if (over.length) notes.push(`${over.join('; ')} — read the gates before calling it a defect`);
       if (p.transcriptShare < MIN_TRANSCRIPT_SHARE) notes.push(`transcript share ${p.transcriptShare} below the ${MIN_TRANSCRIPT_SHARE} floor`);
-      if (notes.length) return { status: 'warn', detail: notes.join('; ') };
-      return { status: 'pass', detail: `context_block ${block ? block.chars : 0} chars · ${share}` };
+      if (notes.length) return { status: 'warn', detail: `${notes.join('; ')} · weighed ${read}` };
+      return { status: 'pass', detail: `${read} · ${share}` };
     },
   },
 
