@@ -509,7 +509,9 @@ export function renderMediumBlockWithGates(bundle: MediumBundle, turn?: TurnRele
 
   // A note or a fact that names a calendar date carries how far away it is, counted here rather
   // than by the model (memory/datedMemory.ts). Routed path only, so a payload with no router is the
-  // stored text byte for byte. Dated after the digest clip, so a date the clip took is not dated.
+  // stored text byte for byte. Run AFTER the digest clip and told to skip any line the clip cut, so
+  // a half-taken date ("october 12" cut to "october 1") is never counted as the date it now reads
+  // as — datedMemory.ts declines every line ending in the clip mark.
   const payload = turn
     ? annotateDates(parts.join('\n\n'), opts.nowMs ?? Date.now(), opts.timeZone ?? DEFAULT_TZ)
     : parts.join('\n\n');

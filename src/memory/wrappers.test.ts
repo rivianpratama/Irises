@@ -889,6 +889,32 @@ test('with no year it reads the nearest occurrence, never a year in the wrong di
   assert.equal(annotateDates('the january 5, 2026 filing', SEP3, DENVER), 'the january 5, 2026 (241 days ago) filing');
 });
 
+test('a line the gate already clipped carries no date — the clip may have taken half of it', () => {
+  // The medium gate stands an off-topic note in as an 80-character digest, and clip() cuts at 80
+  // characters with no token boundary. Land the cut inside the day and "october 12" becomes
+  // "october 1": a date the note does not contain, a count eleven days off, and the suffix sitting
+  // BEFORE the ellipsis so nothing in the prompt says the line was ever cut. The same cut halves a
+  // year just as happily ("october 12, 2027" → "october 12, 202").
+  const note = 'dana and sam are getting married at the barn outside bend on saturday october 12, bring boots';
+  const data = baseData({
+    memory: { handle: '+15550005555', dossierMd: '', prefs: { agent_tz: DENVER } },
+    medium: { directives: [], notes: [note], facts: {} },
+  });
+  const out = renderUserMemoryWithHot('convo', data, SEP3, {
+    currentTurnText: 'what should i cook for dinner',
+    turn: buildTurnRelevance('what should i cook for dinner', { medium: data.medium }),
+  }).text;
+  assert.ok(out.includes('saturday october 1…'), `the digest really does halve the day: ${out}`);
+  assert.ok(!out.includes('(in 28 days)'), `and the halved day is not dated: ${out}`);
+  assert.ok(!out.includes(' days)'), `nothing on a clipped line is dated at all: ${out}`);
+
+  assert.equal(
+    annotateDates('- the mediation over the disputed invoice is october 12, 202…', SEP3, DENVER),
+    '- the mediation over the disputed invoice is october 12, 202…',
+    'a halved YEAR is not a confident parse either',
+  );
+});
+
 test('it counts against THEIR midnight, not the host\'s', () => {
   // 04:00 UTC on the 4th is 22:00 on the 3rd in Denver, so the same stored date is today in one
   // zone and tomorrow in the other.

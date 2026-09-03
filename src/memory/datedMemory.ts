@@ -63,8 +63,22 @@ function suffix(days: number): string {
   return days > 0 ? ` (in ${unit})` : ` (${unit} ago)`;
 }
 
-/** The first date in one line, dated. '' when there is nothing to date. */
+/** The mark a caller leaves when it shortened a line to fit — memory/wrappers.ts clip() and
+ *  clipSection() both end a cut line with it. */
+const CLIPPED_MARK = '…';
+
+/** The first date in one line, dated. The line back unchanged when there is nothing to date. */
 function annotateLine(line: string, nowMs: number, timeZone: string): string {
+  // A line somebody already CUT is not a line this can read. The medium gate stands an off-topic
+  // note in as an 80-character digest and cuts at the character, not at a token: land the cut inside
+  // the day and "october 12" is "october 1" — a real date, eleven days off what the note says — and
+  // land it inside the year and "october 12, 2027" is "october 12, 202", which parses as a yearless
+  // october 12. Both are confident parses of text the user never wrote, and the suffix would go in
+  // BEFORE the ellipsis, so nothing in the prompt would even say the line was cut. So: a visibly
+  // clipped line carries no count. The full text of the same note (a note that touches the turn
+  // rides whole) still does.
+  if (line.trimEnd().endsWith(CLIPPED_MARK)) return line;
+
   const m = DATE_RE.exec(line);
   if (!m) return line;
   const month = MONTHS[m[1].slice(0, 3).toLowerCase()];
