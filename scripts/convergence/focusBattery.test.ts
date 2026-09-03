@@ -197,6 +197,16 @@ test('incomplete receipts are UNSCORED before any check runs', () => {
   assert.equal(r.verdict, 'UNSCORED');
 });
 
+test('a round that measured nothing at all is UNSCORED, not eight silences', () => {
+  // A dead or misconfigured instance answers nothing AND files nothing. Reading that as SILENT ×8
+  // exits 1 under a FAILURE headline, which is exactly the confusion the third exit code exists to
+  // prevent: "the code is wrong" and "nothing was measured" want opposite responses.
+  const r = score(item('f1'), { bubbles: [], replyMs: null, receiptsUsable: false, trace: null, select: null });
+  assert.equal(r.verdict, 'UNSCORED');
+  // …but a real message answered with nothing, on a round that DID read receipts, is still SILENT.
+  assert.equal(score(item('f1'), { bubbles: [], replyMs: null }).verdict, 'SILENT');
+});
+
 test('an on-time clean turn is PASS and a slow one is LATE', () => {
   assert.equal(score(item('f1'), { replyMs: LATE_AFTER_MS + 1 }).verdict, 'LATE');
 });

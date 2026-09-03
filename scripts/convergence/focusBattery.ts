@@ -731,7 +731,10 @@ export interface Scored {
  *
  * PRECEDENCE, in order, and each step is a different question:
  *   unsendable → PENDING   this harness cannot ask this question at all
- *   no reply   → SILENT    a real message answered with nothing
+ *   no reply   → SILENT    a real message answered with nothing — but only on a round that read
+ *                          SOMETHING back. A round that measured nothing at all answers nothing
+ *                          either, and eight silences under a FAILURE headline is the wrong report
+ *                          for a dead instance: that is what the inconclusive exit code is for.
  *   no receipt → UNSCORED  a verdict the evidence cannot support is not a verdict
  *   a check failed         the never-event fired; the FIRST failing check in the item's own order owns
  *                          the verdict, so the item's list is written most-specific-last
@@ -745,7 +748,11 @@ export function scoreItem(item: FocusItem, ev: TurnEvidence, opts: { lateAfterMs
   if (item.unsendable) {
     return { verdict: 'PENDING', evidence: item.unsendable, checks: ['not sent: ' + item.unsendable] };
   }
-  if (!ev.bubbles.length && ev.replyMs === null) {
+  // `receiptsUsable` guards this: silence is only a FAILURE on a round that read something back.
+  // When the whole round measured nothing — no rows, no receipts, an instance that is down or
+  // pointed at the wrong --db — every item would otherwise come back SILENT, and SILENT is a
+  // failure, so the round would exit 1 saying "8 FAILURE(S)" about code it never reached.
+  if (ev.receiptsUsable && !ev.bubbles.length && ev.replyMs === null) {
     return { verdict: 'SILENT', evidence: 'no assistant row at all for this chat', checks: ['reply: NONE'] };
   }
   const checks: string[] = [`reply: ${ev.replyMs === null ? 'no timing' : `+${Math.round(ev.replyMs / 1000)}s`}, ${ev.bubbles.length} bubble row(s)`];
@@ -866,7 +873,9 @@ ${BATTERY.length} probes, ${SENDABLE.length} of them sendable from here. Read th
 
 Verdicts:
   PASS              every check this item runs came back clean
-  SILENT            no assistant row at all — a real message answered with nothing
+  SILENT            no assistant row at all — a real message answered with nothing. Only on a round
+                    that read receipts back: a round that measured NOTHING is inconclusive, not nine
+                    failures
   OFF_TOPIC_LEAK    something held surfaced on a turn it has nothing to do with
   MEMORY_DUMP       what she holds got recited instead of used
   RE_DELIVERY       a look she already delivered arrived a second time
