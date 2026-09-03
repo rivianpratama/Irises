@@ -262,6 +262,43 @@ test('with AFFECT_DETERMINISTIC off, the gauges and the ledger carry forward unc
   }
 });
 
+// The PROMPT half of the same flag, and the point is that there isn't one. The gauges reach the
+// model as four words now, computed from whatever the record carries — so the block renders the same
+// shape whether the arithmetic ran or froze, and the only difference a flip can make is which words
+// those are. Pinned because the alternative is a second prompt to maintain: a render that read the
+// flag would hand her one weather block on and another off, and no test would notice which she got.
+test('AFFECT_DETERMINISTIC off freezes the gauges, and the block reads the same either way', () => {
+  const prior = carried(0, { warmth: 81, patience: 62, social_battery: 44, anxiety: 37 });
+  const emitted = coerceStatus({ ...RAW_V2, mood_shift: 'dipped' })!;
+  const history: MoodPoint[] = [{ level: 72, core: 'powerful', label: 'hopeful', at: 0 }];
+  const before = process.env.AFFECT_DETERMINISTIC;
+  try {
+    process.env.AFFECT_DETERMINISTIC = 'false';
+    const frozen = mergeStatus(emitted, COMPUTED, 9000, prior);
+    // Every gauge exactly as it stood. (The ledger and the null receipt are the test above.)
+    assert.deepEqual(
+      affectGaugesFrom(frozen), affectGaugesFrom(prior),
+      'a gauge moved with the arithmetic off — there is no emitted number left to have moved it',
+    );
+
+    const off = renderStatusForPrompt({ last: frozen, moodHistory: history }, COMPUTED);
+    process.env.AFFECT_DETERMINISTIC = 'true';
+    const on = renderStatusForPrompt({ last: frozen, moodHistory: history }, COMPUTED);
+    assert.equal(
+      off, on,
+      'the weather block reads AFFECT_DETERMINISTIC. It must not: the flag gates the arithmetic that '
+      + 'produces the record, never the rendering of a record, or flipping it changes the prompt as '
+      + 'well as the numbers and there are two prompts to keep honest instead of one',
+    );
+
+    // …and the comparison is not vacuous: what it rendered is the FROZEN row, band for band.
+    assert.match(off, /warmth easy, patience ordinary, social battery half, anxiety quiet/);
+  } finally {
+    if (before === undefined) delete process.env.AFFECT_DETERMINISTIC;
+    else process.env.AFFECT_DETERMINISTIC = before;
+  }
+});
+
 // The row on disk the morning after the deploy: seventeen keys, no `mood_shift`, no ledger. Her
 // state has to survive it — the gauges she had are the gauges she keeps — and nothing may seed at 0,
 // which on a 1-100 gauge would read as the worst moment of her life.
