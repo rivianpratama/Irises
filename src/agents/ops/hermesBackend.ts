@@ -507,16 +507,18 @@ export class HermesBackend implements EngineBackend {
       const out = await this.requestStream('/v1/chat/completions', {
         method: 'POST', headers,
         body: JSON.stringify({ model: 'hermes-agent', messages: [{ role: 'user', content }], stream: true }),
-      }, ctx);
+      }, ctx, ctx.timeoutMs);
       if (typeof out !== 'string') throw new EngineRunError('hermes returned no streamed content', 'llm_error');
       return out;
     }
 
+    // ctx.timeoutMs (undefined on an ordinary leg → the module-wide window, unchanged): a leg the
+    // caller widened deliberately must not be cut at the standard transport budget.
     const res = await this.requestText('/v1/chat/completions', {
       method: 'POST',
       headers,
       body: JSON.stringify({ model: 'hermes-agent', messages: [{ role: 'user', content }], stream: false }),
-    }, ctx.signal);
+    }, ctx.signal, ctx.timeoutMs);
     this.throwForStatus(res, 'chat completion');
     const data = this.parseJson<ChatCompletionResponse>(res, 'chat completion');
     const out = data.choices?.[0]?.message?.content;

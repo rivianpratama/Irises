@@ -158,6 +158,33 @@ test('askEngine: the tag names its own session, and the reply comes back unshape
   assert.equal(body.messages[0].content, 'what do you know about them?', 'no task header on a utility ask');
 });
 
+test('runTask: ctx.timeoutMs is THIS leg\'s transport budget (and its absence is the standard one)', async () => {
+  // The found bug ran the other way: a leg the caller had widened to 15 minutes was still cut at the
+  // module-wide 225s window. Proven here with the window pinned tiny instead — a 5ms budget must give
+  // up on the CALLER's clock, not four minutes later.
+  const hanging = (async (_u: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_res, rej) => {
+    const fail = () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    if (init?.signal?.aborted) fail();
+    else init?.signal?.addEventListener('abort', fail, { once: true });
+  })) as typeof fetch;
+  const be = new HermesBackend({ fetchFn: hanging });
+  const t0 = Date.now();
+  await assert.rejects(be.runTask('the prompt', mkTask(), { timeoutMs: 5 }), (e: Error) => e.name === 'AbortError');
+  assert.ok(Date.now() - t0 < 2_000, 'the caller\'s budget decided, not ENGINE_TIMEOUT_MS');
+
+  // …and the streaming path, which keeps its own window over the whole stream.
+  const prev = process.env.HERMES_STREAM;
+  process.env.HERMES_STREAM = 'on';
+  try {
+    const streamed = new HermesBackend({ fetchFn: hanging });
+    const t1 = Date.now();
+    await assert.rejects(streamed.runTask('the prompt', mkTask(), { timeoutMs: 5 }), (e: Error) => e.name === 'AbortError');
+    assert.ok(Date.now() - t1 < 2_000, 'the streamed leg honours it too');
+  } finally {
+    if (prev === undefined) delete process.env.HERMES_STREAM; else process.env.HERMES_STREAM = prev;
+  }
+});
+
 test('askEngine: opts.timeoutMs is the budget, and it aborts the request', async () => {
   const be = new HermesBackend({
     fetchFn: (async (_u: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_res, rej) => {

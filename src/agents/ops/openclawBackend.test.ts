@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { OpenClawBackend, openclawSessionKey } from './openclawBackend.js';
 import { OPENCLAW_TASK_HEADER, OPENCLAW_ONBOARDING_MESSAGE, onboardingVersion } from './openclawDoctrine.js';
-import { EngineUnavailableError, EngineRunError } from './engineBackend.js';
+import { EngineUnavailableError, EngineRunError, ENGINE_TIMEOUT_MS } from './engineBackend.js';
 import { buildTaskPrompt } from './client.js';
 import { emptyMedia } from '../../webhook/types.js';
 import type { OpsTask } from '../types.js';
@@ -93,6 +93,20 @@ test('channelSend: transport error → EngineUnavailableError, socket dropped, n
   assert.equal(createdCount(), 2, 'a fresh client was dialed after the poisoned one was dropped');
   assert.equal(calls.length, 1);
   assert.equal(calls[0].params.message, 'retry works');
+});
+
+test('runTask: ctx.timeoutMs sets BOTH the gateway run timeout and the RPC wait', async () => {
+  const calls: Call[] = [];
+  const { factory } = fakeClientFactory(calls);
+  const be = new OpenClawBackend({ createClient: factory });
+
+  await be.runTask('p', mkTask(), { timeoutMs: 885_000 });
+  assert.equal(calls[0].params.timeout, 885, 'the engine is told the widened window, in seconds');
+  assert.equal(calls[0].opts?.timeoutMs, 900_000, 'and the RPC waits 15s past it');
+
+  await be.runTask('p', mkTask(), {});
+  assert.equal(calls[1].params.timeout, Math.ceil(ENGINE_TIMEOUT_MS / 1000), 'no ctx budget → the module-wide window, as before');
+  assert.equal(calls[1].opts?.timeoutMs, ENGINE_TIMEOUT_MS + 15_000);
 });
 
 test('runTask: the doctrine header leads and the task prompt below it is passed through untouched', async () => {

@@ -5,7 +5,7 @@ process.env.TZ = 'UTC';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resetEngineBackendCache, getEngineBackend, withEngineSlot, engineSlotState, runViaEngine, computeEngineTimeoutMs, computeEngineQueueWaitMs, EngineRunError, EngineUnavailableError, type EngineBackend } from './engineBackend.js';
+import { resetEngineBackendCache, getEngineBackend, withEngineSlot, engineSlotState, runViaEngine, computeEngineTimeoutMs, computeEngineQueueWaitMs, standardLegBudgetMs, browserLegBudgetMs, BROWSER_LEG_BUDGET_MS, EngineRunError, EngineUnavailableError, type EngineBackend } from './engineBackend.js';
 import { getTraces, clearTraces } from '../../diagnostics/trace.js';
 import { runTask, buildTaskPrompt, looksLikeMiss } from './client.js';
 import { emptyMedia } from '../../webhook/types.js';
@@ -72,6 +72,40 @@ test('computeEngineTimeoutMs: default, explicit override, and the small-orchestr
   // every slow engine surfaced as a synthetic DeadlineError instead of a mapped timeout.
   assert.equal(computeEngineTimeoutMs({ OPS_TASK_TIMEOUT_MS: '20000' }), 15_000);
   assert.equal(computeEngineTimeoutMs({ OPS_TASK_TIMEOUT_MS: '6000' }), 5_000, 'floored, never zero/negative');
+});
+
+test('standardLegBudgetMs: the orchestrator deadline, default four minutes', () => {
+  assert.equal(standardLegBudgetMs({}), 240_000);
+  assert.equal(standardLegBudgetMs({ OPS_TASK_TIMEOUT_MS: '600000' }), 600_000);
+});
+
+test('browserLegBudgetMs: unset is today, a number is taken as written, a bare switch-on is 15 min', () => {
+  // The env IS the flag: an install that never sets it must keep the leg it has always had.
+  assert.equal(browserLegBudgetMs({}), null);
+  assert.equal(browserLegBudgetMs({ OPS_BROWSER_TASK_TIMEOUT_MS: '' }), null);
+  assert.equal(browserLegBudgetMs({ OPS_BROWSER_TASK_TIMEOUT_MS: '  ' }), null);
+  assert.equal(browserLegBudgetMs({ OPS_BROWSER_TASK_TIMEOUT_MS: 'off' }), null);
+  assert.equal(browserLegBudgetMs({ OPS_BROWSER_TASK_TIMEOUT_MS: '0' }), null);
+  assert.equal(browserLegBudgetMs({ OPS_BROWSER_TASK_TIMEOUT_MS: '-1' }), null, 'a nonsense window is not a budget');
+  assert.equal(browserLegBudgetMs({ OPS_BROWSER_TASK_TIMEOUT_MS: 'nonsense' }), null);
+  assert.equal(browserLegBudgetMs({ OPS_BROWSER_TASK_TIMEOUT_MS: '600000' }), 600_000);
+  assert.equal(browserLegBudgetMs({ OPS_BROWSER_TASK_TIMEOUT_MS: 'on' }), BROWSER_LEG_BUDGET_MS);
+  assert.equal(browserLegBudgetMs({ OPS_BROWSER_TASK_TIMEOUT_MS: 'TRUE' }), BROWSER_LEG_BUDGET_MS);
+  // `1` is the switch every other flag here takes, not a one-millisecond window.
+  assert.equal(browserLegBudgetMs({ OPS_BROWSER_TASK_TIMEOUT_MS: '1' }), BROWSER_LEG_BUDGET_MS);
+  assert.equal(BROWSER_LEG_BUDGET_MS, 900_000, '15 minutes — the browser work the live runs actually needed');
+});
+
+test('computeEngineTimeoutMs: a leg budget widens the transport window and never narrows it', () => {
+  // The found bug: a 15-minute leg cut at the standard 225s transport window, and the finished
+  // answer lost to the aborted client.
+  assert.equal(computeEngineTimeoutMs({}, 900_000), 885_000);
+  assert.equal(computeEngineTimeoutMs({ ENGINE_TIMEOUT_MS: '225000' }, 900_000), 885_000,
+    'a stale operator window cannot cut a leg the operator armed for longer');
+  assert.equal(computeEngineTimeoutMs({ ENGINE_TIMEOUT_MS: '600000' }, 60_000), 600_000,
+    'a leg budget below the standard window leaves the standard window alone');
+  assert.equal(computeEngineTimeoutMs({}, undefined), computeEngineTimeoutMs({}), 'no leg budget → today');
+  assert.equal(computeEngineTimeoutMs({}, 0), computeEngineTimeoutMs({}), 'nor a zero one');
 });
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {

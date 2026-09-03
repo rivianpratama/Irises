@@ -15,6 +15,10 @@ import type { OpsTask, OpsResult, OpsDebrief, OpsFailureCause } from '../types.j
 export interface EngineRunContext {
   onProgress?: (milestoneKey: string) => void;
   signal?: AbortSignal;
+  /** This ONE call's transport budget, overriding the adapter's module-wide ENGINE_TIMEOUT_MS.
+   *  Set only by a caller that knows this leg is wider than the standard one — today the walled-URL
+   *  browser budget (ops/client.ts). Absent means "the standard window", byte for byte as before. */
+  timeoutMs?: number;
 }
 
 /** A reminder/automation living ON THE ENGINE (its cron owns scheduling; Irises holds no rows). */
@@ -180,14 +184,61 @@ export interface EngineBackend {
  * 30s transport timeout — the deadline always won, and every slow engine looked like a synthetic
  * DeadlineError instead of a mapped timeout).
  */
-export function computeEngineTimeoutMs(env: NodeJS.ProcessEnv): number {
+export function computeEngineTimeoutMs(env: NodeJS.ProcessEnv, legBudgetMs?: number): number {
   const explicit = Number(env.ENGINE_TIMEOUT_MS);
-  if (Number.isFinite(explicit) && explicit > 0) return explicit;
-  const orch = Number(env.OPS_TASK_TIMEOUT_MS) || 4 * 60_000;
-  return Math.min(Math.max(30_000, orch - 15_000), Math.max(5_000, orch - 5_000));
+  const standard = Number.isFinite(explicit) && explicit > 0
+    ? explicit
+    : transportWindowFor(Number(env.OPS_TASK_TIMEOUT_MS) || 4 * 60_000);
+  // A leg the caller widened deliberately (the walled-URL browser budget) needs a transport window
+  // derived from ITS deadline, not from the standard one — the found bug is a 15-minute browser leg
+  // cut at 225s with the finished answer lost to the aborted client. `max`, so this can only ever
+  // widen: an operator's own bigger ENGINE_TIMEOUT_MS still stands, and no leg budget at all leaves
+  // the number exactly as it was.
+  if (!legBudgetMs || !Number.isFinite(legBudgetMs)) return standard;
+  return Math.max(standard, transportWindowFor(legBudgetMs));
+}
+
+/** The transport window that sits INSIDE a leg deadline of `legMs`: give up ~15s early so the
+ *  failure is a clean mapped result rather than the orchestrator's synthetic DeadlineError, clamped
+ *  on both sides for the small-deadline case computeEngineTimeoutMs documents above. */
+function transportWindowFor(legMs: number): number {
+  return Math.min(Math.max(30_000, legMs - 15_000), Math.max(5_000, legMs - 5_000));
 }
 
 export const ENGINE_TIMEOUT_MS = computeEngineTimeoutMs(process.env);
+
+/** The orchestrator's per-leg deadline for an ORDINARY task — `OPS_TASK_TIMEOUT_MS`, four minutes
+ *  by default. Declared here, beside the transport window derived from it, so the deadline and the
+ *  window can never be read two different ways; the orchestrator holds it as a module constant. */
+export function standardLegBudgetMs(env: NodeJS.ProcessEnv): number {
+  return Number(env.OPS_TASK_TIMEOUT_MS || 4 * 60_000);
+}
+
+/** The leg budget a walled-URL browser task gets when `OPS_BROWSER_TASK_TIMEOUT_MS` is switched on
+ *  without a number of its own: 15 minutes, the window the live Instagram re-tests actually needed
+ *  (~6–15 min of browser work, cut at ~225s). */
+export const BROWSER_LEG_BUDGET_MS = 900_000;
+
+/**
+ * The wider leg budget for a task the engine was told to open a browser for, or `null` when the
+ * standard budget applies.
+ *
+ * The env var IS the flag: unset (or `off`/`0`/junk) means every leg keeps the deadline and the
+ * transport window it has today, byte for byte. A number is taken as written — the operator's word
+ * is final, as with ENGINE_TIMEOUT_MS above — and the switch-on words `threadingEnabled()` accepts
+ * (`on`/`true`/`yes`/`1`) arm the documented BROWSER_LEG_BUDGET_MS default. `1` reads as the switch
+ * rather than as one millisecond on purpose: it is the value an operator copying the other flags
+ * types, and a one-millisecond browser window is not a thing anyone means.
+ *
+ * Pure: the env is injected, so the caller decides when it is read.
+ */
+export function browserLegBudgetMs(env: NodeJS.ProcessEnv): number | null {
+  const raw = (env.OPS_BROWSER_TASK_TIMEOUT_MS || '').trim().toLowerCase();
+  if (raw === '') return null;
+  if (['true', 'on', 'yes', '1'].includes(raw)) return BROWSER_LEG_BUDGET_MS;
+  const ms = Number(raw);
+  return Number.isFinite(ms) && ms > 0 ? ms : null;
+}
 
 /**
  * How long a run may sit in the engine-slot queue below before it gives up and fails honestly.
@@ -422,7 +473,7 @@ export async function runViaEngine(
     } else if (err instanceof EngineUnavailableError) {
       mapped = failureResult(task, 'llm_error', `engine unreachable: ${err.message}`);
     } else if ((err as Error)?.name === 'AbortError' || (err as Error)?.name === 'TimeoutError') {
-      mapped = failureResult(task, 'timeout', `engine call exceeded ${ENGINE_TIMEOUT_MS}ms`);
+      mapped = failureResult(task, 'timeout', `engine call exceeded ${ctx.timeoutMs ?? ENGINE_TIMEOUT_MS}ms`);
     } else {
       mapped = failureResult(task, 'llm_error', String((err as Error)?.message ?? err));
     }

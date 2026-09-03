@@ -122,6 +122,10 @@ export class OpenClawBackend implements EngineBackend {
     // they land after the output contract, so bare interpolation put user text in the prompt's most
     // obeyed position.
     const message = `${OPENCLAW_TASK_HEADER}\n\n${prompt}${renderAttachmentBlock(all)}`;
+    // This leg's transport budget: ctx.timeoutMs when the caller widened the leg (the walled-URL
+    // browser budget), the module-wide window otherwise — the gateway's own `timeout` and the RPC
+    // wait are both derived from it, so they can never disagree about how long this run may take.
+    const budgetMs = ctx.timeoutMs ?? ENGINE_TIMEOUT_MS;
     const client = await this.ensureClient();
     if (ctx.signal?.aborted) throw new EngineRunError('cancelled before dispatch', 'cancelled');
     let raw: unknown;
@@ -133,8 +137,8 @@ export class OpenClawBackend implements EngineBackend {
         // idempotent gateway would REPLAY the first run's result instead of running again. The
         // suffix is deterministic, and a retry-of-retry does not exist.
         idempotencyKey: task.retryOf ? `${task.id}-r` : task.id,
-        timeout: Math.ceil(ENGINE_TIMEOUT_MS / 1000),
-      }, { expectFinal: true, timeoutMs: ENGINE_TIMEOUT_MS + 15_000 });
+        timeout: Math.ceil(budgetMs / 1000),
+      }, { expectFinal: true, timeoutMs: budgetMs + 15_000 });
     } catch (err) {
       // A transport-level failure poisons the socket — drop it so the next call redials.
       this.dropClient();
