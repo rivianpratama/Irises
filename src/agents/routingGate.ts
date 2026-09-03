@@ -6,8 +6,10 @@
 // first cut only forces on a confident 'yes' (over-delegation costs a round-trip, so we stay strict).
 
 // Type-only (erased at runtime): this module stays dependency-free so the gate's regexes can be
-// unit-tested without dragging the engine adapters into the process.
+// unit-tested without dragging the engine adapters into the process. The one runtime import is
+// llm/promptTag.js, which has no imports of its own.
 import type { CapabilityClass } from './ops/engineBackend.js';
+import { dataTag, neutralizeTagBreakouts } from '../llm/promptTag.js';
 
 export type GroundingNeed = 'yes' | 'no' | 'maybe';
 
@@ -263,4 +265,147 @@ function subjectClasses(text: string): CapabilityClass[] {
   return SUBJECT_VOCAB
     .filter(([cls, re]) => re.test(text) || (cls === 'files' && path))
     .map(([cls]) => cls);
+}
+
+// ── What she already holds, at the Convo→Ops boundary ───────────────────────────────────────────
+// The third half of the same live failure, from the 2026-09-03 correspondence run. Asked "how many
+// days till dana's wedding again", Convo answered "39 days / oct 12, you're doing the toast" — read
+// straight off a held note. `needsGrounding` said 'yes' (the message says "how many"), so the gate
+// discarded that answer and force-delegated; the engine, which holds none of her memory, came back
+// with "which dana is this?".
+//
+// Both halves of that are the same blind spot: the gate reads TEXT and never asks what she is
+// holding. So there are two questions here, and they take the same hit list:
+//
+//   • `holdsTheAnswer` — may the gate stand down? Only when something she HOLDS touches the ask
+//     AND she actually wrote an answer off it.
+//   • `heldMemoryBrief` — when a delegation does happen (the gate's, or the model's own
+//     `delegate_to_ops`), what does the engine need so it can't ask "which dana": her own words for
+//     the thing, as data.
+//
+// PURE, and the hits are read STRUCTURALLY (see HeldHit) so this module keeps its dependency-free
+// property — the turn relevance router that produces them lives in memory/relevance.ts and pulls in
+// the whole memory stack behind it.
+
+/**
+ * The hit kinds that count as something she HOLDS about the ask. The memory channels, and only
+ * those: a `directive` is a standing instruction about HOW she answers and a `thread` is a
+ * conversational offer the engine picked for this turn — neither is data an answer could have come
+ * off, so neither may stand the gate down or go into the brief as something she knows.
+ */
+export const HELD_MEMORY_KINDS = ['note', 'fact', 'long', 'research', 'email'] as const;
+
+/** One hit off the turn relevance router (memory/relevance.ts), as this module reads it: what the
+ *  thing is called in her own words, and which channel it came off. Structural on purpose — `kind`
+ *  is a plain string so the router's vocabulary stays the router's. */
+export interface HeldHit {
+  kind: string;
+  label: string;
+}
+
+/**
+ * Which way the gate went, on every turn it was evaluated on. Disjoint buckets, single-sourced
+ * array → type (the THEME_KINDS pattern), so a scan of the ring can bucket a month of turns:
+ *  - `not_needed` — the message needed no grounding, or a fresh look already answered it;
+ *  - `skipped_in_flight` — the same ask is already running, so the gate left it alone;
+ *  - `skipped_memory_hit` — she held something about it and answered off that (the new bucket);
+ *  - `delegated` — the gate fired and the draft was discarded for a real look.
+ */
+export const ROUTING_GATE_DECISIONS = ['delegated', 'skipped_memory_hit', 'skipped_in_flight', 'not_needed'] as const;
+export type RoutingGateDecision = typeof ROUTING_GATE_DECISIONS[number];
+
+/** The hits that are memory she holds, named — the shared subject of both questions below. */
+function heldMemory(hits: readonly HeldHit[]): HeldHit[] {
+  return hits.filter(h => (HELD_MEMORY_KINDS as readonly string[]).includes(h.kind) && h.label.trim());
+}
+
+/**
+ * May the gate stand down and let her own answer ship? Only on the conjunction the live failure
+ * needed and no weaker one:
+ *   • something she holds touches the ask — a real hit off a memory channel, so the answer has a
+ *     source that is not the model's general knowledge (which is the whole thing the gate guards);
+ *   • and she wrote one — at least one bubble, and no tool call, because a tool-calling turn is
+ *     already going to do the work and a silent one has no answer to keep.
+ * Pure.
+ */
+export function holdsTheAnswer(input: { hits: readonly HeldHit[]; bubbles: number; toolCalls: number }): boolean {
+  return input.bubbles > 0 && input.toolCalls === 0 && heldMemory(input.hits).length > 0;
+}
+
+/** The lead line of the held-memory block, outside the data tag — the same shape the ops prompt
+ *  already uses for the request itself (`ops/client.ts`: a plain line, then the tagged payload). */
+const HELD_MEMORY_LEAD = 'What she already holds about this:';
+
+/** How much held text rides along, counted over the listed lines. Small on purpose: this is the
+ *  engine's "who and what do they mean", not a memory dump — the brief above it is still the
+ *  instruction, and every line here is already clipped to one label's width by the router. */
+export const OPS_HELD_MEMORY_CHARS = 400;
+
+/**
+ * What she holds about this ask, for the brief a delegation carries — her own words for each thing,
+ * as DATA (the repo's dataTag convention), plus how many made it in.
+ *
+ * `{ block: '', count: 0 }` when she holds nothing about it, which is what keeps the brief
+ * byte-identical on every turn this changes nothing about.
+ *
+ * Each label is flattened to one line and has our own payload tags defused (`neutralizeTagBreakouts`),
+ * because these are the user's OWN stored notes: without that, a note could close `</prompt>` and
+ * promote itself out of data position in the ops prompt. Whole lines are dropped at the cap rather
+ * than cut, so the engine never reads half a note as the whole of one. Pure.
+ */
+export function heldMemoryBrief(hits: readonly HeldHit[]): { block: string; count: number } {
+  const lines: string[] = [];
+  let used = 0;
+  for (const hit of heldMemory(hits)) {
+    const line = `- ${neutralizeTagBreakouts(hit.label.replace(/\s+/g, ' ').trim())}`;
+    const next = used + line.length + (lines.length ? 1 : 0);
+    if (next > OPS_HELD_MEMORY_CHARS) break;
+    lines.push(line);
+    used = next;
+  }
+  if (!lines.length) return { block: '', count: 0 };
+  return { block: `${HELD_MEMORY_LEAD}\n${dataTag('held_memory', lines.join('\n'))}`, count: lines.length };
+}
+
+/** A brief with the held-memory block after it, or the brief itself when there is no block. One
+ *  implementation, so the gate's forced brief and the model's own `delegate_to_ops` brief can never
+ *  drift apart on where the block goes — and so "no hits" is byte-identical at both sites. Pure. */
+export function briefWithHeldMemory(brief: string, block: string): string {
+  return block ? `${brief}\n\n${block}` : brief;
+}
+
+/** How many hit labels the `convo:routing_gate` receipt names, and how wide each may be. The
+ *  receipt persists for 30 days (diagnostics/turnTrace.ts's discipline applies to every detail in
+ *  the ring), so it says enough to read the decision back without carrying her whole memory. */
+const RECEIPT_LABELS = 5;
+const RECEIPT_LABEL_CHARS = 60;
+
+/**
+ * The hits as the gate's receipt reports them: EVERY hit's channel (so a turn that did not stand
+ * down shows why — nothing but a directive touched it) and the first few names, clipped. Pure.
+ */
+export function routingGateHitReceipt(hits: readonly HeldHit[]): { hitKinds: string[]; hitLabels: string[] } {
+  return {
+    hitKinds: hits.map(h => h.kind),
+    hitLabels: hits.slice(0, RECEIPT_LABELS).map(h => {
+      const flat = h.label.replace(/\s+/g, ' ').trim();
+      return flat.length <= RECEIPT_LABEL_CHARS ? flat : `${flat.slice(0, RECEIPT_LABEL_CHARS - 1)}…`;
+    }),
+  };
+}
+
+/**
+ * The memory-aware half of the gate (env: CONVO_ROUTING_GATE_MEMORY_AWARE). Default ON, read at
+ * call time so flipping it needs no restart — the same parse shape as every sibling flag
+ * (threadingEnabled, themeTopicGateEnabled, memoryRelevanceEnabled, turnTraceEnabled).
+ *
+ * Off means the gate never stands down for a memory hit and no delegation's brief carries what she
+ * holds: the same delegation, the same meta prompt, byte for byte, as an install that never had
+ * this. The receipt still names the decision and the hits behind it, so the flag can be measured
+ * off a live ring before it is trusted. ROUTING_GATE=off remains the switch for the whole floor.
+ */
+export function routingGateMemoryAwareEnabled(): boolean {
+  const v = (process.env.CONVO_ROUTING_GATE_MEMORY_AWARE || '').trim().toLowerCase();
+  if (v === '') return true;
+  return ['true', '1', 'on', 'yes'].includes(v);
 }
