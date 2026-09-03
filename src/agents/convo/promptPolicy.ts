@@ -67,7 +67,7 @@ export type BudgetKey = SectionId | 'memory_stack';
  * `intro_weave`, `weather`, `thread`, `turn_focus`, the timing reads) are the ratchet proper.
  */
 export const PROMPT_BUDGET: Record<BudgetKey, number> = {
-  persona: 138_200,            // 138,102 — P1: the envelope's field list + the copied wheel are gone (was 141,600 for 141,474)
+  persona: 138_020,            // 137,923 — P3 part 3 took the inner-weather section's momentum sentence (−179): applyAffectDrift enforces it now. Was 138,200 for 138,102 after P1 deleted the envelope's field list + the copied wheel (was 141,600 for 141,474)
   tool_docs: 16_450,           // 16,245 — the group fixture (13 tools; the 1:1 lane carries 11) (was 16,500 for 16,288, before remember_user's `handle` doc stopped asking "whose info this is" and named the messaging handle instead)
   capability: 240,             // 237 — all six capability classes minus inbox, the longest line (was 248)
   model_map: 800,              // 387 on a bare checkout — HOST-DEPENDENT, see above

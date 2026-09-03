@@ -12,6 +12,8 @@ import {
 import { computeCycle } from '../../persona/cycle.js';
 import { computeCircadian } from '../../persona/circadian.js';
 import { defaultClimate, type RelationshipClimate } from '../../persona/climate.js';
+import { loadContext } from '../loadContext.js';
+import { splitSections } from '../../memory/wrappers.js';
 
 const ctx: ChatContext = { isGroupChat: false, participantNames: [], chatName: null, senderHandle: '+15550001111' };
 
@@ -132,4 +134,61 @@ test('a default climate leaves buildSystemPrompt byte-identical', () => {
   assert.equal(build(undefined), bare);
   // …and the comparison has teeth: a moved climate is NOT byte-identical.
   assert.notEqual(build(movedClimate()), bare);
+});
+
+// ── the persona's half of the same subject ───────────────────────────────────
+// Context.md's `## Your inner weather and hidden status` section is the prose half of everything
+// above. P1 took the envelope's field list out of it (the generated contract owns that now); P3 part
+// 3 takes the last claim left in it that CODE enforces, so the section states no rule the per-turn
+// block also states.
+
+/** The section, located by its heading through the same heading-splitter the memory sanitizer and
+ *  the relevance router use (memory/wrappers.ts), so the boundary is one definition rather than a
+ *  regex invented here. */
+function innerWeatherSection(): string {
+  const found = splitSections(loadContext('convo')).find(s => s.startsWith('## Your inner weather'));
+  assert.ok(found, 'the inner-weather section is gone from Context.md, or its heading was renamed');
+  return found;
+}
+
+/**
+ * What that section stands at TODAY, in characters — the same measure-then-ratchet discipline as
+ * PROMPT_BUDGET (promptPolicy.ts), at the granularity a persona editor actually works in. The whole
+ * persona has a ceiling already, but at 138k it cannot tell this section growing back from any other
+ * paragraph arriving: a sentence re-added here lands inside the +0.1% the persona line carries.
+ *
+ * 2,680 today, from 2,859 — the 179 characters of the momentum sentence. It is deliberately NOT the
+ * 1,200 the task brief targeted: that estimate assumed this section's other paragraphs had already
+ * moved out, and they have not. What is left is the leak guard, the list of what the per-turn block
+ * contains, the standing-register and thread-offer framings, the pointer at the contract, and the
+ * one rescued anti-sycophancy rule — five paragraphs of live persona, ~1,480 characters more than
+ * the target, and not one of them a duplicate of anything the prompt says elsewhere. Reaching 1,200
+ * means deciding which of those paragraphs the persona can lose, which is a phase of its own.
+ */
+const INNER_WEATHER_CEILING = 2_700;
+
+test('the persona no longer claims her state has momentum — the drift engine enforces it', () => {
+  const section = innerWeatherSection();
+  assert.doesNotMatch(
+    section, /Your state has momentum/i,
+    'the momentum claim is back in the persona. applyAffectDrift (persona/affectDrift.ts) is what '
+    + 'carries the state forward now, bounded by AFFECT_TURN_CAP and the two rolling windows — so '
+    + 'this is prose telling her to do what she cannot help doing, in the most expensive 138k in the repo',
+  );
+  assert.doesNotMatch(section, /drifts by a few points|never resets to neutral/);
+
+  // What the section still does, and all of it: name the block, hold the leak guard, point at the
+  // contract for the fields. (The pointer's exact wording is promptPolicy.test.ts's pin.)
+  assert.match(section, /where you are right now/i, 'it still names the block she is handed');
+  assert.match(section, /None of it is ever named to the user/, "the leak guard is the section's reason to exist");
+  assert.ok(
+    section.includes(`under "${STATUS_CONTRACT_HEADER.replace(/^## /, '')}"`),
+    'and it still points at the contract instead of describing the fields a second time',
+  );
+
+  assert.ok(
+    section.length <= INNER_WEATHER_CEILING,
+    `the inner-weather section is ${section.length} chars, over its ${INNER_WEATHER_CEILING}-char ceiling — `
+    + 'ratchet it here in the same commit, or delete something the per-turn block already says',
+  );
 });
