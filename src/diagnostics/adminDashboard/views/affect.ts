@@ -10,6 +10,11 @@
 export const AFFECT_CSS = `
 #view-affect{padding:0;display:flex;flex-direction:column;min-height:0}
 #aff-head{padding:.7rem 1rem .2rem;flex:none}
+/* This view's own header row — deliberately not memory.ts's .memhead: the two <style> blocks are
+   concatenated into one page, so borrowing another view's class works right up until that view is
+   edited or dropped. */
+#aff-head .head{display:flex;align-items:baseline;gap:.7rem;flex-wrap:wrap}
+#aff-head .head h2{margin:0}
 #aff-body{flex:1;min-width:0;overflow-y:auto;padding:0 1rem 1.2rem}
 #aff-pick{max-width:22rem}
 .dial{display:grid;grid-template-columns:6.5rem 1fr 9rem;align-items:center;gap:.6rem;font-size:.78rem;margin:.35rem 0}
@@ -25,7 +30,7 @@ export const AFFECT_CSS = `
 
 export const AFFECT_HTML = `
 <div id="aff-head">
-  <div class="memhead"><h2 class="vh" id="aff-title">Inner state</h2><span class="pill" id="aff-who">no user</span></div>
+  <div class="head"><h2 class="vh" id="aff-title">Inner state</h2><span class="pill" id="aff-who">no user</span></div>
   <select id="aff-pick"></select>
 </div>
 <div id="aff-body"><div class="empty">pick a user to read their inner state</div></div>
