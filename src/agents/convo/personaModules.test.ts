@@ -14,6 +14,10 @@
 // every module spliced back where it came from — and compares its length and its sha256 against the
 // numbers measured before the move. A rewrite dressed as a move fails there.
 //
+// P4b's delegate shrink DID delete prose, which is why that reconstruction also puts back an
+// enumerated list of deletions before it hashes. The two lists are what keeps the golden readable as
+// evidence: what moved is pinned byte for byte, and what left is written down sentence by sentence.
+//
 // The second is the gates: which modules a turn loads, and that the ones it doesn't are reported
 // with the fact they read. Those are unit assertions over `renderCraftModules`, plus the placement
 // check through the real assembler at the bottom.
@@ -93,10 +97,123 @@ const ADDED_PROSE: readonly string[] = [
   '**A thread can wear the joke — when you are carrying one.** The whole craft of picking a thread up — which material, how a fact callback sounds, the ladder, the tag and its shorthand, and how a tease and a thread ride in one line — arrives as its own page on the turns a thread is actually on offer. The bend itself is always yours: "Roasts and teasing" is right below.\n\n',
 ];
 
-/** Prose DELETED from the persona, each row with the copy that made it redundant. Empty here: the
- *  relocations move prose and edit none of it, and the delegate-section shrink puts its rows in the
- *  list below. A row appearing without a decision behind it is the failure. */
-const DELETED_PROSE: readonly string[] = [];
+/**
+ * Prose DELETED from the persona by P4b's delegate-section shrink, and where each row goes back.
+ *
+ * "When to delegate (and how)" taught the delegate tool's own doc back to the model in longer words.
+ * That doc (tools.ts DELEGATE_TO_OPS_TOOL) is not optional and not conditional: client.ts puts
+ * delegate_to_ops in the tool list on EVERY turn, so its description, its `kind` enum and its
+ * `meta_prompt` skeleton reach the model every turn whatever the persona says. Every row below is a
+ * sentence — or a contiguous run of them — whose content that doc already ships; the task's report
+ * lists each sentence beside its twin.
+ *
+ * Each row carries the exact bytes that left the file plus a surviving ANCHOR and the side of it they
+ * sat on, which is what lets the golden below put them back and keep measuring the relocation. So
+ * this list is not documentation of the shrink, it IS the shrink: a sentence deleted and not listed
+ * here makes the reconstruction come up short, and a row listed but not deleted makes it come up
+ * long. Restored in file order — each anchor is unique in the file at the moment its row is reached.
+ */
+const DELETED_PROSE: ReadonlyArray<{ id: string; gone: string; at: string; side: 'after' | 'before' }> = [
+  {
+    id: 'when_to_delegate_opener',
+    gone: [
+      'Only delegate when the answer needs the web, their own email, a file they sent, a drafted message, or genuinely deeper reasoning. Otherwise answer yourself.',
+      '',
+      '',
+    ].join('\n'),
+    at: [
+      '## When to delegate (and how)',
+      '',
+      '',
+    ].join('\n'),
+    side: 'after',
+  },
+  {
+    id: 'holding_text_specific',
+    gone: 'The text should reflect the real request: the specific thing, the message they mentioned, the question they asked. Let that drive the wording. ',
+    at: 'It can be 1--3 bubbles:',
+    side: 'before',
+  },
+  {
+    id: 'holding_text_examples',
+    gone: [
+      '',
+      '',
+      '  Example range (illustrative, not a menu, generate fresh every time):',
+      '  1 bubble: "looking up those reviews now"',
+      '  2 bubbles: "let me dig into that" / "checking the latest on it now"',
+      '  2 bubbles: "lemme find that email" / "scanning your inbox now"',
+      '  3 bubbles: "okay that\'s a real question" / "thinking that through now" / "back in a bit"',
+      '  3 bubbles: "on the case" / "pulling options, prices, and reviews" / "won\'t take long"',
+    ].join('\n'),
+    at: 'not from a formula.',
+    side: 'after',
+  },
+  {
+    id: 'meta_prompt_skeleton_rule',
+    gone: '**Write the `meta_prompt` as a skeleton of labeled lines** — plain prose, in the order below, and OMIT any line that doesn\'t apply. It is not fill-in-the-blank boilerplate: drop what\'s irrelevant, never pad, and keep it a clear brief to a sharp colleague, not Irises\'s texting voice. ',
+    at: 'Ops runs with real tools',
+    side: 'before',
+  },
+  {
+    id: 'meta_prompt_labeled_lines',
+    gone: [
+      ' The lines:',
+      '  - `objective:` the outcome in one sentence — what a GREAT answer IS, not the user\'s words re-quoted (the `request` field already carries those).',
+      '  - `context:` every disambiguator you hold — the thing in THEIR words plus the alias you know ("the monster" = their thesis), the person\'s full name and role, the budget, the city, the airline, the timeframe. One line of context you already hold saves Ops minutes of guessing and the user a wrong answer.',
+      '  - `sources:` the source plan in priority order. **If the answer lives in something THEY sent or own, that outranks the web** — their own email, a thread, a message they showed you — and don\'t let a generic web fact override it. The web is for current or external facts (products, places, prices, how-to, news); their inbox is for their own mail; a draft is a message written for them.',
+      '  - `actions:` what Ops should DO beyond reading — parse the file they attached, run code over the data, iterate a chain, set itself a follow-up check — PLUS the hard limits: read-only on their inbox, never send or post anything anywhere, and the deliverable comes back in ANSWER.',
+      '  - `depth/eta:` whether this is a quick single-source check or a thorough sweep, and any ETA you already promised the user ("they\'re expecting this in a few minutes — converge fast"). A right-sized run comes back faster and cleaner than an open-ended one.',
+      '  - `success:` what the answer must contain and its shape.',
+      '  - `forks:` where the ask could split (two Daves, two trips), which reading you chose and why — and the comeback protocol: if the data contradicts it, come back empty-handed with NO RESULT NAMING the candidates rather than answering the wrong one. A named fork comes back as one crisp question to the user; a silent wrong guess comes back as a confident wrong answer.',
+    ].join('\n'),
+    at: 'so the brief is where you hand it everything you hold.',
+    side: 'after',
+  },
+  {
+    id: 'kind_lanes',
+    gone: [
+      'Intent and kind (these are the five lanes; `media_read` is a sixth — the media mode, covered under "One hand" below):',
+      '- `web_research`, current or external facts from the web plus reasoning: products, places, prices, how-to, news, definitions you can\'t just state, anything that needs a real look at the world. Carries web search + reading a specific page. Never their private data.',
+      '- `document_read`, read or search the user\'s OWN connected email and its attachments ("what did that email say", "did the reply come in", "find the PDF she sent"). Read-only, their inbox only.',
+      '- `draft`, write a message, note, or letter for THEM to send (you relay the draft, you never send it).',
+      '- `compute`, the answer needs work DONE, not just found: run code over real data, crunch or convert the contents of a file, produce a table or artifact, or drive a multi-step execution chain. Ops carries the full toolset; your meta_prompt is the spec for the work. NEVER for head-math or a definition — you answer those yourself.',
+      '- `general`, any substantive, obscure, or comprehensive request that doesn\'t map cleanly to one kind above, including reasoning across SEVERAL sources combined (the web + their email in one look). Ops carries the full toolset on this kind. Your meta-prompt drives it, always write a strong one (tell Ops what\'s needed, the context, and what a good answer looks like).',
+      '',
+      '',
+    ].join('\n'),
+    at: [
+      'maybe some options they could think about."',
+      '',
+      '',
+    ].join('\n'),
+    side: 'after',
+  },
+  {
+    id: 'media_scope_and_file_reach',
+    gone: '`media_scope` says which files ride along: `"this_turn"` for file(s) on this very message (the normal case — a new file goes with the look that reads it), `"earlier"` for a file they sent before this turn that the ask refers back to, `"none"` when no file is involved. It\'s your own eyes and reach: an internal step, never a handoff you name, never a thing you tell them about. The file\'s contents aren\'t unpacked in front of you until the look opens them, so anything whose answer lives INSIDE a file — "what\'s in this?", "read the fine print", a photo of a form, a screenshot to pull numbers off — goes to delegate_to_ops with the file attached, always. ',
+    at: 'You never guess at what\'s inside',
+    side: 'before',
+  },
+  {
+    id: 'one_call_reads_and_answers',
+    gone: 'A message carrying a NEW file plus a question gets ONE delegate_to_ops (`media_scope: "this_turn"`) that reads the file and answers the ask together. ',
+    at: '**One delegation per turn.** ',
+    side: 'after',
+  },
+  {
+    id: 'source_by_kind',
+    gone: 'Current or external facts -> `web_research`. The user\'s own emails, threads, or attachments -> `document_read`. ',
+    at: 'Pick the source by where the answer lives. ',
+    side: 'after',
+  },
+  {
+    id: 'answer_yourself',
+    gone: 'Answer YOURSELF (no delegation): quick math, definitions you know, onboarding, casual talk, and harmless off-topic. Head-math and a definition you know stay YOURS — a quick sum or "what does X mean" is NEVER a `compute` delegation; `compute` is only for work that genuinely needs doing over real data, a file, or a multi-step chain. ',
+    at: 'Anything inside a photo or file',
+    side: 'before',
+  },
+];
 
 /** craft/onboarding.md carries a second half that never lived in Context.md: the texture coaching P2
  *  took out of the discovery scaffold (memory/wrappers.ts), which used to render on every turn of a
@@ -138,6 +255,14 @@ test('the persona plus every craft module is the pre-change Context.md, byte for
     rebuilt = without;
   }
 
+  for (const { id, gone, at, side } of DELETED_PROSE) {
+    const seen = rebuilt.split(at).length - 1;
+    assert.equal(seen, 1, `${id}: its restore anchor is in the persona ${seen} times, not once (${JSON.stringify(at.slice(0, 50))}…)`);
+    const found = rebuilt.indexOf(at);
+    const cut = side === 'after' ? found + at.length : found;
+    rebuilt = `${rebuilt.slice(0, cut)}${gone}${rebuilt.slice(cut)}`;
+  }
+
   for (const { id, before, rule, slice } of RELOCATION) {
     const anchor = `\n${before}`;
     const at = rebuilt.indexOf(anchor);
@@ -148,7 +273,7 @@ test('the persona plus every craft module is the pre-change Context.md, byte for
 
   assert.equal(
     rebuilt.length, PRE_CHANGE_CHARS,
-    `the relocation gained or lost ${rebuilt.length - PRE_CHANGE_CHARS} characters. A relocation moves prose and edits none of it — if a module was really edited, that is a deliberate change, and it belongs in one of the two enumerated lists above.`,
+    `the relocation gained or lost ${rebuilt.length - PRE_CHANGE_CHARS} characters. A relocation moves prose and edits none of it — if a module was really edited, that is a deliberate change, and it belongs in one of the three enumerated lists above.`,
   );
   assert.equal(
     sha256(rebuilt), PRE_CHANGE_SHA256,
@@ -156,10 +281,16 @@ test('the persona plus every craft module is the pre-change Context.md, byte for
   );
 });
 
-test('nothing was deleted on the way out, and the deletion list says so', () => {
-  assert.deepEqual(DELETED_PROSE, [], 'the relocations deleted nothing; a row here needs a decision behind it, not a test edit');
+test('every deleted sentence is really gone, and gone from the craft pages too', () => {
+  // The corpus, not Context.md: a sentence "deleted" from the core and quietly carried into a craft
+  // page has not been deleted, it has been hidden behind a gate, and the shrink's whole claim is that
+  // the delegate tool's own doc already says these things every turn.
   const corpus = convoPersonaWithCraft();
-  for (const phrase of DELETED_PROSE) assert.ok(!corpus.includes(phrase), `${phrase} was meant to be deleted`);
+  for (const { id, gone } of DELETED_PROSE) {
+    assert.ok(!corpus.includes(gone), `${id}: still in the persona corpus, so it was never deleted`);
+  }
+  const ids = DELETED_PROSE.map(d => d.id);
+  assert.deepEqual([...new Set(ids)], ids, 'two deletion rows share an id');
 });
 
 test('the off path puts the same bytes in the cached prefix instead of the block', () => {

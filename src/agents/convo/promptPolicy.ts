@@ -79,7 +79,7 @@ export type BudgetKey = SectionId | 'memory_stack';
  * out of them and pins its sha256 — which is why this line is a budget and not a ratchet.
  */
 export const PROMPT_BUDGET: Record<BudgetKey, number> = {
-  persona: 105_200,            // 105,071 — P4b split "Connect the dots": the thread-tagging craft (9,120 chars across nineteen paragraphs) went to craft/threading.md behind the thread section, and a 366-char pointer stayed behind because the BANTER half of that section is deliberately still always-on. Was 114,000 for 113,858 after P4a moved seven sections (24,065 chars) out to convo/craft/. Was 138,020 for 137,923 after P3 part 3 took the inner-weather section's momentum sentence (−179): applyAffectDrift enforces it now. Was 138,200 for 138,102 after P1 deleted the envelope's field list + the copied wheel (was 141,600 for 141,474)
+  persona: 99_700,             // 99,611 — P4b's second half shrank "When to delegate (and how)" from 14,348 to 8,888 by deleting the ten runs of prose that the delegate_to_ops tool doc (tools.ts) already ships on every turn: the kind lanes, the meta_prompt skeleton, media_scope, the holding-text examples, "Answer YOURSELF". Every deleted byte is enumerated in personaModules.test.ts (DELETED_PROSE), which puts them back and re-checks the pre-P4a sha256. Was 105,200 for 105,071 after P4b split "Connect the dots": the thread-tagging craft (9,120 chars across nineteen paragraphs) went to craft/threading.md behind the thread section, and a 366-char pointer stayed behind because the BANTER half of that section is deliberately still always-on. Was 114,000 for 113,858 after P4a moved seven sections (24,065 chars) out to convo/craft/. Was 138,020 for 137,923 after P3 part 3 took the inner-weather section's momentum sentence (−179): applyAffectDrift enforces it now. Was 138,200 for 138,102 after P1 deleted the envelope's field list + the copied wheel (was 141,600 for 141,474)
   craft_modules: 30_000,       // 29,660 — the THREAD-OFFER fixture now, and this line went UP while `persona` went down, which is the whole trade: threading + send-order + reminders + onboarding + email-flag is the widest craft a turn can carry (9,223 of it the threading page). The media turn measures 23,100, the mature turn 20,435, the cold turn 15,865, the group burst 7,150 — and a turn with no thread, no file and a filled-in profile carries none of it. Was 23,400 for the media fixture's 23,100. NOT a prose ratchet like the lines below it — it is a SUM over whichever pages the turn's gates fired, so the number moves when a fixture's facts change, and the pages' own bytes are pinned by the sha256 golden in personaModules.test.ts
   tool_docs: 16_450,           // 16,245 — the group fixture (13 tools; the 1:1 lane carries 11) (was 16,500 for 16,288, before remember_user's `handle` doc stopped asking "whose info this is" and named the messaging handle instead)
   capability: 240,             // 237 — all six capability classes minus inbox, the longest line (was 248)
@@ -144,13 +144,17 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
  * craft — no history to order, no file, no burst, a filled-in profile — carries 24k less prompt for
  * the same conversation, and nothing before this could tell those two turns apart.
  *
- * P4b measures **0.0075** on the same fixture (1,207 characters against a 158,740-character prompt,
- * down from 167,527), and this time the mature turn keeps the whole saving: it carries no thread, so
- * the nine thousand characters of thread-tagging craft that used to stand in the persona on every
- * turn are simply not there. The turn that DOES carry a thread still pays for them — and that is the
- * turn where they are about to be used.
+ * P4b's split measured **0.0075** on the same fixture (1,207 characters against a 158,740-character
+ * prompt, down from 167,527), and that time the mature turn kept the whole saving: it carries no
+ * thread, so the nine thousand characters of thread-tagging craft that used to stand in the persona
+ * on every turn are simply not there. The turn that DOES carry a thread still pays for them — and
+ * that is the turn where they are about to be used.
+ *
+ * P4b's delegate shrink measures **0.0078** (1,207 against 153,280), and this one every turn keeps:
+ * 5,460 characters the delegate tool's own doc was already saying left the persona, so nothing
+ * anywhere gates them back in.
  */
-export const MIN_TRANSCRIPT_SHARE = 0.0074;
+export const MIN_TRANSCRIPT_SHARE = 0.0077;
 
 /**
  * Phrases that must exist in the persona, verbatim — the rules whose deletion would be silent.
