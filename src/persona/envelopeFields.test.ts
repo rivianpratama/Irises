@@ -88,6 +88,46 @@ test('every consumer the table names is still an exported function', () => {
 // owns (persona/affectDrift.ts): a DIRECTION for mood, a widening for how the mind was changed, and
 // how the last thread offer actually landed. If one of these rows ever stops naming it, the model is
 // reporting into a void — the gauge it was meant to move is now decided by the clock alone.
+// ── what the envelope costs, off-prompt ──────────────────────────────────────
+// The descriptions reach the model TWICE: once as the `status_contract` section (ratcheted in
+// promptPolicy.ts) and once on the response schema, which is sent with every request to both lanes
+// and is the copy PROMPT_BUDGET cannot see — it is not part of the system prompt, so it is also not
+// part of the cached prefix that makes the persona cheap. This is that copy's ceiling.
+
+/**
+ * What `JSON.stringify(STATUS_SCHEMA_PROP)` stands at TODAY, in characters, rounded up inside the 2%
+ * PROMPT_BUDGET holds its own lines to. 2,899 measured.
+ *
+ * It is deliberately NOT the 1,600 the task brief targeted, and the arithmetic says why. The eight
+ * descriptions are 2,560 of the 2,899; the wrapper (`required`, the types, `additionalProperties`)
+ * is the remaining 339. `thread_note` alone is 1,022 and `thread_outcome` 454 — 51% of the schema in
+ * two rows — because those two descriptions are where P1 re-homed three CAPTURE rules that had lived
+ * in Context.md only: the venting clause, the bare-fact exclusion and the anti-optimism read
+ * (RESCUED_CAPTURE_RULES in status.test.ts, `thread_note_precedence` and
+ * `thread_note_capture_when_heavy` in CLAUSE_INVENTORY). Deleting the pair would land the schema at
+ * ~1,423, under the target — and would delete three behaviour rules with no other home. Every other
+ * row is already one sentence or an enum list.
+ *
+ * So the number to hold is the measurement, and the way to move it is to shorten a rule, in the
+ * table, where both copies change together. Ratchet it here in the same commit when one does.
+ */
+const SCHEMA_JSON_CEILING = 2_950;
+
+test('the status schema both lanes validate against is inside its budget', () => {
+  const json = JSON.stringify(STATUS_SCHEMA_PROP);
+  const props = (STATUS_SCHEMA_PROP as { properties: Record<string, unknown> }).properties;
+  const rows = Object.entries(props)
+    .map(([k, v]) => [k, JSON.stringify(v).length] as const)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => `  ${k}: ${n}`);
+  assert.ok(
+    json.length <= SCHEMA_JSON_CEILING,
+    `the status schema is ${json.length} chars, over its ${SCHEMA_JSON_CEILING}-char ceiling. It rides `
+    + 'every request to both lanes, so a description that grows is paid for on every turn twice over. '
+    + `Where it sits:\n${rows.join('\n')}`,
+  );
+});
+
 test('the fields the gauges are computed from name the engine that computes them', () => {
   const consumersOf = (key: string) => ENVELOPE_FIELDS.find(f => f.key === key)!.consumers;
   for (const key of ['mood_shift', 'epistemic_trigger', 'thread_outcome']) {
