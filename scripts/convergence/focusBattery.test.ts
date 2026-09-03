@@ -207,7 +207,11 @@ test('a healthy on-topic turn passes', () => {
   assert.ok(r.checks.some(c => c.startsWith('bubble_law: pass')), r.checks.join(' | '));
 });
 
-test('no assistant row at all is SILENT, whatever the receipts say', () => {
+test('no assistant row on a round that read receipts is SILENT', () => {
+  // "whatever the receipts say" is what this said before the round-global guard below, and it is
+  // now the opposite of the rule: a round that filed NO receipt anywhere reads as UNSCORED, not as
+  // a silence. This case passes on the default evidence because that evidence carries
+  // `receiptsUsable: true` — which is the clause the title has to name.
   const r = score(item('f1'), { bubbles: [], replyMs: null });
   assert.equal(r.verdict, 'SILENT');
 });
