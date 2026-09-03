@@ -24,6 +24,7 @@ import {
   LOOP_OPENING_GAP_MS,
   PROSE_BUDGET_KEYS,
   PROMPT_BUDGET,
+  MIN_TRANSCRIPT_SHARE,
   MAX_BUBBLE_WORDS,
   THREAD_MIN_TURNS_BETWEEN_OFFERS,
   type BudgetKey,
@@ -99,7 +100,14 @@ function trace(patch: TracePatch = {}): TurnTraceDetail {
       systemChars: 152_600,
       messagesChars: 1_207,
       transcriptRows: 8,
-      transcriptShare: 0.0079,
+      // Derived for the same reason the section sizes above are, and it is the harder half to see:
+      // `MIN_TRANSCRIPT_SHARE` is ratcheted UP as the prose shrinks (promptPolicy.ts records
+      // 0.0068 → 0.0070 through P2 part 3), so a literal measurement of today's share is a floor
+      // waiting to overtake it — and a share under the floor makes `memory_ceiling` WARN, which
+      // turns every `verdict === 'PASS'` case in this file (nine of them) red for a prose deletion
+      // that is the point of the phase. A fifteenth over whatever the floor is, rounded so the
+      // number a report prints stays readable.
+      transcriptShare: Number((MIN_TRANSCRIPT_SHARE * 1.15).toFixed(4)),
     },
     gates: {
       threads: null,
@@ -265,6 +273,20 @@ test('every data section is weighed by name, not just the dossier', () => {
   assert.ok(cleanLine, clean.checks.join(' | '));
   assert.match(cleanLine, /memory_ceiling: pass/);
   for (const k of ['context_block', 'burst', 'tapped_reply']) assert.match(cleanLine, new RegExp(k));
+});
+
+test("the plain fixture's transcript share stays over whatever the floor is", () => {
+  // The assertion that keeps the derivation above honest. Re-literalise that share and this still
+  // passes today — but `MIN_TRANSCRIPT_SHARE` only ever moves UP, and the day it passes the literal
+  // this is the one line that says why nine PASS cases went WARN together.
+  assert.ok(
+    trace().prompt.transcriptShare > MIN_TRANSCRIPT_SHARE,
+    `the fixture's share (${trace().prompt.transcriptShare}) is under the ${MIN_TRANSCRIPT_SHARE} floor — `
+    + 'memory_ceiling now warns on the plain turn and every PASS case in this file is red for a reason '
+    + 'that has nothing to do with the scorer',
+  );
+  const line = score(item('f1')).checks.find(c => c.startsWith('memory_ceiling:'));
+  assert.match(line ?? '', /memory_ceiling: pass/);
 });
 
 test('MEMORY_DUMP: nothing touched the turn and the notes still rendered whole', () => {
