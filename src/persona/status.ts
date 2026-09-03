@@ -536,12 +536,13 @@ function moodTrend(history: MoodPoint[]): string {
  * The gauges the model is handed, and the word each band of one reads as. FOUR of the six, and words
  * rather than levels — both halves are v2's bargain read from the prompt side.
  *
- * Which four: the ones a person can actually FEEL. `mood_level` is not here because it has its own
- * line, with its own texture sentence (moodTexture). `rapport` is not here because a closeness SCORE
- * is the one number nobody should be handed — how a relationship stands reaches her as the standing
- * register underneath (climate.ts), in bands and prose, for exactly this reason. Its MOVEMENT still
- * reaches her on the trajectory line, which is a different thing: feeling something warming up is
- * not grading it.
+ * Which four, and why these: they are already the documented subset — the same four, in the same
+ * order, that renderStatusForComposer carries as "only the voice-SHAPING fields". The other two are
+ * excluded for reasons of their own. `mood_level` has its own line, with its own texture sentence
+ * (moodTexture). `rapport` is a closeness SCORE, which is the one number nobody should be handed —
+ * how a relationship stands reaches her as the standing register underneath (climate.ts), in bands
+ * and prose, for exactly this reason. Its MOVEMENT still reaches her on the trajectory line, which
+ * is a different thing: feeling something warming up is not grading it.
  *
  * Why words: the line used to read "anxiety 30, warmth 80, social battery 65, rapport 55, patience 75
  * (all /100)" — five levels, on the surface the model reads immediately before it grades itself, when
@@ -550,11 +551,11 @@ function moodTrend(history: MoodPoint[]): string {
  * feeling vocabulary. The numbers are still there; they are just arithmetic now (affectDrift.ts).
  */
 const FELT_GAUGES = [
-  { key: 'warmth',         label: 'warmth',         low: 'expensive', mid: 'quieter',    high: 'easy' },
-  { key: 'patience',       label: 'patience',       low: 'thin',      mid: 'ordinary',   high: 'long' },
-  { key: 'social_battery', label: 'social battery', low: 'nearly out', mid: 'half',      high: 'full' },
+  { key: 'warmth',         label: 'warmth',         low: 'expensive',  mid: 'quieter',  high: 'easy' },
+  { key: 'patience',       label: 'patience',       low: 'thin',       mid: 'ordinary', high: 'long' },
+  { key: 'social_battery', label: 'social battery', low: 'nearly out', mid: 'half',     high: 'full' },
   // Read as a VALUE like the other three, not as a good/bad: low is a quiet nervous system, high a loud one.
-  { key: 'anxiety',        label: 'anxiety',        low: 'quiet',     mid: 'humming',    high: 'loud' },
+  { key: 'anxiety',        label: 'anxiety',        low: 'quiet',      mid: 'humming',  high: 'loud' },
 ] as const satisfies ReadonlyArray<{ key: GaugeKey; label: string; low: string; mid: string; high: string }>;
 
 /** Where the three bands split. Two cuts rather than moodTexture's five: this is one clause of four
@@ -581,9 +582,10 @@ const INTERNAL_WEATHER_HEADER =
 
 /**
  * The per-turn "internal weather" block injected into the dynamic prompt (NOT the cached persona).
- * Carries the computed cycle/circadian texture, the prior mood + trend, last turn's meta-prompt, and
- * — underneath all of it — the weeks-scale standing register (climate.ts), then reminds the model to
- * re-report its `status`. Everything here is internal and never spoken.
+ * Carries the computed cycle/circadian texture, the prior mood + trend, the four gauges she can feel
+ * (FELT_GAUGES, as words), last turn's meta-prompt, and — underneath all of it — the weeks-scale
+ * standing register (climate.ts), then points at the contract she re-reports her `status` from.
+ * Everything here is internal and never spoken.
  *
  * The climate lines splice in AFTER the carried mood/gauge/meta-prompt lines and BEFORE the tail:
  * the weather is what she carries into THIS turn, the climate is the ground it sits on, and the tail
