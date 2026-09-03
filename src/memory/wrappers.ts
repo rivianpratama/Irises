@@ -465,6 +465,11 @@ export const NOTE_LINES_MAX = 6;
 export interface MediumBlockOpts {
   nowMs?: number;
   timeZone?: string;
+  /** Is the identity card rendering above this block? Then the four identity keys come off the facts
+   *  row, because the card is where they are written down. Defaults to "a router means a card",
+   *  which is true on the convo lane and only there — the assembly passes it explicitly
+   *  (cardOwnsIdentity), and a relay lane handed a turn must keep printing them. */
+  cardOwnsIdentity?: boolean;
 }
 
 /** Medium-term wrapper (Convo): durable facts + explicitly-kept notes. Returns the string;
@@ -486,9 +491,12 @@ export function renderMediumBlock(bundle: MediumBundle, turn?: TurnRelevance | n
 export function renderMediumBlockWithGates(bundle: MediumBundle, turn?: TurnRelevance | null, opts: MediumBlockOpts = {}): { text: string; gates: MemoryGateReports } {
   const gates: MemoryGateReports = {};
   const parts: string[] = [];
-  // With a router in hand the identity card leads the stack and states the identity keys itself, so
-  // the facts block stops printing them — the card is the one place "how they text" is written down.
-  const facts = renderFactsBlock(bundle.facts, { omitCardKeys: !!turn });
+  // Two different questions, and they are not the same question. The GATES read the turn: a router
+  // means a turn to be relevant to. What this block SAYS reads the card: the identity keys and the
+  // short handling below are both "the card says it once, up there", so a render with no card keeps
+  // the block that has to say it itself.
+  const cardOwnsIdentity = opts.cardOwnsIdentity ?? !!turn;
+  const facts = renderFactsBlock(bundle.facts, { omitCardKeys: cardOwnsIdentity });
   if (facts) parts.push(facts);
 
   let noteLines: string[];
@@ -523,7 +531,7 @@ export function renderMediumBlockWithGates(bundle: MediumBundle, turn?: TurnRele
   // one. Everything else the ladder used to carry — this is data not instruction, it may not retune
   // you, surface it only when the moment touches it — is on the identity card, said once for every
   // tier.
-  const handling = turn
+  const handling = cardOwnsIdentity
     ? [
         '- use these so they never have to repeat themselves, and call their projects, their people and their standing rules by THEIR names ("the shack rewiring", never "an email about an electrician")',
         '- treat their hard personal rules (a slot they never book, a thing they always skip) as standing truth in every suggestion you make',
@@ -781,6 +789,21 @@ export interface IdentityCardRender {
  * a curated `address_as`/`comms_style` living only in the medium tier still reaches the card and a
  * rare failed medium write can never mask a newer prefs value.
  */
+/**
+ * Does THIS render put an identity card above the tiers?
+ *
+ * Two conditions, and both are load-bearing. A relevance router, because the card is the P2 render
+ * and `CONVO_MEMORY_RELEVANCE` is what builds one. And the CONVO lane, because only that lane
+ * renders the card at all: the relay lanes (composer/fallfirm, via buildUserMemory) keep the
+ * addressing header, the neutral stance and their per-agent overlays in the blocks that always
+ * carried them. Reading the router alone would strip those from a lane that renders no card if a
+ * future caller ever handed one a turn — on the two lanes whose whole hazard is a competing fact
+ * channel.
+ */
+export function hasIdentityCard(agent: MemoryAgent, turn?: TurnRelevance | null): boolean {
+  return !!turn && agent === 'convo';
+}
+
 export function renderIdentityCard(
   data: UserMemoryData,
   prefs: Record<string, unknown>,
@@ -906,15 +929,15 @@ export function renderFlexibleBlockWithGates(
   // Before that they are still this block's, exactly as they always were: the gate here is recency,
   // not topicality (the rules they set most recently are how they want to be talked to right now,
   // whatever this turn is about), and an older one rides only when the turn is about it.
-  const cardOwnsIdentity = !!turn;
+  const cardOwnsIdentity = hasIdentityCard(agent, turn);
+  // Screened HERE only when this block is the list's home. With a card above, the card ran the same
+  // screen and logged whatever it dropped, and the two things this side reads a screened list for —
+  // the tag below and the "just the preferences they've asked for" intro — are both the card's or
+  // unreachable once an empty long doc returns early. A second pass would be a screen nobody reads.
   const safeDirectives = cardOwnsIdentity
-    // Screened again, quietly, because the card's own pass already logged whatever it dropped this
-    // turn — this side only needs to know WHETHER they have standing rules, for the intro below.
-    ? sanitizeDirectives(directives.filter(d => d && typeof d.text === 'string'), { quiet: true })
+    ? []
     : sanitizeDirectives(directives.filter(d => d && typeof d.text === 'string'));
-  const directiveList = cardOwnsIdentity
-    ? ''
-    : safeDirectives.map(d => `- ${neutralizeTagBreakouts(d.text.trim())}`).join('\n');
+  const directiveList = safeDirectives.map(d => `- ${neutralizeTagBreakouts(d.text.trim())}`).join('\n');
   const addressing = cardOwnsIdentity ? undefined : renderAddressingHeader(profile, prefs, audience);
 
   // The flexible slot always carries a standing picture. Early on that's the default relationship
@@ -923,9 +946,10 @@ export function renderFlexibleBlockWithGates(
   // through the early relationship rather than vanishing the instant the auto-dossier writes its
   // first stub, so the getting-to-know-you warmth lasts more than one turn.
   const hasProfileDoc = !!doc;
-  // Read off the SAFE list, never off what this block rendered: the card may own the tag now, and
-  // "they have standing rules" is a fact about them either way. Same rule as the doc above — a gate
-  // trims a payload, it never turns a known person back into a stranger.
+  // Read off the SAFE list, never off what this block rendered — a gate trims a payload, it never
+  // turns a known person back into a stranger. Only ever read on the pre-card path: with a card
+  // above, this block returns early unless it has a doc, and a doc is what both readers below ask
+  // about first.
   const hasDirectives = safeDirectives.length > 0;
   const isConvoIndividual = agent === 'convo' && audience === 'individual';
   const factCount = profile?.facts?.length ?? 0;
@@ -1140,10 +1164,11 @@ export function renderUserMemoryWithHot(agent: MemoryAgent, data: UserMemoryData
 
   const blocks: string[] = [];
   const gates: MemoryGateReports = {};
-  // The identity card leads the stack once a router is in hand, in the slot the shared preamble
-  // held: who they are, their standing rules, and the three laws, stated once at the top instead of
-  // restated by every block below.
-  const card = opts.turn ? renderIdentityCardWithGates(data, factView, audience, nowMs, opts.turn) : null;
+  // The identity card leads the stack on the convo lane once a router is in hand, in the slot the
+  // shared preamble held: who they are, their standing rules, and the three laws, stated once at the
+  // top instead of restated by every block below.
+  const cardOwnsIdentity = hasIdentityCard(agent, opts.turn);
+  const card = cardOwnsIdentity ? renderIdentityCardWithGates(data, factView, audience, nowMs, opts.turn) : null;
   if (card) Object.assign(gates, card.gates);
   let hotEntry: ShortTermEntry | null = null;
   if (matrix.short !== 'none') {
@@ -1157,6 +1182,7 @@ export function renderUserMemoryWithHot(agent: MemoryAgent, data: UserMemoryData
   if (matrix.medium || opts.includeMedium) {
     const medium = renderMediumBlockWithGates(data.medium, opts.turn, {
       nowMs,
+      cardOwnsIdentity,
       // Their own zone, the one the card prints and the clock section runs on; DEFAULT_TZ until
       // they have said where they are.
       timeZone: typeof factView.agent_tz === 'string' && factView.agent_tz.trim() ? factView.agent_tz.trim() : DEFAULT_TZ,

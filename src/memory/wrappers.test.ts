@@ -862,6 +862,31 @@ test('a real long doc still renders its block, with its intro', () => {
   assert.ok(out.includes("Here's what little you've got on them so far:"));
 });
 
+test('a relay lane keeps its own identity prose, even handed a router', () => {
+  // The card is the CONVO lane's. `turn` alone used to stand in for "the card owns identity", which
+  // held only because dossier.ts is the one place a router is built today: hand composer or fallfirm
+  // a turn and the addressing header, the neutral stance and both per-agent overlays would come off
+  // a relay lane in favour of a card nobody renders — on the two lanes whose whole hazard is a
+  // competing fact channel.
+  const data = cardData();
+  const turn = buildTurnRelevance('hey', { medium: data.medium });
+  for (const agent of ['composer', 'fallfirm'] as MemoryAgent[]) {
+    const routed = renderUserMemoryWithHot(agent, data, NOW, { currentTurnText: 'hey', turn, includeMedium: true }).text;
+    assert.ok(!routed.includes("## Who you're talking to"), `${agent} renders no card`);
+    assert.equal(
+      routed, renderUserMemory(agent, data, NOW, { includeMedium: true }),
+      `${agent}: a router changes nothing about a lane that has no card`,
+    );
+    assert.ok(routed.includes('How to address them'), `${agent} keeps the addressing header`);
+    assert.ok(routed.includes('comms style: clipped, lowercase'), `${agent} keeps the identity keys`);
+  }
+  assert.ok(
+    renderUserMemoryWithHot('composer', baseData(), NOW, { currentTurnText: 'hey', turn }).text
+      .includes('Nothing is stored in this layer for them yet'),
+    'and the neutral stance',
+  );
+});
+
 test('with no router the seed stances still fill their slots, exactly as they always did', () => {
   const out = renderUserMemory('convo', baseData({ profile: null }), NOW);
   assert.ok(out.includes('### Your default way of being with them (the seed — it retires itself)'));
