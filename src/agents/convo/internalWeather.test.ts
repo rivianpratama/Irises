@@ -51,6 +51,18 @@ test('a prior mood + meta-prompt carry forward into the block', () => {
   assert.match(prompt, /keep it light and follow their lead/); // carried meta-prompt
 });
 
+// P3: the gauges reach her as WORDS, and only the four she can feel. The fixture carries warmth 80,
+// patience 75, social battery 65, anxiety 30 → two on the high band, one mid, one low.
+test('the carried gauges reach the assembled prompt as words, not levels to optimize', () => {
+  const prompt = buildSystemPrompt(ctx, '', [], undefined, undefined, [], 'hey', undefined, affect(), COMPUTED);
+  assert.match(prompt, /- How you're running right now: warmth easy, patience long, social battery half, anxiety quiet\./);
+  assert.ok(!prompt.includes('(all /100)'), 'the block hands her a 1-100 scale to grade her gauges on again');
+  assert.ok(
+    !prompt.includes('Your state has MOMENTUM'),
+    'the momentum sentence is back — applyAffectDrift (persona/affectDrift.ts) enforces it now, so this is an instruction she cannot disobey',
+  );
+});
+
 // The envelope contract (persona/status.ts renderStatusContract) is its OWN section, pushed under the
 // same `computed` guard and immediately after the weather block — whose last line is now one pointer
 // at it (63 chars) instead of a 382-character re-listing of the fields it describes. (Measured off

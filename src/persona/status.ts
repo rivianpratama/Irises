@@ -532,6 +532,47 @@ function moodTrend(history: MoodPoint[]): string {
   return 'holding fairly steady';
 }
 
+/**
+ * The gauges the model is handed, and the word each band of one reads as. FOUR of the six, and words
+ * rather than levels — both halves are v2's bargain read from the prompt side.
+ *
+ * Which four: the ones a person can actually FEEL. `mood_level` is not here because it has its own
+ * line, with its own texture sentence (moodTexture). `rapport` is not here because a closeness SCORE
+ * is the one number nobody should be handed — how a relationship stands reaches her as the standing
+ * register underneath (climate.ts), in bands and prose, for exactly this reason. Its MOVEMENT still
+ * reaches her on the trajectory line, which is a different thing: feeling something warming up is
+ * not grading it.
+ *
+ * Why words: the line used to read "anxiety 30, warmth 80, social battery 65, rapport 55, patience 75
+ * (all /100)" — five levels, on the surface the model reads immediately before it grades itself, when
+ * it was still being asked to report those levels back. A number printed beside a state is a number
+ * to optimize (charter §6.4), which is the same argument that keeps the valence bands out of the
+ * feeling vocabulary. The numbers are still there; they are just arithmetic now (affectDrift.ts).
+ */
+const FELT_GAUGES = [
+  { key: 'warmth',         label: 'warmth',         low: 'expensive', mid: 'quieter',    high: 'easy' },
+  { key: 'patience',       label: 'patience',       low: 'thin',      mid: 'ordinary',   high: 'long' },
+  { key: 'social_battery', label: 'social battery', low: 'nearly out', mid: 'half',      high: 'full' },
+  // Read as a VALUE like the other three, not as a good/bad: low is a quiet nervous system, high a loud one.
+  { key: 'anxiety',        label: 'anxiety',        low: 'quiet',     mid: 'humming',    high: 'loud' },
+] as const satisfies ReadonlyArray<{ key: GaugeKey; label: string; low: string; mid: string; high: string }>;
+
+/** Where the three bands split. Two cuts rather than moodTexture's five: this is one clause of four
+ *  words, and a word per twenty points would say more about the arithmetic than about how she feels. */
+const FELT_HIGH = 70;
+const FELT_LOW = 40;
+
+/** The felt gauges as one clause of words. Read through `clampGauge` so a garbled stored level reads
+ *  as the middle band rather than throwing a `NaN` word into the prompt. */
+function feltGauges(gauges: AffectGauges): string {
+  return FELT_GAUGES
+    .map(f => {
+      const n = clampGauge(gauges[f.key]);
+      return `${f.label} ${n >= FELT_HIGH ? f.high : n >= FELT_LOW ? f.mid : f.low}`;
+    })
+    .join(', ');
+}
+
 // The PROVEN leak-guard header for every internal-weather block: the parenthetical is the line that
 // keeps this state from ever surfacing in a bubble. Shared verbatim by the Convo and Composer
 // injectors (renderStatusForPrompt / renderStatusForComposer) so the wording can never drift apart.
@@ -544,7 +585,7 @@ const INTERNAL_WEATHER_HEADER =
  * — underneath all of it — the weeks-scale standing register (climate.ts), then reminds the model to
  * re-report its `status`. Everything here is internal and never spoken.
  *
- * The climate lines splice in AFTER the momentum/meta-prompt lines and BEFORE the re-report tail:
+ * The climate lines splice in AFTER the carried mood/gauge/meta-prompt lines and BEFORE the tail:
  * the weather is what she carries into THIS turn, the climate is the ground it sits on, and the tail
  * has to stay last (it is the instruction the reply obeys). ONE header for the whole block, ever.
  * With `climate` undefined or at its defaults, climateLines returns [] and this output is
@@ -564,7 +605,7 @@ export function renderStatusForPrompt(
   const history = state?.moodHistory ?? [];
   if (last) {
     lines.push(`- A moment ago you felt ${last.mood_label} (${last.mood_core}, ${last.mood_level}/100), ${moodTrend(history)}. ${moodTexture(last.mood_level)}`);
-    lines.push(`- Gauges you carried in — anxiety ${last.anxiety}, warmth ${last.warmth}, social battery ${last.social_battery}, rapport ${last.rapport}, patience ${last.patience} (all /100).`);
+    lines.push(`- How you're running right now: ${feltGauges(last)}.`);
     // The recent-affect trail (short memory): call out only the gauges that are actually moving, so
     // the model sees the trajectory it's continuing — not just the single last point.
     if (history.length >= 2) {
@@ -576,7 +617,11 @@ export function renderStatusForPrompt(
       ].filter((s): s is string => !!s);
       if (moving.length) lines.push(`- Trajectory across your last ${history.length} turns: ${moving.join(', ')}.`);
     }
-    lines.push('- Your state has MOMENTUM: this turn CONTINUES from that trajectory, it does not reset. Mood and the gauges move a handful of points per turn, not wild swings — carry them forward and let this message nudge them; only something genuinely big shifts them a lot.');
+    // No momentum sentence: it asked her to do what applyAffectDrift (affectDrift.ts) now DOES —
+    // carry the state forward and move it a handful of points, enforced by the turn cap and the two
+    // rolling windows. An instruction she cannot disobey is prompt she pays for and nothing more, and
+    // the true half of it ("your state carries, and it is carried for you") moved to the contract,
+    // which is where the asking happens.
     if (last.meta_prompt) lines.push(`- Your read going into this message (from last turn): "${last.meta_prompt}"`);
   } else {
     lines.push('- First read of this person — set your mood from the weather above and how their message lands.');
@@ -624,6 +669,9 @@ export function renderStatusContract(): string {
   return [
     STATUS_CONTRACT_HEADER,
     'Every reply ends with this hidden `status` object — never seen by them, never spoken, never hinted at. It is what keeps you the same person from one turn to the next: read yourself honestly, then fill every field.',
+    // The half of the bargain no FIELD can state, because the fields it is about are the ones v2
+    // deleted. It frames the bullets rather than trailing them: it is the reason there are only eight.
+    'Your state CARRIES between turns, and it is kept FOR you: how far your mood moved, and where your warmth, patience, social battery and nerves stand, are not yours to report. Give the honest word and the direction it moved; the rest follows from them.',
     ...ENVELOPE_FIELDS.map(f => `- \`${f.key}\` — ${f.description}`),
     'Your feeling words, by core — pick the one that is actually true, not the flattering one:',
     feelingVocabulary(),

@@ -549,6 +549,36 @@ test('feelingVocabulary teaches every word of the wheel and no valence band', ()
   assert.ok(renderStatusContract().includes(vocab), 'the contract carries it verbatim');
 });
 
+/** The half of v2's bargain the FIELDS cannot state, because the fields it is about are gone: the
+ *  level and the gauges are kept for her between turns. It replaces the weather block's momentum
+ *  sentence, and it belongs here rather than there — the block is what she is handed, the contract is
+ *  what she is asked for, and this is a sentence about the asking. */
+const STATE_IS_CARRIED = 'kept FOR you';
+
+test('the contract asks for a direction and says the numbers are kept for her', () => {
+  const contract = renderStatusContract();
+
+  // `mood_shift` is direction-only, with `broke` as the rare escape — on its own bullet, from the
+  // description the response schema is built from (ENVELOPE_FIELDS), so both channels say it.
+  const shift = ENVELOPE_FIELDS.find(f => f.key === 'mood_shift')!;
+  assert.match(shift.description, /Direction only, never how far/);
+  assert.match(shift.description, /broke is a genuine breaking point, not a bad turn/);
+  assert.ok(contract.includes(`- \`mood_shift\` — ${shift.description}`), 'and it reaches her verbatim');
+
+  // …and the other half: nobody asks her for a magnitude, because nothing asks her for a number.
+  assert.equal(
+    contract.split(STATE_IS_CARRIED).length - 1, 1,
+    `the contract says ${JSON.stringify(STATE_IS_CARRIED)} ${contract.split(STATE_IS_CARRIED).length - 1}×, not once — `
+    + 'the envelope stopped carrying the level and the gauges, so the contract is the only place left '
+    + 'that can tell her they still exist and are not hers to grade',
+  );
+  const at = contract.indexOf(STATE_IS_CARRIED);
+  assert.ok(at > 0 && at < contract.indexOf('- `mood_label`'), 'it frames the bullets rather than trailing them');
+  assert.match(contract.slice(at), /^kept FOR you: how far your mood moved, and where your warmth, patience, social battery and nerves stand, are not yours to report/);
+  // It is prose about gauges, not a description of one: no bullet, and no number.
+  assert.doesNotMatch(contract.split('\n').find(l => l.includes(STATE_IS_CARRIED))!, /\d/);
+});
+
 test('renderStatusForPrompt always warns it is internal, and carries prior mood when present', () => {
   const cold = renderStatusForPrompt(undefined, COMPUTED);
   assert.match(cold, /INTERNAL weather/);
@@ -561,12 +591,70 @@ test('renderStatusForPrompt always warns it is internal, and carries prior mood 
 
   // The threading capture is still read by nobody HERE: neither field's value reaches the weather
   // block, and the re-report tail names no field at all now — it points at the contract, which
-  // describes all seventeen in one place (the contract's own bullets are tested above).
+  // describes all eight in one place (the contract's own bullets are tested above).
   // (The bare /thread/i sweep is safe because COMPUTED's slot is afternoon_peak; the EVENING
   // circadian description legitimately uses the word, so keep this fixture out of 18:00-22:00.)
   assert.doesNotMatch(warm, /thread/i);
   assert.doesNotMatch(warm, /visa interview/);
   assert.doesNotMatch(cold, /thread/i);
+});
+
+// ── the felt gauges: words, and only the four she can feel ───────────────────
+// v2 took the numbers off the envelope (Task 15); this is the other end of the same bargain. The
+// block used to hand back five gauges as "anxiety 30, warmth 80, … (all /100)" — five levels to
+// optimize against, on the surface the model reads immediately before grading itself. It now names
+// only what a person can actually feel, in a word per band.
+
+/** The line, by its lead-in — the felt clause is asserted against this and nowhere else. */
+const FELT_LEAD = "- How you're running right now: ";
+
+function feltLine(gauges: Partial<AffectGauges>): string {
+  const out = renderStatusForPrompt({ last: carried(0, gauges), moodHistory: [] }, COMPUTED);
+  const line = out.split('\n').find(l => l.startsWith(FELT_LEAD));
+  assert.ok(line, `no felt-gauge line in the block:\n${out}`);
+  return line;
+}
+
+test('the weather block names the four gauges she can feel, as words, with no gauge number at all', () => {
+  assert.equal(
+    feltLine({ warmth: 95, patience: 88, social_battery: 90, anxiety: 12 }),
+    `${FELT_LEAD}warmth easy, patience long, social battery full, anxiety quiet.`,
+  );
+  assert.equal(
+    feltLine({ warmth: 50, patience: 50, social_battery: 50, anxiety: 50 }),
+    `${FELT_LEAD}warmth quieter, patience ordinary, social battery half, anxiety humming.`,
+  );
+  assert.equal(
+    feltLine({ warmth: 20, patience: 15, social_battery: 10, anxiety: 90 }),
+    `${FELT_LEAD}warmth expensive, patience thin, social battery nearly out, anxiety loud.`,
+  );
+  // The two cuts, from both sides — a band boundary that slid would otherwise be invisible.
+  assert.match(feltLine({ patience: 70 }), /patience long/);
+  assert.match(feltLine({ patience: 69 }), /patience ordinary/);
+  assert.match(feltLine({ patience: 40 }), /patience ordinary/);
+  assert.match(feltLine({ patience: 39 }), /patience thin/);
+
+  // No digit on the line, and the "(all /100)" that invited five of them is gone.
+  assert.doesNotMatch(feltLine({}), /\d/);
+  const out = renderStatusForPrompt({ last: carried(0), moodHistory: [] }, COMPUTED);
+  assert.ok(!out.includes('(all /100)'), 'the block still hands her a scale to grade herself on');
+  // `rapport` is not felt: closeness reaches her as the standing register (climate.ts), in prose.
+  assert.doesNotMatch(out, /rapport/);
+});
+
+// The momentum sentence described what applyAffectDrift now DOES (persona/affectDrift.ts): the
+// gauges cannot swing wildly, because the turn cap and the rolling windows will not let them. An
+// instruction to do what code already enforces is prompt she pays for and cannot disobey.
+test('the block no longer asks her to carry her state forward — the engine does that now', () => {
+  const out = renderStatusForPrompt({ last: carried(0), moodHistory: [] }, COMPUTED);
+  assert.ok(
+    !out.includes('Your state has MOMENTUM'),
+    'the momentum sentence is back in the weather block, where it now instructs her to do the '
+    + 'arithmetic applyAffectDrift already did (persona/affectDrift.ts)',
+  );
+  assert.doesNotMatch(out, /move a handful of points per turn|carry them forward/);
+  // …and the truth it was carrying is stated where the fields are described, once (below).
+  assert.ok(renderStatusContract().includes(STATE_IS_CARRIED));
 });
 
 test('renderStatusForComposer returns "" for null/undefined and when there is no carried mood', () => {
@@ -619,19 +707,21 @@ function movedClimate(): RelationshipClimate {
   return { ...defaultClimate(), dials: { ease: 70, candor: 80, playfulness: 60 }, evalCount: 30 };
 }
 
-test('a moved climate rides ONE weather block, after the momentum lines and before the re-report tail', () => {
+test('a moved climate rides ONE weather block, after the carried lines and before the re-report tail', () => {
   const full = carried(0);
   const out = renderStatusForPrompt({ last: full, moodHistory: [{ level: 72, core: 'joyful', label: 'hopeful', at: 0 }] }, COMPUTED, movedClimate());
 
   // Exactly one header — a second one would read as a second, competing block.
   assert.equal(out.split('INTERNAL weather').length - 1, 1);
 
-  const momentum = out.indexOf('Your state has MOMENTUM');
+  // Anchored on the felt-gauge line, which is the last of the carried lines the momentum sentence
+  // used to sit after. The ordering claim is unchanged: weather, then the ground under it, then the ask.
+  const felt = out.indexOf(FELT_LEAD);
   const meta = out.indexOf('Your read going into this message');
   const leadIn = out.indexOf('standing register');
   const reReport = out.indexOf('Re-report your `status`');
-  assert.ok(momentum !== -1 && meta !== -1 && leadIn !== -1 && reReport !== -1);
-  assert.ok(leadIn > momentum, 'climate must sit after the momentum line');
+  assert.ok(felt !== -1 && meta !== -1 && leadIn !== -1 && reReport !== -1);
+  assert.ok(leadIn > felt, 'climate must sit after the carried gauges');
   assert.ok(leadIn > meta, 'climate must sit after the carried meta-prompt');
   assert.ok(leadIn < reReport, 'the re-report instruction stays last');
 
