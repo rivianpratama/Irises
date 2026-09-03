@@ -6,7 +6,9 @@ import {
   markOpsStart, markOpsDone, getActiveOps, isDuplicateDelegation,
   requestOpsCancel, isOpsCancelled, noteOpsProgress, hasInFlightRequest,
   normalizeRequest, __resetOpsCoordination, markOpsRetry, getOpsEtaStatus,
+  opsStaleMs, OPS_STALE_SLACK_MS,
 } from './opsCoordination.js';
+import { BROWSER_LEG_BUDGET_MS } from '../agents/ops/engineBackend.js';
 
 test('markOpsStart is visible to a synchronous getActiveOps in the same tick (no async race)', () => {
   __resetOpsCoordination();
@@ -232,4 +234,76 @@ test('getOpsEtaStatus returns undefined for a cancelled task', () => {
 test('getOpsEtaStatus returns undefined for a missing task', () => {
   __resetOpsCoordination();
   assert.equal(getOpsEtaStatus('chatA', 'nope'), undefined);
+});
+
+// ── the staleness horizon ───────────────────────────────────────────────────
+
+/** Run `fn` with one env var set (or deleted), then put the environment back exactly as it was.
+ *  The horizon is read at CALL time like every other flag, so this is what "the operator armed the
+ *  browser budget" looks like from a test. */
+function withEnv(key: string, value: string | undefined, fn: () => void): void {
+  const had = Object.prototype.hasOwnProperty.call(process.env, key);
+  const before = process.env[key];
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+  try { fn(); } finally {
+    if (had) process.env[key] = before;
+    else delete process.env[key];
+  }
+}
+
+test('opsStaleMs is the WIDEST configured leg budget plus the slack — and 300_000 on a default env', () => {
+  // The number this was a hardcoded constant for, unchanged: a default install reads exactly the
+  // five minutes it has always read.
+  assert.equal(opsStaleMs({}), 300_000);
+  assert.equal(opsStaleMs({ OPS_BROWSER_TASK_TIMEOUT_MS: 'off' }), 300_000, 'the env var IS the flag; off is today');
+  assert.equal(opsStaleMs({ OPS_BROWSER_TASK_TIMEOUT_MS: 'junk' }), 300_000, 'a nonsense window is not a budget');
+  // Armed: the horizon now sits outside the browser leg it has to outlive.
+  assert.equal(opsStaleMs({ OPS_BROWSER_TASK_TIMEOUT_MS: 'on' }), BROWSER_LEG_BUDGET_MS + OPS_STALE_SLACK_MS);
+  assert.equal(opsStaleMs({ OPS_BROWSER_TASK_TIMEOUT_MS: '600000' }), 660_000);
+  // A widened ORDINARY deadline counts too — the horizon tracks whichever leg is widest, and never
+  // the last one read.
+  assert.equal(opsStaleMs({ OPS_TASK_TIMEOUT_MS: '600000' }), 660_000);
+  assert.equal(opsStaleMs({ OPS_TASK_TIMEOUT_MS: '600000', OPS_BROWSER_TASK_TIMEOUT_MS: '300000' }), 660_000);
+  assert.equal(opsStaleMs({ OPS_TASK_TIMEOUT_MS: '60000', OPS_BROWSER_TASK_TIMEOUT_MS: '900000' }), 960_000);
+});
+
+test('an armed browser leg is still active, duplicate-suppressed and ETA-bearing at 6 and 14 minutes', () => {
+  withEnv('OPS_BROWSER_TASK_TIMEOUT_MS', 'on', () => {
+    __resetOpsCoordination();
+    const t0 = Date.now();
+    markOpsStart('chatA', 'task1', { kind: 'web_research', request: 'pull the tags off that walled listing' });
+    for (const minutes of [6, 14]) {
+      const now = t0 + minutes * 60_000;
+      assert.equal(getActiveOps('chatA', now).length, 1, `still on it at ${minutes} minutes`);
+      assert.equal(hasInFlightRequest('chatA', 'pull the tags off that walled listing', now), true);
+      assert.equal(
+        isDuplicateDelegation('chatA', 'web_research', 'pull the tags off that walled listing', now),
+        'in_flight',
+        `a re-ask at ${minutes} minutes must not start a SECOND engine run`,
+      );
+      assert.ok(getOpsEtaStatus('chatA', 'task1', now), `the ETA is still there at ${minutes} minutes`);
+    }
+    // Past the horizon the self-heal still fires — a crashed run must stop blocking.
+    const past = t0 + opsStaleMs() + 1;
+    assert.equal(getActiveOps('chatA', past).length, 0);
+    assert.equal(hasInFlightRequest('chatA', 'pull the tags off that walled listing', past), false);
+    assert.equal(isDuplicateDelegation('chatA', 'web_research', 'pull the tags off that walled listing', past), null);
+    assert.equal(getOpsEtaStatus('chatA', 'task1', past), undefined);
+  });
+});
+
+test('with no browser budget armed the horizon is exactly five minutes, as it has always been', () => {
+  withEnv('OPS_BROWSER_TASK_TIMEOUT_MS', undefined, () => {
+    __resetOpsCoordination();
+    const t0 = Date.now();
+    markOpsStart('chatA', 'task1', { kind: 'web_research', request: 'hours for the corner cafe' });
+    const justInside = t0 + 300_000 - 1_000;
+    assert.equal(getActiveOps('chatA', justInside).length, 1);
+    assert.equal(isDuplicateDelegation('chatA', 'web_research', 'hours for the corner cafe', justInside), 'in_flight');
+    const justPast = t0 + 300_000 + 1;
+    assert.equal(getActiveOps('chatA', justPast).length, 0);
+    assert.equal(hasInFlightRequest('chatA', 'hours for the corner cafe', justPast), false);
+    assert.equal(getOpsEtaStatus('chatA', 'task1', justPast), undefined);
+  });
 });

@@ -12,6 +12,7 @@
 // marker (no first-finisher-clears-everyone bug).
 import type { TaskKind } from '../agents/types.js';
 import { estimateOpsEta, etaStatus, type EtaEstimate, type EtaStatus } from '../agents/etaEstimate.js';
+import { standardLegBudgetMs, browserLegBudgetMs } from '../agents/ops/engineBackend.js';
 
 interface InFlightEntry {
   kind: TaskKind;
@@ -34,9 +35,34 @@ const recentlyDelegated = new Map<string, Map<string, number>>(); // chatId -> n
 // A just-delegated ask stays "recent" this long so a repeat lands on the cached answer, not a
 // second run. Short enough that a genuinely fresh re-ask after the data could change still runs.
 const RECENT_DELEGATION_MS = 90_000;
-// Soft upper bound on how long we'll claim a run is still "in flight" for wording/suppression.
-// A run that overran this (crash, stuck tool) stops blocking; it's a self-heal, not correctness.
-const STALE_MS = 5 * 60 * 1000;
+// How far PAST its own deadline a leg may run before we stop claiming it is in flight. The orchestrator
+// abandons a leg at its budget and clears the marker in `finally`, so this covers only the gap between
+// "the deadline passed" and "the teardown got here" — a minute is generous for that, and short enough
+// that a genuinely crashed process (no teardown at all) unblocks the next ask quickly.
+export const OPS_STALE_SLACK_MS = 60_000;
+
+/**
+ * Soft upper bound on how long we'll claim a run is still "in flight" for wording/suppression: the
+ * WIDEST leg deadline this deployment can wait on, plus the slack above. A run that overran it
+ * (crash, stuck tool) stops blocking; that's a self-heal, not correctness.
+ *
+ * DERIVED, not pinned, because the two numbers are one fact. While a leg is genuinely running,
+ * `getActiveOps` must keep Convo saying "still on it", `getOpsEtaStatus` must keep the ETA, and
+ * `isDuplicateDelegation` / `hasInFlightRequest` must keep suppressing the re-ask — so this horizon
+ * has to sit OUTSIDE every deadline the orchestrator waits on (ops/client.ts `legBudgetFor`: the
+ * standard `OPS_TASK_TIMEOUT_MS` window, or the wider walled-URL browser budget when the operator
+ * armed one). Pinned at a flat five minutes, an armed 15-minute browser leg went silent at five: the
+ * "still on it" wording stopped, the ETA vanished, and a duplicate re-ask started a SECOND engine run
+ * against the one already working.
+ *
+ * Both env vars are read through the parsers that OWN them (agents/ops/engineBackend.ts), never a
+ * second reading of either one, and at CALL time like every other flag so arming the budget needs no
+ * restart. Pure — the env is injected, so the caller decides when it is read. A default environment
+ * gives 240_000 + 60_000: the same 300_000 this was a constant for.
+ */
+export function opsStaleMs(env: NodeJS.ProcessEnv = process.env): number {
+  return Math.max(standardLegBudgetMs(env), browserLegBudgetMs(env) ?? 0) + OPS_STALE_SLACK_MS;
+}
 
 /** Normalize kind+request into a dedupe key. Whitespace/case-insensitive; exact-intent match. */
 export function normalizeRequest(kind: string, request: string): string {
@@ -83,10 +109,12 @@ export function isOpsCancelled(chatId: string, taskId: string): boolean {
 /**
  * Keep-alive for the cheap RETRY leg (a transient-lane-blip second pass). An llm_error can land
  * LATE in the primary loop, so the retry may run well after the original start and the entry would
- * go stale mid-look (past STALE_MS, getActiveOps + isDuplicateDelegation silently drop the task, so
+ * go stale mid-look (past opsStaleMs, getActiveOps + isDuplicateDelegation silently drop the task, so
  * Convo would stop saying "still on it" and a duplicate re-ask could run mid-look). Resetting the
- * per-leg startedAt restores the `timeout < STALE_MS` invariant (while firstStartedAt stays put so
- * true elapsed survives). It does NOT extend the ETA — a retry is expected to be quick and its
+ * per-leg startedAt hands the new leg the same clock a first leg gets, which is what the horizon is
+ * built for: opsStaleMs sits outside the WIDEST leg deadline this deployment can wait on, so a leg
+ * whose clock starts now cannot go stale before its own deadline abandons it (while firstStartedAt
+ * stays put so true elapsed survives). It does NOT extend the ETA — a retry is expected to be quick and its
  * pings stay silent inside the normal quiet window. In-place, and MUST preserve `cancelled` — this
  * is NOT markOpsStart, which would resurrect a cancelled entry and re-arm its dedupe key. No-op if
  * the entry is already gone.
@@ -100,12 +128,14 @@ export function markOpsRetry(chatId: string, taskId: string): void {
 /**
  * Compute the current ETA status for an in-flight task (elapsed from firstStartedAt so a retry leg
  * doesn't reset the clock). Returns undefined for cancelled, stale, or missing entries.
+ *
+ * `now` is injectable, like on the three reads below: it defaults to the app clock, and a caller
+ * that reads several of these for one turn can pass one instant so they cannot disagree.
  */
-export function getOpsEtaStatus(chatId: string, taskId: string): EtaStatus | undefined {
+export function getOpsEtaStatus(chatId: string, taskId: string, now: number = Date.now()): EtaStatus | undefined {
   const entry = inFlight.get(chatId)?.get(taskId);
   if (!entry || entry.cancelled) return undefined;
-  const now = Date.now();
-  if (now - entry.startedAt >= STALE_MS) return undefined;
+  if (now - entry.startedAt >= opsStaleMs()) return undefined;
   if (entry.estimateMs == null) return undefined;
   const elapsed = now - entry.firstStartedAt;
   return etaStatus({ bucketMs: entry.estimateMs, phrase: entry.estimatePhrase ?? '' }, elapsed);
@@ -151,12 +181,12 @@ export interface ActiveOps {
 
 /** Snapshot of research currently running for this chat (stale and cancelled entries filtered out —
  *  a cancelled task must stop reading as "still pulling" the moment the user killed it). */
-export function getActiveOps(chatId: string): ActiveOps[] {
+export function getActiveOps(chatId: string, now: number = Date.now()): ActiveOps[] {
   const byTask = inFlight.get(chatId);
   if (!byTask) return [];
-  const now = Date.now();
+  const staleMs = opsStaleMs();
   return [...byTask.entries()]
-    .filter(([, e]) => now - e.startedAt < STALE_MS && !e.cancelled)
+    .filter(([, e]) => now - e.startedAt < staleMs && !e.cancelled)
     .map(([taskId, e]) => ({ taskId, kind: e.kind, request: e.request, startedAt: e.startedAt, firstStartedAt: e.firstStartedAt, origin: e.origin, lastMilestone: e.lastMilestone, milestoneAt: e.milestoneAt, estimateMs: e.estimateMs, estimatePhrase: e.estimatePhrase }));
 }
 
@@ -167,13 +197,13 @@ export function getActiveOps(chatId: string): ActiveOps[] {
  * kind-scoped isDuplicateDelegation would miss the overlap. Full-request equality makes cross-kind
  * false positives negligible. Same freshness/cancel filters as getActiveOps.
  */
-export function hasInFlightRequest(chatId: string, request: string): boolean {
+export function hasInFlightRequest(chatId: string, request: string, now: number = Date.now()): boolean {
   const byTask = inFlight.get(chatId);
   if (!byTask) return false;
-  const now = Date.now();
+  const staleMs = opsStaleMs();
   const norm = request.trim().toLowerCase().replace(/\s+/g, ' ');
   for (const e of byTask.values()) {
-    if (now - e.startedAt < STALE_MS && !e.cancelled && e.request.trim().toLowerCase().replace(/\s+/g, ' ') === norm) return true;
+    if (now - e.startedAt < staleMs && !e.cancelled && e.request.trim().toLowerCase().replace(/\s+/g, ' ') === norm) return true;
   }
   return false;
 }
@@ -185,14 +215,14 @@ export function hasInFlightRequest(chatId: string, request: string): boolean {
  *  - null:        no recent identical ask.
  * The caller decides what to do (the two-strike refinement path must NOT be suppressed).
  */
-export function isDuplicateDelegation(chatId: string, kind: string, request: string): 'in_flight' | 'recent' | null {
+export function isDuplicateDelegation(chatId: string, kind: string, request: string, now: number = Date.now()): 'in_flight' | 'recent' | null {
   const key = normalizeRequest(kind, request);
-  const now = Date.now();
+  const staleMs = opsStaleMs();
   const byTask = inFlight.get(chatId);
   if (byTask) {
     for (const e of byTask.values()) {
       // A cancelled run doesn't block a re-ask — "actually, run it again" must start fresh.
-      if (e.normKey === key && now - e.startedAt < STALE_MS && !e.cancelled) return 'in_flight';
+      if (e.normKey === key && now - e.startedAt < staleMs && !e.cancelled) return 'in_flight';
     }
   }
   const at = recentlyDelegated.get(chatId)?.get(key);

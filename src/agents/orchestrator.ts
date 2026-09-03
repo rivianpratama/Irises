@@ -37,12 +37,12 @@ export type SendFollowUp = (chatId: string, content: SpeakContent, opts?: SpeakO
 // browser work that legitimately runs 6-15 minutes must not be abandoned at 4 with the answer
 // already on its way back. Unarmed, it returns the same OPS_TASK_TIMEOUT_MS reading as before.
 //
-// One known consequence of arming it: the ordinary deadline sits UNDER opsCoordination's 5-min
-// STALE_MS, which is what keeps "still on it" wording and the in-flight dedup truthful for a task's
-// whole lifetime. A browser budget wider than that leaves a run genuinely in flight past the point
-// the coordination map calls it stale, so past five minutes Convo stops saying "still on it" and a
-// duplicate re-ask is no longer suppressed. That is the trade the operator makes by setting the env
-// (unset, nothing changes); the fix, if it matters, is to derive STALE_MS from the widest leg budget.
+// Whichever leg budget is in play, it sits UNDER opsCoordination's staleness horizon, which is what
+// keeps "still on it" wording, the ETA and the in-flight dedup truthful for a task's whole lifetime.
+// That relationship is now DERIVED rather than hoped for: `opsStaleMs` (state/opsCoordination.ts) is
+// the widest configured leg budget — this deadline or the wider browser one — plus its slack, so
+// arming a 15-minute browser budget widens the horizon with it. It used to be a flat five minutes,
+// and an armed browser run went silent at five while it was genuinely still working.
 
 /** Combine the user-cancel signal with an internal one (a per-leg timeout abort) so aborting EITHER
  *  stops the run. Used so a timed-out primary Ops leg is actually torn down at its next step check —
