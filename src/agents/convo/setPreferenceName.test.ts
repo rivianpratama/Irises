@@ -14,6 +14,8 @@ import { emptyMedia } from '../../webhook/types.js';
 import { __resetOpsCoordination } from '../../state/opsCoordination.js';
 import { getUserProfile } from '../../db/repositories/profiles.js';
 import { getMemory, setPreference } from '../../db/repositories/memory.js';
+import { listMediumActive } from '../../db/repositories/memoryMedium.js';
+import { SET_PREFERENCE_TOOL, setPreferenceTool } from './tools.js';
 import { groupHandle } from '../../memory/identity.js';
 import type { LlmResult, LlmToolCall } from '../../llm/types.js';
 
@@ -73,6 +75,59 @@ test('other keys still take the ordinary prefs route', async () => {
   await processConvoResult({ ...a, res, textToSend: "i'm in chicago" });
   assert.equal((await getMemory(a.handle))?.prefs.agent_tz, 'America/Chicago');
   assert.equal(await getUserProfile(a.handle), null, 'no profile row minted for a non-name key');
+});
+
+// ── The `basis` arg (MEMORY_PROVENANCE_ENABLED) ────────────────────────────────────────────────
+// set_preference writes two provenance-bearing things: a keyed fact (comms_style / address_as) and
+// an important note. Both take who-says-so from the same coerced arg as remember_user.
+
+async function withProvenance<T>(on: boolean, fn: () => Promise<T> | T): Promise<T> {
+  const prior = process.env.MEMORY_PROVENANCE_ENABLED;
+  process.env.MEMORY_PROVENANCE_ENABLED = on ? 'true' : 'false';
+  try {
+    return await fn();
+  } finally {
+    if (prior === undefined) delete process.env.MEMORY_PROVENANCE_ENABLED;
+    else process.env.MEMORY_PROVENANCE_ENABLED = prior;
+  }
+}
+
+test('with provenance OFF set_preference is the canonical tool object — the prompt is unchanged', async () => {
+  await withProvenance(false, () => {
+    assert.equal(setPreferenceTool(), SET_PREFERENCE_TOOL);
+    const props = (SET_PREFERENCE_TOOL.inputSchema as { properties: Record<string, unknown> }).properties;
+    assert.ok(!('basis' in props));
+  });
+  await withProvenance(true, () => {
+    const props = (setPreferenceTool().inputSchema as { properties: Record<string, Record<string, unknown>> }).properties;
+    assert.deepEqual(props.basis.enum, ['stated', 'inferred']);
+    assert.deepEqual(setPreferenceTool().inputSchema.required, SET_PREFERENCE_TOOL.inputSchema.required, 'basis is optional');
+  });
+});
+
+test('a keyed fact and a note both file who says so', async () => {
+  await withProvenance(true, async () => {
+    const a = args();
+    await processConvoResult({
+      ...a, textToSend: 'keep it short with me',
+      res: makeResult(['will do'], [{ name: 'set_preference', input: { key: 'comms_style', value: 'brief, lowercase', basis: 'stated' } }]),
+    });
+    await processConvoResult({
+      ...a, textToSend: 'and remember the gate code is 88',
+      res: makeResult(['got it'], [{ name: 'set_preference', input: { key: 'important_note', value: 'gate code is 88', basis: 'stated' } }]),
+    });
+    // No basis at all on this one — she worked it out from how they text.
+    await processConvoResult({
+      ...a, textToSend: 'yeah whatever works',
+      res: makeResult(['ok'], [{ name: 'set_preference', input: { key: 'address_as', value: 'Chief' } }]),
+    });
+
+    const rows = await listMediumActive(a.handle);
+    assert.deepEqual(
+      rows.map(r => [r.kind, r.key ?? null, r.prov]),
+      [['fact', 'comms_style', 'stated'], ['important_note', null, 'stated'], ['fact', 'address_as', 'inferred']],
+    );
+  });
 });
 
 test('a GROUP identity never gets a person-profile name (falls through to prefs)', async () => {

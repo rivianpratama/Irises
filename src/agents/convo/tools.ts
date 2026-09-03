@@ -1,3 +1,4 @@
+import { provenanceEnabled } from '../../memory/provenance.js';
 import type { LlmToolDef } from '../../llm/types.js';
 
 export const REACTION_TOOL: LlmToolDef = {
@@ -103,6 +104,46 @@ export const SET_PREFERENCE_TOOL: LlmToolDef = {
     required: ['key', 'value'],
   },
 };
+
+/** WHO SAYS SO, asked of the only party that knows: the model that just read the message. One
+ *  sentence, and a closed choice — `seeded` is not offered because no live turn can honestly claim
+ *  one (only the installer seeds), and a missing or unrecognized value is filed as `inferred`
+ *  (memory/provenance.ts `coerceBasis`). */
+const BASIS_ARG: Record<string, unknown> = {
+  type: 'string',
+  enum: ['stated', 'inferred'],
+  description: 'Where this came from: stated = they said it; inferred = you deduced it. Leave it out only when you genuinely cannot tell — anything missing or unrecognized is filed as inferred.',
+};
+
+/** The same tool with `basis` added, built by spread so the canonical object above is never mutated
+ *  — its exact bytes are what the prompt's tool-docs section renders with the feature off. */
+function withBasisArg(tool: LlmToolDef): LlmToolDef {
+  return {
+    ...tool,
+    inputSchema: {
+      ...tool.inputSchema,
+      properties: {
+        ...(tool.inputSchema.properties as Record<string, unknown>),
+        basis: BASIS_ARG,
+      },
+    },
+  };
+}
+
+const REMEMBER_USER_TOOL_WITH_BASIS = withBasisArg(REMEMBER_USER_TOOL);
+const SET_PREFERENCE_TOOL_WITH_BASIS = withBasisArg(SET_PREFERENCE_TOOL);
+
+/** The two write tools carry `basis` only while `MEMORY_PROVENANCE_ENABLED` is on. Off → the
+ *  canonical object itself, so the tool docs (and the JSON envelope's flat args union built from
+ *  them) are byte-identical to what they were before provenance existed. Read at call time, the
+ *  `delegateToOpsTool(engine)` pattern. */
+export function rememberUserTool(): LlmToolDef {
+  return provenanceEnabled() ? REMEMBER_USER_TOOL_WITH_BASIS : REMEMBER_USER_TOOL;
+}
+
+export function setPreferenceTool(): LlmToolDef {
+  return provenanceEnabled() ? SET_PREFERENCE_TOOL_WITH_BASIS : SET_PREFERENCE_TOOL;
+}
 
 export const SCHEDULE_AUTOMATION_TOOL: LlmToolDef = {
   name: 'schedule_automation',

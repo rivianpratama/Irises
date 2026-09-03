@@ -1,8 +1,8 @@
 import { callLLM } from '../../llm/callLLM.js';
 import { transcribeAudio } from '../../llm/transcribe.js';
 import {
-  REACTION_TOOL, REMEMBER_USER_TOOL, delegateToOpsTool,
-  RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL, SET_PREFERENCE_TOOL,
+  REACTION_TOOL, rememberUserTool, delegateToOpsTool,
+  RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL, setPreferenceTool,
   SCHEDULE_AUTOMATION_TOOL, LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL, CANCEL_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL,
   UPDATE_MEMORY_TOOL, UPDATE_SELF_TOOL, RECALL_MEMORY_TOOL,
 } from './tools.js';
@@ -259,7 +259,7 @@ export async function chat(
   // section and the JSON envelope's name enum + flat args union (first tool's description wins), so
   // the reminder tools are gated IN PLACE rather than appended.
   const tools: LlmToolDef[] = [
-    REACTION_TOOL, REMEMBER_USER_TOOL, delegateToOpsTool(engineName), SET_PREFERENCE_TOOL,
+    REACTION_TOOL, rememberUserTool(), delegateToOpsTool(engineName), setPreferenceTool(),
     // Reminders live entirely on the engine (see shared.ts: all three tools route to
     // createReminder/listReminders/cancelReminder, with no local scheduler behind them). OpenClaw's
     // aren't wired — create and cancel throw, list is always empty — so offering them there buys the

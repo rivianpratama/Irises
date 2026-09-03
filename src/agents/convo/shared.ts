@@ -25,6 +25,7 @@ import { updateThreadInventory, type ThreadTurn } from '../../memory/threadHarve
 import { groomNotes } from '../../memory/noteGroomer.js';
 import { expandRecallQuery, recallExpansionEnabled } from '../../memory/recallExpansion.js';
 import { isGroupHandle } from '../../memory/identity.js';
+import { coerceBasis } from '../../memory/provenance.js';
 import type { TurnRelevance, RelevanceHit } from '../../memory/relevance.js';
 import { isDuplicateDelegation, getActiveOps, hasInFlightRequest, requestOpsCancel, type ActiveOps } from '../../state/opsCoordination.js';
 import { etaStatus, estimateOpsEta } from '../etaEstimate.js';
@@ -1321,7 +1322,9 @@ export async function processConvoResult(args: {
         if (targetHandle) {
           let nameChanged = false, factChanged = false;
           if (input.name) nameChanged = await setUserName(targetHandle, String(input.name));
-          if (input.fact) factChanged = await addUserFact(targetHandle, String(input.fact));
+          // Who says so rides along with the fact (memory/provenance.ts). A missing or garbled
+          // basis is filed as a guess — never as something they said.
+          if (input.fact) factChanged = await addUserFact(targetHandle, String(input.fact), coerceBasis(input.basis));
           if (nameChanged || factChanged) {
             rememberedUser = {
               name: nameChanged ? String(input.name) : undefined,
@@ -1339,7 +1342,7 @@ export async function processConvoResult(args: {
       // is a plain prefs overwrite.
       if (String(input.key) === 'important_note' && input.value != null) {
         try {
-          const saved = await addImportantNote(handle, String(input.value));
+          const saved = await addImportantNote(handle, String(input.value), 'convo', coerceBasis(input.basis));
           if (saved) {
             noteConfirmation = { kind: 'confirmed', summary: "their note is saved — you'll keep it in mind" };
             noteSaved = true;
@@ -1362,7 +1365,7 @@ export async function processConvoResult(args: {
         // Medium tier first; legacy prefs copy keeps the soak-window fallback readable. A medium
         // failure here is logged, not voiced — fact writes have no confirmation beat to correct,
         // and the prefs copy (which still wins at render time during the soak) stays current.
-        await upsertFact(handle, String(input.key), String(input.value ?? ''))
+        await upsertFact(handle, String(input.key), String(input.value ?? ''), 'convo', coerceBasis(input.basis))
           .catch(err => console.error('[convo] medium fact write failed (prefs copy still written)', err));
         await setPreference(handle, String(input.key), input.value);
       } else if (input.key) await setPreference(handle, String(input.key), input.value);

@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { processConvoResult, type ChatContext } from './shared.js';
-import { REMEMBER_USER_TOOL } from './tools.js';
+import { REMEMBER_USER_TOOL, rememberUserTool } from './tools.js';
 import { emptyMedia } from '../../webhook/types.js';
 import { __resetOpsCoordination } from '../../state/opsCoordination.js';
 import { getUserProfile } from '../../db/repositories/profiles.js';
@@ -27,7 +27,7 @@ function makeResult(bubbles: string[], toolCalls: LlmToolCall[]): LlmResult {
   return { text: JSON.stringify(envelope), toolCalls, stopReason: 'end_turn', provider: 'anthropic', model: 'test' };
 }
 
-function rememberUser(input: { handle?: string; name?: string; fact?: string }): LlmToolCall {
+function rememberUser(input: { handle?: string; name?: string; fact?: string; basis?: string }): LlmToolCall {
   return { name: 'remember_user', input };
 }
 
@@ -93,6 +93,68 @@ test('group chat: a NON-participant handle is ignored', async () => {
   const out = await processConvoResult({ ...a, res, textToSend: 'remember mallory' });
   assert.equal(out.rememberedUser, null);
   assert.equal(await getUserProfile(outsider), null);
+});
+
+// ── The `basis` arg (MEMORY_PROVENANCE_ENABLED) ────────────────────────────────────────────────
+// Who says so travels WITH the write, from the only party that knows: the model that just read the
+// message. A missing or garbled basis is filed as a guess, never as testimony.
+
+// Awaited, not just called: a synchronous try/finally around an async body would put the flag back
+// before the first await resumed, and the write under test would run with it off.
+async function withProvenance<T>(on: boolean, fn: () => Promise<T> | T): Promise<T> {
+  const prior = process.env.MEMORY_PROVENANCE_ENABLED;
+  process.env.MEMORY_PROVENANCE_ENABLED = on ? 'true' : 'false';
+  try {
+    return await fn();
+  } finally {
+    if (prior === undefined) delete process.env.MEMORY_PROVENANCE_ENABLED;
+    else process.env.MEMORY_PROVENANCE_ENABLED = prior;
+  }
+}
+
+test('with provenance OFF the tool is the canonical object itself — the prompt is unchanged', async () => {
+  await withProvenance(false, () => {
+    assert.equal(rememberUserTool(), REMEMBER_USER_TOOL, 'same object: not a copy that could drift');
+    const props = (REMEMBER_USER_TOOL.inputSchema as { properties: Record<string, unknown> }).properties;
+    assert.ok(!('basis' in props), 'and the canonical object is never mutated');
+  });
+});
+
+test('with provenance ON the tool offers basis, in one sentence, as a closed choice', async () => {
+  await withProvenance(true, () => {
+    const props = (rememberUserTool().inputSchema as { properties: Record<string, Record<string, unknown>> }).properties;
+    assert.deepEqual(props.basis.enum, ['stated', 'inferred']);
+    assert.ok(String(props.basis.description).includes('stated = they said it; inferred = you deduced it'));
+    // Everything else about the tool is exactly as it was.
+    assert.equal(rememberUserTool().name, REMEMBER_USER_TOOL.name);
+    assert.equal(rememberUserTool().description, REMEMBER_USER_TOOL.description);
+    assert.equal(props.handle.description, (REMEMBER_USER_TOOL.inputSchema as { properties: { handle: { description: string } } }).properties.handle.description);
+  });
+});
+
+test('basis "stated" files the fact as testimony; a missing or garbled one files it as a guess', async () => {
+  await withProvenance(true, async () => {
+    const said = args();
+    await processConvoResult({
+      ...said, textToSend: 'my dog is called biscuit',
+      res: makeResult(['cute name'], [rememberUser({ fact: 'has a dog named biscuit', basis: 'stated' })]),
+    });
+    assert.deepEqual((await getUserProfile(said.handle))?.facts, ['stated: has a dog named biscuit']);
+
+    const guessed = args();
+    await processConvoResult({
+      ...guessed, textToSend: 'ugh, another 5am start',
+      res: makeResult(['brutal'], [rememberUser({ fact: 'is an early riser' })]),
+    });
+    assert.deepEqual((await getUserProfile(guessed.handle))?.facts, ['inferred: is an early riser']);
+
+    const garbled = args();
+    await processConvoResult({
+      ...garbled, textToSend: 'probably golf again this weekend',
+      res: makeResult(['nice'], [rememberUser({ fact: 'plays golf', basis: 'probably' })]),
+    });
+    assert.deepEqual((await getUserProfile(garbled.handle))?.facts, ['inferred: plays golf']);
+  });
 });
 
 test('the tool doc asks for the messaging handle and nothing else', () => {
