@@ -13,10 +13,14 @@ import assert from 'node:assert/strict';
 import {
   BATTERY,
   CHECKS,
+  RECEIPT_SLOP_MS,
+  attributeReceipts,
+  mergeReceipts,
   scoreItem,
   themesTouchedBy,
   unknownSections,
   type FocusItem,
+  type Receipt,
   type TurnEvidence,
 } from './focusBattery.js';
 import {
@@ -551,4 +555,110 @@ test('f4\'s precondition mirrors the topic gate, shorthand on its label alone', 
   assert.deepEqual(themesTouchedBy('all polish no speed today', [theme({ status: 'shorthand' })]), ['speed over polish']);
   // an open theme is not surfaceable at all, whatever it touches
   assert.deepEqual(themesTouchedBy('i keep shipping fast lately', [theme({ status: 'open' })]), []);
+});
+
+// -- the pure half of the live path --------------------------------------------------------------
+// Everything above scores ONE turn's evidence from a fixture. These two functions are what BUILDS
+// that evidence out of a round's receipts, and until now nothing exercised them: not a test (they
+// were private) and not a run (no round has been executed against an instance). They are pure, so
+// there was no reason for that beyond their sitting inside the network path. They no longer do.
+
+const TRACE = 'turn:trace';
+const SELECT = 'threads:select';
+const rc = (chatId: string, label: string, ts: number, detail: Record<string, unknown> | null = { n: ts }): Receipt =>
+  ({ chatId, label, ts, detail });
+
+test('a receipt read from both stores is one receipt, and the merge comes back in time order', () => {
+  const durable = [rc('c1', TRACE, 300), rc('c1', TRACE, 100)];
+  // The ring's whole reason for being read: the tail of the round, which the debounced history write
+  // has not persisted yet. The overlap with the durable read is the same receipt twice.
+  const ring = [rc('c1', TRACE, 300), rc('c1', TRACE, 500)];
+  const merged = mergeReceipts(durable, ring);
+  assert.deepEqual(merged.map(r => r.ts), [100, 300, 500]);
+});
+
+test('the merge keys on the chat and the label, not on the timestamp alone', () => {
+  // Two chats filing in the same millisecond is rare on a 20 s stagger -- but `threads:select` and
+  // `turn:trace` for ONE turn share a millisecond often, and collapsing those would silently drop
+  // one of the two receipts every item is scored on.
+  const merged = mergeReceipts([rc('c1', TRACE, 100), rc('c2', TRACE, 100), rc('c1', SELECT, 100)]);
+  assert.equal(merged.length, 3);
+});
+
+test("a receipt from another chat is never attributed to this item's turn", () => {
+  const receipts = [rc('c1', TRACE, 1_000), rc('c2', TRACE, 1_000)];
+  assert.equal(attributeReceipts(receipts, 'c1', TRACE, 1_000).probe?.detail?.n, 1_000);
+  assert.equal(attributeReceipts(receipts, 'c3', TRACE, 1_000).probe, undefined);
+});
+
+test('the probe takes the FIRST receipt at or after its send, and nothing from before it', () => {
+  const receipts = mergeReceipts([
+    rc('c1', TRACE, 5_000),   // an earlier turn in the same chat -- before the window
+    rc('c1', TRACE, 10_500),  // the probe's own
+    rc('c1', TRACE, 12_000),  // whatever came after
+  ]);
+  assert.equal(attributeReceipts(receipts, 'c1', TRACE, 10_000).probe?.ts, 10_500);
+});
+
+test('a receipt filed just BEFORE the send still belongs to it', () => {
+  // The send stamp is taken before curl unwinds, and a reply can be persisted before the 202 does,
+  // so the window opens a slop earlier on purpose. One millisecond outside it is outside.
+  assert.equal(attributeReceipts([rc('c1', TRACE, 9_999)], 'c1', TRACE, 10_000).probe?.ts, 9_999);
+  assert.equal(
+    attributeReceipts([rc('c1', TRACE, 10_000 - RECEIPT_SLOP_MS)], 'c1', TRACE, 10_000).probe?.ts,
+    10_000 - RECEIPT_SLOP_MS,
+  );
+  assert.equal(attributeReceipts([rc('c1', TRACE, 10_000 - RECEIPT_SLOP_MS - 1)], 'c1', TRACE, 10_000).probe, undefined);
+});
+
+test("each seed's window closes at the next send, so a seed's receipt is not read as the probe's", () => {
+  // f2 is the item this decides: a look delivered on the seed turn files its own turn:trace, and
+  // reading THAT as the probe's would score the topic switch against the wrong prompt entirely.
+  // The stamps are a round's real shape -- a seed, a FOCUS_SEED_GAP_MS-ish gap, another seed,
+  // another gap, the probe -- because the gaps are what hold the windows apart (see below).
+  const seedOne = 1_000_000;
+  const seedTwo = seedOne + 120_000;
+  const probe = seedTwo + 120_000;
+  const receipts = mergeReceipts([
+    rc('c1', TRACE, seedOne + 4_100, { turn: 'seed one' }),
+    rc('c1', TRACE, seedTwo + 3_800, { turn: 'seed two' }),
+    rc('c1', TRACE, probe + 4_200, { turn: 'the probe' }),
+  ]);
+  const got = attributeReceipts(receipts, 'c1', TRACE, probe, [seedOne, seedTwo]);
+  assert.equal(got.probe?.detail?.turn, 'the probe');
+  assert.deepEqual(got.seeds.map(r => r?.detail?.turn), ['seed one', 'seed two']);
+});
+
+test("the last seed's window and the probe's overlap by exactly the slop, and nothing wider", () => {
+  // Both windows open a slop before their own send, so a receipt in that one-second band is read as
+  // BOTH the last seed's and the probe's. That is the documented cost of opening the probe's window
+  // early, and what makes it harmless is the seed gap: the shortest a round uses is 120 s
+  // (FOCUS_SEED_GAP_MS), so a seed's receipt can only land in the band if the seed turn took its
+  // whole gap minus a second to file. Pinned so the day someone shortens a gap toward the slop --
+  // or widens the slop toward a gap -- this says what starts going wrong.
+  const inBand = attributeReceipts(
+    [rc('c1', TRACE, 10_000 - RECEIPT_SLOP_MS, { turn: 'ambiguous' })],
+    'c1', TRACE, 10_000, [5_000],
+  );
+  assert.equal(inBand.probe?.detail?.turn, 'ambiguous');
+  assert.equal(inBand.seeds[0]?.detail?.turn, 'ambiguous');
+  // One millisecond earlier and it is the seed's alone.
+  const before = attributeReceipts(
+    [rc('c1', TRACE, 10_000 - RECEIPT_SLOP_MS - 1, { turn: 'the seed' })],
+    'c1', TRACE, 10_000, [5_000],
+  );
+  assert.equal(before.probe, undefined);
+  assert.equal(before.seeds[0]?.detail?.turn, 'the seed');
+});
+
+test('a seed that filed nothing leaves a hole rather than borrowing its neighbour', () => {
+  const receipts = [rc('c1', TRACE, 122_000, { turn: 'seed two' })];
+  const got = attributeReceipts(receipts, 'c1', TRACE, 240_000, [1_000, 121_000]);
+  assert.deepEqual(got.seeds.map(r => r?.detail?.turn), [undefined, 'seed two']);
+});
+
+test('attribution reads one label at a time', () => {
+  const receipts = mergeReceipts([rc('c1', SELECT, 10_100), rc('c1', TRACE, 10_200)]);
+  assert.equal(attributeReceipts(receipts, 'c1', TRACE, 10_000).probe?.ts, 10_200);
+  assert.equal(attributeReceipts(receipts, 'c1', SELECT, 10_000).probe?.ts, 10_100);
 });

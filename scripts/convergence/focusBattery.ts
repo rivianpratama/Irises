@@ -929,7 +929,7 @@ BUDGET_BREACH naming the section — that is the harness telling you the two com
 interface Row { chatId: string; role: string; content: string; at: number }
 
 /** One receipt, from either source, flattened to what the scoring needs. */
-interface Receipt { chatId: string; label: string; ts: number; detail: Record<string, unknown> | null }
+export interface Receipt { chatId: string; label: string; ts: number; detail: Record<string, unknown> | null }
 
 /** The trace ring as the debug API serves it. */
 interface TraceEvent {
@@ -987,7 +987,7 @@ function readRingReceipts(base: string, q: string, chatIds: Set<string>, since: 
     .map(e => ({ chatId: e.chatId as string, label: e.label as string, ts: e.ts, detail: e.detail ?? null }));
 }
 
-function mergeReceipts(...lists: Receipt[][]): Receipt[] {
+export function mergeReceipts(...lists: Receipt[][]): Receipt[] {
   const seen = new Set<string>();
   const out: Receipt[] = [];
   for (const list of lists) {
@@ -999,6 +999,46 @@ function mergeReceipts(...lists: Receipt[][]): Receipt[] {
     }
   }
   return out.sort((a, b) => a.ts - b.ts);
+}
+
+/**
+ * How far BEFORE a send a receipt may be filed and still belong to it.
+ *
+ * The send stamp is taken before `curl` unwinds and a reply can be persisted before the 202 does,
+ * so a window that opened exactly at the stamp would sometimes miss the turn's own receipt.
+ */
+export const RECEIPT_SLOP_MS = 1_000;
+
+/**
+ * One item's receipts of one label: the probe turn's, and one per seed turn.
+ *
+ * Pure, and exported for that reason — this is the arithmetic every verdict in a live round rests
+ * on, and getting it wrong does not fail loudly, it scores the right item against the wrong prompt.
+ * Nothing about it needs a service, so nothing about it should have needed one to check.
+ *
+ * The windows: the probe's runs from its send to the end of the round, each seed's from its own send
+ * to the NEXT send (the following seed, or the probe). Both open a `RECEIPT_SLOP_MS` early, so the
+ * last seed's window and the probe's overlap by that much — deliberately, because a receipt in that
+ * millisecond band genuinely could belong to either and the seed gaps are what hold them apart.
+ *
+ * The exposure worth naming, unchanged by the extraction: an ASYNC delivery belonging to a seed turn
+ * (f2's look) that filed its receipt after the probe went out is picked up here as the probe's. Same
+ * exposure threadBattery carries, and for the same reason — a receipt says which chat it belongs to
+ * but not which message. A `turn:trace` that disagrees with its item's ask is the shape to look for.
+ */
+export function attributeReceipts(
+  receipts: Receipt[],
+  chatId: string,
+  label: string,
+  sentAt: number,
+  seedStamps: readonly number[] = [],
+): { probe: Receipt | undefined; seeds: Array<Receipt | undefined> } {
+  const mine = receipts.filter(r => r.chatId === chatId && r.label === label);
+  const first = (from: number, to: number) => mine.find(r => r.ts >= from - RECEIPT_SLOP_MS && r.ts < to);
+  return {
+    probe: first(sentAt, Infinity),
+    seeds: seedStamps.map((at, i) => first(at, seedStamps[i + 1] ?? sentAt)),
+  };
 }
 
 /** The themes in the handle's inventory row, and whether the row could be read at all. ABSENT and
@@ -1201,22 +1241,15 @@ async function main(): Promise<number> {
     const stamps = seedTimes.get(p.id) ?? [];
     // The chatId is fresh for this round, so anything assistant-shaped in it belongs to this item;
     // the timestamp floor is what separates the PROBE turn from its own seed turns.
-    const answers = rows.filter(r => r.chatId === p.chatId && r.role === 'assistant' && r.at >= t0 - 1_000);
-    const mine = receipts.filter(r => r.chatId === p.chatId);
-    const inWindow = (from: number, to: number, label: string) =>
-      mine.filter(r => r.label === label && r.ts >= from - 1_000 && r.ts < to);
+    const answers = rows.filter(r => r.chatId === p.chatId && r.role === 'assistant' && r.at >= t0 - RECEIPT_SLOP_MS);
 
-    // The receipts are ordered by ts, so [0] in a window is the first receipt of that kind at or
-    // after the send — the probe's own. The exposure worth naming: an ASYNC delivery belonging to a
-    // seed turn (f2's look) that filed a receipt after the probe went out would be picked up here as
-    // the probe's. Same exposure threadBattery carries, and for the same reason — a receipt says
-    // which chat it belongs to but not which message — held down by the seed gaps rather than by a
-    // guess. A `turn:trace` that disagrees with its item's ask is the shape to look for.
-    const trace = detailAs<TurnTraceDetail>(inWindow(t0, Infinity, TURN_TRACE_LABEL)[0]);
-    const select = detailAs<ThreadSelectReport>(inWindow(t0, Infinity, THREADS_SELECT_LABEL)[0]);
-    // One seed window per seed: from its send to the next send (the following seed, or the probe).
-    const seedTraces = stamps
-      .map((at, i) => detailAs<TurnTraceDetail>(inWindow(at, stamps[i + 1] ?? t0, TURN_TRACE_LABEL)[0]))
+    // Which receipt belongs to which turn is `attributeReceipts` above — pure, and tested, which is
+    // the one part of this path a test can reach.
+    const traces = attributeReceipts(receipts, p.chatId, TURN_TRACE_LABEL, t0, stamps);
+    const trace = detailAs<TurnTraceDetail>(traces.probe);
+    const select = detailAs<ThreadSelectReport>(attributeReceipts(receipts, p.chatId, THREADS_SELECT_LABEL, t0).probe);
+    const seedTraces = traces.seeds
+      .map(r => detailAs<TurnTraceDetail>(r))
       .filter((t): t is TurnTraceDetail => t !== null);
     const seedTokens = [...new Set((p.seeds ?? []).flatMap(s => [...salientTokens(s)]))];
 
