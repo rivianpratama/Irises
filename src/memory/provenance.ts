@@ -50,6 +50,12 @@ export const PROV_PREFIX_RE = new RegExp(`^(${PROVENANCES.join('|')})\\s*:\\s*([
  *  into userContext.ts. */
 export const SEED_SOURCE = 'engine_seed';
 
+/** The one fact key the engine seed's details live under. Here rather than in seedFromEngine.ts
+ *  for the same reason as `SEED_SOURCE`: the read boundary has to recognise it (a bundle that
+ *  arrives with no provenance map still must not file the seed under "facts they told you"), and
+ *  mediumTerm.ts cannot import seedFromEngine.ts without closing a cycle through dossier.ts. */
+export const SEED_FACT_KEY = 'engine_seed_details';
+
 /** The note that keeps a seeded picture honest, and the sentence the "imported" render group is
  *  wrapped in. Byte-pinned by seedFromEngine.test.ts: this is what stops her citing a seeded
  *  detail as something they said to her. */

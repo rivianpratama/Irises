@@ -34,7 +34,7 @@ import {
 } from '../db/repositories/threadInventory.js';
 import { applyThreadHarvest, THREAD_NOTE_PREFIX_RE, type ThreadInventory } from '../persona/threads.js';
 import { persistDossierMerge } from './dossier.js';
-import { SEED_NOTE, SEED_SOURCE } from './provenance.js';
+import { SEED_FACT_KEY, SEED_NOTE, SEED_SOURCE } from './provenance.js';
 import type { EngineProfile } from '../agents/ops/firstMoveProfile.js';
 
 /** What was actually written. `facts` counts MEDIUM-TIER ENTRIES (the details fact + the
@@ -46,19 +46,19 @@ export interface SeedCounts {
   themes: number;
 }
 
-/** The single fact key the details live under. A KEY, not an append: upsertFact supersedes by key,
- *  so re-running the seed rewrites one row instead of stacking five near-duplicates. */
-export const SEED_FACT_KEY = 'engine_seed_details';
-
-/** The `source` stamped on every medium entry written here (so a later groom, or a human reading
- *  MEDIUM.md, can tell seeded material from something she was actually told), and the one note that
- *  keeps everything else here honest.
+/** The single fact key the details live under (a KEY, not an append: upsertFact supersedes by key,
+ *  so re-running the seed rewrites one row instead of stacking five near-duplicates), the `source`
+ *  stamped on every medium entry written here (so a later groom, or a human reading MEDIUM.md, can
+ *  tell seeded material from something she was actually told), and the one note that keeps
+ *  everything else here honest.
  *
- *  Both moved to memory/provenance.ts, unchanged, and are re-exported here under their historical
- *  names: `provFromSource` reads the source from the db layer and the "imported" render group is
- *  wrapped in the note, and neither can import THIS module (seedFromEngine → dossier → mediumTerm
- *  would close a cycle). The same move `stripScopeSections` made into userContext.ts. */
-export { SEED_SOURCE, SEED_NOTE };
+ *  All three moved to memory/provenance.ts, unchanged, and are re-exported here under their
+ *  historical names, because all three are read at the RENDER boundary: `provFromSource` reads the
+ *  source from the db layer, the "imported" render group is wrapped in the note, and the fact key
+ *  is how that group recognises the seed when no provenance map came with the bundle. None of those
+ *  readers can import THIS module (seedFromEngine → dossier → mediumTerm would close a cycle). The
+ *  same move `stripScopeSections` made into userContext.ts. */
+export { SEED_FACT_KEY, SEED_SOURCE, SEED_NOTE };
 
 /** Two themes, never more. Threading earns its patterns over weeks; seeding more than a couple
  *  would fill an empty inventory with guesses that then compete for airtime against things she

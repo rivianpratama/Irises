@@ -34,7 +34,7 @@ import { touchesTurn } from './topicality.js';
 import { emailEntryAsk, shortEntryAsk, type TurnRelevance } from './relevance.js';
 import type { MemoryGateReport, MemoryGateReports } from '../diagnostics/turnTrace.js';
 import { getLongDoc } from '../db/repositories/memoryLong.js';
-import { loadMediumBundle, renderFactsBlock, type MediumBundle } from './mediumTerm.js';
+import { loadMediumBundle, renderFactsBlock, renderKnownFacts, type MediumBundle } from './mediumTerm.js';
 import { renderTenureLine } from './tenure.js';
 import { annotateDates } from './datedMemory.js';
 import { DEFAULT_TZ } from '../pipeline/zonedTime.js';
@@ -496,7 +496,7 @@ export function renderMediumBlockWithGates(bundle: MediumBundle, turn?: TurnRele
   // short handling below are both "the card says it once, up there", so a render with no card keeps
   // the block that has to say it itself.
   const cardOwnsIdentity = opts.cardOwnsIdentity ?? !!turn;
-  const facts = renderFactsBlock(bundle.facts, { omitCardKeys: cardOwnsIdentity });
+  const facts = renderFactsBlock(bundle.facts, { omitCardKeys: cardOwnsIdentity, prov: bundle.factProv });
   if (facts) parts.push(facts);
 
   let noteLines: string[];
@@ -613,7 +613,8 @@ function renderAddressingHeader(profile: UserProfile | null, prefs: Record<strin
     return lines.join('\n');
   }
   const lines: string[] = [`Name: ${name || "unknown — you haven't learned it yet"}`];
-  if (profile?.facts?.length) lines.push(`Known facts:\n- ${profile.facts.join('\n- ')}`);
+  const known = renderKnownFacts(profile?.facts ?? []);
+  if (known) lines.push(known);
   if (addressAs) lines.push(`They asked to be addressed as: "${addressAs}"`);
   let rule: string;
   if (addressAs) rule = `call them "${addressAs}" — that's how they asked to be addressed, and it overrides everything else`;

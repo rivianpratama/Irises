@@ -16,7 +16,7 @@
 import { getMemory, type AgentMemory } from '../db/repositories/memory.js';
 import { getUserProfile } from '../db/repositories/profiles.js';
 import { renderDirectiveBlock, renderPreferenceBlock } from './preferences.js';
-import { loadMediumBundle, renderNotesBlock, type MediumBundle } from './mediumTerm.js';
+import { loadMediumBundle, renderKnownFacts, renderNotesBlock, type MediumBundle } from './mediumTerm.js';
 import type { UserProfile } from '../db/types.js';
 
 // Defense-in-depth: a dossier must never dictate the assistant's scope. Drop any markdown section
@@ -59,7 +59,8 @@ function renderAddressing(profile: UserProfile | null, prefs: Record<string, unk
 
   const lines: string[] = ['## Who they are and how to address them'];
   lines.push(`Name: ${name || "unknown — you haven't learned it yet"}`);
-  if (profile?.facts?.length) lines.push(`Known facts:\n- ${profile.facts.join('\n- ')}`);
+  const known = renderKnownFacts(profile?.facts ?? []);
+  if (known) lines.push(known);
   if (addressAs) lines.push(`They asked to be addressed as: "${addressAs}"`);
 
   let rule: string;

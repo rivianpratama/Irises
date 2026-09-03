@@ -6,8 +6,12 @@ process.env.TZ = 'UTC';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadMediumBundle, partitionMediumRows, renderNotesBlock, renderFactsBlock, renderDirectiveBlock, FACT_KEYS } from './mediumTerm.js';
+import {
+  loadMediumBundle, partitionMediumRows, renderNotesBlock, renderFactsBlock, renderKnownFacts,
+  renderDirectiveBlock, FACT_KEYS, PROV_GROUPS,
+} from './mediumTerm.js';
 import { renderPreferenceBlock } from './preferences.js';
+import { PROVENANCES, SEED_FACT_KEY, SEED_NOTE, SEED_SOURCE, stampFact } from './provenance.js';
 import { addDirective, addImportantNote, upsertFact, type MediumEntry } from '../db/repositories/memoryMedium.js';
 
 const HANDLE = '+15550004444';
@@ -67,6 +71,157 @@ test('loadMediumBundle partitions rows by kind', async () => {
   assert.deepEqual(bundle.directives.map(d => d.text), ['text like a person, not a bot']);
   assert.deepEqual(bundle.notes, ['gate code is 88']);
   assert.deepEqual(bundle.facts, { brokerage: 'Compass' });
+});
+
+// ── Three render groups (MEMORY_PROVENANCE_ENABLED) ────────────────────────────────────────────
+// A fact she was told, a fact she worked out, and a fact the engine handed over at install are
+// three different kinds of claim, and the block now says which is which. Off → the flat list, byte
+// for byte what it always was.
+
+async function withProvenance<T>(on: boolean, fn: () => Promise<T> | T): Promise<T> {
+  const prior = process.env.MEMORY_PROVENANCE_ENABLED;
+  process.env.MEMORY_PROVENANCE_ENABLED = on ? 'true' : 'false';
+  try {
+    return await fn();
+  } finally {
+    if (prior === undefined) delete process.env.MEMORY_PROVENANCE_ENABLED;
+    else process.env.MEMORY_PROVENANCE_ENABLED = prior;
+  }
+}
+
+const GROUPED_FACTS = {
+  comms_style: 'casual, lowercase',
+  occupation: 'writer',
+  location: 'Austin',
+  engine_seed_details: 'fixing up a lake cabin',
+};
+const GROUPED_PROV = {
+  comms_style: 'stated',
+  occupation: 'stated',
+  location: 'inferred',
+  engine_seed_details: 'seeded',
+} as const;
+
+test('renderFactsBlock groups the three kinds of claim, in that order', async () => {
+  await withProvenance(true, () => {
+    assert.equal(
+      renderFactsBlock(GROUPED_FACTS, { prov: GROUPED_PROV }),
+      [
+        'facts they told you:',
+        'comms style: casual, lowercase',
+        'occupation: writer',
+        'facts you gathered (hold lightly):',
+        'location: Austin',
+        `facts imported (verify naturally): ${SEED_NOTE}`,
+        'engine seed details: fixing up a lake cabin',
+      ].join('\n'),
+    );
+  });
+});
+
+test('the seeded group is wrapped in the note that keeps a seed honest, and SEED_FACT_KEY lands there', async () => {
+  await withProvenance(true, () => {
+    const rendered = renderFactsBlock(GROUPED_FACTS, { prov: GROUPED_PROV });
+    const seedLine = rendered.split('\n').find(l => l.includes(SEED_FACT_KEY.replace(/_/g, ' ')))!;
+    const heading = rendered.split('\n')[rendered.split('\n').indexOf(seedLine) - 1];
+    assert.ok(heading.startsWith('facts imported (verify naturally):'), 'never under "facts they told you"');
+    assert.ok(heading.includes(SEED_NOTE), 'and the seed note travels with it');
+  });
+});
+
+test('a group with nothing in it renders no heading at all', async () => {
+  await withProvenance(true, () => {
+    assert.equal(
+      renderFactsBlock({ occupation: 'writer' }, { prov: { occupation: 'inferred' } }),
+      'facts you gathered (hold lightly):\noccupation: writer',
+    );
+    assert.equal(renderFactsBlock({}, { prov: {} }), '');
+  });
+});
+
+test('a fact whose provenance nobody recorded reads as testimony (the legacy default)', async () => {
+  await withProvenance(true, () => {
+    assert.equal(
+      renderFactsBlock({ occupation: 'writer' }, { prov: {} }),
+      'facts they told you:\noccupation: writer',
+    );
+  });
+});
+
+test('with provenance OFF the block is the flat list it always was', async () => {
+  await withProvenance(false, () => {
+    // Same facts, same prov map, offered and ignored.
+    assert.equal(
+      renderFactsBlock(GROUPED_FACTS, { prov: GROUPED_PROV }),
+      'comms style: casual, lowercase\noccupation: writer\nlocation: Austin\nengine seed details: fixing up a lake cabin',
+    );
+  });
+});
+
+test('the engine seed never lands under "facts they told you", even with no provenance map at all', async () => {
+  await withProvenance(true, () => {
+    // The rule the brief states absolutely. A caller that hands over a bare facts map (plenty do)
+    // gets the legacy "stated" default for every key EXCEPT this one — the seed writes one row,
+    // under one key, and second-hand details may not read as testimony.
+    assert.equal(
+      renderFactsBlock({ [SEED_FACT_KEY]: 'fixing up a lake cabin' }),
+      `facts imported (verify naturally): ${SEED_NOTE}\nengine seed details: fixing up a lake cabin`,
+    );
+    // Their own words about it still promote it out of the imported group.
+    assert.equal(
+      renderFactsBlock({ [SEED_FACT_KEY]: 'fixing up a lake cabin' }, { prov: { [SEED_FACT_KEY]: 'stated' } }),
+      'facts they told you:\nengine seed details: fixing up a lake cabin',
+    );
+  });
+});
+
+test('PROV_GROUPS covers every provenance exactly once, in the vocabulary\'s own order', () => {
+  assert.deepEqual(PROV_GROUPS.map(g => g.prov), [...PROVENANCES]);
+  assert.equal(new Set(PROV_GROUPS.map(g => g.heading)).size, PROV_GROUPS.length);
+});
+
+test('loadMediumBundle reports each fact key\'s provenance, flag or no flag', async () => {
+  const h = '+15550004445';
+  await upsertFact(h, 'brokerage', 'Compass');
+  await upsertFact(h, SEED_FACT_KEY, 'fixing up a lake cabin', SEED_SOURCE);
+
+  const bundle = await loadMediumBundle(h);
+  assert.deepEqual(bundle.facts, { brokerage: 'Compass', [SEED_FACT_KEY]: 'fixing up a lake cabin' });
+  // Read off each row (its `prov=` attribute, or what its source means) — the renderer needs an
+  // answer for every key whether or not the feature was on when the row was written. This run has
+  // the flag OFF (default), so nothing was stamped and both answers come from the source.
+  assert.deepEqual(bundle.factProv, { brokerage: 'stated', [SEED_FACT_KEY]: 'seeded' });
+});
+
+// ── The profile's `Known facts` list ───────────────────────────────────────────────────────────
+// The other fact store, and the one that carries provenance IN-BAND. Its prefix is a storage
+// detail: it never reaches the model on either path.
+
+test('renderKnownFacts groups the in-band prefixes and never shows one', async () => {
+  const facts = [stampFact('stated', 'likes golf'), stampFact('inferred', 'probably drives a truck'), 'closes on Fridays'];
+  await withProvenance(true, () => {
+    assert.equal(
+      renderKnownFacts(facts),
+      [
+        'Known facts:',
+        'facts they told you:',
+        '- likes golf',
+        '- closes on Fridays',       // unprefixed → the legacy default, testimony
+        'facts you gathered (hold lightly):',
+        '- probably drives a truck',
+      ].join('\n'),
+    );
+  });
+});
+
+test('renderKnownFacts with provenance OFF is today\'s bytes, prefixes stripped', async () => {
+  await withProvenance(false, () => {
+    // The plain legacy row is byte-identical...
+    assert.equal(renderKnownFacts(['likes golf', 'closes on Fridays']), 'Known facts:\n- likes golf\n- closes on Fridays');
+    // ...and a row stamped while the flag was ON still reads as the fact, never as its storage.
+    assert.equal(renderKnownFacts([stampFact('inferred', 'likes golf')]), 'Known facts:\n- likes golf');
+    assert.equal(renderKnownFacts([]), '');
+  });
 });
 
 test('partitionMediumRows skips non-active rows', () => {
