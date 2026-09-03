@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { loadContext } from '../loadContext.js';
 import { getModelMap, type ModelMap } from '../../llm/modelMap.js';
 import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
+import { browserLegBudgetFor } from '../ops/client.js';
 import type { CapabilitySummary, CapabilityClass } from '../ops/engineBackend.js';
 import { markIntroWoven } from '../ops/firstMove.js';
 import { isValidCron } from '../../pipeline/cron.js';
@@ -1695,7 +1696,9 @@ export async function processConvoResult(args: {
   if (!textResponse && delegatedTask) {
     // Seed the holding line with the SAME coarse ETA the run is stored with, so the very first beat can
     // set a soft duration expectation ("give me a couple mins" energy) — an offer, never a countdown.
-    const holdEta = estimateOpsEta({ kind: delegatedTask.kind, request: delegatedTask.request });
+    // budgetMs: the leg this task will really get (a walled-URL look runs on the browser budget), so
+    // the first promise cannot be shorter than the deadline Irises is about to wait for.
+    const holdEta = estimateOpsEta({ kind: delegatedTask.kind, request: delegatedTask.request, budgetMs: browserLegBudgetFor(delegatedTask) ?? undefined });
     textResponse = await voiceInstant({ kind: 'holding', taskKind: delegatedTask.kind, request: delegatedTask.request, addressHint: delegatedTask.addressHint, dealHint: delegatedTask.dealHint, eta: { phrase: holdEta.phrase, state: 'fresh' } }, chatId, handle ?? '');
   }
   if (!textResponse && suppressedDuplicate) {

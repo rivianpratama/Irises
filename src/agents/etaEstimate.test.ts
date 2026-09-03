@@ -66,8 +66,33 @@ test('no bucket ever exceeds the 210s cap (closing/overrun must stay reachable b
   for (const req of ['write a note', 'what did the fed do', 'show me all my subscriptions', 'go through my inbox', 'add up every invoice']) {
     for (const kind of ['draft', 'general', 'web_research', 'document_read', 'compute'] as const) {
       assert.ok(estimateOpsEta({ kind, request: req }).bucketMs <= 210_000, `${kind}/${req} must stay ≤210s`);
+      // Same rule against a widened leg: the bucket may grow to the leg's own deadline, never past
+      // it, or closing/overrun would again be unreachable before the run is abandoned.
+      assert.ok(estimateOpsEta({ kind, request: req, budgetMs: 900_000 }).bucketMs <= 900_000, `${kind}/${req} must stay inside its leg`);
     }
   }
+});
+
+test('a leg armed for longer reads ITS number, so a browser look is not overrun at minute three', () => {
+  // The walled-URL browser budget (ops/client.ts): 15 minutes of legitimate browser work. Without
+  // this the estimate stayed on the 210s deep bucket, so every ping past 3½ minutes of a leg the
+  // operator had deliberately widened reported 'overrun' — a number contradicting the deadline.
+  const armed = estimateOpsEta({ kind: 'web_research', request: 'who is the girl in that reel', budgetMs: 900_000 });
+  assert.equal(armed.bucketMs, 900_000, 'the same number the leg and the transport window got');
+  assert.equal(armed.phrase, 'a few minutes', 'the words the user hears do not change — only the arithmetic');
+  assert.equal(etaStatus(armed, 180_000).state, 'early', 'three minutes into a fifteen-minute leg is early');
+  assert.equal(etaStatus(armed, 950_000).state, 'overrun', 'and past the leg it is still honest');
+});
+
+test('a leg budget only ever widens the estimate — no budget, or a narrow one, is today', () => {
+  assert.equal(estimateOpsEta({ kind: 'web_research', request: 'what did the fed do today' }).bucketMs, 120_000);
+  // A budget narrower than the ask's own bucket must not shrink the promise (nor re-word it).
+  const narrow = estimateOpsEta({ kind: 'general', request: 'show me all my subscriptions', budgetMs: 60_000 });
+  assert.equal(narrow.bucketMs, 210_000);
+  assert.equal(narrow.phrase, 'a few minutes');
+  const quick = estimateOpsEta({ kind: 'draft', request: 'write a thank-you note', budgetMs: 30_000 });
+  assert.equal(quick.bucketMs, 60_000);
+  assert.equal(quick.phrase, 'about a minute');
 });
 
 test('etaStatus early state with remaining phrase', () => {

@@ -29,9 +29,28 @@ export const INBOX_FILES_RE = /\b(inbox|go through|dig through|sweep)\b|\bthroug
 // Writing a message is one LLM turn plus maybe a lookup — reliably the fastest lane we have.
 const QUICK_KINDS: TaskKind[] = ['draft'];
 
-export function estimateOpsEta(input: { kind: TaskKind; request: string; forceGrounding?: boolean }): EtaEstimate {
+/** The deepest bucket: a fan-out sweep, and the phrase any longer run keeps saying. */
+const DEEP: EtaEstimate = { bucketMs: 210_000, phrase: 'a few minutes' };
+
+/**
+ * @param budgetMs this leg's actual deadline, when the caller armed a WIDER one than the buckets
+ *   below assume — today only the walled-URL browser budget (agents/ops/client.ts's legBudgetFor).
+ *   The bucket then becomes that number, so every later reading (etaStatus's early/closing/overrun,
+ *   and the pings that quote it) is measured against the deadline the run really has instead of
+ *   reporting 'overrun' three and a half minutes into a fifteen-minute browser look. The PHRASE
+ *   stays the deep bucket's: the user hears the same coarse words either way, and this is arithmetic,
+ *   not a new promise. Only ever widens — a budget narrower than the ask's own bucket is ignored,
+ *   so an absent one is byte-identical to before.
+ */
+export function estimateOpsEta(input: { kind: TaskKind; request: string; forceGrounding?: boolean; budgetMs?: number }): EtaEstimate {
+  const est = baseEstimate(input);
+  const budget = input.budgetMs;
+  return budget && Number.isFinite(budget) && budget > est.bucketMs ? { bucketMs: budget, phrase: DEEP.phrase } : est;
+}
+
+function baseEstimate(input: { kind: TaskKind; request: string; forceGrounding?: boolean }): EtaEstimate {
   if (CROSS_ENTITY_RE.test(input.request) || INBOX_FILES_RE.test(input.request) || (input.kind === 'general' && input.forceGrounding) || input.kind === 'compute') {
-    return { bucketMs: 210_000, phrase: 'a few minutes' };
+    return DEEP;
   }
   if (QUICK_KINDS.includes(input.kind)) {
     return { bucketMs: 60_000, phrase: 'about a minute' };

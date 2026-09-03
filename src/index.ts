@@ -34,6 +34,7 @@ import { writePidFileAtBoot } from './update/pidfile.js';
 import { initSelfUpdate } from './update/selfUpdate.js';
 import { markOpsStart } from './state/opsCoordination.js';
 import { estimateOpsEta } from './agents/etaEstimate.js';
+import { browserLegBudgetFor } from './agents/ops/client.js';
 import { withChatLock } from './state/sendQueue.js';
 import { createMouth, type SpeakContent, type SpeakOpts, type SpeakResult } from './state/mouth.js';
 import { registerPendingInboundProvider } from './state/inboundGlance.js';
@@ -866,7 +867,10 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
   // else to Ops (progress-pinged).
   if (delegatedTask) {
     opsCancel = new AbortController();
-    markOpsStart(chatId, delegatedTask.id, { kind: delegatedTask.kind, request: delegatedTask.request, estimate: estimateOpsEta({ kind: delegatedTask.kind, request: delegatedTask.request, forceGrounding: delegatedTask.forceGrounding }) }, opsCancel);
+    // The estimate is chosen ONCE here and read by every later ping (opsCoordination), so it takes
+    // the leg budget this task will actually run on — a walled-URL browser look gets minutes, and a
+    // ping must never call minute three of it an overrun.
+    markOpsStart(chatId, delegatedTask.id, { kind: delegatedTask.kind, request: delegatedTask.request, estimate: estimateOpsEta({ kind: delegatedTask.kind, request: delegatedTask.request, forceGrounding: delegatedTask.forceGrounding, budgetMs: browserLegBudgetFor(delegatedTask) ?? undefined }) }, opsCancel);
     // chatId in the line: this is the only observable marker that a turn delegated, and without it a
     // log-only diagnosis (trace buffer full or unreachable) can't tell WHICH chat delegated.
     console.log(`[main] Delegating ${delegatedTask.kind} task to the engine (chat ${chatId})`);
