@@ -39,20 +39,24 @@ beforeEach(() => {
  *  coerceStatus so a test can never hand the harvest something the envelope couldn't produce. */
 function status(extra: Record<string, unknown> = {}): EmittedStatus {
   return coerceStatus({
-    mood_core: 'peaceful', mood_label: 'content', mood_level: 60,
-    anxiety: 30, warmth: 70, social_battery: 60, rapport: 55, conviction: 55,
-    engagement: 60, patience: 70, intent_mode: 'sharing_update', epistemic_trigger: 'none',
-    meta_prompt: 'keep it easy', profile_note: 'steady', terminal_closure: false,
+    mood_label: 'content', mood_shift: 'steady', intent_mode: 'sharing_update',
+    terminal_closure: false, epistemic_trigger: 'none', meta_prompt: 'keep it easy',
     ...extra,
   })!;
 }
 
-/** The last-turn affect record selection reads, in a shape that opens the theme gate. */
+/** The last-turn affect record selection reads, in a shape that opens the theme gate. `mood_level`
+ *  is STATED on the record rather than emitted into it — it is code's answer now (the envelope
+ *  stopped carrying it), and the level selection's own floor reads has to be a decision here rather
+ *  than whatever the clock happened to drift a cold gauge to. */
 function affect(at: number, extra: Record<string, unknown> = {}): AffectState {
-  const last = mergeStatus(status(extra), {
-    cycle: computeCycle(at, at),
-    circadian: computeCircadian(at, 'UTC'),
-  }, at);
+  const last = {
+    ...mergeStatus(status(extra), {
+      cycle: computeCycle(at, at),
+      circadian: computeCircadian(at, 'UTC'),
+    }, at),
+    mood_level: 60,
+  };
   return { last, moodHistory: [] };
 }
 
@@ -162,6 +166,26 @@ test('a note captured while they are venting mints the theme as distressed', asy
   assert.equal((await getThreadInventory(H)).themes[0].mintedDistressed, true);
 
   // …and the same note on a steady turn does not.
+  resetStorageForTests();
+  __resetThreadInFlightForTests();
+  await updateThreadInventory(H, status({ thread_note: 'tension: speed vs craft' }), { now: T0 });
+  assert.equal((await getThreadInventory(H)).themes[0].mintedDistressed, false);
+});
+
+// The other half of the same gate, and the half that changed hands in the envelope shrink: a low
+// mood does it regardless of mode. The level is no longer a field on the envelope, so the harvest is
+// HANDED the number this turn's drift settled on (persona/affectDrift.ts) — and a caller that has
+// none must read as "not low" rather than as "0", which would mint every theme distressed forever.
+test('a note captured while her mood is low mints the theme as distressed too', async () => {
+  await updateThreadInventory(H, status({ thread_note: 'tension: speed vs craft' }), { now: T0, moodLevel: 20 });
+  assert.equal((await getThreadInventory(H)).themes[0].mintedDistressed, true);
+
+  resetStorageForTests();
+  __resetThreadInFlightForTests();
+  await updateThreadInventory(H, status({ thread_note: 'tension: speed vs craft' }), { now: T0, moodLevel: 60 });
+  assert.equal((await getThreadInventory(H)).themes[0].mintedDistressed, false);
+
+  // No level at all — a turn that folded no affect record — is not a distressed turn.
   resetStorageForTests();
   __resetThreadInFlightForTests();
   await updateThreadInventory(H, status({ thread_note: 'tension: speed vs craft' }), { now: T0 });

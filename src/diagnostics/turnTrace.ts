@@ -302,6 +302,10 @@ export interface TurnTraceTurnInputs {
  *  disappearance the diff has to look for by name. */
 const DROPPABLE_FIELDS = ['thread_note', 'thread_outcome'] as const;
 
+// The three NUMBER reasons are unreachable on today's envelope: v2 emits eight fields and not one of
+// them is numeric (persona/status.ts). They are kept rather than deleted because this vocabulary is
+// what a month of receipts is bucketed by, and the arithmetic below is what a numeric field would
+// need again — the reasons are inert, not wrong.
 function reasonFor(from: unknown, to: unknown): StatusCoercionReason {
   if (from === undefined) return 'absent';
   if (from === null) return 'null';
