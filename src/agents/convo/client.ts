@@ -35,7 +35,7 @@ import { cycleAnchorMs } from '../../persona/config.js';
 import type { ComputedState } from '../../persona/status.js';
 import { hasMedia, type IncomingMedia } from '../../webhook/types.js';
 import { reportError } from '../../diagnostics/errorLog.js';
-import type { LlmMessage, LlmToolDef } from '../../llm/types.js';
+import type { LlmMessage, LlmRequest, LlmResult, LlmToolDef } from '../../llm/types.js';
 import { buildSystemPromptSections, convoPersonaChars, processConvoResult, formatHistory, emptyExtras, callConvoLLM, annotateTappedReply } from './shared.js';
 import { voiceOutcome } from '../fallfirm/client.js';
 import { helpText } from '../fallfirm/floor.js';
@@ -90,6 +90,17 @@ export async function chat(
   userMessage: string,
   media: IncomingMedia,
   chatContext?: ChatContext,
+  /**
+   * The front-line model call, injectable for tests only (the repo's DI convention: `callLLM`'s own
+   * `run`, `splitMiss`'s llm, the engine-backend stubs). Production callers pass nothing and get
+   * `callConvoLLM`, unchanged.
+   *
+   * It exists because everything between the memory read and the reply — the relevance router
+   * handed to the routing gate, the turn-focus hits, the receipt — is assembled HERE and nowhere
+   * else, so a test that starts at `processConvoResult` cannot see any of it. The same function is
+   * handed to `turn.call` below, so the retry ladders use the fake too.
+   */
+  call?: (req: LlmRequest) => Promise<LlmResult>,
 ): Promise<ChatResponse> {
   const cmd = userMessage.toLowerCase().trim();
 
@@ -354,7 +365,7 @@ export async function chat(
   const system = prompt.system;
 
   try {
-    const res = await callConvoLLM({
+    const res = await (call ?? callConvoLLM)({
       role: 'convo',
       system,
       // The persona is the stable HEAD of that system string; mark its length so the Anthropic lane
@@ -368,7 +379,7 @@ export async function chat(
     });
     const result = await processConvoResult({
       res, chatId, handle, chatContext, textToSend, history, media,
-      turn: { system, messages, tools },
+      turn: { system, messages, tools, call },
       computed,
       introWoven: !!introWeave,
       // The turn's ONE relevance verdict, already built during the memory read above — the routing

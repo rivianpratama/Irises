@@ -20,6 +20,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { processConvoResult, type ChatContext } from './shared.js';
+import { chat } from './client.js';
+import { addImportantNote } from '../../db/repositories/memoryMedium.js';
 import { ROUTING_GATE_DECISIONS } from '../routingGate.js';
 import { buildTurnRelevance, threadHit, type TurnRelevance } from '../../memory/relevance.js';
 import { emptyMedia } from '../../webhook/types.js';
@@ -139,6 +141,24 @@ test('the stand-down line counts what actually bought the pass, not every hit', 
   // Three hits reached the gate (the second directive shares no token with the ask), and the
   // receipt still names all three — it is the LINE that has to agree with the decision.
   assert.deepEqual(gateReceipt().hitKinds, ['thread', 'directive', 'note'], 'while the receipt still names every hit');
+});
+
+test('a whole turn stands the gate down off her REAL memory, with nothing injected by hand', async () => {
+  // Through the front door (convo/client.ts `chat`), with the model faked at the lane seam and
+  // NOTHING else stubbed: the note is a real medium-tier row, the relevance router is built by the
+  // turn's own memory read, and the plumb that hands it to the gate is the line under test. Every
+  // other test here passes `relevance` in directly, which cannot see that plumb at all.
+  __resetOpsCoordination();
+  clearTraces();
+  const sender = `+1555801${(seq++).toString().padStart(4, '0')}`;
+  await addImportantNote(sender, NOTE);
+  const ctx: ChatContext = { isGroupChat: false, participantNames: [], chatName: null, senderHandle: sender };
+  const out = await chat(randomUUID(), ASK, emptyMedia(), ctx, async () => makeResult(ANSWER));
+  assert.ok(!out.delegatedTask, 'she held the answer, so no look was forced');
+  assert.equal(out.text, ANSWER.join('\n---\n'));
+  const detail = gateReceipt();
+  assert.equal(detail.decision, 'skipped_memory_hit');
+  assert.deepEqual(detail.hitLabels, [NOTE], 'the hit came off her own stored note');
 });
 
 // ── and every reason it still fires ──────────────────────────────────────────
