@@ -20,6 +20,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { processConvoResult, type ChatContext } from './shared.js';
+import { ROUTING_GATE_DECISIONS } from '../routingGate.js';
 import { buildTurnRelevance, threadHit, type TurnRelevance } from '../../memory/relevance.js';
 import { emptyMedia } from '../../webhook/types.js';
 import { __resetOpsCoordination, markOpsStart } from '../../state/opsCoordination.js';
@@ -72,11 +73,14 @@ function args(textToSend = ASK) {
   return { chatId: randomUUID(), handle: sender, chatContext, history: [], media: emptyMedia(), textToSend };
 }
 
-/** The gate's own receipt for the turn just run. */
+/** The gate's own receipt for the turn just run. Every read checks the decision against the
+ *  single-sourced vocabulary, so a bucket can never reach the 30-day ring under a typo'd name. */
 function gateReceipt(): Record<string, unknown> {
   const ev = getTraces().find(e => e.label === 'convo:routing_gate');
   assert.ok(ev, 'convo:routing_gate was recorded');
-  return (ev.detail ?? {}) as Record<string, unknown>;
+  const detail = (ev.detail ?? {}) as Record<string, unknown>;
+  assert.ok(ROUTING_GATE_DECISIONS.includes(detail.decision as never), `unknown decision: ${String(detail.decision)}`);
+  return detail;
 }
 
 // ── the gate stands down ─────────────────────────────────────────────────────
