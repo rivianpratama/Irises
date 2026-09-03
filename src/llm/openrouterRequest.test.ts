@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildOpenRouterParams, toOpenRouterContent, hasDocument, hasNativeMedia, isLengthStarved } from './openrouterRequest.js';
+import { buildOpenRouterParams, buildOpenAIParams, toOpenRouterContent, hasDocument, hasNativeMedia, isLengthStarved } from './openrouterRequest.js';
 import { MODELS, MAX_TOKENS } from './models.js';
 import type { LlmRequest } from './types.js';
 
@@ -278,6 +278,19 @@ test('convo system prompt is sent as a cache_control content block (persona cach
   assert.ok(Array.isArray(params.messages[0].content), 'convo system is now a cache_control block array');
   assert.equal(params.messages[0].content[0].text, 'persona');
   assert.equal(params.messages[0].content[0].cache_control.type, 'ephemeral');
+});
+
+test('the cache breakpoints change nothing on the OpenAI-compatible lanes, however many there are', () => {
+  // Only the Anthropic path splits `system` at those offsets. Both lanes here send the system as ONE
+  // message — a plain string on the generic lane, a single cache_control block on OpenRouter — so a
+  // turn that offers a second breakpoint must produce a byte-identical body to one that offers none.
+  const base: LlmRequest = { role: 'convo', system: 'persona' + '\n\n<prompt>\ntool docs\n</prompt>', messages: [{ role: 'user', content: 'x' }] };
+  const none = buildOpenRouterParams(base);
+  assert.deepEqual(buildOpenRouterParams({ ...base, systemCacheBreakpoints: [7] }), none);
+  assert.deepEqual(buildOpenRouterParams({ ...base, systemCacheBreakpoints: [7, 20] }), none);
+  const openai = buildOpenAIParams(base);
+  assert.deepEqual(buildOpenAIParams({ ...base, systemCacheBreakpoints: [7, 20] }), openai);
+  assert.equal(openai.messages[0].content, base.system, 'still a plain string on the generic lane');
 });
 
 test('isLengthStarved: length finish with no content and no tool calls is starvation', () => {

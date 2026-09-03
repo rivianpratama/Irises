@@ -20,7 +20,7 @@ process.env.MEMORY_RECALL_EXPANSION = 'off';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { processConvoResult, renderArchiveRecallPass, type ChatContext, type ConvoTurnContext } from './shared.js';
+import { processConvoResult, renderArchiveRecallPass, convoPersonaChars, type ChatContext, type ConvoTurnContext } from './shared.js';
 import { RECALL_MEMORY_TOOL, DELEGATE_TO_OPS_TOOL, REACTION_TOOL } from './tools.js';
 import { emptyMedia } from '../../webhook/types.js';
 import { __resetOpsCoordination } from '../../state/opsCoordination.js';
@@ -113,6 +113,28 @@ test('recall_memory runs the search and answers from a SECOND pass with the tool
 
   // The first pass's draft is discarded; what ships is the answer written WITH the snippets.
   assert.equal(out.text, 'ruiz fencing, 3200 for the back run');
+  await purgeArchiveFor({ handle: a.handle });
+});
+
+test("the second pass reuses the turn's cache breakpoints instead of re-billing the persona", async () => {
+  // It re-sends the SAME system string, so the offsets that split it are still valid — and this is
+  // the call where a cache READ is worth the most, since the first pass just wrote it.
+  const a = args();
+  await seedArchive(a.handle, a.chatId);
+  const seen: LlmRequest[] = [];
+  const capture = async (req: LlmRequest) => { seen.push(req); return makeResult(['ruiz fencing'], []); };
+
+  await processConvoResult({
+    ...a, res: makeResult(['hmm'], [recall('fence guy')]),
+    turn: { ...turnCtx(capture), cacheBreakpoints: [12, 40] },
+  });
+  assert.deepEqual(seen[0].systemCacheBreakpoints, [12, 40], 'both offsets, in order');
+
+  // A caller that declares none gets what this call passed before there was a second breakpoint:
+  // the persona head alone.
+  seen.length = 0;
+  await processConvoResult({ ...a, res: makeResult(['hmm'], [recall('fence guy')]), turn: turnCtx(capture) });
+  assert.deepEqual(seen[0].systemCacheBreakpoints, [convoPersonaChars()]);
   await purgeArchiveFor({ handle: a.handle });
 });
 

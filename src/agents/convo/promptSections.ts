@@ -71,9 +71,13 @@ export function isDynSection(name: SectionId): name is DynSectionId {
 /** The one separator the assembler uses, between every pair of adjacent parts: `\n\n`. */
 const SEPARATOR_CHARS = 2;
 
-/** The fixed cost of wrapPrompt around the dyn block: `<prompt>\n` ahead of it, `\n</prompt>` after.
- *  Derived from PROMPT_TAG, so renaming the tag re-measures instead of drifting. */
-export const PROMPT_WRAPPER_CHARS = `<${PROMPT_TAG}>\n`.length + `\n</${PROMPT_TAG}>`.length;
+/** What wrapPrompt puts AHEAD of the dyn block: `<prompt>\n`. Its own constant because it is also
+ *  the distance from the end of the persona head to the first dyn section (see the breakpoints
+ *  below). Derived from PROMPT_TAG, so renaming the tag re-measures instead of drifting. */
+export const PROMPT_WRAPPER_OPEN = `<${PROMPT_TAG}>\n`.length;
+
+/** The fixed cost of wrapPrompt around the dyn block: `<prompt>\n` ahead of it, `\n</prompt>` after. */
+export const PROMPT_WRAPPER_CHARS = PROMPT_WRAPPER_OPEN + `\n</${PROMPT_TAG}>`.length;
 
 /** persona ⏎⏎ ‹the wrapped dyn block› ⏎⏎ behavior_anchor ⏎⏎ json_anchor — three joins, always. */
 const FRAME_JOINS = 3;
@@ -103,4 +107,44 @@ export function sectionsTotalChars(sections: readonly PromptSection[]): number {
   const dynCount = sections.reduce((n, s) => n + (isDynSection(s.name) ? 1 : 0), 0);
   const joins = Math.max(0, dynCount - 1) + FRAME_JOINS;
   return body + joins * SEPARATOR_CHARS + PROMPT_WRAPPER_CHARS;
+}
+
+/**
+ * The LEADING dyn sections that are stable within one chat rather than per-turn: the model's view of
+ * its tools, and the craft pages this turn's gates fired (convo/personaModules.ts). Together they
+ * are the big ones — up to ~30k characters on the turn that carries the most — and they change only
+ * when the chat's tool list or a gate does, which is what makes them worth a cache breakpoint of
+ * their own on the Anthropic lane.
+ *
+ * The two stable-slot lines behind them, `capability` and `model_map`, are deliberately NOT in here:
+ * six hundred characters between them is not worth a breakpoint, and `model_map` is read from the
+ * live model map, so it can legitimately change mid-chat the moment engine discovery answers.
+ */
+const STABLE_SLOT_IDS: ReadonlySet<string> = new Set<DynSectionId>(['tool_docs', 'craft_modules']);
+
+/**
+ * Where each cache-reusable prefix of the assembled prompt ENDS, as character offsets in ascending
+ * order — what the Anthropic lane splits `system` at (llm/callLLM.ts buildAnthropicSystem):
+ *   1. the static persona head, which is stable for the life of the deployment;
+ *   2. the end of the stable-within-a-chat slot above, when this build rendered any of it.
+ *
+ * Derived from the section list the assembler already returned — the same arithmetic as
+ * `sectionsTotalChars`, walked from the front instead of summed — so nothing is re-measured, no text
+ * is re-joined, and an offset can never disagree with the string it indexes into. Exact for the same
+ * reason that function is: every section's text is already trimmed, so wrapPrompt's own `trim` moves
+ * nothing (promptSections.test.ts pins that).
+ *
+ * One offset (the bare persona) is what a turn with no tools and no craft page reports, and it makes
+ * the lane's request byte-identical to what it sent before there was a second breakpoint.
+ */
+export function promptCacheBreakpoints(sections: readonly PromptSection[]): number[] {
+  const personaChars = sections.find(s => s.name === 'persona')?.chars ?? 0;
+  if (personaChars <= 0) return [];
+  const dyn = sections.filter(s => isDynSection(s.name));
+  let slot = 0;
+  for (let i = 0; i < dyn.length && STABLE_SLOT_IDS.has(dyn[i].name); i++) {
+    slot += (i > 0 ? SEPARATOR_CHARS : 0) + dyn[i].chars;
+  }
+  if (slot <= 0) return [personaChars];
+  return [personaChars, personaChars + SEPARATOR_CHARS + PROMPT_WRAPPER_OPEN + slot];
 }

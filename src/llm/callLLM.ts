@@ -107,34 +107,61 @@ export function patchServerToolInputs(content: Array<{ type: string; input?: unk
 /** One `cache_control`-carrying text block. The remainder block after a prefix split has no marker. */
 type AnthropicSystemBlock = { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } };
 
+/** How many `cache_control` blocks one request may carry — the provider's own limit. A caller that
+ *  offers more breakpoints than this keeps its first four, which are the most stable ones. */
+export const MAX_CACHE_BREAKPOINTS = 4;
+
 /**
- * Build the Anthropic `system` param, caching the large stable prefix for opted-in roles. Sub-
+ * The breakpoints actually usable on `system`, in order: positive, inside the string, and each one
+ * strictly past the last (a zero-length block is rejected by the API, and an offset that doesn't
+ * advance is exactly what an EMPTY stable slot hands in). Capped at the provider's limit. Pure.
+ */
+function cacheCutPoints(offsets: readonly number[] | undefined, len: number): number[] {
+  const cuts: number[] = [];
+  for (const offset of offsets ?? []) {
+    if (!Number.isFinite(offset) || offset <= 0 || offset >= len) continue;
+    if (cuts.length && offset <= cuts[cuts.length - 1]) continue;
+    cuts.push(offset);
+    if (cuts.length === MAX_CACHE_BREAKPOINTS) break;
+  }
+  return cuts;
+}
+
+/**
+ * Build the Anthropic `system` param, caching the stable prefixes for opted-in roles. Sub-
  * 1024/4096-token cached spans silently won't cache (no error). Three shapes:
  *  • caching off → the bare string (Anthropic bills it as ordinary input every call).
- *  • caching on WITH a stable-prefix boundary (Convo: static persona THEN per-turn sections) → the
- *    persona as its OWN cached block + the per-turn remainder as a second, UNcached block, so the
- *    cache matches the persona across turns. Without the split the single breakpoint sits after the
- *    per-turn-varying tail (current time to ms, dossier, …), making every turn a full cache WRITE —
- *    no reads, ~25% premium, and the write tokens still count toward the daily cap. This is the bug
- *    the split fixes; the boundary is validated (0 < len < system.length) or we fall through.
- *  • caching on with no valid boundary → the whole system as one cached block (roles whose
+ *  • caching on WITH breakpoints → one block per span between them, each of those carrying
+ *    `cache_control`, plus the remainder after the last one as a final UNcached block. Convo hands
+ *    in two: the static persona head, then the slot that is stable WITHIN a chat (the tool docs and
+ *    the craft pages, agents/convo/promptSections.ts). Without any split the single breakpoint would
+ *    sit after the per-turn-varying tail (current time to ms, dossier, …), making every turn a full
+ *    cache WRITE — no reads, ~25% premium, and the write tokens still count toward the daily cap.
+ *    That is the bug the first breakpoint fixes; the second one is the same argument one level in —
+ *    a prefix that only changes when the chat's tools or gates change should not be re-billed on
+ *    every turn just because the clock moved. With ONE breakpoint the output is byte-identical to
+ *    what the single-length signature emitted.
+ *  • caching on with no usable breakpoint → the whole system as one cached block (roles whose
  *    system is stable end to end).
  * Exported for unit tests.
  */
 export function buildAnthropicSystem(
   system: string | undefined,
   cacheEnabled: boolean,
-  cachePrefixLen: number | undefined,
+  cacheBreakpoints: readonly number[] | undefined,
 ): string | AnthropicSystemBlock[] | undefined {
   if (!system) return undefined;
   if (!cacheEnabled) return system;
-  if (typeof cachePrefixLen === 'number' && cachePrefixLen > 0 && cachePrefixLen < system.length) {
-    return [
-      { type: 'text', text: system.slice(0, cachePrefixLen), cache_control: { type: 'ephemeral' } },
-      { type: 'text', text: system.slice(cachePrefixLen) },
-    ];
+  const cuts = cacheCutPoints(cacheBreakpoints, system.length);
+  if (!cuts.length) return [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
+  const blocks: AnthropicSystemBlock[] = [];
+  let from = 0;
+  for (const cut of cuts) {
+    blocks.push({ type: 'text', text: system.slice(from, cut), cache_control: { type: 'ephemeral' } });
+    from = cut;
   }
-  return [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
+  blocks.push({ type: 'text', text: system.slice(from) });
+  return blocks;
 }
 
 async function callAnthropic(req: LlmRequest): Promise<LlmResult> {
@@ -172,8 +199,8 @@ async function callAnthropic(req: LlmRequest): Promise<LlmResult> {
   if (temp !== undefined && thinking) {
     console.warn(`[llm] ${req.role}: temperature ignored — mutually exclusive with adaptive thinking on Claude 4.x (set thinking off to use it)`);
   }
-  // Cache the large, stable system prefix for opted-in roles (see buildAnthropicSystem).
-  const systemParam = buildAnthropicSystem(req.system, CACHE_SYSTEM[req.role], req.systemCachePrefixLen);
+  // Cache the stable system prefixes for opted-in roles (see buildAnthropicSystem).
+  const systemParam = buildAnthropicSystem(req.system, CACHE_SYSTEM[req.role], req.systemCacheBreakpoints);
 
   // jsonBubbles: enforce the bubble envelope AT THE API on this path too, via structured outputs
   // (output_config.format, GA — coexists with tools exactly like OpenRouter's response_format).

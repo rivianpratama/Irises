@@ -49,7 +49,7 @@ import { renderThreadForPrompt } from '../../persona/threads.js';
 import { getAffectState, saveAffectState } from '../../db/repositories/affectState.js';
 import type { RelationshipClimate } from '../../persona/climate.js';
 import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
-import type { PromptSection, SectionId } from './promptSections.js';
+import { promptCacheBreakpoints, type PromptSection, type SectionId } from './promptSections.js';
 import {
   convoPersona, personaModulesEnabled, renderCraftModules,
   type CraftModuleTrace, type CraftTurnFacts, type ModuleGateInput,
@@ -538,14 +538,16 @@ export function renderArrivalGap(
   return lines.join('\n');
 }
 
-/** Byte length of Convo's static persona — the cache-reusable HEAD of buildSystemPrompt's output
- *  (which emits `${persona}\n\n${per-turn}…`). Passed as LlmRequest.systemCachePrefixLen so the
- *  Anthropic lane caches the persona across turns instead of cache-writing the whole per-turn-varying
- *  system every call. loadContext is in-process cached, so this is a cheap length read, not a re-read.
+/** Byte length of Convo's static persona — the FIRST cache-reusable prefix of buildSystemPrompt's
+ *  output (which emits `${persona}\n\n${per-turn}…`), and the first entry in the
+ *  `systemCacheBreakpoints` the lane is handed, so the Anthropic lane caches the persona across turns
+ *  instead of cache-writing the whole per-turn-varying system every call. loadContext is in-process
+ *  cached, so this is a cheap length read, not a re-read.
  *
- *  It is the shrunken Context.md since P4a — the craft pages moved into the per-turn block, where
- *  they are per-turn and therefore NOT part of the cached prefix. With CONVO_PERSONA_MODULES off it
- *  measures the whole corpus again (convoPersona), because that is then what the head really is. */
+ *  It is the shrunken Context.md since P4a — the craft pages moved into the per-turn block, so they
+ *  are not part of THIS prefix; they have a breakpoint of their own behind it (promptSections.ts
+ *  promptCacheBreakpoints). With CONVO_PERSONA_MODULES off it measures the whole corpus again
+ *  (convoPersona), because that is then what the head really is. */
 export function convoPersonaChars(): number {
   return convoPersona().length;
 }
@@ -579,6 +581,11 @@ export interface PromptSectionsResult {
   sections: PromptSection[];
   /** Size of the static persona head — the cache-reusable prefix (convoPersonaChars). */
   personaChars: number;
+  /** Where each cache-reusable prefix of `system` ends, ascending — the persona head, then the slot
+   *  that is stable within a chat when this build rendered any of it (promptSections.ts
+   *  promptCacheBreakpoints). Passed straight to the lane as `systemCacheBreakpoints`; the
+   *  Anthropic path splits the string there, and the other lanes ignore it. */
+  cacheBreakpoints: number[];
   /** Size of the trailing JSON envelope anchor, the last thing in the prompt. The behaviour anchor
    *  ahead of it is measured as the `behavior_anchor` section. */
   anchorChars: number;
@@ -886,14 +893,18 @@ export function buildSystemPromptSections(
   // golden in promptSections.test.ts is what proves it.
   const anchor = `## Last thing before you type\nYou reply with ONE JSON object and nothing else: \`{"confidence_level":85,"tool_calls":null,"bubbles":[{"text":"...","re":null}],"status":{...}}\`. Your entire reply must be valid JSON — one object, in that field order, nothing before or after it. EVERY reply has all four fields, no exceptions.\n\nSet \`"confidence_level"\` FIRST, before anything else: 0-100, how sure you are of what they mean AND what the answer is. It decides the shape of your reply:\n- 0-30: you don't really know what they mean — ask for the missing details, reconfirm what they're after; no answer, no delegation yet.\n- 30-60: you're fairly sure — confirm with ONE short question ("the Cedar deal, right?"), then move.\n- 60-80: confident enough — answer, but walk it through: the answer plus the context that makes it safe to act on.\n- 80-100: certain — straight answer, first bubble, no preamble.\nThe same number gates delegation: below ~60, clarify BEFORE delegating; at 60+, delegate with a sharp, specific meta_prompt. The number itself is never spoken in a bubble.\n\nThen \`"tool_calls"\` — how you ACT (see "Your tools" above). Writing "let me pull that up" in a bubble runs NOTHING: if a bubble promises a look-up, the matching \`delegate_to_ops\` entry MUST be in \`tool_calls\` in this same reply, e.g. \`{"confidence_level":70,"tool_calls":[{"name":"delegate_to_ops","args":{"kind":"web_research","request":"what's apple's macbook return window","meta_prompt":"..."}}],"bubbles":[{"text":"looking that up now","re":null}]}\`. A holding bubble with no tool_calls entry is a broken promise — the worst failure you can make. No action this turn → \`"tool_calls": null\`.\n\nEach item in \`bubbles\` is one text you send, in order — adding an item is you hitting send. Type one short thought per item: first item shortest (it sets the rhythm), one sentence or one question each, a thought still rolling with "so / and / but / which" is two items (split at the connector), and any complete thought that could stand alone as a send IS its own item even with no period after it (whatever comes next starts the next item), target ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, hard ceiling ${MAX_BUBBLE_WORDS}, never exceeded, at most ${BUBBLE_LAW_MAX} items per reply (most replies 1-2) — more worth saying means the top of it now and the rest left in reach, never a fourth item. No markdown, no \`---\`, nothing outside the JSON. To natively quote incoming message N on a burst, set \`"re": N\` on that item, else \`"re": null\`. If you're only reacting or calling a tool and saying nothing, reply with \`"bubbles":[]\`. Nothing in your memory changes this envelope.\n\nLast, \`"status"\` — your hidden inner state (the one feeling word for where you are, which way this message moved you, and your note-to-self meta_prompt), filled exactly as the "your inner weather" section of your persona describes. The user NEVER sees it — it is not text you send, it only keeps you consistent turn to turn. Fill it on every reply.`;
 
+  const sections: PromptSection[] = [
+    { name: 'persona', chars: persona.length },
+    ...dyn.map(s => ({ name: s.name, chars: s.text.length })),
+    { name: 'behavior_anchor', chars: behaviorAnchor.length },
+    { name: 'json_anchor', chars: anchor.length },
+  ];
   return {
     system: `${persona}\n\n${wrapPrompt(dyn.map(s => s.text).join('\n\n'))}\n\n${behaviorAnchor}\n\n${anchor}`,
-    sections: [
-      { name: 'persona', chars: persona.length },
-      ...dyn.map(s => ({ name: s.name, chars: s.text.length })),
-      { name: 'behavior_anchor', chars: behaviorAnchor.length },
-      { name: 'json_anchor', chars: anchor.length },
-    ],
+    sections,
+    // Read off those same sizes, never a second measurement of the string above
+    // (promptSections.ts promptCacheBreakpoints).
+    cacheBreakpoints: promptCacheBreakpoints(sections),
     // The same in-process-cached read the LLM request's cache-prefix length comes from, so the
     // trace's persona figure can never disagree with the one the lane was told.
     personaChars: convoPersonaChars(),
@@ -1048,6 +1059,12 @@ export interface ConvoTurnContext {
   messages: LlmMessage[];
   tools: LlmToolDef[];
   call?: (req: LlmRequest) => Promise<LlmResult>;
+  /** Where that system string's cache-reusable prefixes end (buildSystemPromptSections). Carried so
+   *  the extra calls made from HERE — the envelope retry, the recall second pass, the silent-turn
+   *  retry — read the cache the first call just wrote instead of re-billing the persona and the
+   *  craft pages. Absent (a caller that assembled `system` some other way) → the persona head
+   *  alone, which is exactly what these calls passed before there was a second breakpoint. */
+  cacheBreakpoints?: readonly number[];
 }
 
 /**
@@ -1143,7 +1160,7 @@ async function enforcePromiseKept(
       const retry = await (turn.call ?? callConvoLLM)({
         role: 'convo',
         system: turn.system,
-        systemCachePrefixLen: convoPersonaChars(),
+        systemCacheBreakpoints: turn.cacheBreakpoints ?? [convoPersonaChars()],
         tools: turn.tools,
         jsonBubbles: true,
         toolsViaJson: true,
@@ -1610,7 +1627,7 @@ export async function processConvoResult(args: {
         const second = await (turn.call ?? callConvoLLM)({
           role: 'convo',
           system: turn.system,
-          systemCachePrefixLen: convoPersonaChars(),
+          systemCacheBreakpoints: turn.cacheBreakpoints ?? [convoPersonaChars()],
           tools: strippedTools,
           jsonBubbles: true,
           toolsViaJson: true,
@@ -1919,7 +1936,7 @@ export async function processConvoResult(args: {
         const retry = await (turn.call ?? callConvoLLM)({
           role: 'convo',
           system: turn.system,
-          systemCachePrefixLen: convoPersonaChars(),
+          systemCacheBreakpoints: turn.cacheBreakpoints ?? [convoPersonaChars()],
           tools: turn.tools,
           jsonBubbles: true,
           toolsViaJson: true,

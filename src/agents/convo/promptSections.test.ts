@@ -79,7 +79,7 @@ process.env.TZ = 'UTC';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSystemPrompt, buildSystemPromptSections } from './shared.js';
-import { SECTION_IDS, DYN_SECTION_IDS, sectionsTotalChars, type SectionId } from './promptSections.js';
+import { SECTION_IDS, DYN_SECTION_IDS, sectionsTotalChars, PROMPT_WRAPPER_OPEN, type SectionId } from './promptSections.js';
 import { CRAFT_MODULES, craftModuleText } from './personaModules.js';
 import { BUBBLE_LAW_MAX } from '../../pipeline/bubbleJson.js';
 import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '../../pipeline/bubbles.js';
@@ -381,6 +381,46 @@ test("the anchor's bubble law is interpolated from the pipeline constants", () =
   for (const m of law.matchAll(/\d+/g)) {
     assert.ok(allowed.has(Number(m[0])), `bare number ${m[0]} left in the bubble-law paragraph`);
   }
+});
+
+// ── the cache breakpoints ────────────────────────────────────────────────────
+// The offsets the Anthropic lane splits the system string at (llm/callLLM.ts buildAnthropicSystem).
+// Derived from the section list this same build reports — nothing is re-measured and no text is
+// re-joined — so the only thing worth testing is that the arithmetic lands EXACTLY on a section
+// boundary in the real string.
+
+test('the breakpoints are the persona head and the end of the stable-within-a-chat slot', () => {
+  const f = FIXTURES[0];   // tool docs + a craft page, then the capability line
+  const { system, sections, cacheBreakpoints, personaChars } = buildSystemPromptSections(...f.args);
+  const by = (name: SectionId) => sections.find(s => s.name === name)?.chars ?? 0;
+  assert.equal(cacheBreakpoints.length, 2);
+  assert.equal(cacheBreakpoints[0], personaChars, 'breakpoint 1 is where it has always been');
+  // Stated as the arithmetic AND checked against the bytes: the offset must land on the `\n\n`
+  // between the craft pages and the next section, so the cached span is whole sections.
+  assert.equal(
+    cacheBreakpoints[1],
+    personaChars + 2 + PROMPT_WRAPPER_OPEN + by('tool_docs') + 2 + by('craft_modules'),
+  );
+  assert.equal(system.slice(cacheBreakpoints[1], cacheBreakpoints[1] + 2), '\n\n');
+  assert.ok(system.slice(cacheBreakpoints[1] + 2).startsWith('Your deep look can right now'), 'the capability line follows');
+  assert.ok(system.slice(0, cacheBreakpoints[1]).endsWith(craftModuleText('send_order')), 'the slot ends on the craft page');
+  assert.ok(cacheBreakpoints[1] > cacheBreakpoints[0], 'ascending, so both are usable');
+});
+
+test('a turn with no tool docs still caches the craft slot; a turn with neither declares one breakpoint', () => {
+  // Fixture B carries no tools (a group turn built without them) but does load a craft page, so the
+  // slot is that page alone and the offset lands on the model-map section that follows it.
+  const b = buildSystemPromptSections(...FIXTURES[1].args);
+  const craftChars = b.sections.find(s => s.name === 'craft_modules')?.chars ?? 0;
+  assert.ok(craftChars > 0, 'the group fixture loads the burst-quoting page');
+  assert.equal(b.cacheBreakpoints.length, 2);
+  assert.equal(b.cacheBreakpoints[1], b.personaChars + 2 + PROMPT_WRAPPER_OPEN + craftChars);
+  assert.ok(b.system.slice(b.cacheBreakpoints[1] + 2).startsWith('## What you run on'));
+
+  // The barest build: no tools, no craft page. There is no stable slot to cache, so the request
+  // keeps exactly the one breakpoint it had before this existed.
+  const bare = buildSystemPromptSections(undefined, '');
+  assert.deepEqual(bare.cacheBreakpoints, [bare.personaChars]);
 });
 
 // ── the group section's write route ──────────────────────────────────────────

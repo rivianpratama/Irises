@@ -91,15 +91,18 @@ export interface LlmRequest {
   // search" turns with no tool call and no confidence slipped out. One output channel fixes it.
   // Requires jsonBubbles. NEVER set alongside a role that needs a real multi-turn tool loop (Ops).
   toolsViaJson?: boolean;
-  // The number of leading characters of `system` that form the STABLE, cache-reusable prefix (e.g.
-  // Convo's static persona, which precedes the per-turn dynamic sections). When set AND the role opts
-  // into caching (CACHE_SYSTEM[role]), the Anthropic path emits the system as TWO blocks — a cached
-  // prefix [0, len) + an uncached remainder [len, end) — so prompt caching matches the persona across
-  // turns. Without it, a role whose system carries ANY per-turn-varying tail (Convo embeds the current
-  // time to ms) would cache-WRITE the whole system every call: zero reads, plus a ~25% write premium,
-  // and the write tokens still count toward the daily cap. Ignored when unset, <=0, or >= system.length,
-  // and on the OpenRouter lane (prompt caching is Anthropic-only; Convo's OpenRouter primary is deepseek).
-  systemCachePrefixLen?: number;
+  // Where the STABLE, cache-reusable prefixes of `system` end, as character offsets in ascending
+  // order — Convo passes two (agents/convo/promptSections.ts promptCacheBreakpoints): the static
+  // persona head, and the slot that is stable within a chat (the tool docs plus the craft pages).
+  // When set AND the role opts into caching (CACHE_SYSTEM[role]), the Anthropic path emits one
+  // `cache_control` block per span plus an uncached remainder, so a cache read matches everything up
+  // to the last offset that hasn't changed. Without any of them, a role whose system carries ANY
+  // per-turn-varying tail (Convo embeds the current time to ms) would cache-WRITE the whole system
+  // every call: zero reads, plus a ~25% write premium, and the write tokens still count toward the
+  // daily cap. Offsets outside (0, system.length) or that don't advance are ignored, at most
+  // MAX_CACHE_BREAKPOINTS are used, and the whole field is ignored on the OpenRouter/OpenAI lanes
+  // (prompt caching is Anthropic-only; Convo's OpenRouter primary is deepseek).
+  systemCacheBreakpoints?: readonly number[];
   // Cancels the in-flight HTTP request at both SDKs. Long Ops calls can run for minutes; without
   // this, a task timeout only stops the loop BETWEEN steps while the abandoned request keeps
   // billing to completion.

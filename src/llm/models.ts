@@ -133,11 +133,12 @@ export const EFFORT: Record<LlmRole, EffortLevel | null> = {
  *  caching it drops ~90% off the persona input WHENEVER Convo runs on the Anthropic lane — its
  *  transient-error fallback, and any deliberate CONVO_PROVIDER=anthropic flip. CRITICAL: Convo's
  *  system is `persona + PER-TURN sections` (current time to ms, dossier, …), so this flag ALONE is
- *  not enough — the cache breakpoint must sit AFTER the persona, which is why convo/client.ts passes
- *  LlmRequest.systemCachePrefixLen (see buildAnthropicSystem). Without that split the marker lands
+ *  not enough — a cache breakpoint must sit AFTER the persona, which is why convo/client.ts passes
+ *  LlmRequest.systemCacheBreakpoints (see buildAnthropicSystem). Without that split the marker lands
  *  after the varying tail and every turn is a full cache WRITE (no reads, +25% premium) — do not
- *  remove the systemCachePrefixLen plumbing. Harmless no-op on the OpenRouter/deepseek primary lane:
- *  cache_control is an Anthropic-only feature non-Anthropic providers ignore. */
+ *  remove the systemCacheBreakpoints plumbing. Its second offset is the same argument for the tool
+ *  docs and the craft pages behind the persona. Harmless no-op on the OpenRouter/deepseek primary
+ *  lane: cache_control is an Anthropic-only feature non-Anthropic providers ignore. */
 export const CACHE_SYSTEM: Record<LlmRole, boolean> = {
   convo: parseBoolEnv(process.env.CONVO_CACHE_SYSTEM, true),
   ops: parseBoolEnv(process.env.OPS_CACHE_SYSTEM, true),

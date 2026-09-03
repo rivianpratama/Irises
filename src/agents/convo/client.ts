@@ -36,7 +36,7 @@ import type { ComputedState } from '../../persona/status.js';
 import { hasMedia, type IncomingMedia } from '../../webhook/types.js';
 import { reportError } from '../../diagnostics/errorLog.js';
 import type { LlmMessage, LlmRequest, LlmResult, LlmToolDef } from '../../llm/types.js';
-import { buildSystemPromptSections, convoPersonaChars, processConvoResult, formatHistory, emptyExtras, callConvoLLM, annotateTappedReply } from './shared.js';
+import { buildSystemPromptSections, processConvoResult, formatHistory, emptyExtras, callConvoLLM, annotateTappedReply } from './shared.js';
 import { voiceOutcome } from '../fallfirm/client.js';
 import { helpText } from '../fallfirm/floor.js';
 import { claimPendingUpdateNote } from '../../update/announce.js';
@@ -378,9 +378,11 @@ export async function chat(
     const res = await (call ?? callConvoLLM)({
       role: 'convo',
       system,
-      // The persona is the stable HEAD of that system string; mark its length so the Anthropic lane
-      // caches the persona across turns instead of cache-writing the whole per-turn-varying system.
-      systemCachePrefixLen: convoPersonaChars(),
+      // Where that system string's stable prefixes end — the persona head, then the tool docs and
+      // craft pages, which change only when this chat's tools or gates do. The Anthropic lane caches
+      // each of them instead of cache-writing the whole per-turn-varying system every call. Read off
+      // the sizes the assembler just reported, so no part of the string is measured twice.
+      systemCacheBreakpoints: prompt.cacheBreakpoints,
       tools,
       jsonBubbles: true,   // force the schema-valid envelope at the API on BOTH providers
       toolsViaJson: true,  // tools are WRITTEN into that envelope (tool_calls), never sent natively
@@ -389,7 +391,7 @@ export async function chat(
     });
     const result = await processConvoResult({
       res, chatId, handle, chatContext, textToSend, history, media,
-      turn: { system, messages, tools, call },
+      turn: { system, messages, tools, call, cacheBreakpoints: prompt.cacheBreakpoints },
       computed,
       introWoven: !!introWeave,
       // The turn's ONE relevance verdict, already built during the memory read above — the routing
