@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 import {
   WALLED_HOSTS, findWalledUrls, decideWalledTooling, browserRetryDirective, walledScanText,
 } from './walledUrls.js';
-import { buildTaskPrompt, runTask } from './client.js';
-import { resetEngineBackendCache, type EngineBackend } from './engineBackend.js';
+import { buildTaskPrompt, runTask, browserLegBudgetFor, legBudgetFor } from './client.js';
+import { resetEngineBackendCache, standardLegBudgetMs, BROWSER_LEG_BUDGET_MS, type EngineBackend, type EngineRunContext } from './engineBackend.js';
 import { HermesBackend, manifestHasBrowser } from './hermesBackend.js';
 import { getTraces, clearTraces } from '../../diagnostics/trace.js';
 import { emptyMedia } from '../../webhook/types.js';
@@ -295,10 +295,10 @@ test('buildTaskPrompt: OPS_WALLED_URL_HINT off → byte-identical to the pre-hin
 
 // ── the ops:kickoff receipt ───────────────────────────────────────────────────
 
-function stubEngine(browser: boolean | undefined, onPrompt: (p: string) => void): EngineBackend {
+function stubEngine(browser: boolean | undefined, onPrompt: (p: string) => void, onCtx: (c: EngineRunContext) => void = () => {}): EngineBackend {
   return {
     name: 'hermes',
-    runTask: async (prompt: string) => { onPrompt(prompt); return 'ANSWER: her name is on the caption\nSOURCE: the reel page\nFLAGS: none'; },
+    runTask: async (prompt: string, _task: OpsTask, ctx: EngineRunContext) => { onPrompt(prompt); onCtx(ctx); return 'ANSWER: her name is on the caption\nSOURCE: the reel page\nFLAGS: none'; },
     async createReminder() { return { id: 'r', title: 't', schedule: 's' }; },
     async listReminders() { return []; },
     async cancelReminder() { return false; },
@@ -309,15 +309,16 @@ function stubEngine(browser: boolean | undefined, onPrompt: (p: string) => void)
   };
 }
 
-async function kickoffDetail(task: OpsTask, browser: boolean | undefined): Promise<{ detail: Record<string, unknown>; prompt: string }> {
+async function kickoffDetail(task: OpsTask, browser: boolean | undefined): Promise<{ detail: Record<string, unknown>; prompt: string; ctx: EngineRunContext }> {
   let prompt = '';
-  resetEngineBackendCache(stubEngine(browser, p => { prompt = p; }));
+  let ctx: EngineRunContext = {};
+  resetEngineBackendCache(stubEngine(browser, p => { prompt = p; }, c => { ctx = c; }));
   clearTraces();
   try {
     await runTask(task);
     const kickoff = getTraces().find(e => e.label === 'ops:kickoff');
     assert.ok(kickoff, 'ops:kickoff was recorded');
-    return { detail: (kickoff.detail ?? {}) as Record<string, unknown>, prompt };
+    return { detail: (kickoff.detail ?? {}) as Record<string, unknown>, prompt, ctx };
   } finally {
     resetEngineBackendCache(undefined);
   }
@@ -350,4 +351,100 @@ test('runTask: ops:kickoff tells the three no-ops apart — no browser, none rep
   assert.deepEqual(plain.detail.walledHosts, []);
   assert.equal(plain.detail.toolingHint, false);
   assert.equal(plain.detail.browserTooling, true, 'the browser was there — the ask simply had no walled link');
+});
+
+// ── the walled-URL leg budget ─────────────────────────────────────────────────
+// The evidence (2026-09-02/03): Hermes needed ~6–15 minutes of browser work on an Instagram reel,
+// and Irises abandoned each leg at the window derived from OPS_TASK_TIMEOUT_MS (4 min → a ~225s
+// transport window) — the finished answer went to an aborted client. A task the engine was actually
+// TOLD to open a browser for gets a wider leg; every other task keeps the one it has.
+
+/** Run `fn` with these env vars set (nothing else touched), then restore exactly what was there. */
+async function withEnv(vars: Record<string, string | undefined>, fn: () => Promise<void> | void): Promise<void> {
+  const prev: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(vars)) {
+    prev[k] = process.env[k];
+    if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  }
+  try {
+    await fn();
+  } finally {
+    for (const [k, v] of Object.entries(prev)) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  }
+}
+
+/** The selection with a stubbed engine probe in place, since the budget follows the HINT — which
+ *  needs the engine's own answer about whether it can open a page at all. */
+async function budgetWith(browser: boolean | undefined, task: OpsTask, env: Record<string, string | undefined>): Promise<{ browserBudget: number | null; leg: number }> {
+  resetEngineBackendCache(stubEngine(browser, () => { /* no prompt read here */ }));
+  try {
+    let out: { browserBudget: number | null; leg: number } | undefined;
+    await withEnv(env, () => { out = { browserBudget: browserLegBudgetFor(task), leg: legBudgetFor(task) }; });
+    return out!;
+  } finally {
+    resetEngineBackendCache(undefined);
+  }
+}
+
+/** The armed deployment: the browser budget switched on, the hint flag at its default (on). */
+const ARMED = { OPS_BROWSER_TASK_TIMEOUT_MS: 'on', OPS_WALLED_URL_HINT: undefined };
+/** The deployment nobody configured — every assertion under this must describe TODAY. */
+const UNARMED = { OPS_BROWSER_TASK_TIMEOUT_MS: undefined, OPS_WALLED_URL_HINT: undefined };
+
+test('leg budget: the browser budget applies exactly where the tooling hint did', async () => {
+  const armed = await budgetWith(true, mkTask(), ARMED);
+  assert.equal(armed.browserBudget, BROWSER_LEG_BUDGET_MS);
+  assert.equal(armed.leg, BROWSER_LEG_BUDGET_MS, 'the leg deadline the orchestrator waits on');
+
+  // The three no-ops the receipt already tells apart, each keeping today's deadline.
+  const noBrowser = await budgetWith(false, mkTask(), ARMED);
+  assert.equal(noBrowser.browserBudget, null, 'a box with no browser cannot spend 15 minutes opening a page');
+  assert.equal(noBrowser.leg, standardLegBudgetMs(process.env));
+  const coldCache = await budgetWith(undefined, mkTask(), ARMED);
+  assert.equal(coldCache.browserBudget, null, 'discovery has not answered — not a promise');
+  const plainAsk = await budgetWith(true, mkTask({ request: 'find the date on that invoice' }), ARMED);
+  assert.equal(plainAsk.browserBudget, null, 'no walled link, no browser leg');
+
+  // And the hint's own flag gates the budget with it: no hint in the prompt, no wider leg.
+  const hintOff = await budgetWith(true, mkTask(), { ...ARMED, OPS_WALLED_URL_HINT: 'false' });
+  assert.equal(hintOff.browserBudget, null);
+});
+
+test('leg budget: the env is the flag — unset is today, a number is taken as written', async () => {
+  const unset = await budgetWith(true, mkTask(), UNARMED);
+  assert.equal(unset.browserBudget, null, 'an install that never set it keeps the leg it has always had');
+  assert.equal(unset.leg, standardLegBudgetMs(process.env));
+
+  const pinned = await budgetWith(true, mkTask(), { ...UNARMED, OPS_BROWSER_TASK_TIMEOUT_MS: '600000' });
+  assert.equal(pinned.browserBudget, 600_000);
+  assert.equal(pinned.leg, 600_000);
+
+  const off = await budgetWith(true, mkTask(), { ...UNARMED, OPS_BROWSER_TASK_TIMEOUT_MS: 'off' });
+  assert.equal(off.browserBudget, null);
+});
+
+test('runTask: ops:kickoff states the leg budget, and the engine call gets the matching window', async () => {
+  await withEnv(ARMED, async () => {
+    const armed = await kickoffDetail(mkTask(), true);
+    assert.equal(armed.detail.toolingHint, true);
+    assert.equal(armed.detail.budgetMs, BROWSER_LEG_BUDGET_MS, 'the receipt says which leg this task got');
+    assert.equal(armed.ctx.timeoutMs, 885_000, 'and the transport window sits inside THAT leg, not the standard one');
+  });
+});
+
+test('runTask: an unarmed install reports the standard budget and passes NO per-call window', async () => {
+  await withEnv(UNARMED, async () => {
+    const plain = await kickoffDetail(mkTask({ request: 'find the date on that invoice' }), true);
+    assert.equal(plain.detail.toolingHint, false);
+    assert.equal(plain.detail.budgetMs, standardLegBudgetMs(process.env));
+    assert.equal(plain.ctx.timeoutMs, undefined, 'the adapter keeps its module-wide window — today’s bytes');
+
+    // A walled ask on the same unarmed install: the hint still goes in, the leg does not move.
+    const walledButUnarmed = await kickoffDetail(mkTask(), true);
+    assert.equal(walledButUnarmed.detail.toolingHint, true, 'the prompt still carries the hint');
+    assert.equal(walledButUnarmed.detail.budgetMs, standardLegBudgetMs(process.env));
+    assert.equal(walledButUnarmed.ctx.timeoutMs, undefined);
+  });
 });

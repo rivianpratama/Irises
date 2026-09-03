@@ -6,7 +6,10 @@
 import { DEFAULT_TZ } from '../../pipeline/zonedTime.js';
 import { record } from '../../diagnostics/trace.js';
 import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
-import { getEngineBackend, runViaEngine } from './engineBackend.js';
+import {
+  getEngineBackend, runViaEngine, computeEngineTimeoutMs, standardLegBudgetMs, browserLegBudgetMs,
+  type EngineRunContext,
+} from './engineBackend.js';
 import { decideWalledTooling, walledScanText } from './walledUrls.js';
 import { walledUrlHintEnabled } from '../../llm/models.js';
 import { hasMedia } from '../../webhook/types.js';
@@ -77,6 +80,35 @@ export function buildTaskPrompt(task: OpsTask, extras: { now?: number; tz?: stri
   return [wrapPrompt(fields), '', OUTPUT_CONTRACT].join('\n');
 }
 
+/** The engine's browser probe, read the non-blocking cached way (undefined until discovery has
+ *  answered). Never a fetch on a task or turn path — see EngineBackend.hasBrowserTooling. */
+function browserProbe(): boolean | undefined {
+  return getEngineBackend()?.hasBrowserTooling?.();
+}
+
+/**
+ * The WIDER leg budget for a task the engine was told to open a browser for, or `null` when this
+ * task keeps the standard one.
+ *
+ * Armed exactly where the `tooling:` line is (same pure decision, same inputs — a walled link, a
+ * browser that really exists, the hint flag on) plus the operator's own OPS_BROWSER_TASK_TIMEOUT_MS.
+ * That last read is the flag: unset means every leg keeps today's deadline and today's transport
+ * window, byte for byte.
+ *
+ * Read per leg by the orchestrator's deadline, by runTask's transport window, and by the holding
+ * line's ETA — so the number the user is promised, the number the engine is given and the number
+ * Irises waits for can never be three different numbers.
+ */
+export function browserLegBudgetFor(task: OpsTask, env: NodeJS.ProcessEnv = process.env): number | null {
+  const hinted = decideWalledTooling({ text: walledScanText(task), browser: browserProbe(), enabled: walledUrlHintEnabled() }).line !== null;
+  return hinted ? browserLegBudgetMs(env) : null;
+}
+
+/** The leg deadline for one task: the browser budget when armed, OPS_TASK_TIMEOUT_MS otherwise. */
+export function legBudgetFor(task: OpsTask, env: NodeJS.ProcessEnv = process.env): number {
+  return browserLegBudgetFor(task, env) ?? standardLegBudgetMs(env);
+}
+
 /** Execute one delegated task end to end on the configured engine.
  *  @param onProgress optional milestone SIGNAL. The caller (orchestrator) owns throttle + voicing.
  *  @param sink receives the (partial) debrief immediately, so an abandoned run leaves a trail.
@@ -93,6 +125,11 @@ export async function runTask(task: OpsTask, onProgress?: (milestoneKey: string)
   // Decided here as well as inside buildTaskPrompt (same pure call, same inputs) so the receipt
   // states what the engine was actually told, including on the no-op.
   const tooling = decideWalledTooling({ text: walledScanText(task), browser, enabled: walledUrlHintEnabled() });
+  // How long this leg may take, from the same decision: a hinted task gets the browser budget when
+  // the operator armed one, everything else the standard OPS_TASK_TIMEOUT_MS deadline. Derived from
+  // `tooling` rather than through browserLegBudgetFor so the receipt reports the budget for the
+  // decision it just recorded, not a second reading of the probe.
+  const browserBudget = tooling.line ? browserLegBudgetMs(process.env) : null;
   record({
     type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
     label: `${tracePrefix}:kickoff`,
@@ -102,6 +139,7 @@ export async function runTask(task: OpsTask, onProgress?: (milestoneKey: string)
     detail: {
       gapMs: Date.now() - task.createdAt, kind: task.kind,
       walledHosts: tooling.hosts, toolingHint: !!tooling.line, browserTooling: browser ?? null,
+      budgetMs: browserBudget ?? standardLegBudgetMs(process.env),
     },
   });
   const done = (r: OpsResult): OpsResult => {
@@ -125,5 +163,11 @@ export async function runTask(task: OpsTask, onProgress?: (milestoneKey: string)
   if (seedCorpus?.length) {
     prompt += `\n\nEarlier findings from a prior pass at this task (verify before reusing; treat as leads, not ground truth):\n${dataTag('prior_findings', seedCorpus.join('\n---\n').slice(0, 8000))}`;
   }
-  return done(await runViaEngine(engine, prompt, task, { onProgress, signal }, debrief));
+  // A widened leg carries its own transport window (derived from the budget, and always inside it);
+  // an ordinary leg passes none at all, so the adapters keep their module-wide window untouched.
+  const ctx: EngineRunContext = {
+    onProgress, signal,
+    ...(browserBudget ? { timeoutMs: computeEngineTimeoutMs(process.env, browserBudget) } : {}),
+  };
+  return done(await runViaEngine(engine, prompt, task, ctx, debrief));
 }

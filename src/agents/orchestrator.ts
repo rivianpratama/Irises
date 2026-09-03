@@ -1,4 +1,4 @@
-import { runTask } from './ops/client.js';
+import { runTask, legBudgetFor } from './ops/client.js';
 import { withDeadline, DeadlineError } from './deadline.js';
 import { setPreference } from '../db/repositories/memory.js';
 import { addShortTerm } from '../db/repositories/memoryShort.js';
@@ -32,7 +32,11 @@ export type SendFollowUp = (chatId: string, content: SpeakContent, opts?: SpeakO
 // going?". Kept under opsCoordination's 5-min STALE_MS so "still on it" wording and the in-flight
 // dedup stay truthful for the task's whole actual lifetime. On timeout the normal catch below
 // sends the honest snag line and `finally` clears the in-flight marker, so a re-ask runs fresh.
-const OPS_TASK_TIMEOUT_MS = Number(process.env.OPS_TASK_TIMEOUT_MS || 4 * 60_000);
+//
+// PER LEG, not per process: legBudgetFor (ops/client.ts) reads OPS_TASK_TIMEOUT_MS for an ordinary
+// task and the wider walled-URL browser budget for a task the engine was told to open a page for —
+// browser work that legitimately runs 6-15 minutes must not be abandoned at 4, with the answer
+// already on its way back. Unarmed, that call returns exactly the number this constant used to be.
 
 /** Combine the user-cancel signal with an internal one (a per-leg timeout abort) so aborting EITHER
  *  stops the run. Used so a timed-out primary Ops leg is actually torn down at its next step check —
@@ -326,8 +330,11 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
     // Keep the promise: on timeout we must WAIT for the aborted leg to actually settle before a
     // second leg starts, or the two legs bill tools + LLM steps concurrently.
     const primaryRun = runTask(task, milestoneKey => { noteOpsProgress(task.chatId, task.id, milestoneKey); void primary.voiceAndPing('progress', milestoneKey); }, combineSignals(signal, primaryAbort.signal), sink);
+    // Read once per leg, and the same number runTask hands the engine transport (its ops:kickoff
+    // receipt reports it as budgetMs).
+    const legMs = legBudgetFor(task);
     try {
-      result = await withDeadline(primaryRun, OPS_TASK_TIMEOUT_MS, `ops task ${task.id}`);
+      result = await withDeadline(primaryRun, legMs, `ops task ${task.id}`);
     } catch (err) {
       // Only a deadline becomes a triageable synthetic result; a genuine throw goes to the outer catch.
       if (!(err instanceof DeadlineError)) throw err;
@@ -340,11 +347,11 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
       const snap: OpsDebrief | undefined = sink.debrief
         ? { ...sink.debrief, toolsRun: [...sink.debrief.toolsRun], corpus: [...sink.debrief.corpus], endedAt: Date.now(), failure: { cause: 'timeout' } }
         : undefined;
-      record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:timeout', detail: { ms: OPS_TASK_TIMEOUT_MS, steps: snap?.steps, tools: snap?.toolsRun.map(t => t.name) } });
+      record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:timeout', detail: { ms: legMs, steps: snap?.steps, tools: snap?.toolsRun.map(t => t.name) } });
       // trace:false — the ops:timeout event above already carries the ERROR-side story for this turn.
       reportError({
-        source: 'ops', category: 'timeout', message: `ops task ${task.id} exceeded its ${OPS_TASK_TIMEOUT_MS}ms deadline`,
-        detail: { timeoutMs: OPS_TASK_TIMEOUT_MS, kind: task.kind, steps: snap?.steps }, chatId: task.chatId, handle: task.agentHandle, taskId: task.id, trace: false,
+        source: 'ops', category: 'timeout', message: `ops task ${task.id} exceeded its ${legMs}ms deadline`,
+        detail: { timeoutMs: legMs, kind: task.kind, steps: snap?.steps }, chatId: task.chatId, handle: task.agentHandle, taskId: task.id, trace: false,
       });
       result = { taskId: task.id, kind: task.kind, status: 'error', summary: 'ran into a problem completing that', debrief: snap };
     }
@@ -385,7 +392,7 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
 
         // A retry is deliberately SILENT: its gate carries the normal quiet window so a milestone can
         // still note progress, but there's no "taking a harder look" announcement and no heartbeat — the
-        // retry deadline (OPS_TASK_TIMEOUT_MS) sits inside the quiet window, so a slow retry just waits.
+        // retry deadline sits inside the quiet window, so a slow retry just waits.
         const retry = makePings(PROGRESS_QUIET_MS);
         pingStops.push(() => retry.gate.stop());
 
@@ -401,7 +408,7 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
         const retryAbort = new AbortController();
         const retryRun = runTask(retryTask, milestoneKey => { noteOpsProgress(retryTask.chatId, retryTask.id, milestoneKey); void retry.voiceAndPing('progress', milestoneKey); }, combineSignals(signal, retryAbort.signal), undefined, undefined);
         try {
-          result = await withDeadline(retryRun, OPS_TASK_TIMEOUT_MS, `ops retry ${task.id}`);
+          result = await withDeadline(retryRun, legBudgetFor(retryTask), `ops retry ${task.id}`);
         } catch (err) {
           // Retry died too (deadline or throw) — keep the FIRST result and its classification. The
           // transient ladder is spent here, so this is the incident, not the primary's own blip.
