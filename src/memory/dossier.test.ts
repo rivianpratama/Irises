@@ -10,10 +10,19 @@ process.env.TZ = 'UTC';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DOSSIER_SYSTEM_PROMPT, buildDossierTranscript, dossierUpdateUsable, persistDossierMerge, formatDaySpan, buildContextBlock, buildContextBlockWithHot } from './dossier.js';
+import {
+  DOSSIER_SYSTEM_PROMPT, buildDossierTranscript, dossierUpdateUsable, persistDossierMerge,
+  formatDaySpan, buildContextBlock, buildContextBlockWithHot,
+  dossierFactGuardEnabled, enforceKeyedFacts, enforceKeyedFactsWithChanges, keyedFactsForDossier,
+  reinjectSeedProvenance, renderConfirmedFacts,
+} from './dossier.js';
 import { addShortTerm } from '../db/repositories/memoryShort.js';
 import { saveDossier, clearDossier, getMemory, getForgetEpoch } from '../db/repositories/memory.js';
-import { getLongDoc, saveLongDoc } from '../db/repositories/memoryLong.js';
+import { getLongDoc, listLongRevisions, saveLongDoc } from '../db/repositories/memoryLong.js';
+import { PROVENANCE_LINE } from './seedFromEngine.js';
+import { SEED_FACT_KEY, type Provenance } from './provenance.js';
+import type { MediumBundle } from './mediumTerm.js';
+import { clearTraces, getTraces } from '../diagnostics/trace.js';
 
 // The coarse ladder shared by "last seen ~3 weeks ago" here and the climate eval's tenure label
 // (climateDrift.ts). It was copied once and both copies carried the same year-boundary hole.
@@ -207,4 +216,275 @@ test('buildContextBlockWithHot reports no hot look when nothing is held at all',
   const out = await buildContextBlockWithHot(h, 'any word on cedar yet');
   assert.equal(out.hotLook, null);
   assert.ok(out.block.length > 0, 'the memory stack still renders (the addressing rule alone)');
+});
+
+// ── The dossier fact guard (DOSSIER_FACT_GUARD_ENABLED, default ON) ──────────
+// The rewrite is a full-document merge by a cheap model that never saw the medium tier, so it can
+// write "goes by Mike" straight over a stored `address_as` of "Chief". Three keyed lines are now
+// defended — what to call them, how to address them, how they text — line by line and no further.
+
+async function withEnv<T>(name: string, value: string, fn: () => Promise<T> | T): Promise<T> {
+  const prior = process.env[name];
+  process.env[name] = value;
+  try {
+    return await fn();
+  } finally {
+    if (prior === undefined) delete process.env[name];
+    else process.env[name] = prior;
+  }
+}
+const withFactGuard = <T>(on: boolean, fn: () => Promise<T> | T) =>
+  withEnv('DOSSIER_FACT_GUARD_ENABLED', on ? 'true' : 'false', fn);
+const withProvenanceFlag = <T>(on: boolean, fn: () => Promise<T> | T) =>
+  withEnv('MEMORY_PROVENANCE_ENABLED', on ? 'true' : 'false', fn);
+
+/** A bundle with just the fact halves filled — the guard reads nothing else. */
+function bundle(facts: Record<string, string>, factProv?: Record<string, Provenance>): MediumBundle {
+  return { directives: [], notes: [], facts, ...(factProv ? { factProv } : {}) };
+}
+
+test('DOSSIER_FACT_GUARD_ENABLED is default ON, read at call time, parsed like its siblings', () => {
+  const prior = process.env.DOSSIER_FACT_GUARD_ENABLED;
+  try {
+    delete process.env.DOSSIER_FACT_GUARD_ENABLED;
+    assert.equal(dossierFactGuardEnabled(), true, 'unset → on');
+    for (const v of ['true', '1', 'on', 'yes', 'ON', ' yes ']) {
+      process.env.DOSSIER_FACT_GUARD_ENABLED = v;
+      assert.equal(dossierFactGuardEnabled(), true, v);
+    }
+    for (const v of ['false', '0', 'off', 'no', 'nonsense']) {
+      process.env.DOSSIER_FACT_GUARD_ENABLED = v;
+      assert.equal(dossierFactGuardEnabled(), false, v);
+    }
+  } finally {
+    if (prior === undefined) delete process.env.DOSSIER_FACT_GUARD_ENABLED;
+    else process.env.DOSSIER_FACT_GUARD_ENABLED = prior;
+  }
+});
+
+test('enforceKeyedFacts corrects the keyed lines the rewrite contradicted, and nothing else', () => {
+  const md = [
+    '## Who they are',
+    'They go by Mike. Runs a print shop in east austin.',
+    '## How to text them',
+    'Comms style is chatty, lots of exclamation marks.',
+    '## Their world',
+    'Fixing up a lake cabin he calls "the shack".',
+  ].join('\n');
+  const out = enforceKeyedFactsWithChanges(md, { address_as: 'Chief', comms_style: 'clipped, lowercase' });
+  assert.deepEqual(out.changed, ['address_as', 'comms_style']);
+  assert.equal(out.md, [
+    '## Who they are',
+    'They go by Chief. Runs a print shop in east austin.',
+    '## How to text them',
+    'Comms style is clipped, lowercase.',
+    '## Their world',
+    'Fixing up a lake cabin he calls "the shack".',   // untouched: not a keyed line
+  ].join('\n'));
+  // The narrow pinned signature returns the document alone.
+  assert.equal(enforceKeyedFacts(md, { address_as: 'Chief', comms_style: 'clipped, lowercase' }), out.md);
+});
+
+test('enforceKeyedFacts leaves a line that already AGREES exactly as it is', () => {
+  const md = '## Who they are\nThey go by Chief.';
+  const out = enforceKeyedFactsWithChanges(md, { address_as: 'chief' });   // compared case-insensitively
+  assert.deepEqual(out.changed, []);
+  assert.equal(out.md, md, 'byte-identical: agreement is not a change');
+});
+
+test('enforceKeyedFacts with nothing confirmed is the identity function', () => {
+  const md = '## Who they are\nThey go by Mike.\nName: Michael';
+  assert.equal(enforceKeyedFacts(md, {}), md);
+  assert.deepEqual(enforceKeyedFactsWithChanges(md, {}).changed, []);
+});
+
+test('enforceKeyedFacts corrects a Name: line off the confirmed name', () => {
+  const out = enforceKeyedFactsWithChanges('## Who they are\nName: Michael\nThey go by Chief.', { name: 'Riv', address_as: 'Chief' });
+  assert.deepEqual(out.changed, ['name']);
+  assert.equal(out.md, '## Who they are\nName: Riv\nThey go by Chief.');
+});
+
+test('an address line falls back to the confirmed NAME when no address_as is stored', () => {
+  // The addressing precedence the renderers already use (wrappers.ts): address_as > name.
+  const out = enforceKeyedFactsWithChanges('They go by Mike.', { name: 'Riv' });
+  assert.deepEqual(out.changed, ['address_as']);
+  assert.equal(out.md, 'They go by Riv.');
+});
+
+test('enforceKeyedFacts is line-level: it never touches a line it cannot read a value out of', () => {
+  const md = [
+    'Their name came up once and they brushed it off.',
+    'He mentioned his brother Mike in passing.',
+    'Style: he swears by index cards.',
+    'Name: Michael, but the shop staff all call him something else',  // says more than the name
+    'When the room is loud, call them by their first name and keep it short.',
+    'Comms style is clipped; he hates small talk.',                   // a second clause follows
+  ].join('\n');
+  assert.equal(enforceKeyedFacts(md, { name: 'Riv', address_as: 'Chief', comms_style: 'lowercase' }), md);
+});
+
+test('enforceKeyedFacts corrects a quoted nickname, and leaves a quoted one that agrees', () => {
+  assert.equal(enforceKeyedFacts('They go by "Mike".', { address_as: 'Chief' }), 'They go by Chief.');
+  const agrees = 'They go by "Chief".';
+  assert.equal(enforceKeyedFacts(agrees, { address_as: 'Chief' }), agrees, 'the quotes are wording, not a disagreement');
+  // The accepted miss, pinned so nobody "fixes" it by loosening the value shape: an UNQUOTED
+  // two-word nickname is left alone. Missing a correction costs one stale dossier line; a looser
+  // rule costs a rewritten sentence about their life (see KEYED_FACT_LINES).
+  assert.equal(enforceKeyedFacts('They go by Big Mike.', { address_as: 'Chief' }), 'They go by Big Mike.');
+});
+
+test('keyedFactsForDossier: with provenance ON only STATED facts are confirmed', async () => {
+  await withProvenanceFlag(true, () => {
+    const facts = keyedFactsForDossier(
+      { handle: 'h', name: 'Riv', facts: [], firstSeen: 0, lastSeen: 0 },
+      bundle({ address_as: 'Chief', comms_style: 'clipped' }, { address_as: 'stated', comms_style: 'inferred' }),
+    );
+    assert.deepEqual(facts.confirmed, { name: 'Riv', address_as: 'Chief' }, 'a guess is not a confirmation');
+    assert.equal(facts.seedActive, false, 'no seeded row held');
+  });
+});
+
+test('keyedFactsForDossier: with provenance OFF every keyed fact counts as stated', async () => {
+  await withProvenanceFlag(false, () => {
+    const facts = keyedFactsForDossier(
+      null,
+      bundle({ address_as: 'Chief', comms_style: 'clipped' }, { address_as: 'stated', comms_style: 'inferred' }),
+    );
+    // Nothing recorded who said what, so a durable keyed fact IS the confirmed value.
+    assert.deepEqual(facts.confirmed, { address_as: 'Chief', comms_style: 'clipped' });
+  });
+});
+
+test('keyedFactsForDossier reports a live seed row, and a stated override retiring it', () => {
+  assert.equal(keyedFactsForDossier(null, bundle({ [SEED_FACT_KEY]: 'a lake cabin' }, { [SEED_FACT_KEY]: 'seeded' })).seedActive, true);
+  assert.equal(
+    keyedFactsForDossier(null, bundle({ [SEED_FACT_KEY]: 'a lake cabin' }, { [SEED_FACT_KEY]: 'stated' })).seedActive,
+    false,
+    'their own words retire the caveat',
+  );
+  assert.equal(keyedFactsForDossier(null, bundle({ brokerage: 'Compass' })).seedActive, false, 'never seeded at all');
+});
+
+test('reinjectSeedProvenance puts the line back into "## Who they are", and never twice', () => {
+  const stripped = '## Who they are\nThey go by Chief.\n\n## Their world\nThe shack.';
+  const first = reinjectSeedProvenance(stripped);
+  assert.equal(first.outcome, 'reinjected');
+  assert.equal(first.md, `## Who they are\nThey go by Chief.\n${PROVENANCE_LINE}\n\n## Their world\nThe shack.`);
+  const again = reinjectSeedProvenance(first.md);
+  assert.equal(again.outcome, 'kept');
+  assert.equal(again.md, first.md, 'idempotent');
+  const noSection = reinjectSeedProvenance('## Their world\nThe shack.');
+  assert.equal(noSection.outcome, 'no_section');
+  assert.equal(noSection.md, '## Their world\nThe shack.');
+});
+
+test('renderConfirmedFacts tells the merge model what it may not contradict, and vanishes when nothing is held', () => {
+  assert.equal(renderConfirmedFacts({}), '', 'nothing held → the prompt this call always sent');
+  const block = renderConfirmedFacts({ name: 'Riv', address_as: 'Chief', comms_style: 'clipped' });
+  assert.equal(block, [
+    '',
+    '',
+    "CONFIRMED FACTS (from durable memory — the user's own words; never contradict these, and prefer them over anything the transcript seems to say):",
+    '- name: Riv',
+    '- address as: Chief',
+    '- comms style: clipped',
+  ].join('\n'));
+  // The keys render in KEYED_FACT_KEYS order, not in whatever order they were assigned.
+  assert.equal(renderConfirmedFacts({ comms_style: 'clipped', name: 'Riv' }).indexOf('name'), block.indexOf('name'));
+});
+
+test('persistDossierMerge corrects the doc it writes, and the receipt names what it corrected', async () => {
+  const h = freshHandle();
+  await withFactGuard(true, async () => {
+    clearTraces();
+    const res = await persistDossierMerge(
+      h,
+      '## Who they are\nThey go by Mike.',
+      { epoch: getForgetEpoch(h), dossierMd: '' },
+      { facts: { confirmed: { address_as: 'Chief' }, seedActive: false } },
+    );
+    assert.equal(res.dossierSaved, true);
+    assert.equal((await getMemory(h))?.dossierMd, '## Who they are\nThey go by Chief.', 'the doc that got STORED is the corrected one');
+    assert.equal((await getLongDoc(h))?.docMd, '## Who they are\nThey go by Chief.', 'and so is the long-tier mirror');
+
+    const d = (getTraces().find(e => e.label === 'memory:dossier_facts_enforced')?.detail ?? {}) as Record<string, unknown>;
+    assert.deepEqual(d.changed, ['address_as']);
+    assert.equal(d.enabled, true);
+    assert.equal(d.provenanceLine, 'not_seeded');
+  });
+});
+
+test('the clean case still leaves a receipt, with nothing changed', async () => {
+  const h = freshHandle();
+  await withFactGuard(true, async () => {
+    clearTraces();
+    await persistDossierMerge(
+      h,
+      '## Who they are\nThey go by Chief.',
+      { epoch: getForgetEpoch(h), dossierMd: '' },
+      { facts: { confirmed: { address_as: 'Chief' }, seedActive: false } },
+    );
+    const d = (getTraces().find(e => e.label === 'memory:dossier_facts_enforced')?.detail ?? {}) as Record<string, unknown>;
+    assert.deepEqual(d.changed, [], 'the no-op is on the record too');
+    assert.equal(d.confirmed, 1);
+  });
+});
+
+test('a persist with no confirmed facts at all is still on the record', async () => {
+  const h = freshHandle();
+  await withFactGuard(true, async () => {
+    clearTraces();
+    await persistDossierMerge(h, '## Who they are\nThey go by Mike.', { epoch: getForgetEpoch(h), dossierMd: '' });
+    const d = (getTraces().find(e => e.label === 'memory:dossier_facts_enforced')?.detail ?? {}) as Record<string, unknown>;
+    assert.deepEqual(d.changed, []);
+    assert.equal(d.confirmed, 0, 'nothing was held to check against');
+  });
+});
+
+test('flag OFF: the doc is written exactly as the model wrote it, and the receipt says why', async () => {
+  const h = freshHandle();
+  await withFactGuard(false, async () => {
+    clearTraces();
+    await persistDossierMerge(
+      h,
+      '## Who they are\nThey go by Mike.',
+      { epoch: getForgetEpoch(h), dossierMd: '' },
+      { facts: { confirmed: { address_as: 'Chief' }, seedActive: true } },
+    );
+    assert.equal((await getMemory(h))?.dossierMd, '## Who they are\nThey go by Mike.', 'untouched — no correction, no provenance line');
+    const d = (getTraces().find(e => e.label === 'memory:dossier_facts_enforced')?.detail ?? {}) as Record<string, unknown>;
+    assert.equal(d.enabled, false);
+    assert.deepEqual(d.changed, []);
+    assert.equal(d.provenanceLine, 'guard_off', 'the receipt says the guard was off, not that nothing was seeded');
+  });
+});
+
+test('the provenance line survives a rewrite that dropped it, while the seed row is still seeded', async () => {
+  const h = freshHandle();
+  await withFactGuard(true, async () => {
+    clearTraces();
+    await persistDossierMerge(
+      h,
+      '## Who they are\nThey go by Chief.',
+      { epoch: getForgetEpoch(h), dossierMd: '' },
+      { facts: { confirmed: {}, seedActive: true } },
+    );
+    assert.ok((await getMemory(h))?.dossierMd?.includes(PROVENANCE_LINE), 'second-hand stays labeled second-hand');
+    const d = (getTraces().find(e => e.label === 'memory:dossier_facts_enforced')?.detail ?? {}) as Record<string, unknown>;
+    assert.equal(d.provenanceLine, 'reinjected');
+  });
+});
+
+test('persistDossierMerge labels the long-doc revision with the caller\'s own writtenBy', async () => {
+  const h = freshHandle();
+  const seen: string[] = [];
+  await persistDossierMerge(
+    h, 'a seeded first picture', { epoch: getForgetEpoch(h), dossierMd: '' },
+    {
+      writtenBy: 'engine_seed',
+      saveLong: async (handle, doc, version, writtenBy) => { seen.push(writtenBy); return saveLongDoc(handle, doc, version, writtenBy); },
+    },
+  );
+  assert.deepEqual(seen, ['engine_seed'], 'the seed is not a dossier_llm rewrite');
+  assert.equal((await listLongRevisions(h))[0]?.writtenBy, 'engine_seed');
 });

@@ -7,7 +7,10 @@ import { getMemory, saveDossier, getForgetEpoch } from '../db/repositories/memor
 import { getUserProfile } from '../db/repositories/profiles.js';
 import { listShortTerm, SHORT_TTL_MS, type ShortTermEntry } from '../db/repositories/memoryShort.js';
 import { getLongDoc, saveLongDoc } from '../db/repositories/memoryLong.js';
-import { loadMediumBundle } from './mediumTerm.js';
+import { loadMediumBundle, type MediumBundle } from './mediumTerm.js';
+import {
+  LEGACY_FACT_PROV, PROVENANCE_LINE, SEED_FACT_KEY, provenanceEnabled,
+} from './provenance.js';
 import { PENDING_EMAIL_TTL_MS } from './shortTerm.js';
 import {
   renderUserMemoryWithHot, sanitizeLongDoc, splitSections, profileIsThin,
@@ -22,7 +25,7 @@ import { scopeHistoryToUser } from './transcript.js';
 import { isGroupHandle } from './identity.js';
 import { record } from '../diagnostics/trace.js';
 import { reportError } from '../diagnostics/errorLog.js';
-import type { StoredMessage } from '../db/types.js';
+import type { StoredMessage, UserProfile } from '../db/types.js';
 
 // stripScopeSections now lives in userContext.ts (so the shared renderer can reuse it without a
 // circular import). Re-exported here to keep the historical import path stable. Same for the
@@ -307,6 +310,233 @@ export function dossierUpdateUsable(res: { truncated: boolean }): boolean {
   return !res.truncated;
 }
 
+// ── THE KEYED-FACT GUARD ─────────────────────────────────────────────────────────────────────────
+// The rewrite above is a full-document merge, produced by a cheap model that is shown the existing
+// dossier and a transcript — and NOTHING ELSE. It is asked (DOSSIER_SYSTEM_PROMPT) to capture the
+// name, how they like to be addressed and how they text; the durable answers to all three live in
+// the medium tier, which that call never saw. So a stored `address_as` of "Chief" and a transcript
+// where somebody says "Mike" resolve, plausibly and silently, to "They go by Mike." — and the
+// dossier then teaches the front line to get their name wrong.
+//
+// Two halves, both pure, both run in persistDossierMerge just before the write:
+//   • `enforceKeyedFacts` corrects the value inside a line that contradicts a confirmed fact.
+//   • `reinjectSeedProvenance` puts back the "this came from the engine" line while the seeded
+//     picture is still the only picture, because a rewrite that keeps the CONTENT of a seed and
+//     drops its caveat turns second-hand material into something she will cite as testimony.
+//
+// Flag DOSSIER_FACT_GUARD_ENABLED, default ON. Off, the document is written exactly as the model
+// wrote it, byte for byte.
+
+/** The keyed-fact gate (env: DOSSIER_FACT_GUARD_ENABLED). Default ON, read at call time, the same
+ *  parse shape as `threadingEnabled()` (db/repositories/threadInventory.ts). */
+export function dossierFactGuardEnabled(): boolean {
+  const v = (process.env.DOSSIER_FACT_GUARD_ENABLED || '').trim().toLowerCase();
+  if (v === '') return true;
+  return ['true', '1', 'on', 'yes'].includes(v);
+}
+
+/** The three lines the guard defends, and no others. Deliberately the three the system prompt
+ *  above asks for by name — each is a single short value with one durable answer, which is what
+ *  makes a line-level correction safe. Anything richer (their world, their projects, their jokes)
+ *  is prose the model is SUPPOSED to be rewriting, and a guard over it would be a censor. */
+export const KEYED_FACT_KEYS = ['name', 'address_as', 'comms_style'] as const;
+export type KeyedFactKey = (typeof KEYED_FACT_KEYS)[number];
+
+/** What the rewrite may not contradict. An absent key means nothing durable is held for that line,
+ *  so the model's own wording stands. */
+export type ConfirmedFacts = Partial<Record<KeyedFactKey, string>>;
+
+/** Everything the guard needs to know about this user's durable facts. Built by
+ *  `keyedFactsForDossier` from stores the caller has already read. */
+export interface DossierKeyedFacts {
+  confirmed: ConfirmedFacts;
+  /** Is the engine's seeded picture still the only picture — a seeded fact held, with no stated
+   *  override? Then the dossier keeps saying where it came from. */
+  seedActive: boolean;
+}
+
+/**
+ * Profile + medium bundle → what the rewrite may not contradict. PURE: the caller has already read
+ * both stores (buildContextBlockWithHot and updateDossier each load them once).
+ *
+ * WHAT COUNTS AS CONFIRMED. With `MEMORY_PROVENANCE_ENABLED` on, only a `stated` fact does — a
+ * value she inferred is exactly the kind of guess the rewrite should be free to correct, and a
+ * seeded one is second-hand. With provenance OFF nothing recorded who said what, so every keyed
+ * fact in the tier counts as stated: those rows are written by `set_preference` off something the
+ * user said, which is the same truthful default `LEGACY_FACT_PROV` takes.
+ *
+ * `name` comes off the PROFILE row (`setUserName`), which is where the durable name lives — there
+ * is no provenance column on it and no DDL to add one, so a known name is taken at face value.
+ */
+export function keyedFactsForDossier(profile: UserProfile | null, medium: MediumBundle): DossierKeyedFacts {
+  const provOn = provenanceEnabled();
+  const stated = (key: string): string | undefined => {
+    const value = medium.facts[key];
+    if (typeof value !== 'string' || !value.trim()) return undefined;
+    if (provOn && (medium.factProv?.[key] ?? LEGACY_FACT_PROV) !== 'stated') return undefined;
+    return value.trim();
+  };
+  const confirmed: ConfirmedFacts = {};
+  const name = profile?.name?.trim();
+  if (name) confirmed.name = name;
+  const addressAs = stated('address_as');
+  if (addressAs) confirmed.address_as = addressAs;
+  const commsStyle = stated('comms_style');
+  if (commsStyle) confirmed.comms_style = commsStyle;
+  return {
+    confirmed,
+    // The seed writes exactly one keyed row. It reads `seeded` until their own words promote it in
+    // place (memory/provenance.ts `promote`), which is the moment the caveat has been earned away.
+    seedActive: medium.factProv?.[SEED_FACT_KEY] === 'seeded',
+  };
+}
+
+/**
+ * The line patterns, and which confirmed fact each answers to. Each is three capture groups: the
+ * PREFIX that names the subject, the VALUE it states, and whatever closes it — so a correction can
+ * swap the value and leave the sentence.
+ *
+ * DELIBERATELY NARROW, in three ways, because a false positive rewrites a sentence about the user's
+ * life into a fact she was told:
+ *   • the prefix has to name its subject ("goes by", "Name:", "comms style is") on a word boundary;
+ *   • the value has to run to a clause end (`.,;:)` or the end of the line), so a match cannot stop
+ *     halfway through a phrase and leave the rest behind;
+ *   • the ADDRESS value additionally has to LOOK like a name: ONE word-token, or a quoted string.
+ *     Two loose drafts of this rule are why it is that tight — the first stopped at the nearest
+ *     space and turned "call them by their first name" into "call them Chief their first name"; the
+ *     second allowed three tokens and rewrote "the shop staff all call him something else". The
+ *     price is that an unquoted two-word nickname ("goes by Big Mike") is not corrected, which is
+ *     the right side to miss on: this function edits durable memory in place.
+ * A line that merely mentions a name ("his brother Mike came up") has no prefix and is left alone.
+ *
+ * `key` is what the change is REPORTED as; `value` is which confirmed fact the line is checked
+ * against. The addressing line answers to `address_as` and falls back to `name`, which is the
+ * precedence the renderers already use (wrappers.ts renderAddressingHeader: address_as > name).
+ */
+const KEYED_FACT_LINES: ReadonlyArray<{
+  key: KeyedFactKey;
+  re: RegExp;
+  value: (c: ConfirmedFacts) => string | undefined;
+}> = [
+  {
+    // A whole line that IS the name statement. Commas are excluded from the value, so a line that
+    // says more than the name ("Name: Michael, but everyone calls him Mike") matches nothing.
+    key: 'name',
+    re: /^(\s*(?:[-*]\s*)?(?:\*\*)?name(?:\*\*)?\s*[:=]\s*"?)([^".;,\n]{1,40}?)("?\s*\.?\s*)$/i,
+    value: c => c.name,
+  },
+  {
+    key: 'address_as',
+    re: /(\b(?:go(?:es)? by|likes? to be called|prefers? to be called|addressed as|call (?:them|him|her))\s+)("[^"\n]{1,40}"|[\p{L}\p{N}][\p{L}\p{N}'’-]{0,39})(\s*(?=[.,;:)]|$))/iu,
+    value: c => c.address_as ?? c.name,
+  },
+  {
+    // The style value IS a phrase ("clipped, lowercase, no exclamation marks"), so commas stay in
+    // it; the end-of-line anchor is what keeps the match from swallowing a following clause.
+    key: 'comms_style',
+    re: /(\b(?:comms?|communication|texting|writing)\s+style\s*(?:is|:)\s*"?)([^".;\n]{1,60}?)("?\s*\.?\s*)$/i,
+    value: c => c.comms_style,
+  },
+];
+
+/** Two values that mean the same stored fact. Casing, stray space and the quotes a dossier line
+ *  wraps a nickname in — a DIFFERENT wording of the same nickname is a different value, and
+ *  correcting it is the point. */
+function sameValue(a: string, b: string): boolean {
+  const fold = (s: string) => s.trim().replace(/^["'](.*)["']$/, '$1').trim().toLowerCase().replace(/\s+/g, ' ');
+  return fold(a) === fold(b);
+}
+
+/**
+ * Correct the keyed lines, and say which ones needed it. LINE-LEVEL AND VALUE-LEVEL: each line is
+ * tested against the patterns above and, on a match whose captured value disagrees with the
+ * confirmed one, ONLY that captured value is replaced. The rest of the line — its voice, its
+ * second clause, its punctuation — is the model's and stays the model's. At most one correction per
+ * line, so a line that somehow reads as two keyed facts cannot be rewritten twice.
+ *
+ * Pure; `md` in, `md` out. A line that agrees is byte-identical, so a clean document comes back
+ * exactly as it went in.
+ */
+export function enforceKeyedFactsWithChanges(md: string, confirmed: ConfirmedFacts): { md: string; changed: KeyedFactKey[] } {
+  const changed: KeyedFactKey[] = [];
+  const lines = md.split('\n').map(line => {
+    for (const rule of KEYED_FACT_LINES) {
+      const want = rule.value(confirmed);
+      if (!want) continue;
+      const m = rule.re.exec(line);
+      if (!m) continue;
+      if (sameValue(m[2], want)) return line;         // it already agrees: nothing to do, no report
+      if (!changed.includes(rule.key)) changed.push(rule.key);
+      return line.slice(0, m.index) + m[1] + want + m[3] + line.slice(m.index + m[0].length);
+    }
+    return line;
+  });
+  return { md: lines.join('\n'), changed };
+}
+
+/** The narrow form: the corrected document alone. `enforceKeyedFactsWithChanges` beside it reports
+ *  which keys moved, for the receipt (the `buildSystemPrompt` / `buildSystemPromptSections`
+ *  pattern — one implementation, two shapes). */
+export function enforceKeyedFacts(md: string, confirmed: ConfirmedFacts): string {
+  return enforceKeyedFactsWithChanges(md, confirmed).md;
+}
+
+/** What happened to the seed's provenance line. Disjoint buckets, for the receipt: the guard was
+ *  off, nothing said this user was seeded, the rewrite kept the line, it was put back, or the
+ *  section it belongs in is gone. */
+export type ProvenanceLineOutcome = 'guard_off' | 'not_seeded' | 'kept' | 'reinjected' | 'no_section';
+
+/**
+ * Put `PROVENANCE_LINE` back at the end of "## Who they are". Pure and idempotent: a document that
+ * still carries the line is returned untouched, and one with no such heading is left alone rather
+ * than growing a section the merge deliberately dropped.
+ *
+ * The END of the section, not the top, because that is where `buildSeedDossier` puts it — so a
+ * rewrite that kept the line and one that lost it converge on the same document.
+ */
+export function reinjectSeedProvenance(md: string): { md: string; outcome: ProvenanceLineOutcome } {
+  if (md.includes(PROVENANCE_LINE)) return { md, outcome: 'kept' };
+  const lines = md.split('\n');
+  const start = lines.findIndex(l => /^#{1,6}\s*Who they are\s*$/i.test(l.trim()));
+  if (start < 0) return { md, outcome: 'no_section' };
+  // The section runs to the next heading, or to the end. Trailing blanks belong to the gap between
+  // sections, not to this one, so the line lands under the last thing the section actually says.
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^#{1,6}\s/.test(lines[i])) { end = i; break; }
+  }
+  while (end > start + 1 && lines[end - 1].trim() === '') end--;
+  lines.splice(end, 0, PROVENANCE_LINE);
+  return { md: lines.join('\n'), outcome: 'reinjected' };
+}
+
+/** How the confirmed facts are told to the merge model: a block of the user content, between the
+ *  existing dossier and the transcript, because the transcript is what it would otherwise believe.
+ *  Empty string when nothing is held, so a user with no durable keyed facts — and every user at all
+ *  while the flag is off — gets the exact prompt this call always sent. Exported for the pin: this
+ *  is prompt prose, and the whole feature is one sentence of it. */
+export function renderConfirmedFacts(confirmed: ConfirmedFacts): string {
+  const lines = KEYED_FACT_KEYS
+    .filter(k => confirmed[k])
+    .map(k => `- ${k.replace(/_/g, ' ')}: ${confirmed[k]}`);
+  if (!lines.length) return '';
+  return `\n\nCONFIRMED FACTS (from durable memory — the user's own words; never contradict these, and prefer them over anything the transcript seems to say):\n${lines.join('\n')}`;
+}
+
+/** Both halves of the guard over one document, plus the flag — the shape `persistDossierMerge`
+ *  writes and reports in one step. Off, or with nothing held to check against, this returns the
+ *  document unchanged and says so; the receipt fires either way. */
+function guardDossierDoc(md: string, facts: DossierKeyedFacts | undefined): {
+  md: string; changed: KeyedFactKey[]; provenanceLine: ProvenanceLineOutcome;
+} {
+  if (!dossierFactGuardEnabled()) return { md, changed: [], provenanceLine: 'guard_off' };
+  if (!facts) return { md, changed: [], provenanceLine: 'not_seeded' };
+  const corrected = enforceKeyedFactsWithChanges(md, facts.confirmed);
+  if (!facts.seedActive) return { ...corrected, provenanceLine: 'not_seeded' };
+  const reinjected = reinjectSeedProvenance(corrected.md);
+  return { md: reinjected.md, changed: corrected.changed, provenanceLine: reinjected.outcome };
+}
+
 /**
  * Persist a completed merge: the legacy dossier first, then the versioned long-tier mirror.
  * Split out of updateDossier so the two race guards can be tested without an LLM call.
@@ -318,19 +548,46 @@ export function dossierUpdateUsable(res: { truncated: boolean }): boolean {
  *     differs from our baseline, THEY have something we merged from a stale copy — abort and
  *     let the next pass redo the merge from their doc. Only pure version drift (identical
  *     content at a newer version) is safe to retry, and that's the one case that retries.
- * `deps` is the DI seam for tests (no module mocks in this repo).
+ *
+ * `opts` carries the DI seam for tests (no module mocks in this repo) plus two things only the
+ * CALLER knows: `facts`, the durable values this rewrite may not contradict (see the keyed-fact
+ * guard above — the caller has already read those stores, so re-reading them here would be a
+ * second trip for the same answer), and `writtenBy`, the label the long-tier revision carries.
+ * `writtenBy` used to be hardcoded `'dossier_llm'`, which filed the install-time engine seed —
+ * which never went near the LLM — as an LLM rewrite in the dashboard's revision list.
  */
 export async function persistDossierMerge(
   handle: string,
   updated: string,
   baseline: { epoch: number; dossierMd: string },
-  deps: {
+  opts: {
+    facts?: DossierKeyedFacts;
+    writtenBy?: string;
     saveLong?: typeof saveLongDoc;
     getLong?: typeof getLongDoc;
   } = {},
 ): Promise<{ dossierSaved: boolean; longSaved: boolean }> {
-  const saveLong = deps.saveLong ?? saveLongDoc;
-  const getLong = deps.getLong ?? getLongDoc;
+  const saveLong = opts.saveLong ?? saveLongDoc;
+  const getLong = opts.getLong ?? getLongDoc;
+  const writtenBy = opts.writtenBy ?? 'dossier_llm';
+
+  // The guard runs on EVERY persist attempt, before either writer, so the corrected document is the
+  // one both stores get — and it reports even when it changed nothing, because "her memory says the
+  // wrong name and nothing tried to stop it" and "the guard ran and found nothing" are the two
+  // answers a reader of this receipt needs to tell apart.
+  const guard = guardDossierDoc(updated, opts.facts);
+  record({
+    type: 'event',
+    label: 'memory:dossier_facts_enforced',
+    handle,
+    detail: {
+      changed: guard.changed,
+      provenanceLine: guard.provenanceLine,
+      confirmed: Object.keys(opts.facts?.confirmed ?? {}).length,
+      enabled: dossierFactGuardEnabled(),
+    },
+  });
+  updated = guard.md;
 
   const dossierSaved = await saveDossier(handle, updated, { ifForgetEpoch: baseline.epoch });
   if (!dossierSaved) return { dossierSaved: false, longSaved: false };
@@ -341,7 +598,7 @@ export async function persistDossierMerge(
   // logged, never user-facing.
   try {
     const cur = await getLong(handle);
-    let version = await saveLong(handle, updated, cur?.version ?? 0, 'dossier_llm');
+    let version = await saveLong(handle, updated, cur?.version ?? 0, writtenBy);
     if (version == null) {
       if (getForgetEpoch(handle) !== baseline.epoch) {
         console.warn('[memory] long-doc save aborted — /forget landed mid-merge');
@@ -354,7 +611,7 @@ export async function persistDossierMerge(
         console.warn('[memory] long-doc save aborted — another writer landed different content mid-merge');
         return { dossierSaved, longSaved: false };
       }
-      version = await saveLong(handle, updated, cur2?.version ?? 0, 'dossier_llm');
+      version = await saveLong(handle, updated, cur2?.version ?? 0, writtenBy);
     }
     return { dossierSaved, longSaved: version != null };
   } catch (err) {
@@ -378,7 +635,20 @@ export async function updateDossier(handle: string, recent: StoredMessage[]): Pr
     // style) into this user's dossier. No user lines left → nothing to learn, skip the pass.
     const scoped = scopeHistoryToUser(recent, handle);
     if (!scoped.some(m => m.role === 'user')) return;
-    const memory = await getMemory(handle);
+    // The durable keyed facts come from stores this call never used to open — which is exactly why
+    // it could contradict them. Read here, used twice: told to the model as CONFIRMED FACTS, and
+    // handed to the persist as what the rewrite may not contradict, so the prompt's request and the
+    // guard's enforcement can never be two different lists.
+    const [memory, profile, medium] = await Promise.all([
+      getMemory(handle),
+      getUserProfile(handle),
+      loadMediumBundle(handle),
+    ]);
+    // Flag off → `undefined`, so the prompt below is byte-identical to what it always was and the
+    // persist has nothing to enforce. The two reads above still happen: this flag is a kill switch
+    // for BEHAVIOR, and branching a Promise.all on it would buy two local reads inside an already
+    // throttled background pass at the price of a shape nobody can read.
+    const facts = dossierFactGuardEnabled() ? keyedFactsForDossier(profile, medium) : undefined;
     // The fence for a /forget that lands while the LLM below is thinking (see getForgetEpoch):
     // read alongside the doc this merge is about to merge INTO, so the pair is one baseline.
     const epoch0 = getForgetEpoch(handle);
@@ -391,7 +661,7 @@ export async function updateDossier(handle: string, recent: StoredMessage[]): Pr
       system: DOSSIER_SYSTEM_PROMPT,
       messages: [{
         role: 'user',
-        content: `EXISTING DOSSIER:\n${memory?.dossierMd || '(empty)'}\n\nRECENT CONVERSATION:\n${transcript}\n\nReturn the updated dossier.`,
+        content: `EXISTING DOSSIER:\n${memory?.dossierMd || '(empty)'}${renderConfirmedFacts(facts?.confirmed ?? {})}\n\nRECENT CONVERSATION:\n${transcript}\n\nReturn the updated dossier.`,
       }],
       trace: { handle, label: 'dossier_update' },
     });
@@ -421,7 +691,7 @@ export async function updateDossier(handle: string, recent: StoredMessage[]): Pr
       return;
     }
     if (updated && updated !== (memory?.dossierMd ?? '').trim()) {
-      await persistDossierMerge(handle, updated, { epoch: epoch0, dossierMd: memory?.dossierMd ?? '' });
+      await persistDossierMerge(handle, updated, { epoch: epoch0, dossierMd: memory?.dossierMd ?? '' }, { facts });
     }
   } catch (err) {
     console.error('[memory] updateDossier failed', err);

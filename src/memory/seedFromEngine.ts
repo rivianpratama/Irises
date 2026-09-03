@@ -34,7 +34,7 @@ import {
 } from '../db/repositories/threadInventory.js';
 import { applyThreadHarvest, THREAD_NOTE_PREFIX_RE, type ThreadInventory } from '../persona/threads.js';
 import { persistDossierMerge } from './dossier.js';
-import { SEED_FACT_KEY, SEED_NOTE, SEED_SOURCE } from './provenance.js';
+import { PROVENANCE_LINE, SEED_FACT_KEY, SEED_NOTE, SEED_SOURCE } from './provenance.js';
 import type { EngineProfile } from '../agents/ops/firstMoveProfile.js';
 
 /** What was actually written. `facts` counts MEDIUM-TIER ENTRIES (the details fact + the
@@ -69,9 +69,10 @@ export const SEED_THEMES_MAX = 2;
  *  doc and a grown one cost the prompt the same. */
 export const DOSSIER_WORD_CAP = 400;
 
-/** How the seeded doc says where it came from. Italic and first-person-to-Irises, sitting inside
- *  "## Who they are" where she cannot miss it while reading who they are. */
-const PROVENANCE_LINE = '*This first picture came from the engine you front, handed over at install — it is second-hand, not something they told you. Hold it lightly and let them confirm it naturally.*';
+/** How the seeded doc says where it came from. Moved to memory/provenance.ts and re-exported here
+ *  under its historical name, for the same reason as the three constants above: the dossier guard
+ *  re-injects it after an LLM rewrite drops it, and dossier.ts cannot import THIS module. */
+export { PROVENANCE_LINE };
 
 /** A detail that trivially reads as a running joke or a named object, which is the ONLY thing that
  *  earns the "## Running jokes" heading. Deliberately dumb: a quoted name, or them plainly saying
@@ -189,8 +190,12 @@ async function seedDossier(handle: string, profile: EngineProfile): Promise<bool
   // The epoch is read AFTER the emptiness checks and passed into the save, exactly like the LLM
   // merge next door: a /forget landing between here and the write refuses it. The baseline doc is
   // the empty string because that is what we just proved both stores hold.
+  // `writtenBy` names the engine seed rather than the LLM merge that never ran: the long tier keeps
+  // a revision list the dashboard shows, and filing this as `dossier_llm` claimed a model wrote it.
+  // No keyed facts are passed because there are none to defend — the name lands on the profile in
+  // the NEXT phase, and this document is going into a proven vacuum.
   const epoch = getForgetEpoch(handle);
-  const { dossierSaved } = await persistDossierMerge(handle, doc, { epoch, dossierMd: '' });
+  const { dossierSaved } = await persistDossierMerge(handle, doc, { epoch, dossierMd: '' }, { writtenBy: SEED_SOURCE });
   return dossierSaved;
 }
 
