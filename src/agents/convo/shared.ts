@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { loadContext } from '../loadContext.js';
 import { getModelMap, type ModelMap } from '../../llm/modelMap.js';
 import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
 import { browserLegBudgetFor } from '../ops/client.js';
@@ -50,6 +49,10 @@ import { getAffectState, saveAffectState } from '../../db/repositories/affectSta
 import type { RelationshipClimate } from '../../persona/climate.js';
 import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
 import type { PromptSection, SectionId } from './promptSections.js';
+import {
+  convoPersona, personaModulesEnabled, renderCraftModules,
+  type CraftModuleTrace, type CraftTurnFacts, type ModuleGateInput,
+} from './personaModules.js';
 import { renderTurnFocus, turnFocusBlockEnabled, type TurnFocusInput } from './turnFocus.js';
 import { detectUnkeptPromise, renderPromiseCorrection, unkeptPromiseGuardEnabled } from './unkeptPromise.js';
 import { callLLM } from '../../llm/callLLM.js';
@@ -537,9 +540,13 @@ export function renderArrivalGap(
 /** Byte length of Convo's static persona — the cache-reusable HEAD of buildSystemPrompt's output
  *  (which emits `${persona}\n\n${per-turn}…`). Passed as LlmRequest.systemCachePrefixLen so the
  *  Anthropic lane caches the persona across turns instead of cache-writing the whole per-turn-varying
- *  system every call. loadContext is in-process cached, so this is a cheap length read, not a re-read. */
+ *  system every call. loadContext is in-process cached, so this is a cheap length read, not a re-read.
+ *
+ *  It is the shrunken Context.md since P4a — the craft pages moved into the per-turn block, where
+ *  they are per-turn and therefore NOT part of the cached prefix. With CONVO_PERSONA_MODULES off it
+ *  measures the whole corpus again (convoPersona), because that is then what the head really is. */
 export function convoPersonaChars(): number {
-  return loadContext('convo').length;
+  return convoPersona().length;
 }
 
 /** The per-turn "What you run on" note that lets Irises answer model questions honestly (see the
@@ -574,6 +581,11 @@ export interface PromptSectionsResult {
   /** Size of the trailing JSON envelope anchor, the last thing in the prompt. The behaviour anchor
    *  ahead of it is measured as the `behavior_anchor` section. */
   anchorChars: number;
+  /** Which craft pages this turn loaded and which it didn't, each with the structural fact that
+   *  decided it (convo/personaModules.ts) — the `craft_modules` section, itemised, for the per-turn
+   *  receipt. Empty with CONVO_PERSONA_MODULES off: no registry ran, because the pages are in the
+   *  persona head instead. */
+  craft: CraftModuleTrace[];
 }
 
 /**
@@ -632,8 +644,17 @@ export function buildSystemPromptSections(
   // has, and rendered LAST inside the block. Absent → nothing pushed, prompt byte-identical to the
   // install that never had the block — which is also what every non-Convo caller gets for free.
   turnFocus?: TurnFocusInput,
+  // The three facts the craft-module gates need that this function cannot see for itself: whether a
+  // file arrived, whether a flagged email is live, and whether their long-term picture is still thin
+  // (convo/personaModules.ts). All three were decided by reads the caller already did. Absent → all
+  // three read false, which is the honest answer for a caller that never did those reads.
+  craftFacts?: CraftTurnFacts,
 ): PromptSectionsResult {
-  const persona = loadContext('convo');
+  // The persona head: the always-on core with the craft pages loading per-turn inside the block
+  // below, or — with CONVO_PERSONA_MODULES off — the whole corpus, pages included, exactly as it
+  // stood before P4a (convo/personaModules.ts).
+  const modulesOn = personaModulesEnabled();
+  const persona = convoPersona();
 
   // Everything per-turn goes inside ONE <prompt>…</prompt> block after the static persona, so the
   // persona stays a clean (cache-friendly) prefix and there's a single trust boundary the persona
@@ -650,6 +671,31 @@ export function buildSystemPromptSections(
   // tools, and it's stable within a chat (varies only with group state), so it sits ahead of
   // the genuinely per-turn sections.
   if (tools?.length) push('tool_docs', renderToolDocs(tools));
+
+  // The craft pages this turn structurally needs, right behind the tool docs and for the same
+  // reason: they are guidance rather than data, so they belong ahead of everything genuinely
+  // per-turn (charter §11.3). Two of the gates read work done further down this function — the
+  // reply-order read and the tapped-reply resolution — so both are computed HERE and rendered at
+  // their own push sites below, unchanged. Nothing is pushed when no page loaded.
+  //
+  // A tapped reply of any kind carries an explicit target, which suppresses both order-read
+  // sections; the reply-order line below is therefore '' exactly when the send-order craft has
+  // nothing to do, which is what makes it the honest gate for that page.
+  const tapped = hasTappedReply(chatContext);
+  const replyOrderLine = history?.length && incomingText
+    ? renderArrivalGap(chatContext?.arrivals, tapped) || renderReplyOrder(history, incomingText, tapped)
+    : '';
+  const craftGate: ModuleGateInput = {
+    replyOrderSection: !!replyOrderLine,
+    attachmentNote: !!craftFacts?.attachmentNote,
+    burstSize: chatContext?.burstManifest?.length ?? 0,
+    toolNames: tools?.map(t => t.name) ?? [],
+    tappedReply: tapped,
+    emailFlag: !!craftFacts?.emailFlag,
+    thinProfile: !!craftFacts?.thinProfile,
+  };
+  const craft = modulesOn ? renderCraftModules(craftGate) : { text: '', modules: [] };
+  if (craft.text) push('craft_modules', craft.text);
 
   // Capability awareness: one brand-free line on what the deep look can do this deployment, so Convo
   // never promises something the engine can't do (e.g. an inbox dig when email isn't connected). Sits
@@ -788,18 +834,12 @@ export function buildSystemPromptSections(
   // message was typed BEFORE Irises's latest sends (it queued behind the chat lock), the order runs
   // BACKWARD, so renderArrivalGap REPLACES the reply-order line (whose "arrived after your run" claim is
   // then inverted) and licenses standing down. Tapped replies skip both (their explicit target wins).
-  if (history?.length && incomingText) {
-    // A tapped reply of ANY kind — including unresolved — carries an explicit target, so it
-    // suppresses both order-read sections (their "landing on your latest run" claim is exactly the
-    // misattribution we're avoiding). The per-kind section above already told the model what to do.
-    const tapped = hasTappedReply(chatContext);
-    const gapLine = renderArrivalGap(chatContext?.arrivals, tapped);
-    if (gapLine) push('reply_order', gapLine);
-    else {
-      const orderLine = renderReplyOrder(history, incomingText, tapped);
-      if (orderLine) push('reply_order', orderLine);
-    }
-  }
+  // A tapped reply of ANY kind — including unresolved — carries an explicit target, so it
+  // suppresses both order-read sections (their "landing on your latest run" claim is exactly the
+  // misattribution we're avoiding). The per-kind section above already told the model what to do.
+  // Both renderers ran up at the craft gate, which needs to know whether this section exists before
+  // it can decide on the send-order page; this is the same string, pushed in the same place.
+  if (replyOrderLine) push('reply_order', replyOrderLine);
 
   if (extraSection) push('extra', extraSection);
 
@@ -846,6 +886,7 @@ export function buildSystemPromptSections(
     // trace's persona figure can never disagree with the one the lane was told.
     personaChars: convoPersonaChars(),
     anchorChars: anchor.length,
+    craft: craft.modules,
   };
 }
 

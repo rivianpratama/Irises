@@ -16,7 +16,17 @@
 //
 // It changes nothing and shrinks nothing itself. A count that MOVES is the failure, in either
 // direction: up means a copy came back, down means a rule was deleted without anyone deciding to.
+//
+// It counts over the WHOLE corpus, which since P4a takes one line of setup. Seven sections of the
+// persona are now craft pages that load only on the turns that need them (convo/personaModules.ts),
+// so a prompt assembled on any one turn carries some of them and not others — and a clause counted
+// against that prompt would read 1 on a turn where its page loaded and 0 on a turn where it didn't.
+// The flag's OFF path is exactly the concatenation of all of them, so the census builds its turn with
+// CONVO_PERSONA_MODULES off: every page present, once, which is both the honest answer to "how many
+// times is she told this" and the same string these counts were originally measured against.
 process.env.TZ = 'UTC';
+// Set before the prompt is assembled at module scope below — see the header.
+process.env.CONVO_PERSONA_MODULES = 'off';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

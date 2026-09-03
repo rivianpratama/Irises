@@ -22,6 +22,7 @@ import { PROMPT_TAG } from '../../llm/promptTag.js';
  */
 export const DYN_SECTION_IDS = [
   'tool_docs',            // renderToolDocs — under toolsViaJson, the model's only view of its tools
+  'craft_modules',        // renderCraftModules — the persona pages this turn structurally needs
   'capability',           // renderCapabilityLine — what the deep look can do this deployment
   'model_map',            // renderModelMapAwareness — unconditional
   'name_nudge',           // "Getting their name" — no name on file yet

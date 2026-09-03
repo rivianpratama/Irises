@@ -9,7 +9,11 @@ import { listShortTerm, SHORT_TTL_MS, type ShortTermEntry } from '../db/reposito
 import { getLongDoc, saveLongDoc } from '../db/repositories/memoryLong.js';
 import { loadMediumBundle } from './mediumTerm.js';
 import { PENDING_EMAIL_TTL_MS } from './shortTerm.js';
-import { renderUserMemoryWithHot, sanitizeLongDoc, splitSections } from './wrappers.js';
+import {
+  renderUserMemoryWithHot, sanitizeLongDoc, splitSections, profileIsThin,
+  type MemoryAudience, type UserMemoryData,
+} from './wrappers.js';
+import type { CraftTurnFacts } from '../agents/convo/personaModules.js';
 import { renderTenureBlock } from './tenure.js';
 import { sanitizeDirectives } from './preferences.js';
 import { buildTurnRelevance, memoryRelevanceEnabled, type TurnRelevance } from './relevance.js';
@@ -132,7 +136,13 @@ export async function buildContextBlock(handle: string, currentTurnText?: string
 export async function buildContextBlockWithHot(
   handle: string,
   currentTurnText?: string,
-): Promise<{ block: string; hotLook: ShortTermEntry | null; turn: TurnRelevance | null; gates: MemoryGateReports }> {
+): Promise<{
+  block: string;
+  hotLook: ShortTermEntry | null;
+  turn: TurnRelevance | null;
+  gates: MemoryGateReports;
+  craft: CraftTurnFacts;
+}> {
   const [memory, profile, shortEntries, medium, longDoc] = await Promise.all([
     getMemory(handle),
     getUserProfile(handle),
@@ -232,14 +242,26 @@ export async function buildContextBlockWithHot(
   // The wrapped memory tiers LAST: preamble → short → medium → flexible (identity/addressing +
   // long doc + directives) in the recency slot; the persona's hard rules stay anchored at the
   // top of the system prompt and outrank all of it.
-  const wrapped = renderUserMemoryWithHot('convo', {
-    profile, memory, medium, short: shortForWrapper, longDocMd,
-  }, nowMs, { audience: isGroupHandle(handle) ? 'group' : 'individual', currentTurnText, turn });
+  const data: UserMemoryData = { profile, memory, medium, short: shortForWrapper, longDocMd };
+  const audience: MemoryAudience = isGroupHandle(handle) ? 'group' : 'individual';
+  const wrapped = renderUserMemoryWithHot('convo', data, nowMs, { audience, currentTurnText, turn });
   parts.push(wrapped.text);
 
   const gates: MemoryGateReports = { ...wrapped.gates };
   if (clarification.report) gates.clarification = clarification.report;
-  return { block: parts.join('\n\n'), hotLook: wrapped.hotEntry, turn, gates };
+
+  // Two facts about THIS memory read that the prompt assembler cannot see, for the craft-module
+  // gates it feeds (agents/convo/personaModules.ts). Computed here because this is the only place
+  // that holds every tier at once — the alternative is re-reading two stores at the call site.
+  //   • a flagged email is live, so their next message may be about it;
+  //   • their long-term picture is still thin, so getting to know them is still the job. Individuals
+  //     only, for the same reason the discovery scaffold is 1:1-flavored (wrappers.ts): the craft it
+  //     gates teaches name elicitation, which has no business running against a group's identity.
+  const craft: CraftTurnFacts = {
+    emailFlag: shortForWrapper.some(e => e.kind === 'email_flag' && e.expiresAt > nowMs),
+    thinProfile: audience !== 'group' && profileIsThin(data),
+  };
+  return { block: parts.join('\n\n'), hotLook: wrapped.hotEntry, turn, gates, craft };
 }
 
 /** The dossier updater's harvest contract — exported so tests can pin the two-family

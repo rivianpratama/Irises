@@ -6,6 +6,13 @@
 // rewrite that drops one of them looks like a tidy-up in review and shows up as drift in production
 // weeks later. This file makes that deletion fail immediately, by id.
 //
+// "The persona" here is the whole CORPUS — Context.md plus every craft page under convo/craft/
+// (convoPersonaWithCraft, the flag's off-path concatenation) — and not the core file alone. P4a moved
+// seven sections out into pages that load per-turn, so a rule that ends up in one of them is still a
+// rule the model reads, and a scan of Context.md alone would report it missing. The negative checks
+// below get the same widening for free, and want it more: "no envelope field is described in the
+// prose" has to mean no page either.
+//
 // Its other half is the same job pointed the other way: the JSON anchor at the recency edge STATES
 // the bubble law, and the pipeline ENFORCES it (pipeline/bubbleJson.ts, pipeline/bubbles.ts). The
 // statement and the backstop must agree, or the model is told one law and held to another.
@@ -19,7 +26,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSystemPromptSections } from './shared.js';
 import { RULE_ANCHORS, CONFIDENCE_BANDS } from './promptPolicy.js';
-import { loadContext } from '../loadContext.js';
+import { convoPersonaWithCraft } from './personaModules.js';
 import { BUBBLE_LAW_MAX } from '../../pipeline/bubbleJson.js';
 import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '../../pipeline/bubbles.js';
 import { ENVELOPE_FIELDS, STATUS_CONTRACT_HEADER } from '../../persona/status.js';
@@ -32,7 +39,7 @@ import { buildProgressBrief } from '../fallfirm/voiceInstant.js';
 // ── the persona's load-bearing clauses ───────────────────────────────────────
 
 test('every rule anchor is still in the persona, verbatim', () => {
-  const persona = loadContext('convo');
+  const persona = convoPersonaWithCraft();
   for (const { id, personaAnchor } of RULE_ANCHORS) {
     assert.ok(
       persona.includes(personaAnchor),
@@ -67,7 +74,7 @@ const RUNG_ORDER: Record<ThreadRung, number> = { fact: 0, pattern: 1, shorthand:
 const RUNGS = (Object.keys(RUNG_ORDER) as ThreadRung[]).sort((a, b) => RUNG_ORDER[a] - RUNG_ORDER[b]);
 
 test('the persona teaches exactly the rungs the engine can deliver, in the same order', () => {
-  const persona = loadContext('convo');
+  const persona = convoPersonaWithCraft();
   const at = persona.indexOf('**The ladder — enter one rung lower than you could.**');
   assert.ok(at > 0, 'found the ladder paragraph in "Connect the dots"');
   const ladder = persona.slice(at, persona.indexOf('\n', at));
@@ -117,7 +124,7 @@ const STATUS_CONTRACT_POINTER = `under "${STATUS_CONTRACT_HEADER.replace(/^## /,
 const PERSONA_RULE_FIELD = '`epistemic_trigger` is a rule rather than a reading:';
 
 test('the persona describes no envelope field and copies no wheel — it points at the contract', () => {
-  const persona = loadContext('convo');
+  const persona = convoPersonaWithCraft();
 
   // The bands are the wheel's tell: they only ever appeared in the hand-copied list.
   assert.ok(!persona.includes('joyful [70-100]'), 'the copied feelings wheel is back in the persona');
@@ -199,7 +206,7 @@ test('the behaviour anchor states no bubble number at all — the JSON anchor ow
 const BAND_MAPPING_LEAD = "**The band picks the reply's shape";
 
 test('the persona says what each confidence band buys, and the JSON anchor still agrees', () => {
-  const persona = loadContext('convo');
+  const persona = convoPersonaWithCraft();
   const at = persona.indexOf(BAND_MAPPING_LEAD);
   assert.ok(
     at > 0,

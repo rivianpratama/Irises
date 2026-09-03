@@ -1,10 +1,16 @@
 // What the Convo prompt is ALLOWED to be — today's sizes, today's rule statements, today's
 // duplication, all written down in one place.
 //
-// Convo's system prompt is ~177k characters, of which ~138k is the persona. Every block in it was
-// added by someone with a good reason, and nothing had ever said no. This module is the "no": a set
-// of numbers and phrases measured against the live assembler, held by three tests
+// Convo's system prompt assembled to ~177k characters, of which ~138k was the persona. Every block
+// in it was added by someone with a good reason, and nothing had ever said no. This module is the
+// "no": a set of numbers and phrases measured against the live assembler, held by three tests
 // (promptBudget.test.ts, promptPolicy.test.ts, clauseInventory.test.ts).
+//
+// Since P4a the persona is two things, and the numbers below distinguish them: the always-on core
+// (`persona`, Context.md — 114k) and the craft pages that load per-turn (`craft_modules`,
+// convo/craft/*.md — up to 23k of them on the turn that needs the most). A phrase check reads BOTH,
+// because a rule in a page is still a rule the model reads; a size check reads them apart, because
+// the whole point of a page is the turns it stays out of.
 //
 // It ENFORCES NOTHING AT RUNTIME. No prompt path reads any of this — the assembler will happily
 // build a prompt twice this size, and a real turn whose dossier is longer than the fixture's is not
@@ -65,9 +71,16 @@ export type BudgetKey = SectionId | 'memory_stack';
  * `tapped_reply`) are measured on their fixture's data, so changing a fixture re-measures the number
  * rather than breaking the test's meaning. The prose-shaped ones (`persona`, both anchors,
  * `intro_weave`, `weather`, `thread`, `turn_focus`, the timing reads) are the ratchet proper.
+ *
+ * `craft_modules` is a third kind: a SUM over whichever craft pages the turn's gates fired
+ * (personaModules.ts), so its ceiling is the widest such sum across the fixtures rather than the size
+ * of any one thing. Editing a page moves it; so does a fixture whose facts fire a different set. The
+ * pages' own bytes are held elsewhere — personaModules.test.ts reconstructs the pre-P4a Context.md
+ * out of them and pins its sha256 — which is why this line is a budget and not a ratchet.
  */
 export const PROMPT_BUDGET: Record<BudgetKey, number> = {
-  persona: 138_020,            // 137,923 — P3 part 3 took the inner-weather section's momentum sentence (−179): applyAffectDrift enforces it now. Was 138,200 for 138,102 after P1 deleted the envelope's field list + the copied wheel (was 141,600 for 141,474)
+  persona: 114_000,            // 113,858 — P4a moved seven sections (24,065 chars) out to convo/craft/, where they load per-turn: the always-on core is what is left. Was 138,020 for 137,923 after P3 part 3 took the inner-weather section's momentum sentence (−179): applyAffectDrift enforces it now. Was 138,200 for 138,102 after P1 deleted the envelope's field list + the copied wheel (was 141,600 for 141,474)
+  craft_modules: 23_400,       // 23,100 — the media fixture, the widest craft a turn can carry: send-order + reminders + onboarding + attachments. The mature and thread-offer turns measure 20,435 (email-flag instead of attachments), the group burst 7,150, the cold turn 15,865. NOT a prose ratchet like the lines below it — it is a SUM over whichever pages the turn's gates fired, so the number moves when a fixture's facts change, and the pages' own bytes are pinned by the sha256 golden in personaModules.test.ts
   tool_docs: 16_450,           // 16,245 — the group fixture (13 tools; the 1:1 lane carries 11) (was 16,500 for 16,288, before remember_user's `handle` doc stopped asking "whose info this is" and named the messaging handle instead)
   capability: 240,             // 237 — all six capability classes minus inbox, the longest line (was 248)
   model_map: 800,              // 387 on a bare checkout — HOST-DEPENDENT, see above
@@ -121,8 +134,17 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
  * is what stands between this number and anything better, and P2 never touched it. Worth stating
  * plainly rather than letting a barely-moved floor read as a phase that did nothing: this phase
  * bought RELEVANCE, not size.
+ *
+ * P4a is the first phase to touch the persona since P1, and it measures **0.0072** (1,207 characters
+ * of transcript against a 167,527-character prompt, down from 171,157). Read the exchange rate
+ * honestly: twenty-four thousand characters left Context.md, and twenty thousand of them came
+ * straight back on THIS turn as craft pages the gates fired — because a mature turn with an open
+ * identity slot and a flagged email loads four of the seven. What P4a bought is not this number; it
+ * is that the number now MOVES with the turn instead of standing still. A turn that taps no
+ * craft — no history to order, no file, no burst, a filled-in profile — carries 24k less prompt for
+ * the same conversation, and nothing before this could tell those two turns apart.
  */
-export const MIN_TRANSCRIPT_SHARE = 0.0070;
+export const MIN_TRANSCRIPT_SHARE = 0.0071;
 
 /**
  * Phrases that must exist in the persona, verbatim — the rules whose deletion would be silent.
@@ -137,6 +159,11 @@ export const MIN_TRANSCRIPT_SHARE = 0.0070;
  * only come from that clause. Rewording the paragraph around it is fine and expected; losing the
  * anchor means the rule itself is gone, or has been paraphrased into something that no longer says
  * the same thing. If you meant to change it, change it here in the same commit.
+ *
+ * Scanned against the whole CORPUS — Context.md plus every craft page (personaModules.ts
+ * convoPersonaWithCraft) — rather than the core file alone: P4a moved seven sections out into pages,
+ * and a rule that lands in one of them is still a rule she reads. Every anchor below happens to live
+ * in the core today, and this is what would say so if one moved.
  */
 export const RULE_ANCHORS: Array<{ id: string; personaAnchor: string }> = [
   // Guess before you ask — the default for every open turn (Context.md ~581).
@@ -221,6 +248,10 @@ export interface ClauseCount {
  * Read `anchorCopies` and `where` before changing a `count`. `predict_named` in particular is 2/0
  * for a reason that is NOT duplication: both copies are in Context.md because the second one is a
  * cross-reference pointing at the section, and deleting a pointer is not a tightening.
+ *
+ * Counted over the whole corpus, not one turn's prompt: clauseInventory.test.ts assembles its fixture
+ * with CONVO_PERSONA_MODULES off, so every craft page is present exactly once (see that file's
+ * header). A page that loads on some turns and not others must not make a pinned count flicker.
  */
 export const CLAUSE_INVENTORY: readonly ClauseCount[] = [
   {

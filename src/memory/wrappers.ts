@@ -1098,12 +1098,35 @@ export const DISCOVERY_BLOCK_MAX_CHARS = 1_650;
  * fill-over-time note when the day-to-day picture is empty, and the never-say-it closing. Returns
  * '' once there is nothing left on the list — every slot closed and a day-to-day picture on file.
  */
-export function renderDiscoveryBlock(data: UserMemoryData): string {
+/** The two structural reads the scaffold turns on: which identity slots are still open, and whether
+ *  the day-to-day picture is empty. Shared with profileIsThin below so the scaffold and the craft
+ *  module that teaches how to close a slot cannot disagree about which slots are open. */
+function discoveryState(data: UserMemoryData): { unknown: string[]; mediumEmpty: boolean } {
   const prefs = data.memory?.prefs ?? {};
   const factView: Record<string, unknown> = { ...data.medium.facts, ...prefs };
-  const unknown = DISCOVERY_SLOTS.filter(s => !s.known(data, factView)).map(s => s.line);
+  return {
+    unknown: DISCOVERY_SLOTS.filter(s => !s.known(data, factView)).map(s => s.line),
+    mediumEmpty: !data.medium.notes.length && !Object.keys(data.medium.facts).length,
+  };
+}
 
-  const mediumEmpty = !data.medium.notes.length && !Object.keys(data.medium.facts).length;
+/**
+ * Is their long-term picture still thin? An identity slot still open, OR no day-to-day picture at
+ * all, OR fewer than TEXTURE_FACTS_ENOUGH personal facts banked.
+ *
+ * The scaffold above renders on the first two; this predicate adds the third, because it answers a
+ * different question: not "is there a slot to print" but "is getting to know them still the job".
+ * That is the gate on the onboarding craft module (agents/convo/personaModules.ts), which is where
+ * the coaching for exactly that job now lives — so the craft loads while a slot is open or the
+ * facts are still thin, and stops loading once neither is true.
+ */
+export function profileIsThin(data: UserMemoryData): boolean {
+  const { unknown, mediumEmpty } = discoveryState(data);
+  return unknown.length > 0 || mediumEmpty || (data.profile?.facts?.length ?? 0) < TEXTURE_FACTS_ENOUGH;
+}
+
+export function renderDiscoveryBlock(data: UserMemoryData): string {
+  const { unknown, mediumEmpty } = discoveryState(data);
   if (!unknown.length && !mediumEmpty) return '';
 
   const lines: string[] = ["## What you don't know about them YET (fill it in naturally, never as an intake)"];

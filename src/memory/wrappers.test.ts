@@ -422,8 +422,16 @@ test('the onboarding craft module is prompt-ready: nothing in it is written to a
   for (const devNote of ['memory/wrappers.ts', 'P4', 'craft module', 'Nothing below is edited']) {
     assert.ok(!visible.includes(devNote), `provenance leaks into the prompt: ${devNote}`);
   }
-  assert.ok(visible.trimStart().startsWith('# Getting to know a new person'), 'the heading still opens the file');
-  assert.ok(visible.includes('Getting to know them IS the job right now'), 'and the craft itself is untouched');
+  // P4a moved Context.md's "## Onboarding" section in above this text, so the file now opens on that
+  // section and the coaching follows under its own heading — the two halves of one page, in the order
+  // she reads them (personaModules.test.ts pins that the relocated half is byte-identical).
+  assert.ok(visible.trimStart().startsWith('## Onboarding (first encounters'), 'the relocated section opens the file');
+  const craftAt = visible.indexOf('# Getting to know a new person');
+  assert.ok(craftAt > 0, 'the coaching half still has its heading');
+  assert.ok(
+    visible.indexOf('Getting to know them IS the job right now') > craftAt,
+    'and the craft itself is untouched, under that heading',
+  );
 });
 
 test('known slots disappear one by one; a mature profile renders no scaffold at all', () => {

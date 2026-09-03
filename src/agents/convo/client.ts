@@ -41,6 +41,7 @@ import { voiceOutcome } from '../fallfirm/client.js';
 import { helpText } from '../fallfirm/floor.js';
 import { claimPendingUpdateNote } from '../../update/announce.js';
 import type { ChatContext, ChatResponse, Reaction } from './shared.js';
+import type { CraftTurnFacts } from './personaModules.js';
 
 // Shared front-line types/helpers live in ./shared.js. Re-export the types so existing imports of
 // `./convo/client.js` still resolve.
@@ -205,7 +206,7 @@ export async function chat(
           ? getRelationshipClimate(handle)
           : Promise.resolve(defaultClimate()),
       ])
-    : [{ block: '', hotLook: null, turn: null, gates: {} }, undefined, defaultClimate()];
+    : [{ block: '', hotLook: null, turn: null, gates: {}, craft: {} }, undefined, defaultClimate()];
   const contextBlock = context.block;
 
   // Irises's hidden affect state: her persisted prior-turn mood/gauges/meta-prompt for THIS chat,
@@ -361,7 +362,12 @@ export async function chat(
   // sizes are what the turn receipt reports, and they are free here (`prompt.system` is the
   // byte-identical output buildSystemPrompt returns, which is now just a wrapper over this call;
   // see convo/promptSections.ts).
-  const prompt = buildSystemPromptSections(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined, affectState, computed, capabilitySummary, climate, thread, introWeave, turnFocus);
+  // The three structural facts behind the craft-module gates (convo/personaModules.ts), none of them
+  // re-derived: the attachment note this turn's text already carries, and the two reads the memory
+  // loaders answered on the way past (memory/dossier.ts). Everything else a gate needs — the
+  // reply-order read, the burst, the tapped reply, the tool list — the assembler is already holding.
+  const craftFacts: CraftTurnFacts = { ...context.craft, attachmentNote: !!attachNote };
+  const prompt = buildSystemPromptSections(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined, affectState, computed, capabilitySummary, climate, thread, introWeave, turnFocus, craftFacts);
   const system = prompt.system;
 
   try {

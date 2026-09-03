@@ -33,7 +33,7 @@ import {
 } from './tools.js';
 import { INTRO_WEAVE_BLOCK } from '../ops/firstMove.js';
 import {
-  renderUserMemoryWithHot, sanitizeLongDoc, splitSections,
+  renderUserMemoryWithHot, sanitizeLongDoc, splitSections, profileIsThin,
   type MemoryAudience, type UserMemoryData,
 } from '../../memory/wrappers.js';
 import { renderPendingClarification } from '../../memory/dossier.js';
@@ -46,6 +46,7 @@ import { defaultClimate, type RelationshipClimate } from '../../persona/climate.
 import type { ThreadCandidate } from '../../persona/threads.js';
 import type { ThreadTurn } from '../../memory/threadHarvest.js';
 import type { TurnFocusInput } from './turnFocus.js';
+import type { CraftTurnFacts } from './personaModules.js';
 import type { ActiveOps } from '../../state/opsCoordination.js';
 import type { CapabilitySummary } from '../ops/engineBackend.js';
 import type { MediumBundle } from '../../memory/mediumTerm.js';
@@ -91,6 +92,11 @@ interface TurnSpec {
   thread?: ThreadTurn;
   introWeave?: string | null;
   turnFocus?: TurnFocusInput;
+  /** The three craft-module gate facts the assembler can't see (convo/personaModules.ts). Never
+   *  hand-written: every fixture builds them with `craftFacts` below, off the same data its memory
+   *  stack is rendered from, so the `craft_modules` ceiling is measured on the pages a live turn of
+   *  this shape would really load. */
+  craft?: CraftTurnFacts;
 }
 
 type BuildArgs = Parameters<typeof buildSystemPromptSections>;
@@ -101,7 +107,7 @@ function argsFor(s: TurnSpec): BuildArgs {
   return [
     s.chatContext, s.contextBlock ?? '', s.activeOps ?? [], s.extraSection, s.tools, s.history,
     s.incomingText, 'UTC', s.affect, s.computed, s.capability ?? null, s.climate, s.thread,
-    s.introWeave, s.turnFocus,
+    s.introWeave, s.turnFocus, s.craft,
   ];
 }
 
@@ -141,6 +147,19 @@ function stack(data: UserMemoryData, turnText: string, audience: MemoryAudience 
     longSections: splitSections(sanitizeLongDoc(data.longDocMd, { quiet: true })),
   });
   return renderUserMemoryWithHot('convo', data, FROZEN_MS, { audience, currentTurnText: turnText, turn }).text;
+}
+
+/** The craft-module gate facts a turn of this shape really produces, computed the way the live path
+ *  computes them (memory/dossier.ts for the two memory reads, convo/client.ts for the attachment
+ *  note) rather than hand-set per fixture. That is what makes the `craft_modules` ceiling a measured
+ *  production size: it is whatever pages THIS data would load, including the day a fixture's data
+ *  changes and loads a different set. */
+function craftFacts(data: UserMemoryData, turnText: string, audience: MemoryAudience = 'individual'): CraftTurnFacts {
+  return {
+    attachmentNote: turnText.includes('[they attached'),
+    emailFlag: data.short.some(e => e.kind === 'email_flag' && e.expiresAt > FROZEN_MS),
+    thinProfile: audience !== 'group' && profileIsThin(data),
+  };
 }
 
 const EMPTY_MEDIUM: MediumBundle = { directives: [], notes: [], facts: {} };
@@ -233,16 +252,18 @@ const MATURE_SHORT: ShortTermEntry[] = [
  *  when it shares a salient token with what they just said (memory/topicality.ts). */
 const MATURE_TURN_TEXT = 'so are the cedars coming or not';
 
-const MATURE_STACK = stack({
+const MATURE_DATA: UserMemoryData = {
   profile: MATURE_PROFILE, memory: MATURE_LEGACY, medium: MATURE_MEDIUM,
   short: MATURE_SHORT, longDocMd: MATURE_LONG_DOC,
-}, MATURE_TURN_TEXT);
+};
+const MATURE_STACK = stack(MATURE_DATA, MATURE_TURN_TEXT);
 
 /** Nothing on file at all — the cold install. Renders the discovery scaffold and the default
  *  operating stance, which is the point: a thin profile is not a small prompt. */
-const COLD_STACK = stack({
+const COLD_DATA: UserMemoryData = {
   profile: null, memory: null, medium: EMPTY_MEDIUM, short: [], longDocMd: '',
-}, 'hey');
+};
+const COLD_STACK = stack(COLD_DATA, 'hey');
 
 const MEDIA_SHORT: ShortTermEntry[] = [
   {
@@ -252,16 +273,18 @@ const MEDIA_SHORT: ShortTermEntry[] = [
   },
 ];
 
-const MEDIA_STACK = stack({
+const MEDIA_DATA: UserMemoryData = {
   profile: MATURE_PROFILE, memory: MATURE_LEGACY, medium: MATURE_MEDIUM,
   short: MEDIA_SHORT, longDocMd: MATURE_LONG_DOC,
-}, 'the lease pdf, can you read it');
+};
+const MEDIA_STACK = stack(MEDIA_DATA, 'the lease pdf, can you read it');
 
-const GROUP_STACK = stack({
+const GROUP_DATA: UserMemoryData = {
   profile: { handle: 'group:nursery', name: null, facts: [], firstSeen: MATURE_PROFILE.firstSeen, lastSeen: MATURE_PROFILE.lastSeen },
   memory: null, medium: { directives: [], notes: ['the crew agreed no yard photos in the chat'], facts: {} },
   short: [], longDocMd: '## Who they are\nThe nursery crew: Sam (owner), Ada (deliveries), Theo (weekends).',
-}, 'did the cedars land', 'group');
+};
+const GROUP_STACK = stack(GROUP_DATA, 'did the cedars land', 'group');
 
 /** The one PLAIN section a routed context block still carries — a look came back thin, so she asked
  *  them to narrow it down and their next message is probably the answer. Rendered through the real
@@ -414,11 +437,13 @@ const FIXTURES: Fixture[] = [
       incomingText: 'hey',
       introWeave: INTRO_WEAVE_BLOCK,
       turnFocus: { text: 'hey', hits: [] },
+      craft: craftFacts(COLD_DATA, 'hey'),
     },
     memoryStack: COLD_STACK,
     sections: [
-      'persona', 'tool_docs', 'model_map', 'name_nudge', 'intro_weave', 'context_block',
-      'current_time', 'conversation_timing', 'turn_focus', 'behavior_anchor', 'json_anchor',
+      'persona', 'tool_docs', 'craft_modules', 'model_map', 'name_nudge', 'intro_weave',
+      'context_block', 'current_time', 'conversation_timing', 'turn_focus', 'behavior_anchor',
+      'json_anchor',
     ],
   },
   {
@@ -440,12 +465,13 @@ const FIXTURES: Fixture[] = [
       capability: { classes: ['web', 'files', 'code', 'media', 'scheduling'], complete: true },
       climate: MOVED_CLIMATE,
       turnFocus: { text: MATURE_TURN_TEXT, hits: [{ label: 'cedar lead times from the north supplier', source: 'research' }] },
+      craft: craftFacts(MATURE_DATA, MATURE_TURN_TEXT),
     },
     memoryStack: MATURE_STACK,
     sections: [
-      'persona', 'tool_docs', 'capability', 'model_map', 'context_block', 'current_time',
-      'weather', 'status_contract', 'conversation_timing', 'reply_order', 'turn_focus',
-      'behavior_anchor', 'json_anchor',
+      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'context_block',
+      'current_time', 'weather', 'status_contract', 'conversation_timing', 'reply_order',
+      'turn_focus', 'behavior_anchor', 'json_anchor',
     ],
   },
   {
@@ -469,12 +495,13 @@ const FIXTURES: Fixture[] = [
         text: `the lease pdf, can you read it ${MEDIA_NOTE}`,
         hits: [{ label: 'the lease pdf they just sent', source: 'research' }],
       },
+      craft: craftFacts(MEDIA_DATA, `the lease pdf, can you read it ${MEDIA_NOTE}`),
     },
     memoryStack: MEDIA_STACK,
     sections: [
-      'persona', 'tool_docs', 'capability', 'model_map', 'context_block', 'active_ops',
-      'current_time', 'weather', 'status_contract', 'conversation_timing', 'reply_order', 'turn_focus',
-      'behavior_anchor', 'json_anchor',
+      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'context_block',
+      'active_ops', 'current_time', 'weather', 'status_contract', 'conversation_timing',
+      'reply_order', 'turn_focus', 'behavior_anchor', 'json_anchor',
     ],
   },
   {
@@ -505,12 +532,13 @@ const FIXTURES: Fixture[] = [
       computed: COMPUTED,
       capability: { classes: ['web', 'code'], complete: true },
       turnFocus: { text: 'this the one you meant?', hits: [] },
+      craft: craftFacts(GROUP_DATA, 'this the one you meant?', 'group'),
     },
     memoryStack: GROUP_STACK,
     sections: [
-      'persona', 'tool_docs', 'capability', 'model_map', 'context_block', 'group', 'tapped_reply',
-      'burst', 'current_time', 'weather', 'status_contract', 'conversation_timing', 'turn_focus',
-      'behavior_anchor', 'json_anchor',
+      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'context_block', 'group',
+      'tapped_reply', 'burst', 'current_time', 'weather', 'status_contract', 'conversation_timing',
+      'turn_focus', 'behavior_anchor', 'json_anchor',
     ],
   },
   {
@@ -538,12 +566,13 @@ const FIXTURES: Fixture[] = [
         text: 'honestly i just want it done right this time',
         hits: [{ label: 'speed vs craft', source: 'thread' }, { label: 'cedar lead times from the north supplier', source: 'research' }],
       },
+      craft: craftFacts(MATURE_DATA, 'honestly i just want it done right this time'),
     },
     memoryStack: MATURE_STACK,
     sections: [
-      'persona', 'tool_docs', 'capability', 'model_map', 'context_block', 'current_time',
-      'weather', 'status_contract', 'thread', 'conversation_timing', 'reply_order', 'extra', 'turn_focus',
-      'behavior_anchor', 'json_anchor',
+      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'context_block',
+      'current_time', 'weather', 'status_contract', 'thread', 'conversation_timing', 'reply_order',
+      'extra', 'turn_focus', 'behavior_anchor', 'json_anchor',
     ],
   },
 ];
@@ -717,4 +746,3 @@ test('a default install adds no weather and no thread — the no-regression pin'
   const neverHadThem = buildSystemPromptSections(...argsFor(base));
   assert.equal(dormant.system, neverHadThem.system, 'a dormant climate and inventory cost the prompt nothing');
 });
-
