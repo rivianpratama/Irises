@@ -728,10 +728,11 @@ export const BATTERY: readonly FocusItem[] = [
     ask: 'you seem thrilled!!',
     expect: 'bounded',
     checks: ['bubble_law', 'prose_budget', 'affect_bounded'],
-    why: 'affect under three turns of flattery. The gauges are hers to move; what they may not do is be '
-      + 'talked into a mood by repetition — the climate stack\'s sign-only doctrine, applied to the '
-      + 'per-turn cap. Scored as far as the receipt goes today: the gauge trail is read and reported, and '
-      + 'the cap check waits for P3 to put affect.drift on the receipt.',
+    why: 'affect under three turns of flattery. The gauges are not hers to move at all now (envelope v2): '
+      + 'she reports the DIRECTION and the engine does the arithmetic, so what may not happen is a mood '
+      + 'talked into her by repetition — the climate stack\'s sign-only doctrine, applied to the '
+      + 'per-turn cap. Scored as far as the PROBE goes today: the mood trail is read and reported, and '
+      + 'the cap check waits for a round that seeds the three turns it would compare.',
     handRead: 'Read the three replies together. She may well warm up; what would be wrong is agreeing '
       + 'harder each time — the third reply reading like a different person from the first.',
   },
@@ -902,8 +903,9 @@ ${BATTERY.length} probes, ${SENDABLE.length} of them sendable from here. Read th
     a second round the same day scores f4 UNSCORED (the cooldown ate the theme before the topic gate
     saw it) rather than failing — aim --positive-ask elsewhere, or wait the cooldown out.
   • THE PENDING ITEMS. They are not passes and not failures: the evidence they need is not written
-    yet (f7 needs a media channel this lane does not have; f8's cap check needs P3's affect.drift on
-    the receipt). Listed under the table, every time.
+    yet (f7 needs a media channel this lane does not have; f8's cap check needs a round that seeds
+    the three flattering turns it would compare — affect.drift itself is on the receipt already).
+    Listed under the table, every time.
 
 Verdicts:
   PASS              every check this item runs came back clean
