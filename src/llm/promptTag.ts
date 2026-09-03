@@ -27,9 +27,12 @@ export function dataTag(name: string, content: string | null | undefined): strin
 
 /** The tags a payload could close to promote itself out of data position. Lives here, beside the
  *  tags themselves, because every payload that carries text somebody else wrote has to defuse the
- *  same list — the memory tiers on their way into their own tag (memory/wrappers.ts), and the
- *  turn-focus block, whose hits line is prose with no tag around it at all. */
-const PAYLOAD_TAGS = [PROMPT_TAG, 'memory_short', 'memory_medium', 'memory_long', 'user_directives'];
+ *  same list — the memory tiers on their way into their own tag (memory/wrappers.ts), the
+ *  turn-focus block, whose hits line is prose with no tag around it at all, and the held-memory
+ *  block a delegation carries into the ops prompt (agents/routingGate.ts). A tag added here must be
+ *  added for EVERY payload: the list is one regex, so it is the closer of its own block that a
+ *  stored note is likeliest to carry. */
+const PAYLOAD_TAGS = [PROMPT_TAG, 'memory_short', 'memory_medium', 'memory_long', 'user_directives', 'held_memory'];
 const TAG_BREAKOUT_RE = new RegExp(`<(/?)(?:${PAYLOAD_TAGS.join('|')})\\b`, 'gi');
 
 /**
