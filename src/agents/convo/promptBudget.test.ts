@@ -37,6 +37,7 @@ import {
   type MemoryAudience, type UserMemoryData,
 } from '../../memory/wrappers.js';
 import { buildTurnRelevance } from '../../memory/relevance.js';
+import { sanitizeDirectives } from '../../memory/preferences.js';
 import { coerceStatus, mergeStatus, type AffectState, type ComputedState } from '../../persona/status.js';
 import { computeCycle } from '../../persona/cycle.js';
 import { computeCircadian } from '../../persona/circadian.js';
@@ -124,13 +125,18 @@ const TOOLS_GROUP: LlmToolDef[] = [...TOOLS_1TO1, RENAME_CHAT_TOOL, REMOVE_MEMBE
 //
 // WITH this turn's relevance router, because a live turn has one: CONVO_MEMORY_RELEVANCE defaults
 // ON, so the gate table (memory/wrappers.ts) is what a real prompt is measured through. Handed the
-// same things dossier.ts hands it — the loaders' rows, and the long doc split at the granularity
-// the sanitizer screens at.
+// same things dossier.ts hands it, through the same screens — expired short rows dropped, directives
+// past sanitizeDirectives, the long doc split at the granularity the sanitizer screens at. These
+// fixtures are clean enough that no screen changes the measurement, which is the point: the day one
+// of them stops being clean, the ratchet measures what production would render, not more.
 
 function stack(data: UserMemoryData, turnText: string, audience: MemoryAudience = 'individual'): string {
   const turn = buildTurnRelevance(turnText, {
-    short: data.short,
-    medium: data.medium,
+    short: data.short.filter(e => e.expiresAt > FROZEN_MS),
+    medium: {
+      ...data.medium,
+      directives: sanitizeDirectives(data.medium.directives.filter(d => d && typeof d.text === 'string'), { quiet: true }),
+    },
     longSections: splitSections(sanitizeLongDoc(data.longDocMd, { quiet: true })),
   });
   return renderUserMemoryWithHot('convo', data, FROZEN_MS, { audience, currentTurnText: turnText, turn }).text;
