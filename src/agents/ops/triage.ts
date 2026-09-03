@@ -41,7 +41,7 @@ export interface TriageDecision {
  * something NEW to say, the directive folded onto the brief.
  *
  * That fold is the whole point: `buildTaskPrompt` derives every field it renders from
- * kind/hints/media/metaPrompt/request, so a bare `{...task, retryOf}` re-sends a byte-identical
+ * kind/hints/media/metaPrompt/heldMemory/request, so a bare `{...task, retryOf}` re-sends a byte-identical
  * prompt — and the walled-URL escalation arms on exactly the condition that already put the
  * `tooling:` line into the first pass, so its second leg would spend a full engine run (up to
  * OPS_TASK_TIMEOUT_MS) re-rolling the same dice. A decision with no directive — the transient

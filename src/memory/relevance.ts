@@ -48,9 +48,12 @@ export interface RelevanceHit {
   label: string;
   /** The text this hit was MATCHED by — the held thing as the memory stack has it, unclipped. Where
    *  `label` is a name (a long doc's section is named by its heading alone), this is the substance,
-   *  which is what a reader who holds none of her memory needs: the routing gate's delegation brief
-   *  carries it so the engine cannot come back asking which Dana (agents/routingGate.ts). Never
-   *  recorded — the 30-day receipt carries `label`, whose width is bounded. */
+   *  which is what a reader who holds none of her memory needs: a delegation carries it (bounded,
+   *  as data) in the task's own `heldMemory` field so the engine cannot come back asking which Dana
+   *  (agents/routingGate.ts). Never RECORDED — the trace ring's gate and turn receipts carry
+   *  `label`, whose width is bounded, and the task field it rides is in-flight only, so nothing
+   *  persists it. Widening its travel means re-reading that: `metaPrompt`, for one, is recorded in
+   *  the `delegate:<kind>` event and stashed in the pending-clarification preference row. */
   text: string;
   /** How many of the turn's salient tokens this candidate shares. Always ≥1 for a real hit. */
   score: number;

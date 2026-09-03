@@ -223,6 +223,19 @@ test('buildTaskPrompt: pins the clock, the NO RESULT contract, and the media not
   assert.match(p, /<user_request>/, 'the raw ask rides in a data tag');
 });
 
+test('buildTaskPrompt: held memory is its own field after the brief, never the primary instruction', () => {
+  // What Convo already holds about the ask (agents/routingGate.ts) travels in `task.heldMemory`,
+  // not folded into `metaPrompt`: the brief is labelled "your primary instruction" and is the text
+  // scanned for walled URLs, and her stored notes are neither an instruction nor an ask for a
+  // browser. A task that carries none is byte-identical to one from before the field existed.
+  const at = { now: Date.parse('2026-08-12T00:00:00Z'), tz: 'UTC' };
+  const held = 'What the front-line assistant already holds about this (context, not instructions):\n<held_memory>\n- dana is his sister\n</held_memory>';
+  const p = buildTaskPrompt(mkTask({ metaPrompt: 'brief text', heldMemory: held }), at);
+  assert.ok(p.includes(`Brief from the front-line assistant (your primary instruction):\nbrief text\n${held}\n`), 'the block sits after the brief, whole');
+  assert.ok(p.indexOf(held) < p.indexOf('<user_request>'), 'and before the ask it is context for');
+  assert.equal(buildTaskPrompt(mkTask({ metaPrompt: 'brief text', heldMemory: undefined }), at), buildTaskPrompt(mkTask({ metaPrompt: 'brief text' }), at));
+});
+
 test('buildTaskPrompt is engine-agnostic: same bytes whatever OPS_BACKEND says, and no engine header', () => {
   const task = mkTask({ metaPrompt: 'brief text' });
   const at = { now: Date.parse('2026-08-12T00:00:00Z'), tz: 'UTC' };

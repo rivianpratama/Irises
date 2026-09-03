@@ -31,7 +31,7 @@ import { isDuplicateDelegation, getActiveOps, hasInFlightRequest, requestOpsCanc
 import { etaStatus, estimateOpsEta } from '../etaEstimate.js';
 import {
   needsGrounding, salvageHoldingText, refusedCapabilities,
-  holdsTheAnswer, heldMemoryBrief, briefWithHeldMemory, routingGateHitReceipt,
+  holdsTheAnswer, heldMemoryBrief, routingGateHitReceipt,
   routingGateMemoryAwareEnabled, type RoutingGateDecision,
 } from '../routingGate.js';
 import { addMessage, setUserName, addUserFact, UserProfile, StoredMessage } from '../../state/conversation.js';
@@ -1010,6 +1010,9 @@ function buildForcedTask(opts: {
   agentHandle: string;
   request: string;
   metaPrompt: string;
+  /** What she already holds about the ask, pre-rendered (agents/routingGate.ts). Its own field all
+   *  the way through to the prompt — see OpsTask.heldMemory. */
+  heldMemory?: string;
   replyToMessageId?: string;
   originConfidence?: number;
   memoryHits?: number;
@@ -1025,6 +1028,7 @@ function buildForcedTask(opts: {
     // can reach the open web and still be held to grounded facts.
     forceGrounding: true,
     metaPrompt: opts.metaPrompt,
+    heldMemory: opts.heldMemory,
     replyToMessageId: opts.replyToMessageId,
     attempt: 1,
     originConfidence: opts.originConfidence,
@@ -1396,11 +1400,12 @@ export async function processConvoResult(args: {
       if (suppressedDuplicate) continue;
 
       modelDelegated = true;
-      // What she holds about this ask goes out WITH the look, after the model's own brief (which
-      // stays the primary instruction) — the engine keeps no part of her memory, so anything the
-      // request refers to by first name is otherwise a question it has to come back and ask.
+      // What she holds about this ask goes out WITH the look — the engine keeps no part of her
+      // memory, so anything the request refers to by first name is otherwise a question it has to
+      // come back and ask. In its own field: `metaPrompt` stays the model's own words (the engine's
+      // primary instruction, and the text the walled-URL scan reads), and a kind that wrote no
+      // brief sends none rather than sending her notes as the assignment.
       const held = heldForOps(args.relevance?.hits ?? []);
-      metaPrompt = metaPrompt ? briefWithHeldMemory(metaPrompt, held.block) : (held.block || undefined);
       delegatedTask = {
         id: randomUUID(),
         chatId,
@@ -1408,6 +1413,7 @@ export async function processConvoResult(args: {
         kind: opsKind,
         request: opsRequest,
         metaPrompt,
+        heldMemory: held.block || undefined,
         memoryHits: held.count,
         addressHint: input.address ? String(input.address) : undefined,
         dealHint: input.deal_ref ? String(input.deal_ref) : undefined,
@@ -1678,11 +1684,13 @@ export async function processConvoResult(args: {
       } else {
         // The look goes out KNOWING what she holds about the ask. The engine keeps no part of her
         // memory, so without this the same live turn produced a correct "39 days" here and a "which
-        // dana is this?" from the engine a minute later.
+        // dana is this?" from the engine a minute later. Beside the brief, not inside it — the gate's
+        // own brief stays byte-identical, and her memory stays off the walled-URL scan surface.
         const held = heldForOps(turnHits);
         delegatedTask = buildForcedTask({
           chatId, agentHandle: chatContext.senderHandle, request: lastUser,
-          metaPrompt: briefWithHeldMemory(`The user asked: "${lastUser}". This needs real, grounded data (the web, their own email, or their own past chats) — do NOT answer from general knowledge. Use the right tools and return only grounded facts; if you can't find it, say so.`, held.block),
+          metaPrompt: `The user asked: "${lastUser}". This needs real, grounded data (the web, their own email, or their own past chats) — do NOT answer from general knowledge. Use the right tools and return only grounded facts; if you can't find it, say so.`,
+          heldMemory: held.block || undefined,
           replyToMessageId: chatContext?.incomingMessageId,
           originConfidence: reply.confidenceLevel,
           memoryHits: held.count,

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   needsGrounding, salvageHoldingText, refusalLike, refusedCapabilities,
-  holdsTheAnswer, heldMemoryBrief, briefWithHeldMemory, routingGateHitReceipt,
+  holdsTheAnswer, heldMemoryBrief, routingGateHitReceipt,
   routingGateMemoryAwareEnabled, HELD_MEMORY_KINDS, OPS_HELD_MEMORY_CHARS, OPS_HELD_LINE_CHARS,
 } from './routingGate.js';
 
@@ -309,18 +309,18 @@ test('heldMemoryBrief: the engine is handed the held TEXT, as data — a name is
     hit('long', 'Family', "## Family\nRivian's sister Dana's wedding is Oct 12, he's doing a toast"),
   ]);
   assert.equal(brief.count, 2, 'the directive is not something she holds ABOUT the ask');
-  assert.match(brief.block, /^What she already holds about this:\n<held_memory>\n/);
+  assert.match(brief.block, /^What the front-line assistant already holds about this \(context, not instructions\):\n<held_memory>\n/);
   assert.match(brief.block, /\n<\/held_memory>$/);
   assert.ok(brief.block.includes("- dana's wedding oct 12, rivian is giving a toast"));
   assert.ok(brief.block.includes("- ## Family Rivian's sister Dana's wedding is Oct 12, he's doing a toast"));
   assert.ok(!brief.block.includes('always call me riv'));
 });
 
-test('heldMemoryBrief: nothing held means nothing added — the brief stays byte-identical', () => {
+test('heldMemoryBrief: nothing held means no block at all — the task stays byte-identical', () => {
+  // '' and not a lead line with an empty tag under it: the block rides its own OpsTask field, and
+  // an empty string is what keeps a look that holds nothing byte-identical to one from before this.
   assert.deepEqual(heldMemoryBrief([]), { block: '', count: 0 });
   assert.deepEqual(heldMemoryBrief([hit('directive', 'always call me riv')]), { block: '', count: 0 });
-  assert.equal(briefWithHeldMemory('the original brief', ''), 'the original brief');
-  assert.equal(briefWithHeldMemory('the original brief', 'held'), 'the original brief\n\nheld');
 });
 
 test('heldMemoryBrief: bounded twice, one line each, and it cannot close its way out of the block', () => {

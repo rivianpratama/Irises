@@ -25,7 +25,7 @@ import { buildTurnRelevance, threadHit, type TurnRelevance } from '../../memory/
 import { emptyMedia } from '../../webhook/types.js';
 import { __resetOpsCoordination, markOpsStart } from '../../state/opsCoordination.js';
 import { clearTraces, getTraces } from '../../diagnostics/trace.js';
-import { runTask } from '../ops/client.js';
+import { runTask, buildTaskPrompt, legBudgetFor } from '../ops/client.js';
 import { resetEngineBackendCache, type EngineBackend } from '../ops/engineBackend.js';
 import type { LlmResult, LlmToolCall } from '../../llm/types.js';
 import type { TurnTraceTurnInputs } from '../../diagnostics/turnTrace.js';
@@ -71,6 +71,21 @@ function args(textToSend = ASK) {
   const sender = `+1555800${(seq++).toString().padStart(4, '0')}`;
   const chatContext: ChatContext = { isGroupChat: false, participantNames: [], chatName: null, senderHandle: sender };
   return { chatId: randomUUID(), handle: sender, chatContext, history: [], media: emptyMedia(), textToSend };
+}
+
+/** A stub engine, the repo's DI convention (same shape as ops/walledUrls.test.ts): the far end of
+ *  the brief runs for real without a live service. */
+function stubEngine(): EngineBackend {
+  return {
+    name: 'hermes',
+    async runTask() { return 'ANSWER: oct 12\nSOURCE: her calendar\nFLAGS: none'; },
+    async createReminder() { return { id: 'r', title: 't', schedule: 's' }; },
+    async listReminders() { return []; },
+    async cancelReminder() { return false; },
+    async remember() { /* not under test */ },
+    async probe() { return { ok: true }; },
+    async channelSend() { return {}; },
+  };
 }
 
 /** The gate's own receipt for the turn just run. Every read checks the decision against the
@@ -187,8 +202,11 @@ test('the same ask already running leaves its own receipt, and is never stacked 
 
 // ── and when a delegation DOES happen, it carries what she holds ─────────────
 
-/** The block, as the ops brief carries it — her own rendered text for each thing, as data. */
-const heldBlock = (lines: string[]) => `What she already holds about this:\n<held_memory>\n${lines.map(l => `- ${l}`).join('\n')}\n</held_memory>`;
+/** The block, as the task carries it — her own rendered text for each thing, as data. It rides its
+ *  OWN field (`OpsTask.heldMemory`), never inside `metaPrompt`: everything in the brief is scanned
+ *  for walled URLs (ops/walledUrls.ts), and a link out of her memory must not arm browser tooling
+ *  for an ask that never mentioned one. */
+const heldBlock = (lines: string[]) => `What the front-line assistant already holds about this (context, not instructions):\n<held_memory>\n${lines.map(l => `- ${l}`).join('\n')}\n</held_memory>`;
 /** Her long-doc section as the memory stack rendered it, flattened onto one line. */
 const LONG_LINE = "## Family Rivian's sister Dana's wedding is Oct 12, he's doing a toast";
 
@@ -200,7 +218,8 @@ test('a forced look carries her own words, so the engine can never ask which dan
     relevance: relevance(ASK, { notes: [NOTE], longSections: [LONG] }),
   });
   assert.ok(out.delegatedTask);
-  assert.equal(out.delegatedTask!.metaPrompt, `${gateBrief(ASK)}\n\n${heldBlock([NOTE, LONG_LINE])}`);
+  assert.equal(out.delegatedTask!.metaPrompt, gateBrief(ASK), 'the brief itself is the gate’s own words, unchanged');
+  assert.equal(out.delegatedTask!.heldMemory, heldBlock([NOTE, LONG_LINE]));
   assert.equal(out.delegatedTask!.memoryHits, 2, 'and the count rides along for the kickoff receipt');
 });
 
@@ -211,19 +230,64 @@ test('with nothing held, the forced brief is byte-identical to what it always wa
     relevance: relevance(ASK, { notes: ['the cedar cabin electrician is booked for thursday'] }),
   });
   assert.equal(out.delegatedTask!.metaPrompt, gateBrief(ASK));
+  assert.equal(out.delegatedTask!.heldMemory, undefined, 'no empty field on a look that carries nothing');
   assert.equal(out.delegatedTask!.memoryHits, 0);
 });
 
-test('the model’s OWN delegate_to_ops brief carries it too, after the model’s instruction', async () => {
-  // The brief the model wrote stays the primary instruction (ops/client.ts labels it that way);
-  // what she holds follows it as context.
+test('the model’s OWN delegate_to_ops brief carries it too, beside the model’s instruction', async () => {
+  // The brief the model wrote stays the primary instruction (ops/client.ts labels it that way) and
+  // stays the model's OWN words; what she holds travels beside it, in its own field.
   const out = await processConvoResult({
     ...args(),
     res: makeResult(['lemme pull the exact date'], [{ name: 'delegate_to_ops', input: { kind: 'general', request: ASK, meta_prompt: 'get the exact date off her calendar' } }]),
     relevance: relevance(ASK, { notes: [NOTE] }),
   });
-  assert.equal(out.delegatedTask!.metaPrompt, `get the exact date off her calendar\n\n${heldBlock([NOTE])}`);
+  assert.equal(out.delegatedTask!.metaPrompt, 'get the exact date off her calendar');
+  assert.equal(out.delegatedTask!.heldMemory, heldBlock([NOTE]));
   assert.equal(out.delegatedTask!.memoryHits, 1);
+});
+
+test('a kind with no brief of its own is never handed her memory as its instruction', async () => {
+  // For a non-'general' kind the synthesized-brief fallback does not apply, so `metaPrompt` is
+  // genuinely absent — and the ops prompt labels metaPrompt "your primary instruction". Held memory
+  // in that slot would have made her stored notes the whole assignment.
+  const out = await processConvoResult({
+    ...args(),
+    res: makeResult(['one sec'], [{ name: 'delegate_to_ops', input: { kind: 'web_research', request: ASK } }]),
+    relevance: relevance(ASK, { notes: [NOTE] }),
+  });
+  assert.equal(out.delegatedTask!.metaPrompt, undefined, 'no brief means no brief');
+  assert.equal(out.delegatedTask!.heldMemory, heldBlock([NOTE]));
+});
+
+test('a walled URL sitting in a held note arms nothing — the ASK decides that, not her memory', async () => {
+  // The coupling the separate field exists to prevent (`walledScanText` is request + metaPrompt):
+  // a reddit link in a note that merely shares the token "dana" with the ask would insert the
+  // `tooling:` line, swap the standard leg deadline for the wider browser budget — which is also
+  // the ETA the user is promised — and let a thin second leg be steered to a link nobody asked
+  // about this turn.
+  const engine: EngineBackend = { ...stubEngine(), hasBrowserTooling: () => true };
+  resetEngineBackendCache(engine);
+  try {
+    const out = await processConvoResult({
+      ...args(),
+      res: makeResult([]),
+      relevance: relevance(ASK, { notes: [`riv sent me this https://reddit.com/r/weddings/comments/xyz for dana's toast`] }),
+    });
+    const task = out.delegatedTask!;
+    assert.ok(task.heldMemory!.includes('reddit.com/r/weddings'), 'the note still rides along — it is what the engine needs');
+    const prompt = buildTaskPrompt(task, { now: Date.parse('2026-09-03T00:00:00Z'), tz: 'UTC', browser: true });
+    assert.ok(prompt.includes('reddit.com/r/weddings'), 'and it reaches the engine');
+    assert.ok(!prompt.includes('tooling:'), 'but her memory does not arm the browser hint');
+    const env = { OPS_TASK_TIMEOUT_MS: '1000', OPS_BROWSER_TASK_TIMEOUT_MS: '9000' } as NodeJS.ProcessEnv;
+    assert.equal(legBudgetFor(task, env), 1000, 'and the leg keeps the standard deadline');
+    // The control: the SAME link in the ask itself still arms both, exactly as before.
+    const asked = { ...task, request: `who posted https://reddit.com/r/weddings/comments/xyz` };
+    assert.ok(buildTaskPrompt(asked, { now: 0, tz: 'UTC', browser: true }).includes('tooling:'));
+    assert.equal(legBudgetFor(asked, env), 9000);
+  } finally {
+    resetEngineBackendCache(undefined);
+  }
 });
 
 test('CONVO_ROUTING_GATE_MEMORY_AWARE=off carries nothing into either brief', async () => {
@@ -231,12 +295,14 @@ test('CONVO_ROUTING_GATE_MEMORY_AWARE=off carries nothing into either brief', as
   try {
     const forced = await processConvoResult({ ...args(), res: makeResult([]), relevance: relevance(ASK, { notes: [NOTE] }) });
     assert.equal(forced.delegatedTask!.metaPrompt, gateBrief(ASK));
+    assert.equal(forced.delegatedTask!.heldMemory, undefined);
     const model = await processConvoResult({
       ...args(),
       res: makeResult(['one sec'], [{ name: 'delegate_to_ops', input: { kind: 'general', request: ASK, meta_prompt: 'get the exact date off her calendar' } }]),
       relevance: relevance(ASK, { notes: [NOTE] }),
     });
     assert.equal(model.delegatedTask!.metaPrompt, 'get the exact date off her calendar');
+    assert.equal(model.delegatedTask!.heldMemory, undefined);
     assert.equal(model.delegatedTask!.memoryHits, 0);
   } finally {
     delete process.env.CONVO_ROUTING_GATE_MEMORY_AWARE;
@@ -297,16 +363,7 @@ test('the gate’s decision rides the turn receipt, and only when the gate ran',
 // engine pattern as ops/walledUrls.test.ts, kept here because it is the other end of the block above.
 
 test('ops:kickoff says how much of her memory rode along', async () => {
-  const engine: EngineBackend = {
-    name: 'hermes',
-    async runTask() { return 'ANSWER: oct 12\nSOURCE: her calendar\nFLAGS: none'; },
-    async createReminder() { return { id: 'r', title: 't', schedule: 's' }; },
-    async listReminders() { return []; },
-    async cancelReminder() { return false; },
-    async remember() { /* not under test */ },
-    async probe() { return { ok: true }; },
-    async channelSend() { return {}; },
-  };
+  const engine = stubEngine();
   const task = { id: 't1', chatId: 'c1', agentHandle: '+15558000000', kind: 'general' as const, request: ASK, metaPrompt: 'brief', attempt: 1, createdAt: Date.now() };
   resetEngineBackendCache(engine);
   try {

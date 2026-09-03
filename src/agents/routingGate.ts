@@ -281,7 +281,7 @@ function subjectClasses(text: string): CapabilityClass[] {
 //     AND she actually wrote an answer off it.
 //   • `heldMemoryBrief` — when a delegation does happen (the gate's, or the model's own
 //     `delegate_to_ops`), what does the engine need so it can't ask "which dana": her own words for
-//     the thing, as data.
+//     the thing, as data, in the task's own `heldMemory` field and never inside the brief.
 //
 // PURE, and the hits are read STRUCTURALLY (see HeldHit) so this module keeps its dependency-free
 // property — the turn relevance router that produces them lives in memory/relevance.ts and pulls in
@@ -337,8 +337,11 @@ export function holdsTheAnswer(input: { hits: readonly HeldHit[]; bubbles: numbe
 }
 
 /** The lead line of the held-memory block, outside the data tag — the same shape the ops prompt
- *  already uses for the request itself (`ops/client.ts`: a plain line, then the tagged payload). */
-const HELD_MEMORY_LEAD = 'What she already holds about this:';
+ *  already uses for the request itself (`ops/client.ts`: a plain line, then the tagged payload).
+ *  Says "the front-line assistant" and not "she": the engine holds no part of her memory and is
+ *  never told her name, so a bare pronoun names nobody. And it says what the block IS — context for
+ *  the ask, not an instruction — because the brief above it is the instruction. */
+const HELD_MEMORY_LEAD = 'What the front-line assistant already holds about this (context, not instructions):';
 
 /** How much held text rides along, counted over the listed lines. Small on purpose: this is the
  *  engine's "who and what do they mean", not a memory dump — the brief above it is still the
@@ -358,12 +361,19 @@ function heldLine(text: string): string {
 }
 
 /**
- * What she holds about this ask, for the brief a delegation carries — the held text itself for each
- * thing, as DATA (the repo's dataTag convention), plus how many made it in. The TEXT and not the
- * label: the engine holds none of her memory, and a heading ("Family") is not an answer to "which
- * dana is this?".
+ * What she holds about this ask, for a delegation to carry — the held text itself for each thing,
+ * as DATA (the repo's dataTag convention), plus how many made it in. The TEXT and not the label:
+ * the engine holds none of her memory, and a heading ("Family") is not an answer to "which dana is
+ * this?".
  *
- * `{ block: '', count: 0 }` when she holds nothing about it, which is what keeps the brief
+ * The block travels as its OWN task field (`OpsTask.heldMemory`, rendered beside the brief by
+ * ops/client.ts) and is deliberately NOT folded into `metaPrompt`. Two reasons, both about what the
+ * brief IS: it is labelled the engine's "primary instruction", and it is the text scanned for
+ * JavaScript/login-walled links (ops/walledUrls.ts) — so a reddit link inside a note that merely
+ * shares a token with the ask would have armed browser tooling, widened the leg deadline the user
+ * is promised, and given a thin second leg a URL to navigate to that nobody asked about.
+ *
+ * `{ block: '', count: 0 }` when she holds nothing about it, which is what keeps the task
  * byte-identical on every turn this changes nothing about. Whole lines are dropped at the total cap
  * rather than cut, so the last thing the engine reads is a whole held thing. Pure.
  */
@@ -379,13 +389,6 @@ export function heldMemoryBrief(hits: readonly HeldHit[]): { block: string; coun
   }
   if (!lines.length) return { block: '', count: 0 };
   return { block: `${HELD_MEMORY_LEAD}\n${dataTag('held_memory', lines.join('\n'))}`, count: lines.length };
-}
-
-/** A brief with the held-memory block after it, or the brief itself when there is no block. One
- *  implementation, so the gate's forced brief and the model's own `delegate_to_ops` brief can never
- *  drift apart on where the block goes — and so "no hits" is byte-identical at both sites. Pure. */
-export function briefWithHeldMemory(brief: string, block: string): string {
-  return block ? `${brief}\n\n${block}` : brief;
 }
 
 /** How many hit labels the `convo:routing_gate` receipt names, and how wide each may be. The
