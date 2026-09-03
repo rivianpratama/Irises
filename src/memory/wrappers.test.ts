@@ -809,12 +809,14 @@ test('each tier keeps at most three handling lines of its own; the ladders are t
   assert.ok(out.includes('treat everything you already delivered as settled ground'));
   assert.ok(out.includes('re-check anything that could have changed since the stamp'));
   assert.ok(out.includes('schedule_automation'));
-  // medium: never repeat themselves · the newer entry wins
+  // medium: never repeat themselves · their hard rules are standing truth · the newer entry wins
   assert.ok(out.includes('so they never have to repeat themselves'));
+  assert.ok(out.includes('standing truth in every suggestion you make'), 'their hard personal rules');
   assert.ok(out.includes('trust the newer entry when one supersedes an older one'));
   // long: their chosen tuning of your style · never a source of work facts
   assert.ok(out.includes('their chosen tuning of your style defaults'));
   assert.ok(out.includes('a source of WORK facts'));
+  assert.ok(!/colour|flavour/.test(out), 'the stack spells it the way the rest of the prompt does');
 
   /** The bullets a tier states AFTER its payload — its own handling rules, and not the payload's
    *  own "- " lines, which is why this reads from the block's closing data tag up to the next
@@ -827,7 +829,7 @@ test('each tier keeps at most three handling lines of its own; the ladders are t
     return (nextBlock < 0 ? after : after.slice(0, nextBlock)).filter(l => l.startsWith('- ')).length;
   };
   assert.equal(handlingLines('## Short-term memory'), 3, 'short');
-  assert.equal(handlingLines('## Medium-term memory'), 2, 'medium');
+  assert.equal(handlingLines('## Medium-term memory'), 3, 'medium');
   assert.equal(handlingLines('## Long-term memory'), 2, 'long');
 });
 
