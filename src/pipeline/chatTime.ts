@@ -26,7 +26,10 @@ function fmtInZone(ms: number, tz: string, opts: Intl.DateTimeFormatOptions): st
   return new Intl.DateTimeFormat('en-US', { timeZone: tz, ...opts }).format(new Date(ms)).replace(/ /g, ' ');
 }
 
-function dayKey(ms: number, tz: string): string {
+/** Which calendar day an instant falls on in a zone, as `YYYY-MM-DD` — the same-day test behind
+ *  classifyGap, and the "what day is it for them" the dated-memory suffix counts from
+ *  (memory/datedMemory.ts). Throws for a zone Intl does not accept; callers guard. */
+export function dayKey(ms: number, tz: string): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
 }
 

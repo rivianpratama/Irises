@@ -36,6 +36,8 @@ import type { MemoryGateReport, MemoryGateReports } from '../diagnostics/turnTra
 import { getLongDoc } from '../db/repositories/memoryLong.js';
 import { loadMediumBundle, renderFactsBlock, type MediumBundle } from './mediumTerm.js';
 import { renderTenureLine } from './tenure.js';
+import { annotateDates } from './datedMemory.js';
+import { DEFAULT_TZ } from '../pipeline/zonedTime.js';
 import { looksUnsafe, sanitizeDirectives } from './preferences.js';
 import { stripScopeSections } from './userContext.js';
 import { isGroupHandle } from './identity.js';
@@ -455,10 +457,17 @@ export const NOTE_DIGEST_CHARS = 80;
 /** How many note lines may render at all in one turn. The tier holds up to twenty. */
 export const NOTE_LINES_MAX = 6;
 
+/** When the payload's calendar dates are counted from, and in whose zone. Only the routed path
+ *  passes it; without it the dates render exactly as they are stored. */
+export interface MediumBlockOpts {
+  nowMs?: number;
+  timeZone?: string;
+}
+
 /** Medium-term wrapper (Convo): durable facts + explicitly-kept notes. Returns the string;
  *  renderMediumBlockWithGates beneath it returns the same string plus the gate table's verdicts. */
-export function renderMediumBlock(bundle: MediumBundle, turn?: TurnRelevance | null): string {
-  return renderMediumBlockWithGates(bundle, turn).text;
+export function renderMediumBlock(bundle: MediumBundle, turn?: TurnRelevance | null, opts: MediumBlockOpts = {}): string {
+  return renderMediumBlockWithGates(bundle, turn, opts).text;
 }
 
 /** The block, plus what the gate table did with it — see MemoryGateReports.
@@ -471,7 +480,7 @@ export function renderMediumBlock(bundle: MediumBundle, turn?: TurnRelevance | n
  *
  *  FACTS are not gated at all (`kept_always`): each is one short line, and the whole point of the
  *  channel is that they never have to repeat themselves. */
-export function renderMediumBlockWithGates(bundle: MediumBundle, turn?: TurnRelevance | null): { text: string; gates: MemoryGateReports } {
+export function renderMediumBlockWithGates(bundle: MediumBundle, turn?: TurnRelevance | null, opts: MediumBlockOpts = {}): { text: string; gates: MemoryGateReports } {
   const gates: MemoryGateReports = {};
   const parts: string[] = [];
   // With a router in hand the identity card leads the stack and states the identity keys itself, so
@@ -494,6 +503,13 @@ export function renderMediumBlockWithGates(bundle: MediumBundle, turn?: TurnRele
   }
   if (noteLines.length) parts.push(`things they explicitly asked you to remember:\n${noteLines.join('\n')}`);
   if (!parts.length) return { text: '', gates };
+
+  // A note or a fact that names a calendar date carries how far away it is, counted here rather
+  // than by the model (memory/datedMemory.ts). Routed path only, so a payload with no router is the
+  // stored text byte for byte. Dated after the digest clip, so a date the clip took is not dated.
+  const payload = turn
+    ? annotateDates(parts.join('\n\n'), opts.nowMs ?? Date.now(), opts.timeZone ?? DEFAULT_TZ)
+    : parts.join('\n\n');
 
   // Two lines, because two things here are this tier's own and nothing else's: the record exists so
   // they never say a thing twice, and a later entry beats an earlier one. Everything else the
@@ -529,7 +545,7 @@ export function renderMediumBlockWithGates(bundle: MediumBundle, turn?: TurnRele
     '## Medium-term memory (durable facts you\'ve learned about them)',
     "You must adhere to this rule about how to handle your medium-term memory. Here's the durable",
     'record — facts they told you and things they explicitly asked you to remember:',
-    dataTag('memory_medium', neutralizeTagBreakouts(parts.join('\n\n'))),
+    dataTag('memory_medium', neutralizeTagBreakouts(payload)),
     ...handling,
   ].join('\n'), gates };
 }
@@ -1131,7 +1147,12 @@ export function renderUserMemoryWithHot(agent: MemoryAgent, data: UserMemoryData
     Object.assign(gates, short.gates);
   }
   if (matrix.medium || opts.includeMedium) {
-    const medium = renderMediumBlockWithGates(data.medium, opts.turn);
+    const medium = renderMediumBlockWithGates(data.medium, opts.turn, {
+      nowMs,
+      // Their own zone, the one the card prints and the clock section runs on; DEFAULT_TZ until
+      // they have said where they are.
+      timeZone: typeof factView.agent_tz === 'string' && factView.agent_tz.trim() ? factView.agent_tz.trim() : DEFAULT_TZ,
+    });
     Object.assign(gates, medium.gates);
     const mediumBlock = medium.text;
     if (mediumBlock) {

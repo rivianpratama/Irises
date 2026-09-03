@@ -15,6 +15,7 @@ import {
   type UserMemoryData, type MemoryAgent, type MemoryAudience,
 } from './wrappers.js';
 import { buildTurnRelevance } from './relevance.js';
+import { annotateDates } from './datedMemory.js';
 import type { ShortTermEntry } from '../db/repositories/memoryShort.js';
 
 const NOW = Date.parse('2026-07-14T12:00:00Z');
@@ -854,6 +855,71 @@ test('with no router the seed stances still fill their slots, exactly as they al
   assert.ok(out.includes('### Your default way of being with them (the seed — it retires itself)'));
   assert.ok(out.includes('## Medium-term memory — how they want you to work (nothing learned yet)'));
   assert.ok(renderUserMemory('composer', baseData(), NOW).includes('Nothing is stored in this layer for them yet'));
+});
+
+// ── Dated memories (a stored calendar date answers "how many days till…") ─────
+// Observed live: "how many days till dana's wedding again" was delegated to the engine as deep
+// work and the answer landed after the sign-off. The date was already in the prompt; only the
+// arithmetic was missing, and arithmetic is code's job.
+
+const DENVER = 'America/Denver';
+/** Noon on 3 September 2026 in Denver. */
+const SEP3 = Date.parse('2026-09-03T18:00:00Z');
+
+test('a stored calendar date carries how far away it is, counted in their zone', () => {
+  assert.equal(annotateDates("dana's wedding is october 12", SEP3, DENVER), "dana's wedding is october 12 (in 39 days)");
+  assert.equal(annotateDates('the deck came down august 2', SEP3, DENVER), 'the deck came down august 2 (32 days ago)');
+  assert.equal(annotateDates('renewal on Sept 4th', SEP3, DENVER), 'renewal on Sept 4th (in 1 day)');
+  assert.equal(annotateDates('the permit is due September 3, 2026', SEP3, DENVER), 'the permit is due September 3, 2026 (today)');
+});
+
+test('with no year it reads the nearest occurrence, never a year in the wrong direction', () => {
+  // …and the count lands against the date it counts, not at the end of whatever sentence holds it.
+  assert.equal(annotateDates('the january 5 filing', SEP3, DENVER), 'the january 5 (in 124 days) filing');
+  assert.equal(annotateDates('the january 5, 2026 filing', SEP3, DENVER), 'the january 5, 2026 (241 days ago) filing');
+});
+
+test('it counts against THEIR midnight, not the host\'s', () => {
+  // 04:00 UTC on the 4th is 22:00 on the 3rd in Denver, so the same stored date is today in one
+  // zone and tomorrow in the other.
+  const lateEvening = Date.parse('2026-09-04T04:00:00Z');
+  assert.equal(annotateDates('drinks september 4', lateEvening, DENVER), 'drinks september 4 (in 1 day)');
+  assert.equal(annotateDates('drinks september 4', lateEvening, 'UTC'), 'drinks september 4 (today)');
+});
+
+test('it fires only on a confident parse, and leaves everything else alone', () => {
+  for (const text of [
+    'he turned 30 in may 5 years ago',      // a duration, not a date
+    'the february 30 deadline',             // not a real day
+    'renewals happen in october',           // no day
+    'the 2026 budget',                      // no month
+    'call marched on',                      // not a month name
+  ]) {
+    assert.equal(annotateDates(text, SEP3, DENVER), text, text);
+  }
+  assert.equal(annotateDates('the lease started january 4, 2019', SEP3, DENVER), 'the lease started january 4, 2019', 'past the window');
+  assert.equal(annotateDates('meet on october 12', SEP3, 'Not/AZone'), 'meet on october 12', 'an unusable zone changes nothing');
+});
+
+test('it annotates the first date on each line and is pure', () => {
+  const text = 'wedding october 12 and the rehearsal october 11\nthe permit is due august 2';
+  const once = annotateDates(text, SEP3, DENVER);
+  assert.equal(once, 'wedding october 12 (in 39 days) and the rehearsal october 11\nthe permit is due august 2 (32 days ago)');
+  assert.equal(annotateDates(text, SEP3, DENVER), once, 'same answer twice');
+  assert.equal(text, 'wedding october 12 and the rehearsal october 11\nthe permit is due august 2', 'input untouched');
+});
+
+test('a dated note answers the question inside the medium block, and only with a router', () => {
+  const data = baseData({
+    memory: { handle: '+15550005555', dossierMd: '', prefs: { agent_tz: DENVER } },
+    medium: { directives: [], notes: ["dana's wedding is october 12"], facts: {} },
+  });
+  const routed = renderUserMemoryWithHot('convo', data, SEP3, {
+    currentTurnText: 'how many days till dana wedding again',
+    turn: buildTurnRelevance('how many days till dana wedding again', { medium: data.medium }),
+  }).text;
+  assert.ok(routed.includes("dana's wedding is october 12 (in 39 days)"), routed);
+  assert.ok(!renderUserMemory('convo', data, SEP3).includes('(in 39 days)'), 'no router, no arithmetic');
 });
 
 test('with no router the stack opens with the preamble and renders no card at all', () => {
