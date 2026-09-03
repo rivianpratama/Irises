@@ -30,6 +30,7 @@ import {
 import { getTraces, clearTraces } from './trace.js';
 import { buildSystemPromptSections, processConvoResult, type ChatContext } from '../agents/convo/shared.js';
 import { SECTION_IDS, sectionsTotalChars, isDynSection } from '../agents/convo/promptSections.js';
+import { CRAFT_MODULES } from '../agents/convo/personaModules.js';
 import { loadContext } from '../agents/loadContext.js';
 import { coerceStatus, mergeStatus, mergeStatusWithDrift, type AffectState, type ComputedState } from '../persona/status.js';
 import { AFFECT_TURN_CAP } from '../persona/affectDrift.js';
@@ -280,6 +281,60 @@ test('the measured sections add back up to the prompt they came from', () => {
   assert.equal(detail.prompt.messagesChars, 'any word on the cedars'.length + 'checking now'.length + 'any news on the cedars?'.length);
   const share = detail.prompt.messagesChars / (detail.prompt.systemChars + detail.prompt.messagesChars);
   assert.equal(detail.prompt.transcriptShare, Math.round(share * 10_000) / 10_000);
+});
+
+// ── the craft pages ──────────────────────────────────────────────────────────
+//
+// `craft_modules` is one section on the size table, and one number cannot answer the question the
+// gates raise: WHICH pages loaded, and why did the others stay out. Without the itemised row a
+// reply that ignored the send order on a turn where the send-order page never loaded is
+// indistinguishable from one that had the page and ignored it anyway — so the receipt carries every
+// page in the registry, loaded or not, with the structural fact that decided it.
+
+test('the receipt itemises the craft pages: which loaded, what they cost, which fact decided each', () => {
+  const prompt = realPrompt();
+  const detail = buildTurnTrace({ draft: draft(SPOKE, GOOD_STATUS, turnInputs(prompt)), bubbles: TWO_BUBBLES });
+
+  // This fixture has a stored thread and an incoming message, so the reply-order read renders and
+  // the send-order page comes with it. Nothing else about the turn is structural: no file, no burst,
+  // no tapped reply, no reminder tools offered.
+  assert.deepEqual(detail.prompt.craft.filter(c => c.rendered).map(c => c.id), ['send_order']);
+  assert.equal(detail.prompt.craft.length, CRAFT_MODULES.length, 'every page is on the receipt');
+  assert.deepEqual(detail.prompt.craft.map(c => c.id), CRAFT_MODULES.map(m => m.id), 'in registry order');
+
+  for (const row of detail.prompt.craft) {
+    assert.ok(row.gate.length > 0, `${row.id}: names the fact it read`);
+    assert.equal(row.chars > 0, row.rendered, `${row.id}: a page that stayed out cost nothing`);
+  }
+  const skipped = detail.prompt.craft.filter(c => !c.rendered);
+  assert.equal(skipped.length, CRAFT_MODULES.length - 1, 'and says why each of the rest stayed out');
+  assert.equal(new Set(detail.prompt.craft.map(c => c.gate)).size, CRAFT_MODULES.length, 'disjoint buckets');
+
+  // The itemisation adds back up to the section on the size table: the loaded pages plus the `\n\n`
+  // between each pair. That is what makes it a decomposition of a measured section rather than a
+  // second, drifting account of it.
+  const loaded = detail.prompt.craft.filter(c => c.rendered);
+  const section = detail.prompt.sections.find(s => s.name === 'craft_modules');
+  assert.ok(section, 'the turn rendered a craft section');
+  assert.equal(
+    section.chars,
+    loaded.reduce((n, c) => n + c.chars, 0) + 2 * (loaded.length - 1),
+  );
+});
+
+test('a turn whose gates all read false files a craft receipt of seven skips', () => {
+  // The no-op still leaves a receipt (the threads:select rule): a turn that loaded no craft is a
+  // reading about the turn, not an absence of data.
+  const prompt = buildSystemPromptSections(undefined, '');
+  const turn = { ...turnInputs(prompt), prompt };
+  const detail = buildTurnTrace({
+    draft: buildTurnTraceDraft({ turn, affect: { raw: GOOD_STATUS, coerced: coerceStatus(GOOD_STATUS) }, outcome: SPOKE }),
+    bubbles: TWO_BUBBLES,
+  });
+  assert.ok(!detail.prompt.sections.some(s => s.name === 'craft_modules'), 'no section was pushed');
+  assert.equal(detail.prompt.craft.length, CRAFT_MODULES.length);
+  assert.deepEqual(detail.prompt.craft.filter(c => c.rendered), []);
+  assert.equal(detail.prompt.craft.reduce((n, c) => n + c.chars, 0), 0, 'and the whole registry cost nothing');
 });
 
 test('the section list is capped, and the cap sits above the whole section vocabulary', () => {

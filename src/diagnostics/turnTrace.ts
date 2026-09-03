@@ -27,6 +27,7 @@ import type { BubbleReport } from '../pipeline/bubbleJson.js';
 import type { AffectDriftOutcome, EmittedStatus } from '../persona/status.js';
 import type { AffectDriftReport, GaugeKey } from '../persona/affectDrift.js';
 import type { RelevanceHitKind } from '../memory/relevance.js';
+import type { CraftModuleTrace } from '../agents/convo/personaModules.js';
 import type { RoutingGateDecision } from '../agents/routingGate.js';
 import type { ThreadSelectReport } from '../persona/threads.js';
 
@@ -55,6 +56,9 @@ export interface MeasuredPrompt {
   sections: readonly PromptSection[];
   personaChars: number;
   anchorChars: number;
+  /** The craft pages the assembler weighed this turn (agents/convo/personaModules.ts) — a type-only
+   *  import, so the diagnostics layer still pulls nothing new at runtime. */
+  craft: readonly CraftModuleTrace[];
 }
 
 /** The one thing this needs from a message: how much text it puts in front of the model. Structural
@@ -265,6 +269,19 @@ export interface TurnTracePrompt {
   transcriptRows: number;
   /** messagesChars / (systemChars + messagesChars), to four decimals. */
   transcriptShare: number;
+  /**
+   * The `craft_modules` section, itemised: every craft page in the registry, whether it loaded, what
+   * it cost, and the structural fact that decided it (agents/convo/personaModules.ts). The section's
+   * own size answers "how much"; this answers the question the gates raise — WHICH pages, and why
+   * not the others. A reply that ignored the send order reads very differently once you can see that
+   * the send-order page never loaded.
+   *
+   * Disjoint reason buckets, one row per page, the no-op included: a turn that loaded nothing files
+   * seven skips rather than an empty list, the way threads:select reports its own no-op. Bounded by
+   * the registry (a compile-time constant), so unlike `sections` it needs no cap. Empty with
+   * CONVO_PERSONA_MODULES off — no registry ran, because the pages are in the persona head.
+   */
+  craft: CraftModuleTrace[];
 }
 
 /** The recorded detail — the shape that persists, and the single source for the draft below.
@@ -378,6 +395,7 @@ function measurePrompt(prompt: MeasuredPrompt, messages: readonly TranscriptMess
     messagesChars,
     transcriptRows: messages.length,
     transcriptShare: total > 0 ? Math.round((messagesChars / total) * 10_000) / 10_000 : 0,
+    craft: prompt.craft.map(c => ({ ...c })),
   };
 }
 
@@ -423,8 +441,8 @@ export function buildTurnTraceDraft(inputs: {
  * whatever the turn thought it produced.
  *
  * COPYING, stated so it can't be read as an accident: every container this function owns is rebuilt
- * (prompt, its section list, gates and both of its leaves, affect and its coercion list, hits,
- * outcome), so a draft mutated afterwards can never change a detail already built from it. Three
+ * (prompt, its section list, its craft rows, gates and both of its leaves, affect and its coercion
+ * list, hits, outcome), so a draft mutated afterwards can never change a detail already built from it. Three
  * payloads pass through by reference — `gates.threads` (the selection engine's finished report),
  * `affect.rawEmitted` and `affect.coerced` (the model's own status objects), and `affect.drift` /
  * `affect.targets` (the drift engine's, built once by mergeStatusWithDrift and read by nobody else)
@@ -435,7 +453,11 @@ export function buildTurnTraceDraft(inputs: {
 export function buildTurnTrace(inputs: { draft: TurnTraceDraft; bubbles: BubbleReport }): TurnTraceDetail {
   const { draft, bubbles } = inputs;
   return {
-    prompt: { ...draft.prompt, sections: [...draft.prompt.sections] },
+    prompt: {
+      ...draft.prompt,
+      sections: [...draft.prompt.sections],
+      craft: draft.prompt.craft.map(c => ({ ...c })),
+    },
     gates: {
       threads: draft.gates.threads,
       memory: {

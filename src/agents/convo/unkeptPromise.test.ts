@@ -282,7 +282,7 @@ test('a promise the reply backed with its own delegation is left alone too', asy
 
 // The per-turn receipt only needs a prompt it can measure — the sizes are not what this pins.
 const TRACE_INPUTS = {
-  prompt: { system: 'SYSTEM PROMPT (persona + this turn)', sections: [], personaChars: 0, anchorChars: 0 },
+  prompt: { system: 'SYSTEM PROMPT (persona + this turn)', sections: [], personaChars: 0, anchorChars: 0, craft: [] },
   messages: [{ content: ASK }],
   gates: {
     threads: null,

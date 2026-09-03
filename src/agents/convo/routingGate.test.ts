@@ -371,7 +371,7 @@ test('a delegation the MODEL made never re-enters the gate, so there is no secon
 /** The smallest honest `trace` a caller can hand in — the receipt's other fields are pinned by
  *  turnTrace.test.ts; this is only here so the gate's decision has somewhere to land. */
 const traceInputs = (): TurnTraceTurnInputs => ({
-  prompt: { system: 'x', sections: [], personaChars: 0, anchorChars: 0 },
+  prompt: { system: 'x', sections: [], personaChars: 0, anchorChars: 0, craft: [] },
   messages: [],
   gates: {
     threads: null,
