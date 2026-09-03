@@ -674,9 +674,10 @@ export function buildSystemPromptSections(
 
   // The craft pages this turn structurally needs, right behind the tool docs and for the same
   // reason: they are guidance rather than data, so they belong ahead of everything genuinely
-  // per-turn (charter §11.3). Two of the gates read work done further down this function — the
-  // reply-order read and the tapped-reply resolution — so both are computed HERE and rendered at
-  // their own push sites below, unchanged. Nothing is pushed when no page loaded.
+  // per-turn (charter §11.3). Three of the gates read work done further down this function — the
+  // thread block, the reply-order read and the tapped-reply resolution — so all three are computed
+  // HERE and rendered at their own push sites below, unchanged. Nothing is pushed when no page
+  // loaded.
   //
   // A tapped reply of any kind carries an explicit target, which suppresses both order-read
   // sections; the reply-order line below is therefore '' exactly when the send-order craft has
@@ -685,7 +686,9 @@ export function buildSystemPromptSections(
   const replyOrderLine = history?.length && incomingText
     ? renderArrivalGap(chatContext?.arrivals, tapped) || renderReplyOrder(history, incomingText, tapped)
     : '';
+  const threadBlock = renderThreadForPrompt(thread?.offer ?? null, thread?.outcomeAsk ?? null);
   const craftGate: ModuleGateInput = {
+    threadSection: !!threadBlock,
     replyOrderSection: !!replyOrderLine,
     attachmentNote: !!craftFacts?.attachmentNote,
     burstSize: chatContext?.burstManifest?.length ?? 0,
@@ -821,7 +824,8 @@ export function buildSystemPromptSections(
   // the same class of orientation — what she is carrying into this turn — and is read BEFORE the timing
   // block below, whose gap arithmetic is what qualified a loop for an opening in the first place.
   // Renders to '' whenever there is nothing to offer and nothing to report back, which is most turns.
-  const threadBlock = renderThreadForPrompt(thread?.offer ?? null, thread?.outcomeAsk ?? null);
+  // Computed at the top of this function (it is also the threading craft page's gate) and pushed
+  // here, where it has always been.
   if (threadBlock) push('thread', threadBlock);
 
   // Precomputed timing read of the thread (gap since it was last alive, whose wait it is, regime) —

@@ -1,12 +1,19 @@
 // The craft modules: the pages of Convo's persona that only some turns need.
 //
 // Context.md is the always-on core — who she is, how she writes, the laws that rank with the bubble
-// rule. Beside it, under craft/, sit seven pages that teach ONE move each: how to read a thread in
-// send order, how to answer a burst, what to do with an attachment, how to get to know somebody new.
+// rule. Beside it, under craft/, sit eight pages that teach ONE move each: how to pick up a thread of
+// theirs, how to read a thread in send order, how to answer a burst, what to do with an attachment,
+// how to get to know somebody new.
 // Every one of them used to be a section of Context.md, which meant every one of them was in front
 // of the model on every turn — the burst tradecraft on a single message, nine thousand characters of
 // onboarding craft nine months into a relationship, the send-order read on a turn with no history to
 // order. Twenty-four thousand characters of the persona, most of it irrelevant to most turns.
+//
+// What did NOT move with the threading craft: banter. The tease frame, the four safe bends, the
+// deadpan rule and "their response overrules your framing" stay in Context.md on every single turn,
+// because a joke is not a thread — she can bend past literal on a turn that carries no thread at
+// all, and a play frame she only reads when the thread engine happens to offer something is a play
+// frame that goes missing exactly when she is being funny on her own.
 //
 // Each page now loads on a STRUCTURAL FACT about the turn: a section the assembler already rendered,
 // a tool that is really on offer, a file that really arrived, a slot the memory stack really hasn't
@@ -33,6 +40,9 @@ import { SCHEDULE_AUTOMATION_TOOL } from './tools.js';
  * the memory loaders answered — memory/dossier.ts).
  */
 export interface ModuleGateInput {
+  /** The thread section rendered this turn: renderThreadForPrompt produced a block, i.e. the thread
+   *  engine really put an offer or an outcome ask in front of her (persona/threads.ts). */
+  threadSection: boolean;
   /** The reply-order read rendered this turn: renderArrivalGap or renderReplyOrder produced a
    *  section, i.e. there IS a thread whose send order this message has to be placed in. */
   replyOrderSection: boolean;
@@ -79,6 +89,16 @@ interface CraftModule {
  * type, the receipt, the render order and the golden all read the same source.
  */
 export const CRAFT_MODULES = [
+  {
+    id: 'threading',
+    file: 'craft/threading.md',
+    // The thread engine's own output is the fact: the block renders exactly when a theme, a loop or
+    // an outcome ask was really selected for this turn (persona/threads.ts renderThreadForPrompt),
+    // and it renders '' on the great majority of turns — which are precisely the turns where nine
+    // thousand characters of how-to-tag craft had nothing to tag.
+    gateName: 'thread_section',
+    gate: (ctx: ModuleGateInput) => ctx.threadSection,
+  },
   {
     id: 'tapped_reply',
     file: 'craft/tapped-reply.md',

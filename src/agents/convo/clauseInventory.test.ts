@@ -17,7 +17,7 @@
 // It changes nothing and shrinks nothing itself. A count that MOVES is the failure, in either
 // direction: up means a copy came back, down means a rule was deleted without anyone deciding to.
 //
-// It counts over the WHOLE corpus, which since P4a takes one line of setup. Seven sections of the
+// It counts over the WHOLE corpus, which since P4a takes one line of setup. Eight sections of the
 // persona are now craft pages that load only on the turns that need them (convo/personaModules.ts),
 // so a prompt assembled on any one turn carries some of them and not others — and a clause counted
 // against that prompt would read 1 on a turn where its page loaded and 0 on a turn where it didn't.

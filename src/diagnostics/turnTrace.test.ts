@@ -322,7 +322,7 @@ test('the receipt itemises the craft pages: which loaded, what they cost, which 
   );
 });
 
-test('a turn whose gates all read false files a craft receipt of seven skips', () => {
+test('a turn whose gates all read false files a craft receipt of one skip per page', () => {
   // The no-op still leaves a receipt (the threads:select rule): a turn that loaded no craft is a
   // reading about the turn, not an absence of data.
   const prompt = buildSystemPromptSections(undefined, '');

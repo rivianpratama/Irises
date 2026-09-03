@@ -1,12 +1,13 @@
 // Run with: npm test   (TZ=UTC tsx --test — runner pins DATA_BACKEND=memory)
 //
-// The craft modules: seven pages of Convo's persona that only some turns need.
+// The craft modules: eight pages of Convo's persona that only some turns need.
 //
-// Until P4a every one of them was a section of Context.md, which means every one of them was in
+// Until P4a/P4b every one of them was a section of Context.md, which means every one of them was in
 // front of the model on every turn — the send-order read on a turn with no history, the burst
 // tradecraft on a single message, nine thousand characters of onboarding craft nine months into a
-// relationship. They are now files under convo/craft/, each behind a STRUCTURAL gate (a fact about
-// this turn, never a judgement about it), and this file holds two very different claims about them.
+// relationship, nine thousand more on how to tag a thread on a turn with no thread on offer. They
+// are now files under convo/craft/, each behind a STRUCTURAL gate (a fact about this turn, never a
+// judgement about it), and this file holds two very different claims about them.
 //
 // The first is the relocation itself: not one byte of that prose changed. The golden below
 // reconstructs the pre-change Context.md from what is on disk now — the shrunken Context.md with
@@ -33,6 +34,7 @@ import { addShortTerm } from '../../db/repositories/memoryShort.js';
 import { emptyMedia } from '../../webhook/types.js';
 import { loadContext } from '../loadContext.js';
 import { SCHEDULE_AUTOMATION_TOOL, REACTION_TOOL, REMEMBER_USER_TOOL } from './tools.js';
+import type { ThreadCandidate } from '../../persona/threads.js';
 import type { LlmResult, LlmToolDef } from '../../llm/types.js';
 import type { StoredMessage, UserProfile } from '../../db/types.js';
 
@@ -49,16 +51,23 @@ const PRE_CHANGE_CHARS = 137_923;
 const PRE_CHANGE_SHA256 = 'ac0faa6f9ce66afa216f860327b12a6b0567c3b606831912b1c29a8dd884cfc1';
 
 /**
- * Where each module's prose sat, so the golden can put it back: the heading of the section that
- * FOLLOWED it (unique in the file — clauseInventory.test.ts holds that), and whether a `---` rule
- * sat between the two. Three modules were consecutive ahead of "When to delegate", two ahead of
- * "Quick math", which is why the reconstruction walks this list in order.
+ * Where each module's prose sat, so the golden can put it back: the FIRST LINE of whatever followed
+ * it (a section heading for P4a's seven pages, the paragraph that came next for P4b's threading
+ * craft — each unique in the file, which the reconstruction re-checks), and whether a `---` rule sat
+ * between the two. Three modules were consecutive ahead of "When to delegate", two ahead of "Quick
+ * math", which is why the reconstruction walks this list in order.
+ *
+ * `slice` is for a page assembled out of MORE than one home: P4b's threading craft came from two
+ * places inside "Connect the dots" — the long run of thread paragraphs, and the automations
+ * paragraph eighteen lines further down — so it has a row each.
  *
  * This table exists for ONE commit's worth of evidence. It is not part of the registry: nothing at
  * runtime needs to know where a module used to live (personaModules.ts), and the day this test is
  * the only reader left is the day the relocation is finished being checked.
  */
-const RELOCATION: ReadonlyArray<{ id: CraftModuleId; before: string; rule: boolean }> = [
+const RELOCATION: ReadonlyArray<{ id: CraftModuleId; before: string; rule: boolean; slice?: 'head' | 'tail' }> = [
+  { id: 'threading', before: "**When unsure, don't — that's the default, not a fallback.**", rule: false, slice: 'head' },
+  { id: 'threading', before: '**What you never do with what you know:**', rule: false, slice: 'tail' },
   { id: 'tapped_reply', before: '## When to delegate (and how)', rule: true },
   { id: 'send_order', before: '## When to delegate (and how)', rule: true },
   { id: 'burst_re', before: '## When to delegate (and how)', rule: true },
@@ -69,16 +78,24 @@ const RELOCATION: ReadonlyArray<{ id: CraftModuleId; before: string; rule: boole
 ];
 
 /**
- * The one sentence P4a ADDED to Context.md, and the reason this golden has an addition list at all:
- * the modules render inside `<prompt>`, where the persona's own trust boundary says plain guidance
- * is her system talking to her — so the boundary section now says out loud that a craft page is one
- * of those, arriving only on the turns that need it. Removed before hashing, so the pin measures the
- * relocation and nothing else.
+ * Prose ADDED to Context.md by the relocations, and the reason this golden has an addition list at
+ * all. Each is removed before hashing, so the pin measures the relocation and nothing else.
+ *
+ * 1. P4a: the modules render inside `<prompt>`, where the persona's own trust boundary says plain
+ *    guidance is her system talking to her — so the boundary section now says out loud that a craft
+ *    page is one of those, arriving only on the turns that need it.
+ * 2. P4b: the one-line pointer left standing where the playful-thread paragraph was, because the
+ *    thread craft is now gated and the BANTER craft below it is not. It has to say both things: the
+ *    threading page comes with a thread, and the bend itself is always hers.
  */
-const ADDED_PROSE = ' A few of those plain blocks are your own craft pages: the guidance on one specific move — reading send order, answering a burst, an attachment, getting to know someone new — arrives only on the turns that need it, and it carries the same weight as this file.';
+const ADDED_PROSE: readonly string[] = [
+  ' A few of those plain blocks are your own craft pages: the guidance on one specific move — reading send order, answering a burst, an attachment, getting to know someone new — arrives only on the turns that need it, and it carries the same weight as this file.',
+  '**A thread can wear the joke — when you are carrying one.** The whole craft of picking a thread up — which material, how a fact callback sounds, the ladder, the tag and its shorthand, and how a tease and a thread ride in one line — arrives as its own page on the turns a thread is actually on offer. The bend itself is always yours: "Roasts and teasing" is right below.\n\n',
+];
 
-/** Prose P4a DELETED from the persona. Empty, deliberately: P4a is a relocation, and P4b is where
- *  anything gets shortened. A row appearing here without a decision behind it is the failure. */
+/** Prose DELETED from the persona, each row with the copy that made it redundant. Empty here: the
+ *  relocations move prose and edit none of it, and the delegate-section shrink puts its rows in the
+ *  list below. A row appearing without a decision behind it is the failure. */
 const DELETED_PROSE: readonly string[] = [];
 
 /** craft/onboarding.md carries a second half that never lived in Context.md: the texture coaching P2
@@ -86,13 +103,28 @@ const DELETED_PROSE: readonly string[] = [];
  *  thin profile. It starts at this line, and the reconstruction stops there. */
 const ONBOARDING_LOCAL_HALF = '# Getting to know a new person (the onboarding craft)';
 
-/** The part of a module that came out of Context.md — all of it, except for onboarding's local half. */
-function relocatedPart(id: CraftModuleId): string {
+/** craft/threading.md's own heading, which no section of Context.md ever had (the prose lived under
+ *  "Connect the dots"), and the paragraph that opens its second relocated half. */
+const THREADING_HEADING = '## Picking up a thread of theirs (you are carrying one this turn)\n\n';
+const THREADING_TAIL = '**Tweaking automations — their history is the spec.**';
+
+/** The part of a module that came out of Context.md: all of it for the five single-home pages, and
+ *  the named half for the two that are assembled out of more than their relocated prose. */
+function relocatedPart(id: CraftModuleId, slice?: 'head' | 'tail'): string {
   const text = craftModuleText(id);
-  if (id !== 'onboarding') return text;
-  const at = text.indexOf(ONBOARDING_LOCAL_HALF);
-  assert.ok(at > 0, 'craft/onboarding.md still marks where its second half begins');
-  return text.slice(0, at).trimEnd();
+  if (id === 'onboarding') {
+    const at = text.indexOf(ONBOARDING_LOCAL_HALF);
+    assert.ok(at > 0, 'craft/onboarding.md still marks where its second half begins');
+    return text.slice(0, at).trimEnd();
+  }
+  if (id === 'threading') {
+    assert.ok(text.startsWith(THREADING_HEADING), 'craft/threading.md still opens on its own heading');
+    const body = text.slice(THREADING_HEADING.length);
+    const at = body.indexOf(THREADING_TAIL);
+    assert.ok(at > 0, 'craft/threading.md still carries the automations paragraph it took from further down');
+    return slice === 'tail' ? body.slice(at) : body.slice(0, at).trimEnd();
+  }
+  return text;
 }
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
@@ -100,21 +132,23 @@ const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex
 test('the persona plus every craft module is the pre-change Context.md, byte for byte', () => {
   let rebuilt = loadContext('convo');
 
-  const withoutAddition = rebuilt.replace(ADDED_PROSE, '');
-  assert.notEqual(withoutAddition, rebuilt, `the added sentence is no longer in the persona: ${JSON.stringify(ADDED_PROSE.slice(0, 60))}…`);
-  rebuilt = withoutAddition;
+  for (const added of ADDED_PROSE) {
+    const without = rebuilt.replace(added, '');
+    assert.notEqual(without, rebuilt, `this addition is no longer in the persona: ${JSON.stringify(added.slice(0, 60))}…`);
+    rebuilt = without;
+  }
 
-  for (const { id, before, rule } of RELOCATION) {
-    const anchor = `\n${before}\n`;
+  for (const { id, before, rule, slice } of RELOCATION) {
+    const anchor = `\n${before}`;
     const at = rebuilt.indexOf(anchor);
-    assert.ok(at > 0, `${id}: the section it used to sit above is gone from Context.md (${before})`);
-    assert.equal(rebuilt.indexOf(anchor), rebuilt.lastIndexOf(anchor), `${id}: its anchor heading is not unique any more`);
-    rebuilt = `${rebuilt.slice(0, at + 1)}${relocatedPart(id)}${rule ? '\n\n---\n\n' : '\n\n'}${rebuilt.slice(at + 1)}`;
+    assert.ok(at > 0, `${id}: what it used to sit above is gone from Context.md (${before})`);
+    assert.equal(rebuilt.indexOf(anchor), rebuilt.lastIndexOf(anchor), `${id}: its anchor line is not unique any more`);
+    rebuilt = `${rebuilt.slice(0, at + 1)}${relocatedPart(id, slice)}${rule ? '\n\n---\n\n' : '\n\n'}${rebuilt.slice(at + 1)}`;
   }
 
   assert.equal(
     rebuilt.length, PRE_CHANGE_CHARS,
-    `the relocation gained or lost ${rebuilt.length - PRE_CHANGE_CHARS} characters. P4a moves prose and edits none of it — if a module was really edited, that is a P4b change, and this pin moves with a recorded old→new.`,
+    `the relocation gained or lost ${rebuilt.length - PRE_CHANGE_CHARS} characters. A relocation moves prose and edits none of it — if a module was really edited, that is a deliberate change, and it belongs in one of the two enumerated lists above.`,
   );
   assert.equal(
     sha256(rebuilt), PRE_CHANGE_SHA256,
@@ -123,7 +157,7 @@ test('the persona plus every craft module is the pre-change Context.md, byte for
 });
 
 test('nothing was deleted on the way out, and the deletion list says so', () => {
-  assert.deepEqual(DELETED_PROSE, [], 'P4a deleted nothing; a row here needs a decision behind it, not a test edit');
+  assert.deepEqual(DELETED_PROSE, [], 'the relocations deleted nothing; a row here needs a decision behind it, not a test edit');
   const corpus = convoPersonaWithCraft();
   for (const phrase of DELETED_PROSE) assert.ok(!corpus.includes(phrase), `${phrase} was meant to be deleted`);
 });
@@ -144,7 +178,8 @@ test('the off path puts the same bytes in the cached prefix instead of the block
 // ── the registry ─────────────────────────────────────────────────────────────
 
 test('the registry is a usable table — unique ids, unique files, every file loads', () => {
-  assert.equal(CRAFT_MODULES.length, 7, 'the seven sections P4a relocated');
+  assert.equal(CRAFT_MODULES.length, 8, 'the seven sections P4a relocated, plus P4b\'s threading craft');
+  assert.equal(CRAFT_MODULES[0].id, 'threading', 'canonical order: the threading craft came from Context.md ahead of the other seven');
   const ids = CRAFT_MODULES.map(m => m.id);
   assert.equal(new Set(ids).size, ids.length, 'no id is used twice');
   const files = CRAFT_MODULES.map(m => m.file);
@@ -165,7 +200,7 @@ const TOOLS_OPENCLAW = [REACTION_TOOL, REMEMBER_USER_TOOL].map(t => t.name);
 
 /** Every fact false — the turn that needs no craft at all. */
 const NO_FACTS: ModuleGateInput = {
-  replyOrderSection: false, attachmentNote: false, burstSize: 1, toolNames: [],
+  threadSection: false, replyOrderSection: false, attachmentNote: false, burstSize: 1, toolNames: [],
   tappedReply: false, emailFlag: false, thinProfile: false,
 };
 
@@ -175,11 +210,12 @@ const rendered = (ctx: Partial<ModuleGateInput>): CraftModuleId[] =>
 test('a turn with no structural need loads no craft at all', () => {
   const render = renderCraftModules(NO_FACTS);
   assert.equal(render.text, '', 'nothing rendered, so the section is not pushed');
-  assert.deepEqual(render.modules.map(m => m.rendered), Array(7).fill(false));
+  assert.deepEqual(render.modules.map(m => m.rendered), Array(CRAFT_MODULES.length).fill(false));
   for (const m of render.modules) assert.equal(m.chars, 0, `${m.id}: a module that did not load costs no characters`);
 });
 
 test('each gate turns on exactly its own module', () => {
+  assert.deepEqual(rendered({ threadSection: true }), ['threading']);
   assert.deepEqual(rendered({ tappedReply: true }), ['tapped_reply']);
   assert.deepEqual(rendered({ replyOrderSection: true }), ['send_order']);
   assert.deepEqual(rendered({ burstSize: 2 }), ['burst_re']);
@@ -206,10 +242,10 @@ test('the reminder craft follows the reminder tools, so OpenClaw is not taught a
 test('a skipped module still reports the fact it read', () => {
   const render = renderCraftModules({ ...NO_FACTS, tappedReply: true });
   const gates = new Map(render.modules.map(m => [m.id, m.gate] as const));
-  assert.equal(gates.size, 7, 'every module is on the receipt, loaded or not');
-  assert.equal(new Set(gates.values()).size, 7, 'each module names a different fact — disjoint buckets');
+  assert.equal(gates.size, CRAFT_MODULES.length, 'every module is on the receipt, loaded or not');
+  assert.equal(new Set(gates.values()).size, CRAFT_MODULES.length, 'each module names a different fact — disjoint buckets');
   const skipped = render.modules.filter(m => !m.rendered);
-  assert.equal(skipped.length, 6);
+  assert.equal(skipped.length, CRAFT_MODULES.length - 1);
   for (const m of skipped) assert.ok(m.gate.length > 0, `${m.id}: says why it stayed out`);
 });
 
@@ -242,6 +278,12 @@ test('five representative turns load the craft they structurally need', () => {
     rendered({ replyOrderSection: true, emailFlag: true, toolNames: TOOLS_OPENCLAW }),
     ['send_order', 'email_flag'],
   );
+  // 6. the thread the engine really offered her this turn — the one turn in five where the tagging
+  //    craft has something to tag.
+  assert.deepEqual(
+    rendered({ threadSection: true, replyOrderSection: true, toolNames: TOOLS_HERMES }),
+    ['threading', 'send_order', 'reminders'],
+  );
 });
 
 test('the rendered text is the loaded modules joined in canonical order, and nothing else', () => {
@@ -258,6 +300,11 @@ test('the rendered text is the loaded modules joined in canonical order, and not
 const HANDLE = '+15550001111';
 const PROFILE: UserProfile = { handle: HANDLE, name: 'Sam', facts: ['runs a nursery'], firstSeen: 1, lastSeen: 2 };
 const TOOL: LlmToolDef = SCHEDULE_AUTOMATION_TOOL;
+/** One standing theme of theirs, at the rung the thread engine would really hand over. */
+const THEME: ThreadCandidate = {
+  material: 'theme', rungCeiling: 'pattern', kind: 'tension', id: 't1',
+  label: 'speed vs craft', note: 'they keep landing back on shipping fast versus doing it right',
+};
 const HISTORY: StoredMessage[] = [
   { role: 'user', content: 'any word on the cedars', handle: HANDLE, at: Date.now() - 40 * 60_000 },
   { role: 'assistant', content: 'checking now', at: Date.now() - 38 * 60_000 },
@@ -292,7 +339,32 @@ test('the craft section sits right after the tool docs, once, inside the block',
     craft.filter(m => m.rendered).map(m => m.id), ['send_order', 'reminders'],
     'the result carries the receipt rows the turn trace reports',
   );
-  assert.equal(craft.length, 7, 'including the five modules this turn did not need');
+  assert.equal(craft.length, CRAFT_MODULES.length, 'including the six modules this turn did not need');
+});
+
+test('the threading craft follows the thread section the engine really rendered, not the mere fact of a thread', () => {
+  // The gate is the assembler's own thread block (persona/threads.ts renderThreadForPrompt), so this
+  // is the one page whose fact only a build can show: hand the same turn a candidate and the page
+  // arrives with the section, hand it none and both stay out together.
+  const withThread = args();
+  withThread[12] = { offer: THEME, outcomeAsk: null };
+  const offered = buildSystemPromptSections(...withThread);
+  assert.ok(offered.sections.some(s => s.name === 'thread'), 'the thread section rendered');
+  assert.ok(offered.system.includes(craftModuleText('threading')), 'so the tagging craft came with it');
+  assert.deepEqual(
+    offered.craft.filter(m => m.rendered).map(m => m.id), ['threading', 'send_order', 'reminders'],
+  );
+
+  const quiet = buildSystemPromptSections(...args());
+  assert.ok(!quiet.sections.some(s => s.name === 'thread'), 'no candidate, no section');
+  assert.ok(!quiet.system.includes(craftModuleText('threading')), 'and nine thousand characters of tagging craft stay out');
+});
+
+test('an outcome ask alone is enough — the craft is for reading how they took it, too', () => {
+  const askOnly = args();
+  askOnly[12] = { offer: null, outcomeAsk: { label: 'the dock boards', material: 'loop' } };
+  const built = buildSystemPromptSections(...askOnly);
+  assert.ok(built.system.includes(craftModuleText('threading')));
 });
 
 test('a turn that needs no craft assembles no craft section', () => {
