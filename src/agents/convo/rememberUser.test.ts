@@ -11,9 +11,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { processConvoResult, type ChatContext } from './shared.js';
+import { REMEMBER_USER_TOOL } from './tools.js';
 import { emptyMedia } from '../../webhook/types.js';
 import { __resetOpsCoordination } from '../../state/opsCoordination.js';
 import { getUserProfile } from '../../db/repositories/profiles.js';
+import { getTraces, clearTraces } from '../../diagnostics/trace.js';
 import type { LlmResult, LlmToolCall } from '../../llm/types.js';
 
 function makeResult(bubbles: string[], toolCalls: LlmToolCall[]): LlmResult {
@@ -91,6 +93,44 @@ test('group chat: a NON-participant handle is ignored', async () => {
   const out = await processConvoResult({ ...a, res, textToSend: 'remember mallory' });
   assert.equal(out.rememberedUser, null);
   assert.equal(await getUserProfile(outsider), null);
+});
+
+test('the tool doc asks for the messaging handle and nothing else', () => {
+  // The live slip: Convo passed the user's NICKNAME ("riv") as `handle`, the guard dropped the
+  // write, and the profile fact was silently lost. The doc was the invitation — "whose info this is"
+  // reads like a person, so a name looked like an answer.
+  const handle = (REMEMBER_USER_TOOL.inputSchema as { properties: { handle: { description: string } } }).properties.handle;
+  assert.equal(
+    handle.description,
+    "the sender's messaging handle exactly as it appears (never their name or nickname); omit to use the current sender",
+  );
+});
+
+test('an ignored handle leaves a convo:tool_arg_ignored receipt, so the slip is visible', async () => {
+  __resetOpsCoordination();
+  clearTraces();
+  const a = args();
+  const res = makeResult(['sure'], [rememberUser({ handle: 'riv', name: 'Riv' })]);
+  const out = await processConvoResult({ ...a, res, textToSend: 'i go by riv' });
+  assert.equal(out.rememberedUser, null, 'still dropped — the receipt does not change the guard');
+
+  const ignored = getTraces().find(e => e.label === 'convo:tool_arg_ignored');
+  assert.ok(ignored, 'the dropped write is on the record, not only in a console line');
+  const detail = (ignored.detail ?? {}) as Record<string, unknown>;
+  assert.equal(detail.tool, 'remember_user');
+  assert.equal(detail.arg, 'handle');
+  assert.equal(detail.value, 'riv', 'and what was actually passed — that is the finding');
+  assert.equal(detail.reason, 'not_sender_or_participant');
+  assert.equal(ignored.chatId, a.chatId);
+});
+
+test('a write that lands leaves NO tool_arg_ignored receipt', async () => {
+  __resetOpsCoordination();
+  clearTraces();
+  const a = args();
+  const res = makeResult(['nice to meet you'], [rememberUser({ name: 'Jo' })]);
+  await processConvoResult({ ...a, res, textToSend: "i'm jo" });
+  assert.equal(getTraces().filter(e => e.label === 'convo:tool_arg_ignored').length, 0);
 });
 
 test('1:1 chat: participantNames can NOT authorize a foreign write (group-only allowance)', async () => {

@@ -20,7 +20,7 @@ export const REMEMBER_USER_TOOL: LlmToolDef = {
   inputSchema: {
     type: 'object',
     properties: {
-      handle: { type: 'string', description: "Whose info this is — must be the current sender or, in a group chat, a listed participant's handle; anything else is ignored. Omit to use the current sender." },
+      handle: { type: 'string', description: "the sender's messaging handle exactly as it appears (never their name or nickname); omit to use the current sender" },
       name: { type: 'string' },
       fact: { type: 'string' },
     },

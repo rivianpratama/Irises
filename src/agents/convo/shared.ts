@@ -1232,6 +1232,15 @@ export async function processConvoResult(args: {
         || (chatContext?.isGroupChat === true && (chatContext.participantNames ?? []).includes(requested));
       if (!allowed) {
         console.warn(`[convo] remember_user ignored: "${requested}" is not the sender or a participant of this chat (sender ${sender ?? 'unknown'})`);
+        // The dropped write is a LOST FACT, and until now it was visible only in a console line: the
+        // live slip was a nickname ("riv") passed as the handle, so the guard did its job and the
+        // thing the user had just said about themselves went nowhere. The value rides along because
+        // it IS the finding — a name here means the tool doc is being misread, not that someone is
+        // writing to a stranger.
+        record({
+          type: 'event', label: 'convo:tool_arg_ignored', chatId, handle,
+          detail: { tool: 'remember_user', arg: 'handle', value: requested.slice(0, 40), reason: 'not_sender_or_participant', group: chatContext?.isGroupChat === true },
+        });
       } else {
         const targetHandle = requested || sender;
         if (targetHandle) {
