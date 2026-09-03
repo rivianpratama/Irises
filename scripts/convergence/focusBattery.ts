@@ -75,11 +75,16 @@
 // the engine round-trips → read the messages table and the turn receipts back → score, print a
 // markdown table, write JSON.
 
-import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { webChatId, WEB_DEBUG_HANDLE } from '../../src/channels/web/identity.js';
+// The plumbing three batteries share — argv, curl, the sqlite3 CLI, the markdown trims. It lives in
+// its own module (and holds no verdict and no threshold) precisely so a battery can import it: this
+// file's `main()` is behind an entry-point guard, but the older two run theirs at module scope, so
+// importing FROM them would start a round. See harness.ts.
+import {
+  arg, cell, curlJson, expand, flag, num, quote, sh, sleep, sqlExec, sqlJson, truncate,
+} from './harness.js';
 // The engine's OWN topic predicates, imported rather than reimplemented (the loopBattery precedent):
 // `touchesTurn` is the very function the theme topic gate runs, so f4's precondition is computed with
 // the code under test rather than with a regex that approximates it.
@@ -814,12 +819,9 @@ export function themesTouchedBy(ask: string, themes: readonly ThreadTheme[]): st
 
 // ── timing ──────────────────────────────────────────────────────────────────────────────────────
 // The siblings' defaults and the siblings' reasoning: the env overrides exist so the harness itself
-// can be smoke-tested against a stub in seconds, and must never be set for a real round.
+// can be smoke-tested against a stub in seconds, and must never be set for a real round (`num`
+// reads them, in harness.ts).
 
-const num = (name: string, fallback: number) => {
-  const v = Number(process.env[name]);
-  return Number.isFinite(v) && v >= 0 ? v : fallback;
-};
 const STAGGER_MS = num('FOCUS_STAGGER_MS', 20_000);   // one item every ~20 s, so turns don't batch
 const SILENT_MS = num('FOCUS_SILENT_MS', 90_000);     // past this a reply is LATE; no reply at all is SILENT
 const SETTLE_MS = num('FOCUS_SETTLE_MS', 180_000);    // grace after the LAST send
@@ -887,54 +889,6 @@ turn:trace receipt anywhere) · 2 fatal.
 NOTE: rebuild and restart the instance from this tree first, with DIAGNOSTICS_ENABLED on and the
 P0/P2 flags on. The prose ceilings are properties of THIS checkout, so an older binary shows up as a
 BUDGET_BREACH naming the section — that is the harness telling you the two commits differ.`;
-
-function flag(name: string): boolean {
-  return process.argv.includes(`--${name}`);
-}
-function arg(name: string, fallback?: string): string | undefined {
-  const i = process.argv.indexOf(`--${name}`);
-  return i !== -1 && process.argv[i + 1] && !process.argv[i + 1].startsWith('--') ? process.argv[i + 1] : fallback;
-}
-/** `~/x` → `$HOME/x`. execFile never sees a shell, so nothing else expands it. */
-function expand(p: string): string {
-  return resolve(p.startsWith('~/') ? p.replace('~', homedir()) : p);
-}
-
-// ── shelling out (no dependencies: curl + the sqlite3 CLI) ───────────────────────────────────────
-// The same four helpers threadBattery.ts uses, deliberately copied rather than shared: that file
-// runs main() at module scope, so importing anything from it would start a threading round. When a
-// third battery wants them, lift them (and the inventory reader below) into a scripts/convergence
-// harness module and have all three import it.
-
-function sh(bin: string, args: string[]): string {
-  return execFileSync(bin, args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 }).trim();
-}
-
-function curlJson<T>(url: string): T | null {
-  try {
-    const body = sh('curl', ['-sS', '--max-time', '30', url]);
-    return body ? (JSON.parse(body) as T) : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * One statement through the sqlite3 CLI, parsed as the single JSON value it returns. The query wraps
- * its own rows in json_group_array/json_object: `-json` output is not available on every sqlite3
- * build, but the JSON1 functions are, so the SQL does the encoding instead of the CLI.
- */
-function sqlJson<T>(db: string, sql: string): T[] {
-  const raw = sh('sqlite3', [db, sql]);
-  if (!raw || raw === 'null') return [];
-  return JSON.parse(raw) as T[];
-}
-
-function sqlExec(db: string, sql: string): void {
-  sh('sqlite3', [db, sql]);
-}
-
-const quote = (s: string) => `'${s.replace(/'/g, "''")}'`;
 
 // ── what is read back ───────────────────────────────────────────────────────────────────────────
 
@@ -1071,11 +1025,6 @@ interface Result extends Scored {
   /** Items with a hand-read half get their whole reply, never clipped. */
   fullReply?: string;
 }
-
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-const truncate = (s: string, n: number) => (s.length <= n ? s : s.slice(0, n - 1) + '…');
-/** Markdown cells: pipes break the table and newlines break the row. */
-const cell = (s: string) => truncate(s.replace(/\s*\n+\s*/g, ' ⏎ ').replace(/\|/g, '\\|'), 64);
 
 async function main(): Promise<number> {
   if (flag('help') || flag('h') || process.argv.length <= 2) { console.log(USAGE); return 0; }
