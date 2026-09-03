@@ -188,7 +188,7 @@ export function computeEngineTimeoutMs(env: NodeJS.ProcessEnv, legBudgetMs?: num
   const explicit = Number(env.ENGINE_TIMEOUT_MS);
   const standard = Number.isFinite(explicit) && explicit > 0
     ? explicit
-    : transportWindowFor(Number(env.OPS_TASK_TIMEOUT_MS) || 4 * 60_000);
+    : transportWindowFor(standardLegBudgetMs(env));
   // A leg the caller widened deliberately (the walled-URL browser budget) needs a transport window
   // derived from ITS deadline, not from the standard one — the found bug is a 15-minute browser leg
   // cut at 225s with the finished answer lost to the aborted client. `max`, so this can only ever
@@ -209,9 +209,14 @@ export const ENGINE_TIMEOUT_MS = computeEngineTimeoutMs(process.env);
 
 /** The orchestrator's per-leg deadline for an ORDINARY task — `OPS_TASK_TIMEOUT_MS`, four minutes
  *  by default. Declared here, beside the transport window derived from it, so the deadline and the
- *  window can never be read two different ways; the orchestrator holds it as a module constant. */
+ *  window can never be read two different ways; the orchestrator holds it as a module constant, and
+ *  `computeEngineTimeoutMs` above derives its own window through this function rather than reading
+ *  the var a second time. Being the ONE reading is why the fallback is total: empty, junk or a
+ *  zero/negative window all read as the documented four minutes, so nothing derived from this — the
+ *  transport window, the staleness horizon in state/opsCoordination.ts — can inherit a NaN. */
 export function standardLegBudgetMs(env: NodeJS.ProcessEnv): number {
-  return Number(env.OPS_TASK_TIMEOUT_MS || 4 * 60_000);
+  const ms = Number(env.OPS_TASK_TIMEOUT_MS);
+  return Number.isFinite(ms) && ms > 0 ? ms : 4 * 60_000;
 }
 
 /** The leg budget a walled-URL browser task gets when `OPS_BROWSER_TASK_TIMEOUT_MS` is switched on

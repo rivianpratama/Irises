@@ -77,6 +77,13 @@ test('computeEngineTimeoutMs: default, explicit override, and the small-orchestr
 test('standardLegBudgetMs: the orchestrator deadline, default four minutes', () => {
   assert.equal(standardLegBudgetMs({}), 240_000);
   assert.equal(standardLegBudgetMs({ OPS_TASK_TIMEOUT_MS: '600000' }), 600_000);
+  // The ONE reading of this env var — computeEngineTimeoutMs derives its window through this
+  // function, so junk, empty and a zero-length deadline have to land on the documented default here
+  // rather than propagate a NaN into every window and horizon derived from it (state/opsCoordination.ts).
+  assert.equal(standardLegBudgetMs({ OPS_TASK_TIMEOUT_MS: '' }), 240_000);
+  assert.equal(standardLegBudgetMs({ OPS_TASK_TIMEOUT_MS: 'nonsense' }), 240_000);
+  assert.equal(standardLegBudgetMs({ OPS_TASK_TIMEOUT_MS: '0' }), 240_000, 'a zero deadline is not a deadline');
+  assert.equal(computeEngineTimeoutMs({ OPS_TASK_TIMEOUT_MS: 'nonsense' }), 225_000, 'the same reading, one function down');
 });
 
 test('browserLegBudgetMs: unset is today, a number is taken as written, a bare switch-on is 15 min', () => {
