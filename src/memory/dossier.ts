@@ -18,7 +18,7 @@ import { scopeHistoryToUser } from './transcript.js';
 import { isGroupHandle } from './identity.js';
 import { record } from '../diagnostics/trace.js';
 import { reportError } from '../diagnostics/errorLog.js';
-import type { StoredMessage, UserProfile } from '../db/types.js';
+import type { StoredMessage } from '../db/types.js';
 
 // stripScopeSections now lives in userContext.ts (so the shared renderer can reuse it without a
 // circular import). Re-exported here to keep the historical import path stable. Same for the

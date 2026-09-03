@@ -420,6 +420,9 @@ export function renderShortBlockWithHot(
   // retunes you; connect, never recite). What is left is the three that are genuinely about a
   // 24-hour activity log: it is already delivered, its numbers go stale, and a flagged mail is the
   // fact channel behind "yes, remind me".
+  //
+  // The reminder bullet is written twice on purpose — once here as one line, once above wrapped
+  // across two — because the pre-router path has to render the bytes it always did. Edit both.
   const handling = turn
     ? [
         '- treat everything you already delivered as settled ground: build forward from it, never re-deliver or re-summarize it',
@@ -733,14 +736,13 @@ function gateDirectives(safe: readonly Directive[], turn: TurnRelevance): Direct
  *  because `<user_directives>` has two homes on the two paths — the identity card once a router is
  *  in hand, the flexible block before that — and one selection is what keeps them the same rules. */
 function selectDirectives(directives: Directive[], turn: TurnRelevance | null | undefined): {
-  safe: Directive[];
   shown: Directive[];
   report: MemoryGateReport | null;
 } {
   const safe = sanitizeDirectives(directives.filter(d => d && typeof d.text === 'string'));
-  if (!turn) return { safe, shown: safe, report: null };
+  if (!turn) return { shown: safe, report: null };
   const shown = gateDirectives(safe, turn);
-  return { safe, shown, report: gateReport(safe.length, shown.length, safe.length - shown.length) };
+  return { shown, report: gateReport(safe.length, shown.length, safe.length - shown.length) };
 }
 
 /** The directive rows this render works from: the medium tier, falling back to the legacy

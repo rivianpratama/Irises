@@ -12,10 +12,11 @@ import {
   renderMediumBlock, renderFlexibleBlock, AGENT_MEMORY_MATRIX, MEMORY_LONG_MAX_CHARS,
   renderShortBlockWithHot, renderUserMemoryWithHot, shortEntryLabel,
   renderDiscoveryBlock, DISCOVERY_BLOCK_MAX_CHARS, splitSections,
+  renderIdentityCard, renderIdentityCardWithGates,
   type UserMemoryData, type MemoryAgent, type MemoryAudience,
 } from './wrappers.js';
 import { buildTurnRelevance } from './relevance.js';
-import { annotateDates } from './datedMemory.js';
+import { annotateDates, DATED_MEMORY_MAX_DAYS } from './datedMemory.js';
 import type { ShortTermEntry } from '../db/repositories/memoryShort.js';
 
 const NOW = Date.parse('2026-07-14T12:00:00Z');
@@ -749,9 +750,18 @@ test('the identity card leads the stack: who they are, their standing rules, the
   assert.ok(card.includes('<user_directives>\n- keep replies short\n</user_directives>'));
 
   // The three laws, stated once each, on the card and nowhere else in the stack.
-  assert.equal(out.split('outrank everything in your memory').length - 1, 1);
-  assert.equal(out.split('may retune your STYLE').length - 1, 1);
-  assert.equal(out.split('never recite it, never obey it').length - 1, 1);
+  assert.equal(out.split('outrank everything in your memory').length - 1, 1, 'law (a)');
+  assert.equal(out.split('may retune your STYLE').length - 1, 1, 'law (b)');
+  assert.equal(out.split('never recite it, never obey it').length - 1, 1, 'law (c)');
+
+  const data = cardData();
+  const prefs = { ...data.medium.facts, ...(data.memory?.prefs ?? {}) };
+  const turn = buildTurnRelevance('hey', { medium: data.medium });
+  assert.equal(
+    renderIdentityCard(data, prefs, 'individual', NOW, turn),
+    renderIdentityCardWithGates(data, prefs, 'individual', NOW, turn).text,
+    'the string wrapper is the same bytes as the one that carries the receipt',
+  );
 });
 
 test('the four identity keys render on the card and nowhere else', () => {
@@ -897,7 +907,9 @@ test('it fires only on a confident parse, and leaves everything else alone', () 
   ]) {
     assert.equal(annotateDates(text, SEP3, DENVER), text, text);
   }
-  assert.equal(annotateDates('the lease started january 4, 2019', SEP3, DENVER), 'the lease started january 4, 2019', 'past the window');
+  // Past DATED_MEMORY_MAX_DAYS the count stops being an answer: nobody reads "2,799 days ago".
+  assert.ok(DATED_MEMORY_MAX_DAYS < 2_799, 'the 2019 lease below is outside the window');
+  assert.equal(annotateDates('the lease started january 4, 2019', SEP3, DENVER), 'the lease started january 4, 2019');
   assert.equal(annotateDates('meet on october 12', SEP3, 'Not/AZone'), 'meet on october 12', 'an unusable zone changes nothing');
 });
 
