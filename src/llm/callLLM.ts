@@ -515,14 +515,17 @@ async function runWithCallTimeout(run: LaneRunner, provider: LlmProvider, req: L
   let timer: NodeJS.Timeout | undefined;
   const expiry = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
-      ctl.abort();
       const model = req.modelOverride || MODELS[req.role][provider];
+      // Release the socket, hand the turn back, THEN write the receipt — in that order, so nothing
+      // that could go wrong on the diagnostics side can leave the turn hanging, which is the whole
+      // failure this function exists to end.
+      ctl.abort();
+      reject(laneTimeoutError(provider, model, ms));
       record({
         type: 'event', label: 'llm:timeout', role: req.role,
         chatId: req.trace?.chatId, handle: req.trace?.handle, taskId: req.trace?.taskId,
         detail: { role: req.role, model, ms },
       });
-      reject(laneTimeoutError(provider, model, ms));
     }, ms);
   });
   const call = run(provider, { ...req, signal });
