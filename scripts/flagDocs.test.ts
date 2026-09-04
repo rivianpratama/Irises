@@ -34,10 +34,10 @@ import { provenanceEnabled } from '../src/memory/provenance.js';
 import { dossierFactGuardEnabled } from '../src/memory/dossier.js';
 import { convoHistoryMax } from '../src/db/repositories/conversations.js';
 import { walledUrlHintEnabled } from '../src/llm/models.js';
-import { hermesSessionRotation } from '../src/agents/ops/hermesBackend.js';
+import { hermesSessionRotation, runsTransportEnabled } from '../src/agents/ops/hermesBackend.js';
 import { unkeptPromiseGuardEnabled } from '../src/agents/convo/unkeptPromise.js';
 import { starvedRetryEnabled, reasoningDisableEnabled, llmCallTimeoutMs } from '../src/llm/openrouterRequest.js';
-import { browserLegBudgetMs } from '../src/agents/ops/engineBackend.js';
+import { browserLegBudgetMs, opsCancelEngineAbortEnabled } from '../src/agents/ops/engineBackend.js';
 
 const REPO = process.cwd();
 const APP_ENV = readFileSync(join(REPO, 'deploy/app.env'), 'utf8');
@@ -74,6 +74,9 @@ const FLAGS: readonly FlagDoc[] = [
   { name: 'LLM_CALL_TIMEOUT_MS', probe: () => String(llmCallTimeoutMs({})) },
   // The env var IS the switch here: unset means every leg keeps the standard deadline.
   { name: 'OPS_BROWSER_TASK_TIMEOUT_MS', probe: () => onOff(browserLegBudgetMs({}) !== null) },
+  { name: 'OPS_CANCEL_ENGINE_ABORT', probe: () => onOff(opsCancelEngineAbortEnabled()) },
+  // Not a boolean — the token IS the transport name, same shape as HERMES_SESSION_ROTATION above.
+  { name: 'HERMES_RUN_TRANSPORT', probe: () => (runsTransportEnabled() ? 'runs' : 'chat') },
 ];
 
 /** The default a flag applies with nothing set — the var is removed for the read and put back. */
