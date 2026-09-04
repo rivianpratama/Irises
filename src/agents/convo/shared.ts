@@ -10,7 +10,7 @@ import {
 } from '../ops/sideEffects.js';
 import { resolveConsent } from '../ops/consent.js';
 import {
-  getOpsTask, insertPendingApproval, promoteToRunning, settleOpsTask,
+  getOpsTask, insertPendingApproval, listPendingApprovals, promoteToRunning, settleOpsTask,
 } from '../../db/repositories/opsTasks.js';
 import { isValidCron } from '../../pipeline/cron.js';
 import { getPreference, setPreference } from '../../db/repositories/memory.js';
@@ -1407,6 +1407,37 @@ async function resolvePendingApproval(a: {
 }
 
 /**
+ * A cancel that lands on an action still waiting for its yes: the user said "forget it" about
+ * something that was never started, so there is nothing in flight to stop — the in-memory registry
+ * would answer "nothing running" and she would tell them nothing was happening, while the parked row
+ * sat there waiting. Settling it 'declined' is the honest reading of the same words.
+ *
+ * Chat-scoped like handleCancelResearch (the rows are keyed by chat), match-filtered the same way,
+ * and returns how many it declined so the caller can drop a now-wrong correction note.
+ */
+async function declineParkedApprovals(chatId: string, sender: string | undefined, match: string): Promise<number> {
+  if (!opsApprovalGateEnabled()) return 0;
+  const m = match.trim().toLowerCase();
+  const parked = listPendingApprovals(chatId).filter(r => !m || r.request.toLowerCase().includes(m));
+  if (!parked.length) return 0;
+  for (const row of parked) {
+    settleOpsTask(row.id, 'declined');
+    record({ type: 'event', label: 'ops:approval', chatId, taskId: row.id, detail: { decision: 'declined', taskId: row.id, via: 'cancel' } });
+  }
+  if (sender) {
+    const pa = await getPreference<PendingApprovalPref>(sender, 'pending_approval').catch(() => undefined);
+    // Only the marker for a row we just declined is dropped — another chat's open ask is not this
+    // one's to retire.
+    if (pa?.taskId && parked.some(r => r.id === pa.taskId)) {
+      await setPreference(sender, 'pending_approval', null)
+        .catch(err => console.error('[convo] failed to clear pending_approval', err));
+    }
+  }
+  console.log(`[convo] cancel declined ${parked.length} parked action(s) (chat ${chatId})`);
+  return parked.length;
+}
+
+/**
  * Process an LLM result into a ChatResponse: fold text, run every tool call (reactions,
  * remember_user, delegate_to_ops, scheduling, directives), apply the never-go-silent fallbacks,
  * and persist history + refresh the dossier. `media` is this turn's attachments — the delegate
@@ -1815,10 +1846,16 @@ export async function processConvoResult(args: {
       const note = await handleCancelAutomation(String(input.match ?? ''), chatContext.senderHandle, chatId);
       if (note) outcomeParts.push(note);
     } else if (call.name === 'cancel_research') {
+      // An action still waiting on their yes is cancelled by DECLINING it — nothing is in flight for
+      // requestOpsCancel to stop, so without this the parked row would sit there while she told them
+      // nothing was running.
+      const declined = await declineParkedApprovals(chatId, chatContext?.senderHandle, String(input.match ?? ''));
       // Chat-scoped (works in groups, needs no handle) and synchronous — the in-flight map is the
-      // authority and the flag must be set before this turn's reply goes out.
+      // authority and the flag must be set before this turn's reply goes out. Still consulted after
+      // a decline, because a real look may ALSO be running for this chat; only its "nothing is being
+      // looked up" note is dropped, since a park was just dropped and that note would contradict it.
       const note = handleCancelResearch(String(input.match ?? ''), chatId);
-      if (note) outcomeParts.push(note);
+      if (note && !(declined > 0 && note.kind === 'nothing_found')) outcomeParts.push(note);
     } else if (call.name === 'recall_memory') {
       // Just captured here — the search + the answer happen in one bounded second pass after
       // the loop (Convo is single-shot, so a result can't come back inside this call).

@@ -501,6 +501,23 @@ test('a yes with nothing pending is not the gate\'s business', async () => {
   assert.equal(laneCalls, 0);
 });
 
+// ── the cancel path ──────────────────────────────────────────────────────────
+
+test('cancel_research on a parked action declines it instead of claiming nothing is running', async () => {
+  const { a, row } = await park();
+  const out = await processConvoResult({
+    ...answer(a, 'actually forget it'),
+    res: makeResult(['dropped it'], [{ name: 'cancel_research', input: { match: '' } }]),
+    turn: reasker([]).turn,
+  });
+
+  assert.equal(getOpsTask(row.id)?.status, 'declined');
+  assert.equal(await getPreference(a.handle, 'pending_approval'), null, 'the marker is dropped');
+  assert.equal(out.text, 'dropped it', 'her own confirmation stands — no "nothing was running" correction');
+  const rec = getTraces().filter(e => e.label === 'ops:approval').map(e => e.detail as { decision?: string; via?: string });
+  assert.ok(rec.some(d => d.decision === 'declined' && d.via === 'cancel'), 'the decline is on the record');
+});
+
 // ── the off path ─────────────────────────────────────────────────────────────
 
 test('OPS_APPROVAL_GATE=off: a yes resolves nothing — no read, no lane, no promotion', async () => {
