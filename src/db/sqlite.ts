@@ -145,6 +145,16 @@ CREATE TABLE IF NOT EXISTS proactive_deliveries (
 CREATE INDEX IF NOT EXISTS idx_proactive_dedupe ON proactive_deliveries(dedupe_key, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_proactive_due ON proactive_deliveries(status, deliver_after) WHERE status = 'pending';
 
+-- Inbound claims for the bridge door: one row per (platform, chat_id, message_id) already turned
+-- into a turn, so a plugin retrying a forward whose 202 never landed is answered instead of
+-- re-asked. Deliberately NOT folded into inbound_messages: that table's ON CONFLICT DO UPDATE is
+-- load-bearing for reply resolution and has to stay an upsert, which is the exact opposite of a
+-- claim. Ephemeral (24h), pruned on write.
+CREATE TABLE IF NOT EXISTS bridge_inbound_seen (
+  seen_key TEXT PRIMARY KEY, chat_id TEXT NOT NULL, created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bridge_inbound_seen_created ON bridge_inbound_seen(created_at);
+
 -- Cold storage under every tier: rows retired anywhere upstream (a superseded medium entry,
 -- an expired short row, a pruned message, an evicted profile fact) land here so "search your
 -- own past" has something to read. The source column is deliberately CHECK-less — the repo owns
@@ -372,6 +382,7 @@ export function resetStorageForTests(): void {
     DELETE FROM memory_short;
     DELETE FROM forget_epochs;
     DELETE FROM proactive_deliveries;
+    DELETE FROM bridge_inbound_seen;
     DELETE FROM token_usage;
     DELETE FROM error_log;
     DELETE FROM diagnostic_turns;
