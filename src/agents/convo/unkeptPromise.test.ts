@@ -1,8 +1,8 @@
 // Coverage for the unkept-promise guard — the honesty backstop under the one failure the persona
 // names as unrecoverable: a reply that PROMISES work while calling no tool, with nothing running.
 //
-// The live shape (VPS, 2026-09-02): the user asked for a browser look and got "udah bro, hermes udah
-// gue suruh pake browser … masih jalan, bentar lagi" with `tool_calls: null` and no run in flight —
+// The live shape (VPS, 2026-09-02): the user asked for a browser look and got "yeah, i already told
+// hermes to use the browser … still on it, hang tight" with `tool_calls: null` and no run in flight —
 // the earlier one had finished hours before. Two halves are pinned here: the pure lexicon/verdict,
 // and the ONE corrective re-ask in the call path (through the injected `turn.call` seam, so the three
 // ways a re-ask can land are all real turns end-to-end against the ephemeral DB backend).
@@ -22,17 +22,19 @@ import { markOpsStart, __resetOpsCoordination } from '../../state/opsCoordinatio
 import { getTraces, clearTraces, record } from '../../diagnostics/trace.js';
 import type { LlmRequest, LlmResult, LlmToolCall } from '../../llm/types.js';
 
-// The user's own words from the live failure — deliberately a message the routing gate reads as
-// social ('no'), which is exactly why the fabricated claim shipped: no other gate was going to fire.
-const ASK = 'coba minta si hermes pake browser feature';
+// What the user asked in the live failure — deliberately a message the routing gate reads as social
+// ('no'), which is exactly why the fabricated claim shipped: no other gate was going to fire. In
+// English like every other fixture here: her voice is L1 English, and no other language belongs in
+// this file's fixtures any more than in the lexicon (user rule 2026-09-04).
+const ASK = 'try asking hermes to use the browser feature';
 // And the reply it produced, bubble for bubble.
-const FABRICATED = ['udah bro, hermes udah gue suruh pake browser', 'masih jalan, bentar lagi'];
+const FABRICATED = ['yeah, i already told hermes to use the browser', 'still on it, hang tight'];
 
 // ── the lexicon and the verdict (pure) ───────────────────────────────────────
 
 test('the live failure reads as an unkept promise: a claim of work with no tool and nothing running', () => {
   assert.deepEqual(detectUnkeptPromise(FABRICATED, null, 0), {
-    promised: true, phrase: 'gue suruh', unkept: true,
+    promised: true, phrase: 'on it', unkept: true,
   });
 });
 
@@ -43,7 +45,7 @@ test('a real delegation with a holding line is a KEPT promise — the work is ac
 });
 
 test('"still on it" while research is genuinely in flight is kept too', () => {
-  const verdict = detectUnkeptPromise(['still on it', 'bentar lagi ya'], null, 1);
+  const verdict = detectUnkeptPromise(['still on it', 'hang tight'], null, 1);
   assert.equal(verdict.promised, true);
   assert.equal(verdict.unkept, false, 'an active run is what makes the line true');
 });
@@ -64,7 +66,7 @@ test('phrases match as whole phrases inside one clause, never across a break', (
 
 test('matching is blind to case and punctuation', () => {
   assert.equal(detectUnkeptPromise(['ON IT!'], null, 0).phrase, 'on it');
-  assert.equal(detectUnkeptPromise(['[[re:1]]gue cek dulu ya'], null, 0).phrase, 'gue cek');
+  assert.equal(detectUnkeptPromise(['[[re:1]]ON IT, checking on that'], null, 0).phrase, 'on it');
 });
 
 test('every phrase in the single-source lexicon is one the detector actually fires on', () => {
@@ -82,8 +84,8 @@ test('every phrase in the single-source lexicon is one the detector actually fir
 
 test('the corrective re-ask names the phrase and forbids claiming work is in progress', () => {
   assert.equal(
-    renderPromiseCorrection('gue suruh'),
-    'SYSTEM: your reply promised work ("gue suruh") but called no tool and nothing is running for them. Reply again as ONE JSON object: either include the delegate_to_ops entry that actually does the work, or say plainly what you can and can\'t do right now — never claim work is in progress.',
+    renderPromiseCorrection('still on it'),
+    'SYSTEM: your reply promised work ("still on it") but called no tool and nothing is running for them. Reply again as ONE JSON object: either include the delegate_to_ops entry that actually does the work, or say plainly what you can and can\'t do right now — never claim work is in progress.',
   );
 });
 
@@ -150,7 +152,7 @@ test('an unkept promise gets ONE re-ask showing the model its own reply and the 
     res: original,
     turn: turnCtx(async req => {
       seen.push(req);
-      return makeResult(['gabisa gue jalanin sendiri', 'lo mau gue coba dari sisi mana']);
+      return makeResult(["i can't run the browser from here", 'which side do you want me to try']);
     }),
   });
   assert.equal(seen.length, 1, 'exactly one re-ask');
@@ -158,7 +160,7 @@ test('an unkept promise gets ONE re-ask showing the model its own reply and the 
   assert.ok(seen[0].tools?.some(t => t.name === 'delegate_to_ops'), 'the full tool list still stands');
   assert.deepEqual(seen[0].messages.slice(-2), [
     { role: 'assistant', content: original.text },
-    { role: 'user', content: renderPromiseCorrection('gue suruh') },
+    { role: 'user', content: renderPromiseCorrection('on it') },
   ], 'its own slip, then the correction');
 });
 
@@ -175,7 +177,7 @@ test('the re-ask\'s call and the decision receipt land under SEPARATE labels in 
     ...args(),
     res: fabricated(),
     turn: turnCtx(async req => {
-      const out = makeResult(['gue gabisa jalanin browser dari sini']);
+      const out = makeResult(["i can't run the browser from here"]);
       record({
         type: 'llm', role: 'convo', label: req.trace?.label,
         chatId: req.trace?.chatId, handle: req.trace?.handle, response: out.text,
@@ -188,30 +190,30 @@ test('the re-ask\'s call and the decision receipt land under SEPARATE labels in 
     ['llm convo:unkept_retry', 'event convo:unkept_promise'],
     'the call and the decision are told apart by label alone',
   );
-  assert.deepEqual(receipt(), { phrase: 'gue suruh', retried: true, resolved: 'honest' });
+  assert.deepEqual(receipt(), { phrase: 'on it', retried: true, resolved: 'honest' });
 });
 
 test('a re-ask that delegates for real is accepted and the delegation is dispatched', async () => {
   const out = await processConvoResult({
     ...args(),
     res: fabricated(),
-    turn: turnCtx(async () => makeResult(['bentar ya, gue cek dulu'], [
+    turn: turnCtx(async () => makeResult(['hang tight, checking on that'], [
       { name: 'delegate_to_ops', input: { kind: 'general', request: 'use the browser to look at the feature', meta_prompt: null } },
     ])),
   });
   assert.ok(out.delegatedTask, 'the work the promise claimed is now actually running');
   assert.ok(out.text && out.text.trim().length, 'and a holding line goes out with it');
-  assert.deepEqual(receipt(), { phrase: 'gue suruh', retried: true, resolved: 'tool_call' });
+  assert.deepEqual(receipt(), { phrase: 'on it', retried: true, resolved: 'tool_call' });
 });
 
 test('an honest re-ask replaces the fabricated claim and says so in the receipt', async () => {
   const out = await processConvoResult({
     ...args(),
     res: fabricated(),
-    turn: turnCtx(async () => makeResult(['gue gabisa jalanin browser dari sini'])),
+    turn: turnCtx(async () => makeResult(["i can't run the browser from here"])),
   });
-  assert.equal(out.text, 'gue gabisa jalanin browser dari sini');
-  assert.deepEqual(receipt(), { phrase: 'gue suruh', retried: true, resolved: 'honest' });
+  assert.equal(out.text, "i can't run the browser from here");
+  assert.deepEqual(receipt(), { phrase: 'on it', retried: true, resolved: 'honest' });
 });
 
 test('a re-ask that promises again keeps the ORIGINAL reply — never a dropped turn', async () => {
@@ -219,11 +221,11 @@ test('a re-ask that promises again keeps the ORIGINAL reply — never a dropped 
   const out = await processConvoResult({
     ...args(),
     res: fabricated(),
-    turn: turnCtx(async () => { calls++; return makeResult(['bentar lagi ya, masih jalan']); }),
+    turn: turnCtx(async () => { calls++; return makeResult(['hang tight, still on it']); }),
   });
   assert.equal(calls, 1, 'one re-ask, never a loop');
   assert.equal(out.text, FABRICATED.join('\n---\n'), 'the turn still ships something');
-  assert.deepEqual(receipt(), { phrase: 'gue suruh', retried: true, resolved: 'kept_original' });
+  assert.deepEqual(receipt(), { phrase: 'on it', retried: true, resolved: 'kept_original' });
 });
 
 test('a re-ask that comes back empty keeps the original too', async () => {
@@ -233,7 +235,7 @@ test('a re-ask that comes back empty keeps the original too', async () => {
     turn: turnCtx(async () => makeResult([])),
   });
   assert.equal(out.text, FABRICATED.join('\n---\n'), 'an empty envelope is not an honest answer');
-  assert.deepEqual(receipt(), { phrase: 'gue suruh', retried: true, resolved: 'kept_original' });
+  assert.deepEqual(receipt(), { phrase: 'on it', retried: true, resolved: 'kept_original' });
 });
 
 test('a re-ask whose call throws keeps the original reply', async () => {
@@ -243,13 +245,13 @@ test('a re-ask whose call throws keeps the original reply', async () => {
     turn: turnCtx(async () => { throw new Error('provider down'); }),
   });
   assert.equal(out.text, FABRICATED.join('\n---\n'));
-  assert.deepEqual(receipt(), { phrase: 'gue suruh', retried: true, resolved: 'kept_original' });
+  assert.deepEqual(receipt(), { phrase: 'on it', retried: true, resolved: 'kept_original' });
 });
 
 test('with no turn context there is nothing to re-ask, and the receipt says so', async () => {
   const out = await processConvoResult({ ...args(), res: fabricated() });
   assert.equal(out.text, FABRICATED.join('\n---\n'));
-  assert.deepEqual(receipt(), { phrase: 'gue suruh', retried: false, resolved: 'kept_original' });
+  assert.deepEqual(receipt(), { phrase: 'on it', retried: false, resolved: 'kept_original' });
 });
 
 test('a promise with research actually running is left alone: no re-ask, no receipt', async () => {
@@ -258,19 +260,19 @@ test('a promise with research actually running is left alone: no re-ask, no rece
   markOpsStart(a.chatId, 'task1', { kind: 'general', request: 'the earlier browser look' });
   const out = await processConvoResult({
     ...a,
-    res: makeResult(['masih jalan bro', 'bentar lagi']),
+    res: makeResult(['still on it', 'hang tight']),
     turn: turnCtx(async () => { calls++; return makeResult(['unused']); }),
   });
   assert.equal(calls, 0);
   assert.equal(receipt(), undefined, 'nothing was decided, so nothing is filed');
-  assert.equal(out.text, 'masih jalan bro\n---\nbentar lagi');
+  assert.equal(out.text, 'still on it\n---\nhang tight');
 });
 
 test('a promise the reply backed with its own delegation is left alone too', async () => {
   let calls = 0;
   const out = await processConvoResult({
     ...args(),
-    res: makeResult(['on it, bentar ya'], [
+    res: makeResult(['on it, one sec'], [
       { name: 'delegate_to_ops', input: { kind: 'general', request: ASK, meta_prompt: null } },
     ]),
     turn: turnCtx(async () => { calls++; return makeResult(['unused']); }),
@@ -297,7 +299,7 @@ test('the turn receipt says the guard fired on this turn', async () => {
     ...args(),
     res: fabricated(),
     trace: TRACE_INPUTS,
-    turn: turnCtx(async () => makeResult(['gue gabisa jalanin browser dari sini'])),
+    turn: turnCtx(async () => makeResult(["i can't run the browser from here"])),
   });
   assert.equal(out.turnTrace?.outcome.unkeptPromise, true);
 });

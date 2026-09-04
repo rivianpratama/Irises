@@ -442,14 +442,14 @@ test('the classify lane is consulted only for a reply the lexicon cannot settle,
   assert.equal(laneCalls, 0);
 
   // Nothing pending any more: still no call, whatever they say.
-  const after = answer(a, 'kirim sekarang');
+  const after = answer(a, 'envíalo ahora');
   await processConvoResult({ ...after, res: makeResult(['sure']), turn: reasker([]).turn });
   assert.equal(laneCalls, 0, 'the lane is never a per-turn tax');
 
   // Pending and unreadable to the lexicon: exactly one call, and its verdict decides.
   const { a: b, row } = await park('cancel my gym membership');
   laneVerdict = 'YES';
-  const out = await processConvoResult({ ...answer(b, 'ya, lakukan'), res: makeResult(['on it']), turn: reasker([]).turn });
+  const out = await processConvoResult({ ...answer(b, 'sí, hazlo'), res: makeResult(['on it']), turn: reasker([]).turn });
   assert.equal(laneCalls, 1);
   assert.equal(out.delegatedTask?.id, row.id, 'a non-English yes runs the action through the lane alone');
   laneVerdict = 'UNCLEAR';

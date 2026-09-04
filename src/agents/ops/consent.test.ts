@@ -79,7 +79,7 @@ test('anything the English lexicon does not settle is unclear — including ever
   assert.equal(classifyConsent(''), 'unclear');
   assert.equal(classifyConsent('what did you find'), 'unclear');
   assert.equal(classifyConsent('sí, hazlo'), 'unclear');
-  assert.equal(classifyConsent('lakukan sekarang'), 'unclear');
+  assert.equal(classifyConsent('hazlo ahora'), 'unclear');
 });
 
 // ── the classify lane, the language-agnostic path ────────────────────────────

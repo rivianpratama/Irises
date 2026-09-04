@@ -1,8 +1,8 @@
 // The unkept-promise guard — the honesty backstop under the ONE failure the persona names as
 // unrecoverable: a reply that promises work while nothing is actually being done for the user.
 //
-// Observed live (VPS, 2026-09-02). The user: "coba minta si hermes pake browser feature". The reply:
-// "udah bro, hermes udah gue suruh pake browser … masih jalan, bentar lagi" — with `tool_calls: null`
+// Observed live (VPS, 2026-09-02). The user asked for a browser look. The reply: "yeah, i already
+// told hermes to use the browser … still on it, hang tight" — with `tool_calls: null`
 // and no run in flight, the earlier one having finished 2.5h before. A fabricated in-flight claim,
 // and nothing in the pipeline was looking for it: the routing gate reads the USER's message (and read
 // that one as social), and the false-refusal floor reads the draft for the opposite failure — a claim
@@ -13,8 +13,11 @@
 // (convo/shared.ts, beside the JSON-envelope retry it mirrors) — only that has a model to re-ask.
 
 /**
- * The promise lexicon — bilingual, because she texts in both. Whole phrases, not words: single words
- * ("cek", "checking") carry no commitment on their own, and the verdict here costs a model call.
+ * The promise lexicon — ENGLISH-ONLY: her L1 is English, and a hand-written list for any other
+ * language is the thing the language-agnostic rule forbids (user, 2026-09-04) — a promise in another
+ * language is the model's own `[[re:N]]` tag / the classify lane's business, never this array's.
+ * Whole phrases, not words: single words ("checking") carry no commitment on their own, and the
+ * verdict here costs a model call.
  *
  * SINGLE SOURCE (the THEME_KINDS pattern): the trigger and the re-ask's accept check read this same
  * array, so a phrase can never be one the guard fires on but the retry is not held to. Deliberately
@@ -22,7 +25,6 @@
  * exactly the claim a turn with no tool call and no active run cannot back.
  */
 export const PROMISE_PHRASES = [
-  // EN
   'on it',
   'looking that up',
   'pulling that up',
@@ -34,16 +36,6 @@ export const PROMISE_PHRASES = [
   'gimme a sec',
   'give me a minute',
   'back in a bit',
-  // ID
-  'gue cek',
-  'gue cari',
-  'gue suruh',
-  'lagi jalan',
-  'masih jalan',
-  'bentar lagi',
-  'sabar ya',
-  'tunggu ya',
-  'lagi gue',
 ] as const;
 
 /** One phrase from the lexicon above — derived from the array so the two can never drift. */
@@ -62,7 +54,7 @@ export interface UnkeptPromiseVerdict {
 // phrase may span, so "moving on. it can wait" and "hang on, it broke" are not promises even though
 // their letters contain one — the words sit either side of a break. Every other non-alphanumeric run
 // collapses to a single space, which is what makes the match blind to case, punctuation and the
-// `[[re:N]]` routing prefix ("ON IT!", "[[re:1]]gue cek dulu"). The leading/trailing pad is what
+// `[[re:N]]` routing prefix ("ON IT!", "[[re:1]]ON IT"). The leading/trailing pad is what
 // makes the includes() below a whole-phrase test rather than a substring one ("depends on itself"
 // contains "on it" as letters, never as words).
 const CLAUSE_BREAK = /[.!?,;:\n\r]+/;
