@@ -553,8 +553,14 @@ class _SendHandler(BaseHTTPRequestHandler):
             metadata = {"thread_id": body["thread_id"]} if body.get("thread_id") else None
             try:
                 if str(state) == "stop":
-                    # STOP: the platform adapters expose a dedicated stop_typing(chat_id); where there
-                    # isn't one, typing self-expires within a few seconds so doing nothing is correct.
+                    # STOP: the platform adapters expose a dedicated stop_typing(chat_id). This is not
+                    # a nicety — Photon's indicator is STATEFUL: setTyping(guid, True) stays lit until
+                    # setTyping(guid, False), so a reply that never stops leaves the dots burning
+                    # forever. That is why Irises now sends an explicit stop after EVERY reply (plus a
+                    # guarded trailing stop, since a start still crossing this 3s round trip can land
+                    # after it — see src/state/typingStop.ts). An adapter WITHOUT stop_typing is left
+                    # to its own platform's expiry: there is nothing to call, and inventing a fake
+                    # start-with-no-refresh would be worse than waiting it out.
                     stop_fn = getattr(adapter, "stop_typing", None)
                     if callable(stop_fn):
                         asyncio.run_coroutine_threadsafe(stop_fn(str(chat_id)), loop).result(timeout=3)

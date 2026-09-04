@@ -376,6 +376,14 @@ the plugin — if the adapter has no chat-action, it's a safe no-op (the plugin 
 it found one). With `BRIDGE_TYPING=off`, replies also land quicker because the per-bubble simulated-typing
 hold (invisible without dots) is skipped.
 
+Irises ends every reply with an **explicit typing stop**, then a second guarded stop
+`TYPING_TRAILING_STOP_MS` later (default 4500ms). Photon's indicator is stateful — it stays on until
+something turns it off — so unlike the web channel, sending the last bubble does not clear it; and
+because "start typing" is fire-and-forget through a gateway leg that can take seconds (both sides time
+out at 3s), a start issued just before the final send can land *after* the first stop. The trailing
+stop catches that one, and is skipped if a new turn has asserted dots in the meantime. Raise
+`TYPING_TRAILING_STOP_MS` if your gateway's typing round trip is slower than 3s; it must stay above it.
+
 On the Irises side, `HERMES_BRIDGE_URL` (default `http://127.0.0.1:8655`) points at that hermes
 loopback listener; OpenClaw needs nothing extra (outbound rides the existing gateway WS client).
 
@@ -498,6 +506,7 @@ above) — set one only to override it.
 | `HERMES_STREAM` | hermes | `on` streams the research completion (SSE) for a live progress heartbeat on long runs; default `off`, with a safe fallback to the blocking read when the endpoint doesn't stream. **Only affects the `chat` fallback** — the default `runs` transport already streams via `/v1/runs/{id}/events` regardless of this flag |
 | `OPS_CANCEL_ENGINE_ABORT` | both | default **on**; on give-up (user cancel or Irises's own leg timeout) also notifies the engine so it stops working too — hermes `POST /v1/runs/{id}/stop`, OpenClaw's abort+notify RPC. Anything but `true`/`1`/`on`/`yes` turns it **off**, reverting to dropping the connection locally without telling the engine (the old behavior, and the orphaned-run bug this exists to fix) |
 | `BRIDGE_TYPING` | both | `on` forwards a typing indicator through the engine adapter's chat-action (feature-detected, safe no-op otherwise); default `off` — which also makes replies snappier (skips the invisible per-bubble typing hold) |
+| `TYPING_TRAILING_STOP_MS` | both | `4500`: how long after a reply's explicit typing stop the guarded second stop fires, catching a fire-and-forget "start" that crossed the gateway *after* it. Must exceed the 3s typing round-trip timeout on both sides; only matters where the indicator is stateful (Photon) |
 | `ENGINE_TIMEOUT_MS` | both | per-engine-call budget (default: `OPS_TASK_TIMEOUT_MS` − 15s) |
 | `ENGINE_MAX_CONCURRENT` | both | simultaneous engine agent runs (default 3); a further run queues, then fails honestly. Match it to the engine's own concurrent-run cap |
 | `IRISES_FRONT` | bridge | engine-side glob list choosing fronted chats (e.g. `telegram:*`) — set where the gateway runs |

@@ -41,6 +41,7 @@ import { createMouth, type SpeakContent, type SpeakOpts, type SpeakResult } from
 import { registerPendingInboundProvider } from './state/inboundGlance.js';
 import { isTypingFresh as isTypingFreshAt, shouldFlush, effectiveSettleMs } from './state/batchTiming.js';
 import { typingDelayMs as pacedTypingDelayMs, holdLoop, type PacingConfig } from './state/pacing.js';
+import { createTypingLifecycle } from './state/typingStop.js';
 import { mergeBurst, splitBurstBySender } from './state/burstMerge.js';
 import { resolveOutboundBubbles, resolveReactionTarget, stripReplyTag } from './state/replyThreading.js';
 import { noteSend, countSendsSince, lastSendAt } from './state/outboundLog.js';
@@ -156,8 +157,18 @@ export interface AgentClient {
 // a channel that can't do one simply skips it instead of throwing.
 const sendMessage = (chatId: string, text: string, replyTo?: ReplyTo, media?: MediaAttachment[]) =>
   resolveChannel(chatId).sendMessage(chatId, text, replyTo, media);
-const startTyping = (chatId: string) => resolveChannel(chatId).startTyping(chatId);
+// Every "typing" assertion in this file goes through the lifecycle (state/typingStop.ts), which is
+// what makes the explicit stop at the end of a reply safe: it knows whether a start landed after
+// that stop and so whether the trailing safety stop would be killing a NEW turn's dots. Keeps a
+// Promise return type because two call sites `await` it; the assertion itself is fire-and-forget by
+// design (the gateway leg is slow enough that awaiting it once stalled the reply), so the promise is
+// already-resolved rather than the channel's round trip. `typingLifecycle` is declared further down,
+// with the other TYPING_* knobs it needs — these arrows only ever run per-turn, long after module
+// init, so the later binding is resolved by the time anyone calls them.
+const startTyping = (chatId: string): Promise<void> => { typingLifecycle.noteStart(chatId); return Promise.resolve(); };
 const stopTyping = (chatId: string) => resolveChannel(chatId).stopTyping(chatId);
+/** The reply (or the silent turn) is over — clear the dots, with the trailing safety stop. */
+const releaseTyping = (chatId: string) => { typingLifecycle.release(chatId); };
 const markAsRead = (chatId: string) => resolveChannel(chatId).markAsRead(chatId);
 const getChat = (chatId: string) => resolveChannel(chatId).getChat(chatId);
 const sendReaction = (chatId: string, messageId: string, reaction: Reaction, operation?: 'add' | 'remove') => {
@@ -243,12 +254,30 @@ const TYPING_DELAY_MIN_MS = Number(process.env.TYPING_DELAY_MIN_MS || 400);    /
 const TYPING_FIRST_BUBBLE_MAX_MS = Number(process.env.TYPING_FIRST_BUBBLE_MAX_MS || 600); // bubble 1 only: dots were already up through the LLM call (lowered from 800 so first ink lands sooner)
 const TYPING_JITTER_PCT = Number(process.env.TYPING_JITTER_PCT || 15);         // ±% humanizing wobble on the hold; 0 disables
 const TYPING_REFRESH_MS = Number(process.env.TYPING_REFRESH_MS || 2000);       // re-ping the typing indicator this often so it stays visible (no dead air)
+const TYPING_TRAILING_STOP_MS = Number(process.env.TYPING_TRAILING_STOP_MS || 4500); // second, guarded stop after a reply — must EXCEED the 3s typing round-trip timeout on both sides (channelTyping's abort here, `.result(timeout=3)` in the plugin), or an in-flight start can still land after it
 // On a channel with NO visible typing indicator (bridge with BRIDGE_TYPING off, or an adapter with no
 // chat-action), a full per-bubble simulated-typing HOLD is pure dead air — a delay the user sees as an
 // unexplained gap. There we skip the hold and space multi-bubble replies by just this small gap so they
 // still land in order and read as separate sends. 0 = fire bubbles back-to-back.
 const BRIDGE_BUBBLE_GAP_MS = Number(process.env.BRIDGE_BUBBLE_GAP_MS || 400);
 const PACING: PacingConfig = { cpm: TYPING_CPM, minMs: TYPING_DELAY_MIN_MS, maxMs: TYPING_DELAY_MAX_MS, firstBubbleMaxMs: TYPING_FIRST_BUBBLE_MAX_MS, jitterPct: TYPING_JITTER_PCT };
+
+// One lifecycle for the whole process (the maps inside are keyed by chat). Lives here rather than
+// beside the outbound wrappers above because it needs TYPING_TRAILING_STOP_MS; the wrappers reach
+// down to it through arrows, so the ordering is only a declaration detail. Timers are unref'd for
+// the same reason withTypingKeptAlive unrefs its interval: a pending 4.5s stop must never be the
+// reason the process stays alive.
+const typingLifecycle = createTypingLifecycle({
+  now: Date.now,
+  start: chatId => { void resolveChannel(chatId).startTyping(chatId); },
+  stop: chatId => { void resolveChannel(chatId).stopTyping(chatId); },
+  setTimeout: (fn, ms) => {
+    const t = setTimeout(fn, ms);
+    (t as { unref?: () => void }).unref?.();
+    return t;
+  },
+  clearTimeout: handle => clearTimeout(handle as NodeJS.Timeout),
+}, { trailingStopMs: TYPING_TRAILING_STOP_MS });
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -425,6 +454,14 @@ async function withTypingKeptAlive<T>(chatId: string, work: Promise<T>): Promise
     return await work;
   } finally {
     clearInterval(timer);
+    // Stopping the interval only stops NEW pings — on Photon the dots it already lit stay lit until
+    // told to stop, so every exit from here (settle OR reject) must clear them. This is the catch-all
+    // for the turns sendBubbles never sees: a reaction-only turn, a silent tool-only turn, a voicer
+    // thunk that returns nothing. A DOUBLE release (sendBubbles below, then this) is harmless — the
+    // second stop is idempotent and just reschedules the one trailing timer. The mouth's voicer case
+    // — release here, then sendBubbles re-starts for the first bubble — is exactly what the
+    // trailing-stop guard is for: that later start suppresses this release's trailing stop.
+    releaseTyping(chatId);
   }
 }
 
@@ -496,13 +533,21 @@ async function sendBubbles(chatId: string, rawBubbles: string[], opts: SendBubbl
     // inbound id) — the join key when a later tapped reply collapses to that thread root.
     // Fire-and-forget; never blocks the send.
     if (sent?.message?.id) void recordSentBubble(chatId, sent.message.id, text, replyTo?.message_id);
-    // Sending a message clears the recipient's typing dots. If MORE bubbles are coming, re-assert
-    // them immediately so there's no dark gap — the user sees "bubble → dots again" = more coming.
-    // After the last bubble we intentionally don't, so the dots clear (= done). Fire-and-forget:
-    // startTyping swallows its own errors, and the next bubble's hold re-pings anyway. Only meaningful
-    // where dots are visible.
+    // If MORE bubbles are coming, re-assert the dots immediately so there's no dark gap — the user
+    // sees "bubble → dots again" = more coming. Not after the last one, where a ping racing past the
+    // send would read as "still typing" with nothing behind it. Fire-and-forget: startTyping swallows
+    // its own errors, and the next bubble's hold re-pings anyway. Only meaningful where dots show.
     if (paced && typingVisible && !isLast) void startTyping(chatId);
   }
+  // The reply is fully out, so put the dots down EXPLICITLY. This used to be left implicit on the
+  // theory that "sending a message clears the recipient's typing dots" — true on the web channel,
+  // where the browser hides them on any incoming bubble, but false on Photon over the bridge, whose
+  // indicator is stateful: it stays lit until it is told to stop. Hence the leak this fixes (dots
+  // burning after every reply). Unconditional on `paced`: an unpaced delivery (a critical alert, a
+  // progress ping) still runs under withTypingKeptAlive's dots, and they have to come down too.
+  // The release also schedules the guarded trailing stop that catches a start still in flight
+  // through the gateway when this stop went out — see state/typingStop.ts.
+  if (typingVisible) releaseTyping(chatId);
   // Log this send (ONE entry per delivery ≈ one assistant history row): so a later message answered
   // after these bubbles is treated as "gapped" and gets a quote, and so a queued message that predates
   // this send is flagged stale to the next turn's prompt (outboundLog.countSendsSince).
@@ -585,7 +630,12 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
 
   // Dots only once a reply is certain: 1:1, or any media (which skips the classifier). Showing them
   // for a group text Irises then ignores reads as it starting to answer and thinking better of it.
-  if (shouldStartTypingEarly(isGroupChat, hasMedia(media))) void startTyping(chatId);
+  // Remembered, not re-derived: on Photon the dots stay lit until stopped, so every exit between
+  // here and withTypingKeptAlive (whose finally releases) has to put down whatever THIS turn lit —
+  // and only that. Releasing dots this turn never lit would blank a concurrent follow-up's
+  // indicator, which is mid-delivery outside the chat lock we haven't taken yet.
+  const startedTypingEarly = shouldStartTypingEarly(isGroupChat, hasMedia(media));
+  if (startedTypingEarly) void startTyping(chatId);
 
   // In group chats, check if agent should respond, react, or ignore
   // Always respond to any media (image/audio/video/doc) - someone sending media is clearly communicating
@@ -598,6 +648,7 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
       // Record it anyway (the react path already did): the next turn's history must show what was
       // said in the room, or Irises answers "what did Sam just say?" having never heard it.
       await addMessage(chatId, 'user', text, from);
+      if (startedTypingEarly) releaseTyping(chatId);   // silent exit before the keep-alive's finally
       return;
     }
 
@@ -619,6 +670,9 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
         // history loses what was said ("what did Sam just say?" with no record of it).
         await addMessage(chatId, 'user', text, from);
       }
+      // Same as the ignore branch: a reaction (or a named-nothing non-reaction) is the end of the
+      // turn, and it never reaches withTypingKeptAlive's finally.
+      if (startedTypingEarly) releaseTyping(chatId);
       return;
     }
 
