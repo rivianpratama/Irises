@@ -245,6 +245,19 @@ export function browserLegBudgetMs(env: NodeJS.ProcessEnv): number | null {
   return Number.isFinite(ms) && ms > 0 ? ms : null;
 }
 
+/** The mid-flight-cancel gate (env: OPS_CANCEL_ENGINE_ABORT). Default ON, read at CALL time — the
+ *  same parse shape as every sibling flag (threadingEnabled, opsDurableTasksEnabled).
+ *
+ *  It lives HERE rather than in one adapter because BOTH adapters now answer to it: OpenClaw's
+ *  wrapper-side abort + notify RPC, and hermes's `POST /v1/runs/{id}/stop` on either give-up. Off ⇒
+ *  each adapter behaves exactly as it did before its own cancel path existed: the run is dropped
+ *  locally and the engine is never told. */
+export function opsCancelEngineAbortEnabled(): boolean {
+  const v = (process.env.OPS_CANCEL_ENGINE_ABORT || '').trim().toLowerCase();
+  if (v === '') return true;
+  return ['true', '1', 'on', 'yes'].includes(v);
+}
+
 /**
  * How long a run may sit in the engine-slot queue below before it gives up and fails honestly.
  *

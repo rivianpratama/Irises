@@ -9,7 +9,7 @@
 // v1 scope note: runTask / remember / probe are complete. Reminder scheduling has a working hermes
 // path; on OpenClaw it lands next iteration (the cron.add RPC payload shape needs verification
 // against a live gateway — see docs/ENGINES.md), so those methods fail honestly for now.
-import { EngineUnavailableError, EngineRunError, ENGINE_TIMEOUT_MS } from './engineBackend.js';
+import { EngineUnavailableError, EngineRunError, ENGINE_TIMEOUT_MS, opsCancelEngineAbortEnabled } from './engineBackend.js';
 import type { EngineBackend, EngineRunContext, ReminderSpec, ReminderRef, ProbeResult, CapabilitySummary } from './engineBackend.js';
 import { OPENCLAW_TASK_HEADER } from './openclawDoctrine.js';
 import { parseDeclaredCapabilities } from './capabilityDeclaration.js';
@@ -63,17 +63,14 @@ export function openclawSessionKey(chatId: string): string {
   return `agent:${agentId}:irises-${tail}`;
 }
 
-/** The mid-flight-cancel gate (env: OPS_CANCEL_ENGINE_ABORT). Default ON, read at CALL time — the
- *  same parse shape as every sibling flag (threadingEnabled, opsDurableTasksEnabled).
+/** The mid-flight-cancel gate, now shared with the hermes adapter and so declared on the seam
+ *  (engineBackend.ts). Re-exported because it was this module's export first — importers, tests
+ *  and docs that name it here keep working.
  *
  *  Off ⇒ requestAbortable() hands straight to client.request with the caller's own opts object: no
  *  listener, no `signal` key, and a cancelled run goes on waiting out the RPC budget exactly as it
  *  did before this existed. */
-export function opsCancelEngineAbortEnabled(): boolean {
-  const v = (process.env.OPS_CANCEL_ENGINE_ABORT || '').trim().toLowerCase();
-  if (v === '') return true;
-  return ['true', '1', 'on', 'yes'].includes(v);
-}
+export { opsCancelEngineAbortEnabled };
 
 /** "This gateway build has no such RPC" — the signal that a feature-detection loop should try the
  *  next candidate name rather than give up. Shared by channelTyping and the abort notify. */
