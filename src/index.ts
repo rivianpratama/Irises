@@ -32,7 +32,8 @@ import { getUpdateStatus, startUpdateChecker } from './update/checker.js';
 import { createUpdateAnnouncer } from './update/announce.js';
 import { writePidFileAtBoot } from './update/pidfile.js';
 import { initSelfUpdate } from './update/selfUpdate.js';
-import { markOpsStart } from './state/opsCoordination.js';
+import { markOpsStart, setOpsTaskSink } from './state/opsCoordination.js';
+import { createOpsTaskRecovery, opsDurableTasksEnabled } from './state/opsTaskDurability.js';
 import { estimateOpsEta } from './agents/etaEstimate.js';
 import { browserLegBudgetFor } from './agents/ops/client.js';
 import { withChatLock } from './state/sendQueue.js';
@@ -1020,6 +1021,15 @@ app.listen(PORT, () => {
   // The proactive sweep: quiet-hours deferrals whose morning has come, and rows a restart stranded
   // mid-delivery (boot + every 60s, unref'd like the retention timers).
   proactive.start();
+  // Durable ops-task state: a row per background run, so a task a restart killed can be owned up to
+  // — once, honestly, claiming no result — instead of leaving a holding line that never lands.
+  // Registering the sink is what turns the feature on: with the flag off nothing is registered, the
+  // registry's hooks stay one false `if` each, and no timer is armed.
+  if (opsDurableTasksEnabled()) {
+    const opsRecovery = createOpsTaskRecovery({ deliver: proactive.deliver });
+    setOpsTaskSink(opsRecovery.sink);
+    opsRecovery.start();
+  }
   // Thread-revisit pings: the hourly sweep that asks how a thing they left hanging went. Off unless
   // THREADING_PINGS_ENABLED says otherwise — the one memory surface that texts a phone unprompted.
   initThreadPings({ deliver: proactive.deliver });
