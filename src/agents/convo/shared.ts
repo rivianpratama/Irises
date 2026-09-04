@@ -6,8 +6,12 @@ import type { CapabilitySummary, CapabilityClass } from '../ops/engineBackend.js
 import { markIntroWoven } from '../ops/firstMove.js';
 import {
   approvalAskFallback, classifySideEffect, coerceEffect, opsApprovalGateEnabled, renderApprovalAsk,
+  reconfirmAskFallback, renderReconfirmAsk,
 } from '../ops/sideEffects.js';
-import { insertPendingApproval } from '../../db/repositories/opsTasks.js';
+import { resolveConsent } from '../ops/consent.js';
+import {
+  getOpsTask, insertPendingApproval, promoteToRunning, settleOpsTask,
+} from '../../db/repositories/opsTasks.js';
 import { isValidCron } from '../../pipeline/cron.js';
 import { getPreference, setPreference } from '../../db/repositories/memory.js';
 // Directives/notes/facts are memory_medium rows now (Stage 1) — the "no error margin" tier:
@@ -23,7 +27,7 @@ import {
 } from '../../db/repositories/memoryArchive.js';
 import { validateDirective } from '../../memory/preferences.js';
 import { FACT_KEYS } from '../../memory/mediumTerm.js';
-import { updateDossier, PENDING_CLARIFICATION_TTL_MS } from '../../memory/dossier.js';
+import { updateDossier, PENDING_ASK_TTL_MS, PENDING_CLARIFICATION_TTL_MS } from '../../memory/dossier.js';
 import { updateRelationshipClimate } from '../../memory/climateDrift.js';
 import { updateThreadInventory, type ThreadTurn } from '../../memory/threadHarvest.js';
 import { groomNotes } from '../../memory/noteGroomer.js';
@@ -70,7 +74,7 @@ import { voiceOutcome, type Outcome } from '../fallfirm/client.js';
 import { voiceInstant } from '../fallfirm/voiceInstant.js';
 import { requestSelfUpdate } from '../../update/selfUpdate.js';
 import { recallMedia, MEDIA_RECALL_TTL_MS } from './mediaRecall.js';
-import { hasMedia, type IncomingMedia } from '../../webhook/types.js';
+import { emptyMedia, hasMedia, type IncomingMedia } from '../../webhook/types.js';
 import type { LlmRequest, LlmResult, LlmMessage, LlmToolDef } from '../../llm/types.js';
 import type { OpsTask, TaskKind, PendingClarification } from '../types.js';
 import type { ResolvedReply } from '../../state/replyResolution.js';
@@ -1224,8 +1228,14 @@ async function enforcePromiseKept(
 async function askForApproval(
   args: { res: LlmResult; chatId: string; handle: string | undefined; turn?: ConvoTurnContext },
   request: string,
+  variant: 'park' | 'reconfirm' = 'park',
 ): Promise<string> {
   const { res, chatId, handle, turn } = args;
+  // Two notes, one mechanism: the park's ("you were about to…") and the expired yes's ("they said
+  // yes, but the ask had run out"). Both are questions about the same action, and both must be
+  // impossible to mistake for a claim that it is running.
+  const note = variant === 'reconfirm' ? renderReconfirmAsk(request) : renderApprovalAsk(request);
+  const fallback = variant === 'reconfirm' ? reconfirmAskFallback(request) : approvalAskFallback(request);
   let asked: string | null = null;
   if (turn) {
     try {
@@ -1239,7 +1249,7 @@ async function askForApproval(
         messages: [
           ...turn.messages,
           { role: 'assistant', content: res.text ?? '' },
-          { role: 'user', content: renderApprovalAsk(request) },
+          { role: 'user', content: note },
         ],
         // The CALL's own label, distinct from the decision receipt below — same split as
         // convo:unkept_retry / convo:unkept_promise, for the same reason.
@@ -1252,8 +1262,148 @@ async function askForApproval(
       reportError({ source: 'convo', category: 'retry_exhausted', severity: 'warn', err, detail: { guard: 'approval_ask' }, chatId, handle });
     }
   }
-  record({ type: 'event', label: 'convo:approval_ask', chatId, handle, detail: { resolved: asked ? 'reasked' : 'fallback' } });
-  return asked ?? approvalAskFallback(request);
+  record({ type: 'event', label: 'convo:approval_ask', chatId, handle, detail: { resolved: asked ? 'reasked' : 'fallback', variant } });
+  return asked ?? fallback;
+}
+
+// ── The answer to that ask ──────────────────────────────────────────────────────────────────────
+/**
+ * The parked action's marker, as it sits on the sender's prefs beside pending_clarification. Written
+ * by the park (above) and by the re-confirm (below); read by this resolution and by the prompt
+ * section (memory/dossier.ts renderPendingApproval).
+ */
+interface PendingApprovalPref {
+  taskId?: string;
+  request?: string;
+  kind?: string;
+  askedAt?: number;
+  /** True on the marker the re-confirm wrote: a yes to THIS one is a fresh approval, and it never
+   *  re-asks a second time. */
+  reconfirm?: boolean;
+}
+
+/** What the resolution hands back: at most one of the two, and usually neither. */
+interface ApprovalOutcome {
+  /** The promoted task, ready for the ONE kickoff site (index.ts, inside this turn's lock). */
+  task: OpsTask | null;
+  /** The action to re-ask about, when a yes arrived after the ask had already expired. */
+  reconfirm: string | null;
+}
+
+const NO_APPROVAL: ApprovalOutcome = { task: null, reconfirm: null };
+
+/**
+ * The task the user actually said yes to, rebuilt from the durable row.
+ *
+ * The row carries the WHOLE serialized OpsTask (the park writes `meta.task`), which is the point of
+ * parking durably: the brief she asked about is the brief that runs, even across a restart. A row
+ * that is gone or unparseable falls back to the marker's own three fields — a thinner task than the
+ * one she asked about, but the user said yes, and dropping an authorized action silently is the one
+ * outcome that is never acceptable. The receipt says which of the two this was.
+ */
+function approvedTask(pa: PendingApprovalPref, chatId: string, sender: string, now: number): { task: OpsTask; fromRow: boolean } {
+  const stored = pa.taskId ? getOpsTask(pa.taskId)?.meta?.task : undefined;
+  const fromRow = !!stored && typeof stored === 'object';
+  const kind: TaskKind = (OPS_KINDS as readonly string[]).includes(String(pa.kind)) ? pa.kind as TaskKind : 'general';
+  const base: OpsTask = fromRow
+    ? { ...(stored as OpsTask) }
+    : {
+        id: String(pa.taskId), chatId, agentHandle: sender, kind,
+        request: String(pa.request), effect: 'act', createdAt: now, media: emptyMedia(),
+      };
+  return {
+    // approvedAt is what the brief's AUTHORIZED ACTION line is keyed to (agents/ops/client.ts), and
+    // `reconfirm` rides along so a re-confirmed yes is readable on the task itself.
+    task: {
+      ...base,
+      effect: 'act',
+      approval: {
+        ...(base.approval ?? { askedAt: pa.askedAt ?? now }),
+        approvedAt: now,
+        ...(pa.reconfirm ? { reconfirm: true } : {}),
+      },
+    },
+    fromRow,
+  };
+}
+
+/**
+ * Read this turn as the answer to a parked action — the ONE place a short word starts work in the
+ * outside world.
+ *
+ * Runs before the tool loop, so a promotion occupies the turn's single delegation slot and the model
+ * cannot also delegate over the top of it. It hands the task back through `delegatedTask`, which
+ * means the run is started at the ONE site that has ever started one (index.ts, after the reply is
+ * out, inside this turn's chat lock — INV-1 untouched, a fresh AbortController per run).
+ *
+ * The five ways this goes, with a receipt on every one of them including the no-ops:
+ *   • yes, inside the TTL → promote the row, hand the task back, drop the marker;
+ *   • no → settle the row 'declined', drop the marker (Convo's own line acknowledges it);
+ *   • unclear → nothing moves; the ask stays live and the section asks again next turn;
+ *   • expired → settle 'expired'; a yes on that turn RE-ASKS (never runs) and parks a fresh row,
+ *     and the yes after that is a fresh approval;
+ *   • nothing pending → nothing happens, and the classify lane is never consulted.
+ */
+async function resolvePendingApproval(a: {
+  chatId: string; handle: string | undefined; sender: string; text: string;
+}): Promise<ApprovalOutcome> {
+  const pa = await getPreference<PendingApprovalPref>(a.sender, 'pending_approval')
+    .catch(err => { console.error('[convo] failed to read pending_approval', err); return undefined; });
+  if (!pa?.taskId || !pa.request || typeof pa.askedAt !== 'number') return NO_APPROVAL;
+
+  const now = Date.now();
+  const latencyMs = now - pa.askedAt;
+  const expired = latencyMs > PENDING_ASK_TTL_MS;
+  // The lane is reached only from here, which is what "never consult it when nothing is pending"
+  // means in code: above this line the function has already returned.
+  const consent = await resolveConsent(a.text, pa.request);
+  const rec = (detail: Record<string, unknown>) =>
+    record({ type: 'event', label: 'ops:approval', chatId: a.chatId, handle: a.handle, taskId: String(pa.taskId), detail });
+  const drop = () => setPreference(a.sender, 'pending_approval', null)
+    .catch(err => console.error('[convo] failed to clear pending_approval', err));
+
+  if (expired) {
+    // The ask is dead either way — thirty minutes is the whole point of the TTL.
+    settleOpsTask(String(pa.taskId), 'expired');
+    rec({ decision: 'expired', taskId: pa.taskId, ageMs: latencyMs, consent });
+    // A yes that arrives after the clock ran out is NOT authorization (user decision 2026-09-04):
+    // re-ask once, and only once — a marker that already carries `reconfirm` retires instead.
+    if (consent !== 'yes' || pa.reconfirm) { await drop(); return NO_APPROVAL; }
+    const { task } = approvedTask(pa, a.chatId, a.sender, now);
+    const fresh: OpsTask = { ...task, id: randomUUID(), approval: { askedAt: now, reconfirm: true }, createdAt: now };
+    if (!insertPendingApproval({ id: fresh.id, chatId: a.chatId, kind: fresh.kind, request: fresh.request, meta: { task: fresh } }, now)) {
+      record({ type: 'event', chatId: a.chatId, taskId: fresh.id, label: 'ops:durable-write-lost', detail: { taskId: fresh.id, kind: fresh.kind, at: 'reconfirm' } });
+    }
+    await setPreference(a.sender, 'pending_approval', { taskId: fresh.id, request: fresh.request, kind: fresh.kind, askedAt: now, reconfirm: true })
+      .catch(err => console.error('[convo] failed to persist pending_approval', err));
+    rec({ decision: 'reconfirm', taskId: fresh.id, of: pa.taskId, ageMs: latencyMs });
+    return { task: null, reconfirm: fresh.request };
+  }
+
+  if (consent === 'yes') {
+    const promoted = promoteToRunning(String(pa.taskId), now);
+    const { task, fromRow } = approvedTask(pa, a.chatId, a.sender, now);
+    await drop();
+    // `promoted` and `fromRow` are the two ways the durable half can have gone missing under a
+    // yes — a lost park write, or a row swept out from under it. Neither cancels the action the
+    // user just authorized; both are on the record.
+    rec({ decision: 'approved', taskId: task.id, latencyMs, promoted, fromRow, reconfirm: !!pa.reconfirm });
+    console.log(`[convo] approved action starting (chat ${a.chatId}, task ${task.id})`);
+    return { task, reconfirm: null };
+  }
+
+  if (consent === 'no') {
+    settleOpsTask(String(pa.taskId), 'declined');
+    await drop();
+    rec({ decision: 'declined', taskId: pa.taskId, latencyMs });
+    return NO_APPROVAL;
+  }
+
+  // Unsettled: the action stays parked, the section stays live, and nothing about the row changes.
+  // The receipt fires anyway — an install where every reply reads as unclear is a lexicon problem,
+  // and it is invisible without this line.
+  rec({ decision: 'unclear', taskId: pa.taskId, latencyMs });
+  return NO_APPROVAL;
 }
 
 /**
@@ -1338,7 +1488,7 @@ export async function processConvoResult(args: {
   // Set when the approval gate parked an action instead of handing it back for kickoff: the request
   // she is about to ask them about. Its presence is what replaces her holding line with a question
   // and keeps the routing floor off a turn that deliberately delegated nothing.
-  let parkedApproval: { request: string } | null = null;
+  let parkedApproval: { request: string; variant: 'park' | 'reconfirm' } | null = null;
   // True when the MODEL (not the routing gate below) built delegatedTask, so the salvage after the
   // loop knows to discard its un-grounded answer tail. Convo is single-shot — it never sees Ops'
   // result — so any substantive claim it wrote alongside a delegation is un-grounded, and the
@@ -1369,6 +1519,35 @@ export async function processConvoResult(args: {
   // The FIRST recall_memory query this turn (a second call in the same envelope is ignored — one
   // archive search per turn, and the second pass below is what answers from it).
   let recallQuery: string | null = null;
+
+  // ── The answer to a parked action ─────────────────────────────────────────────────────────────
+  // BEFORE the tool loop, so a promoted action holds this turn's single delegation slot and the
+  // model cannot delegate over the top of work the user just authorized. It hands the task back
+  // through `delegatedTask`, which is the only channel index.ts starts a run from — so an approved
+  // action starts at the one site that has ever started one, inside this turn's chat lock, with its
+  // own fresh AbortController (INV-1 untouched).
+  //
+  // Fenced off the recall second pass (`archivePass`): that pass re-enters this function with the
+  // same user text, and the ask has already been resolved by the first one.
+  //
+  // The flag read comes FIRST: with OPS_APPROVAL_GATE off nothing here runs at all — no prefs read,
+  // no classify call, no promotion — and a parked row from before the flip is left exactly as it is.
+  if (opsApprovalGateEnabled() && chatContext?.senderHandle && !args.archivePass) {
+    const settled = await resolvePendingApproval({
+      chatId, handle, sender: chatContext.senderHandle, text: textToSend ?? '',
+    });
+    if (settled.task) {
+      delegatedTask = settled.task;
+      // Same reason the model's own delegation sets it: Convo is single-shot and never sees the
+      // result, so the line it wrote alongside this ("okay, sending it now") is un-grounded and the
+      // composer is coming back with the real outcome. The salvage below keeps the holding half.
+      modelDelegated = true;
+    } else if (settled.reconfirm) {
+      // A yes that arrived too late: she re-asks through the same mechanism the park uses, and the
+      // floors that fire on "nothing was delegated" stand down for the same reason they do there.
+      parkedApproval = { request: settled.reconfirm, variant: 'reconfirm' };
+    }
+  }
 
   for (const call of res.toolCalls) {
     const input = call.input;
@@ -1598,7 +1777,7 @@ export async function processConvoResult(args: {
           record({ type: 'event', label: 'ops:approval', chatId, handle, detail: { decision: 'requested', trigger: sideEffect.trigger, taskId: built.id } });
           // chatId in the line: the park is invisible otherwise — nothing starts, nothing is marked.
           console.log(`[convo] parked an action behind the user's approval (${sideEffect.trigger}, chat ${chatId})`);
-          parkedApproval = { request: built.request };
+          parkedApproval = { request: built.request, variant: 'park' };
           continue;
         }
         // Fires on the NO-OP path too: a read delegation is the answer the gate gives thousands of
@@ -1664,7 +1843,7 @@ export async function processConvoResult(args: {
   // must all see the question rather than the holding line it replaced.
   if (parkedApproval) {
     textParts.length = 0;
-    textParts.push(await askForApproval(args, parkedApproval.request));
+    textParts.push(await askForApproval(args, parkedApproval.request, parkedApproval.variant));
     // The shipped text is no longer this parse's text, so this parse's bubble cap is not the cap to
     // report (same rule as every other branch that replaces the reply).
     hardCapped = false;

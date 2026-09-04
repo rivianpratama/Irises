@@ -22,6 +22,10 @@ import { getPreference } from '../../db/repositories/memory.js';
 import { closeDb, stmt } from '../../db/sqlite.js';
 import { buildContextBlock } from '../../memory/dossier.js';
 import { approvalAskFallback } from '../ops/sideEffects.js';
+import { buildTaskPrompt } from '../ops/client.js';
+import { __setConsentLlmForTests } from '../ops/consent.js';
+import { setPreference } from '../../db/repositories/memory.js';
+import { PENDING_ASK_TTL_MS } from '../../memory/dossier.js';
 import type { LlmResult, LlmToolCall, LlmRequest } from '../../llm/types.js';
 
 const ACT_ASK = 'email my landlord that rent is late';
@@ -44,6 +48,7 @@ let seq = 0;
 function args(textToSend: string) {
   __resetOpsCoordination();
   clearTraces();
+  laneCalls = 0;
   const sender = `+1555820${(seq++).toString().padStart(4, '0')}`;
   const chatContext: ChatContext = { isGroupChat: false, participantNames: [], chatName: null, senderHandle: sender };
   return { chatId: randomUUID(), handle: sender, chatContext, history: [], media: emptyMedia(), textToSend };
@@ -60,6 +65,15 @@ function reasker(bubbles: string[]) {
   };
   return { turn, seen };
 }
+
+// The classify lane, faked for the whole file: the resolution reaches it only for a reply the
+// English lexicon cannot settle, and a real call here would be a network hop in a unit suite.
+let laneCalls = 0;
+let laneVerdict = 'UNCLEAR';
+__setConsentLlmForTests(async () => {
+  laneCalls++;
+  return { text: laneVerdict, toolCalls: [], stopReason: 'end_turn' as const, provider: 'anthropic' as const, model: 'test' };
+});
 
 function receipt(label: string): Record<string, unknown> | undefined {
   const ev = getTraces().find(e => e.label === label);
@@ -119,7 +133,7 @@ test("an act delegation never starts: it is parked, asked about, and the next tu
   assert.doesNotMatch(out.text ?? '', /emailing them now/);
 
   assert.deepEqual(receipt('ops:approval'), { decision: 'requested', trigger: 'both', taskId: parked[0].id });
-  assert.deepEqual(receipt('convo:approval_ask'), { resolved: 'reasked' });
+  assert.deepEqual(receipt('convo:approval_ask'), { resolved: 'reasked', variant: 'park' });
 
   // And the next turn is told the ask is open — the whole reason the park is durable.
   const block = await buildContextBlock(a.handle, 'yes');
@@ -158,7 +172,7 @@ test('a research ask kicks off exactly as before, with a not_needed receipt', as
   assert.equal(out.text, 'checking flights now', 'her own holding line ships');
   assert.equal(seen.length, 0, 'no re-ask is spent');
   assert.equal(listPendingApprovals(a.chatId).length, 0, 'no row');
-  assert.equal(await getPreference(a.handle, 'pending_approval'), undefined, 'no pref');
+  assert.equal(await getPreference(a.handle, 'pending_approval'), undefined, 'no pref — nothing was ever written');
   assert.deepEqual(receipt('ops:approval'), { decision: 'not_needed', trigger: 'none' });
   assert.equal(receipt('convo:approval_ask'), undefined);
 });
@@ -195,7 +209,7 @@ test('a re-ask that comes back empty or with a tool call falls back to one code 
   const out = await processConvoResult({ ...a, res: makeResult(['on it'], [delegate(ACT_ASK, 'act')]), turn });
   assert.equal(out.delegatedTask, null, 'still parked');
   assert.equal(out.text, approvalAskFallback(ACT_ASK));
-  assert.deepEqual(receipt('convo:approval_ask'), { resolved: 'fallback' });
+  assert.deepEqual(receipt('convo:approval_ask'), { resolved: 'fallback', variant: 'park' });
   assert.equal(listPendingApprovals(a.chatId).length, 1, 'the park does not depend on the ask landing');
 });
 
@@ -207,7 +221,7 @@ test('a re-ask that throws still asks — the code line ships and the row stands
   };
   const out = await processConvoResult({ ...a, res: makeResult(['on it'], [delegate(ACT_ASK, 'act')]), turn });
   assert.equal(out.text, approvalAskFallback(ACT_ASK));
-  assert.deepEqual(receipt('convo:approval_ask'), { resolved: 'fallback' });
+  assert.deepEqual(receipt('convo:approval_ask'), { resolved: 'fallback', variant: 'park' });
   assert.equal(listPendingApprovals(a.chatId).length, 1);
 });
 
@@ -216,7 +230,7 @@ test('with no turn context at all (a caller that passes none) the fallback carri
   const out = await processConvoResult({ ...a, res: makeResult(['on it'], [delegate(ACT_ASK, 'act')]) });
   assert.equal(out.delegatedTask, null);
   assert.equal(out.text, approvalAskFallback(ACT_ASK));
-  assert.deepEqual(receipt('convo:approval_ask'), { resolved: 'fallback' });
+  assert.deepEqual(receipt('convo:approval_ask'), { resolved: 'fallback', variant: 'park' });
 });
 
 // ── the off path ─────────────────────────────────────────────────────────────
@@ -259,7 +273,7 @@ test('OPS_APPROVAL_GATE=off: an action kicks off exactly as today — no row, no
   assert.equal(task!.approval, undefined, 'no handshake happened');
   assert.equal(seen.length, 0, 'no re-ask');
   assert.equal(listPendingApprovals(a.chatId).length, 0, 'no row');
-  assert.equal(await getPreference(a.handle, 'pending_approval'), undefined, 'no pref');
+  assert.equal(await getPreference(a.handle, 'pending_approval'), undefined, 'no pref — nothing was ever written');
   assert.equal(receipt('ops:approval'), undefined, 'and the gate files nothing when it is not there');
   assert.equal(receipt('convo:approval_ask'), undefined);
   // Her own holding line ships untouched (the salvage floor keeps the holding-shaped opener).
@@ -325,6 +339,180 @@ test('the parked row carries the ask time as its clock, and nothing settles it h
   assert.ok(row!.startedAt >= before && row!.startedAt <= Date.now(), 'askedAt is the row clock');
   assert.equal(row!.settledAt, null, 'a question waiting is not a settled row');
   assert.equal(row!.kind, 'general');
+});
+
+// ── the answer ───────────────────────────────────────────────────────────────
+// The resolving turn: she asked, they replied, and the reply is read BEFORE anything can be handed
+// back for kickoff. A yes promotes the parked row and returns the task she asked about — index.ts
+// starts it at the one site that has ever started a run (INV-1, inside this turn's lock).
+
+/** Park one action and hand back everything the next turn needs to answer it. */
+async function park(request = ACT_ASK): Promise<{ a: ReturnType<typeof args>; row: ReturnType<typeof listPendingApprovals>[number] }> {
+  const a = args(request);
+  const { turn } = reasker(['want me to go ahead?']);
+  await processConvoResult({ ...a, res: makeResult(['on it'], [delegate(request, 'act')]), turn });
+  const row = listPendingApprovals(a.chatId)[0];
+  assert.ok(row, 'the action is parked');
+  return { a, row };
+}
+
+/** The same chat and sender, one turn later, with the receipts and the lane counter reset. */
+function answer(a: ReturnType<typeof args>, text: string): ReturnType<typeof args> {
+  clearTraces();
+  laneCalls = 0;
+  return { ...a, textToSend: text };
+}
+
+test('a yes promotes the parked row and hands the authorized task back for kickoff', async () => {
+  const { a, row } = await park();
+  const { turn, seen } = reasker(['never asked']);
+  const out = await processConvoResult({ ...answer(a, 'go'), res: makeResult(['okay, sending it now']), turn });
+
+  assert.ok(out.delegatedTask, 'the task she asked about goes back for kickoff');
+  assert.equal(out.delegatedTask!.id, row.id, 'the parked id, not a new one');
+  assert.equal(out.delegatedTask!.request, ACT_ASK);
+  assert.equal(out.delegatedTask!.effect, 'act');
+  assert.equal(out.delegatedTask!.approval?.askedAt, row.startedAt);
+  assert.equal(typeof out.delegatedTask!.approval?.approvedAt, 'number');
+
+  // The durable half moved with it, and the marker the section reads is gone.
+  const promoted = getOpsTask(row.id);
+  assert.equal(promoted?.status, 'running');
+  assert.equal(promoted?.settledAt, null);
+  assert.ok(promoted!.startedAt >= row.startedAt, 'promotion re-stamps the clock as a real leg');
+  assert.equal(await getPreference(a.handle, 'pending_approval'), null, 'the ask is settled, so the pref is gone');
+
+  // The brief the engine will read carries the one line that lifts its read-only limit.
+  assert.match(buildTaskPrompt(out.delegatedTask!), /^AUTHORIZED ACTION: the user explicitly approved this exact action at /m);
+
+  const rec = receipt('ops:approval');
+  assert.equal(rec?.decision, 'approved');
+  assert.equal(rec?.taskId, row.id);
+  assert.equal(typeof rec?.latencyMs, 'number');
+  assert.equal(seen.length, 0, 'no extra call — the section already told her to hold the line');
+  assert.equal(laneCalls, 0, 'and the English lexicon settled it for free');
+});
+
+test('a no declines the row and starts nothing', async () => {
+  const { a, row } = await park();
+  const { turn } = reasker(['never asked']);
+  const out = await processConvoResult({ ...answer(a, 'nope, leave it'), res: makeResult(["okay, dropping it"]), turn });
+
+  assert.equal(out.delegatedTask, null, 'nothing goes back for kickoff');
+  const settled = getOpsTask(row.id);
+  assert.equal(settled?.status, 'declined');
+  assert.ok(settled!.settledAt, 'a declined row is settled');
+  assert.equal(await getPreference(a.handle, 'pending_approval'), null, 'the marker is dropped');
+  assert.equal(receipt('ops:approval')?.decision, 'declined');
+  assert.equal(out.text, 'okay, dropping it', 'her own line stands — the section told her what to say');
+});
+
+test('an unclear reply leaves the action parked, exactly as it was', async () => {
+  const { a, row } = await park();
+  laneVerdict = 'UNCLEAR';
+  const out = await processConvoResult({ ...answer(a, 'hmm what did you find'), res: makeResult(['nothing yet']), turn: reasker([]).turn });
+
+  assert.equal(out.delegatedTask, null);
+  assert.equal(getOpsTask(row.id)?.status, 'pending_approval', 'still waiting on them');
+  assert.ok(await getPreference(a.handle, 'pending_approval'), 'and the pref keeps the section live');
+  assert.equal(receipt('ops:approval')?.decision, 'unclear');
+});
+
+test('the classify lane is consulted only for a reply the lexicon cannot settle, and only while pending', async () => {
+  const { a } = await park();
+  // Settled by the English list: no call.
+  const yes = answer(a, 'go ahead');
+  await processConvoResult({ ...yes, res: makeResult(['on it']), turn: reasker([]).turn });
+  assert.equal(laneCalls, 0);
+
+  // Nothing pending any more: still no call, whatever they say.
+  const after = answer(a, 'kirim sekarang');
+  await processConvoResult({ ...after, res: makeResult(['sure']), turn: reasker([]).turn });
+  assert.equal(laneCalls, 0, 'the lane is never a per-turn tax');
+
+  // Pending and unreadable to the lexicon: exactly one call, and its verdict decides.
+  const { a: b, row } = await park('cancel my gym membership');
+  laneVerdict = 'YES';
+  const out = await processConvoResult({ ...answer(b, 'ya, lakukan'), res: makeResult(['on it']), turn: reasker([]).turn });
+  assert.equal(laneCalls, 1);
+  assert.equal(out.delegatedTask?.id, row.id, 'a non-English yes runs the action through the lane alone');
+  laneVerdict = 'UNCLEAR';
+});
+
+// ── the clock runs out ───────────────────────────────────────────────────────
+
+/** Age the ask past its TTL by rewriting the marker's clock (the row keeps its own). */
+async function age(a: ReturnType<typeof args>): Promise<void> {
+  const pref = await getPreference<{ taskId: string; request: string; kind: string; askedAt: number }>(a.handle, 'pending_approval');
+  assert.ok(pref);
+  await setPreference(a.handle, 'pending_approval', { ...pref!, askedAt: Date.now() - PENDING_ASK_TTL_MS - 1 });
+}
+
+test('a yes after the ask expired re-asks instead of running, and the next yes is fresh approval', async () => {
+  const { a, row } = await park();
+  await age(a);
+
+  const { turn, seen } = reasker(['that one expired — still want me to email them?']);
+  const out = await processConvoResult({ ...answer(a, 'yes go'), res: makeResult(['sending it now']), turn });
+
+  assert.equal(out.delegatedTask, null, 'a stale yes must never execute');
+  assert.equal(getOpsTask(row.id)?.status, 'expired');
+  assert.equal(seen.length, 1, 'she re-asks once, through the same system-note mechanism');
+  assert.match(String(seen[0].messages.at(-1)?.content ?? ''), /^SYSTEM: .*expired/);
+  assert.equal(out.text, 'that one expired — still want me to email them?');
+  const decisions = getTraces().filter(e => e.label === 'ops:approval').map(e => (e.detail as { decision?: string }).decision);
+  assert.deepEqual(decisions, ['expired', 'reconfirm']);
+
+  // A fresh row is parked for the re-ask, and the pref points at it.
+  const parked = listPendingApprovals(a.chatId);
+  assert.equal(parked.length, 1);
+  assert.notEqual(parked[0].id, row.id, 'the expired row stays expired — the re-ask gets its own');
+  const pref = await getPreference<{ taskId: string; reconfirm?: boolean }>(a.handle, 'pending_approval');
+  assert.equal(pref?.taskId, parked[0].id);
+  assert.equal(pref?.reconfirm, true);
+
+  // And the next yes runs it, as a fresh approval.
+  const again = await processConvoResult({ ...answer(a, 'yes'), res: makeResult(['on it']), turn: reasker([]).turn });
+  assert.equal(again.delegatedTask?.id, parked[0].id);
+  assert.equal(again.delegatedTask?.approval?.reconfirm, true, 'the brief knows this one was re-confirmed');
+  assert.equal(getOpsTask(parked[0].id)?.status, 'running');
+  assert.equal(receipt('ops:approval')?.decision, 'approved');
+});
+
+test('an expired ask with no yes just retires — the row is expired and the marker is dropped', async () => {
+  const { a, row } = await park();
+  await age(a);
+  laneVerdict = 'UNCLEAR';
+  const out = await processConvoResult({ ...answer(a, 'anyway what about the rent thing'), res: makeResult(['what about it?']), turn: reasker([]).turn });
+
+  assert.equal(out.delegatedTask, null);
+  assert.equal(getOpsTask(row.id)?.status, 'expired');
+  assert.equal(await getPreference(a.handle, 'pending_approval'), null, 'nothing keeps asking');
+  assert.equal(receipt('ops:approval')?.decision, 'expired');
+  assert.equal(listPendingApprovals(a.chatId).length, 0);
+});
+
+test('a yes with nothing pending is not the gate\'s business', async () => {
+  const a = args('go ahead');
+  const out = await processConvoResult({ ...a, res: makeResult(['with what?']), turn: reasker([]).turn });
+  assert.equal(out.delegatedTask, null);
+  assert.equal(out.text, 'with what?');
+  assert.equal(receipt('ops:approval'), undefined, 'no decision to file');
+  assert.equal(laneCalls, 0);
+});
+
+// ── the off path ─────────────────────────────────────────────────────────────
+
+test('OPS_APPROVAL_GATE=off: a yes resolves nothing — no read, no lane, no promotion', async () => {
+  const { a, row } = await park();
+  await withGate('off', async () => {
+    const out = await processConvoResult({ ...answer(a, 'go'), res: makeResult(['on it']), turn: reasker([]).turn });
+    assert.equal(out.delegatedTask, null, 'nothing is promoted with the gate off');
+    assert.equal(getOpsTask(row.id)?.status, 'pending_approval', 'the row is left exactly as it was');
+    assert.ok(await getPreference(a.handle, 'pending_approval'), 'and so is the marker');
+    assert.equal(receipt('ops:approval'), undefined);
+    assert.equal(laneCalls, 0);
+  });
 });
 
 // ── when the durable half is lost ────────────────────────────────────────────

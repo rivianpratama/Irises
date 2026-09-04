@@ -186,6 +186,21 @@ export function approvalAskFallback(request: string): string {
 }
 
 /**
+ * The same note for the other direction: their yes arrived after the ask had already expired, so
+ * the action is NOT started (user decision 2026-09-04 — a stale yes re-confirms, it never runs).
+ * She has just been handed a bare "go" with no live ask in front of her, so the note has to carry
+ * both halves: which action, and that the clock ran out on it.
+ */
+export function renderReconfirmAsk(request: string): string {
+  return `SYSTEM: they just said yes, but the action they are agreeing to — have the engine ${request} — was asked about long enough ago that it expired, so nothing has started. Ask them in one short line whether they still want it, naming the action; do not claim it is running; no tool calls.`;
+}
+
+/** The code floor under the re-confirm, same discipline as approvalAskFallback. */
+export function reconfirmAskFallback(request: string): string {
+  return `that one expired a while ago — still want me to ${request}?`;
+}
+
+/**
  * The feature gate (env: OPS_APPROVAL_GATE). Default ON, read at CALL time so flipping it needs no
  * restart — the same parse shape as every sibling flag (threadingEnabled, opsDurableTasksEnabled,
  * unkeptPromiseGuardEnabled).
