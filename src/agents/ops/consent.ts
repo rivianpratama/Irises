@@ -82,6 +82,22 @@ function wordCount(text: string): number {
   return text.toLowerCase().replace(NON_WORD, ' ').trim().split(' ').filter(Boolean).length;
 }
 
+/**
+ * Words that may sit around a yes without making the reply about something else — politeness,
+ * pointing ("that one"), and the flat intensifiers a yes routinely picks up ("go ahead", "yeah
+ * fine"). Deliberately tiny and closed: everything NOT here counts as substance, so the failure
+ * mode of a missing word is one extra classify call, never a wrong 'yes'.
+ */
+const CONSENT_FILLER = new Set([
+  'please', 'pls', 'plz', 'thanks', 'thank', 'you', 'thx', 'now', 'then', 'ahead',
+  'it', 'that', 'one', 'and', 'fine', 'good', 'great', 'alright', 'cool', 'ya', 'sounds', 'do',
+]);
+
+/** How much unaccounted-for text a yes may carry and still be an ANSWER. One word absorbs the
+ *  connective a real yes tends to keep ("yep go FOR it", "sure, send it OVER"); two is a sentence
+ *  with its own subject, which is a different topic wearing a yes word. */
+const CONSENT_MAX_UNCOVERED = 1;
+
 function matchAt(tokens: string[], at: number, phrase: string[]): boolean {
   for (let i = 0; i < phrase.length; i++) if (tokens[at + i] !== phrase[i]) return false;
   return true;
@@ -102,6 +118,9 @@ function negated(tokens: string[], at: number): boolean {
  *     because "how did that go?" is a reply about the action, not permission for it;
  *   • a reply carrying BOTH a yes and a no settles nothing ("yes but not now");
  *   • a yes word inside a negator's reach is a no ("not ok", "don't send it");
+ *   • a yes has to be the SUBSTANCE of the reply, not a word inside one: past one token that no
+ *     yes/no phrase covered and that is not bare politeness, it is 'unclear' and the lane reads it
+ *     ("ok what's the weather" and "go check the weather" are not permission for a parked email);
  *   • anything past CONSENT_MAX_WORDS is 'unclear', and so is every language the list cannot read.
  */
 export function classifyConsent(text: string): Consent {
@@ -113,9 +132,16 @@ export function classifyConsent(text: string): Consent {
 
   let yes = false;
   let no = false;
+  // Every token a yes/no phrase actually claimed. What is left over is what the reply is ABOUT.
+  let uncovered = 0;
   for (const tokens of clauseTokens(t)) {
+    const covered = tokens.map(() => false);
     for (const phrase of NO_TOKENS) {
-      for (let at = 0; at + phrase.length <= tokens.length; at++) if (matchAt(tokens, at, phrase)) no = true;
+      for (let at = 0; at + phrase.length <= tokens.length; at++) {
+        if (!matchAt(tokens, at, phrase)) continue;
+        no = true;
+        for (let i = 0; i < phrase.length; i++) covered[at + i] = true;
+      }
     }
     for (const phrase of YES_TOKENS) {
       for (let at = 0; at + phrase.length <= tokens.length; at++) {
@@ -123,12 +149,22 @@ export function classifyConsent(text: string): Consent {
         // A negated yes is a decline, not an unsettled reply: "not ok" is an answer.
         if (negated(tokens, at)) no = true;
         else yes = true;
+        for (let i = 0; i < phrase.length; i++) covered[at + i] = true;
       }
+    }
+    for (let i = 0; i < tokens.length; i++) {
+      if (!covered[i] && !CONSENT_FILLER.has(tokens[i]!)) uncovered++;
     }
   }
   if (yes && no) return 'unclear'; // mixed — the ask stays open
   if (no) return 'no';
-  return yes ? 'yes' : 'unclear';
+  if (!yes) return 'unclear';
+  // The yes has to BE the reply, not a word inside one. "ok" and "go" and "sure" are all ordinary
+  // conversational openers ("ok what's the weather", "go check the weather", "sure lets talk
+  // tomorrow"), and each of those would have started a parked action on the strength of one word.
+  // Anything carrying its own subject goes to the classify lane, which reads the whole sentence.
+  if (uncovered > CONSENT_MAX_UNCOVERED) return 'unclear';
+  return 'yes';
 }
 
 // ── the classify lane ────────────────────────────────────────────────────────

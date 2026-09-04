@@ -49,6 +49,20 @@ test('a mixed reply settles nothing', () => {
   assert.equal(classifyConsent('ok wait'), 'unclear');
 });
 
+test('a yes word carried along by a reply about something else settles nothing', () => {
+  // The lexicon matches whole words inside a clause, so before this a "yes" word anywhere under the
+  // word cap was consent — and "go check the weather" would have sent the parked email.
+  for (const reply of ["ok what's the weather", 'how did that go', 'go check the weather', 'sure lets talk about tomorrow']) {
+    assert.equal(classifyConsent(reply), 'unclear', reply);
+  }
+});
+
+test('a yes wrapped in nothing but filler is still a yes', () => {
+  for (const reply of ['yes please', 'sure, send it', 'yep go for it', 'ok do it', 'yeah go ahead', 'yes, thank you']) {
+    assert.equal(classifyConsent(reply), 'yes', reply);
+  }
+});
+
 test('a reply longer than the word cap is never consent', () => {
   const long = 'yes i think that is probably the right thing to do here';
   assert.ok(long.split(' ').length > CONSENT_MAX_WORDS);
