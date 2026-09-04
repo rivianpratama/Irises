@@ -16,11 +16,21 @@ import { parseDeclaredCapabilities } from './capabilityDeclaration.js';
 import { renderAttachmentBlock } from './attachments.js';
 import { hash8 } from './sessionHash.js';
 import { dataTag } from '../../llm/promptTag.js';
+import { record } from '../../diagnostics/trace.js';
 import type { OpsTask } from '../types.js';
 
-interface GatewayClientLike {
+/** Per-request options the gateway client accepts. `signal` is a FORWARD-COMPATIBLE HINT: the
+ *  published @openclaw/gateway-client ignores unknown keys today, and a build that does honour it
+ *  simply cancels sooner. Our own abort never depends on it — see requestAbortable(). */
+export interface GatewayRequestOpts {
+  expectFinal?: boolean;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+export interface GatewayClientLike {
   start(): Promise<void> | void;
-  request(method: string, params: Record<string, unknown>, opts?: { expectFinal?: boolean; timeoutMs?: number }): Promise<unknown>;
+  request(method: string, params: Record<string, unknown>, opts?: GatewayRequestOpts): Promise<unknown>;
   stop?(): void;
   close?(): void;
 }
@@ -51,6 +61,81 @@ export function openclawSessionKey(chatId: string): string {
   const sanitized = chatId.replace(/[^a-zA-Z0-9_-]/g, '-');
   const tail = sanitized.length <= 48 ? sanitized : `${sanitized.slice(0, 39)}-${hash8(chatId)}`;
   return `agent:${agentId}:irises-${tail}`;
+}
+
+/** The mid-flight-cancel gate (env: OPS_CANCEL_ENGINE_ABORT). Default ON, read at CALL time — the
+ *  same parse shape as every sibling flag (threadingEnabled, opsDurableTasksEnabled).
+ *
+ *  Off ⇒ requestAbortable() hands straight to client.request with the caller's own opts object: no
+ *  listener, no `signal` key, and a cancelled run goes on waiting out the RPC budget exactly as it
+ *  did before this existed. */
+export function opsCancelEngineAbortEnabled(): boolean {
+  const v = (process.env.OPS_CANCEL_ENGINE_ABORT || '').trim().toLowerCase();
+  if (v === '') return true;
+  return ['true', '1', 'on', 'yes'].includes(v);
+}
+
+/** "This gateway build has no such RPC" — the signal that a feature-detection loop should try the
+ *  next candidate name rather than give up. Shared by channelTyping and the abort notify. */
+const UNKNOWN_METHOD_RE = /unknown method|method not found|unsupported|no such method|not implemented/i;
+
+/** Candidate abort RPC names an OpenClaw gateway MIGHT expose, in priority order. UNVERIFIED
+ *  against a live gateway (same status as the reminder RPCs) — which is exactly why they are
+ *  feature-detected and every rejection is swallowed. The correctness fix is the wrapper-side
+ *  reject below; the notify is a courtesy that stops the engine burning tokens on a dead run. */
+const ABORT_METHOD_CANDIDATES = ['agent.abort', 'abort', 'cancel', 'interrupt'] as const;
+
+/**
+ * One gateway request that can actually be given up on. @openclaw/gateway-client is an external
+ * package with no abort contract, so the abort is OURS: the request races an abort listener, and
+ * the listener's rejection is what the caller sees.
+ *
+ * The orphaned RPC keeps running gateway-side and eventually settles into a promise nobody reads.
+ * That is deliberate: dropClient() would kill a socket SHARED by every other chat's run, so a
+ * cancel in one conversation would knock over the rest. A late rejection is pre-handled here so it
+ * can never surface as an unhandled rejection.
+ */
+export async function requestAbortable(
+  client: GatewayClientLike,
+  method: string,
+  params: Record<string, unknown>,
+  opts: GatewayRequestOpts,
+  signal?: AbortSignal,
+  onAbort?: (abortedAtMs: number) => void,
+): Promise<unknown> {
+  if (!signal || !opsCancelEngineAbortEnabled()) return client.request(method, params, opts);
+  if (signal.aborted) throw new EngineRunError('cancelled mid-flight', 'cancelled');
+  const inflight = client.request(method, params, { ...opts, signal });
+  inflight.catch(() => { /* orphaned by the abort below — read by nobody, thrown by nobody */ });
+  let listener: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    listener = () => {
+      try { onAbort?.(Date.now()); } catch { /* a receipt must never outrank the cancel */ }
+      reject(new EngineRunError('cancelled mid-flight', 'cancelled'));
+    };
+    signal.addEventListener('abort', listener, { once: true });
+  });
+  try {
+    return await Promise.race([inflight, aborted]);
+  } finally {
+    if (listener) signal.removeEventListener('abort', listener);
+  }
+}
+
+/** Tell the engine to stop, if it has any way of hearing that. Feature-detected exactly like
+ *  channelTyping: unknown-method walks to the next candidate, any other error stops the walk, and
+ *  NOTHING throws — the run is already cancelled either way, and this is an optional side channel
+ *  on a socket other chats are using (so no dropClient here either). */
+async function notifyEngineAbort(client: GatewayClientLike, idempotencyKey: string): Promise<boolean> {
+  for (const method of ABORT_METHOD_CANDIDATES) {
+    try {
+      await client.request(method, { idempotencyKey }, { timeoutMs: 3_000 });
+      return true;
+    } catch (err) {
+      if (!UNKNOWN_METHOD_RE.test(String((err as Error)?.message ?? err))) return false;
+    }
+  }
+  return false;
 }
 
 async function defaultCreateClient(): Promise<GatewayClientLike> {
@@ -128,18 +213,37 @@ export class OpenClawBackend implements EngineBackend {
     const budgetMs = ctx.timeoutMs ?? ENGINE_TIMEOUT_MS;
     const client = await this.ensureClient();
     if (ctx.signal?.aborted) throw new EngineRunError('cancelled before dispatch', 'cancelled');
+    // The orchestrator's retry leg deliberately reuses task.id (orchestrator.ts:385), so an
+    // idempotent gateway would REPLAY the first run's result instead of running again. The
+    // suffix is deterministic, and a retry-of-retry does not exist.
+    const idempotencyKey = task.retryOf ? `${task.id}-r` : task.id;
     let raw: unknown;
     try {
-      raw = await client.request('agent', {
+      raw = await requestAbortable(client, 'agent', {
         message,
         sessionKey: openclawSessionKey(task.chatId),
-        // The orchestrator's retry leg deliberately reuses task.id (orchestrator.ts:385), so an
-        // idempotent gateway would REPLAY the first run's result instead of running again. The
-        // suffix is deterministic, and a retry-of-retry does not exist.
-        idempotencyKey: task.retryOf ? `${task.id}-r` : task.id,
+        idempotencyKey,
         timeout: Math.ceil(budgetMs / 1000),
-      }, { expectFinal: true, timeoutMs: budgetMs + 15_000 });
+      }, { expectFinal: true, timeoutMs: budgetMs + 15_000 }, ctx.signal, abortedAt => {
+        // Fire-and-forget ON PURPOSE: the run rejects in this same tick, so runViaEngine's
+        // `finally { release?.() }` hands the engine slot back immediately instead of after the
+        // budget. The receipt lands when the optional notify settles, hence a latency that
+        // measures abort → notify-settled (the run itself was already gone at ~0ms).
+        // This is the ADAPTER's leg of the cancel receipt — the orchestrator records its own
+        // `ops:cancelled` synchronously when the turn unwinds; `engine` tells the two apart, and
+        // only this one can carry engineNotified, which does not exist until the notify answers.
+        void notifyEngineAbort(client, idempotencyKey).then(engineNotified => {
+          record({
+            type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
+            label: 'ops:cancelled',
+            detail: { request: task.request, engine: 'openclaw', engineNotified, latencyMs: Date.now() - abortedAt },
+          });
+        });
+      });
     } catch (err) {
+      // Our own mid-flight cancel: the socket is fine (nothing failed), so no dropClient and no
+      // re-dress as "engine unreachable" — the cancelled cause has to reach runViaEngine intact.
+      if (err instanceof EngineRunError) throw err;
       // A transport-level failure poisons the socket — drop it so the next call redials.
       this.dropClient();
       throw new EngineUnavailableError(`OpenClaw agent call failed at transport level (${(err as Error)?.message ?? err})`, err);
@@ -307,7 +411,7 @@ export class OpenClawBackend implements EngineBackend {
       } catch (err) {
         // Unknown-method / unsupported → try the next candidate name. Any OTHER error is a real
         // transport problem: stop and no-op (do NOT dropClient — this is an optional side channel).
-        if (!/unknown method|method not found|unsupported|no such method|not implemented/i.test(String((err as Error)?.message ?? err))) return;
+        if (!UNKNOWN_METHOD_RE.test(String((err as Error)?.message ?? err))) return;
       }
     }
   }

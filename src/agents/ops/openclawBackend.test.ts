@@ -13,9 +13,10 @@ import { OPENCLAW_TASK_HEADER, OPENCLAW_ONBOARDING_MESSAGE, onboardingVersion } 
 import { EngineUnavailableError, EngineRunError, ENGINE_TIMEOUT_MS } from './engineBackend.js';
 import { buildTaskPrompt } from './client.js';
 import { emptyMedia } from '../../webhook/types.js';
+import { getTraces, clearTraces } from '../../diagnostics/trace.js';
 import type { OpsTask } from '../types.js';
 
-type RequestOpts = { expectFinal?: boolean; timeoutMs?: number };
+type RequestOpts = { expectFinal?: boolean; timeoutMs?: number; signal?: AbortSignal };
 type Call = { method: string; params: Record<string, unknown>; opts?: RequestOpts };
 
 function fakeClientFactory(calls: Call[], opts: { failFirstRequest?: boolean } = {}) {
@@ -258,4 +259,107 @@ test('askEngine: transport error → EngineUnavailableError + redial; a textless
   });
   await assert.rejects(textless.askEngine('x', { tag: 'first-move' }), (e: Error) =>
     e instanceof EngineRunError && /ask \(first-move\) returned no text/.test(e.message));
+});
+
+// ---------------------------------------------------------------------------
+// Mid-flight cancel (Task 36). The gateway client is external, so the abort is
+// implemented in OUR wrapper: race the RPC against the signal and reject. The
+// engine-side abort RPC is feature-detected and its rejections are swallowed.
+// ---------------------------------------------------------------------------
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+/** A gateway whose `agent` run NEVER settles — the shape a mid-flight cancel has to survive. */
+function hangingClientFactory(calls: Call[], abort: 'accept' | 'unknown' | 'throw', acceptMethod = 'agent.abort') {
+  return async () => ({
+    start() { /* connected */ },
+    async request(method: string, params: Record<string, unknown>, reqOpts?: RequestOpts) {
+      calls.push({ method, params, opts: reqOpts });
+      if (method === 'agent') return new Promise<never>(() => { /* never settles */ });
+      if (abort === 'accept' && method === acceptMethod) return { ok: true };
+      if (abort === 'throw') throw new Error('gateway blew up');
+      throw new Error('unknown method');
+    },
+    stop() { /* noop */ },
+  });
+}
+
+/** Poll for the receipt: the engine notify is deliberately NOT awaited before the run rejects. */
+async function waitForCancelReceipt(timeoutMs = 500): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const ev = getTraces().find(e => e.label === 'ops:cancelled');
+    if (ev) return ev.detail as Record<string, unknown>;
+    if (Date.now() > deadline) throw new Error('no ops:cancelled receipt');
+    await sleep(5);
+  }
+}
+
+test('cancel: an abort mid-flight rejects the run at once, and the engine notify is feature-detected', async () => {
+  clearTraces();
+  const calls: Call[] = [];
+  const be = new OpenClawBackend({ createClient: hangingClientFactory(calls, 'accept') });
+  const ac = new AbortController();
+  const p = be.runTask('do it', mkTask(), { signal: ac.signal });
+  await sleep(5); // let the agent RPC dispatch
+  const t0 = Date.now();
+  ac.abort();
+  await assert.rejects(p, (e: Error) =>
+    e instanceof EngineRunError && e.failureCause === 'cancelled' && /cancelled mid-flight/.test(e.message));
+  assert.ok(Date.now() - t0 < 50, `the run settled in ${Date.now() - t0}ms, not after the RPC budget`);
+  assert.ok(calls[0].opts?.signal instanceof AbortSignal, 'the signal rides along as a forward-compatible hint');
+
+  const detail = await waitForCancelReceipt();
+  assert.equal(detail.engineNotified, true);
+  assert.equal(typeof detail.latencyMs, 'number');
+  assert.equal(calls[1].method, 'agent.abort', 'first candidate accepted → no further names tried');
+  assert.equal(calls[1].params.idempotencyKey, 't1', 'the abort names the run');
+  assert.equal(calls.length, 2);
+});
+
+test('cancel: an unknown abort method walks the candidate list; a throwing one still cancels cleanly', async () => {
+  clearTraces();
+  const calls: Call[] = [];
+  const be = new OpenClawBackend({ createClient: hangingClientFactory(calls, 'accept', 'interrupt') });
+  const ac = new AbortController();
+  const p = be.runTask('do it', mkTask(), { signal: ac.signal });
+  await sleep(5);
+  ac.abort();
+  await assert.rejects(p, (e: Error) => e instanceof EngineRunError && e.failureCause === 'cancelled');
+  assert.equal((await waitForCancelReceipt()).engineNotified, true);
+  assert.deepEqual(calls.slice(1).map(c => c.method), ['agent.abort', 'abort', 'cancel', 'interrupt']);
+
+  clearTraces();
+  const boom: Call[] = [];
+  const be2 = new OpenClawBackend({ createClient: hangingClientFactory(boom, 'throw') });
+  const ac2 = new AbortController();
+  const p2 = be2.runTask('do it', mkTask(), { signal: ac2.signal });
+  await sleep(5);
+  ac2.abort();
+  await assert.rejects(p2, (e: Error) => e instanceof EngineRunError && e.failureCause === 'cancelled');
+  assert.equal((await waitForCancelReceipt()).engineNotified, false, 'a throwing abort RPC is swallowed');
+});
+
+test('cancel: OPS_CANCEL_ENGINE_ABORT=off is the old behaviour — no signal key, no abort RPC, still pending', async () => {
+  clearTraces();
+  const calls: Call[] = [];
+  const be = new OpenClawBackend({ createClient: hangingClientFactory(calls, 'accept') });
+  const ac = new AbortController();
+  // withEnv() restores synchronously, so it cannot hold a flag across awaits — set it by hand.
+  const prev = process.env.OPS_CANCEL_ENGINE_ABORT;
+  process.env.OPS_CANCEL_ENGINE_ABORT = 'off';
+  try {
+    const p = be.runTask('do it', mkTask(), { signal: ac.signal });
+    let settled = false;
+    p.then(() => { settled = true; }, () => { settled = true; });
+    await sleep(5);
+    ac.abort();
+    await sleep(30);
+    assert.equal(settled, false, 'the run keeps waiting on the gateway, exactly as before');
+    assert.equal(calls.length, 1, 'no abort RPC was attempted');
+    assert.ok(!('signal' in (calls[0].opts ?? {})), 'the opts object carries no signal key');
+    assert.equal(getTraces().filter(e => e.label === 'ops:cancelled').length, 0);
+  } finally {
+    if (prev === undefined) delete process.env.OPS_CANCEL_ENGINE_ABORT; else process.env.OPS_CANCEL_ENGINE_ABORT = prev;
+  }
 });

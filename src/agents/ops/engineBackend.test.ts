@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { resetEngineBackendCache, getEngineBackend, withEngineSlot, engineSlotState, runViaEngine, computeEngineTimeoutMs, computeEngineQueueWaitMs, standardLegBudgetMs, browserLegBudgetMs, BROWSER_LEG_BUDGET_MS, EngineRunError, EngineUnavailableError, type EngineBackend } from './engineBackend.js';
 import { getTraces, clearTraces } from '../../diagnostics/trace.js';
 import { runTask, buildTaskPrompt, looksLikeMiss } from './client.js';
+import { OpenClawBackend } from './openclawBackend.js';
 import { emptyMedia } from '../../webhook/types.js';
 import type { OpsTask, OpsDebrief, OpsDebriefSink } from '../types.js';
 
@@ -218,6 +219,32 @@ test('abort: a signal aborted mid-run maps to cancelled', async () => {
   } finally {
     resetEngineBackendCache(undefined);
   }
+});
+
+test('cancel mid-flight on openclaw hands the engine slot straight back', async () => {
+  // The whole point of the wrapper-side abort (Task 36): the gateway RPC used to sit there for
+  // budget+15s holding one of ENGINE_MAX_CONCURRENT slots. runTask now settles on abort, so
+  // runViaEngine's `finally { release?.() }` fires at once.
+  const before = engineSlotState().active;
+  const backend = new OpenClawBackend({
+    createClient: async () => ({
+      start() { /* connected */ },
+      async request(method: string) {
+        if (method === 'agent') return new Promise<never>(() => { /* never settles */ });
+        throw new Error('unknown method');
+      },
+      stop() { /* noop */ },
+    }),
+  });
+  const ac = new AbortController();
+  const task = mkTask();
+  const run = runViaEngine(backend, 'p', task, { signal: ac.signal }, mkDebrief());
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(engineSlotState().active, before + 1, 'the run holds a slot while it waits');
+  ac.abort();
+  const r = await run;
+  assert.equal(r.debrief!.failure?.cause, 'cancelled');
+  assert.equal(engineSlotState().active, before, 'the slot came back the moment the abort landed');
 });
 
 test('buildTaskPrompt: pins the clock, the NO RESULT contract, and the media note', () => {
