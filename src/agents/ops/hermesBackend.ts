@@ -17,6 +17,7 @@ import {
 import { DEFAULT_TZ, zoneOffsetMs } from '../../pipeline/zonedTime.js';
 import { dataTag } from '../../llm/promptTag.js';
 import { record } from '../../diagnostics/trace.js';
+import { coerceBridgeSendResult } from '../../channels/bridge/contract.js';
 import type { OpsTask } from '../types.js';
 
 /** Injectable impure edges — the repo's DI testing convention (no module mocks). */
@@ -870,11 +871,10 @@ export class HermesBackend implements EngineBackend {
         signal: controller.signal,
       });
       if (!res.ok) throw new EngineRunError(`bridge send failed: ${res.status} ${(await res.text().catch(() => '')).slice(0, 200)}`, 'tool_errors', res.status);
-      // Tolerant on purpose: the message IS sent by now. An older plugin build answers {"ok":true}
-      // with no id, and a body that won't parse must not turn a delivered message into a failure —
-      // we just lose tapped-reply matching for that bubble.
-      const body = await res.json().catch(() => ({})) as { message_id?: string | number };
-      return { messageId: body.message_id ? String(body.message_id) : undefined };
+      // Tolerant on purpose, and read through the bridge contract rather than `as`-cast: the
+      // message IS sent by now, so an older plugin build answering {"ok":true} with no id — or a
+      // body that won't parse — costs a tapped-reply id, never a delivered message.
+      return coerceBridgeSendResult(await res.json().catch(() => ({})));
     } catch (err) {
       if (err instanceof EngineRunError) throw err;
       throw new EngineUnavailableError(`hermes bridge listener not reachable at ${bridgeUrl} — is the irises-bridge plugin installed and enabled? (${(err as Error)?.message ?? err})`, err);
