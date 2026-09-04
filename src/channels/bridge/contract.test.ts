@@ -7,6 +7,7 @@ process.env.TZ = 'UTC';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   parseBridgeInbound,
   bridgeContractStrict,
@@ -222,4 +223,48 @@ test('contract: a quote with no id gets a synthetic id, derived from the parse c
   // idempotency never claims a key that changes every request.
   assert.equal(res.value.messageId, `eng-in-${NOW.toString(36)}`);
   assert.equal(res.value.hasPlatformMessageId, false);
+});
+
+// ── the shared fixture ────────────────────────────────────────────────────────
+// bridge/contract-fixtures/inbound-v1.json is the ONE written description of a v1 payload, and
+// BOTH sides of the wire read it: this file runs every case through the parser, and the hermes
+// plugin's own suite (bridge/hermes/test_irises_bridge.py::test_payload_matches_shared_fixture)
+// checks the payload it builds against the same field list. A name that drifts on one side and
+// not the other now fails a test instead of silencing a chat — the incident-06889fa class.
+
+interface FixtureCase {
+  name: string;
+  body: unknown;
+  expect: { ok: boolean; field?: string; ignoredFields?: string[]; value?: Record<string, unknown> };
+}
+interface Fixture {
+  now_ms: number;
+  schema_version: number;
+  known_fields: string[];
+  cases: FixtureCase[];
+}
+
+const fixture = JSON.parse(
+  readFileSync(new URL('../../../bridge/contract-fixtures/inbound-v1.json', import.meta.url), 'utf8'),
+) as Fixture;
+
+test('contract: the shared fixture names exactly the fields this door knows', () => {
+  assert.equal(fixture.schema_version, BRIDGE_SCHEMA_VERSION);
+  assert.deepEqual([...fixture.known_fields].sort(), [...KNOWN_BRIDGE_FIELDS].sort());
+});
+
+test('contract: every shared fixture case parses the way the fixture says it does', () => {
+  assert.ok(fixture.cases.length >= 8, 'the fixture should carry the whole shape of the contract');
+  for (const c of fixture.cases) {
+    const res = parseBridgeInbound(c.body, fixture.now_ms);
+    assert.equal(res.ok, c.expect.ok, c.name);
+    if (!res.ok) {
+      assert.equal(res.field, c.expect.field, c.name);
+      continue;
+    }
+    if (c.expect.ignoredFields) assert.deepEqual(res.ignoredFields, c.expect.ignoredFields, c.name);
+    for (const [k, want] of Object.entries(c.expect.value ?? {})) {
+      assert.deepEqual((res.value as unknown as Record<string, unknown>)[k], want, `${c.name} → ${k}`);
+    }
+  }
 });

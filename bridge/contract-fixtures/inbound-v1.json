@@ -1,0 +1,177 @@
+{
+  "note": "The v1 bridge inbound contract, written once and read by BOTH sides of the wire: src/channels/bridge/contract.test.ts runs every case through parseBridgeInbound, and bridge/hermes/test_irises_bridge.py checks the payload the hermes plugin builds against known_fields + schema_version. The OpenClaw plugin has no runnable suite in this repo (openclaw's plugin SDK is not a dependency here), so contract.test.ts reads its source and checks its payload keys against the same list. A field renamed on one side and not the other fails a test here instead of silencing a chat — that is the incident-06889fa class, where a Python datetime in `timestamp` broke json.dumps and dropped every forward with nobody noticing.",
+  "schema_version": 1,
+  "known_fields": [
+    "engine", "platform", "chat_id", "sender_id", "sender_name", "chat_name", "text",
+    "message_id", "thread_id", "reply_to_id", "reply_to_text", "timestamp", "is_group",
+    "media", "schema_version"
+  ],
+  "now_ms": 1700000000000,
+  "cases": [
+    {
+      "name": "hermes forwards a plain dm",
+      "body": {
+        "engine": "hermes",
+        "platform": "Telegram",
+        "chat_id": 42,
+        "sender_id": "u1",
+        "sender_name": "Riv",
+        "text": "what's the weather",
+        "message_id": "m1",
+        "timestamp": 1699999970,
+        "is_group": false,
+        "media": [],
+        "schema_version": 1
+      },
+      "expect": {
+        "ok": true,
+        "ignoredFields": [],
+        "value": {
+          "engine": "hermes",
+          "platform": "telegram",
+          "rawChatId": "42",
+          "chatId": "eng:telegram:42",
+          "from": "eng:telegram:u1",
+          "text": "what's the weather",
+          "messageId": "m1",
+          "hasPlatformMessageId": true,
+          "mediaCount": 0,
+          "isGroup": false,
+          "receivedAt": 1699999970000,
+          "schemaVersion": 1,
+          "truncated": false
+        }
+      }
+    },
+    {
+      "name": "openclaw forwards a group message under a digest id",
+      "body": {
+        "engine": "openclaw",
+        "platform": "whatsapp",
+        "chat_id": "+15551234",
+        "sender_id": "+15559999",
+        "chat_name": "eng crew",
+        "thread_id": 7,
+        "text": "ship it",
+        "message_id": "eng-o-3f1c2b8a91d04e77",
+        "is_group": true,
+        "schema_version": 1
+      },
+      "expect": {
+        "ok": true,
+        "ignoredFields": [],
+        "value": {
+          "engine": "openclaw",
+          "platform": "whatsapp",
+          "chatId": "eng:whatsapp:+15551234",
+          "from": "eng:whatsapp:+15559999",
+          "messageId": "eng-o-3f1c2b8a91d04e77",
+          "hasPlatformMessageId": true,
+          "chatName": "eng crew",
+          "threadId": "7",
+          "isGroup": true
+        }
+      }
+    },
+    {
+      "name": "a media-only forward carries no text and is still accepted",
+      "body": {
+        "engine": "hermes",
+        "platform": "telegram",
+        "chat_id": "42",
+        "sender_id": "u1",
+        "message_id": "m2",
+        "media": [{ "path": "/var/cache/a.jpg", "mimeType": "image/jpeg" }],
+        "schema_version": 1
+      },
+      "expect": {
+        "ok": true,
+        "value": { "text": "", "mediaCount": 1, "messageId": "m2" }
+      }
+    },
+    {
+      "name": "a reply forwards the quoted text alongside the id",
+      "body": {
+        "engine": "hermes",
+        "platform": "telegram",
+        "chat_id": "42",
+        "sender_id": "u1",
+        "text": "yeah that one",
+        "message_id": "m3",
+        "reply_to_id": "root9",
+        "reply_to_text": "the quarterly report",
+        "schema_version": 1
+      },
+      "expect": {
+        "ok": true,
+        "value": { "replyTo": { "message_id": "root9", "content": "the quarterly report" } }
+      }
+    },
+    {
+      "name": "a minor sender's unknown field is accepted and named, not refused",
+      "body": {
+        "engine": "openclaw",
+        "platform": "discord",
+        "chat_id": "9",
+        "sender_id": "u9",
+        "text": "hi",
+        "message_id": "m4",
+        "sticker_id": "s1",
+        "schema_version": 1.4
+      },
+      "expect": {
+        "ok": true,
+        "ignoredFields": ["sticker_id"],
+        "value": { "schemaVersion": 1.4, "text": "hi" }
+      }
+    },
+    {
+      "name": "no message_id at all means the id cannot identify a retry",
+      "body": {
+        "engine": "hermes",
+        "platform": "signal",
+        "chat_id": "+1",
+        "sender_id": "+1",
+        "text": "hey",
+        "schema_version": 1
+      },
+      "expect": {
+        "ok": true,
+        "value": { "messageId": "eng-in-loyw3v28", "hasPlatformMessageId": false }
+      }
+    },
+    {
+      "name": "an unknown major schema_version is refused",
+      "body": {
+        "engine": "hermes",
+        "platform": "telegram",
+        "chat_id": "42",
+        "text": "hi",
+        "schema_version": 2
+      },
+      "expect": { "ok": false, "field": "schema_version" }
+    },
+    {
+      "name": "a body that is an array is refused before anything is read off it",
+      "body": [],
+      "expect": { "ok": false, "field": "body" }
+    },
+    {
+      "name": "a body that is a bare string is refused the same way",
+      "body": "platform=telegram",
+      "expect": { "ok": false, "field": "body" }
+    },
+    {
+      "name": "the required trio still holds — no text and no media is nothing to answer",
+      "body": {
+        "engine": "hermes",
+        "platform": "telegram",
+        "chat_id": "42",
+        "sender_id": "u1",
+        "message_id": "m5",
+        "schema_version": 1
+      },
+      "expect": { "ok": false, "field": "platform|chat_id|text" }
+    }
+  ]
+}
