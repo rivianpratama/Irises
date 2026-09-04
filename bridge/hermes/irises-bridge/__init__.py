@@ -51,6 +51,11 @@ log = logging.getLogger("plugins.irises_bridge")
 _SEND_WAIT_S = 14
 _GW_POLL_S = 3.0
 _GW_POLL_STEP_S = 0.5
+# The inbound payload version this plugin speaks. Irises's door (src/channels/bridge/contract.ts)
+# accepts any sender declaring the same MAJOR and refuses one declaring a major it does not know,
+# rather than half-understanding it. The field list is written down once, in
+# bridge/contract-fixtures/inbound-v1.json, and checked from both sides.
+_SCHEMA_VERSION = 1
 # Per-POST budget for one inbound forward, times three attempts.
 _FORWARD_TIMEOUT_S = 10
 _FORWARD_ATTEMPTS = 3
@@ -134,6 +139,26 @@ def _shard_index(chat_id, num_shards: int) -> int:
         return 0
     digest = hashlib.blake2b(str(chat_id).encode("utf-8"), digest_size=8).digest()
     return int.from_bytes(digest, "big") % num_shards
+
+
+def _stable_message_id(platform_id, platform, chat_id, sender_id, text, timestamp):
+    """The id Irises dedupes retried forwards on — (platform, chat_id, message_id) is its key.
+
+    A platform id is handed straight back (untouched, so the wire bytes for the common case are
+    exactly what they were). When the adapter gives us none, a per-attempt id would be no id at
+    all: this worker retries a failed POST up to _FORWARD_ATTEMPTS times, and a lost 202 on the
+    first attempt would then land as a SECOND turn in the chat. So the fallback is content-
+    addressed — the same message digests to the same id no matter how many times it is sent.
+
+    The trade that buys: two identical messages ("ok", "thanks") from the same sender in the same
+    chat, carrying the SAME timestamp, collapse to one id and the second is dropped by Irises's
+    dedup window. The timestamp is what keeps them apart, so this only bites on an adapter that
+    forwards no timestamp at all — a real gap, named here rather than hidden.
+    """
+    if platform_id is not None and str(platform_id).strip():
+        return platform_id
+    raw = "|".join("" if p is None else str(p) for p in (platform, chat_id, sender_id, text, timestamp))
+    return "eng-h-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def _backoff_s(attempt: int) -> float:
@@ -641,23 +666,29 @@ def on_inbound(event=None, gateway=None, session_store=None, **_kwargs):
                         platform, chat_id)
             return None
 
+        sender_id = getattr(src, "user_id", None) or getattr(event, "user_id", None)
+        text = getattr(event, "text", "") or ""
+        # MUST be epoch, not a datetime — a datetime here breaks json.dumps and drops the message.
+        timestamp = _to_epoch(_first_attr(event, _TIMESTAMP_FIELDS))
         payload = {
             "engine": "hermes",
             "platform": platform,
             "chat_id": chat_id,
-            "sender_id": getattr(src, "user_id", None) or getattr(event, "user_id", None),
+            "sender_id": sender_id,
             "sender_name": getattr(event, "user_name", None),
             "chat_name": getattr(src, "chat_name", None),
-            "text": getattr(event, "text", "") or "",
-            "message_id": getattr(event, "message_id", None),
+            "text": text,
+            # The platform's own id when it has one, else a content digest — see _stable_message_id.
+            "message_id": _stable_message_id(
+                getattr(event, "message_id", None), platform, chat_id, sender_id, text, timestamp),
+            "schema_version": _SCHEMA_VERSION,
             "thread_id": getattr(src, "thread_id", None),
             # Reply id / quoted TEXT / platform send time — tried across the field names different
             # adapters use (Photon included). Irises uses the quote to show what was replied to even when
             # it can't resolve the id, and the timestamp as the message's real receivedAt.
             "reply_to_id": _first_attr(event, _REPLY_ID_FIELDS),
             "reply_to_text": _first_attr(event, _REPLY_TEXT_FIELDS),
-            # MUST be epoch, not a datetime — a datetime here breaks json.dumps and drops the message.
-            "timestamp": _to_epoch(_first_attr(event, _TIMESTAMP_FIELDS)),
+            "timestamp": timestamp,
             # hermes normalizes chat_type to dm/group/channel/thread ("supergroup" kept defensively
             # for adapters that pass raw platform values through).
             "is_group": (getattr(src, "chat_type", "") or "").lower() in ("group", "supergroup", "channel", "thread"),

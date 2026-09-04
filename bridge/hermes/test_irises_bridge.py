@@ -148,6 +148,40 @@ class OnInbound(unittest.TestCase):
         self.assertEqual(payload["reply_to_text"], "the earlier msg")
         self.assertEqual(payload["timestamp"], 1699999999)
 
+    def test_payload_declares_the_schema_version_the_door_speaks(self):
+        bridge.on_inbound(event=_event(), gateway="GW")
+        self.assertEqual(self.q.get_nowait()["schema_version"], 1)
+
+    def test_a_message_with_no_platform_id_still_carries_a_stable_one(self):
+        # Irises dedupes retried forwards on (platform, chat_id, message_id). Without an id of our
+        # own, a retry after a lost 202 would arrive as a second turn.
+        ev = _event(message_id=None, text="ok", timestamp=1700000000)
+        bridge.on_inbound(event=ev, gateway="GW")
+        first = self.q.get_nowait()["message_id"]
+        self.assertTrue(first.startswith("eng-h-"), first)
+        bridge.on_inbound(event=_event(message_id=None, text="ok", timestamp=1700000000), gateway="GW")
+        self.assertEqual(self.q.get_nowait()["message_id"], first, "the same message digests the same")
+
+    def test_payload_matches_shared_fixture(self):
+        # bridge/contract-fixtures/inbound-v1.json is the one written copy of the v1 contract, also
+        # read by src/channels/bridge/contract.test.ts. This is the incident-06889fa guard: a field
+        # this side invents (or a value json.dumps cannot carry) fails here instead of silently
+        # dropping every forward.
+        import json as _json
+        import pathlib as _pathlib
+        fixture = _json.loads(
+            (_pathlib.Path(__file__).resolve().parents[1] / "contract-fixtures" / "inbound-v1.json").read_text()
+        )
+        ev = _event(chat_id="42", chat_name="eng crew", thread_id="t7", chat_type="group",
+                    reply_to_message_id="root9", reply_to_text="the report", timestamp=1700000000,
+                    media_urls=["/var/cache/a.jpg"], media_types=["image/jpeg"])
+        bridge.on_inbound(event=ev, gateway="GW")
+        payload = self.q.get_nowait()
+        unknown = set(payload) - set(fixture["known_fields"])
+        self.assertEqual(unknown, set(), f"hermes sends fields the door does not know: {unknown}")
+        self.assertEqual(payload["schema_version"], fixture["schema_version"])
+        _json.dumps(payload)  # must NOT raise
+
     def test_gateway_captured_for_outbound_listener(self):
         with mock.patch.object(bridge, "_GW", [None, None]):
             bridge.on_inbound(event=_event(), gateway="THE-GATEWAY")
@@ -275,6 +309,32 @@ class ShardIndex(unittest.TestCase):
     def test_traffic_spreads_across_shards(self):
         seen = {bridge._shard_index(f"chat{i}", 4) for i in range(50)}
         self.assertEqual(seen, {0, 1, 2, 3})
+
+
+class StableMessageId(unittest.TestCase):
+    def test_a_platform_id_is_forwarded_untouched(self):
+        self.assertEqual(bridge._stable_message_id("m1", "telegram", "42", "u1", "hi", 1700000000), "m1")
+        self.assertEqual(bridge._stable_message_id(77, "telegram", "42", "u1", "hi", None), 77)
+
+    def test_a_blank_platform_id_is_no_id_at_all(self):
+        for blank in (None, "", "   "):
+            self.assertTrue(
+                bridge._stable_message_id(blank, "telegram", "42", "u1", "hi", None).startswith("eng-h-"),
+                blank,
+            )
+
+    def test_the_digest_is_deterministic_and_content_addressed(self):
+        args = ("telegram", "42", "u1", "hi", 1700000000)
+        first = bridge._stable_message_id(None, *args)
+        self.assertEqual(bridge._stable_message_id(None, *args), first, "same message, same id")
+        for changed in (
+            ("whatsapp", "42", "u1", "hi", 1700000000),
+            ("telegram", "43", "u1", "hi", 1700000000),
+            ("telegram", "42", "u2", "hi", 1700000000),
+            ("telegram", "42", "u1", "hi there", 1700000000),
+            ("telegram", "42", "u1", "hi", 1700000001),
+        ):
+            self.assertNotEqual(bridge._stable_message_id(None, *changed), first, changed)
 
 
 class Backoff(unittest.TestCase):
