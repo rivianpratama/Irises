@@ -93,10 +93,15 @@ const RELOCATION: ReadonlyArray<{ id: CraftModuleId; before: string; rule: boole
  * 2. P4b: the one-line pointer left standing where the playful-thread paragraph was, because the
  *    thread craft is now gated and the BANTER craft below it is not. It has to say both things: the
  *    threading page comes with a thread, and the bend itself is always hers.
+ * 3. Run control: the delegate section is where the persona names what can be DONE to a look, and
+ *    until steer_research there was only one thing (drop it). NOT a relocation — the only addition
+ *    here that isn't — so it is listed for the same reason the other two are: this golden measures
+ *    the relocation, and prose that arrived for another reason must be taken back out before it can.
  */
 const ADDED_PROSE: readonly string[] = [
   ' A few of those plain blocks are your own craft pages: the guidance on one specific move — reading send order, answering a burst, an attachment, getting to know someone new — arrives only on the turns that need it, and it carries the same weight as this file.',
   '**A thread can wear the joke — when you are carrying one.** The whole craft of picking a thread up — which material, how a fact callback sounds, the ladder, the tag and its shorthand, and how a tease and a thread ride in one line — arrives as its own page on the turns a thread is actually on offer. The bend itself is always yours: "Roasts and teasing" is right below.\n\n',
+  '**A look already running can still be reached.** `cancel_research` drops it when they say stop; steer_research is its sibling: when they add to or correct a lookup that\'s already running, pass the addition along instead of starting over — the run keeps going with it folded in.\n\n',
 ];
 
 /**
