@@ -454,7 +454,12 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
         // difference a second leg may carry: triage's directive, folded onto the brief, so an escalation
         // that had something new to say does not re-send byte-identical bytes. A transient retry has no
         // directive and gets the original brief unchanged.
-        const retryTask: OpsTask = retryTaskFor(task, triage);
+        // Built off `ladderTask`, not `task`: on the ordinary path they are the same object, and
+        // when a steer replay ran it is the replay task — so a retry after one carries the
+        // addition the user made instead of quietly re-running the brief that predates it. (Today
+        // a replay's `retryOf` makes `canRetry` false, so triage cannot ask for this; that is a
+        // bound, not a reason to hand the wrong brief down if it ever changes.)
+        const retryTask: OpsTask = retryTaskFor(ladderTask, triage);
         const t0 = Date.now();
         const retryAbort = new AbortController();
         const retryRun = runTask(retryTask, milestoneKey => { noteOpsProgress(retryTask.chatId, retryTask.id, milestoneKey); void retry.voiceAndPing('progress', milestoneKey); }, combineSignals(signal, retryAbort.signal), undefined, undefined);

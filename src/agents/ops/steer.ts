@@ -49,20 +49,25 @@ export interface SteerOpts {
 export type SteerOutcome = 'accepted' | 'not_running' | 'unsupported';
 
 /**
- * Wrap the user's addition for the engine.
+ * Wrap the user's addition for the engine. The wording is the human's own, pinned whole by its test
+ * — treat it as text to be changed deliberately, not tidied.
  *
- * Two jobs. It says WHAT this text is — an addition to work already in progress, not a new task and
- * not a correction of the engine's instructions (hermes additionally marks it
- * `[OUT-OF-BAND USER MESSAGE …]` on its own side). And it restates the output contract, because a
- * steered run otherwise tends to answer the addition alone, in prose, leaving the follow-up composer
- * with no ANSWER/SOURCE/FLAGS block to read. The "say in FLAGS if it arrived too late" clause is
- * what turns a steer that missed its window into something the user hears about instead of silence.
+ * Three jobs. It says WHAT this text is: an addition to work already in progress, not a new task
+ * and not a correction of the engine's instructions (hermes additionally marks it
+ * `[OUT-OF-BAND USER MESSAGE …]` on its own side) — "the work you are doing now" is what stops a
+ * run restarting itself. It restates the output contract, because a steered run otherwise tends to
+ * answer the addition alone, in prose, leaving the follow-up composer with no
+ * ANSWER/SOURCE/ACTIONS/FLAGS block to read. And the FLAGS clause is what turns a steer that missed
+ * its window into something the user hears about instead of silence.
  *
  * The user's words are quoted, deliberately, rather than fenced as data: this IS an instruction from
- * them about their own task, and the engine is meant to act on it.
+ * them about their own task, and the engine is meant to act on it. Wrapping happens HERE and only
+ * here — every caller passes the guidance raw.
  */
 export function steerPrompt(text: string): string {
-  return `The user just added to this task mid-run: "${text.trim()}". Fold it into the current work; keep the same OUTPUT contract (ANSWER/SOURCE/ACTIONS/FLAGS) and say in FLAGS if it arrived too late to act on.`;
+  return `The user just added to this task mid-run: "${text.trim()}"\n`
+    + 'Fold it into the work you are doing now. Keep the same output contract (ANSWER / SOURCE / ACTIONS / FLAGS). '
+    + 'If it arrived too late to act on, say so in FLAGS in one line rather than restarting.';
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
@@ -71,8 +76,12 @@ const defaultSleep = (ms: number): Promise<void> => new Promise(r => setTimeout(
  * Deliver one addition to a running engine leg, retrying the "not yet" case.
  *
  * Never throws and never retries an ERROR: a 401/429/5xx is not the construction window, so re-asking
- * only spends the user's turn. Always leaves an `ops:steer` receipt — accepted or not — because
- * "did the engine actually hear the correction?" is the one question a live round needs answered.
+ * only spends the user's turn. Leaves an `ops:steer` receipt on every outcome that reached the
+ * engine or decided not to — accepted, not_running, errored, cancelled, unsupported — because "did
+ * the engine actually hear the correction?" is the one question a live round needs answered. The
+ * ONE silent return is blank text: nothing happened, there is no addition, and an event saying so
+ * would be noise in the round it is meant to make readable (requestOpsSteer already answers
+ * 'already_done' for a blank steer, so nothing upstream reaches this line by accident).
  */
 export async function steerWithRetry(
   engine: EngineBackend,

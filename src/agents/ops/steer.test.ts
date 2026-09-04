@@ -45,13 +45,15 @@ function steerTrace(): Record<string, unknown> | undefined {
   return getTraces().find(e => e.label === 'ops:steer')?.detail as Record<string, unknown> | undefined;
 }
 
-test('steerPrompt: the user\'s words are quoted as an ADDITION, and the output contract is restated', () => {
-  const out = steerPrompt('also check jakarta');
-  assert.match(out, /The user just added to this task mid-run: "also check jakarta"\./);
-  // Without this the engine tends to answer the addition alone, in prose — and the follow-up
-  // composer has no ANSWER/SOURCE/FLAGS block to read.
-  assert.match(out, /keep the same OUTPUT contract \(ANSWER\/SOURCE\/ACTIONS\/FLAGS\)/);
-  assert.match(out, /say in FLAGS if it arrived too late to act on/);
+test('steerPrompt: the wrapper is the exact text the engine is meant to read', () => {
+  // Pinned whole, not by fragments: this is the human-authored engine-facing wording, and the
+  // clauses are load-bearing — "the work you are doing now" is what stops a restart, the contract
+  // restatement is what keeps an ANSWER/SOURCE/ACTIONS/FLAGS block for the composer to read, and
+  // the FLAGS clause is what turns a steer that missed its window into something the user hears.
+  assert.equal(steerPrompt('  also check jakarta  '), [
+    'The user just added to this task mid-run: "also check jakarta"',
+    'Fold it into the work you are doing now. Keep the same output contract (ANSWER / SOURCE / ACTIONS / FLAGS). If it arrived too late to act on, say so in FLAGS in one line rather than restarting.',
+  ].join('\n'));
 });
 
 test('steerWithRetry: accepted on the first attempt, with a receipt saying so', async () => {
