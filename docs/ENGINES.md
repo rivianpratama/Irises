@@ -36,6 +36,18 @@ its public API, and either side can update independently.
 There is deliberately **no built-in research engine**: if no engine is configured, Irises still
 chats — and says honestly that its deep half is offline when you ask for more.
 
+**Hermes transport:** a delegated leg runs on `POST /v1/runs` + `GET /v1/runs/{run_id}/events`
+(SSE) — one run per leg, control included (see *Run control* below). It falls back to the older
+blocking `POST /v1/chat/completions` when `HERMES_RUN_TRANSPORT=chat`, when hermes's own
+`/v1/capabilities` (or a live 404 on `/v1/runs`) says the runs API isn't there, or for any task
+carrying an image — `/v1/runs` accepts an image content-part without complaint but the run never
+sees the picture (unvalidated by hermes's own multimodal path), so image-bearing tasks always take
+the chat route regardless of the flag. Either way each run gets a **fresh transcript**: nothing
+from the chat's history is replayed into the run body. The session id keeps rotating as before
+(see `HERMES_SESSION_ROTATION`) but is now purely a grouping label in hermes's `state.db` — the
+`X-Hermes-Session-Key` memory scope, and the engine's own memory of the chat, are unaffected.
+OpenClaw is untouched: it still speaks the gateway `agent` RPC.
+
 ## Quick start (engine users)
 
 **Hermes users** — in your hermes chat, or by hand:
@@ -186,6 +198,45 @@ to **replace** any section with the same heading rather than append a second one
 **None of it is load-bearing.** Both adapters prepend a compact engine-mode header to *every*
 delegated task — the invitation, the hard limits, the reply shape — so an engine that never got
 onboarded, or forgot, still gets the essentials on every single run. Degraded, not broken.
+
+## Run control
+
+hermes's own CLI advertises busy-run controls (`msg=interrupt` · `/queue` · `/bg` · `/steer` ·
+Ctrl+C cancel). Irises maps the ones that exist as HTTP onto its own run — hermes only, since
+OpenClaw's gateway RPC has no equivalent surface:
+
+- **Give-up = stop.** When the user cancels, or Irises's own leg budget times out, the engine-side
+  run is stopped too: `POST /v1/runs/{run_id}/stop` (cooperative — hermes finishes what it's doing,
+  then quits; it is not instant). This is the fix for the orphaned-leg bug: Irises used to just drop
+  the connection, hermes kept the run going for minutes after the client had already given up, the
+  eventual answer landed nowhere, and a retry could stack a second run onto the same session while
+  the first was still working. Gated by `OPS_CANCEL_ENGINE_ABORT` (default on — see *Environment
+  reference*); off reverts to the old drop-and-forget.
+- **Mid-run additions ride `steer_research`.** The Convo tool posts `POST /v1/runs/{run_id}/steer`;
+  hermes folds the text in before its next tool result or model call — it never interrupts
+  generation. A steer hermes accepts *after* it already produced its final answer comes back on
+  that run's own terminal frame as `pending_steer`, unapplied; Irises replays it once as a follow-up
+  leg rather than dropping it, bounded to a single replay.
+- **One SSE subscriber per run.** hermes pops the event queue the moment a subscriber detaches, and
+  a reconnect on the same run 404s — so Irises never tries to reconnect a dropped stream. It polls
+  `GET /v1/runs/{run_id}` instead until the run reaches a terminal status.
+- **Redirect is cancel + fresh delegation, not a hermes primitive.** hermes's `redirect()` /
+  `msg=interrupt` is CLI/TUI-only with no HTTP route. When what the user wants changes mid-run,
+  Irises does `cancel_research` and `delegate_to_ops` in the same turn instead.
+- **`/queue` and `/bg` have nothing to build.** Every Irises delegation already runs in the
+  background, and a message that arrives mid-run is already folded into the follow-up leg — that
+  is hermes's queue/bg behavior by construction, not something layered on top of it.
+- **Caveats:** stop is cooperative, not instant — a run mid-tool-call can take a few seconds to
+  actually quit. `waiting_for_approval` is a dead end on the poll path: nothing in Irises answers a
+  hermes approval prompt, so such a run just burns its window and times out (with a stop still
+  fired). A parked confirmation (Irises waiting on the user's yes/no for an action) is invisible to
+  `steer_research` — it only reaches a run that is actually executing.
+
+Grep the trace for what happened: `engine:hermes:run` (a run's `run_id` at submission — also
+`engine:hermes:runs-unsupported` when `/v1/runs` 404s and the leg fell back to chat), `ops:cancelled`
+(a stop was fired; `engineNotified` says whether hermes actually heard it), `ops:steer` (one steer
+attempt, accepted or not), `ops:steer-replay` / `ops:steer-replay-result` (the follow-up leg run for
+a `pending_steer`).
 
 ## First move (install introduction)
 
@@ -443,7 +494,9 @@ above) — set one only to override it.
 | `FIRST_MOVE_ENABLED` | both | default **on**; `false` disables the one-time install introduction entirely — the engine memory pull, the memory seed and her first text (see *First move* above) |
 | `ENGINE_PUSH_TOKEN` | both | guards `POST /api/engine/push` AND `POST /api/bridge/inbound` (generated by setup) |
 | `HERMES_BRIDGE_URL` | hermes | bridge mode outbound: the plugin's loopback listener (default `http://127.0.0.1:8655`) |
-| `HERMES_STREAM` | hermes | `on` streams the research completion (SSE) for a live progress heartbeat on long runs; default `off`, with a safe fallback to the blocking read when the endpoint doesn't stream |
+| `HERMES_RUN_TRANSPORT` | hermes | `runs` (default) \| `chat` — which transport a delegated leg speaks. `runs` = `POST /v1/runs` + SSE events (stop/steer reach an in-flight run — see *Run control*); `chat` forces the old blocking `POST /v1/chat/completions` body, no run control. Falls back to `chat` on its own for an image-bearing task, a 404 on `/v1/runs`, or a capability manifest saying the runs API isn't there — only the literal word `chat` turns it off, so a typo fails safe toward keeping run control |
+| `HERMES_STREAM` | hermes | `on` streams the research completion (SSE) for a live progress heartbeat on long runs; default `off`, with a safe fallback to the blocking read when the endpoint doesn't stream. **Only affects the `chat` fallback** — the default `runs` transport already streams via `/v1/runs/{id}/events` regardless of this flag |
+| `OPS_CANCEL_ENGINE_ABORT` | both | default **on**; on give-up (user cancel or Irises's own leg timeout) also notifies the engine so it stops working too — hermes `POST /v1/runs/{id}/stop`, OpenClaw's abort+notify RPC. Anything but `true`/`1`/`on`/`yes` turns it **off**, reverting to dropping the connection locally without telling the engine (the old behavior, and the orphaned-run bug this exists to fix) |
 | `BRIDGE_TYPING` | both | `on` forwards a typing indicator through the engine adapter's chat-action (feature-detected, safe no-op otherwise); default `off` — which also makes replies snappier (skips the invisible per-bubble typing hold) |
 | `ENGINE_TIMEOUT_MS` | both | per-engine-call budget (default: `OPS_TASK_TIMEOUT_MS` − 15s) |
 | `ENGINE_MAX_CONCURRENT` | both | simultaneous engine agent runs (default 3); a further run queues, then fails honestly. Match it to the engine's own concurrent-run cap |
