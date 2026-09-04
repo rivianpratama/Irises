@@ -39,6 +39,8 @@ The engine stays completely unmodified. One command wires it up. That's the whol
 
 - **A voice, not another brain.** The front-line agent (**Convo**) answers right away and delegates every piece of deep work through one seam. A **Composer** re-voices whatever comes back, so the hand-off never shows.
 - **It sits in front of what you already run.** hermes-agent or OpenClaw does the research, files, mail, reminders and memory, untouched. (Reminders need the hermes engine in v1 — the OpenClaw cron wiring is still pending.)
+- **You can still reach a run that's in flight.** On hermes, every delegated leg is a real run (`POST /v1/runs` + its event stream), so "stop" actually stops the engine too, and "also check Jakarta" typed forty seconds into a two-minute look is folded into the running job instead of starting a second one. A run a restart killed is owned up to once, plainly, rather than left as a "give me a minute" that never lands. See [docs/ENGINES.md § Run control](docs/ENGINES.md#run-control).
+- **She asks before the engine does something she can't take back.** A delegation that would *act* in the world — send, delete, book, post — is parked with a plain question instead of kicked off. Only a clear yes in that chat starts it, "forget it" drops it, and the engine gets one line saying it may act, for that one action. `OPS_APPROVAL_GATE=off` restores the old fire-and-forget.
 - **One voice, many channels.** A web debug chat, a terminal REPL (`npm run chat`), and — in bridge mode — every channel your engine already speaks: Telegram, WhatsApp, Signal, Discord, Slack, LINE, and so on.
 - **It texts like a person.** Messages get batched into bursts, each chat has a send lock, and replies are paced like real typing. No firehose of ten bubbles in one second.
 - **It remembers you, in layers.** Short, medium and long memory tiers are kept locally, and the durable facts get forwarded to the engine's own memory too, so both halves remember the same person. Saved notes are quietly groomed — restate a fact three times and it folds back into one note instead of crowding out three others. Optional **semantic recall** (`MEMORY_SEMANTIC_RECALL=on`) adds an embedding leg to the archive search, so "the vacation house by the water" finds what was written down as "my lake cabin"; keyless installs get the same paraphrase tolerance from a tiny query-expansion call instead. The full design (and how it compares to vector/graph/episodic memory) is in [docs/MEMORY_ARCHITECTURES.md](docs/MEMORY_ARCHITECTURES.md).
@@ -47,7 +49,7 @@ The engine stays completely unmodified. One command wires it up. That's the whol
 - **It reaches out first, but politely.** The engine's cron jobs and mail triage push back through `POST /api/engine/push`, get voiced by the Composer (which opens with *why* the text is arriving), and land on whatever channel the chat came from. Duplicates are collapsed, and a non-urgent push that arrives overnight waits for morning. If you opt in (`THREADING_PINGS_ENABLED`, off by default because it makes a phone buzz unprompted), she may also text once about something you left hanging — hard-bounded to one ping per person per week, only after 48h of silence, never twice about the same thing. This part I'm quite proud of.
 - **A hidden mood.** There is a small affect engine behind the scenes — a per-chat mood based on the Gloria Willcox feeling wheel, a 28-day cycle, a circadian rhythm. Nobody is told about it, and its status output is swallowed before you see it. It only makes the voice feel a bit more alive.
 - **Provider-neutral LLM layer.** One `callLLM` over Anthropic, OpenRouter, and any OpenAI-compatible API — a primary lane per role, automatic fallback to the next configured lane on transient errors, and tool-calls, structured "bubble" output and prompt caching normalized to one shape.
-- **Nothing is a black box.** `/debug` shows every prompt trace, and `/dashboard` shows every hop, cost, and error.
+- **Nothing is a black box.** `/debug` shows every prompt trace, and `/dashboard` shows every hop, cost, and error — plus an **Inner state** tab that reads back the hidden mood trail, the climate dials, the thread inventory, the actions still waiting on a yes, and what each turn's prompt actually looked like.
 
 ## How it works
 
@@ -89,9 +91,9 @@ A quick map of the code, if you want to read along:
 - **Channels** (`src/channels`) — one `Channel` abstraction with `web` (SSE + CLI) and `bridge` adapters. See [docs/CHANNELS.md](docs/CHANNELS.md).
 - **LLM layer** (`src/llm`) — one `callLLM` entry point, per-role primary provider, automatic fallback lane, token budget guards.
 - **Persona & affect** (`src/persona`) — the hidden per-turn affect engine, the relationship climate, and the conversational-thread selection described above.
-- **State & memory** (`src/state`, `src/memory`) — burst-batching, per-chat send lock, typing pacing, the short/medium/long memory tiers, plus the thread harvest, the note groomer, and the optional semantic-recall leg.
+- **State & memory** (`src/state`, `src/memory`) — burst-batching, per-chat send lock, typing pacing, a durable registry of in-flight engine runs (so a restart can find and own up to the one it killed), the short/medium/long memory tiers, plus the thread harvest, the note groomer, and the optional semantic-recall leg.
 - **Data** (`src/db`) — a local store under `IRISES_HOME` (default `~/.irises`): SQLite (builtin `node:sqlite`) for machine data, plus per-user markdown for the curated memory tiers. `DATA_BACKEND=memory` runs the same code but ephemeral, nothing persists.
-- **Diagnostics** (`src/diagnostics`) — `/debug` prompt traces and the `/dashboard` GUI with cost, error and memory views.
+- **Diagnostics** (`src/diagnostics`) — `/debug` prompt traces and the `/dashboard` GUI with cost, error, memory and inner-state views.
 
 ## Already running hermes-agent or OpenClaw?
 
@@ -262,6 +264,9 @@ Outbound routes by `chatId` prefix — `web:` → web / CLI, `eng:<platform>:<ch
 | `FIRST_MOVE_ENABLED` | `false` skips the one-time install introduction (engine memory pull + her first text). One-shot state lives in `$IRISES_HOME/first-move.json`, so restarts and updates never re-fire it. |
 | `ENGINE_PUSH_TOKEN` | Shared secret for `POST /api/engine/push` (`x-engine-token`) **and** `POST /api/bridge/inbound` (`x-bridge-token`). Unset = loopback-only. |
 | `ENGINE_TIMEOUT_MS` · `ENGINE_MAX_CONCURRENT` | Per-call budget (default `OPS_TASK_TIMEOUT_MS − 15s`) and the engine-call semaphore (default 2). |
+| `HERMES_RUN_TRANSPORT` | `runs` (default) \| `chat` — which transport a hermes delegation speaks. `runs` = `POST /v1/runs` + SSE events, the one that lets stop and `steer_research` reach an in-flight leg; `chat` = the old blocking `/v1/chat/completions` body, no run control. Falls back to `chat` on its own for an image-bearing task or a hermes with no runs API. |
+| `OPS_CANCEL_ENGINE_ABORT` | On give-up (user says stop, or Irises's own leg timeout) also tell the engine to stop working — hermes `POST /v1/runs/{id}/stop`, OpenClaw's abort RPC. `off` reverts to dropping the connection locally (the orphaned-run bug this exists to fix). Both engines. Default on. |
+| `OPS_APPROVAL_GATE` | Park a delegation that would act in the world until the user says yes in that chat. `off` = kick it off immediately, no question, no parked row. Default on. |
 | `HERMES_BRIDGE_URL` · `IRISES_PUSH_URL` | Where Irises sends bridge replies (default `http://127.0.0.1:8655`) and the push URL embedded in engine cron jobs. |
 
 **Channels**
@@ -284,6 +289,7 @@ Outbound routes by `chatId` prefix — `web:` → web / CLI, `eng:<platform>:<ch
 | `ROUTING_GATE` | `off` disables the grounding screen that forces data questions through the engine. |
 | `CONVO_ROUTING_GATE_MEMORY_AWARE` | `off` makes that screen text-only again: it stops standing down for a data question she answered off something she already holds, and a delegation stops carrying what she holds to the engine (it rides beside the brief, in the task's own field, never inside it). Default on. |
 | `REFUSAL_FLOOR` | `off` disables the screen that catches a reply falsely claiming it can't reach something the engine can, and delegates instead. |
+| `MEMORY_PROVENANCE_ENABLED` | Stamp every durable fact `stated` \| `seeded` \| `inferred` so a guess is never cited as testimony. **Default off** — the one default-off switch in the focus set, because it changes what a memory file contains (the read side parses stamps either way). |
 | `BATCH_SETTLE_MS` · `TYPING_CPM` · `TYPING_DELAY_MAX_MS` | Batching + simulated-typing pacing. |
 | `LLM_DAILY_TOKEN_CAP` · `OPS_TASK_TOKEN_BUDGET` · `LLM_MAX_INPUT_TOKENS_EST` | Cost circuit breakers (tripping fails loud, never re-billed on the other lane). |
 | `DIAGNOSTICS_ENABLED` · `DIAGNOSTICS_*` | `/debug` trace buffer sizing and retention. |
@@ -328,7 +334,7 @@ With **no engine** (the debug/standalone path) Irises falls back to its own ship
 |---------------|---------|------|
 | `POST /api/web/message` · `GET /api/web/stream` · `POST /api/web/cancel` | Web debug chat (browser + `npm run chat` CLI) — send / SSE stream / stop research | `DEBUG_TOKEN` (unset = localhost) |
 | `POST /api/engine/push` | Engine cron / mail → a voiced message on the right channel | `x-engine-token` |
-| `POST /api/bridge/inbound` | Bridge plugin forwards a fronted chat *(mounted when `OPS_BACKEND` is set)* | `x-bridge-token` |
+| `POST /api/bridge/inbound` | Bridge plugin forwards a fronted chat *(mounted when `OPS_BACKEND` is set)*; idempotent per message id, so a plugin retry is answered once, never run twice | `x-bridge-token` |
 | `GET /debug` | Prompt diagnostics | `DEBUG_TOKEN` |
 | `GET /dashboard` | Admin orchestration GUI | `DASHBOARD_PASSWORD` |
 | `GET /health` | Health check + running-persona fingerprint | none |
@@ -339,16 +345,16 @@ With **no engine** (the debug/standalone path) Irises falls back to its own ship
 irises/
 ├─ src/                    # the server brain (Express · TypeScript · Node 22)
 │  ├─ index.ts             #   HTTP entry, batching/mouth, boot
-│  ├─ agents/              #   convo · ops (engine seam) · composer · fallfirm + orchestrator
+│  ├─ agents/              #   convo · ops (engine seam: runs, stop/steer, consent gate) · composer · fallfirm + orchestrator
 │  ├─ channels/            #   Channel abstraction + web (SSE + CLI) · bridge
 │  ├─ llm/                 #   callLLM: provider-neutral LLM layer (Anthropic + OpenRouter + OpenAI-compatible)
 │  ├─ persona/             #   hidden affect engine (mood wheel · circadian · 28-day cycle · status) · climate · threads
 │  ├─ state/ · memory/     #   send lock, batching, pacing · memory tiers · thread harvest · note groomer · semantic recall
-│  ├─ db/ · pipeline/      #   local data layer (SQLite + memory files) · bubble, cron, time helpers
+│  ├─ db/ · pipeline/      #   local data layer (SQLite + memory files · ops-run registry · bridge dedupe) · bubble, cron, time helpers
 │  ├─ update/              #   self-update checker, announcer, pidfile, version stamp
 │  ├─ webhook/             #   engine push door
-│  └─ diagnostics/         #   /debug traces + /dashboard GUI
-├─ bridge/                 # engine plugins — hermes (Python) · openclaw (TypeScript)
+│  └─ diagnostics/         #   /debug traces + /dashboard GUI (overview · memory · inner state)
+├─ bridge/                 # engine plugins — hermes (Python) · openclaw (TypeScript) · contract-fixtures (the shared v1 payload)
 ├─ skills/                 # irises-setup-hermes · irises-setup-openclaw (engine-native installers)
 ├─ scripts/                # engine-setup.sh · update.sh · irises-chat.ts (REPL)
 ├─ deploy/                 # docker-compose · Caddyfile · app.env · env.vm.example
