@@ -1535,10 +1535,43 @@ export async function processConvoResult(args: {
   // garbled reply passes through unchanged; an empty/tool-only envelope yields null text, so the
   // never-go-silent fallbacks below take over.
   const firstReply = parseReply(args.res.text);
+
+  // ── The answer to a parked action ─────────────────────────────────────────────────────────────
+  // FIRST, ahead of the honesty guard below and of the tool loop: a promoted action holds this
+  // turn's single delegation slot, so the model cannot delegate over the top of work the user just
+  // authorized. It hands the task back through `delegatedTask`, which is the only channel index.ts
+  // starts a run from — so an approved action starts at the one site that has ever started one,
+  // inside this turn's chat lock, with its own fresh AbortController (INV-1 untouched).
+  //
+  // Fenced off the recall second pass (`archivePass`): that pass re-enters this function with the
+  // same user text, and the ask has already been resolved by the first one.
+  //
+  // The flag read comes FIRST: with OPS_APPROVAL_GATE off nothing here runs at all — no prefs read,
+  // no classify call, no promotion — and a parked row from before the flip is left exactly as it is.
+  let settledTask: OpsTask | null = null;
+  let settledReconfirm: string | null = null;
+  if (opsApprovalGateEnabled() && chatContext?.senderHandle && !args.archivePass) {
+    const settled = await resolvePendingApproval({
+      chatId, handle, sender: chatContext.senderHandle, text: textToSend ?? '',
+    });
+    if (settled.task) settledTask = settled.task;
+    else if (settled.reconfirm) settledReconfirm = settled.reconfirm;
+  }
+
   // The honesty backstop, BEFORE anything is dispatched or persisted: a reply that promised work
   // while calling no tool with nothing running for them gets one corrective re-ask, and whatever
   // stands after it is the reply this whole function then processes (convo/unkeptPromise.ts).
-  const guard = await enforcePromiseKept(args, replyBubbles(firstReply));
+  //
+  // Stood down on the two turns the approval gate has just settled, which is why the resolution
+  // above runs first. The pending_approval section ASKS for a holding line with no tool call, so
+  // an approved "yes" arrives here as "on it" with an empty envelope and nothing yet marked in
+  // flight — the guard's exact signature — while the work behind the line is the promotion this
+  // very turn just made (`settledTask`); a `settledReconfirm` turn's text is replaced by the ask
+  // anyway. Left in front, the guard burned one corrective re-ask on EVERY approved yes and
+  // shipped its "honest" retry ("i can't send that from here") over an action that was starting.
+  const guard = (settledTask || settledReconfirm)
+    ? { res: args.res, fired: false }
+    : await enforcePromiseKept(args, replyBubbles(firstReply));
   const res = guard.res;
   // Re-parsed only when the re-ask actually replaced the reply — parseReply logs a line for a
   // non-envelope reply, and parsing the same one twice would double it.
@@ -1554,16 +1587,23 @@ export async function processConvoResult(args: {
   let renameChat: string | null = null;
   let rememberedUser: ChatResponse['rememberedUser'] = null;
   let removeMember: string | null = null;
-  let delegatedTask: OpsTask | null = null;
+  // Seeded with the action the user just authorized, promoted above.
+  let delegatedTask: OpsTask | null = settledTask;
   // Set when the approval gate parked an action instead of handing it back for kickoff: the request
   // she is about to ask them about. Its presence is what replaces her holding line with a question
-  // and keeps the routing floor off a turn that deliberately delegated nothing.
-  let parkedApproval: { request: string; variant: 'park' | 'reconfirm' } | null = null;
+  // and keeps the routing floor off a turn that deliberately delegated nothing. A yes that arrived
+  // too late seeds it as a 'reconfirm': she re-asks through the same mechanism the park uses, and
+  // the floors that fire on "nothing was delegated" stand down for the same reason they do there.
+  let parkedApproval: { request: string; variant: 'park' | 'reconfirm' } | null =
+    settledReconfirm ? { request: settledReconfirm, variant: 'reconfirm' } : null;
   // True when the MODEL (not the routing gate below) built delegatedTask, so the salvage after the
   // loop knows to discard its un-grounded answer tail. Convo is single-shot — it never sees Ops'
   // result — so any substantive claim it wrote alongside a delegation is un-grounded, and the
   // composer re-answers the same facts from the real result, doubling them on the user's screen.
-  let modelDelegated = false;
+  // A promoted approval sets it for that same reason: the line she wrote beside it ("okay, sending
+  // it now") is un-grounded and the composer is coming back with the real outcome, while the
+  // salvage below keeps the holding half.
+  let modelDelegated = settledTask !== null;
   // True when the model called delegate_to_ops but it was a deterministic duplicate of work
   // already running / just answered, so we skipped building the task. Used as a last-resort
   // fallback so the turn is never silent if the model also wrote no text.
@@ -1589,35 +1629,6 @@ export async function processConvoResult(args: {
   // The FIRST recall_memory query this turn (a second call in the same envelope is ignored — one
   // archive search per turn, and the second pass below is what answers from it).
   let recallQuery: string | null = null;
-
-  // ── The answer to a parked action ─────────────────────────────────────────────────────────────
-  // BEFORE the tool loop, so a promoted action holds this turn's single delegation slot and the
-  // model cannot delegate over the top of work the user just authorized. It hands the task back
-  // through `delegatedTask`, which is the only channel index.ts starts a run from — so an approved
-  // action starts at the one site that has ever started one, inside this turn's chat lock, with its
-  // own fresh AbortController (INV-1 untouched).
-  //
-  // Fenced off the recall second pass (`archivePass`): that pass re-enters this function with the
-  // same user text, and the ask has already been resolved by the first one.
-  //
-  // The flag read comes FIRST: with OPS_APPROVAL_GATE off nothing here runs at all — no prefs read,
-  // no classify call, no promotion — and a parked row from before the flip is left exactly as it is.
-  if (opsApprovalGateEnabled() && chatContext?.senderHandle && !args.archivePass) {
-    const settled = await resolvePendingApproval({
-      chatId, handle, sender: chatContext.senderHandle, text: textToSend ?? '',
-    });
-    if (settled.task) {
-      delegatedTask = settled.task;
-      // Same reason the model's own delegation sets it: Convo is single-shot and never sees the
-      // result, so the line it wrote alongside this ("okay, sending it now") is un-grounded and the
-      // composer is coming back with the real outcome. The salvage below keeps the holding half.
-      modelDelegated = true;
-    } else if (settled.reconfirm) {
-      // A yes that arrived too late: she re-asks through the same mechanism the park uses, and the
-      // floors that fire on "nothing was delegated" stand down for the same reason they do there.
-      parkedApproval = { request: settled.reconfirm, variant: 'reconfirm' };
-    }
-  }
 
   for (const call of res.toolCalls) {
     const input = call.input;

@@ -393,6 +393,22 @@ test('a yes promotes the parked row and hands the authorized task back for kicko
   assert.equal(laneCalls, 0, 'and the English lexicon settled it for free');
 });
 
+test('the holding line on an approved yes is not read as an unkept promise', async () => {
+  // The pending_approval section tells her to write a holding line with NO tool call, so on the
+  // approving turn the reply is "on it" with an empty envelope — and the promotion that backs it up
+  // happens inside this function, not in the model's tool calls. With the honesty guard running
+  // first, every single approved yes burned one corrective re-ask and shipped its "honest" retry
+  // ("i can't send that from here") over the top of an action that WAS starting.
+  const { a, row } = await park();
+  const { turn, seen } = reasker(['i cannot do that']);
+  const out = await processConvoResult({ ...answer(a, 'yes'), res: makeResult(['on it']), turn });
+
+  assert.equal(receipt('convo:unkept_promise'), undefined, 'the promoted action IS the work behind the line');
+  assert.equal(seen.length, 0, 'so no corrective re-ask is spent');
+  assert.equal(out.delegatedTask?.id, row.id, 'and the action she was authorized to run still goes out');
+  assert.equal(out.text, 'on it', 'her holding line ships, not a retry that denies it');
+});
+
 test('a no declines the row and starts nothing', async () => {
   const { a, row } = await park();
   const { turn } = reasker(['never asked']);
