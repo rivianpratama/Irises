@@ -18,6 +18,12 @@
 // composer-failure path that relays Ops's raw summary with no model in the loop — can never crack
 // the single-entity seam.
 //
+// HARDCODED OFF (added later): the word-level scrubbing below now ships DISABLED — the master switch
+// REDACT_INTERNAL_TOOLS is false, so redactInternalTools is a pass-through and none of the rules run.
+// Nothing is removed: the rules and the engine (applyInternalToolRedactions) are kept intact for a
+// fork to re-enable by flipping that one constant to true. The policy above describes what the
+// scrubbing DOES when switched on, not what currently ships.
+//
 // Deliberately NOT scrubbed: "gateway". It is too ordinary a word (a gateway community, the gateway
 // listing) and a real leak always co-occurs with "openclaw", which IS scrubbed — so gating it would
 // buy nothing and cost false positives.
@@ -83,17 +89,39 @@ const INTERNAL_TOOL_REDACTIONS: RedactionRule[] = [
   { pattern: /\b(?:spawned|spun\s+up|kicked\s+off)\s+(?:a\s+few\s+|\d+\s+|some\s+|several\s+)?(?:parallel\s+)?sub-?agents?\b/gi, replacement: 'worked a few angles' },
 ];
 
+// HARDCODED master switch for the word-level scrubbing. Shipped OFF at the owner's request:
+// redactInternalTools passes text through untouched, so a model/engine/tool name the persona says
+// reaches the user verbatim. Nothing below is removed — the rules in INTERNAL_TOOL_REDACTIONS and the
+// engine applyInternalToolRedactions() stay intact. A fork that wants the single-entity scrubbing back
+// flips this one constant to true (no other change needed).
+const REDACT_INTERNAL_TOOLS = false;
+
 /**
- * Scrub internal tool names from a single piece of user-facing text. Idempotent and
- * safe to call on every outbound bubble. Logs once per hit so a leak that reaches this
- * far is visible (it means a persona prompt needs reinforcing), without throwing.
+ * The word-level rewrite engine: run every INTERNAL_TOOL_REDACTIONS rule over the text. Always applies
+ * the rules regardless of the master switch — this is the preserved scrubbing logic, exported so it is
+ * still exercised by the tests and directly callable by a fork that re-enables the feature. The shipped
+ * path is redactInternalTools, which is gated OFF by REDACT_INTERNAL_TOOLS above.
  */
-export function redactInternalTools(text: string | null | undefined): string {
-  if (!text) return text ?? '';
+export function applyInternalToolRedactions(text: string): string {
   let out = text;
   for (const { pattern, replacement } of INTERNAL_TOOL_REDACTIONS) {
     out = out.replace(pattern, replacement);
   }
+  return out;
+}
+
+/**
+ * Scrub internal tool names from a single piece of user-facing text. Idempotent and
+ * safe to call on every outbound bubble. Logs once per hit so a leak that reaches this
+ * far is visible (it means a persona prompt needs reinforcing), without throwing.
+ *
+ * HARDCODED OFF (REDACT_INTERNAL_TOOLS = false): currently a pure pass-through — the rewrite engine
+ * applyInternalToolRedactions() is preserved but not applied. Flip the constant to re-enable.
+ */
+export function redactInternalTools(text: string | null | undefined): string {
+  if (!text) return text ?? '';
+  if (!REDACT_INTERNAL_TOOLS) return text;   // disabled by hardcode: replace nothing
+  const out = applyInternalToolRedactions(text);
   if (out !== text) {
     console.warn('[guardrail] redacted an internal tool name from user-facing text');
   }

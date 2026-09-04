@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { redactInternalTools, stripOpsScaffolding, stripEchoedHolding } from './guardrails.js';
+import { redactInternalTools, applyInternalToolRedactions, stripOpsScaffolding, stripEchoedHolding } from './guardrails.js';
 
 // ── stripEchoedHolding: the fused-bubble bug ────────────────────────────────────────────────────
 // The Composer retyped its holding line glued to the answer with no whitespace, and the 19-word
@@ -122,126 +122,147 @@ test('idempotent and null-safe', () => {
 // Irises. The rules degrade the common leak shapes to first-person instead of garbled text.
 
 test('redacts "ops" leaks into first-person Irises', () => {
-  assert.equal(redactInternalTools('ops is pulling that up'), "i'm pulling that up");
-  assert.equal(redactInternalTools('my ops engine is on it'), "i'm on it");
-  assert.equal(redactInternalTools('the ops engine found the owner'), 'i found the owner');
-  assert.equal(redactInternalTools('handed that off to ops, one sec'), 'handed that, one sec');
-  assert.equal(redactInternalTools('sent it to my ops team already'), 'sent it already');
-  assert.equal(redactInternalTools('checking with my ops side now'), 'checking with me now');
-  assert.equal(redactInternalTools('Ops came back with the deadline'), 'i came back with the deadline');
+  assert.equal(applyInternalToolRedactions('ops is pulling that up'), "i'm pulling that up");
+  assert.equal(applyInternalToolRedactions('my ops engine is on it'), "i'm on it");
+  assert.equal(applyInternalToolRedactions('the ops engine found the owner'), 'i found the owner');
+  assert.equal(applyInternalToolRedactions('handed that off to ops, one sec'), 'handed that, one sec');
+  assert.equal(applyInternalToolRedactions('sent it to my ops team already'), 'sent it already');
+  assert.equal(applyInternalToolRedactions('checking with my ops side now'), 'checking with me now');
+  assert.equal(applyInternalToolRedactions('Ops came back with the deadline'), 'i came back with the deadline');
 });
 
 test('redacts "reflexion" leaks into plain "my memory"', () => {
-  assert.equal(redactInternalTools('my reflexion pass will tidy that up tonight'), 'my memory will tidy that up tonight');
-  assert.equal(redactInternalTools('reflexion will reconcile your notes'), 'my memory will reconcile your notes');
-  assert.equal(redactInternalTools('the reflexion agent updated what i know'), 'my memory updated what i know');
-  assert.equal(redactInternalTools('Reflexion is reviewing the day'), 'my memory is reviewing the day');
+  assert.equal(applyInternalToolRedactions('my reflexion pass will tidy that up tonight'), 'my memory will tidy that up tonight');
+  assert.equal(applyInternalToolRedactions('reflexion will reconcile your notes'), 'my memory will reconcile your notes');
+  assert.equal(applyInternalToolRedactions('the reflexion agent updated what i know'), 'my memory updated what i know');
+  assert.equal(applyInternalToolRedactions('Reflexion is reviewing the day'), 'my memory is reviewing the day');
 });
 
 test('redacts a leaked recall_memory tool name, but never ordinary prose', () => {
-  assert.equal(redactInternalTools('let me check recall_memory for that'), 'let me check my memory for that');
-  assert.equal(redactInternalTools('my recall-memory tool has it'), 'my memory has it');
+  assert.equal(applyInternalToolRedactions('let me check recall_memory for that'), 'let me check my memory for that');
+  assert.equal(applyInternalToolRedactions('my recall-memory tool has it'), 'my memory has it');
   // The bare bigram is left alone — this rule targets the identifier, not English.
-  assert.equal(redactInternalTools("i can't recall memory of that day"), "i can't recall memory of that day");
+  assert.equal(applyInternalToolRedactions("i can't recall memory of that day"), "i can't recall memory of that day");
 });
 
 test('redacts model/provider names into plain "AI" (the "what model are you" leak)', () => {
-  assert.equal(redactInternalTools('i run on deepseek'), 'i run on AI');
-  assert.equal(redactInternalTools("that's chatgpt under the hood"), "that's AI under the hood");
-  assert.equal(redactInternalTools('OpenAI handles the heavy lifting'), 'AI handles the heavy lifting');
-  assert.equal(redactInternalTools('my calls route through openrouter'), 'my calls route through AI');
-  assert.equal(redactInternalTools('anthropic built the model i use'), 'AI built the model i use');
-  assert.equal(redactInternalTools('gpt-4 does my reasoning'), 'AI does my reasoning');
-  assert.equal(redactInternalTools("deepseek's answer was cached"), 'AI answer was cached');
+  assert.equal(applyInternalToolRedactions('i run on deepseek'), 'i run on AI');
+  assert.equal(applyInternalToolRedactions("that's chatgpt under the hood"), "that's AI under the hood");
+  assert.equal(applyInternalToolRedactions('OpenAI handles the heavy lifting'), 'AI handles the heavy lifting');
+  assert.equal(applyInternalToolRedactions('my calls route through openrouter'), 'my calls route through AI');
+  assert.equal(applyInternalToolRedactions('anthropic built the model i use'), 'AI built the model i use');
+  assert.equal(applyInternalToolRedactions('gpt-4 does my reasoning'), 'AI does my reasoning');
+  assert.equal(applyInternalToolRedactions("deepseek's answer was cached"), 'AI answer was cached');
 });
 
 test('redacts "claude"/"gemini" ONLY in self-referential tech shapes', () => {
-  assert.equal(redactInternalTools("i'm powered by claude"), "i'm powered by AI");
-  assert.equal(redactInternalTools('built on gemini, actually'), 'built on AI, actually');
-  assert.equal(redactInternalTools('running on Claude behind the scenes'), 'running on AI behind the scenes');
-  assert.equal(redactInternalTools("it's gemini under the hood"), "it's AI under the hood");
+  assert.equal(applyInternalToolRedactions("i'm powered by claude"), "i'm powered by AI");
+  assert.equal(applyInternalToolRedactions('built on gemini, actually'), 'built on AI, actually');
+  assert.equal(applyInternalToolRedactions('running on Claude behind the scenes'), 'running on AI behind the scenes');
+  assert.equal(applyInternalToolRedactions("it's gemini under the hood"), "it's AI under the hood");
 });
 
 test('never false-positives on Claude the client or gemini the zodiac sign', () => {
   const client = 'claude is coming by at 3 to see the house';
-  assert.equal(redactInternalTools(client), client);
+  assert.equal(applyInternalToolRedactions(client), client);
   const zodiac = "she's a gemini, makes sense honestly";
-  assert.equal(redactInternalTools(zodiac), zodiac);
+  assert.equal(applyInternalToolRedactions(zodiac), zodiac);
   const showing = 'told claude the showing moved to friday';
-  assert.equal(redactInternalTools(showing), showing);
+  assert.equal(applyInternalToolRedactions(showing), showing);
 });
 
 test('redacts "openclaw" leaks — first-person where there is a shape to keep, plain "AI" otherwise', () => {
-  assert.equal(redactInternalTools('openclaw is pulling that up'), "i'm pulling that up");
-  assert.equal(redactInternalTools('openclaw came back with the deadline'), 'i came back with the deadline');
-  assert.equal(redactInternalTools('my openclaw engine is slow'), "i'm slow");
-  assert.equal(redactInternalTools('handed that off to openclaw, one sec'), 'handed that, one sec');
+  assert.equal(applyInternalToolRedactions('openclaw is pulling that up'), "i'm pulling that up");
+  assert.equal(applyInternalToolRedactions('openclaw came back with the deadline'), 'i came back with the deadline');
+  assert.equal(applyInternalToolRedactions('my openclaw engine is slow'), "i'm slow");
+  assert.equal(applyInternalToolRedactions('handed that off to openclaw, one sec'), 'handed that, one sec');
   // No shape left to keep → the brand flattens like a model name, never to "i run on i".
-  assert.equal(redactInternalTools('i run on openclaw'), 'i run on AI');
-  assert.equal(redactInternalTools("openclaw's run finished"), 'AI run finished');
+  assert.equal(applyInternalToolRedactions('i run on openclaw'), 'i run on AI');
+  assert.equal(applyInternalToolRedactions("openclaw's run finished"), 'AI run finished');
   // The arcade machine is two words and never a leak.
   const arcade = 'the open claw machine at the arcade';
-  assert.equal(redactInternalTools(arcade), arcade);
+  assert.equal(applyInternalToolRedactions(arcade), arcade);
 });
 
 test('redacts "hermes" ONLY in self-referential tech shapes', () => {
-  assert.equal(redactInternalTools('built on hermes'), 'built on AI');
-  assert.equal(redactInternalTools("it's hermes under the hood"), "it's AI under the hood");
-  assert.equal(redactInternalTools('my hermes engine is slow'), "i'm slow");
-  assert.equal(redactInternalTools('checking with my hermes side now'), 'checking with me now');
+  assert.equal(applyInternalToolRedactions('built on hermes'), 'built on AI');
+  assert.equal(applyInternalToolRedactions("it's hermes under the hood"), "it's AI under the hood");
+  assert.equal(applyInternalToolRedactions('my hermes engine is slow'), "i'm slow");
+  assert.equal(applyInternalToolRedactions('checking with my hermes side now'), 'checking with me now');
 });
 
 test('never false-positives on hermes the god, the handbag, or the courier', () => {
   const courier = 'hermes says the package lands tuesday';
-  assert.equal(redactInternalTools(courier), courier);
+  assert.equal(applyInternalToolRedactions(courier), courier);
   const bag = 'she wants a hermes bag for her birthday';
-  assert.equal(redactInternalTools(bag), bag);
+  assert.equal(applyInternalToolRedactions(bag), bag);
   const god = 'hermes was the messenger god, fitting';
-  assert.equal(redactInternalTools(god), god);
+  assert.equal(applyInternalToolRedactions(god), god);
 });
 
 test('redacts "claude code" as a bare bigram, but never claude the client doing the coding', () => {
-  assert.equal(redactInternalTools('claude code does my deep digging'), 'AI does my deep digging');
-  assert.equal(redactInternalTools("claude code's run finished"), 'AI run finished');
+  assert.equal(applyInternalToolRedactions('claude code does my deep digging'), 'AI does my deep digging');
+  assert.equal(applyInternalToolRedactions("claude code's run finished"), 'AI run finished');
   const coded = 'claude coded the fix himself';
-  assert.equal(redactInternalTools(coded), coded);
+  assert.equal(applyInternalToolRedactions(coded), coded);
 });
 
 test('redacts mcp tool talk, but never the mcp line on a form', () => {
-  assert.equal(redactInternalTools('i used an mcp tool for that'), 'i used a tool for that');
-  assert.equal(redactInternalTools('my mcp servers are all connected'), 'my tools are all connected');
+  assert.equal(applyInternalToolRedactions('i used an mcp tool for that'), 'i used a tool for that');
+  assert.equal(applyInternalToolRedactions('my mcp servers are all connected'), 'my tools are all connected');
   const fee = 'the mcp on that form is the monthly cost';
-  assert.equal(redactInternalTools(fee), fee);
+  assert.equal(applyInternalToolRedactions(fee), fee);
 });
 
 test('redacts a subagent spawn, but never a real-estate subagent', () => {
-  assert.equal(redactInternalTools('i spun up 4 parallel subagents'), 'i worked a few angles');
-  assert.equal(redactInternalTools('spawned a few sub-agents to check the comps'), 'worked a few angles to check the comps');
+  assert.equal(applyInternalToolRedactions('i spun up 4 parallel subagents'), 'i worked a few angles');
+  assert.equal(applyInternalToolRedactions('spawned a few sub-agents to check the comps'), 'worked a few angles to check the comps');
   const showing = 'my subagent showed the house today';
-  assert.equal(redactInternalTools(showing), showing);
+  assert.equal(applyInternalToolRedactions(showing), showing);
   const commission = 'the subagent gets half the commission';
-  assert.equal(redactInternalTools(commission), commission);
+  assert.equal(applyInternalToolRedactions(commission), commission);
 });
 
 test('never false-positives on real words containing "ops"', () => {
   const coops = 'a few co-ops on that block allow subletting';
-  assert.equal(redactInternalTools(coops), coops);
+  assert.equal(applyInternalToolRedactions(coops), coops);
   const oops = 'oops, typo, i meant june 30';
-  assert.equal(redactInternalTools(oops), oops);
+  assert.equal(applyInternalToolRedactions(oops), oops);
   const stops = 'the bus stops right at the corner lot';
-  assert.equal(redactInternalTools(stops), stops);
+  assert.equal(applyInternalToolRedactions(stops), stops);
   const workshops = 'they run first-time buyer workshops monthly';
-  assert.equal(redactInternalTools(workshops), workshops);
+  assert.equal(applyInternalToolRedactions(workshops), workshops);
 });
 
-test('composes with redactInternalTools the way sendBubbles applies them', () => {
-  // sendBubbles runs stripOpsScaffolding(redactInternalTools(x)) per bubble.
+test('the scrubbing engine composes with stripOpsScaffolding (the fork re-enable path)', () => {
+  // sendBubbles runs stripOpsScaffolding(redactInternalTools(x)) per bubble, but redactInternalTools
+  // is hardcoded OFF — so this drives the engine (applyInternalToolRedactions) directly to pin the
+  // label-strip + scrub interaction a fork gets when REDACT_INTERNAL_TOOLS is flipped back on.
   const raw = 'SOURCE: the web (three sources)';
-  assert.equal(stripOpsScaffolding(redactInternalTools(raw)), ''); // whole SOURCE line dropped
+  assert.equal(stripOpsScaffolding(applyInternalToolRedactions(raw)), ''); // whole SOURCE line dropped
   const answer = 'ANSWER: ops found the owner is the Delgado trust';
   // "ops found" → first person ("i found"), then the ANSWER: label is stripped.
-  assert.equal(stripOpsScaffolding(redactInternalTools(answer)), 'i found the owner is the Delgado trust');
+  assert.equal(stripOpsScaffolding(applyInternalToolRedactions(answer)), 'i found the owner is the Delgado trust');
   // Same for a leaked engine name in the same block.
   const engine = 'ANSWER: openclaw came back with the deadline';
-  assert.equal(stripOpsScaffolding(redactInternalTools(engine)), 'i came back with the deadline');
+  assert.equal(stripOpsScaffolding(applyInternalToolRedactions(engine)), 'i came back with the deadline');
+});
+
+// The shipped entry point is hardcoded OFF (REDACT_INTERNAL_TOOLS = false): a pure pass-through, so
+// every model/engine/tool name the persona says reaches the user verbatim. The rules themselves are
+// still verified above via applyInternalToolRedactions — this only pins the master switch.
+test('redactInternalTools is hardcoded OFF — text passes through unchanged', () => {
+  for (const s of [
+    'i run on deepseek',
+    'ops is pulling that up',
+    'claude code does my deep digging',
+    'openclaw came back with the deadline',
+    "i'm powered by claude",
+    'i used an mcp tool for that',
+  ]) {
+    assert.equal(redactInternalTools(s), s);
+  }
+  // null/empty still normalize the same way, switch or no switch.
+  assert.equal(redactInternalTools(''), '');
+  assert.equal(redactInternalTools(null), '');
 });
