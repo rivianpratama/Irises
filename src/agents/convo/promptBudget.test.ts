@@ -36,7 +36,7 @@ import {
   renderUserMemoryWithHot, sanitizeLongDoc, splitSections, profileIsThin,
   type MemoryAudience, type UserMemoryData,
 } from '../../memory/wrappers.js';
-import { renderPendingClarification } from '../../memory/dossier.js';
+import { renderPendingClarification, renderPendingApproval } from '../../memory/dossier.js';
 import { buildTurnRelevance } from '../../memory/relevance.js';
 import { sanitizeDirectives } from '../../memory/preferences.js';
 import { coerceStatus, mergeStatus, type AffectState, type ComputedState } from '../../persona/status.js';
@@ -286,10 +286,20 @@ const GROUP_DATA: UserMemoryData = {
 };
 const GROUP_STACK = stack(GROUP_DATA, 'did the cedars land', 'group');
 
-/** The one PLAIN section a routed context block still carries — a look came back thin, so she asked
- *  them to narrow it down and their next message is probably the answer. Rendered through the real
- *  renderer (memory/dossier.ts), never mirrored here: the hand-written tenure mirror that used to
- *  sit in this file had drifted from its renderer by the time anyone compared them. */
+/** The two PLAIN sections a routed context block can carry, both through the real renderers
+ *  (memory/dossier.ts), never mirrored here: the hand-written tenure mirror that used to sit in this
+ *  file had drifted from its renderer by the time anyone compared them.
+ *
+ *  APPROVAL is the approval gate's — she asked whether to go ahead with an action in the world and
+ *  nothing has started; CLARIFICATION is the steering question after a thin look. They are
+ *  independent (different asks, different clocks), so the widest plain part is both at once. */
+const APPROVAL = renderPendingApproval({
+  taskId: 'a1',
+  request: 'email the north supplier that the warped pallet is going back',
+  kind: 'general',
+  askedAt: FROZEN_MS - 4 * MINUTE,
+}, FROZEN_MS);
+
 const CLARIFICATION = renderPendingClarification({
   request: 'replacing the warped dock boards',
   missingFields: ['which supplier the pallet came from', 'whether you want the whole pallet returned or the six boards swapped'],
@@ -544,15 +554,16 @@ const FIXTURES: Fixture[] = [
   {
     // 5. THREAD-OFFER turn: her weather carries one standing theme to (maybe) tag, last turn's offer
     // is still owed a bookkeeping answer, and a version note is riding along as the caller addendum.
-    // It is also the one fixture with a steering question outstanding — their message reads like the
-    // answer to it — so this is where the context block's plain part is measured.
+    // It is also the one fixture carrying BOTH plain sections a routed context block can hold — a
+    // steering question and an approval ask, live at the same time — so this is where the context
+    // block's plain part is measured, at its widest.
     name: 'thread offer with an outcome ask',
     spec: {
       chatContext: {
         isGroupChat: false, participantNames: [], chatName: null,
         senderHandle: HANDLE, senderProfile: MATURE_PROFILE,
       },
-      contextBlock: contextBlockWith(MATURE_STACK, CLARIFICATION),
+      contextBlock: contextBlockWith(MATURE_STACK, CLARIFICATION, APPROVAL),
       extraSection: UPDATE_NOTE,
       tools: TOOLS_1TO1,
       history: HISTORY_12,

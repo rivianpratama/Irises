@@ -15,9 +15,10 @@ import {
   formatDaySpan, buildContextBlock, buildContextBlockWithHot,
   dossierFactGuardEnabled, enforceKeyedFacts, enforceKeyedFactsWithChanges, keyedFactsForDossier,
   reinjectSeedProvenance, renderConfirmedFacts,
+  renderPendingApproval, gatePendingApproval, PENDING_ASK_TTL_MS, PENDING_CLARIFICATION_TTL_MS,
 } from './dossier.js';
 import { addShortTerm } from '../db/repositories/memoryShort.js';
-import { saveDossier, clearDossier, getMemory, getForgetEpoch } from '../db/repositories/memory.js';
+import { saveDossier, clearDossier, getMemory, getForgetEpoch, setPreference } from '../db/repositories/memory.js';
 import { getLongDoc, listLongRevisions, saveLongDoc } from '../db/repositories/memoryLong.js';
 import { PROVENANCE_LINE } from './seedFromEngine.js';
 import { SEED_FACT_KEY, type Provenance } from './provenance.js';
@@ -521,4 +522,57 @@ test('persistDossierMerge labels the long-doc revision with the caller\'s own wr
   );
   assert.deepEqual(seen, ['engine_seed'], 'the seed is not a dossier_llm rewrite');
   assert.equal((await listLongRevisions(h))[0]?.writtenBy, 'engine_seed');
+});
+
+// ── The pending-approval section (the approval gate's half of the prompt) ─────
+// She asked whether to go ahead with an action, and the answer is coming in the very next message —
+// often as one bare word. A "yes" carries no tokens the relevance router could match, so unlike the
+// steering question beside it this section has NO topic gate: while the ask is live it renders, and
+// the clock alone retires it (the shared 30-minute PENDING_ASK_TTL_MS).
+
+test('renderPendingApproval names the action, the clock and the two answers', () => {
+  const now = Date.UTC(2026, 8, 4, 12, 0, 0);
+  const block = renderPendingApproval(
+    { taskId: 't-1', request: 'email my landlord that rent is late', kind: 'general', askedAt: now - 4 * 60_000 },
+    now,
+  );
+  assert.match(block, /^## You asked them to approve an action/);
+  assert.match(block, /email my landlord that rent is late/);
+  assert.match(block, /4 minutes ago/);
+  // It must never let her claim the action is already happening — that is the whole failure the
+  // park exists to prevent.
+  assert.match(block, /has NOT started/);
+});
+
+test('gatePendingApproval: live while the clock holds, whatever the turn is about', () => {
+  const now = Date.UTC(2026, 8, 4, 12, 0, 0);
+  const pa = { taskId: 't-1', request: 'book the 9am flight', askedAt: now - 29 * 60_000 };
+  assert.equal(gatePendingApproval(pa, now).keep, true);
+  assert.equal(gatePendingApproval({ ...pa, askedAt: now - 31 * 60_000 }, now).keep, false, 'past the TTL');
+  assert.equal(gatePendingApproval(undefined, now).keep, false);
+  assert.equal(gatePendingApproval({ request: 'no clock' }, now).keep, false);
+  assert.equal(gatePendingApproval({ askedAt: now }, now).keep, false, 'no request');
+  assert.equal(PENDING_ASK_TTL_MS, PENDING_CLARIFICATION_TTL_MS, 'one clock for both asks');
+});
+
+test('the context block carries a live approval ask, and drops it once it expires', async () => {
+  const h = freshHandle();
+  await setPreference(h, 'pending_approval', {
+    taskId: 't-1', request: 'send the invoice to accounts', kind: 'general', askedAt: Date.now() - 60_000,
+  });
+  const live = await buildContextBlock(h, 'yes');
+  assert.match(live, /## You asked them to approve an action/);
+  assert.match(live, /send the invoice to accounts/);
+
+  await setPreference(h, 'pending_approval', {
+    taskId: 't-1', request: 'send the invoice to accounts', kind: 'general', askedAt: Date.now() - 40 * 60_000,
+  });
+  const stale = await buildContextBlock(h, 'yes');
+  assert.doesNotMatch(stale, /You asked them to approve an action/);
+});
+
+test('no pending approval renders nothing at all — the section is free until it is asked', async () => {
+  const h = freshHandle();
+  const block = await buildContextBlock(h, 'hey');
+  assert.doesNotMatch(block, /approve an action/);
 });

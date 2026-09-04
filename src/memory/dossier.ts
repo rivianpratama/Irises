@@ -17,7 +17,7 @@ import {
   type MemoryAudience, type UserMemoryData,
 } from './wrappers.js';
 import type { CraftTurnFacts } from '../agents/convo/personaModules.js';
-import { renderTenureBlock } from './tenure.js';
+import { renderTenureBlock, formatAgo } from './tenure.js';
 import { sanitizeDirectives } from './preferences.js';
 import { buildTurnRelevance, memoryRelevanceEnabled, type TurnRelevance } from './relevance.js';
 import type { MemoryGateReason, MemoryGateReport, MemoryGateReports } from '../diagnostics/turnTrace.js';
@@ -105,6 +105,40 @@ export function gatePendingClarification(
 export function renderPendingClarification(pc: PendingClarificationCtx): string {
   const asked = pc.missingFields?.length ? `\nYou specifically asked them for: ${pc.missingFields.join('; ')}.` : '';
   return `## You just asked them to narrow something down (their next reply likely answers it)\nA recent look at "${pc.request}" came back thin, so you asked them a quick steering question instead of telling them.${asked}\nWhen they reply, treat it as them narrowing THAT ask. delegate_to_ops again with the original ask plus what they just clarified, combined. Do NOT answer it from memory, and do NOT treat it as a brand-new topic. If they clearly changed the subject instead, handle the new thing normally.`;
+}
+
+/** The clock both of Convo's outstanding asks run on — the steering question above and the approval
+ *  ask below. ONE constant, aliased rather than copied: a user who has been waiting thirty minutes
+ *  for either has moved on, and two numbers here would eventually disagree about that. */
+export const PENDING_ASK_TTL_MS = PENDING_CLARIFICATION_TTL_MS;
+
+export interface PendingApprovalCtx { taskId?: string; request?: string; kind?: string; askedAt?: number }
+
+/**
+ * Is the approval ask she just made still live? PURE — `now` is injected.
+ *
+ * NO TOPIC GATE, and that is the deliberate difference from the steering question above: a bare
+ * "yes" or "go" carries no salient token any relevance router could match against the action, so a
+ * turn-relevance gate here would drop the section on exactly the reply it exists for. The clock has
+ * the only word, and thirty minutes is short enough that a stale ask retires itself.
+ */
+export function gatePendingApproval(pa: PendingApprovalCtx | undefined, nowMs: number): { keep: boolean } {
+  if (!pa?.request || typeof pa.askedAt !== 'number') return { keep: false };
+  return { keep: nowMs - pa.askedAt <= PENDING_ASK_TTL_MS };
+}
+
+/**
+ * The approval section: she asked whether to go ahead with an action in the world, and their next
+ * message is probably the answer.
+ *
+ * The one thing it MUST say is the one the park exists for — nothing has started. She wrote a
+ * holding line for this ask once already (the re-ask replaced it before it shipped), and a section
+ * that only named the action would leave her free to talk about it as if it were running.
+ */
+export function renderPendingApproval(pa: PendingApprovalCtx, nowMs: number): string {
+  const ago = formatAgo(typeof pa.askedAt === 'number' ? Math.floor(pa.askedAt / 1000) : undefined, nowMs);
+  const when = ago ? ` (asked ${ago})` : '';
+  return `## You asked them to approve an action (their next reply is probably the answer)\nYou asked whether to go ahead with: "${pa.request}"${when}. It has NOT started, and will not until they say yes — never speak about it as if it were running.\nIf they say yes, it starts as this turn ends: one short line that you are doing it. If they say no, let it go in one line. If they reply about something else, answer that normally — the ask stays open until they settle it.`;
 }
 
 interface PendingEmailContext {
@@ -241,6 +275,12 @@ export async function buildContextBlockWithHot(
   // is the order this block has always read in.
   const clarification = gatePendingClarification(prefs.pending_clarification as PendingClarificationCtx | undefined, nowMs, turn);
   if (clarification.keep) parts.push(renderPendingClarification(prefs.pending_clarification as PendingClarificationCtx));
+
+  // Pending approval: she asked whether to go ahead with an action in the world, and NOTHING has
+  // started. Rendered on every turn while the ask is live — no topic gate, because the answer is
+  // usually one bare word (see gatePendingApproval).
+  const approval = prefs.pending_approval as PendingApprovalCtx | undefined;
+  if (gatePendingApproval(approval, nowMs).keep) parts.push(renderPendingApproval(approval as PendingApprovalCtx, nowMs));
 
   // The wrapped memory tiers LAST: preamble → short → medium → flexible (identity/addressing +
   // long doc + directives) in the recency slot; the persona's hard rules stay anchored at the
