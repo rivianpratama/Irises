@@ -25,8 +25,24 @@ export interface HermesDeps {
   fetchFn: typeof fetch;
   now: () => number;
   readFile: (path: string) => Promise<Buffer>;
+  /** The wait between run-status polls. Injected for the same reason ops/steer.ts injects its own:
+   *  the poll ladder is several seconds of real time, and a unit test must be able to walk it
+   *  without waiting them out. */
+  sleep: (ms: number, signal: AbortSignal) => Promise<void>;
 }
-const realDeps: HermesDeps = { fetchFn: (...a) => fetch(...a), now: () => Date.now(), readFile: p => fsReadFile(p) };
+
+/** Abortable delay. Resolves on the abort too — the caller re-checks the signal, so the give-up
+ *  path stays in ONE place (the request that follows). */
+function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise<void>(resolve => {
+    const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); };
+    const timer = setTimeout(done, ms);
+    if (signal.aborted) done();
+    else signal.addEventListener('abort', done, { once: true });
+  });
+}
+
+const realDeps: HermesDeps = { fetchFn: (...a) => fetch(...a), now: () => Date.now(), readFile: p => fsReadFile(p), sleep: abortableSleep };
 
 interface ChatCompletionResponse {
   choices?: Array<{ message?: { content?: string | null } }>;
@@ -432,6 +448,13 @@ export class HermesBackend implements EngineBackend {
   private static readonly RUN_STEER_TIMEOUT_MS = 3_000;
   private static readonly RUN_POLL_INTERVAL_MS = 2_000;
   private static readonly RUN_POLL_REQUEST_TIMEOUT_MS = 10_000;
+  /** How many polls IN A ROW may fail before we stop believing we can watch this run. Three, at
+   *  the interval above, is ~6s of blindness — long enough to ride out one dropped connection or a
+   *  gateway restart, short enough that a genuinely gone engine isn't polled for a whole leg
+   *  budget. Any answered poll resets the count; the give-up past it stops the run engine-side and
+   *  reads as our own timeout, because a single blip must never end a LIVE run as the retryable
+   *  llm_error (that is what put two hermes agents on one session). */
+  private static readonly RUN_POLL_FAILURE_TOLERANCE = 3;
 
   constructor(deps: Partial<HermesDeps> = {}) {
     this.baseUrl = (process.env.HERMES_BASE_URL || 'http://127.0.0.1:8642').replace(/\/$/, '');
@@ -688,13 +711,19 @@ export class HermesBackend implements EngineBackend {
     // both — exactly as requestStream guards a chat stream. Either give-up (the caller's cancel or
     // our own timer) aborts this controller, and the abort is what fires the engine-side stop.
     const controller = new AbortController();
-    let timerFired = false;
-    const timer = setTimeout(() => { timerFired = true; controller.abort(); }, Math.max(1, deadline - Date.now()));
+    // "WE gave up on this run" — our transport timer, or a poll ladder that ran out of tries. Kept
+    // apart from the caller's cancel because only the caller's is a 'cancelled' upstream.
+    let ownGiveUp = false;
+    const giveUp = () => { ownGiveUp = true; controller.abort(); };
+    const timer = setTimeout(giveUp, Math.max(1, deadline - Date.now()));
     const onCallerAbort = () => controller.abort();
     // ONE listener for BOTH give-ups: whichever aborts, hermes is told to stop. `once` so a caller
     // abort landing right after our timer cannot POST /stop twice.
     controller.signal.addEventListener('abort', () => {
-      this.notifyRunStop(task, runId, timerFired ? 'timeout' : 'abort');
+      // The CALLER's signal is read first, exactly as runViaEngine reads it when it maps the
+      // failure: if both landed in the same tick, the user's cancel is what this was, and the
+      // receipt must not say 'timeout' about a run the result will call 'cancelled'.
+      this.notifyRunStop(task, runId, ctx.signal?.aborted ? 'abort' : 'timeout');
     }, { once: true });
     if (ctx.signal) {
       if (ctx.signal.aborted) controller.abort();
@@ -702,11 +731,29 @@ export class HermesBackend implements EngineBackend {
     }
 
     try {
-      let outcome = await this.consumeRunEventsFrom(runId, controller.signal, ctx);
+      let outcome: RunOutcome | undefined;
+      try {
+        outcome = await this.consumeRunEventsFrom(runId, controller.signal, ctx);
+      } catch (err) {
+        // A run outcome hermes reported (run.failed / run.cancelled) is the answer — pass it on.
+        if (err instanceof EngineRunError) throw err;
+        // A give-up is the caller's or our own, and the catch below owns saying so.
+        if ((err as Error)?.name === 'AbortError' || controller.signal.aborted) throw err;
+        // Anything else is the TRANSPORT dying under a run that is still going — undici raises
+        // `TypeError: terminated` when the connection drops, which used to leave here as
+        // EngineUnavailableError → llm_error → a triage retry starting a second agent on the same
+        // session, with the first still running and never stopped. Our view is gone; the run is
+        // not. Fall through to the status endpoint, which is the only thing that can still see it.
+        record({
+          type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
+          label: 'engine:hermes:run-events-lost',
+          detail: { runId, error: String((err as Error)?.message ?? err).slice(0, 200) },
+        });
+      }
       // The events buffer takes exactly ONE subscriber and a reconnect 404s, so a stream that 404s,
       // drops, or ends without a terminal event can never be re-opened — the status endpoint is the
       // only way to learn how the run actually ended (terminal records live an hour engine-side).
-      outcome ??= await this.pollRunUntilTerminal(runId, controller.signal, ctx);
+      outcome ??= await this.pollRunUntilTerminal(runId, controller.signal, ctx, giveUp, task);
       if (outcome.pendingSteer) {
         try { ctx.onPendingSteer?.(outcome.pendingSteer); } catch { /* the answer outranks the receipt */ }
       }
@@ -722,7 +769,7 @@ export class HermesBackend implements EngineBackend {
       // engineBackend.ts: a caller abort reaches runViaEngine as 'cancelled' (it tests
       // ctx.signal.aborted first) and our own timer as an AbortError-named error → 'timeout'.
       if ((err as Error)?.name === 'AbortError') throw err;
-      if (timerFired || ctx.signal?.aborted) {
+      if (ownGiveUp || ctx.signal?.aborted) {
         throw Object.assign(new Error(`hermes run ${runId} was given up on`), { name: 'AbortError' });
       }
       throw new EngineUnavailableError(`hermes not reachable at ${this.baseUrl} (${(err as Error)?.message ?? err})`, err);
@@ -810,20 +857,54 @@ export class HermesBackend implements EngineBackend {
    * window closes. The give-up deliberately arrives through that signal rather than through a
    * deadline check of its own, because the signal's abort is ALSO what tells hermes to stop; a loop
    * that gave up by itself would leave the engine running the orphan this transport exists to kill.
+   * `giveUp` is how the ladder below reaches that same abort — see RUN_POLL_FAILURE_TOLERANCE.
    */
-  private async pollRunUntilTerminal(runId: string, signal: AbortSignal, ctx: EngineRunContext): Promise<RunOutcome> {
+  private async pollRunUntilTerminal(runId: string, signal: AbortSignal, ctx: EngineRunContext, giveUp: () => void, task: OpsTask): Promise<RunOutcome> {
     const path = `/v1/runs/${encodeURIComponent(runId)}`;
+    let failures = 0;
+    /** One poll that could not answer. A single blip used to end the whole run as an `llm_error`
+     *  while hermes was still working on it — the retryable cause, on a run nobody had stopped.
+     *  So: back off and re-ask, and past the tolerance GIVE UP through the run's own abort, which
+     *  fires the engine-side stop and maps exactly as our transport timer does. */
+    const tolerate = async (what: string): Promise<void> => {
+      failures += 1;
+      record({
+        type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
+        label: 'engine:hermes:run-poll-failed', detail: { runId, failures, error: what.slice(0, 200) },
+      });
+      if (failures >= HermesBackend.RUN_POLL_FAILURE_TOLERANCE) { giveUp(); return; }
+      await this.deps.sleep(HermesBackend.RUN_POLL_INTERVAL_MS, signal);
+    };
+
     for (;;) {
       // The loop owns its own termination rather than trusting the request below to notice the
       // abort. By the time this fires the engine-side stop has already gone out (the same abort
       // fired it), so giving up here leaves nothing orphaned.
       if (signal.aborted) throw Object.assign(new Error(`hermes run ${runId} was given up on`), { name: 'AbortError' });
-      const res = await this.requestText(path, { method: 'GET', headers: this.headers() }, signal, HermesBackend.RUN_POLL_REQUEST_TIMEOUT_MS);
+      let res: HermesResponse;
+      try {
+        res = await this.requestText(path, { method: 'GET', headers: this.headers() }, signal, HermesBackend.RUN_POLL_REQUEST_TIMEOUT_MS);
+      } catch (err) {
+        // An aborted request IS a give-up already under way — the loop's own top says so.
+        if ((err as Error)?.name === 'AbortError') throw err;
+        await tolerate(String((err as Error)?.message ?? err)); // refused/reset/DNS — maybe briefly
+        continue;
+      }
       // Terminal records are kept an hour engine-side, so a 404 here means the run genuinely never
-      // existed or the engine restarted under us — either way there is no answer coming.
+      // existed or the engine restarted under us — either way there is no answer coming, and no
+      // amount of re-asking changes that. Same for a rejected key: it is a VERDICT, not a blip,
+      // and needs_auth is the one cause an operator can actually act on.
       if (res.status === 404) throw new EngineRunError(`hermes no longer knows run ${runId}`, 'llm_error', res.status);
-      this.throwForStatus(res, 'run status');
-      const body = this.parseJson<RunStatusBody>(res, 'run status');
+      if (res.status === 401 || res.status === 403) this.throwForStatus(res, 'run status');
+      if (!res.ok) { await tolerate(`${res.status} ${res.text.slice(0, 120)}`); continue; } // a 5xx/429 blip
+      let body: RunStatusBody;
+      try {
+        body = this.parseJson<RunStatusBody>(res, 'run status');
+      } catch (err) {
+        await tolerate(String((err as Error)?.message ?? err)); // a proxy's HTML error page at 200
+        continue;
+      }
+      failures = 0; // an answered poll: we can see the run again, so the ladder starts over
       switch (body.status) {
         case 'completed':
           return this.runOutcome(body.output, body.pending_steer);
@@ -837,19 +918,8 @@ export class HermesBackend implements EngineBackend {
       // Still alive: say so, then wait. The sleep resolves early on the abort, so the next request
       // is the one that reports the give-up (requestText rejects an already-aborted signal).
       ctx.onProgress?.('streaming');
-      await this.sleep(HermesBackend.RUN_POLL_INTERVAL_MS, signal);
+      await this.deps.sleep(HermesBackend.RUN_POLL_INTERVAL_MS, signal);
     }
-  }
-
-  /** Abortable sleep. Resolves on the abort too — the caller re-checks the signal, so the give-up
-   *  path stays in ONE place (the request that follows). */
-  private sleep(ms: number, signal: AbortSignal): Promise<void> {
-    return new Promise<void>(resolve => {
-      const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); };
-      const timer = setTimeout(done, ms);
-      if (signal.aborted) done();
-      else signal.addEventListener('abort', done, { once: true });
-    });
   }
 
   /**
@@ -960,16 +1030,26 @@ export class HermesBackend implements EngineBackend {
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let nl: number;
-      while ((nl = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, nl).trim();
-        buffer = buffer.slice(nl + 1);
-        if (line) yield line;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (line) yield line;
+        }
       }
+    } finally {
+      // Every consumer here walks away EARLY — a terminal event, or a throw — and `for await`'s own
+      // teardown lands in this finally. Without the cancel the response body is left half-read with
+      // its reader still locked: the socket cannot be reused and, on a stream hermes keeps open,
+      // nothing tells it we detached. Both directions are swallowed: an errored body rejects the
+      // cancel, and the stream is over either way.
+      try { void reader.cancel().catch(() => { /* already errored or closed */ }); }
+      catch { /* likewise */ }
     }
   }
 

@@ -997,6 +997,20 @@ function hangingEventStream(init: RequestInit, first: unknown): Response {
   return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
 }
 
+/** An events stream that hands over ONE frame and then dies the way a dropped connection does —
+ *  undici raises `TypeError: terminated` out of the reader. Nothing aborted, nothing asked for it,
+ *  and the run on hermes is entirely unaffected: only our view of it is gone. */
+function terminatedEventStream(first: unknown): Response {
+  let sent = false;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (!sent) { sent = true; controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(first)}\n\n`)); return; }
+      controller.error(new TypeError('terminated'));
+    },
+  });
+  return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+}
+
 /** Poll for the receipt: the engine stop is deliberately NOT awaited before the run rejects. */
 async function waitForCancelReceipt(timeoutMs = 500): Promise<Record<string, unknown>> {
   const deadline = Date.now() + timeoutMs;
@@ -1158,6 +1172,80 @@ test('runs transport: a lost events stream falls back to polling the run status'
   });
   await assert.rejects(truncated.runTask('p', mkTask(), {}), (e: Error) =>
     e instanceof EngineRunError && e.failureCause === 'llm_error' && /tool crashed/.test(e.message));
+});
+
+test('runs transport: a stream that DIES mid-flight polls the run instead of failing it', async () => {
+  clearTraces();
+  const captured: Captured[] = [];
+  // The reported shape: undici throws `TypeError: terminated` out of the body reader when the
+  // connection drops. Our view of the run is gone; the run itself is untouched and still working.
+  // Wrapping that as EngineUnavailableError made it an llm_error — the ONE cause triage retries —
+  // and the retry started a SECOND hermes agent on the same session, with no stop for the first.
+  const be = new HermesBackend({
+    fetchFn: routedFetch([
+      submitted('run_term'),
+      { match: /\/run_term\/events$/, respond: () => terminatedEventStream({ event: 'message.delta', delta: 'working' }) },
+      { match: /\/run_term\/stop$/, respond: () => json200({ status: 'stopping' }) },
+      { match: /\/v1\/runs\/run_term$/, respond: () => json200({ status: 'completed', output: 'the real answer' }) },
+    ], captured),
+  });
+  const debrief = mkDebrief();
+  const res = await runViaEngine(be, 'p', mkTask(), {}, debrief);
+  assert.equal(res.summary, 'the real answer', 'the answer came back off the status endpoint');
+  assert.equal(debrief.failure, undefined, 'nothing failed — least of all with the retryable cause');
+  assert.ok(captured.some(c => /\/v1\/runs\/run_term$/.test(c.url)), 'the poll path was consulted');
+  assert.ok(!captured.some(c => /\/stop$/.test(c.url)), 'a run we can still poll is not given up on');
+});
+
+test('runs transport: ONE unanswerable poll does not end a run that is still going', async () => {
+  clearTraces();
+  const captured: Captured[] = [];
+  let polls = 0;
+  const be = new HermesBackend({
+    fetchFn: routedFetch([
+      submitted('run_blip'),
+      { match: /\/run_blip\/events$/, respond: () => new Response('{}', { status: 404 }) },
+      { match: /\/run_blip\/stop$/, respond: () => json200({ status: 'stopping' }) },
+      { match: /\/v1\/runs\/run_blip$/, respond: () => {
+        polls += 1;
+        if (polls === 1) throw new TypeError('fetch failed');                              // the gateway blinked
+        if (polls === 2) return new Response('<html>502 bad gateway</html>', { status: 502 }); // …and its proxy
+        return json200({ status: 'completed', output: 'the real answer' });
+      } },
+    ], captured),
+    sleep: async () => { /* the backoff is injected away — no real waits in a unit test */ },
+  });
+  const debrief = mkDebrief();
+  const res = await runViaEngine(be, 'p', mkTask(), {}, debrief);
+  assert.equal(res.summary, 'the real answer');
+  assert.equal(debrief.failure, undefined, 'a blip mid-poll is not a failed run');
+  assert.ok(!captured.some(c => /\/stop$/.test(c.url)), 'and the run was never stopped — it was still alive');
+});
+
+test('runs transport: polls that NEVER answer give up as a timeout, with the stop fired', async () => {
+  clearTraces();
+  const captured: Captured[] = [];
+  // The window is wide (30s) so the adapter's own timer cannot be what ends this — the poll
+  // tolerance is. Either way the rule is the same: a give-up on a LIVE run stops it engine-side
+  // and reads as our timeout, never as the retryable llm_error.
+  const be = new HermesBackend({
+    fetchFn: routedFetch([
+      submitted('run_dead'),
+      { match: /\/run_dead\/events$/, respond: () => new Response('{}', { status: 404 }) },
+      { match: /\/run_dead\/stop$/, respond: () => json200({ status: 'stopping' }) },
+      { match: /\/v1\/runs\/run_dead$/, respond: () => { throw new TypeError('terminated'); } },
+    ], captured),
+    sleep: async () => { /* no real backoff */ },
+  });
+  const debrief = mkDebrief();
+  const res = await runViaEngine(be, 'p', mkTask(), { timeoutMs: 30_000 }, debrief);
+  assert.equal(res.status, 'error');
+  assert.equal(debrief.failure?.cause, 'timeout', 'never llm_error — that is the cause that retries');
+  assert.equal(captured.filter(c => /\/v1\/runs\/run_dead$/.test(c.url)).length, 3, 'three tries, then honesty');
+  const detail = await waitForCancelReceipt();
+  assert.equal(detail.reason, 'timeout');
+  assert.equal(detail.runId, 'run_dead');
+  assert.equal(detail.engineNotified, true);
 });
 
 test('runs transport: an abort mid-stream stops the run ENGINE-side and leaves a receipt', async () => {
