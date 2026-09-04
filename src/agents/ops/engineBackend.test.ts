@@ -463,6 +463,9 @@ test('runViaEngine: the run handle reaches the in-flight map, and steers queued 
   const engine: EngineBackend = {
     ...stub(async (_p, _t, ctx) => {
       ctx.onRunHandle?.({ engine: 'hermes', runId: 'run_9' });
+      // WHILE the leg runs — the only window in which this is true, and the whole point of it: a
+      // steer_research arriving now has something to aim at.
+      assert.deepEqual(getOpsEngineRun(task.chatId, task.id), { engine: 'hermes', runId: 'run_9' });
       for (let i = 0; i < 100 && steered.length < 2; i++) await new Promise(r => setTimeout(r, 5));
       return 'ANSWER: ok';
     }),
@@ -471,8 +474,6 @@ test('runViaEngine: the run handle reaches the in-flight map, and steers queued 
 
   const res = await runViaEngine(engine, 'p', task, {}, mkDebrief());
   assert.equal(res.status, 'ok');
-  assert.deepEqual(getOpsEngineRun(task.chatId, task.id), { engine: 'hermes', runId: 'run_9' },
-    'a later steer_research can now reach this run');
   // Order preserved: the additions are delivered one at a time, in the order the user said them.
   assert.equal(steered.length, 2);
   assert.match(steered[0], /under 100k/);
@@ -485,15 +486,76 @@ test('runViaEngine: a caller\'s own onRunHandle still fires, and a throwing one 
   __resetOpsCoordination();
   const task = mkTask();
   markOpsStart(task.chatId, task.id, { kind: task.kind, request: task.request });
-  const engine = stub(async (_p, _t, ctx) => { ctx.onRunHandle?.({ engine: 'hermes', runId: 'run_x' }); return 'ANSWER: ok'; });
+  const engine = stub(async (_p, _t, ctx) => {
+    ctx.onRunHandle?.({ engine: 'hermes', runId: 'run_x' });
+    // The registration still happened, because the caller's hook runs after it. Read inside the
+    // leg: the handle is dropped when the leg ends (a finished run answers 409 to a steer).
+    assert.deepEqual(getOpsEngineRun(task.chatId, task.id), { engine: 'hermes', runId: 'run_x' });
+    return 'ANSWER: ok';
+  });
   const seen: string[] = [];
   const res = await runViaEngine(engine, 'p', task, {
     onRunHandle: h => { seen.push(h.runId); throw new Error('a caller hook blew up'); },
   }, mkDebrief());
   assert.equal(res.status, 'ok', 'the answer outranks the bookkeeping');
   assert.deepEqual(seen, ['run_x']);
-  // …and the registration still happened, because the caller's hook runs after it.
-  assert.deepEqual(getOpsEngineRun(task.chatId, task.id), { engine: 'hermes', runId: 'run_x' });
+  __resetOpsCoordination();
+});
+
+test('runViaEngine: the leg is opened and closed, so a steer after it is not answered "ready"', async () => {
+  __resetOpsCoordination();
+  const task = mkTask();
+  markOpsStart(task.chatId, task.id, { kind: task.kind, request: task.request });
+  const engine: EngineBackend = {
+    ...stub(async (_p, _t, ctx) => {
+      ctx.onRunHandle?.({ engine: 'hermes', runId: 'run_5' });
+      // Mid-leg the run is reachable, which is the whole point of the handle.
+      assert.equal(requestOpsSteer(task.chatId, task.id, 'under 100k'), 'ready');
+      return 'ANSWER: ok';
+    }),
+    async steerRun() { return 'accepted'; },
+  };
+  await runViaEngine(engine, 'p', task, {}, mkDebrief());
+  // The task is STILL in flight here — triage and compose come next — but its engine leg is over,
+  // and a steer at a finished run is a 409. 'ready' in this window had Convo ack "adding that in"
+  // for a POST that could not land.
+  assert.equal(getOpsEngineRun(task.chatId, task.id), undefined);
+  assert.equal(requestOpsSteer(task.chatId, task.id, 'actually jakarta'), 'already_done');
+  __resetOpsCoordination();
+});
+
+test('runViaEngine: an engine that cannot steer says so, instead of queueing for ever', async () => {
+  clearTraces();
+  __resetOpsCoordination();
+  const task = mkTask();
+  markOpsStart(task.chatId, task.id, { kind: task.kind, request: task.request });
+  // No steerRun at all (OpenClaw today): nothing this leg does can ever take an addition, so the
+  // honest answer is owed inside the turn. 'queued' was a queue nothing would ever drain.
+  const engine = stub(async () => {
+    assert.equal(requestOpsSteer(task.chatId, task.id, 'under 100k'), 'unsupported');
+    return 'ANSWER: ok';
+  });
+  await runViaEngine(engine, 'p', task, {}, mkDebrief());
+
+  // …and the same when the ADAPTER is the one that knows: it can steer, but the transport it took
+  // carries no run id (hermes's chat completions).
+  const task2 = mkTask({ id: 't2' });
+  markOpsStart(task2.chatId, task2.id, { kind: task2.kind, request: task2.request });
+  const chatty: EngineBackend = {
+    ...stub(async (_p, _t, ctx) => {
+      assert.equal(requestOpsSteer(task2.chatId, task2.id, 'under 100k'), 'queued', 'before it has routed');
+      ctx.onNoRunHandle?.();
+      assert.equal(requestOpsSteer(task2.chatId, task2.id, 'morning only'), 'unsupported');
+      return 'ANSWER: ok';
+    }),
+    async steerRun() { return 'accepted'; },
+  };
+  await runViaEngine(chatty, 'p', task2, {}, mkDebrief());
+  // The one queued before it routed reached nobody — that is a trace, not a silence.
+  const dropped = getTraces().filter(e => e.label === 'ops:steer-dropped').map(e => e.detail as Record<string, unknown>);
+  assert.equal(dropped.length, 1);
+  assert.equal(dropped[0].reason, 'leg_ended');
+  assert.deepEqual(dropped[0].texts, ['under 100k']);
   __resetOpsCoordination();
 });
 

@@ -11,7 +11,9 @@ import { OpenClawBackend } from './openclawBackend.js';
 // Cyclic with this module (opsCoordination derives its staleness horizon from the leg budgets
 // declared here), which ESM resolves fine because neither side calls into the other at module
 // scope — both only ever read the other from inside a function.
-import { noteOpsEngineRun, takePendingSteers } from '../../state/opsCoordination.js';
+import {
+  noteOpsEngineRun, takePendingSteers, beginOpsEngineLeg, endOpsEngineLeg, noteOpsSteerUnreachable,
+} from '../../state/opsCoordination.js';
 import { steerWithRetry } from './steer.js';
 import type { OpsTask, OpsResult, OpsDebrief, OpsFailureCause } from '../types.js';
 
@@ -36,6 +38,12 @@ export interface EngineRunContext {
    *  mid-run steer has something to aim at, and the adapter MUST NOT let a throwing hook kill the
    *  run it just started. */
   onRunHandle?: (handle: EngineRunHandle) => void;
+  /** Called when this run will NEVER have a handle — the adapter took a transport that carries no
+   *  run id (hermes's chat completions). Same synchronous, best-effort contract as `onRunHandle`,
+   *  and mutually exclusive with it: an adapter says one or the other, as early as it can.
+   *  `runViaEngine` uses it so a mid-run steer is answered honestly ('unsupported') instead of
+   *  queued against a handle that is never coming. */
+  onNoRunHandle?: () => void;
   /** Steer text the engine ACCEPTED but never applied — it landed after the final model response.
    *  Reported on the terminal event so the caller can replay it as its own leg instead of losing
    *  what the user asked for (hermes calls this `pending_steer`). */
@@ -514,11 +522,20 @@ export async function runViaEngine(
       // forgets to guard still cannot lose a run to a caller's bookkeeping hook.
       try { ctx.onRunHandle?.(handle); } catch { /* a receipt must never outrank the run */ }
     },
+    onNoRunHandle: () => {
+      noteOpsSteerUnreachable(task.chatId, task.id);
+      try { ctx.onNoRunHandle?.(); } catch { /* likewise */ }
+    },
     onPendingSteer: text => {
       steerUnapplied = text;
       try { ctx.onPendingSteer?.(text); } catch { /* likewise */ }
     },
   };
+  // The leg's own lifecycle, which is NOT the task's: it opens here and closes in the `finally`,
+  // while the task lives on through triage and compose. `steerRun` is the engine's answer to "can
+  // an addition reach a run at all"; an adapter that then takes a run-id-less transport says so
+  // through onNoRunHandle above.
+  beginOpsEngineLeg(task.chatId, task.id, !!engine.steerRun);
   try {
     release = await acquire({
       signal: ctx.signal,
@@ -569,6 +586,15 @@ export async function runViaEngine(
     }
     debrief.toolsRun.push({ name: `engine:${engine.name}`, argsSummary: task.kind, ok: false, resultPreview: String((err as Error)?.message ?? err).slice(0, 200), durationMs });
     debrief.failure = { cause: mapped.cause, detail: String((err as Error)?.message ?? err).slice(0, 500) };
+    // `steerUnapplied` rides the OK path only — a failed leg has no answer to refine, so the
+    // orchestrator's replay has nothing to hang off. Say the addition was dropped rather than
+    // dropping it without a word: it is still on the in-flight entry for the next ask.
+    if (steerUnapplied) {
+      record({
+        type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
+        label: 'ops:steer-dropped', detail: { reason: 'leg_failed', cause: mapped.cause, texts: [steerUnapplied.slice(0, 120)] },
+      });
+    }
     record({
       type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
       label: `engine:${engine.name}:error`, detail: { cause: mapped.cause, ms: durationMs, error: String((err as Error)?.message ?? err).slice(0, 300) },
@@ -576,5 +602,16 @@ export async function runViaEngine(
     return { ...mapped.result, debrief };
   } finally {
     release?.();
+    // The leg is over. Dropping the handle is what stops `requestOpsSteer` answering 'ready' during
+    // triage and compose — a window in which Convo acked "adding that in" and the POST then 409'd.
+    // Anything still queued for delivery reached nobody: a trace, never a silence.
+    const undelivered = endOpsEngineLeg(task.chatId, task.id);
+    if (undelivered.length) {
+      record({
+        type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
+        label: 'ops:steer-dropped',
+        detail: { reason: 'leg_ended', count: undelivered.length, texts: undelivered.map(t => t.slice(0, 120)) },
+      });
+    }
   }
 }

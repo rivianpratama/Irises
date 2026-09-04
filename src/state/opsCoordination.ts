@@ -31,6 +31,15 @@ interface InFlightEntry {
   // run_id, published through EngineRunContext.onRunHandle). It is what a steer or a stop aims at;
   // absent means the run cannot be reached at all yet.
   engineRun?: EngineRunHandle;
+  // Set when NO handle can ever land for the leg now running: the engine has no steer route at all
+  // (OpenClaw), or its adapter took a transport that carries no run id (hermes's chat completions).
+  // Without it every steer on such a leg answered 'queued' and waited for a drain that never runs —
+  // the user heard "adding that in" about an addition nothing would ever deliver.
+  steerUnreachable?: true;
+  // Set when the engine leg has ENDED. The task is still in flight (triage and compose come next)
+  // but the run is over on the engine and answers 409 to a steer, so this is what tells the two
+  // apart: 'already_done' for the addition, without pretending the whole task is finished.
+  legEnded?: true;
   // Everything the user ADDED to this ask mid-run, in the order they said it — kept whether or not
   // the engine accepted any of it, because these are things they said about work that is running:
   // the status line reads them back and a refinement leg folds them in.
@@ -221,6 +230,52 @@ export function noteOpsEngineRun(chatId: string, taskId: string, handle: EngineR
   if (entry && !entry.cancelled) entry.engineRun = handle;
 }
 
+/**
+ * The engine leg for this task is STARTING (`runViaEngine`, once per leg — a retry and a steer
+ * replay are each their own leg). Resets what belongs to a LEG rather than to the task: the
+ * previous leg's handle, the fact that it had ended, and whether anything on this one can be
+ * steered at all.
+ *
+ * `steerable` is the ENGINE's answer — does it have a steer route — not the transport's. An adapter
+ * that then routes somewhere with no run id downgrades it through `noteOpsSteerUnreachable`.
+ *
+ * In-place; no-op on a gone or cancelled entry, the same discipline every mutator here keeps.
+ */
+export function beginOpsEngineLeg(chatId: string, taskId: string, steerable: boolean): void {
+  const entry = inFlight.get(chatId)?.get(taskId);
+  if (!entry || entry.cancelled) return;
+  delete entry.engineRun;
+  delete entry.legEnded;
+  if (steerable) delete entry.steerUnreachable;
+  else entry.steerUnreachable = true;
+}
+
+/** This leg will never publish a handle — an engine with no steer route, or a transport that
+ *  carries no run id. Called through `EngineRunContext.onNoRunHandle` so the user gets the honest
+ *  "I'll work it into the answer" now instead of an ack for a delivery that cannot happen. */
+export function noteOpsSteerUnreachable(chatId: string, taskId: string): void {
+  const entry = inFlight.get(chatId)?.get(taskId);
+  if (entry && !entry.cancelled) entry.steerUnreachable = true;
+}
+
+/**
+ * The engine leg ENDED (an answer, or a failure). Drops the handle, because a steer aimed at a
+ * finished run is a 409 and the caller must stop being told 'ready' for it, and hands back
+ * anything still queued for delivery: those additions reached nobody, and this module imports no
+ * diagnostics, so the CALLER owns the trace. Returns [] for a gone or cancelled entry.
+ *
+ * The task is NOT done here — triage and compose still have to run. `markOpsDone` is that.
+ */
+export function endOpsEngineLeg(chatId: string, taskId: string): string[] {
+  const entry = inFlight.get(chatId)?.get(taskId);
+  if (!entry || entry.cancelled) return [];
+  delete entry.engineRun;
+  entry.legEnded = true;
+  const undelivered = entry.pendingSteers ?? [];
+  entry.pendingSteers = [];
+  return undelivered;
+}
+
 /** The engine handle for an in-flight leg, or undefined when there is none (yet, or ever — an
  *  adapter whose transport carries no run id never publishes one). The companion read to
  *  `requestOpsSteer`'s 'ready': the caller needs the handle to actually deliver. */
@@ -238,18 +293,27 @@ export function getOpsEngineRun(chatId: string, taskId: string): EngineRunHandle
  *  - 'queued':       the leg is dispatched but has no handle yet (hermes needs a second or two to
  *                    build the agent). The text waits in pendingSteers and is drained the moment
  *                    the handle lands — losing it here is losing something the user actually said.
- *  - 'already_done': nothing is running under that id, it was cancelled, or the text is blank. The
+ *  - 'unsupported':  no handle can EVER land for this leg (`beginOpsEngineLeg`'s `steerable: false`,
+ *                    or `noteOpsSteerUnreachable`). Distinct from 'queued' because a queue nobody
+ *                    will drain is indistinguishable from delivery to the user, and from
+ *                    'already_done' because the run is still going — the caller owes them a
+ *                    different sentence: "I'll work it into the answer when it lands."
+ *  - 'already_done': nothing is running under that id, it was cancelled, its engine leg has ended
+ *                    (triage/compose are next and a steer would 409), or the text is blank. The
  *                    caller says so honestly and folds the addition into the next ask.
  *
  * Every non-blank addition is remembered on the entry regardless of the answer, so the status line
  * can say "you added: …" and a refinement leg can carry it even when the engine never took it.
  */
-export function requestOpsSteer(chatId: string, taskId: string, text: string): 'ready' | 'queued' | 'already_done' {
+export function requestOpsSteer(chatId: string, taskId: string, text: string): 'ready' | 'queued' | 'unsupported' | 'already_done' {
   const trimmed = text.trim();
   const entry = inFlight.get(chatId)?.get(taskId);
   if (!entry || entry.cancelled || !trimmed) return 'already_done';
   entry.steers = [...(entry.steers ?? []), trimmed];
+  // The leg is over even though the task is not: the engine has nothing left to fold this into.
+  if (entry.legEnded) return 'already_done';
   if (entry.engineRun) return 'ready';
+  if (entry.steerUnreachable) return 'unsupported';
   entry.pendingSteers = [...(entry.pendingSteers ?? []), trimmed];
   return 'queued';
 }

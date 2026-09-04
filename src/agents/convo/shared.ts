@@ -327,9 +327,12 @@ export function handleSteerResearch(
   if (decided.every(d => d.outcome === 'already_done')) {
     return { kind: 'failed', summary: 'that lookup actually just finished — the answer is already landing on their screen', nextStep: 'tell them you\'ll fold their addition in as a quick follow-up look, and delegate_to_ops with the original ask plus the addition' };
   }
-  // Asked of the ENGINE, not of this run: with no steer route neither a ready addition nor a queued
-  // one can ever reach the leg, so the correction is owed now rather than after a silent drop.
-  if (!engine?.steerRun) {
+  // No route to the run, from either direction: the ENGINE has no steer method at all (OpenClaw),
+  // or the map says no handle can ever land for this leg (hermes on the chat transport — only the
+  // adapter knows that, and it says so through onNoRunHandle). Either way neither a ready addition
+  // nor a queued one can reach the leg, so the correction is owed now rather than after a silent
+  // drop. 'unsupported' is deliberately NOT the 'already_done' sentence: the run is still going.
+  if (!engine?.steerRun || decided.every(d => d.outcome === 'unsupported')) {
     return { kind: 'failed', summary: "the run can't take mid-flight additions on this engine, but their note is kept with the task", nextStep: 'tell them you\'ll work it into the answer when it lands — do not promise it changes what\'s being searched right now' };
   }
   for (const { taskId } of decided.filter(d => d.outcome === 'ready')) {

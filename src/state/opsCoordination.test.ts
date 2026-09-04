@@ -8,6 +8,7 @@ import {
   normalizeRequest, __resetOpsCoordination, markOpsRetry, getOpsEtaStatus,
   opsStaleMs, OPS_STALE_SLACK_MS,
   noteOpsEngineRun, getOpsEngineRun, requestOpsSteer, takePendingSteers,
+  beginOpsEngineLeg, endOpsEngineLeg, noteOpsSteerUnreachable,
 } from './opsCoordination.js';
 import { BROWSER_LEG_BUDGET_MS } from '../agents/ops/engineBackend.js';
 
@@ -373,6 +374,76 @@ test('noteOpsEngineRun / takePendingSteers: no-ops on a gone or cancelled entry'
   requestOpsCancel('chatA', 'task1');
   noteOpsEngineRun('chatA', 'task1', { engine: 'hermes', runId: 'run_1' });
   assert.equal(getOpsEngineRun('chatA', 'task1'), undefined);
+});
+
+// ── the engine LEG's lifecycle, which is not the task's ─────────────────────────────────────────
+//
+// A task outlives its engine leg: triage and compose come after. Between those two moments the run
+// is over on hermes (a steer at it answers 409) while the task is still very much in flight, so the
+// map has to be able to say "the leg is done" without saying "the task is done".
+
+test('requestOpsSteer: once the leg ends the handle is gone, and a steer is already_done', () => {
+  __resetOpsCoordination();
+  markOpsStart('chatA', 'task1', { kind: 'web_research', request: 'flights to bekasi' });
+  beginOpsEngineLeg('chatA', 'task1', true);
+  noteOpsEngineRun('chatA', 'task1', { engine: 'hermes', runId: 'run_1' });
+  assert.equal(requestOpsSteer('chatA', 'task1', 'under 100k'), 'ready');
+
+  assert.deepEqual(endOpsEngineLeg('chatA', 'task1'), [], 'nothing was left queued');
+  // The window this closes: triage + compose, during which the task is still "running" for every
+  // other reader. 'ready' here had Convo ack "adding that in" for a POST that then 409'd.
+  assert.equal(getOpsEngineRun('chatA', 'task1'), undefined);
+  assert.equal(requestOpsSteer('chatA', 'task1', 'actually jakarta'), 'already_done');
+  // …and it is still an addition the user made about this ask, so it stays on the entry.
+  assert.deepEqual(getActiveOps('chatA')[0].steers, ['under 100k', 'actually jakarta']);
+});
+
+test('requestOpsSteer: unsupported when no handle can EVER land for this leg', () => {
+  __resetOpsCoordination();
+  markOpsStart('chatA', 'task1', { kind: 'web_research', request: 'flights to bekasi' });
+  // An engine with no steer route at all (OpenClaw today) — declared at the leg's start.
+  beginOpsEngineLeg('chatA', 'task1', false);
+  assert.equal(requestOpsSteer('chatA', 'task1', 'under 100k'), 'unsupported');
+  assert.deepEqual(takePendingSteers('chatA', 'task1'), [], 'never queued for a drain that cannot come');
+  assert.deepEqual(getActiveOps('chatA')[0].steers, ['under 100k'], 'their words still ride with the task');
+
+  // The other shape: an engine that CAN steer, on a transport that carries no run id (hermes's
+  // chat completions). Only the adapter knows, and it says so once it has routed.
+  markOpsStart('chatA', 'task2', { kind: 'web_research', request: 'trains' });
+  beginOpsEngineLeg('chatA', 'task2', true);
+  assert.equal(requestOpsSteer('chatA', 'task2', 'under 100k'), 'queued', 'a handle might still land');
+  noteOpsSteerUnreachable('chatA', 'task2');
+  assert.equal(requestOpsSteer('chatA', 'task2', 'morning only'), 'unsupported');
+});
+
+test('endOpsEngineLeg: hands back what nobody could deliver, and a second leg starts clean', () => {
+  __resetOpsCoordination();
+  markOpsStart('chatA', 'task1', { kind: 'web_research', request: 'flights to bekasi' });
+  beginOpsEngineLeg('chatA', 'task1', true);
+  assert.equal(requestOpsSteer('chatA', 'task1', 'under 100k'), 'queued');
+  // The leg ended before the handle ever landed: the queue is the CALLER's to trace, because this
+  // module imports no diagnostics and a silently dropped addition is the failure being fixed.
+  assert.deepEqual(endOpsEngineLeg('chatA', 'task1'), ['under 100k']);
+  assert.deepEqual(takePendingSteers('chatA', 'task1'), [], 'handed off, not copied');
+
+  // A retry or a steer replay is a NEW leg on the same task — it can be steered again.
+  beginOpsEngineLeg('chatA', 'task1', true);
+  assert.equal(requestOpsSteer('chatA', 'task1', 'actually jakarta'), 'queued');
+  noteOpsEngineRun('chatA', 'task1', { engine: 'hermes', runId: 'run_2' });
+  assert.equal(requestOpsSteer('chatA', 'task1', 'and mornings'), 'ready');
+});
+
+test('the leg hooks no-op on a gone or cancelled entry', () => {
+  __resetOpsCoordination();
+  beginOpsEngineLeg('chatA', 'nope', true);
+  noteOpsSteerUnreachable('chatA', 'nope');
+  assert.deepEqual(endOpsEngineLeg('chatA', 'nope'), []);
+
+  markOpsStart('chatA', 'task1', { kind: 'web_research', request: 'flights' });
+  requestOpsCancel('chatA', 'task1');
+  beginOpsEngineLeg('chatA', 'task1', true);
+  noteOpsEngineRun('chatA', 'task1', { engine: 'hermes', runId: 'run_1' });
+  assert.equal(getOpsEngineRun('chatA', 'task1'), undefined, 'a cancelled entry stays cleared');
 });
 
 test('getActiveOps: an untouched run carries no steers field at all', () => {

@@ -624,6 +624,11 @@ export class HermesBackend implements EngineBackend {
    *  Still the path for image-bearing tasks, for `HERMES_RUN_TRANSPORT=chat`, and for a hermes with
    *  no runs route at all. It carries no run id, so nothing here can be stopped or steered. */
   private async runViaChat(content: unknown, task: OpsTask, ctx: EngineRunContext): Promise<string> {
+    // No run id exists on this route, so no handle will EVER be published for this leg. Saying so
+    // is what lets a mid-run addition be answered honestly inside the turn ("I'll work it into the
+    // answer when it lands") instead of queueing for a handle that is never coming. Guarded like
+    // every other bookkeeping hook: it must not be able to take the run down.
+    try { ctx.onNoRunHandle?.(); } catch { /* a registration must never outrank the run */ }
     const headers = this.headers(task.chatId);
 
     // HERMES_STREAM (default off): stream the completion so token flow gives a live "still producing"

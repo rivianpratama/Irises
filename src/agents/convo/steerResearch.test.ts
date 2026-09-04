@@ -14,6 +14,7 @@ import { handleSteerResearch, renderActiveOps } from './shared.js';
 import { STEER_RESEARCH_TOOL, convoToolList } from './tools.js';
 import {
   markOpsStart, markOpsDone, noteOpsEngineRun, getActiveOps, takePendingSteers,
+  beginOpsEngineLeg, endOpsEngineLeg, noteOpsSteerUnreachable,
   __resetOpsCoordination, type ActiveOps,
 } from '../../state/opsCoordination.js';
 import type { EngineBackend, EngineRunHandle } from '../ops/engineBackend.js';
@@ -111,6 +112,37 @@ test('the run is already finished → the correction says so instead of promisin
   assert.equal(note?.kind, 'failed');
   assert.match(note?.summary ?? '', /just finished/);
   markOpsDone('chatA', 't1');
+});
+
+test('the leg finished while she was reading the turn → the correction says so, and nothing is POSTed', () => {
+  __resetOpsCoordination();
+  markOpsStart('chatA', 't1', { kind: 'general', request: 'full inbox scan' });
+  beginOpsEngineLeg('chatA', 't1', true);
+  noteOpsEngineRun('chatA', 't1', { engine: 'hermes', runId: 'run_7' });
+  // The engine leg is over; the task is still in flight while triage and compose run. hermes
+  // answers 409 to a steer at a finished run, so an "adding that in" ack here would be a lie.
+  endOpsEngineLeg('chatA', 't1');
+  const calls: Array<{ handle: EngineRunHandle; text: string }> = [];
+  const note = handleSteerResearch('', 'also check jakarta', 'chatA', HANDLE, steerableEngine(calls));
+  assert.equal(note?.kind, 'failed');
+  assert.match(note?.summary ?? '', /just finished/);
+  assert.equal(calls.length, 0, 'nothing was aimed at a run that is over');
+});
+
+test('a transport with no run id → the unsupported note, even from an engine that CAN steer', () => {
+  __resetOpsCoordination();
+  markOpsStart('chatA', 't1', { kind: 'general', request: 'full inbox scan' });
+  beginOpsEngineLeg('chatA', 't1', true);
+  // hermes on the chat transport: it has a steer route, but this run has no id to aim it at. The
+  // addition would otherwise sit queued for a handle that is never coming, and the user would hear
+  // "adding that in" about nothing.
+  noteOpsSteerUnreachable('chatA', 't1');
+  const calls: Array<{ handle: EngineRunHandle; text: string }> = [];
+  const note = handleSteerResearch('', 'also check jakarta', 'chatA', HANDLE, steerableEngine(calls));
+  assert.equal(note?.kind, 'failed');
+  assert.match(note?.nextStep ?? '', /work it into the answer when it lands/);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(getActiveOps('chatA')[0].steers, ['also check jakarta'], 'their words stay with the task');
 });
 
 test('an engine with no steer route → the honest failed note, and the addition is still kept', () => {
