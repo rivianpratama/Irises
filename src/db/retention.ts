@@ -23,6 +23,7 @@ import { stmt } from './sqlite.js';
 import { irisesHome } from './stateDir.js';
 import { sweepExpiredShortTerm } from './repositories/memoryShort.js';
 import { sweepOldProactive } from './repositories/proactive.js';
+import { sweepOldOpsTasks } from './repositories/opsTasks.js';
 import { sweepArchiveCaps } from './repositories/memoryArchive.js';
 import { pruneMessagesBefore } from './repositories/conversations.js';
 
@@ -61,6 +62,12 @@ function sweepDaily(): void {
   // rows are never swept — a quiet-hours deferral must survive until its morning arrives.
   void sweepOldProactive().then(n => {
     if (n > 0) console.log(`[retention] proactive sweep: ${n} settled delivery rows`);
+  });
+  // Settled ops-task rows past 7d. Open rows (running, retrying, waiting on an approval) are never
+  // swept here — the stranded-run horizon and the approval TTL are what retire those, and a row
+  // deleted before either got to it would take the only record of a cut-off run with it.
+  void sweepOldOpsTasks().then(n => {
+    if (n > 0) console.log(`[retention] ops-task sweep: ${n} settled task rows`);
   });
 }
 
