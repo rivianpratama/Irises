@@ -19,6 +19,7 @@ import { __resetOpsCoordination, getActiveOps } from '../../state/opsCoordinatio
 import { clearTraces, getTraces } from '../../diagnostics/trace.js';
 import { listPendingApprovals, getOpsTask } from '../../db/repositories/opsTasks.js';
 import { getPreference } from '../../db/repositories/memory.js';
+import { closeDb, stmt } from '../../db/sqlite.js';
 import { buildContextBlock } from '../../memory/dossier.js';
 import { approvalAskFallback } from '../ops/sideEffects.js';
 import type { LlmResult, LlmToolCall, LlmRequest } from '../../llm/types.js';
@@ -298,6 +299,20 @@ test('the tool arg is still accepted and coerced with the gate off', async () =>
   assert.equal(out.delegatedTask!.effect, 'act');
 });
 
+test('a parked action holds the one delegation slot — a second call this turn parks nothing', async () => {
+  const a = args(ACT_ASK);
+  const { turn, seen } = reasker(['want me to send that?']);
+  const out = await processConvoResult({
+    ...a,
+    res: makeResult(['on it'], [delegate(ACT_ASK, 'act'), delegate('book the 9am flight', 'act')]),
+    turn,
+  });
+  assert.equal(out.delegatedTask, null);
+  assert.equal(listPendingApprovals(a.chatId).length, 1, 'first-wins, exactly as an un-parked delegation does');
+  assert.equal(listPendingApprovals(a.chatId)[0].request, ACT_ASK);
+  assert.equal(seen.length, 1, 'and one question, about the action that was parked');
+});
+
 // ── the row's own clock ──────────────────────────────────────────────────────
 
 test('the parked row carries the ask time as its clock, and nothing settles it here', async () => {
@@ -310,4 +325,26 @@ test('the parked row carries the ask time as its clock, and nothing settles it h
   assert.ok(row!.startedAt >= before && row!.startedAt <= Date.now(), 'askedAt is the row clock');
   assert.equal(row!.settledAt, null, 'a question waiting is not a settled row');
   assert.equal(row!.kind, 'general');
+});
+
+// ── when the durable half is lost ────────────────────────────────────────────
+// LAST in the file on purpose: it makes the insert genuinely throw by dropping the table out from
+// under it, then closes the db so the next file opens a fresh one with the DDL re-applied (the
+// pattern opsTasks.test.ts uses for the same reason).
+
+test('a lost park row still asks — and says so, with the same receipt the run sink files', async () => {
+  const a = args(ACT_ASK);
+  const { turn } = reasker(['want me to send it?']);
+  stmt('DROP TABLE ops_tasks').run();
+  try {
+    const out = await processConvoResult({ ...a, res: makeResult(['on it'], [delegate(ACT_ASK, 'act')]), turn });
+    assert.equal(out.delegatedTask, null, 'a lost row must never become a started action');
+    assert.equal(out.text, 'want me to send it?', 'she still asks');
+    assert.equal(receipt('ops:approval')?.decision, 'requested');
+    assert.equal(receipt('ops:durable-write-lost')?.at, 'approval');
+    const pref = await getPreference(a.handle, 'pending_approval');
+    assert.ok(pref, 'the pref still carries the ask, so the next turn can still resolve it');
+  } finally {
+    closeDb();
+  }
 });

@@ -1461,7 +1461,9 @@ export async function processConvoResult(args: {
       // two tasks and silently drop whichever came first, leaving a holding promise nothing keeps.
       // A NEW file always goes through delegate_to_mm first (the fast look); research that refers
       // back to an already-seen file is THIS tool with media_scope "earlier" — Ops re-opens it.
-      if (delegatedTask) continue;
+      // A PARKED action holds the same single slot: it is a delegation that happened, waiting on a
+      // yes, so a second call this turn would park a second row and ask about only one of them.
+      if (delegatedTask || parkedApproval) continue;
       // If a recent look came up thin and Irises asked a steering question, this delegation is
       // the refined second look: bump the attempt (so the composer does its soft "couldn't find
       // it" + offer on a second miss, not another re-aim) and fold the original ask into the
@@ -1581,9 +1583,15 @@ export async function processConvoResult(args: {
           // The whole task is serialized into the row (every field is JSON-safe) so the yes can run
           // exactly the brief she asked about, even after a restart. Row keyed by chat like every
           // other ops_tasks row; the pref keyed by sender like every other agent_prefs marker.
-          insertPendingApproval({
+          const parked = insertPendingApproval({
             id: built.id, chatId, kind: built.kind, request: built.request, meta: { task: built },
           }, askedAt);
+          if (!parked) {
+            // Not fatal to the turn — she still asks, and a yes on the next turn still finds the
+            // pref. What is lost is the row that would have carried the brief across a restart, and
+            // the same receipt Task 35's sink files makes that silence readable.
+            record({ type: 'event', chatId, taskId: built.id, label: 'ops:durable-write-lost', detail: { taskId: built.id, kind: built.kind, at: 'approval' } });
+          }
           await setPreference(chatContext.senderHandle, 'pending_approval', {
             taskId: built.id, request: built.request, kind: built.kind, askedAt,
           }).catch(err => console.error('[convo] failed to persist pending_approval', err));
