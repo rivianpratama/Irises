@@ -4,6 +4,7 @@ import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
 import { browserLegBudgetFor } from '../ops/client.js';
 import type { CapabilitySummary, CapabilityClass } from '../ops/engineBackend.js';
 import { markIntroWoven } from '../ops/firstMove.js';
+import { classifySideEffect, coerceEffect } from '../ops/sideEffects.js';
 import { isValidCron } from '../../pipeline/cron.js';
 import { getPreference, setPreference } from '../../db/repositories/memory.js';
 // Directives/notes/facts are memory_medium rows now (Stage 1) — the "no error margin" tier:
@@ -1093,6 +1094,10 @@ function buildForcedTask(opts: {
     agentHandle: opts.agentHandle,
     kind: 'general',
     request: opts.request,
+    // A FLOOR never pushes in an action: both floors exist to make an un-grounded ANSWER grounded
+    // (a data question Convo answered itself, a draft that claimed it couldn't reach something), so
+    // the task they build is a look, always. Nothing here can reach the approval gate.
+    effect: 'read',
     // forceGrounding keeps the fidelity backstop ON for a pushed-in DATA question. Web search
     // stays ON too (Ops seeds server-side results into the grounding corpus), so the question
     // can reach the open web and still be held to grounded facts.
@@ -1426,6 +1431,11 @@ export async function processConvoResult(args: {
       const opsKind: TaskKind = (OPS_KINDS as readonly string[]).includes(requestedKind) ? requestedKind as TaskKind : 'general';
       if (opsKind !== requestedKind) console.warn(`[convo] delegate_to_ops kind "${requestedKind}" is not a TaskKind — coerced to 'general'`);
       const opsRequest = String(input.request ?? textToSend);
+      // Would the ENGINE change something outside Irises to do this? Two sources, either sufficient:
+      // the model's own `effect` tag (it reads every language) and the English phrase list
+      // (agents/ops/sideEffects.ts). Read here, on the request as it will actually be sent, so the
+      // verdict and the brief can never describe different asks.
+      const sideEffect = classifySideEffect(opsRequest, coerceEffect(input.effect));
       // 'general' is the tool-less-hint catch-all: the brief IS the steering. If the model
       // skipped it, synthesize a minimal one from the request so Ops never runs blind.
       if (opsKind === 'general' && !metaPrompt) {
@@ -1484,6 +1494,7 @@ export async function processConvoResult(args: {
         agentHandle: chatContext.senderHandle,
         kind: opsKind,
         request: opsRequest,
+        effect: sideEffect.effect,
         metaPrompt,
         heldMemory: held.block || undefined,
         memoryHits: held.count,

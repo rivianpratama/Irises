@@ -62,6 +62,24 @@ test('openclaw variant keeps the canonical name, required list, property keys an
   assert.deepEqual(props(openclaw).media_scope.enum, props(hermes).media_scope.enum);
 });
 
+// The approval gate's one tool argument (2026-09-04). Deliberately re-pinned: the canonical object's
+// bytes ARE the hermes lane's contract, so a new argument on it is a contract change and this is
+// where it is written down. It is NOT in `required` — a model that omits it coerces to 'read', the
+// no-friction default, and the engine doctrine still refuses an unauthorized side effect.
+test('both lanes carry the effect arg, identically worded, and it stays optional', () => {
+  for (const t of [hermes, openclaw]) {
+    const effect = props(t).effect;
+    assert.deepEqual(effect.enum, ['read', 'act']);
+    assert.match(String(effect.description), /read = look things up/);
+    assert.match(String(effect.description), /act = the engine itself would send, post, buy, book, pay, delete, cancel/);
+  }
+  assert.equal(desc(openclaw, 'effect'), desc(hermes, 'effect'));
+  assert.deepEqual((hermes.inputSchema as { required: string[] }).required, ['kind', 'request']);
+  // And it reaches the model where the descriptions actually travel under toolsViaJson — the flat
+  // args union prefixes an enum with its own "one of:" line and keeps the wording after it.
+  assert.equal(argDesc([hermes], 'effect'), `one of: read | act. ${desc(hermes, 'effect')}`);
+});
+
 test('both lanes stay brand-free — no tool description ever names an engine', () => {
   for (const t of [hermes, openclaw]) {
     assert.doesNotMatch(t.description, /hermes|openclaw/i);

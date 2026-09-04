@@ -15,6 +15,18 @@ export interface OpsTask {
   agentHandle: string;
   kind: TaskKind;
   request: string;          // the user's underlying ask, verbatim or distilled
+  // Would the ENGINE change something outside Irises to do this? 'read' is every look Irises has
+  // ever taken (find, compute, draft for THEM to send); 'act' is the engine sending, posting,
+  // buying, booking, paying, deleting or cancelling. Decided at delegation time from two sources
+  // (agents/ops/sideEffects.ts): the model's own `effect` tag and an English phrase list. An 'act'
+  // task is PARKED behind the user's explicit yes — it is the one kind of task that does not start
+  // when it is built.
+  effect: 'read' | 'act';
+  // The handshake's own clocks, set only on an 'act' task the approval gate parked. `askedAt` is
+  // when she asked; `approvedAt` is the explicit yes that authorizes the brief's AUTHORIZED ACTION
+  // line; `reconfirm` marks a yes that arrived after the ask expired, which re-asks rather than
+  // executes (user decision 2026-09-04).
+  approval?: { askedAt: number; approvedAt?: number; reconfirm?: boolean };
   metaPrompt?: string;      // Convo-authored instruction for Ops (what's needed + relevant context)
   addressHint?: string;
   dealHint?: string;

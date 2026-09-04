@@ -45,6 +45,11 @@ export const DELEGATE_TO_OPS_TOOL: LlmToolDef = {
         description: "web_research=current or external facts from the web plus reasoning (look something up, read a page, check what's true now); document_read=read or search the user's OWN email and its attachments; draft=write a message or note for them to send; media_read=the ask is ABOUT a file they texted (what's in this photo/PDF/memo); compute=the ask needs work DONE not just found — run code over data, crunch or convert a file's contents, produce a table, or a multi-step chain; never head-math; general=substantive multi-source or multi-step reasoning with no single obvious tool — Ops carries the full toolset and your meta_prompt drives it.",
       },
       request: { type: 'string', description: "The user's underlying ask, distilled." },
+      effect: {
+        type: 'string',
+        enum: ['read', 'act'],
+        description: 'read = look things up / compute / draft for them to send; act = the engine itself would send, post, buy, book, pay, delete, cancel, or change anything outside Irises.',
+      },
       media_scope: { type: 'string', enum: ['this_turn', 'earlier', 'none'], description: 'Which chat file(s) this look is grounded in: this_turn = the file(s) on this very message (the normal case for a new file); earlier = a file they sent BEFORE this turn that the ask refers back to; none = no file is involved (the default when this message carries none).' },
       meta_prompt: {
         type: 'string',
