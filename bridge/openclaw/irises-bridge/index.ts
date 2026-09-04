@@ -106,14 +106,19 @@ function backoffMs(attempt: number): number {
  *
  * The trade: two identical messages ("ok", "thanks") from the same sender in the same chat with
  * the same timestamp collapse to one id, and Irises drops the second. The timestamp is what keeps
- * them apart, so this only bites on a channel that carries no timestamp at all.
+ * them apart — so a channel that carries none gets a coarse one from us instead: the minute we
+ * received the message in. Wide enough that a retry of the same message digests identically (the
+ * whole backoffMs ladder is 0.5-2s), narrow enough that a second "ok" typed minutes later is its
+ * own turn instead of a message Irises silently drops. Two identical messages inside the SAME
+ * minute still collapse; on a channel with no clock of its own that is the smallest gap left.
  */
 function stableMessageId(
   platformId: string | undefined,
   parts: { platform: string; chatId: string; senderId?: string; text: string; timestamp?: number },
 ): string {
   if (platformId != null && String(platformId).trim()) return String(platformId);
-  const raw = [parts.platform, parts.chatId, parts.senderId, parts.text, parts.timestamp]
+  const bucket = parts.timestamp ?? Math.floor(Date.now() / 60000);
+  const raw = [parts.platform, parts.chatId, parts.senderId, parts.text, bucket]
     .map(p => (p == null ? "" : String(p)))
     .join("|");
   return `eng-o-${createHash("sha256").update(raw).digest("hex").slice(0, 16)}`;

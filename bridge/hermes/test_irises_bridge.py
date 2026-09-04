@@ -337,6 +337,20 @@ class StableMessageId(unittest.TestCase):
             self.assertNotEqual(bridge._stable_message_id(None, *changed), first, changed)
 
 
+    def test_a_timestamp_less_message_digests_per_receive_minute(self):
+        """Two identical messages minutes apart must not collapse into one id, and a retry of the
+        SAME message (0.5-2s later, the _backoff_s ladder) must still digest identically."""
+        args = ("telegram", "42", "u1", "ok", None)
+        with mock.patch.object(bridge.time, "time", return_value=1_700_000_000.0):
+            first = bridge._stable_message_id(None, *args)
+        # The retry, two seconds later: same minute bucket, same id — the dedup still works.
+        with mock.patch.object(bridge.time, "time", return_value=1_700_000_002.0):
+            self.assertEqual(bridge._stable_message_id(None, *args), first, "a retry is the same message")
+        # The same words typed again five minutes later: a different message, a different id.
+        with mock.patch.object(bridge.time, "time", return_value=1_700_000_300.0):
+            self.assertNotEqual(bridge._stable_message_id(None, *args), first, "a later 'ok' is its own turn")
+
+
 class Backoff(unittest.TestCase):
     def test_two_step_backoff_clamped_at_the_ends(self):
         self.assertEqual(bridge._backoff_s(1), 0.5)

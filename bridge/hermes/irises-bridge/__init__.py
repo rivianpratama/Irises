@@ -152,12 +152,17 @@ def _stable_message_id(platform_id, platform, chat_id, sender_id, text, timestam
 
     The trade that buys: two identical messages ("ok", "thanks") from the same sender in the same
     chat, carrying the SAME timestamp, collapse to one id and the second is dropped by Irises's
-    dedup window. The timestamp is what keeps them apart, so this only bites on an adapter that
-    forwards no timestamp at all — a real gap, named here rather than hidden.
+    dedup window. The timestamp is what keeps them apart — so an adapter that forwards NO timestamp
+    gets a coarse one from us instead: the minute we received the message in. That is wide enough
+    that a retry of the same message digests identically (the whole _backoff_s ladder is 0.5-2s),
+    and narrow enough that a second "ok" typed minutes later is its own turn rather than a message
+    Irises silently drops. Two identical messages inside the SAME minute still collapse; on a
+    channel with no clock of its own that is the smallest gap left, and it is named, not hidden.
     """
     if platform_id is not None and str(platform_id).strip():
         return platform_id
-    raw = "|".join("" if p is None else str(p) for p in (platform, chat_id, sender_id, text, timestamp))
+    bucket = timestamp if timestamp is not None else int(time.time() // 60)
+    raw = "|".join("" if p is None else str(p) for p in (platform, chat_id, sender_id, text, bucket))
     return "eng-h-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
