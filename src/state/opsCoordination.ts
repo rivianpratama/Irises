@@ -32,6 +32,31 @@ interface InFlightEntry {
 const inFlight = new Map<string, Map<string, InFlightEntry>>();   // chatId -> taskId -> entry
 const recentlyDelegated = new Map<string, Map<string, number>>(); // chatId -> normKey -> at (ms)
 
+/**
+ * The optional durable twin of the maps above. This module is on the REPLY path and imports no
+ * storage — its tests run without a database, and a db import here would drag one into every one of
+ * them. So the durable half registers itself as a SINK instead: every method is synchronous (the
+ * map writes it shadows are what INV-1 rests on, and an await between them would open the gap that
+ * invariant closes) and every call site try/catches it (a durable write must never take down a
+ * reply). No sink registered — the flag off, or a test — and every hook below is one false `if`.
+ */
+export interface OpsTaskSink {
+  onStart(e: { chatId: string; taskId: string; kind: TaskKind; request: string; budgetMs: number; origin?: 'scheduled' }): void;
+  onRetry(e: { chatId: string; taskId: string }): void;
+  onCancel(e: { chatId: string; taskId: string }): void;
+  onDone(e: { chatId: string; taskId: string }): void;
+  /** "Is this exact ask already running, according to something that outlived the process?" —
+   *  consulted only after both maps miss, which after a restart is every ask. */
+  isRunningElsewhere(chatId: string, request: string): boolean;
+}
+
+let taskSink: OpsTaskSink | null = null;
+
+/** Register (or clear, with null) the durable twin. Called once at boot, and by tests. */
+export function setOpsTaskSink(sink: OpsTaskSink | null): void {
+  taskSink = sink;
+}
+
 // A just-delegated ask stays "recent" this long so a repeat lands on the cached answer, not a
 // second run. Short enough that a genuinely fresh re-ask after the data could change still runs.
 const RECENT_DELEGATION_MS = 90_000;
@@ -83,6 +108,12 @@ export function markOpsStart(chatId: string, taskId: string, info: { kind: TaskK
   ring.set(normKey, now);
   recentlyDelegated.set(chatId, ring);
   prune(chatId);
+  // The durable copy goes AFTER the maps: the maps are the authority this turn, the row is what
+  // answers for this run after the process is gone.
+  if (taskSink) {
+    try { taskSink.onStart({ chatId, taskId, kind: info.kind, request: info.request, budgetMs: opsStaleMs(), origin: info.origin }); }
+    catch { /* durable state is best-effort — never the reply's problem */ }
+  }
 }
 
 /**
@@ -98,6 +129,10 @@ export function requestOpsCancel(chatId: string, taskId: string): 'signalled' | 
   entry.cancelled = true;
   entry.cancel?.abort();
   recentlyDelegated.get(chatId)?.delete(entry.normKey);
+  if (taskSink) {
+    try { taskSink.onCancel({ chatId, taskId }); }
+    catch { /* durable state is best-effort */ }
+  }
   return 'signalled';
 }
 
@@ -123,6 +158,10 @@ export function markOpsRetry(chatId: string, taskId: string): void {
   const entry = inFlight.get(chatId)?.get(taskId);
   if (!entry || entry.cancelled) return;
   entry.startedAt = Date.now();
+  if (taskSink) {
+    try { taskSink.onRetry({ chatId, taskId }); }
+    catch { /* durable state is best-effort */ }
+  }
 }
 
 /**
@@ -162,8 +201,14 @@ export function noteOpsProgress(chatId: string, taskId: string, milestoneKey: st
 export function markOpsDone(chatId: string, taskId: string): void {
   const byTask = inFlight.get(chatId);
   if (!byTask) return;
-  byTask.delete(taskId);
+  const had = byTask.delete(taskId);
   if (byTask.size === 0) inFlight.delete(chatId);
+  // Only when an entry actually existed: a second markOpsDone (or one for a task this process never
+  // held) must not write a row, and must not re-settle one another process already closed out.
+  if (had && taskSink) {
+    try { taskSink.onDone({ chatId, taskId }); }
+    catch { /* durable state is best-effort */ }
+  }
 }
 
 export interface ActiveOps {
@@ -227,6 +272,13 @@ export function isDuplicateDelegation(chatId: string, kind: string, request: str
   }
   const at = recentlyDelegated.get(chatId)?.get(key);
   if (at && now - at < RECENT_DELEGATION_MS) return 'recent';
+  // Last: the durable twin, which is the only one that still remembers anything after a restart.
+  // Asked ONLY on a miss, so nothing about the in-memory answer changes, and asked with the request
+  // so a run stranded in this chat cannot make an unrelated ask read as already running.
+  if (taskSink) {
+    try { if (taskSink.isRunningElsewhere(chatId, request)) return 'in_flight'; }
+    catch { /* durable state is best-effort — fall through to "no duplicate" */ }
+  }
   return null;
 }
 
@@ -238,8 +290,9 @@ function prune(chatId: string): void {
   if (ring.size === 0) recentlyDelegated.delete(chatId);
 }
 
-/** Test-only: wipe all coordination state. */
+/** Test-only: wipe all coordination state, sink included — the shape of a restart. */
 export function __resetOpsCoordination(): void {
   inFlight.clear();
   recentlyDelegated.clear();
+  taskSink = null;
 }
