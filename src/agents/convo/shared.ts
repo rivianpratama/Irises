@@ -4,7 +4,10 @@ import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
 import { browserLegBudgetFor } from '../ops/client.js';
 import type { CapabilitySummary, CapabilityClass } from '../ops/engineBackend.js';
 import { markIntroWoven } from '../ops/firstMove.js';
-import { classifySideEffect, coerceEffect } from '../ops/sideEffects.js';
+import {
+  approvalAskFallback, classifySideEffect, coerceEffect, opsApprovalGateEnabled, renderApprovalAsk,
+} from '../ops/sideEffects.js';
+import { insertPendingApproval } from '../../db/repositories/opsTasks.js';
 import { isValidCron } from '../../pipeline/cron.js';
 import { getPreference, setPreference } from '../../db/repositories/memory.js';
 // Directives/notes/facts are memory_medium rows now (Stage 1) — the "no error margin" tier:
@@ -1202,6 +1205,57 @@ async function enforcePromiseKept(
   return { res: out, fired: true };
 }
 
+// ── The approval ask ────────────────────────────────────────────────────────────────────────────
+/**
+ * ONE corrective re-ask for a delegation the approval gate just parked — the same mechanism, the
+ * same seam and the same accept discipline as the unkept-promise guard above, for the mirror-image
+ * failure. There she promised work that was not happening; here work really is not happening, and
+ * the holding line she already wrote ("on it, emailing them now") would say otherwise.
+ *
+ * The retry is accepted only if it is a question she could have asked: at least one bubble and NO
+ * tool call (a tool call would be her trying to do the thing again). Anything else — an empty
+ * envelope, a tool call, a dead lane, a caller with no turn context at all — ships the code line
+ * instead, because the one thing that must never happen here is silence: the action is parked and
+ * only their answer can move it.
+ *
+ * Runs after the tool loop, so the row and the pref are already written when the question goes out;
+ * if this call fails the park still stands and the section keeps it live for the next turn.
+ */
+async function askForApproval(
+  args: { res: LlmResult; chatId: string; handle: string | undefined; turn?: ConvoTurnContext },
+  request: string,
+): Promise<string> {
+  const { res, chatId, handle, turn } = args;
+  let asked: string | null = null;
+  if (turn) {
+    try {
+      const retry = await (turn.call ?? callConvoLLM)({
+        role: 'convo',
+        system: turn.system,
+        systemCacheBreakpoints: turn.cacheBreakpoints ?? [convoPersonaChars()],
+        tools: turn.tools,
+        jsonBubbles: true,
+        toolsViaJson: true,
+        messages: [
+          ...turn.messages,
+          { role: 'assistant', content: res.text ?? '' },
+          { role: 'user', content: renderApprovalAsk(request) },
+        ],
+        // The CALL's own label, distinct from the decision receipt below — same split as
+        // convo:unkept_retry / convo:unkept_promise, for the same reason.
+        trace: { chatId, handle, label: 'convo:approval_retry' },
+      });
+      const parsed = parseReply(retry.text);
+      if (replyBubbles(parsed).length && !retry.toolCalls.length) asked = parsed.legacyText;
+      else console.warn(`[convo] the approval re-ask came back ${retry.toolCalls.length ? 'with a tool call' : 'empty'} — asking in one line instead (chat ${chatId})`);
+    } catch (err) {
+      reportError({ source: 'convo', category: 'retry_exhausted', severity: 'warn', err, detail: { guard: 'approval_ask' }, chatId, handle });
+    }
+  }
+  record({ type: 'event', label: 'convo:approval_ask', chatId, handle, detail: { resolved: asked ? 'reasked' : 'fallback' } });
+  return asked ?? approvalAskFallback(request);
+}
+
 /**
  * Process an LLM result into a ChatResponse: fold text, run every tool call (reactions,
  * remember_user, delegate_to_ops, scheduling, directives), apply the never-go-silent fallbacks,
@@ -1281,6 +1335,10 @@ export async function processConvoResult(args: {
   let rememberedUser: ChatResponse['rememberedUser'] = null;
   let removeMember: string | null = null;
   let delegatedTask: OpsTask | null = null;
+  // Set when the approval gate parked an action instead of handing it back for kickoff: the request
+  // she is about to ask them about. Its presence is what replaces her holding line with a question
+  // and keeps the routing floor off a turn that deliberately delegated nothing.
+  let parkedApproval: { request: string } | null = null;
   // True when the MODEL (not the routing gate below) built delegatedTask, so the salvage after the
   // loop knows to discard its un-grounded answer tail. Convo is single-shot — it never sees Ops'
   // result — so any substantive claim it wrote alongside a delegation is un-grounded, and the
@@ -1481,14 +1539,13 @@ export async function processConvoResult(args: {
       }
       if (suppressedDuplicate) continue;
 
-      modelDelegated = true;
       // What she holds about this ask goes out WITH the look — the engine keeps no part of her
       // memory, so anything the request refers to by first name is otherwise a question it has to
       // come back and ask. In its own field: `metaPrompt` stays the model's own words (the engine's
       // primary instruction, and the text the walled-URL scan reads), and a kind that wrote no
       // brief sends none rather than sending her notes as the assignment.
       const held = heldForOps(args.relevance?.hits ?? []);
-      delegatedTask = {
+      const built: OpsTask = {
         id: randomUUID(),
         chatId,
         agentHandle: chatContext.senderHandle,
@@ -1509,6 +1566,41 @@ export async function processConvoResult(args: {
         recalledAgeMs: opsRecalledAgeMs,
         createdAt: Date.now(),
       };
+
+      // ── The approval gate (OPS_APPROVAL_GATE, default ON) ─────────────────────────────────────
+      // An action in the world does not start because a model called a tool. It is PARKED — a
+      // durable `pending_approval` row that outlives this process, a pref beside
+      // pending_clarification for the next turn to resolve, and no task handed back, which is the
+      // whole mechanism: index.ts kicks off ONLY from `delegatedTask`, so a null one cannot start
+      // anything and INV-1 (markOpsStart inside the lock) is untouched because nothing is marked.
+      // Task 38 turns the answer into a run.
+      if (opsApprovalGateEnabled()) {
+        if (built.effect === 'act') {
+          const askedAt = Date.now();
+          built.approval = { askedAt };
+          // The whole task is serialized into the row (every field is JSON-safe) so the yes can run
+          // exactly the brief she asked about, even after a restart. Row keyed by chat like every
+          // other ops_tasks row; the pref keyed by sender like every other agent_prefs marker.
+          insertPendingApproval({
+            id: built.id, chatId, kind: built.kind, request: built.request, meta: { task: built },
+          }, askedAt);
+          await setPreference(chatContext.senderHandle, 'pending_approval', {
+            taskId: built.id, request: built.request, kind: built.kind, askedAt,
+          }).catch(err => console.error('[convo] failed to persist pending_approval', err));
+          record({ type: 'event', label: 'ops:approval', chatId, handle, detail: { decision: 'requested', trigger: sideEffect.trigger, taskId: built.id } });
+          // chatId in the line: the park is invisible otherwise — nothing starts, nothing is marked.
+          console.log(`[convo] parked an action behind the user's approval (${sideEffect.trigger}, chat ${chatId})`);
+          parkedApproval = { request: built.request };
+          continue;
+        }
+        // Fires on the NO-OP path too: a read delegation is the answer the gate gives thousands of
+        // times for every park, and a receipt that only appeared when it fired would leave the
+        // false-positive rate unreadable.
+        record({ type: 'event', label: 'ops:approval', chatId, handle, detail: { decision: 'not_needed', trigger: sideEffect.trigger } });
+      }
+
+      modelDelegated = true;
+      delegatedTask = built;
     } else if (call.name === 'update_memory' && handle) {
       // Silent memory ASK. The ENGINE owns its long-term user model (per-chat engine session
       // memory) — this requests a reconciliation fire-and-forget (the engine decides what to
@@ -1557,6 +1649,19 @@ export async function processConvoResult(args: {
     }
   }
 
+  // ── The approval ask ──────────────────────────────────────────────────────────────────────
+  // An action was parked in the loop above, so the holding line she wrote for it is a claim about
+  // work that has not started. Replace it with the question — hers if the one re-ask lands, the code
+  // line if it does not. First thing after the loop: every floor below reads `textParts`, and they
+  // must all see the question rather than the holding line it replaced.
+  if (parkedApproval) {
+    textParts.length = 0;
+    textParts.push(await askForApproval(args, parkedApproval.request));
+    // The shipped text is no longer this parse's text, so this parse's bubble cap is not the cap to
+    // report (same rule as every other branch that replaces the reply).
+    hardCapped = false;
+  }
+
   // ── recall_memory's bounded second pass ───────────────────────────────────────────────────
   // Convo is single-shot (toolsViaJson): a tool call never returns its result to the model in the
   // same call, so a SEARCH tool is worthless without a second call. This is that call, bounded
@@ -1565,7 +1670,9 @@ export async function processConvoResult(args: {
   // recursion outright (depth ≤ 2).
   // DELEGATION WINS on conflict: if the model also delegated, the composer is already coming back
   // with grounded facts and a second draft here would race it onto the user's screen.
-  if (recallQuery && !args.archivePass && !delegatedTask && !suppressedDuplicate) {
+  // A PARKED action counts as a delegation here for the same reason: the question just replaced her
+  // draft, and a second pass would answer the archive over the top of it.
+  if (recallQuery && !args.archivePass && !delegatedTask && !suppressedDuplicate && !parkedApproval) {
     // ── The paraphrase ladder branches HERE ─────────────────────────────────────────────────
     // 'vector' means searchArchive is about to fuse an embedding leg over the same rows, which is a
     // BETTER answer to "they didn't use the words they wrote it down with" than synonyms are — so
@@ -1722,7 +1829,10 @@ export async function processConvoResult(args: {
   // action — must not be clobbered with a forced delegation + holding line.
   // Also skipped on the recall second pass: that answer IS grounded (in the user's own archived
   // memory), and forcing a delegation there would discard it for a holding line.
-  if (process.env.ROUTING_GATE !== 'off' && !delegatedTask && !suppressedDuplicate
+  // Also skipped on a PARKED turn: the model DID delegate — the gate's own reason to stand down —
+  // and the task is waiting on the user's yes. Forcing a look here would answer the same message
+  // with a run they have not authorized, and replace her question with a holding line.
+  if (process.env.ROUTING_GATE !== 'off' && !delegatedTask && !suppressedDuplicate && !parkedApproval
       && !scheduleConfirmation && !noteConfirmation && outcomeParts.length === 0
       && !args.archivePass
       && handle && chatContext?.senderHandle) {
