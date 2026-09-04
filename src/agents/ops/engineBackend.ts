@@ -534,8 +534,14 @@ export async function runViaEngine(
   // The leg's own lifecycle, which is NOT the task's: it opens here and closes in the `finally`,
   // while the task lives on through triage and compose. `steerRun` is the engine's answer to "can
   // an addition reach a run at all"; an adapter that then takes a run-id-less transport says so
-  // through onNoRunHandle above.
-  beginOpsEngineLeg(task.chatId, task.id, !!engine.steerRun);
+  // through onNoRunHandle above — but that hook only fires once the leg actually runs, and this
+  // call sits BEFORE acquire(). A hermes leg carrying a photo is already known, right here, to be
+  // routing onto the chat transport (images never take /v1/runs — see useRunsTransport), so a steer
+  // said while it is still parked behind the concurrency cap must not be told 'queued' for a handle
+  // that a long wait later turns out never to arrive.
+  const imageBearing = (task.media?.images?.length ?? 0) > 0;
+  const steerableAtOpen = !!engine.steerRun && !(engine.name === 'hermes' && imageBearing);
+  beginOpsEngineLeg(task.chatId, task.id, steerableAtOpen);
   try {
     release = await acquire({
       signal: ctx.signal,

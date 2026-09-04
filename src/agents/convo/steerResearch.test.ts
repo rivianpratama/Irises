@@ -102,15 +102,19 @@ test('several running + empty match → failed outcome that lists them, and adds
   assert.ok(getActiveOps('chatA').every(o => o.steers === undefined));
 });
 
-test('the run is already finished → the correction says so instead of promising a fold-in', () => {
+test('blank guidance is a no-op — nothing is sent, and it does not read back as "just finished"', () => {
   __resetOpsCoordination();
   markOpsStart('chatA', 't1', { kind: 'general', request: 'full inbox scan' });
-  // A steer with nothing in it takes the same branch as the entry that vanished between the status
-  // read and the delivery (requestOpsSteer's 'already_done'), which is what a run finishing looks
-  // like from inside the turn.
-  const note = handleSteerResearch('', '   ', 'chatA', HANDLE, null);
-  assert.equal(note?.kind, 'failed');
-  assert.match(note?.summary ?? '', /just finished/);
+  noteOpsEngineRun('chatA', 't1', { engine: 'hermes', runId: 'run_7' });
+  const calls: Array<{ handle: EngineRunHandle; text: string }> = [];
+  // Whitespace-only guidance used to fall into requestOpsSteer's blank-text branch, which reads
+  // identically to the run having already ended — the still-running lookup got told it was over.
+  // A blank addition is nothing said at all: Convo's own ack stands, the map is never touched, and
+  // nothing is POSTed.
+  const note = handleSteerResearch('', '   ', 'chatA', HANDLE, steerableEngine(calls));
+  assert.equal(note, null);
+  assert.equal(calls.length, 0, 'nothing to steer with, so nothing was sent');
+  assert.equal(getActiveOps('chatA')[0].steers, undefined, 'the map was never consulted');
   markOpsDone('chatA', 't1');
 });
 

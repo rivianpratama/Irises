@@ -1361,9 +1361,13 @@ test('runs transport: a hermes with no /v1/runs falls back to chat completions, 
   assert.equal(captured.filter(c => /\/v1\/runs$/.test(c.url)).length, 1,
     'the 404 latched — a hermes too old for /v1/runs is not re-dialled on every task');
   assert.ok(getTraces().some(e => e.label === 'engine:hermes:runs-unsupported'));
+  const pinned = getTraces().find(e => e.label === 'engine:hermes:runs-disabled');
+  assert.ok(pinned, 'the same one-time pin trace fires for the 404 latch too');
+  assert.equal(pinned?.detail?.reason, 'not_found');
 });
 
 test('runs transport: an engine whose capabilities deny run_submission keeps the chat transport', async () => {
+  clearTraces();
   const captured: Captured[] = [];
   const be = new HermesBackend({
     fetchFn: routedFetch([
@@ -1376,6 +1380,11 @@ test('runs transport: an engine whose capabilities deny run_submission keeps the
   await settleCaps(be, () => be.getCapabilitySummary() !== null);
   assert.equal(await be.runTask('p', mkTask(), {}), 'chat answer');
   assert.ok(!captured.some(c => /\/v1\/runs$/.test(c.url)), 'feature detection, not a 404 round trip');
+  // The pin has no visible effect from inside a single call — chat answers fine either way — so
+  // without a trace this engine is silently stuck on the slower, unstoppable transport forever.
+  const pinned = getTraces().find(e => e.label === 'engine:hermes:runs-disabled');
+  assert.ok(pinned, 'the whole-process pin left a trace');
+  assert.equal(pinned?.detail?.reason, 'capabilities');
 });
 
 test('runs transport: images keep the chat transport — /v1/runs never sees the picture', async () => {

@@ -321,6 +321,11 @@ export function handleSteerResearch(
   if (!m && matches.length > 1) {
     return { kind: 'failed', summary: "more than one lookup is running and it's unclear which to add this to", facts: `currently running: ${active.map(a => `"${a.request}"`).join(', ')}`, nextStep: 'ask which one they mean' };
   }
+  // Blank/whitespace guidance is nothing said, not a steer — requestOpsSteer's own blank-text guard
+  // answers 'already_done', which reads exactly like the run having just finished. That correction
+  // would be a lie to a lookup that is still going. Bail before the map sees it: no record, no POST,
+  // Convo's own ack stands.
+  if (!guidance.trim()) return null;
   // Ask the map FIRST, engine or no engine: this is what records their addition on the entry, so the
   // status line reads it back and the refinement leg carries it even when nothing could be delivered.
   const decided = matches.map(a => ({ taskId: a.taskId, outcome: requestOpsSteer(chatId, a.taskId, guidance) }));

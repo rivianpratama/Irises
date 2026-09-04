@@ -559,6 +559,31 @@ test('runViaEngine: an engine that cannot steer says so, instead of queueing for
   __resetOpsCoordination();
 });
 
+test('runViaEngine: an image-bearing hermes task is marked steer-unreachable before it even queues', async () => {
+  // beginOpsEngineLeg runs before acquire() — a steer said while a hermes leg carrying a photo is
+  // still parked behind the concurrency cap used to be answered 'queued' (steerRun exists, so
+  // steerable looked true), and then dropped the moment the leg routed onto the chat transport
+  // (images never take /v1/runs, so no handle ever lands and onNoRunHandle only fires once the
+  // adapter actually runs). Queued-then-dropped reads to the user as delivered when it never was.
+  __resetOpsCoordination();
+  const pins = await pinEverySlot();
+  try {
+    const task = mkTask({ media: { images: [{ url: 'u', mimeType: 'image/png' }], audio: [], video: [], docs: [] } });
+    markOpsStart(task.chatId, task.id, { kind: task.kind, request: task.request });
+    const engine: EngineBackend = { ...stub(async () => 'answer'), async steerRun() { return 'accepted'; } };
+    const p = runViaEngine(engine, 'prompt', task, {}, mkDebrief());
+    await settle();
+    assert.equal(requestOpsSteer(task.chatId, task.id, 'also check jakarta'), 'unsupported',
+      'known unreachable from the moment the leg opened, not just once it routes');
+    assert.deepEqual(takePendingSteers(task.chatId, task.id), [], 'nothing sits in a queue nobody will drain');
+    await pins.freeAll();
+    await p;
+  } finally {
+    await pins.freeAll();
+  }
+  __resetOpsCoordination();
+});
+
 test('runViaEngine: a pending steer rides back on the OpsResult instead of being lost', async () => {
   __resetOpsCoordination();
   const task = mkTask();

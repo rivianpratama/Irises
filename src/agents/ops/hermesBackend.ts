@@ -435,6 +435,11 @@ export class HermesBackend implements EngineBackend {
   // Latched by a 404 on POST /v1/runs: this engine predates the route. It cannot come back without
   // a restart, and re-dialling it would cost every later task a wasted round trip.
   private runsUnsupported = false;
+  // A pin to the chat transport is invisible from inside any one call — the run still answers, just
+  // over the older route — so without a trace an engine can get stuck there for the life of the
+  // process with nothing in the logs to say why. Guards BOTH the capabilities gate below and the 404
+  // latch above so the one-time record fires once total, not once per hourly capability refresh.
+  private runsDisabledTraced = false;
   // Read ONCE at construction: getCapabilitySummary() sits on the per-turn prompt path, so it must
   // not re-parse (or re-read the environment) per turn.
   private readonly declaredCapabilities: CapabilitySummary | null;
@@ -694,6 +699,13 @@ export class HermesBackend implements EngineBackend {
         type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
         label: 'engine:hermes:runs-unsupported', detail: { status: 404 },
       });
+      if (!this.runsDisabledTraced) {
+        this.runsDisabledTraced = true;
+        record({
+          type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
+          label: 'engine:hermes:runs-disabled', detail: { reason: 'not_found' },
+        });
+      }
       return null;
     }
     this.throwForStatus(started, 'run submit');
@@ -1297,6 +1309,13 @@ export class HermesBackend implements EngineBackend {
       // gate: a failed read leaves the last one standing, and never turns "unknown" into "no runs".
       const runsSupported = bodies[1] === undefined ? undefined : manifestSupportsRuns(bodies[1]);
       if (runsSupported !== undefined) this.capRunsSupported = runsSupported;
+      // A `features` map that answers but leaves out run_stop/run_submission is a definite "no", not
+      // an unknown — and unlike the 404 latch (one loud failed POST) this gate can pin the chat
+      // transport for the whole process without a single failing request anywhere to notice.
+      if (runsSupported === false && !this.runsDisabledTraced) {
+        this.runsDisabledTraced = true;
+        record({ type: 'event', label: 'engine:hermes:runs-disabled', detail: { reason: 'capabilities' } });
+      }
       const answered = bodies.filter(b => b !== undefined);
       if (!answered.length) return; // total failure → keep last-known, retry next read
       const partial = answered.length < bodies.length;
