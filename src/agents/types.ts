@@ -132,6 +132,12 @@ export interface OpsResult {
   summary: string;          // accurate plain text; Convo re-voices this
   data?: Record<string, unknown>;
   debrief?: OpsDebrief;     // what the run did + why it failed; fuels triage
+  /** A mid-run addition the engine ACCEPTED but never applied: it landed after the final model
+   *  response, so the answer above does not reflect it (hermes reports this as `pending_steer` on
+   *  the terminal run event). Present means the user asked for something they have NOT been given
+   *  yet — the orchestrator replays it once as a refinement leg rather than delivering an answer
+   *  that quietly ignores the last thing they said. */
+  steerUnapplied?: string;
 }
 
 /**

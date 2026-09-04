@@ -7,6 +7,12 @@
 import { record } from '../../diagnostics/trace.js';
 import { HermesBackend } from './hermesBackend.js';
 import { OpenClawBackend } from './openclawBackend.js';
+// The in-flight map is where a run handle has to land for a LATER turn's steer_research to find it.
+// Cyclic with this module (opsCoordination derives its staleness horizon from the leg budgets
+// declared here), which ESM resolves fine because neither side calls into the other at module
+// scope — both only ever read the other from inside a function.
+import { noteOpsEngineRun, takePendingSteers } from '../../state/opsCoordination.js';
+import { steerWithRetry } from './steer.js';
 import type { OpsTask, OpsResult, OpsDebrief, OpsFailureCause } from '../types.js';
 
 // ── contract every adapter implements ────────────────────────────────────────
@@ -465,6 +471,14 @@ function failureResult(task: OpsTask, cause: OpsFailureCause, detail: string, st
   };
 }
 
+/** Hand the engine the additions the user made BEFORE this run had a handle, one at a time so they
+ *  arrive in the order they were said. Fire-and-forget from the run's point of view: the leg itself
+ *  must never wait on a courtesy call, and steerWithRetry never throws. */
+async function deliverQueuedSteers(engine: EngineBackend, handle: EngineRunHandle, texts: string[], task: OpsTask, signal?: AbortSignal): Promise<void> {
+  const where = { chatId: task.chatId, agentHandle: task.agentHandle, taskId: task.id };
+  for (const text of texts) await steerWithRetry(engine, handle, text, where, { signal });
+}
+
 /** Run one task on the configured engine and shape the outcome as an OpsResult. The debrief is the
  *  caller's (runTask owns creating it + the sink/done bookkeeping); this fills in what happened. */
 export async function runViaEngine(
@@ -481,6 +495,30 @@ export async function runViaEngine(
   // wedge EVERY later delegation in acquire() forever — a hang with no trace, no socket and no
   // engine ever contacted. A throw from acquire() itself is safe: it never took a slot.
   let release: (() => void) | undefined;
+  // A mid-run addition the engine took but never applied (hermes's `pending_steer`). Captured here
+  // and returned on the result so the orchestrator can replay it as a refinement leg — an answer
+  // that silently ignores the last thing the user said is worse than a slower one.
+  let steerUnapplied: string | undefined;
+  // The ctx the ADAPTER sees: the caller's, plus the two hooks this seam owns. Wrapping rather than
+  // mutating keeps the caller's object untouched (ops/client.ts builds it per leg) and keeps any
+  // hook the caller set of its own working.
+  const engineCtx: EngineRunContext = {
+    ...ctx,
+    onRunHandle: handle => {
+      // Registration FIRST: the caller's hook is free to throw, and losing the handle would leave
+      // a run nothing can steer or stop for the rest of its life.
+      noteOpsEngineRun(task.chatId, task.id, handle);
+      const queued = takePendingSteers(task.chatId, task.id);
+      if (queued.length) void deliverQueuedSteers(engine, handle, queued, task, ctx.signal);
+      // Guarded here as well as in the adapters: this is the composition point, so an adapter that
+      // forgets to guard still cannot lose a run to a caller's bookkeeping hook.
+      try { ctx.onRunHandle?.(handle); } catch { /* a receipt must never outrank the run */ }
+    },
+    onPendingSteer: text => {
+      steerUnapplied = text;
+      try { ctx.onPendingSteer?.(text); } catch { /* likewise */ }
+    },
+  };
   try {
     release = await acquire({
       signal: ctx.signal,
@@ -503,15 +541,18 @@ export async function runViaEngine(
       // (spreading an absent descriptor adds nothing — the detail stays exactly as it was).
       detail: { kind: task.kind, promptChars: prompt.length, queuedMs: Date.now() - t0, ...engine.sessionDescriptor?.(task.chatId) },
     });
-    const text = (await engine.runTask(prompt, task, ctx)).trim();
+    const text = (await engine.runTask(prompt, task, engineCtx)).trim();
     debrief.steps += 1;
     debrief.toolsRun.push({ name: `engine:${engine.name}`, argsSummary: task.kind, ok: true, resultPreview: text.slice(0, 200), durationMs: Date.now() - t0 });
     debrief.corpus.push(text);
+    // Absent rather than undefined when nothing is pending, so an ordinary result is byte-identical
+    // to what it has always been.
+    const pending = steerUnapplied ? { steerUnapplied } : {};
     if (!text) {
       debrief.failure = { cause: 'empty_miss', detail: 'engine returned empty text' };
-      return { taskId: task.id, kind: task.kind, status: 'ok', summary: 'NO RESULT: the look came back empty', debrief };
+      return { taskId: task.id, kind: task.kind, status: 'ok', summary: 'NO RESULT: the look came back empty', debrief, ...pending };
     }
-    return { taskId: task.id, kind: task.kind, status: 'ok', summary: text, debrief };
+    return { taskId: task.id, kind: task.kind, status: 'ok', summary: text, debrief, ...pending };
   } catch (err) {
     const durationMs = Date.now() - t0;
     let mapped: { result: OpsResult; cause: OpsFailureCause };

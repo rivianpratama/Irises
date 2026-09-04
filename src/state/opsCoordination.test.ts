@@ -7,6 +7,7 @@ import {
   requestOpsCancel, isOpsCancelled, noteOpsProgress, hasInFlightRequest,
   normalizeRequest, __resetOpsCoordination, markOpsRetry, getOpsEtaStatus,
   opsStaleMs, OPS_STALE_SLACK_MS,
+  noteOpsEngineRun, getOpsEngineRun, requestOpsSteer, takePendingSteers,
 } from './opsCoordination.js';
 import { BROWSER_LEG_BUDGET_MS } from '../agents/ops/engineBackend.js';
 
@@ -306,4 +307,78 @@ test('with no browser budget armed the horizon is exactly five minutes, as it ha
     assert.equal(hasInFlightRequest('chatA', 'hours for the corner cafe', justPast), false);
     assert.equal(getOpsEtaStatus('chatA', 'task1', justPast), undefined);
   });
+});
+
+// ── mid-run steer: the queue between "the user added something" and "there is a run to add it to" ──
+//
+// A hermes run is only steerable once its agent exists, which is a second or two after dispatch.
+// A user who adds to the ask inside that window must not lose the words, so the state machine has
+// three answers, not two: 'ready' (there is a handle — go POST it), 'queued' (hold it until the
+// handle lands), 'already_done' (nothing to steer; fold it into the next ask instead).
+
+test('requestOpsSteer: queued before the handle exists, ready after, and drained exactly once', () => {
+  __resetOpsCoordination();
+  markOpsStart('chatA', 'task1', { kind: 'web_research', request: 'flights to bekasi' });
+
+  assert.equal(requestOpsSteer('chatA', 'task1', 'under 100k'), 'queued', 'no run handle yet');
+  assert.equal(getOpsEngineRun('chatA', 'task1'), undefined);
+
+  noteOpsEngineRun('chatA', 'task1', { engine: 'hermes', runId: 'run_1' });
+  assert.deepEqual(getOpsEngineRun('chatA', 'task1'), { engine: 'hermes', runId: 'run_1' });
+  assert.deepEqual(takePendingSteers('chatA', 'task1'), ['under 100k'], 'the queued text comes back for delivery');
+  assert.deepEqual(takePendingSteers('chatA', 'task1'), [], 'and only once — a drain is a hand-off');
+
+  assert.equal(requestOpsSteer('chatA', 'task1', 'actually jakarta'), 'ready', 'the handle exists now');
+  assert.deepEqual(takePendingSteers('chatA', 'task1'), [], 'a ready steer is the caller\'s to send, not the queue\'s');
+});
+
+test('requestOpsSteer: every addition stays on the entry so the follow-up leg still sees it', () => {
+  __resetOpsCoordination();
+  markOpsStart('chatA', 'task1', { kind: 'web_research', request: 'flights to bekasi' });
+  noteOpsEngineRun('chatA', 'task1', { engine: 'hermes', runId: 'run_1' });
+  requestOpsSteer('chatA', 'task1', 'under 100k');
+  requestOpsSteer('chatA', 'task1', 'morning departures');
+  // Whether hermes accepted them or not, these are things the user said about a running ask: the
+  // status line reads them back ("you added: …") and a refinement leg folds them in.
+  assert.deepEqual(getActiveOps('chatA')[0].steers, ['under 100k', 'morning departures']);
+  // Blank text is not an addition — it must not put an empty quote on the status line.
+  assert.equal(requestOpsSteer('chatA', 'task1', '   '), 'already_done');
+  assert.deepEqual(getActiveOps('chatA')[0].steers, ['under 100k', 'morning departures']);
+});
+
+test('requestOpsSteer: a finished or cancelled lookup is already_done, and never resurrects', () => {
+  __resetOpsCoordination();
+  assert.equal(requestOpsSteer('chatA', 'gone', 'also check jakarta'), 'already_done', 'no entry at all');
+
+  markOpsStart('chatA', 'task1', { kind: 'web_research', request: 'flights' });
+  markOpsDone('chatA', 'task1');
+  assert.equal(requestOpsSteer('chatA', 'task1', 'also check jakarta'), 'already_done');
+
+  markOpsStart('chatA', 'task2', { kind: 'web_research', request: 'trains' });
+  requestOpsCancel('chatA', 'task2');
+  // The user killed it a beat ago; adding to it would be a promise about work that is stopping.
+  assert.equal(requestOpsSteer('chatA', 'task2', 'also check jakarta'), 'already_done');
+  assert.deepEqual(takePendingSteers('chatA', 'task2'), []);
+});
+
+test('noteOpsEngineRun / takePendingSteers: no-ops on a gone or cancelled entry', () => {
+  __resetOpsCoordination();
+  noteOpsEngineRun('chatA', 'nope', { engine: 'hermes', runId: 'run_x' });
+  assert.equal(getOpsEngineRun('chatA', 'nope'), undefined);
+  assert.deepEqual(takePendingSteers('chatA', 'nope'), []);
+
+  // A leg abandoned at its deadline can still publish a handle late (the adapter's 202 races the
+  // teardown) — mirrors markOpsRetry/noteOpsProgress: a cleared or cancelled entry stays cleared.
+  markOpsStart('chatA', 'task1', { kind: 'web_research', request: 'flights' });
+  requestOpsCancel('chatA', 'task1');
+  noteOpsEngineRun('chatA', 'task1', { engine: 'hermes', runId: 'run_1' });
+  assert.equal(getOpsEngineRun('chatA', 'task1'), undefined);
+});
+
+test('getActiveOps: an untouched run carries no steers field at all', () => {
+  __resetOpsCoordination();
+  markOpsStart('chatA', 'task1', { kind: 'web_research', request: 'flights' });
+  // Absent, not empty: the status line and its prompt budget are the same bytes as before anyone
+  // could add to a running ask.
+  assert.equal('steers' in getActiveOps('chatA')[0], false);
 });

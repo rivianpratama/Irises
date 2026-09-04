@@ -12,7 +12,7 @@
 // marker (no first-finisher-clears-everyone bug).
 import type { TaskKind } from '../agents/types.js';
 import { estimateOpsEta, etaStatus, type EtaEstimate, type EtaStatus } from '../agents/etaEstimate.js';
-import { standardLegBudgetMs, browserLegBudgetMs } from '../agents/ops/engineBackend.js';
+import { standardLegBudgetMs, browserLegBudgetMs, type EngineRunHandle } from '../agents/ops/engineBackend.js';
 
 interface InFlightEntry {
   kind: TaskKind;
@@ -27,6 +27,17 @@ interface InFlightEntry {
   cancelled?: boolean;      // the load-bearing flag: the orchestrator suppresses delivery on it
   estimateMs?: number;
   estimatePhrase?: string;
+  // The ENGINE's handle for the leg currently running, once the adapter has one to give (hermes's
+  // run_id, published through EngineRunContext.onRunHandle). It is what a steer or a stop aims at;
+  // absent means the run cannot be reached at all yet.
+  engineRun?: EngineRunHandle;
+  // Everything the user ADDED to this ask mid-run, in the order they said it — kept whether or not
+  // the engine accepted any of it, because these are things they said about work that is running:
+  // the status line reads them back and a refinement leg folds them in.
+  steers?: string[];
+  // The subset not yet handed to a caller for delivery. A steer that arrives before engineRun
+  // exists (hermes takes a second or two to build the agent) waits here rather than being dropped.
+  pendingSteers?: string[];
 }
 
 const inFlight = new Map<string, Map<string, InFlightEntry>>();   // chatId -> taskId -> entry
@@ -197,6 +208,63 @@ export function noteOpsProgress(chatId: string, taskId: string, milestoneKey: st
   }
 }
 
+/**
+ * Record the ENGINE's handle for the leg now running (hermes's run_id, from
+ * `EngineRunContext.onRunHandle`). Until this lands there is nothing a steer or a stop can aim at.
+ *
+ * In-place; no-op if the entry is gone or cancelled — the same discipline markOpsRetry and
+ * noteOpsProgress keep, and for the same reason: a leg abandoned at its deadline can still publish
+ * a handle late, and a cleared or cancelled entry must not be resurrected or mutated by it.
+ */
+export function noteOpsEngineRun(chatId: string, taskId: string, handle: EngineRunHandle): void {
+  const entry = inFlight.get(chatId)?.get(taskId);
+  if (entry && !entry.cancelled) entry.engineRun = handle;
+}
+
+/** The engine handle for an in-flight leg, or undefined when there is none (yet, or ever — an
+ *  adapter whose transport carries no run id never publishes one). The companion read to
+ *  `requestOpsSteer`'s 'ready': the caller needs the handle to actually deliver. */
+export function getOpsEngineRun(chatId: string, taskId: string): EngineRunHandle | undefined {
+  const entry = inFlight.get(chatId)?.get(taskId);
+  return entry && !entry.cancelled ? entry.engineRun : undefined;
+}
+
+/**
+ * The user just ADDED to a lookup that is already running (steer_research). Synchronous, because
+ * this map is the authority and the answer has to be in hand inside the live turn.
+ *
+ *  - 'ready':        there is an engine handle — the CALLER performs the async POST (this module
+ *                    stays storage-free and does no I/O; read the handle with getOpsEngineRun).
+ *  - 'queued':       the leg is dispatched but has no handle yet (hermes needs a second or two to
+ *                    build the agent). The text waits in pendingSteers and is drained the moment
+ *                    the handle lands — losing it here is losing something the user actually said.
+ *  - 'already_done': nothing is running under that id, it was cancelled, or the text is blank. The
+ *                    caller says so honestly and folds the addition into the next ask.
+ *
+ * Every non-blank addition is remembered on the entry regardless of the answer, so the status line
+ * can say "you added: …" and a refinement leg can carry it even when the engine never took it.
+ */
+export function requestOpsSteer(chatId: string, taskId: string, text: string): 'ready' | 'queued' | 'already_done' {
+  const trimmed = text.trim();
+  const entry = inFlight.get(chatId)?.get(taskId);
+  if (!entry || entry.cancelled || !trimmed) return 'already_done';
+  entry.steers = [...(entry.steers ?? []), trimmed];
+  if (entry.engineRun) return 'ready';
+  entry.pendingSteers = [...(entry.pendingSteers ?? []), trimmed];
+  return 'queued';
+}
+
+/** Take (and clear) the steers still awaiting delivery — a HAND-OFF, so a second call returns
+ *  nothing and two drainers can never send the same addition twice. Empty for a gone or cancelled
+ *  entry: a run nobody is waiting on has nothing to be told. */
+export function takePendingSteers(chatId: string, taskId: string): string[] {
+  const entry = inFlight.get(chatId)?.get(taskId);
+  if (!entry || entry.cancelled || !entry.pendingSteers?.length) return [];
+  const queued = entry.pendingSteers;
+  entry.pendingSteers = [];
+  return queued;
+}
+
 /** Clear a single finished task. Call from runOpsAndFollowUp's finally, AFTER the result handoff. */
 export function markOpsDone(chatId: string, taskId: string): void {
   const byTask = inFlight.get(chatId);
@@ -222,6 +290,10 @@ export interface ActiveOps {
   milestoneAt?: number;
   estimateMs?: number;
   estimatePhrase?: string;
+  /** What the user added to this ask mid-run, in the order they said it. ABSENT rather than empty
+   *  when nobody added anything, so an ordinary run's status line — and the prompt budget pinned to
+   *  it — stays exactly the bytes it was. */
+  steers?: string[];
 }
 
 /** Snapshot of research currently running for this chat (stale and cancelled entries filtered out —
@@ -232,7 +304,7 @@ export function getActiveOps(chatId: string, now: number = Date.now()): ActiveOp
   const staleMs = opsStaleMs();
   return [...byTask.entries()]
     .filter(([, e]) => now - e.startedAt < staleMs && !e.cancelled)
-    .map(([taskId, e]) => ({ taskId, kind: e.kind, request: e.request, startedAt: e.startedAt, firstStartedAt: e.firstStartedAt, origin: e.origin, lastMilestone: e.lastMilestone, milestoneAt: e.milestoneAt, estimateMs: e.estimateMs, estimatePhrase: e.estimatePhrase }));
+    .map(([taskId, e]) => ({ taskId, kind: e.kind, request: e.request, startedAt: e.startedAt, firstStartedAt: e.firstStartedAt, origin: e.origin, lastMilestone: e.lastMilestone, milestoneAt: e.milestoneAt, estimateMs: e.estimateMs, estimatePhrase: e.estimatePhrase, ...(e.steers?.length ? { steers: [...e.steers] } : {}) }));
 }
 
 /**

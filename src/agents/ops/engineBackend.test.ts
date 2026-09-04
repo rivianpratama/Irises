@@ -9,6 +9,9 @@ import { resetEngineBackendCache, getEngineBackend, withEngineSlot, engineSlotSt
 import { getTraces, clearTraces } from '../../diagnostics/trace.js';
 import { runTask, buildTaskPrompt, looksLikeMiss } from './client.js';
 import { OpenClawBackend } from './openclawBackend.js';
+import {
+  markOpsStart, requestOpsSteer, getOpsEngineRun, takePendingSteers, __resetOpsCoordination,
+} from '../../state/opsCoordination.js';
 import { emptyMedia } from '../../webhook/types.js';
 import type { OpsTask, OpsDebrief, OpsDebriefSink } from '../types.js';
 
@@ -438,4 +441,77 @@ test('runViaEngine: a queued run flips queued → engine once a slot frees, and 
   const r = await p;
   assert.equal(r.summary, 'the answer');
   assert.deepEqual(milestones, ['queued', 'engine'], 'acquiring a slot flips it to engine (running)');
+});
+
+// ── run handle + steer plumbing ────────────────────────────────────────────────────────────────
+//
+// The seam's job here is small and load-bearing: publish the engine's run id the moment the adapter
+// has one, so a steer arriving mid-run has something to aim at — and hand over anything the user
+// added BEFORE that moment, because hermes needs a second or two to build the agent and a user
+// typing "also check jakarta" right after "on it" lands inside that window.
+
+test('runViaEngine: the run handle reaches the in-flight map, and steers queued before it drain in order', async () => {
+  clearTraces();
+  __resetOpsCoordination();
+  const task = mkTask();
+  markOpsStart(task.chatId, task.id, { kind: task.kind, request: task.request });
+  // Both land before any handle exists — the whole reason a queue is needed.
+  assert.equal(requestOpsSteer(task.chatId, task.id, 'under 100k'), 'queued');
+  assert.equal(requestOpsSteer(task.chatId, task.id, 'morning departures'), 'queued');
+
+  const steered: string[] = [];
+  const engine: EngineBackend = {
+    ...stub(async (_p, _t, ctx) => {
+      ctx.onRunHandle?.({ engine: 'hermes', runId: 'run_9' });
+      for (let i = 0; i < 100 && steered.length < 2; i++) await new Promise(r => setTimeout(r, 5));
+      return 'ANSWER: ok';
+    }),
+    async steerRun(_handle, text) { steered.push(text); return 'accepted'; },
+  };
+
+  const res = await runViaEngine(engine, 'p', task, {}, mkDebrief());
+  assert.equal(res.status, 'ok');
+  assert.deepEqual(getOpsEngineRun(task.chatId, task.id), { engine: 'hermes', runId: 'run_9' },
+    'a later steer_research can now reach this run');
+  // Order preserved: the additions are delivered one at a time, in the order the user said them.
+  assert.equal(steered.length, 2);
+  assert.match(steered[0], /under 100k/);
+  assert.match(steered[1], /morning departures/);
+  assert.deepEqual(takePendingSteers(task.chatId, task.id), [], 'the queue was handed off, not copied');
+  __resetOpsCoordination();
+});
+
+test('runViaEngine: a caller\'s own onRunHandle still fires, and a throwing one cannot kill the run', async () => {
+  __resetOpsCoordination();
+  const task = mkTask();
+  markOpsStart(task.chatId, task.id, { kind: task.kind, request: task.request });
+  const engine = stub(async (_p, _t, ctx) => { ctx.onRunHandle?.({ engine: 'hermes', runId: 'run_x' }); return 'ANSWER: ok'; });
+  const seen: string[] = [];
+  const res = await runViaEngine(engine, 'p', task, {
+    onRunHandle: h => { seen.push(h.runId); throw new Error('a caller hook blew up'); },
+  }, mkDebrief());
+  assert.equal(res.status, 'ok', 'the answer outranks the bookkeeping');
+  assert.deepEqual(seen, ['run_x']);
+  // …and the registration still happened, because the caller's hook runs after it.
+  assert.deepEqual(getOpsEngineRun(task.chatId, task.id), { engine: 'hermes', runId: 'run_x' });
+  __resetOpsCoordination();
+});
+
+test('runViaEngine: a pending steer rides back on the OpsResult instead of being lost', async () => {
+  __resetOpsCoordination();
+  const task = mkTask();
+  const engine = stub(async (_p, _t, ctx) => {
+    // hermes accepted the addition after its final model response, so the answer below does NOT
+    // reflect it. Silently delivering that answer is the failure this field exists to stop.
+    ctx.onPendingSteer?.('also check jakarta');
+    return 'ANSWER: bekasi flights';
+  });
+  const res = await runViaEngine(engine, 'p', task, {}, mkDebrief());
+  assert.equal(res.status, 'ok');
+  assert.equal(res.summary, 'ANSWER: bekasi flights');
+  assert.equal(res.steerUnapplied, 'also check jakarta');
+
+  // …and an ordinary run carries no such field, so nothing downstream has to test for absence twice.
+  const plain = await runViaEngine(stub(async () => 'ANSWER: ok'), 'p', task, {}, mkDebrief());
+  assert.equal('steerUnapplied' in plain, false);
 });
