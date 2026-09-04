@@ -1,11 +1,6 @@
 import { callLLM } from '../../llm/callLLM.js';
 import { transcribeAudio } from '../../llm/transcribe.js';
-import {
-  REACTION_TOOL, rememberUserTool, delegateToOpsTool,
-  RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL, setPreferenceTool,
-  SCHEDULE_AUTOMATION_TOOL, LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL, CANCEL_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL,
-  UPDATE_MEMORY_TOOL, UPDATE_SELF_TOOL, RECALL_MEMORY_TOOL,
-} from './tools.js';
+import { convoToolList } from './tools.js';
 import { selfUpdateEnabled } from '../../update/selfUpdate.js';
 import { rememberMedia } from './mediaRecall.js';
 import { getPreference, ensureChatId, clearDossier } from '../../db/repositories/memory.js';
@@ -255,23 +250,13 @@ export async function chat(
   // feeds the capability summary further down — all three must agree on the same engine.
   const engine = getEngineBackend();
   const engineName = engine?.name ?? null;
-  // Order is load-bearing and must stay exactly as it is on the hermes lane: it drives the tool-docs
-  // section and the JSON envelope's name enum + flat args union (first tool's description wins), so
-  // the reminder tools are gated IN PLACE rather than appended.
-  const tools: LlmToolDef[] = [
-    REACTION_TOOL, rememberUserTool(), delegateToOpsTool(engineName), setPreferenceTool(),
-    // Reminders live entirely on the engine (see shared.ts: all three tools route to
-    // createReminder/listReminders/cancelReminder, with no local scheduler behind them). OpenClaw's
-    // aren't wired — create and cancel throw, list is always empty — so offering them there buys the
-    // user a confirmed reminder that never fires. Gated as a set: listing and canceling mean nothing
-    // when nothing can be created.
-    ...(engineName === 'openclaw' ? [] : [SCHEDULE_AUTOMATION_TOOL, LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL]),
-    CANCEL_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL,
-    UPDATE_MEMORY_TOOL, RECALL_MEMORY_TOOL,
-  ];
-  if (chatContext?.isGroupChat) tools.push(RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL);
-  // "update yourself" from chat — offered only when enabled (single-user by design; see selfUpdate.ts).
-  if (selfUpdateEnabled()) tools.push(UPDATE_SELF_TOOL);
+  // The list itself — order included — lives in tools.ts (convoToolList); the flags are read HERE so
+  // that function stays pure and testable.
+  const tools: LlmToolDef[] = convoToolList({
+    engineName,
+    isGroupChat: chatContext?.isGroupChat ?? false,
+    selfUpdate: selfUpdateEnabled(),
+  });
 
   // Label the current turn with when it actually ARRIVED, not lock-acquisition time — a message that
   // queued behind the chat lock (while a follow-up delivered) would otherwise read as arriving after

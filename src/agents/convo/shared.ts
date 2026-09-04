@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { getModelMap, type ModelMap } from '../../llm/modelMap.js';
 import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
 import { browserLegBudgetFor } from '../ops/client.js';
-import type { CapabilitySummary, CapabilityClass } from '../ops/engineBackend.js';
+import type { CapabilitySummary, CapabilityClass, EngineBackend } from '../ops/engineBackend.js';
 import { markIntroWoven } from '../ops/firstMove.js';
 import {
   approvalAskFallback, classifySideEffect, coerceEffect, opsApprovalGateEnabled, renderApprovalAsk,
@@ -35,7 +35,11 @@ import { expandRecallQuery, recallExpansionEnabled } from '../../memory/recallEx
 import { isGroupHandle } from '../../memory/identity.js';
 import { coerceBasis } from '../../memory/provenance.js';
 import type { TurnRelevance, RelevanceHit } from '../../memory/relevance.js';
-import { isDuplicateDelegation, getActiveOps, hasInFlightRequest, requestOpsCancel, type ActiveOps } from '../../state/opsCoordination.js';
+import {
+  isDuplicateDelegation, getActiveOps, hasInFlightRequest, requestOpsCancel,
+  requestOpsSteer, getOpsEngineRun, type ActiveOps,
+} from '../../state/opsCoordination.js';
+import { steerWithRetry } from '../ops/steer.js';
 import { etaStatus, estimateOpsEta } from '../etaEstimate.js';
 import {
   needsGrounding, salvageHoldingText, refusedCapabilities,
@@ -285,6 +289,60 @@ export function handleCancelResearch(match: string, chatId: string): Outcome | n
   return null; // clean cancel — Convo's own confirming text stands
 }
 
+// The sibling of the cancel above, and the reason it exists: "also check jakarta" typed forty
+// seconds into a two-minute look is not a stop and not a new ask — dropping the run to start over
+// throws away minutes of real work, and ignoring it answers a question they no longer have.
+// Same branch table as handleCancelResearch (nothing running / no match / ambiguous / already
+// finished), plus the one it cannot share: an engine with no steer route at all.
+//
+// SYNCHRONOUS by contract, like the cancel: the in-flight map is the authority and this turn's reply
+// depends on the answer. The engine POST is fire-and-forget (the ladder in ops/steer.ts can spend
+// several seconds inside hermes's construction window), so the Outcome NEVER waits on the network —
+// the same shape as the memory ask further down the tool loop.
+//
+// `engine` is a parameter rather than a read so a test can hand over an engine that steers and one
+// that doesn't: getEngineBackend caches for the process. Exported for unit tests.
+export function handleSteerResearch(
+  match: string,
+  guidance: string,
+  chatId: string,
+  agentHandle: string,
+  engine: EngineBackend | null = getEngineBackend(),
+): Outcome | null {
+  const m = match.trim().toLowerCase();
+  const active = getActiveOps(chatId);
+  if (!active.length) {
+    return { kind: 'nothing_found', summary: "nothing's being looked up for them right now — either it already landed or nothing was started", nextStep: 'treat what they said as a fresh ask: delegate_to_ops with the original topic plus this addition, if it reads like one' };
+  }
+  const matches = m ? active.filter(a => a.request.toLowerCase().includes(m)) : active;
+  if (matches.length === 0) {
+    return { kind: 'nothing_found', summary: "couldn't find a running lookup matching that", facts: `currently running: ${active.map(a => `"${a.request}"`).join(', ')}`, nextStep: 'ask which of those they mean' };
+  }
+  if (!m && matches.length > 1) {
+    return { kind: 'failed', summary: "more than one lookup is running and it's unclear which to add this to", facts: `currently running: ${active.map(a => `"${a.request}"`).join(', ')}`, nextStep: 'ask which one they mean' };
+  }
+  // Ask the map FIRST, engine or no engine: this is what records their addition on the entry, so the
+  // status line reads it back and the refinement leg carries it even when nothing could be delivered.
+  const decided = matches.map(a => ({ taskId: a.taskId, outcome: requestOpsSteer(chatId, a.taskId, guidance) }));
+  if (decided.every(d => d.outcome === 'already_done')) {
+    return { kind: 'failed', summary: 'that lookup actually just finished — the answer is already landing on their screen', nextStep: 'tell them you\'ll fold their addition in as a quick follow-up look, and delegate_to_ops with the original ask plus the addition' };
+  }
+  // Asked of the ENGINE, not of this run: with no steer route neither a ready addition nor a queued
+  // one can ever reach the leg, so the correction is owed now rather than after a silent drop.
+  if (!engine?.steerRun) {
+    return { kind: 'failed', summary: "the run can't take mid-flight additions on this engine, but their note is kept with the task", nextStep: 'tell them you\'ll work it into the answer when it lands — do not promise it changes what\'s being searched right now' };
+  }
+  for (const { taskId } of decided.filter(d => d.outcome === 'ready')) {
+    const handle = getOpsEngineRun(chatId, taskId);
+    if (!handle) continue; // the run went away between the two reads — the map wins
+    // No engine slot: this is one small POST at an existing run, not an agent run, and queueing it
+    // behind the concurrency cap would spend the window it has to land in.
+    void steerWithRetry(engine, handle, guidance, { chatId, agentHandle, taskId })
+      .catch(err => console.warn('[convo] steer delivery failed', err));
+  }
+  return null; // delivered or queued — Convo's own "adding that in" text stands
+}
+
 // Save/change/remove a free-form user preference ("directive").
 // Validation is the write-time guard from the charter's data-vs-instructions boundary.
 // Returns { note, acted }. `note` is a voiced Outcome (failure/ambiguity/nothing-found) or null when
@@ -426,10 +484,14 @@ function elapsedLabel(startedAt: number): string {
 /** One status line per in-flight run: the ask, how long it's been going, ETA pace, and — when Ops
  *  has signalled a milestone — what it's doing right now (mapped from the tool to user-meaning). */
 function opsStatusLine(o: ActiveOps): string {
+  // What they ADDED mid-run (steer_research), quoted back so she can answer "did you get that?" from
+  // the status instead of from hope — and so a second addition doesn't read as the first one again.
+  // Absent for the ordinary run, which is why an untouched status line is the bytes it always was.
+  const added = o.steers?.length ? ` — you added: ${o.steers.map(s => `"${s}"`).join('; ')}` : '';
   // Queued: parked behind the concurrency cap, not started. Elapsed/ETA measure RUN time, so suppress
   // the pace clause entirely and say plainly it's still waiting for a slot — never imply progress.
   if (o.lastMilestone === 'queued') {
-    return `- "${o.request}" — queued ${elapsedLabel(o.firstStartedAt)}, hasn't started yet (waiting for a free slot)`;
+    return `- "${o.request}" — queued ${elapsedLabel(o.firstStartedAt)}, hasn't started yet (waiting for a free slot)${added}`;
   }
   const phrase = o.lastMilestone ? MILESTONE_PHRASES[o.lastMilestone] : undefined;
   let etaPace = '';
@@ -445,7 +507,7 @@ function opsStatusLine(o: ActiveOps): string {
     else if (s.state === 'closing') etaPace = `, you said it'd take ${o.estimatePhrase} (should be close now)`;
     else if (s.state === 'overrun') etaPace = `, you said it'd take ${o.estimatePhrase} (running past that)`;
   }
-  return `- "${o.request}" — started ${elapsedLabel(o.firstStartedAt)} ago${phrase ? `, right now: ${phrase}` : ''}${etaPace}`;
+  return `- "${o.request}" — started ${elapsedLabel(o.firstStartedAt)} ago${phrase ? `, right now: ${phrase}` : ''}${etaPace}${added}`;
 }
 
 // Exported for unit tests (same pattern as renderReplyOrder).
@@ -462,6 +524,10 @@ export function renderActiveOps(activeOps: ActiveOps[]): string {
   if (scheduled.length) {
     blocks.push(`Also running right now — a scheduled check they set up earlier (they did NOT just ask for this):\n${scheduled.map(opsStatusLine).join('\n')}\nDon't say "still on it" as if you're answering them. But if their new message asks about that same thing, do NOT delegate_to_ops for it — tell them you're actually pulling exactly that right now and it'll reach them in a moment. cancel_research stops this run; if they want the recurring check itself gone, that's cancel_automation.`);
   }
+  // Ahead of the STOP block, because a stop is the rarer of the two and the one this used to be the
+  // only instruction for: everything ELSE they might say about a live look — an addition, a
+  // narrowing, a correction, a replacement — landed as either a duplicate delegation or nothing.
+  blocks.push('If their new message ADDS to, narrows, or corrects the running lookup ("also check…", "actually in…", "only under…"): call steer_research with their addition as `guidance` — the run keeps going with it folded in. Ack it in one short bubble ("adding that in"), no new timeline. If instead they\'ve changed the ask to something genuinely different that REPLACES the running one: call cancel_research AND delegate_to_ops in this same turn (drop the old, start the new), and say so plainly in one line. One lookup running → act right away (empty match). Several → ask which one first.');
   blocks.push('If they tell you to STOP ("stop", "cancel that", "nevermind", "forget it"): call cancel_research. One lookup running → cancel it right away (empty match) and confirm lightly. Several running and they didn\'t say which → ask which one in ONE short bubble first (the list above names them), no cancel yet. A bare "ok"/"thanks" is NEVER a cancel.');
   return `\n\n${blocks.join('\n')}`;
 }
@@ -1906,6 +1972,12 @@ export async function processConvoResult(args: {
       // looked up" note is dropped, since a park was just dropped and that note would contradict it.
       const note = handleCancelResearch(String(input.match ?? ''), chatId);
       if (note && !(declined > 0 && note.kind === 'nothing_found')) outcomeParts.push(note);
+    } else if (call.name === 'steer_research') {
+      // Same chat-scoped, synchronous map as the cancel above, and for the same reason: her ack goes
+      // out this turn, so the decision has to be in hand before it does. The delivery POST itself is
+      // dispatched inside and never awaited (see handleSteerResearch).
+      const note = handleSteerResearch(String(input.match ?? ''), String(input.guidance ?? ''), chatId, handle ?? '');
+      if (note) outcomeParts.push(note);
     } else if (call.name === 'recall_memory') {
       // Just captured here — the search + the answer happen in one bounded second pass after
       // the loop (Convo is single-shot, so a result can't come back inside this call).

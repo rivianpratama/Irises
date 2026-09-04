@@ -28,7 +28,8 @@ import { PROMPT_BUDGET, MIN_TRANSCRIPT_SHARE, type BudgetKey } from './promptPol
 import { buildTurnTraceDraft, type MeasuredPrompt, type TranscriptMessage } from '../../diagnostics/turnTrace.js';
 import {
   REACTION_TOOL, REMEMBER_USER_TOOL, delegateToOpsTool, SET_PREFERENCE_TOOL, SCHEDULE_AUTOMATION_TOOL,
-  LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL, CANCEL_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL,
+  LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL, CANCEL_RESEARCH_TOOL, STEER_RESEARCH_TOOL,
+  UPDATE_DIRECTIVES_TOOL,
   UPDATE_MEMORY_TOOL, RECALL_MEMORY_TOOL, RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL,
 } from './tools.js';
 import { INTRO_WEAVE_BLOCK } from '../ops/firstMove.js';
@@ -119,7 +120,8 @@ function argsFor(s: TurnSpec): BuildArgs {
 const TOOLS_1TO1: LlmToolDef[] = [
   REACTION_TOOL, REMEMBER_USER_TOOL, delegateToOpsTool('hermes'), SET_PREFERENCE_TOOL,
   SCHEDULE_AUTOMATION_TOOL, LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL,
-  CANCEL_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL, UPDATE_MEMORY_TOOL, RECALL_MEMORY_TOOL,
+  CANCEL_RESEARCH_TOOL, STEER_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL, UPDATE_MEMORY_TOOL,
+  RECALL_MEMORY_TOOL,
 ];
 const TOOLS_GROUP: LlmToolDef[] = [...TOOLS_1TO1, RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL];
 
@@ -355,6 +357,10 @@ const ACTIVE_OPS: ActiveOps[] = [
     taskId: 'op1', kind: 'media_analysis', request: 'read the lease pdf they just sent',
     startedAt: FROZEN_MS - 40_000, firstStartedAt: FROZEN_MS - 40_000,
     lastMilestone: 'engine', estimateMs: 120_000, estimatePhrase: 'a couple minutes',
+    // One mid-run addition on the look that is actually RUNNING — the live shape of a steer
+    // (state/opsCoordination.ts `steers`), and what makes the "you added" suffix a measured part of
+    // the active_ops ceiling rather than an unmeasured one.
+    steers: ['the option period especially'],
   },
   {
     taskId: 'op2', kind: 'web_research', request: 'commercial lease option-period norms in bend',

@@ -204,6 +204,25 @@ export const CANCEL_RESEARCH_TOOL: LlmToolDef = {
   },
 };
 
+export const STEER_RESEARCH_TOOL: LlmToolDef = {
+  name: 'steer_research',
+  description: [
+    "Add to, narrow, or correct a lookup you're ALREADY running for the user — without dropping it. Use when they extend or fix the live ask mid-run: \"also check X\", \"actually jakarta, not bekasi\", \"under 100k only\", \"skip the ones without parking\".",
+    "NOT for a wholly different ask (that's a fresh delegate_to_ops — and if it replaces the running one, cancel_research first, same turn). NOT for a stop (that's cancel_research). A bare \"ok\"/\"thanks\" is never a steer.",
+    'If exactly one lookup is running, call it with match empty. If SEVERAL are running and they didn\'t say which, do NOT call this yet — ask which one in one short bubble first (the "already pulling" section names them), then call it with `match`.',
+    'Pass `guidance` as the user\'s addition in plain words (what to add/narrow/fix), not a rewrite of the whole ask.',
+    'You MUST also write a short acknowledging text ("adding that in" energy, one bubble, no promise of a new timeline) — never a question, never "let me start over".',
+  ].join(' '),
+  inputSchema: {
+    type: 'object',
+    properties: {
+      guidance: { type: 'string', description: "What the user just added, narrowed, or corrected — in their terms." },
+      match: { type: 'string', description: 'Words identifying which running lookup to steer. Empty when only one is running.' },
+    },
+    required: ['guidance'],
+  },
+};
+
 export const UPDATE_SELF_TOOL: LlmToolDef = {
   name: 'update_self',
   description: [
@@ -282,3 +301,37 @@ export const REMOVE_MEMBER_TOOL: LlmToolDef = {
   description: 'Remove a member from the group chat. Only when explicitly asked. Also send a text response.',
   inputSchema: { type: 'object', properties: { handle: { type: 'string' } }, required: ['handle'] },
 };
+
+/**
+ * Every tool one Convo turn is offered, in the order it is offered them.
+ *
+ * ORDER IS LOAD-BEARING and must stay exactly as it is on the hermes lane: it drives the tool-docs
+ * section of the prompt and the JSON envelope's `name` enum + flat args union (first tool's
+ * description of a shared arg wins, pipeline/bubbleJson.ts), so the reminder tools are gated IN
+ * PLACE rather than appended.
+ *
+ * Pure, and the flags come in as booleans rather than being read here, so the one place that
+ * assembles the live list is also the one a test can read (convo/steerResearch.test.ts). Reminders
+ * live entirely on the engine (shared.ts routes all three to createReminder/listReminders/
+ * cancelReminder, with no local scheduler behind them). OpenClaw's aren't wired — create and cancel
+ * throw, list is always empty — so offering them there buys the user a confirmed reminder that never
+ * fires. Gated as a set: listing and canceling mean nothing when nothing can be created.
+ */
+export function convoToolList(opts: {
+  engineName: 'hermes' | 'openclaw' | null;
+  isGroupChat: boolean;
+  /** "update yourself" from chat — offered only when enabled (single-user by design). */
+  selfUpdate: boolean;
+}): LlmToolDef[] {
+  const tools: LlmToolDef[] = [
+    REACTION_TOOL, rememberUserTool(), delegateToOpsTool(opts.engineName), setPreferenceTool(),
+    ...(opts.engineName === 'openclaw' ? [] : [SCHEDULE_AUTOMATION_TOOL, LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL]),
+    // The two halves of run control, side by side: drop the look, or add to it mid-flight. They read
+    // as a pair in the tool docs because the model's mistake to avoid is picking one for the other.
+    CANCEL_RESEARCH_TOOL, STEER_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL,
+    UPDATE_MEMORY_TOOL, RECALL_MEMORY_TOOL,
+  ];
+  if (opts.isGroupChat) tools.push(RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL);
+  if (opts.selfUpdate) tools.push(UPDATE_SELF_TOOL);
+  return tools;
+}
