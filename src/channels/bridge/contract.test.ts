@@ -268,3 +268,26 @@ test('contract: every shared fixture case parses the way the fixture says it doe
     }
   }
 });
+
+test('contract: the openclaw plugin sends only fields this door knows, and forwards before it claims', () => {
+  // The OpenClaw plugin is TypeScript but lives outside src/ and imports openclaw's own plugin SDK,
+  // which is not a dependency here — so it cannot be imported and run by this suite the way the
+  // hermes plugin is run by its own. Reading its source is how the shared contract reaches it at
+  // all (the trick engineDiscovery.test.ts uses on models.ts), and it pins the two things a silent
+  // forward would break: the payload's field names, and the fire-and-forget ordering.
+  const src = readFileSync(new URL('../../../bridge/openclaw/irises-bridge/index.ts', import.meta.url), 'utf8');
+  const start = src.indexOf('const payload = {');
+  assert.ok(start > 0, 'the plugin still builds one payload literal');
+  const block = src.slice(start, src.indexOf('};', start));
+  const keys = [...block.matchAll(/^\s{2,}([a-z_]+):/gm)].map(m => m[1]);
+  assert.ok(keys.length >= 10, 'payload keys were found');
+  for (const k of keys) assert.ok(KNOWN_BRIDGE_FIELDS.has(k), `openclaw sends an unknown field: ${k}`);
+  assert.match(src, new RegExp(`const SCHEMA_VERSION = ${BRIDGE_SCHEMA_VERSION};`));
+  assert.match(block, /schema_version:\s*SCHEMA_VERSION\b/);
+  // Claiming the turn cannot move behind the forward without an OpenClaw engine change (see the
+  // file header) — but the forward must be STARTED before the claim returns, or the retries would
+  // be running behind a handler the engine has already finished with.
+  const forwardAt = src.indexOf('void forwardInbound(');
+  assert.ok(forwardAt > 0, 'the forward is still started, not awaited');
+  assert.ok(src.indexOf('return { handled: true }') > forwardAt);
+});

@@ -20,8 +20,33 @@
  *     handler never waits on Irises's LLM latency — it forwards fire-and-forget and claims.
  *   - Slash-command bodies (`/…`) always fall through so the operator keeps `/status`, `/reset`,
  *     etc. (`/stop` and `/approve` fast-path before this hook anyway.)
+ *
+ * WHY THE TURN IS CLAIMED BEFORE IRISES HAS ACKNOWLEDGED IT
+ *   `before_dispatch`'s RETURN VALUE is the suppression decision, and OpenClaw consumes it
+ *   synchronously in choose-route.ts. There is no "claim later" — awaiting the forward here would
+ *   couple every turn to Irises's round trip, and the hook's own 5s timeout would fire first
+ *   anyway. So the handler starts the forward and claims in the same tick, and a forward that
+ *   never lands is a message nobody answered. That is what the retries below are for; making the
+ *   claim conditional on the ack would need a change inside the OpenClaw engine, which this repo
+ *   does not own.
+ *
+ *   The retries are only safe because every payload carries a STABLE message_id (the platform's
+ *   own, or a content digest), and Irises dedupes inbound on (platform, chat_id, message_id) — a
+ *   retry after a lost 202 is answered "duplicate" instead of becoming a second turn in the chat.
  */
+import { createHash } from "node:crypto";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+
+/** The inbound payload version this plugin speaks. Irises's door accepts any sender declaring the
+ *  same MAJOR; the field list itself is written down in bridge/contract-fixtures/inbound-v1.json
+ *  and checked against this file by src/channels/bridge/contract.test.ts. */
+const SCHEMA_VERSION = 1;
+/** One forward, then one retry — deliberately small: the hook has already claimed the turn, so a
+ *  long retry tail just delays the moment the chat is known to be silent. Mirrors the hermes
+ *  plugin's _FORWARD_ATTEMPTS / _backoff_s. */
+const FORWARD_ATTEMPTS = 2;
+const BACKOFF_MS = [500, 2_000];
+const FORWARD_TIMEOUT_MS = 15_000;
 
 interface BeforeDispatchEvent {
   messageId?: string;
@@ -65,6 +90,75 @@ function fronted(channel: string, conversation: string): boolean {
   return patterns().some(p => globMatch(p, key));
 }
 
+/** Sleep before retrying a failed forward: 500ms after the first miss, 2s after the second. Clamped
+ *  at both ends exactly like the hermes plugin's _backoff_s, so only the first step is reachable at
+ *  two attempts and raising FORWARD_ATTEMPTS needs no second edit here. */
+function backoffMs(attempt: number): number {
+  return BACKOFF_MS[Math.min(Math.max(attempt, 1), BACKOFF_MS.length) - 1];
+}
+
+/**
+ * The id Irises dedupes retried forwards on — its key is (platform, chat_id, message_id).
+ *
+ * The channel's own id when it has one. When it has none, a fresh id per attempt would be no id
+ * at all and a retry after a lost 202 would land as a SECOND turn, so the fallback is
+ * content-addressed: the same message digests to the same id however many times it is sent.
+ *
+ * The trade: two identical messages ("ok", "thanks") from the same sender in the same chat with
+ * the same timestamp collapse to one id, and Irises drops the second. The timestamp is what keeps
+ * them apart, so this only bites on a channel that carries no timestamp at all.
+ */
+function stableMessageId(
+  platformId: string | undefined,
+  parts: { platform: string; chatId: string; senderId?: string; text: string; timestamp?: number },
+): string {
+  if (platformId != null && String(platformId).trim()) return String(platformId);
+  const raw = [parts.platform, parts.chatId, parts.senderId, parts.text, parts.timestamp]
+    .map(p => (p == null ? "" : String(p)))
+    .join("|");
+  return `eng-o-${createHash("sha256").update(raw).digest("hex").slice(0, 16)}`;
+}
+
+/**
+ * POST one inbound payload to Irises, retrying a TRANSPORT failure once. Never throws — the caller
+ * has already claimed the turn and cannot act on the outcome; the log is the only report.
+ */
+async function forwardInbound(url: string, token: string, payload: unknown, label: string): Promise<void> {
+  for (let attempt = 1; attempt <= FORWARD_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-bridge-token": token },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(FORWARD_TIMEOUT_MS),
+      });
+      // fetch resolves for a 4xx/5xx, so without this a rejected forward looked exactly like a
+      // delivered one — the message vanished and nothing was logged.
+      if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
+      return;
+    } catch (err) {
+      const msg = (err as Error)?.message ?? String(err);
+      const status = (err as { status?: number })?.status;
+      // A 4xx is the door's ANSWER, not a transport failure: a retry gets the same one and only
+      // burns the backoff. 401/403 = the shared secret doesn't match Irises's ENGINE_PUSH_TOKEN;
+      // 404 = Irises is running without OPS_BACKEND, so /api/bridge/inbound was never mounted.
+      const permanent = typeof status === "number" && status >= 400 && status < 500;
+      if (!permanent && attempt < FORWARD_ATTEMPTS) {
+        console.warn(`[irises-bridge] forward attempt ${attempt}/${FORWARD_ATTEMPTS} failed (${label}): ${msg}`);
+        await new Promise(resolve => setTimeout(resolve, backoffMs(attempt)));
+        continue;
+      }
+      // LOUD: OpenClaw has already been told to stay silent for this turn, so the user got nothing.
+      console.warn(
+        `[irises-bridge] forward ${permanent ? `REJECTED with ${msg}` : `FAILED after ${FORWARD_ATTEMPTS} attempts`}`
+        + ` (${label}) — the message is LOST and OpenClaw stayed silent for it`
+        + (permanent ? " (check IRISES_BRIDGE_TOKEN, and that Irises runs with OPS_BACKEND set)" : `: ${msg}`),
+      );
+      return;
+    }
+  }
+}
+
 export default definePluginEntry({
   id: "irises-bridge",
   name: "Irises Bridge",
@@ -81,13 +175,19 @@ export default definePluginEntry({
           const conversation = String(ctx.conversationId ?? event.senderId ?? "");
           if (!channel || !conversation || !fronted(channel, conversation)) return undefined;
 
+          // The channel's own id when it has one, else a content digest — see stableMessageId.
+          const messageId = stableMessageId(event.messageId, {
+            platform: channel, chatId: conversation, senderId: event.senderId,
+            text: body, timestamp: event.timestamp,
+          });
           const payload = {
             engine: "openclaw",
             platform: channel,
             chat_id: conversation,
             sender_id: event.senderId,
             text: body,
-            message_id: event.messageId,
+            message_id: messageId,
+            schema_version: SCHEMA_VERSION,
             reply_to_id: event.replyToId,
             // The quoted message's text (so Irises can show what was replied to even without a resolvable
             // id) and the platform send time (used as receivedAt) — both when the event carries them.
@@ -95,13 +195,14 @@ export default definePluginEntry({
             timestamp: event.timestamp,
             is_group: event.isGroup === true,
           };
-          // Fire-and-forget: never couple OpenClaw's dispatch lane to Irises's latency.
-          void fetch(`${env("IRISES_URL", "http://127.0.0.1:3000").replace(/\/$/, "")}/api/bridge/inbound`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "x-bridge-token": env("IRISES_BRIDGE_TOKEN") },
-            body: JSON.stringify(payload),
-            signal: AbortSignal.timeout(15_000),
-          }).catch(err => console.warn(`[irises-bridge] forward failed (${channel}:${conversation}):`, err?.message ?? err));
+          // Fire-and-forget: never couple OpenClaw's dispatch lane to Irises's latency. The claim
+          // below returns in this same tick — see the file header for why it cannot wait.
+          void forwardInbound(
+            `${env("IRISES_URL", "http://127.0.0.1:3000").replace(/\/$/, "")}/api/bridge/inbound`,
+            env("IRISES_BRIDGE_TOKEN"),
+            payload,
+            `${channel}:${conversation}`,
+          );
 
           return { handled: true }; // silence — Irises replies via the gateway `send` RPC
         } catch (err) {
