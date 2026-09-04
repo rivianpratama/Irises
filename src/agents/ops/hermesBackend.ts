@@ -706,7 +706,7 @@ export class HermesBackend implements EngineBackend {
       // The events buffer takes exactly ONE subscriber and a reconnect 404s, so a stream that 404s,
       // drops, or ends without a terminal event can never be re-opened — the status endpoint is the
       // only way to learn how the run actually ended (terminal records live an hour engine-side).
-      outcome ??= await this.pollRunUntilTerminal(runId, controller.signal, ctx, deadline);
+      outcome ??= await this.pollRunUntilTerminal(runId, controller.signal, ctx);
       if (outcome.pendingSteer) {
         try { ctx.onPendingSteer?.(outcome.pendingSteer); } catch { /* the answer outranks the receipt */ }
       }
@@ -805,13 +805,19 @@ export class HermesBackend implements EngineBackend {
   /**
    * The fallback when the events stream is gone: read `GET /v1/runs/{id}` until the run is terminal.
    *
-   * Bounded by the same window everything else in this run is (`signal` aborts it, `deadline` stops
-   * it re-polling past the budget), so a run stuck `waiting_for_approval` — which nothing here can
-   * answer — gives up on our clock instead of hanging.
+   * Bounded by the same window everything else in this run is: `signal` is the run's own give-up
+   * signal, so a run stuck `waiting_for_approval` — which nothing here can answer — ends when the
+   * window closes. The give-up deliberately arrives through that signal rather than through a
+   * deadline check of its own, because the signal's abort is ALSO what tells hermes to stop; a loop
+   * that gave up by itself would leave the engine running the orphan this transport exists to kill.
    */
-  private async pollRunUntilTerminal(runId: string, signal: AbortSignal, ctx: EngineRunContext, deadline: number): Promise<RunOutcome> {
+  private async pollRunUntilTerminal(runId: string, signal: AbortSignal, ctx: EngineRunContext): Promise<RunOutcome> {
     const path = `/v1/runs/${encodeURIComponent(runId)}`;
     for (;;) {
+      // The loop owns its own termination rather than trusting the request below to notice the
+      // abort. By the time this fires the engine-side stop has already gone out (the same abort
+      // fired it), so giving up here leaves nothing orphaned.
+      if (signal.aborted) throw Object.assign(new Error(`hermes run ${runId} was given up on`), { name: 'AbortError' });
       const res = await this.requestText(path, { method: 'GET', headers: this.headers() }, signal, HermesBackend.RUN_POLL_REQUEST_TIMEOUT_MS);
       // Terminal records are kept an hour engine-side, so a 404 here means the run genuinely never
       // existed or the engine restarted under us — either way there is no answer coming.
@@ -828,12 +834,9 @@ export class HermesBackend implements EngineBackend {
         default:
           break; // queued | running | waiting_for_approval | stopping
       }
-      // Still alive: say so (throttled inside), then wait — but never past the window, because a
-      // sleep the deadline outlives is a hang the caller can't see.
+      // Still alive: say so, then wait. The sleep resolves early on the abort, so the next request
+      // is the one that reports the give-up (requestText rejects an already-aborted signal).
       ctx.onProgress?.('streaming');
-      if (Date.now() + HermesBackend.RUN_POLL_INTERVAL_MS >= deadline) {
-        throw Object.assign(new Error(`hermes run ${runId} did not finish inside its window`), { name: 'AbortError' });
-      }
       await this.sleep(HermesBackend.RUN_POLL_INTERVAL_MS, signal);
     }
   }
@@ -880,7 +883,11 @@ export class HermesBackend implements EngineBackend {
           label: 'ops:cancelled',
           detail: { request: task.request, engine: 'hermes', runId, engineNotified, latencyMs: Date.now() - gaveUpAt, reason },
         });
-      });
+      })
+      // Nothing awaits this chain, and an unhandled rejection is FATAL in this process
+      // (diagnostics/errorLog.ts exits(1) on one) — a courtesy stop must never be able to take the
+      // VM down mid-delegation.
+      .catch(() => { /* the run is already gone */ });
   }
 
   /** ADD to a run already in flight (EngineBackend.steerRun). Short window on purpose: this runs

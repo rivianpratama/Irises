@@ -1211,6 +1211,29 @@ test('runs transport: the adapter\'s OWN timer stops the run and maps to timeout
   assert.ok(captured.some(c => /\/run_to\/stop$/.test(c.url)));
 });
 
+test('runs transport: a give-up during the POLLING fallback still stops the run engine-side', async () => {
+  clearTraces();
+  // The gap this closes: with the events stream gone, the poll loop is the only thing watching the
+  // run. If it gave up on a deadline of its own instead of on the run's abort signal, hermes would
+  // be left executing the exact orphan this transport exists to kill.
+  const captured: Captured[] = [];
+  const be = new HermesBackend({
+    fetchFn: routedFetch([
+      submitted('run_pg'),
+      { match: /\/run_pg\/stop$/, respond: () => json200({ status: 'stopping' }) },
+      { match: /\/run_pg\/events$/, respond: () => new Response('{}', { status: 404 }) },
+      { match: /\/v1\/runs\/run_pg$/, respond: () => json200({ status: 'running' }) },
+    ], captured),
+  });
+  const debrief = mkDebrief();
+  await runViaEngine(be, 'p', mkTask(), { timeoutMs: 60 }, debrief);
+  assert.equal(debrief.failure?.cause, 'timeout');
+  const detail = await waitForCancelReceipt();
+  assert.equal(detail.reason, 'timeout');
+  assert.equal(detail.engineNotified, true);
+  assert.ok(captured.some(c => /\/run_pg\/stop$/.test(c.url)));
+});
+
 test('runs transport: OPS_CANCEL_ENGINE_ABORT=off drops the run locally and tells hermes nothing', async () => {
   clearTraces();
   const captured: Captured[] = [];
