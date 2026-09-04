@@ -48,10 +48,19 @@ export function buildTaskPrompt(task: OpsTask, extras: { now?: number; tz?: stri
   // overdue", "how long ago"), and must never guess today's date.
   const nowMs = extras.now ?? Date.now();
   const tz = extras.tz || DEFAULT_TZ;
-  const localTime = new Intl.DateTimeFormat('en-US', {
+  const fmtLocal = (ms: number): string => new Intl.DateTimeFormat('en-US', {
     timeZone: tz, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-  }).format(new Date(nowMs));
+  }).format(new Date(ms));
+  const localTime = fmtLocal(nowMs);
   const clock = `Current time: ${new Date(nowMs).toISOString()} (UTC) — ${localTime} in ${tz}. Use THIS for any "days out"/"overdue"/"how long ago" reasoning; never guess today's date.`;
+  // The ONE line that lifts the engine's read-only limit, and it is keyed to the APPROVAL rather
+  // than to the effect tag: an `act` task nobody has answered yet, and a task carrying an approval
+  // that is only an ASK (askedAt with no approvedAt), both produce a brief byte-identical to every
+  // read task Irises has ever run. Both doctrines name this line as the only thing that can lift
+  // the limit — and say the never-message-the-user limit is never lifted by it.
+  const authorized = task.effect === 'act' && typeof task.approval?.approvedAt === 'number'
+    ? `AUTHORIZED ACTION: the user explicitly approved this exact action at ${fmtLocal(task.approval.approvedAt)} in ${tz}: ${task.request}. You may perform it. Take no other side-effecting action; if the action cannot be done exactly as stated, stop and report in ANSWER.`
+    : '';
   const hints = [
     task.addressHint ? `address hint: ${task.addressHint}` : '',
     task.dealHint ? `deal hint: ${task.dealHint}` : '',
@@ -70,6 +79,9 @@ export function buildTaskPrompt(task: OpsTask, extras: { now?: number; tz?: stri
   const fields = [
     clock,
     `task kind: ${task.kind}`,
+    // Above the tooling hint and everything else: whether the engine may act at all comes before
+    // how it should go about looking.
+    authorized,
     tooling ?? '',
     hints,
     mediaNote,
@@ -150,6 +162,11 @@ export async function runTask(task: OpsTask, onProgress?: (milestoneKey: string)
       // own `heldMemory` field beside the brief, never inside it. Always a number, so a look that
       // went out blind reads as 0 rather than as a missing field.
       memoryHits: task.memoryHits ?? 0,
+      // Whether this run acts in the world, and whether the user said so — the two fields that make
+      // a live round readable: an `act` run with `approved: false` would be an action nobody
+      // authorized reaching the engine, which is the one thing the whole handshake exists to stop.
+      effect: task.effect === 'act' ? 'act' : 'read',
+      approved: typeof task.approval?.approvedAt === 'number',
     },
   });
   const done = (r: OpsResult): OpsResult => {
