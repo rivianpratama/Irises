@@ -18,16 +18,27 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { affectTrail, climateDialRows, threadSummary, traceRows } from './affect.js';
+import { affectTrail, climateDialRows, threadSummary, traceRows, pendingApprovalRows } from './affect.js';
 import { MOOD_HISTORY_CAP, type AffectState, type AffectStatus } from '../../../persona/status.js';
 import { CLIMATE_WINDOW_CAP, type RelationshipClimate } from '../../../persona/climate.js';
 import { defaultThreadInventory, type ThreadInventory } from '../../../persona/threads.js';
 import { TURN_TRACE_LABEL } from '../../traceLabels.js';
 import type { Turn } from '../../turns.js';
 import type { TraceEvent } from '../../trace.js';
+import type { OpsTaskRow } from '../../../db/repositories/opsTasks.js';
 
 const NOW = Date.UTC(2026, 8, 3, 12, 0, 0);
 const MIN = 60_000;
+
+/** One `ops_tasks` row as the repository hands it back. */
+function opsRow(over: Partial<OpsTaskRow> = {}): OpsTaskRow {
+  return {
+    id: 'a1', chatId: 'web:debug', kind: 'general', request: 'do the thing',
+    status: 'pending_approval', startedAt: NOW - MIN, legStartedAt: NOW - MIN,
+    budgetMs: null, retryOf: null, meta: {}, updatedAt: NOW - MIN, settledAt: null,
+    ...over,
+  };
+}
 
 function status(over: Partial<AffectStatus> = {}): AffectStatus {
   return {
@@ -225,4 +236,26 @@ test('a corrupt or partial receipt is skipped rather than crashing the panel', (
   assert.deepEqual(traceRows([turn('bad', NOW, [junk])], 20), []);
   const noDetail: TraceEvent = { id: 9, ts: NOW, type: 'event', label: TURN_TRACE_LABEL };
   assert.deepEqual(traceRows([turn('bad', NOW, [noDetail])], 20), []);
+});
+
+// ── the pending approvals ────────────────────────────────────────────────────
+// Read-only: the actions this chat has been asked about and has not answered yet. Nothing in the
+// panel can settle one — the decision has to come from the user, in the chat.
+
+test('pending approvals read as id, request, state and how long the ask has been open', () => {
+  const rows = pendingApprovalRows([
+    opsRow({ id: 'a1', request: 'email my landlord that rent is late', startedAt: NOW - 4 * MIN }),
+    opsRow({
+      id: 'a2', kind: 'draft', request: 'cancel my gym membership', startedAt: NOW - 40 * MIN,
+      meta: { task: { approval: { askedAt: NOW - 40 * MIN, reconfirm: true } } },
+    }),
+  ], NOW);
+  assert.deepEqual(rows, [
+    { id: 'a1', kind: 'general', request: 'email my landlord that rent is late', askedAt: NOW - 4 * MIN, ageMs: 4 * MIN, state: 'pending_approval', reconfirm: false, expired: false },
+    { id: 'a2', kind: 'draft', request: 'cancel my gym membership', askedAt: NOW - 40 * MIN, ageMs: 40 * MIN, state: 'pending_approval', reconfirm: true, expired: true },
+  ]);
+});
+
+test('an approval panel with nothing pending is empty, not a row of blanks', () => {
+  assert.deepEqual(pendingApprovalRows([], NOW), []);
 });

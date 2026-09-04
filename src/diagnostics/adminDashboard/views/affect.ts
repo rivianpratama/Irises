@@ -130,6 +130,23 @@ export const AFFECT_JS = `
     return head + labels;
   }
 
+  function approvalsPanel(d){
+    var rows = d.approvals||[];
+    if (!rows.length) return '<div class="empty">nothing waiting on their yes</div>';
+    return '<div class="tablewrap"><table class="t"><thead><tr>'
+      + '<th>asked</th><th>action</th><th>kind</th><th>state</th><th>id</th>'
+      + '</tr></thead><tbody>' + rows.map(function(r){
+        return '<tr><td'+(r.expired?' style="color:var(--warn)"':'')+'>'+M.esc(M.ago(r.askedAt))+' ago</td>'
+          + '<td>'+M.esc(r.request)+'</td>'
+          + '<td>'+M.esc(r.kind)+'</td>'
+          + '<td>'+M.esc(r.state)
+          + (r.reconfirm ? ' <span class="pill">re-asked</span>' : '')
+          + (r.expired ? ' <span class="pill warn">expired</span>' : '')
+          + '</td>'
+          + '<td><span class="gauges">'+M.esc(r.id)+'</span></td></tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+
   function sectionsSummary(r){
     var top = (r.sections||[]).slice().sort(function(a,b){ return b.chars-a.chars; }).slice(0,4);
     return top.map(function(s){ return M.esc(s.name)+' '+M.fmtNum(s.chars); }).join(', ') || '\\u2014';
@@ -193,6 +210,7 @@ export const AFFECT_JS = `
       + '<h3 class="sh">Mood trail (last '+(d.trail||[]).length+')</h3>' + trailPanel(d)
       + '<h3 class="sh">Relationship climate</h3>' + dialsPanel(d)
       + '<h3 class="sh">Threads</h3>' + threadsPanel(d)
+      + '<h3 class="sh">Waiting on their yes</h3>' + approvalsPanel(d)
       + '<h3 class="sh">Last turns, as the receipt saw them</h3>' + tracesPanel(d);
   }
 

@@ -3,6 +3,7 @@ import { getPreference } from '../../../db/repositories/memory.js';
 import { getAffectState } from '../../../db/repositories/affectState.js';
 import { getRelationshipClimate } from '../../../db/repositories/relationshipClimate.js';
 import { getThreadInventory } from '../../../db/repositories/threadInventory.js';
+import { listPendingApprovals, type OpsTaskRow } from '../../../db/repositories/opsTasks.js';
 import { listFullTurnHistory } from '../../../db/repositories/diagnosticTurnHistory.js';
 import { getTurns, type Turn } from '../../turns.js';
 import { TURN_TRACE_LABEL } from '../../traceLabels.js';
@@ -12,6 +13,7 @@ import {
 } from '../../../persona/climate.js';
 import type { ThreadInventory } from '../../../persona/threads.js';
 import { MIN_TRANSCRIPT_SHARE } from '../../../agents/convo/promptPolicy.js';
+import { PENDING_ASK_TTL_MS } from '../../../memory/dossier.js';
 import { authed } from '../auth.js';
 import { cached } from '../cache.js';
 
@@ -333,6 +335,47 @@ export function traceRows(turns: readonly Turn[], limit: number): TraceRow[] {
   return rows.sort((a, b) => b.at - a.at).slice(0, Math.max(0, limit));
 }
 
+// ── the pending approvals ────────────────────────────────────────────────────
+
+/**
+ * One action this chat has been asked about and has not answered yet, as the panel reads it.
+ *
+ * READ-ONLY, and that is the whole design: an approval can only be settled by the user saying yes
+ * or no in the chat (agents/convo/shared.ts), never from here — a dashboard button that started
+ * someone's email would be exactly the thing the handshake exists to prevent.
+ */
+export interface PendingApprovalRow {
+  id: string;
+  kind: string;
+  request: string;
+  /** When she asked. For a parked row this IS the row's clock (opsTasks.ts startedAt). */
+  askedAt: number;
+  ageMs: number;
+  state: string;
+  /** True when this row is the second ask about the same action (the first one expired). */
+  reconfirm: boolean;
+  /** Past the shared 30-minute ask TTL: the next turn will settle it 'expired' rather than run it. */
+  expired: boolean;
+}
+
+/** The parked rows, oldest first (the repository's own order), shaped for reading. Pure. */
+export function pendingApprovalRows(rows: readonly OpsTaskRow[], nowMs: number): PendingApprovalRow[] {
+  return rows.map(r => {
+    const task = asRecord(r.meta?.task);
+    const approval = asRecord(task?.approval);
+    return {
+      id: r.id,
+      kind: r.kind,
+      request: r.request,
+      askedAt: r.startedAt,
+      ageMs: Math.max(0, nowMs - r.startedAt),
+      state: r.status,
+      reconfirm: approval?.reconfirm === true,
+      expired: nowMs - r.startedAt > PENDING_ASK_TTL_MS,
+    };
+  });
+}
+
 // ── the route ────────────────────────────────────────────────────────────────
 
 /** Live turns win over their own persisted copies (fresher events) — the Turn cost view's read. */
@@ -382,6 +425,10 @@ export function registerAffectRoutes(router: Router): void {
           dials: climateDialRows(climate, now),
           climate: { lastEvalAt: climate.lastEvalAt, evalCount: climate.evalCount },
           threads: threadSummary(inventory),
+          // The actions waiting on this person's yes. A synchronous read of the durable half of the
+          // registry (the same rows the resolution promotes), and the only place outside the chat
+          // where an open ask is visible at all.
+          approvals: pendingApprovalRows(chatId ? listPendingApprovals(chatId) : [], now),
           traces: traceRows(turns, TRACE_ROWS),
           // The floor the budget test holds the branch to, IMPORTED rather than retyped in the
           // client (agents/convo/promptPolicy.ts): a receipt under it is a turn where the
