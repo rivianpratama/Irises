@@ -48,18 +48,23 @@ test('renderAttachmentBlock: missing metadata degrades to labels, never to "unde
 test('both adapters send the fenced block, and only when files are attached', async () => {
   const media = { images: [], audio: [], video: [], docs: [{ url: 'https://cdn/l.pdf', mimeType: 'application/pdf', filename: 'lease.pdf' }] };
 
+  // hermes on its default transport: the brief rides `input` on POST /v1/runs, and the run's
+  // outcome comes back over the events stream (only the submit is captured here).
   const captured: Array<{ body: string }> = [];
   const hermes = new HermesBackend({
-    fetchFn: (async (_u: RequestInfo | URL, init?: RequestInit) => {
-      captured.push({ body: String(init?.body) });
-      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 });
+    fetchFn: (async (u: RequestInfo | URL, init?: RequestInit) => {
+      if (/\/v1\/runs$/.test(String(u))) {
+        captured.push({ body: String(init?.body) });
+        return new Response(JSON.stringify({ run_id: 'run_att', status: 'started' }), { status: 202 });
+      }
+      return new Response(`data: ${JSON.stringify({ event: 'run.completed', output: 'ok' })}\n\n`,
+        { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
     }) as typeof fetch,
   });
   await hermes.runTask('P', mkTask({ media }), {});
-  const hermesText = String(JSON.parse(captured[0].body).messages[0].content);
-  assert.match(hermesText, /<attached_files>/);
+  assert.match(String(JSON.parse(captured[0].body).input), /<attached_files>/);
   await hermes.runTask('P', mkTask(), {});
-  assert.doesNotMatch(String(JSON.parse(captured[1].body).messages[0].content), /attached_files/);
+  assert.doesNotMatch(String(JSON.parse(captured[1].body).input), /attached_files/);
 
   const calls: Array<Record<string, unknown>> = [];
   const openclaw = new OpenClawBackend({

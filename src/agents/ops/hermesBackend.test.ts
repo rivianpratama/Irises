@@ -1,17 +1,21 @@
 // hermes adapter contract tests — DI-injected fetchFn (repo convention: no module mocks).
-// Covers the chat-completions happy path, per-chat session headers, media mapping, error mapping
-// (401/429/refused/timeout), the jobs API body shape, and the NO-ENGINE-left-behind guarantees.
+// Covers both transports (`/v1/runs` + events SSE, and the chat-completions fallback), per-chat
+// session headers, media mapping, error mapping (401/429/refused/timeout), engine-side stop on
+// give-up, steer, the jobs API body shape, and the NO-ENGINE-left-behind guarantees.
 
 process.env.TZ = 'UTC';
 // Session ids carry the rotation window, so an operator value inherited from the shell would decide
 // what every header below looks like. Tests that care set it themselves and restore it.
 delete process.env.HERMES_SESSION_ROTATION;
+// Same reason, one level up: HERMES_RUN_TRANSPORT decides WHICH endpoint every runTask below
+// speaks to. Unset is the shipped default (`runs`); withTransport() pins the other one per test.
+delete process.env.HERMES_RUN_TRANSPORT;
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { HermesBackend, hermesSessionKey, hermesSessionRotation, jobPrefix, legacyJobPrefix, reminderJobPrompt, shiftCronToEngineZone, inlineLocalImage, normalizeCapabilities } from './hermesBackend.js';
+import { HermesBackend, hermesSessionKey, hermesSessionRotation, jobPrefix, legacyJobPrefix, reminderJobPrompt, shiftCronToEngineZone, inlineLocalImage, normalizeCapabilities, runsTransportEnabled, manifestSupportsRuns } from './hermesBackend.js';
 import { HERMES_TASK_HEADER, HERMES_ONBOARDING_MESSAGE, hermesOnboardingVersion } from './hermesDoctrine.js';
-import { EngineUnavailableError, EngineRunError, runViaEngine } from './engineBackend.js';
+import { EngineUnavailableError, EngineRunError, runViaEngine, type EngineRunHandle } from './engineBackend.js';
 import { getTraces, clearTraces } from '../../diagnostics/trace.js';
 import { emptyMedia } from '../../webhook/types.js';
 import type { OpsTask, OpsDebrief } from '../types.js';
@@ -41,27 +45,45 @@ function fakeFetch(status: number, body: unknown, captured: Captured[] = []): ty
   }) as typeof fetch;
 }
 
-test('runTask: happy path returns the message content and sends session headers', async () => {
-  const captured: Captured[] = [];
-  const be = new HermesBackend({ fetchFn: fakeFetch(200, { choices: [{ message: { content: 'ANSWER: 42\nSOURCE: web\nFLAGS: none' } }] }, captured), now: () => IN_WEEK_36 });
-  const out = await be.runTask('the prompt', mkTask(), {});
-  assert.equal(out, 'ANSWER: 42\nSOURCE: web\nFLAGS: none');
-  assert.equal(captured.length, 1);
-  assert.match(captured[0].url, /\/v1\/chat\/completions$/);
-  const headers = captured[0].init.headers as Record<string, string>;
-  assert.equal(headers['X-Hermes-Session-Id'], 'irises-web-debug-w2026-36', 'the transcript session carries this week');
-  assert.equal(headers['X-Hermes-Session-Key'], hermesSessionKey('web:debug'), 'the memory scope does not rotate');
-  assert.match(headers.Authorization, /^Bearer /);
-  const body = JSON.parse(String(captured[0].init.body));
-  assert.equal(body.stream, false);
-  // The engine-mode header leads every run (an un-onboarded hermes still gets the limits and the
-  // reply shape); the prompt below it is passed through untouched.
-  assert.equal(body.messages[0].content, `${HERMES_TASK_HEADER}\n\nthe prompt`);
+/** Pin the transport for one test. `runs` is the shipped default, so a test that asserts the
+ *  chat-completions body has to SAY it means the fallback — and an env value inherited from the
+ *  operator's shell must never decide which endpoint an assertion is about. Set by hand rather than
+ *  through a withEnv() helper because these bodies await. */
+async function withTransport<T>(mode: 'runs' | 'chat', fn: () => Promise<T>): Promise<T> {
+  const prev = process.env.HERMES_RUN_TRANSPORT;
+  process.env.HERMES_RUN_TRANSPORT = mode;
+  try {
+    return await fn();
+  } finally {
+    if (prev === undefined) delete process.env.HERMES_RUN_TRANSPORT; else process.env.HERMES_RUN_TRANSPORT = prev;
+  }
+}
+
+test('runTask (chat transport): happy path returns the message content and sends session headers', async () => {
+  await withTransport('chat', async () => {
+    const captured: Captured[] = [];
+    const be = new HermesBackend({ fetchFn: fakeFetch(200, { choices: [{ message: { content: 'ANSWER: 42\nSOURCE: web\nFLAGS: none' } }] }, captured), now: () => IN_WEEK_36 });
+    const out = await be.runTask('the prompt', mkTask(), {});
+    assert.equal(out, 'ANSWER: 42\nSOURCE: web\nFLAGS: none');
+    assert.equal(captured.length, 1);
+    assert.match(captured[0].url, /\/v1\/chat\/completions$/);
+    const headers = captured[0].init.headers as Record<string, string>;
+    assert.equal(headers['X-Hermes-Session-Id'], 'irises-web-debug-w2026-36', 'the transcript session carries this week');
+    assert.equal(headers['X-Hermes-Session-Key'], hermesSessionKey('web:debug'), 'the memory scope does not rotate');
+    assert.match(headers.Authorization, /^Bearer /);
+    const body = JSON.parse(String(captured[0].init.body));
+    assert.equal(body.stream, false);
+    // The engine-mode header leads every run (an un-onboarded hermes still gets the limits and the
+    // reply shape); the prompt below it is passed through untouched.
+    assert.equal(body.messages[0].content, `${HERMES_TASK_HEADER}\n\nthe prompt`);
+  });
 });
 
 test('runTask (streaming): accumulates SSE deltas, heartbeats, and keeps the chat session', async () => {
   const prev = process.env.HERMES_STREAM;
   process.env.HERMES_STREAM = 'on';
+  // HERMES_STREAM is a CHAT-transport switch only — the runs transport streams its events either way.
+  process.env.HERMES_RUN_TRANSPORT = 'chat';
   try {
     const captured: Captured[] = [];
     const sse = [
@@ -85,6 +107,7 @@ test('runTask (streaming): accumulates SSE deltas, heartbeats, and keeps the cha
     assert.equal(headers['X-Hermes-Session-Id'], 'irises-web-debug-w2026-36', 'streaming uses the chat\'s current session');
   } finally {
     if (prev === undefined) delete process.env.HERMES_STREAM; else process.env.HERMES_STREAM = prev;
+    delete process.env.HERMES_RUN_TRANSPORT;
   }
 });
 
@@ -92,9 +115,11 @@ test('runTask (streaming): a non-SSE body (proxy ignored stream:true) falls back
   const prev = process.env.HERMES_STREAM;
   process.env.HERMES_STREAM = 'on';
   try {
-    const be = new HermesBackend({ fetchFn: fakeFetch(200, { choices: [{ message: { content: 'plain answer' } }] }) });
-    const out = await be.runTask('the prompt', mkTask(), {});
-    assert.equal(out, 'plain answer', 'the ordinary completion shape is read when it is not an event-stream');
+    await withTransport('chat', async () => {
+      const be = new HermesBackend({ fetchFn: fakeFetch(200, { choices: [{ message: { content: 'plain answer' } }] }) });
+      const out = await be.runTask('the prompt', mkTask(), {});
+      assert.equal(out, 'plain answer', 'the ordinary completion shape is read when it is not an event-stream');
+    });
   } finally {
     if (prev === undefined) delete process.env.HERMES_STREAM; else process.env.HERMES_STREAM = prev;
   }
@@ -103,7 +128,7 @@ test('runTask (streaming): a non-SSE body (proxy ignored stream:true) falls back
 test('runTask: the doctrine header restates the limits that matter most on a gateway engine', async () => {
   const captured: Captured[] = [];
   const be = new HermesBackend({ fetchFn: fakeFetch(200, { choices: [{ message: { content: 'ok' } }] }, captured) });
-  await be.runTask('the prompt', mkTask(), {});
+  await withTransport('chat', () => be.runTask('the prompt', mkTask(), {}));
   const content = String(JSON.parse(String(captured[0].init.body)).messages[0].content);
   assert.ok(content.startsWith(HERMES_TASK_HEADER), 'nothing precedes the header');
   assert.match(HERMES_TASK_HEADER, /NEVER message the user on any channel yourself/);
@@ -172,14 +197,16 @@ test('runTask: ctx.timeoutMs is THIS leg\'s transport budget (and its absence is
   await assert.rejects(be.runTask('the prompt', mkTask(), { timeoutMs: 5 }), (e: Error) => e.name === 'AbortError');
   assert.ok(Date.now() - t0 < 2_000, 'the caller\'s budget decided, not ENGINE_TIMEOUT_MS');
 
-  // …and the streaming path, which keeps its own window over the whole stream.
+  // …and the streaming chat path, which keeps its own window over the whole stream.
   const prev = process.env.HERMES_STREAM;
   process.env.HERMES_STREAM = 'on';
   try {
-    const streamed = new HermesBackend({ fetchFn: hanging });
-    const t1 = Date.now();
-    await assert.rejects(streamed.runTask('the prompt', mkTask(), { timeoutMs: 5 }), (e: Error) => e.name === 'AbortError');
-    assert.ok(Date.now() - t1 < 2_000, 'the streamed leg honours it too');
+    await withTransport('chat', async () => {
+      const streamed = new HermesBackend({ fetchFn: hanging });
+      const t1 = Date.now();
+      await assert.rejects(streamed.runTask('the prompt', mkTask(), { timeoutMs: 5 }), (e: Error) => e.name === 'AbortError');
+      assert.ok(Date.now() - t1 < 2_000, 'the streamed leg honours it too');
+    });
   } finally {
     if (prev === undefined) delete process.env.HERMES_STREAM; else process.env.HERMES_STREAM = prev;
   }
@@ -460,12 +487,18 @@ test('hermesSessionKey: ids over 64 sanitized chars get a hash suffix and stay d
 
 // ── session rotation: the transcript rolls, the memory scope does not ─────────────────────────
 
-/** Run `fn` with HERMES_SESSION_ROTATION set to `value` (or deliberately unset), then restore. */
+/** Run `fn` with HERMES_SESSION_ROTATION set to `value` (or deliberately unset), then restore.
+ *
+ *  Also pins the CHAT transport, because these bodies pair `runTask` with `remember` and read the
+ *  session headers off both — one canned chat-completions body serves both calls, where the runs
+ *  transport needs three endpoints. Both transports build their headers through the same
+ *  `sessionNow()`, and the runs submit's own session_id + Session-Key are asserted in the
+ *  runs-transport block below, so nothing about rotation goes unheld. */
 async function withRotation<T>(value: string | undefined, fn: () => Promise<T>): Promise<T> {
   const prev = process.env.HERMES_SESSION_ROTATION;
   if (value === undefined) delete process.env.HERMES_SESSION_ROTATION; else process.env.HERMES_SESSION_ROTATION = value;
   try {
-    return await fn();
+    return await withTransport('chat', fn);
   } finally {
     if (prev === undefined) delete process.env.HERMES_SESSION_ROTATION; else process.env.HERMES_SESSION_ROTATION = prev;
   }
@@ -913,4 +946,382 @@ test('HERMES_CAPABILITIES: the operator declaration fills the cold-cache gap; di
   } finally {
     if (prev === undefined) delete process.env.HERMES_CAPABILITIES; else process.env.HERMES_CAPABILITIES = prev;
   }
+});
+
+// ── the /v1/runs transport: stop, steer, and the events stream ─────────────────────────────────
+//
+// Why this transport exists at all: chat-completions runs have no run id and are never registered
+// in hermes's `_active_run_agents`, so there is NOTHING to stop or steer. Dropping the socket is
+// ignored for a non-streaming call — the found bug (focus-revamp progress.md:46-49) is a leg Irises
+// abandoned at ~225s that hermes kept running for another 2.4 minutes while a retry started a
+// SECOND agent on the same session.
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+type Route = { match: RegExp; respond: (init: RequestInit) => Response | Promise<Response> };
+
+/** A fetchFn that answers per ENDPOINT: the runs transport is three URLs deep (submit, events,
+ *  stop/steer), so one canned response cannot express a single run. First match wins. */
+function routedFetch(routes: Route[], captured: Captured[] = []): typeof fetch {
+  return (async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    captured.push({ url: u, init: init ?? {} });
+    for (const r of routes) if (r.match.test(u)) return await r.respond(init ?? {});
+    throw new Error(`test fixture has no route for ${u}`);
+  }) as typeof fetch;
+}
+
+const submitted = (runId: string): Route => ({
+  match: /\/v1\/runs$/,
+  respond: () => new Response(JSON.stringify({ run_id: runId, status: 'started' }), { status: 202, headers: { 'Content-Type': 'application/json' } }),
+});
+
+/** A complete events stream: `data: <json>\n\n` frames, then hermes's `: stream closed` comment. */
+function eventStream(...frames: unknown[]): Response {
+  const body = frames.map(f => `data: ${JSON.stringify(f)}\n\n`).join('') + ': keepalive\n\n: stream closed\n\n';
+  return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+}
+
+/** An events stream that delivers `first` and then NEVER terminates — the shape a give-up has to
+ *  survive. Real fetch errors the body when its signal aborts; the fixture does the same, because
+ *  the abort is the only thing that can end this stream. */
+function hangingEventStream(init: RequestInit, first: unknown): Response {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(first)}\n\n`));
+      const fail = () => { try { controller.error(Object.assign(new Error('aborted'), { name: 'AbortError' })); } catch { /* already errored */ } };
+      if (init.signal?.aborted) fail();
+      else init.signal?.addEventListener('abort', fail, { once: true });
+    },
+  });
+  return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+}
+
+/** Poll for the receipt: the engine stop is deliberately NOT awaited before the run rejects. */
+async function waitForCancelReceipt(timeoutMs = 500): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const ev = getTraces().find(e => e.label === 'ops:cancelled');
+    if (ev) return ev.detail as Record<string, unknown>;
+    if (Date.now() > deadline) throw new Error('no ops:cancelled receipt');
+    await sleep(5);
+  }
+}
+
+function mkDebrief(): OpsDebrief {
+  return { steps: 0, toolsRun: [], corpus: [], startedAt: Date.now(), endedAt: 0 };
+}
+
+test('runsTransportEnabled: `runs` is the default; only `chat` turns it off, and junk fails safe', () => {
+  const prev = process.env.HERMES_RUN_TRANSPORT;
+  try {
+    delete process.env.HERMES_RUN_TRANSPORT;
+    assert.equal(runsTransportEnabled(), true, 'unset is the shipped transport');
+    for (const v of ['chat', 'CHAT', ' chat ']) {
+      process.env.HERMES_RUN_TRANSPORT = v;
+      assert.equal(runsTransportEnabled(), false);
+    }
+    // A typo must not silently drop stop/steer — the whole point of the transport.
+    for (const v of ['runs', 'run', 'sse', '']) {
+      process.env.HERMES_RUN_TRANSPORT = v;
+      assert.equal(runsTransportEnabled(), true);
+    }
+  } finally {
+    if (prev === undefined) delete process.env.HERMES_RUN_TRANSPORT; else process.env.HERMES_RUN_TRANSPORT = prev;
+  }
+});
+
+test('manifestSupportsRuns: both features together, and an unreadable manifest says nothing', () => {
+  assert.equal(manifestSupportsRuns({ features: { run_submission: true, run_stop: true } }), true);
+  assert.equal(manifestSupportsRuns({ features: { run_submission: true, run_stop: false } }), false);
+  assert.equal(manifestSupportsRuns({ features: { chat_completions: true } }), false);
+  // Undefined, never false: a body with no `features` map at all has not answered the question, and
+  // a false there would pin this deployment to the chat transport for the process's life.
+  assert.equal(manifestSupportsRuns({}), undefined);
+  assert.equal(manifestSupportsRuns(null), undefined);
+  assert.equal(manifestSupportsRuns('<html>502</html>'), undefined);
+});
+
+test('runs transport: 202 → events SSE, with the run id on a receipt and on the handle hook', async () => {
+  clearTraces();
+  const captured: Captured[] = [];
+  const be = new HermesBackend({
+    fetchFn: routedFetch([
+      submitted('run_abc'),
+      { match: /\/v1\/runs\/run_abc\/events$/, respond: () => eventStream(
+        { event: 'message.delta', run_id: 'run_abc', delta: 'thinking' },
+        { event: 'tool.started', run_id: 'run_abc', tool: 'web_search' },
+        { event: 'run.completed', run_id: 'run_abc', output: 'ANSWER: 42\nSOURCE: web\nFLAGS: none', usage: { total_tokens: 9 } },
+      ) },
+    ], captured),
+    now: () => IN_WEEK_36,
+  });
+  const handles: EngineRunHandle[] = [];
+  const milestones: string[] = [];
+  const out = await be.runTask('the prompt', mkTask(), {
+    onRunHandle: h => { handles.push(h); },
+    onProgress: m => { milestones.push(m); },
+  });
+
+  assert.equal(out, 'ANSWER: 42\nSOURCE: web\nFLAGS: none');
+  assert.deepEqual(handles, [{ engine: 'hermes', runId: 'run_abc' }], 'the handle is published the moment the 202 lands');
+  // One heartbeat only: the injected clock is a single pinned instant, so the 10s throttle swallows
+  // every frame after the first. Which key the FIRST frame maps to is what this pins.
+  assert.deepEqual(milestones, ['streaming']);
+
+  const submit = captured.find(c => /\/v1\/runs$/.test(c.url))!;
+  const body = JSON.parse(String(submit.init.body));
+  assert.equal(body.model, 'hermes-agent');
+  assert.equal(body.input, `${HERMES_TASK_HEADER}\n\nthe prompt`, 'the brief rides `input`, header first');
+  assert.equal(body.session_id, 'irises-web-debug-w2026-36', 'the rotated session groups the run in hermes state.db');
+  assert.equal(body.conversation_history, undefined, 'fresh transcript per run — nothing is replayed');
+  const headers = submit.init.headers as Record<string, string>;
+  assert.equal(headers['X-Hermes-Session-Key'], hermesSessionKey('web:debug'), 'the memory scope still rides the header');
+  assert.match(headers.Authorization, /^Bearer /);
+
+  const receipt = getTraces().find(e => e.label === 'engine:hermes:run');
+  assert.deepEqual(receipt?.detail, { runId: 'run_abc', transport: 'runs', kind: 'web_research' });
+});
+
+test('runs transport: tool frames heartbeat as engine_tool', async () => {
+  const be = new HermesBackend({
+    fetchFn: routedFetch([
+      submitted('run_t'),
+      { match: /\/run_t\/events$/, respond: () => eventStream(
+        { event: 'tool.started', tool: 'browser_navigate' },
+        { event: 'run.completed', output: 'done' },
+      ) },
+    ]),
+    now: () => IN_WEEK_36,
+  });
+  const milestones: string[] = [];
+  assert.equal(await be.runTask('p', mkTask(), { onProgress: m => { milestones.push(m); } }), 'done');
+  assert.deepEqual(milestones, ['engine_tool']);
+});
+
+test('runs transport: a steer accepted after the final response comes back as pending, not lost', async () => {
+  const be = new HermesBackend({
+    fetchFn: routedFetch([
+      submitted('run_ps'),
+      { match: /\/run_ps\/events$/, respond: () => eventStream(
+        { event: 'run.completed', output: 'the answer', pending_steer: 'also check jakarta' },
+      ) },
+    ]),
+  });
+  const pending: string[] = [];
+  const out = await be.runTask('p', mkTask(), { onPendingSteer: t => { pending.push(t); } });
+  assert.equal(out, 'the answer');
+  assert.deepEqual(pending, ['also check jakarta'], 'the caller gets to replay it as its own leg');
+});
+
+test('runs transport: run.failed is an llm_error and run.cancelled is a cancel, never a hang', async () => {
+  const failed = new HermesBackend({
+    fetchFn: routedFetch([
+      submitted('run_f'),
+      { match: /\/run_f\/events$/, respond: () => eventStream({ event: 'run.failed', error: 'provider auth failed' }) },
+    ]),
+  });
+  await assert.rejects(failed.runTask('p', mkTask(), {}), (e: Error) =>
+    e instanceof EngineRunError && e.failureCause === 'llm_error' && /provider auth failed/.test(e.message));
+
+  const cancelled = new HermesBackend({
+    fetchFn: routedFetch([
+      submitted('run_c'),
+      { match: /\/run_c\/events$/, respond: () => eventStream({ event: 'run.cancelled' }) },
+    ]),
+  });
+  await assert.rejects(cancelled.runTask('p', mkTask(), {}), (e: Error) =>
+    e instanceof EngineRunError && e.failureCause === 'cancelled');
+});
+
+test('runs transport: a lost events stream falls back to polling the run status', async () => {
+  const captured: Captured[] = [];
+  // 404 is the real case, not a hypothetical: the events buffer takes ONE subscriber and a
+  // reconnect 404s, so a dropped stream can never be re-opened — polling is the only way back.
+  const be = new HermesBackend({
+    fetchFn: routedFetch([
+      submitted('run_p'),
+      { match: /\/run_p\/events$/, respond: () => new Response(JSON.stringify({ error: { message: 'Run not found' } }), { status: 404 }) },
+      { match: /\/v1\/runs\/run_p$/, respond: () => new Response(JSON.stringify({ status: 'completed', output: 'polled answer' }), { status: 200 }) },
+    ], captured),
+  });
+  assert.equal(await be.runTask('p', mkTask(), {}), 'polled answer');
+  assert.ok(captured.some(c => /\/v1\/runs\/run_p$/.test(c.url)), 'the status endpoint was actually consulted');
+
+  // …and a stream that ends with no terminal event at all (a proxy cutting the connection).
+  const truncated = new HermesBackend({
+    fetchFn: routedFetch([
+      submitted('run_q'),
+      { match: /\/run_q\/events$/, respond: () => eventStream({ event: 'message.delta', delta: 'half an ans' }) },
+      { match: /\/v1\/runs\/run_q$/, respond: () => new Response(JSON.stringify({ status: 'failed', error: 'tool crashed' }), { status: 200 }) },
+    ]),
+  });
+  await assert.rejects(truncated.runTask('p', mkTask(), {}), (e: Error) =>
+    e instanceof EngineRunError && e.failureCause === 'llm_error' && /tool crashed/.test(e.message));
+});
+
+test('runs transport: an abort mid-stream stops the run ENGINE-side and leaves a receipt', async () => {
+  clearTraces();
+  const captured: Captured[] = [];
+  const be = new HermesBackend({
+    fetchFn: routedFetch([
+      submitted('run_ab'),
+      { match: /\/run_ab\/stop$/, respond: () => new Response(JSON.stringify({ run_id: 'run_ab', status: 'stopping' }), { status: 200 }) },
+      { match: /\/run_ab\/events$/, respond: init => hangingEventStream(init, { event: 'message.delta', delta: 'working' }) },
+    ], captured),
+  });
+  const ac = new AbortController();
+  const p = be.runTask('do it', mkTask(), { signal: ac.signal });
+  await sleep(20); // let the submit land and the events subscription open
+  const t0 = Date.now();
+  ac.abort();
+  await assert.rejects(p, (e: Error) => e.name === 'AbortError');
+  assert.ok(Date.now() - t0 < 50, `the run settled in ${Date.now() - t0}ms, not after the transport budget`);
+
+  const detail = await waitForCancelReceipt();
+  assert.equal(detail.engine, 'hermes');
+  assert.equal(detail.runId, 'run_ab');
+  assert.equal(detail.engineNotified, true);
+  assert.equal(detail.reason, 'abort');
+  assert.equal(typeof detail.latencyMs, 'number');
+  const stop = captured.find(c => /\/run_ab\/stop$/.test(c.url));
+  assert.equal(String(stop?.init.method), 'POST');
+});
+
+test('runs transport: the adapter\'s OWN timer stops the run and maps to timeout, not a retryable llm_error', async () => {
+  clearTraces();
+  const captured: Captured[] = [];
+  // This is the duplicate-run bug's exact shape: Irises gave up first, the abort mid-body-read was
+  // wrapped as "engine unreachable" → llm_error → triage retried → two hermes agents on one session.
+  const be = new HermesBackend({
+    fetchFn: routedFetch([
+      submitted('run_to'),
+      { match: /\/run_to\/stop$/, respond: () => new Response(JSON.stringify({ status: 'stopping' }), { status: 200 }) },
+      { match: /\/run_to\/events$/, respond: init => hangingEventStream(init, { event: 'message.delta', delta: 'working' }) },
+    ], captured),
+  });
+  const debrief = mkDebrief();
+  const res = await runViaEngine(be, 'p', mkTask(), { timeoutMs: 40 }, debrief);
+  assert.equal(res.status, 'error');
+  assert.equal(debrief.failure?.cause, 'timeout', 'a give-up on OUR clock is a timeout, and timeouts do not retry');
+
+  const detail = await waitForCancelReceipt();
+  assert.equal(detail.reason, 'timeout');
+  assert.equal(detail.engineNotified, true);
+  assert.ok(captured.some(c => /\/run_to\/stop$/.test(c.url)));
+});
+
+test('runs transport: OPS_CANCEL_ENGINE_ABORT=off drops the run locally and tells hermes nothing', async () => {
+  clearTraces();
+  const captured: Captured[] = [];
+  const be = new HermesBackend({
+    fetchFn: routedFetch([
+      submitted('run_off'),
+      { match: /\/run_off\/events$/, respond: init => hangingEventStream(init, { event: 'message.delta', delta: 'working' }) },
+    ], captured),
+  });
+  const prev = process.env.OPS_CANCEL_ENGINE_ABORT;
+  process.env.OPS_CANCEL_ENGINE_ABORT = 'off';
+  try {
+    const ac = new AbortController();
+    const p = be.runTask('do it', mkTask(), { signal: ac.signal });
+    await sleep(20);
+    ac.abort();
+    await assert.rejects(p, (e: Error) => e.name === 'AbortError');
+    await sleep(30);
+    assert.ok(!captured.some(c => /\/stop$/.test(c.url)), 'no stop was POSTed');
+    assert.equal(getTraces().filter(e => e.label === 'ops:cancelled').length, 0);
+  } finally {
+    if (prev === undefined) delete process.env.OPS_CANCEL_ENGINE_ABORT; else process.env.OPS_CANCEL_ENGINE_ABORT = prev;
+  }
+});
+
+test('runs transport: a hermes with no /v1/runs falls back to chat completions, once', async () => {
+  clearTraces();
+  const captured: Captured[] = [];
+  const be = new HermesBackend({
+    fetchFn: routedFetch([
+      { match: /\/v1\/runs$/, respond: () => new Response(JSON.stringify({ error: { message: 'Not Found' } }), { status: 404 }) },
+      { match: /\/v1\/chat\/completions$/, respond: () => new Response(JSON.stringify({ choices: [{ message: { content: 'chat answer' } }] }), { status: 200 }) },
+    ], captured),
+  });
+  assert.equal(await be.runTask('p', mkTask(), {}), 'chat answer');
+  assert.equal(await be.runTask('p', mkTask(), {}), 'chat answer');
+  assert.equal(captured.filter(c => /\/v1\/runs$/.test(c.url)).length, 1,
+    'the 404 latched — a hermes too old for /v1/runs is not re-dialled on every task');
+  assert.ok(getTraces().some(e => e.label === 'engine:hermes:runs-unsupported'));
+});
+
+test('runs transport: an engine whose capabilities deny run_submission keeps the chat transport', async () => {
+  const captured: Captured[] = [];
+  const be = new HermesBackend({
+    fetchFn: routedFetch([
+      { match: /\/v1\/capabilities$/, respond: () => json200({ features: { chat_completions: true, run_submission: false, run_stop: false } }) },
+      { match: /\/v1\/toolsets$/, respond: () => json200({ object: 'list', data: [{ name: 'web', enabled: true, configured: true, tools: ['web_search'] }] }) },
+      { match: /\/v1\/chat\/completions$/, respond: () => json200({ choices: [{ message: { content: 'chat answer' } }] }) },
+    ], captured),
+  });
+  be.getCapabilitySummary(); // kicks the background refresh that also answers the transport question
+  await settleCaps(be, () => be.getCapabilitySummary() !== null);
+  assert.equal(await be.runTask('p', mkTask(), {}), 'chat answer');
+  assert.ok(!captured.some(c => /\/v1\/runs$/.test(c.url)), 'feature detection, not a 404 round trip');
+});
+
+test('runs transport: images keep the chat transport — /v1/runs never sees the picture', async () => {
+  // Probed live against hermes 0.20.1: POST /v1/runs ACCEPTS an image content-part body (202) but
+  // the run reports NO-IMAGE — `_handle_runs` hands `input` straight to run_conversation and never
+  // calls `_normalize_multimodal_content`, which is what the chat/responses routes use to translate
+  // image parts. So a photo silently becomes an answer about the words alone. Until that changes,
+  // an image-bearing task is worth more than stop/steer are.
+  const captured: Captured[] = [];
+  const be = new HermesBackend({
+    fetchFn: routedFetch([
+      { match: /\/v1\/chat\/completions$/, respond: () => json200({ choices: [{ message: { content: 'i see it' } }] }) },
+    ], captured),
+  });
+  const media = { images: [{ url: 'https://cdn/x.jpg', mimeType: 'image/jpeg', filename: 'x.jpg' }], audio: [], video: [], docs: [] };
+  assert.equal(await be.runTask('look', mkTask({ media }), {}), 'i see it');
+  assert.deepEqual(captured.map(c => c.url.replace(/^.*(\/v1\/.*)$/, '$1')), ['/v1/chat/completions']);
+});
+
+test('steerRun: 200 is accepted, 409/404 is not_running, and auth still fails honestly', async () => {
+  const captured: Captured[] = [];
+  const ok = new HermesBackend({
+    fetchFn: routedFetch([{ match: /\/run_s\/steer$/, respond: () => json200({ object: 'hermes.run.steer', run_id: 'run_s', accepted: true }) }], captured),
+  });
+  assert.equal(await ok.steerRun({ engine: 'hermes', runId: 'run_s' }, 'also check jakarta'), 'accepted');
+  assert.equal(String(captured[0].init.method), 'POST');
+  assert.deepEqual(JSON.parse(String(captured[0].init.body)), { input: 'also check jakarta' });
+
+  // 409 is hermes's own gate: only a run whose status is exactly `running` is steerable, so a run
+  // still constructing its agent (or already finalizing) answers 409 — "not running", not an error.
+  const busy = new HermesBackend({
+    fetchFn: routedFetch([{ match: /\/steer$/, respond: () => new Response(JSON.stringify({ error: { code: 'run_not_accepting_steer' } }), { status: 409 }) }]),
+  });
+  assert.equal(await busy.steerRun({ engine: 'hermes', runId: 'run_s' }, 'x'), 'not_running');
+
+  const gone = new HermesBackend({
+    fetchFn: routedFetch([{ match: /\/steer$/, respond: () => new Response(JSON.stringify({ error: { code: 'run_not_found' } }), { status: 404 }) }]),
+  });
+  assert.equal(await gone.steerRun({ engine: 'hermes', runId: 'run_s' }, 'x'), 'not_running');
+
+  const bad = new HermesBackend({
+    fetchFn: routedFetch([{ match: /\/steer$/, respond: () => new Response('{}', { status: 401 }) }]),
+  });
+  await assert.rejects(bad.steerRun({ engine: 'hermes', runId: 'run_s' }, 'x'), (e: Error) =>
+    e instanceof EngineRunError && e.failureCause === 'needs_auth');
+});
+
+test('HERMES_RUN_TRANSPORT=chat: the old chat-completions body, byte for byte', async () => {
+  await withTransport('chat', async () => {
+    const captured: Captured[] = [];
+    const be = new HermesBackend({ fetchFn: fakeFetch(200, { choices: [{ message: { content: 'ok' } }] }, captured), now: () => IN_WEEK_36 });
+    await be.runTask('the prompt', mkTask(), {});
+    assert.deepEqual(captured.map(c => c.url.replace(/^.*(\/v1\/.*)$/, '$1')), ['/v1/chat/completions']);
+    assert.deepEqual(JSON.parse(String(captured[0].init.body)), {
+      model: 'hermes-agent',
+      messages: [{ role: 'user', content: `${HERMES_TASK_HEADER}\n\nthe prompt` }],
+      stream: false,
+    });
+  });
 });

@@ -11,6 +11,12 @@ import type { OpsTask, OpsResult, OpsDebrief, OpsFailureCause } from '../types.j
 
 // ── contract every adapter implements ────────────────────────────────────────
 
+/** The ENGINE's own name for one in-flight run — the only thing that can be stopped or steered
+ *  after dispatch. It exists solely for a transport that registers runs server-side (hermes's
+ *  `POST /v1/runs` → `run_id`); an adapter whose transport has no such id simply never publishes
+ *  one, and every control built on it degrades to "we can only drop it locally". */
+export type EngineRunHandle = { engine: 'hermes' | 'openclaw'; runId: string };
+
 /** Milestone/abort plumbing threaded from the orchestrator through runTask into the adapter. */
 export interface EngineRunContext {
   onProgress?: (milestoneKey: string) => void;
@@ -19,6 +25,15 @@ export interface EngineRunContext {
    *  Set only by a caller that knows this leg is wider than the standard one — today the walled-URL
    *  browser budget (ops/client.ts). Absent means "the standard window", byte for byte as before. */
   timeoutMs?: number;
+  /** Called ONCE, as early as the transport can say it, with the engine's handle for this run.
+   *  Synchronous and best-effort by contract: `runViaEngine` uses it to register the handle so a
+   *  mid-run steer has something to aim at, and the adapter MUST NOT let a throwing hook kill the
+   *  run it just started. */
+  onRunHandle?: (handle: EngineRunHandle) => void;
+  /** Steer text the engine ACCEPTED but never applied — it landed after the final model response.
+   *  Reported on the terminal event so the caller can replay it as its own leg instead of losing
+   *  what the user asked for (hermes calls this `pending_steer`). */
+  onPendingSteer?: (text: string) => void;
 }
 
 /** A reminder/automation living ON THE ENGINE (its cron owns scheduling; Irises holds no rows). */
@@ -95,6 +110,22 @@ export interface EngineBackend {
    *  session continuity, media mapping (task.media), and its own request timeout. Throws
    *  EngineUnavailableError / EngineRunError; never returns partial output. */
   runTask(prompt: string, task: OpsTask, ctx: EngineRunContext): Promise<string>;
+  /**
+   * ADD to a run that is already going — the user narrowed it, corrected it, or thought of one more
+   * thing — without dropping the work already done. `handle` is what `EngineRunContext.onRunHandle`
+   * published for this run.
+   *
+   * `'accepted'` means the engine took the text; it is folded in at the next tool result or
+   * pre-model call, so it never interrupts and may still land too late to act on (that case comes
+   * back through `onPendingSteer`). `'not_running'` means the run is not in a steerable state —
+   * still constructing its agent, already finalizing, stopping, or gone. That distinction is the
+   * whole value of the return type: `'not_running'` during the construction window is worth
+   * retrying (see ./steer.ts), an error is not.
+   *
+   * Optional the way `channelTyping` is: an engine with no steer route simply omits it, and the
+   * caller says so honestly rather than pretending the addition was delivered.
+   */
+  steerRun?(handle: EngineRunHandle, text: string, opts?: { signal?: AbortSignal }): Promise<'accepted' | 'not_running'>;
   createReminder(spec: ReminderSpec): Promise<ReminderRef>;
   listReminders(chatId: string): Promise<ReminderRef[]>;
   cancelReminder(id: string): Promise<boolean>;

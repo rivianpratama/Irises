@@ -4,8 +4,8 @@
 // modified. Per-chat continuity + engine-side memory scoping ride the X-Hermes-Session-Id/Key
 // headers, so hermes builds its own deepening model of each chat.
 import { readFile as fsReadFile } from 'node:fs/promises';
-import { EngineUnavailableError, EngineRunError, ENGINE_TIMEOUT_MS, CAP_ORDER } from './engineBackend.js';
-import type { EngineBackend, EngineRunContext, ReminderSpec, ReminderRef, ProbeResult, CapabilitySummary, CapabilityClass } from './engineBackend.js';
+import { EngineUnavailableError, EngineRunError, ENGINE_TIMEOUT_MS, CAP_ORDER, opsCancelEngineAbortEnabled } from './engineBackend.js';
+import type { EngineBackend, EngineRunContext, EngineRunHandle, ReminderSpec, ReminderRef, ProbeResult, CapabilitySummary, CapabilityClass } from './engineBackend.js';
 import { HERMES_TASK_HEADER } from './hermesDoctrine.js';
 import { parseDeclaredCapabilities } from './capabilityDeclaration.js';
 import { renderAttachmentBlock } from './attachments.js';
@@ -34,6 +34,59 @@ interface ChatCompletionResponse {
 
 /** One completed engine response: status plus the FULLY-READ body (see requestText). */
 interface HermesResponse { status: number; ok: boolean; text: string }
+
+/** One frame off `GET /v1/runs/{id}/events`. Only the fields this adapter reads are named; hermes
+ *  sends more (run_id, timestamp, usage, tool names) and may send events we ignore. */
+interface RunEventFrame {
+  event?: string;
+  delta?: string;
+  output?: string;
+  error?: string;
+  pending_steer?: string;
+}
+
+/** `GET /v1/runs/{id}` — the polling fallback's view of a run. */
+interface RunStatusBody {
+  status?: string;
+  output?: string;
+  error?: string;
+  pending_steer?: string;
+}
+
+/** What a terminal run event (or a terminal poll) says. */
+interface RunOutcome { output: string; pendingSteer?: string }
+
+/**
+ * Which transport `runTask` speaks (env: HERMES_RUN_TRANSPORT, default `runs`).
+ *
+ * `runs` = `POST /v1/runs` + the events SSE, the only shape that yields a `run_id` — and therefore
+ * the only shape that can be STOPPED or STEERED (hermes registers a run in `_active_run_agents`
+ * only on that route; a chat-completions run cannot be reached at all once dispatched). `chat` pins
+ * the old `POST /v1/chat/completions` behaviour byte for byte.
+ *
+ * Only the exact word `chat` turns it off, and anything else — including a typo — reads as `runs`.
+ * That direction is deliberate: the fail-safe here is KEEPING run control, because losing it
+ * silently is what produced the orphaned-leg bug this transport exists to fix.
+ */
+export function runsTransportEnabled(): boolean {
+  return (process.env.HERMES_RUN_TRANSPORT || '').trim().toLowerCase() !== 'chat';
+}
+
+/**
+ * Does a `/v1/capabilities` body say this engine can both START and STOP a run? `undefined` when
+ * the body cannot answer (no `features` map — an older engine, or a proxy's error page).
+ *
+ * BOTH features are required, not just `run_submission`: a transport that can start runs but not
+ * stop them buys nothing this change is for, and would trade a working chat call for a run nobody
+ * can kill. Undefined is never read as false — see useRunsTransport. Pure; never throws.
+ */
+export function manifestSupportsRuns(body: unknown): boolean | undefined {
+  if (body == null || typeof body !== 'object') return undefined;
+  const features = (body as Record<string, unknown>).features;
+  if (features == null || typeof features !== 'object' || Array.isArray(features)) return undefined;
+  const f = features as Record<string, unknown>;
+  return f.run_submission === true && f.run_stop === true;
+}
 
 /**
  * Session key for a chat: stable, header-safe, ≤64 chars (hermes's header cap is 256; this stays
@@ -360,9 +413,25 @@ export class HermesBackend implements EngineBackend {
   // The browser probe (hasBrowserTooling), kept beside the class cache and filled by the same
   // refresh. `undefined` means no manifest has answered yet — never "no browser".
   private capBrowser: boolean | undefined;
+  // Whether /v1/capabilities reported run_submission AND run_stop, filled by the same refresh.
+  // `undefined` means no manifest has answered — never "no runs" (see useRunsTransport).
+  private capRunsSupported: boolean | undefined;
+  // Latched by a 404 on POST /v1/runs: this engine predates the route. It cannot come back without
+  // a restart, and re-dialling it would cost every later task a wasted round trip.
+  private runsUnsupported = false;
   // Read ONCE at construction: getCapabilitySummary() sits on the per-turn prompt path, so it must
   // not re-parse (or re-read the environment) per turn.
   private readonly declaredCapabilities: CapabilitySummary | null;
+
+  // The runs transport's four windows. The submit and the control calls are quick REST hops — they
+  // must not be able to spend a whole leg budget — while the events stream and the polling loop get
+  // what is left of the caller's own budget. The steer/stop windows are short because both run
+  // beside a live turn: a user waiting on "adding that in" must not wait on hermes.
+  private static readonly RUN_SUBMIT_TIMEOUT_MS = 20_000;
+  private static readonly RUN_STOP_TIMEOUT_MS = 3_000;
+  private static readonly RUN_STEER_TIMEOUT_MS = 3_000;
+  private static readonly RUN_POLL_INTERVAL_MS = 2_000;
+  private static readonly RUN_POLL_REQUEST_TIMEOUT_MS = 10_000;
 
   constructor(deps: Partial<HermesDeps> = {}) {
     this.baseUrl = (process.env.HERMES_BASE_URL || 'http://127.0.0.1:8642').replace(/\/$/, '');
@@ -500,10 +569,43 @@ export class HermesBackend implements EngineBackend {
     if (notes.length) text += `\n\n${notes.join('\n')}`;
     const content: unknown = blocks.length ? [{ type: 'text', text }, ...blocks] : text;
 
+    if (this.useRunsTransport(blocks.length)) {
+      const out = await this.runViaRuns(text, task, ctx);
+      if (out !== null) return out;
+      // …else this hermes answered 404 on /v1/runs (latched below) — fall through to chat.
+    }
+    return this.runViaChat(content, task, ctx);
+  }
+
+  /**
+   * Should THIS call take the runs transport? Four gates, in the order that costs least:
+   *   - the operator's HERMES_RUN_TRANSPORT (read at call time, like every sibling flag);
+   *   - `runsUnsupported`, latched by a 404 on a previous submit — a hermes too old for the route;
+   *   - images: PROBED live against hermes 0.20.1 — `POST /v1/runs` accepts an image content-part
+   *     body (202) but the run answers as if no picture were there. `_handle_runs` hands `input`
+   *     straight to run_conversation and never calls `_normalize_multimodal_content`, which is the
+   *     translation the chat/responses routes rely on. Seeing the photo beats stopping the run;
+   *   - capability discovery: only an explicit "no" diverts. `undefined` (a cold cache, an engine
+   *     that is down, a manifest with no `features` map) tries runs and lets the 404 latch decide —
+   *     reading unknown as "no" would pin a perfectly capable engine to the chat transport for the
+   *     life of the process, and boot is exactly when the cache is cold.
+   */
+  private useRunsTransport(imageCount: number): boolean {
+    if (!runsTransportEnabled()) return false;
+    if (this.runsUnsupported) return false;
+    if (imageCount > 0) return false;
+    return this.capRunsSupported !== false;
+  }
+
+  /** The pre-`/v1/runs` transport, unchanged: one blocking (or HERMES_STREAM'd) chat completion.
+   *  Still the path for image-bearing tasks, for `HERMES_RUN_TRANSPORT=chat`, and for a hermes with
+   *  no runs route at all. It carries no run id, so nothing here can be stopped or steered. */
+  private async runViaChat(content: unknown, task: OpsTask, ctx: EngineRunContext): Promise<string> {
     const headers = this.headers(task.chatId);
 
     // HERMES_STREAM (default off): stream the completion so token flow gives a live "still producing"
     // heartbeat for long runs, instead of one silent blocking POST. Falls back safely to non-stream.
+    // It is a CHAT-transport switch only — the runs transport always streams its events.
     if (process.env.HERMES_STREAM === 'on') {
       const out = await this.requestStream('/v1/chat/completions', {
         method: 'POST', headers,
@@ -525,6 +627,279 @@ export class HermesBackend implements EngineBackend {
     const out = data.choices?.[0]?.message?.content;
     if (typeof out !== 'string') throw new EngineRunError('hermes returned no message content', 'llm_error', res.status);
     return out;
+  }
+
+  /**
+   * One run over `POST /v1/runs` + `GET /v1/runs/{id}/events`, or `null` when this hermes has no
+   * such route (404 on submit) and the caller must use the chat transport for this call.
+   *
+   * What this transport buys, and nothing else does: a `run_id`. hermes registers a run in
+   * `_active_run_agents` only on this route, so it is the only run that can be stopped
+   * (`POST …/stop`) or steered (`POST …/steer`). The old chat call is unreachable once dispatched —
+   * dropping the socket is ignored for a non-streaming completion, which is how a leg Irises had
+   * given up on kept burning tokens for another 2.4 minutes while a retry started a SECOND agent on
+   * the same session.
+   *
+   * The transcript is FRESH per run, by decision: `/v1/runs` does not reload a session's transcript
+   * and nothing is replayed into `conversation_history`. Irises's briefs are self-contained, and the
+   * `X-Hermes-Session-Key` memory scope — the thing that must never be lost — is unaffected. The
+   * `session_id` is still the rotated name, purely as a grouping label in hermes's state.db.
+   */
+  private async runViaRuns(text: string, task: OpsTask, ctx: EngineRunContext): Promise<string | null> {
+    const budgetMs = ctx.timeoutMs ?? ENGINE_TIMEOUT_MS;
+    // ONE deadline for the whole run, so submit + events + polling together stay inside the budget
+    // the caller was promised (the submit used to be able to spend it twice over).
+    const deadline = Date.now() + budgetMs;
+    const { session } = this.sessionNow(task.chatId);
+
+    const started = await this.requestText('/v1/runs', {
+      method: 'POST',
+      headers: this.headers(task.chatId),
+      body: JSON.stringify({ model: 'hermes-agent', input: text, session_id: session }),
+    }, ctx.signal, Math.min(budgetMs, HermesBackend.RUN_SUBMIT_TIMEOUT_MS));
+
+    if (started.status === 404) {
+      // This engine predates /v1/runs. Latch it: re-dialling a route that does not exist would cost
+      // every later task a wasted round trip, and the answer cannot change without a restart.
+      this.runsUnsupported = true;
+      record({
+        type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
+        label: 'engine:hermes:runs-unsupported', detail: { status: 404 },
+      });
+      return null;
+    }
+    this.throwForStatus(started, 'run submit');
+    const runId = this.parseJson<{ run_id?: string }>(started, 'run submit').run_id;
+    if (!runId) throw new EngineRunError('hermes /v1/runs returned no run_id', 'llm_error', started.status);
+
+    // Publish the handle BEFORE waiting on anything: a steer that arrives one second into a
+    // four-minute run needs something to aim at, and this is the first moment there is one. Guarded
+    // because the hook registers state and drains queued steers — none of which may take down the
+    // run it belongs to.
+    try { ctx.onRunHandle?.({ engine: 'hermes', runId }); } catch { /* a registration must never outrank the run */ }
+    // The adapter records its own receipt rather than the seam growing a `transportName` hook: this
+    // is the only place that knows both the run id and which transport produced it.
+    record({
+      type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
+      label: 'engine:hermes:run', detail: { runId, transport: 'runs', kind: task.kind },
+    });
+
+    // The guarded window over EVERYTHING that follows — the events stream and the polling fallback
+    // both — exactly as requestStream guards a chat stream. Either give-up (the caller's cancel or
+    // our own timer) aborts this controller, and the abort is what fires the engine-side stop.
+    const controller = new AbortController();
+    let timerFired = false;
+    const timer = setTimeout(() => { timerFired = true; controller.abort(); }, Math.max(1, deadline - Date.now()));
+    const onCallerAbort = () => controller.abort();
+    // ONE listener for BOTH give-ups: whichever aborts, hermes is told to stop. `once` so a caller
+    // abort landing right after our timer cannot POST /stop twice.
+    controller.signal.addEventListener('abort', () => {
+      this.notifyRunStop(task, runId, timerFired ? 'timeout' : 'abort');
+    }, { once: true });
+    if (ctx.signal) {
+      if (ctx.signal.aborted) controller.abort();
+      else ctx.signal.addEventListener('abort', onCallerAbort, { once: true });
+    }
+
+    try {
+      let outcome = await this.consumeRunEventsFrom(runId, controller.signal, ctx);
+      // The events buffer takes exactly ONE subscriber and a reconnect 404s, so a stream that 404s,
+      // drops, or ends without a terminal event can never be re-opened — the status endpoint is the
+      // only way to learn how the run actually ended (terminal records live an hour engine-side).
+      outcome ??= await this.pollRunUntilTerminal(runId, controller.signal, ctx, deadline);
+      if (outcome.pendingSteer) {
+        try { ctx.onPendingSteer?.(outcome.pendingSteer); } catch { /* the answer outranks the receipt */ }
+      }
+      return outcome.output;
+    } catch (err) {
+      // A run outcome hermes actually reported (run.failed / run.cancelled / a bad status) is
+      // already mapped — pass it straight through.
+      if (err instanceof EngineRunError) throw err;
+      // Otherwise: a GIVE-UP must never be re-dressed as "engine unreachable". That wrap is the
+      // duplicate-run bug — EngineUnavailableError maps to llm_error, llm_error is the one cause
+      // triage retries, and the retry started a second hermes agent on the same session while the
+      // first was still running. Checked before anything is wrapped, per the abort contract in
+      // engineBackend.ts: a caller abort reaches runViaEngine as 'cancelled' (it tests
+      // ctx.signal.aborted first) and our own timer as an AbortError-named error → 'timeout'.
+      if ((err as Error)?.name === 'AbortError') throw err;
+      if (timerFired || ctx.signal?.aborted) {
+        throw Object.assign(new Error(`hermes run ${runId} was given up on`), { name: 'AbortError' });
+      }
+      throw new EngineUnavailableError(`hermes not reachable at ${this.baseUrl} (${(err as Error)?.message ?? err})`, err);
+    } finally {
+      clearTimeout(timer);
+      ctx.signal?.removeEventListener('abort', onCallerAbort);
+    }
+  }
+
+  /** Subscribe to a run's events and read it to a terminal event — or `undefined` when the stream
+   *  is unusable (a 404, a non-SSE body) or ends without one, which hands the decision to the poll
+   *  fallback. Throws for a terminal FAILURE event; a transport error propagates to the caller's
+   *  give-up check. */
+  private async consumeRunEventsFrom(runId: string, signal: AbortSignal, ctx: EngineRunContext): Promise<RunOutcome | undefined> {
+    const res = await this.deps.fetchFn(`${this.baseUrl}/v1/runs/${encodeURIComponent(runId)}/events`, {
+      method: 'GET', headers: this.headers(), signal,
+    });
+    const ctype = res.headers?.get?.('content-type') ?? '';
+    if (!res.ok || !res.body || !/text\/event-stream/i.test(ctype)) {
+      // Drained on every path — an unread body leaves the socket holding it (an undici
+      // connection-reuse nit the blocking path fixed the same way).
+      await res.text().catch(() => '');
+      return undefined;
+    }
+    return this.consumeRunEvents(res.body as ReadableStream<Uint8Array>, ctx);
+  }
+
+  /**
+   * Parse `/v1/runs/{id}/events`: `data: {event,…}` frames, `: keepalive` / `: stream closed`
+   * comments in between. Heartbeats are throttled exactly as the chat stream's are — token flow
+   * reads as 'streaming', tool boundaries as 'engine_tool' — so the status line knows a long run is
+   * alive. Returns on the terminal SUCCESS event; `undefined` when the stream simply ends.
+   */
+  private async consumeRunEvents(body: ReadableStream<Uint8Array>, ctx: EngineRunContext): Promise<RunOutcome | undefined> {
+    let lastHeartbeat = 0;
+    const HEARTBEAT_MS = 10_000;
+    const heartbeat = (key: string) => {
+      const now = this.deps.now();
+      if (now - lastHeartbeat >= HEARTBEAT_MS) { lastHeartbeat = now; ctx.onProgress?.(key); }
+    };
+    for await (const line of this.sseLines(body)) {
+      if (!line.startsWith('data:')) continue; // a keepalive / stream-closed comment
+      let frame: RunEventFrame;
+      try {
+        frame = JSON.parse(line.slice(5).trim()) as RunEventFrame;
+      } catch {
+        continue; // a partial or non-JSON frame — skip it, more will follow
+      }
+      switch (frame.event) {
+        case 'message.delta':
+          heartbeat('streaming');
+          break;
+        case 'tool.started':
+        case 'tool.completed':
+          heartbeat('engine_tool');
+          break;
+        case 'run.completed':
+          return this.runOutcome(frame.output, frame.pending_steer);
+        case 'run.failed':
+          throw new EngineRunError(`hermes run failed: ${String(frame.error ?? 'no error text').slice(0, 300)}`, 'llm_error');
+        case 'run.cancelled':
+          throw new EngineRunError('hermes run was cancelled', 'cancelled');
+        default:
+          break; // run.steered / approval.request / anything hermes adds later
+      }
+    }
+    return undefined;
+  }
+
+  /** The one reading of a terminal payload, shared by the stream and the poll: an absent `output` is
+   *  the empty string (runViaEngine already treats empty text as an honest miss), and an empty
+   *  `pending_steer` is no pending steer at all. */
+  private runOutcome(output: unknown, pendingSteer: unknown): RunOutcome {
+    return {
+      output: typeof output === 'string' ? output : '',
+      ...(typeof pendingSteer === 'string' && pendingSteer.trim() ? { pendingSteer } : {}),
+    };
+  }
+
+  /**
+   * The fallback when the events stream is gone: read `GET /v1/runs/{id}` until the run is terminal.
+   *
+   * Bounded by the same window everything else in this run is (`signal` aborts it, `deadline` stops
+   * it re-polling past the budget), so a run stuck `waiting_for_approval` — which nothing here can
+   * answer — gives up on our clock instead of hanging.
+   */
+  private async pollRunUntilTerminal(runId: string, signal: AbortSignal, ctx: EngineRunContext, deadline: number): Promise<RunOutcome> {
+    const path = `/v1/runs/${encodeURIComponent(runId)}`;
+    for (;;) {
+      const res = await this.requestText(path, { method: 'GET', headers: this.headers() }, signal, HermesBackend.RUN_POLL_REQUEST_TIMEOUT_MS);
+      // Terminal records are kept an hour engine-side, so a 404 here means the run genuinely never
+      // existed or the engine restarted under us — either way there is no answer coming.
+      if (res.status === 404) throw new EngineRunError(`hermes no longer knows run ${runId}`, 'llm_error', res.status);
+      this.throwForStatus(res, 'run status');
+      const body = this.parseJson<RunStatusBody>(res, 'run status');
+      switch (body.status) {
+        case 'completed':
+          return this.runOutcome(body.output, body.pending_steer);
+        case 'failed':
+          throw new EngineRunError(`hermes run failed: ${String(body.error ?? 'no error text').slice(0, 300)}`, 'llm_error', res.status);
+        case 'cancelled':
+          throw new EngineRunError('hermes run was cancelled', 'cancelled', res.status);
+        default:
+          break; // queued | running | waiting_for_approval | stopping
+      }
+      // Still alive: say so (throttled inside), then wait — but never past the window, because a
+      // sleep the deadline outlives is a hang the caller can't see.
+      ctx.onProgress?.('streaming');
+      if (Date.now() + HermesBackend.RUN_POLL_INTERVAL_MS >= deadline) {
+        throw Object.assign(new Error(`hermes run ${runId} did not finish inside its window`), { name: 'AbortError' });
+      }
+      await this.sleep(HermesBackend.RUN_POLL_INTERVAL_MS, signal);
+    }
+  }
+
+  /** Abortable sleep. Resolves on the abort too — the caller re-checks the signal, so the give-up
+   *  path stays in ONE place (the request that follows). */
+  private sleep(ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise<void>(resolve => {
+      const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); };
+      const timer = setTimeout(done, ms);
+      if (signal.aborted) done();
+      else signal.addEventListener('abort', done, { once: true });
+    });
+  }
+
+  /**
+   * Tell hermes to stop a run we have given up on, and leave the receipt.
+   *
+   * Fire-and-forget ON PURPOSE: the run rejects in this same tick, so runViaEngine's
+   * `finally { release?.() }` hands the engine slot back immediately instead of after the budget.
+   * The receipt lands when the stop settles, hence a latency that measures give-up → stop-answered
+   * (the run itself was already gone at ~0ms). `reason` is what makes the receipt readable: an
+   * 'abort' is the user's cancel, a 'timeout' is our own transport window closing — the case that
+   * used to leave hermes running an orphaned agent for minutes.
+   *
+   * Everything is swallowed. The run is over either way, and a stop is cooperative (hermes answers
+   * 200 `{"status":"stopping"}` and interrupts at its next checkpoint).
+   */
+  private notifyRunStop(task: OpsTask, runId: string, reason: 'abort' | 'timeout'): void {
+    if (!opsCancelEngineAbortEnabled()) return;
+    // The WALL clock, not this.deps.now(): the injected one is pinned to a single instant in tests
+    // (and is free to be a logical clock), and a latency has to measure real elapsed time.
+    const gaveUpAt = Date.now();
+    void this.requestText(`/v1/runs/${encodeURIComponent(runId)}/stop`, {
+      method: 'POST', headers: this.headers(),
+    }, undefined, HermesBackend.RUN_STOP_TIMEOUT_MS)
+      .then(res => res.ok, () => false)
+      .then(engineNotified => {
+        // This is the ADAPTER's leg of the cancel receipt — the orchestrator records its own
+        // `ops:cancelled` synchronously when the turn unwinds; `engine` tells the two apart, and
+        // only this one can carry engineNotified, which does not exist until the stop answers.
+        record({
+          type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
+          label: 'ops:cancelled',
+          detail: { request: task.request, engine: 'hermes', runId, engineNotified, latencyMs: Date.now() - gaveUpAt, reason },
+        });
+      });
+  }
+
+  /** ADD to a run already in flight (EngineBackend.steerRun). Short window on purpose: this runs
+   *  inside a live Convo turn, and the user is waiting on the ack.
+   *
+   *  409 is hermes's own gate — only a run whose status is exactly `running` is steerable, so a run
+   *  still constructing its agent answers 409 and so does one already finalizing. Both are
+   *  'not_running', which is what tells ./steer.ts the construction window is worth a retry. */
+  async steerRun(handle: EngineRunHandle, text: string, opts: { signal?: AbortSignal } = {}): Promise<'accepted' | 'not_running'> {
+    // Belt to the caller's braces: an OpenClaw handle here would steer a hermes run id that means
+    // nothing on this engine.
+    if (handle.engine !== 'hermes') return 'not_running';
+    const res = await this.requestText(`/v1/runs/${encodeURIComponent(handle.runId)}/steer`, {
+      method: 'POST', headers: this.headers(), body: JSON.stringify({ input: text }),
+    }, opts.signal, HermesBackend.RUN_STEER_TIMEOUT_MS);
+    if (res.ok) return 'accepted';
+    if (res.status === 404 || res.status === 409) return 'not_running';
+    this.throwForStatus(res, 'run steer'); // 401/403/429/5xx keep the seam's own vocabulary
+    return 'not_running'; // unreachable: throwForStatus always throws on a non-2xx
   }
 
   /**
@@ -571,19 +946,13 @@ export class HermesBackend implements EngineBackend {
     }
   }
 
-  /** Parse an OpenAI-style SSE stream: accumulate delta content, emit throttled progress heartbeats.
-   *  Exposed shape is a pure string return; malformed/partial frames are skipped, `[DONE]` ends it. */
-  private async consumeSse(body: ReadableStream<Uint8Array>, ctx: EngineRunContext): Promise<string> {
+  /** The wire-level half of every SSE this adapter reads: decode, split on newlines, yield the
+   *  non-empty lines. Shared by the chat stream (OpenAI `choices[].delta` frames) and the run event
+   *  stream (`{event,…}` frames) — two frame vocabularies, one framing. */
+  private async *sseLines(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    let out = '';
-    let lastHeartbeat = 0;
-    const HEARTBEAT_MS = 10_000;
-    const heartbeat = (key: string) => {
-      const now = this.deps.now();
-      if (now - lastHeartbeat >= HEARTBEAT_MS) { lastHeartbeat = now; ctx.onProgress?.(key); }
-    };
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -592,16 +961,31 @@ export class HermesBackend implements EngineBackend {
       while ((nl = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, nl).trim();
         buffer = buffer.slice(nl + 1);
-        if (!line.startsWith('data:')) continue;
-        const payload = line.slice(5).trim();
-        if (payload === '[DONE]') return out;
-        try {
-          const frame = JSON.parse(payload) as { choices?: Array<{ delta?: { content?: string; tool_calls?: unknown[] } }> };
-          const delta = frame.choices?.[0]?.delta;
-          if (typeof delta?.content === 'string' && delta.content) { out += delta.content; heartbeat('streaming'); }
-          if (Array.isArray(delta?.tool_calls) && delta.tool_calls.length) heartbeat('engine_tool');
-        } catch { /* a partial or non-JSON frame — skip it, more will follow */ }
+        if (line) yield line;
       }
+    }
+  }
+
+  /** Parse an OpenAI-style SSE stream: accumulate delta content, emit throttled progress heartbeats.
+   *  Exposed shape is a pure string return; malformed/partial frames are skipped, `[DONE]` ends it. */
+  private async consumeSse(body: ReadableStream<Uint8Array>, ctx: EngineRunContext): Promise<string> {
+    let out = '';
+    let lastHeartbeat = 0;
+    const HEARTBEAT_MS = 10_000;
+    const heartbeat = (key: string) => {
+      const now = this.deps.now();
+      if (now - lastHeartbeat >= HEARTBEAT_MS) { lastHeartbeat = now; ctx.onProgress?.(key); }
+    };
+    for await (const line of this.sseLines(body)) {
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (payload === '[DONE]') return out;
+      try {
+        const frame = JSON.parse(payload) as { choices?: Array<{ delta?: { content?: string; tool_calls?: unknown[] } }> };
+        const delta = frame.choices?.[0]?.delta;
+        if (typeof delta?.content === 'string' && delta.content) { out += delta.content; heartbeat('streaming'); }
+        if (Array.isArray(delta?.tool_calls) && delta.tool_calls.length) heartbeat('engine_tool');
+      } catch { /* a partial or non-JSON frame — skip it, more will follow */ }
     }
     return out;
   }
@@ -816,6 +1200,11 @@ export class HermesBackend implements EngineBackend {
     this.capRefreshing = true;
     try {
       const bodies = await Promise.all([this.fetchCapBody('/v1/toolsets'), this.fetchCapBody('/v1/capabilities')]);
+      // The transport question rides this same read (it is what `/v1/capabilities` is FOR — the
+      // action-class half of it contributes nothing on a stock hermes). Only an answer updates the
+      // gate: a failed read leaves the last one standing, and never turns "unknown" into "no runs".
+      const runsSupported = bodies[1] === undefined ? undefined : manifestSupportsRuns(bodies[1]);
+      if (runsSupported !== undefined) this.capRunsSupported = runsSupported;
       const answered = bodies.filter(b => b !== undefined);
       if (!answered.length) return; // total failure → keep last-known, retry next read
       const partial = answered.length < bodies.length;
