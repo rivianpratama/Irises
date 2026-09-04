@@ -4,10 +4,11 @@
 // Irises turn: enqueueInbound → Convo → (deep work back on the engine) → Composer → the bridge
 // channel delivers through the engine's connection.
 //
-// This file is only the DOOR: auth, one call into ./contract.ts, the receipt, and the answer.
-// What a v1 payload IS lives in the contract; mapBridgeMedia and normalizeTimestamp are re-exported
-// from here because they were born here and callers (and bridge.test.ts, the byte-identity oracle
-// for the coercions) import them from this path.
+// This file is only the DOOR: auth, one call into ./contract.ts, one claim against
+// bridge_inbound_seen, the receipt, and the answer. What a v1 payload IS lives in the contract;
+// mapBridgeMedia and normalizeTimestamp are re-exported from here because they were born here and
+// callers (and bridge.test.ts, the byte-identity oracle for the coercions) import them from this
+// path.
 //
 // Auth mirrors /api/engine/push: ENGINE_PUSH_TOKEN set → x-bridge-token must match exactly;
 // unset → loopback-only (dev). One token guards both engine-facing doors on purpose — the setup
@@ -15,6 +16,7 @@
 import { Router, type Request } from 'express';
 import { noteBridgeChat } from './channel.js';
 import { parseBridgeInbound } from './contract.js';
+import { claimBridgeInbound, bridgeInboundDedupEnabled } from '../../db/repositories/bridgeInboundSeen.js';
 import { record } from '../../diagnostics/trace.js';
 import type { AgentClient, EnqueueInbound } from '../../index.js';
 
@@ -49,6 +51,30 @@ export function createBridgeInboundRouter(deps: { enqueueInbound: EnqueueInbound
       return;
     }
     const v = parsed.value;
+    const detail: Record<string, unknown> = {
+      engine: v.engine, platform: v.platform, isGroup: v.isGroup, chars: v.text.length,
+      media: v.mediaCount, schemaVersion: v.schemaVersion, truncated: v.truncated,
+      ...(parsed.ignoredFields.length ? { ignored: parsed.ignoredFields } : {}),
+    };
+
+    // Idempotency BEFORE any side effect: the plugins claim the turn from their engine before Irises
+    // acknowledges, and the Hermes one retries three times, so a 202 that never landed comes back.
+    // A synthetic eng-in- id is minted per request and could never match a retry — claiming it would
+    // only fill the table with keys nothing will ever look up.
+    const dedupe = !bridgeInboundDedupEnabled() ? undefined
+      : !v.hasPlatformMessageId ? 'unkeyed'
+      : claimBridgeInbound(v.platform, v.chatId, v.messageId) === 'duplicate' ? 'hit' : 'miss';
+    if (dedupe === 'hit') {
+      // 200, not 202: nothing was accepted THIS time, and the plugin should stop retrying. No
+      // noteBridgeChat, no enqueue — the first POST already owns this turn.
+      record({
+        type: 'event', chatId: v.chatId, label: 'bridge:inbound',
+        detail: { ...detail, decision: 'duplicate', reason: 'message_id already claimed', dedupe },
+      });
+      res.status(200).json({ ok: true, chatId: v.chatId, duplicate: true });
+      return;
+    }
+
     noteBridgeChat(v.chatId, {
       isGroup: v.isGroup,
       name: v.chatName,
@@ -58,12 +84,7 @@ export function createBridgeInboundRouter(deps: { enqueueInbound: EnqueueInbound
     });
     record({
       type: 'event', chatId: v.chatId, label: 'bridge:inbound',
-      detail: {
-        engine: v.engine, platform: v.platform, isGroup: v.isGroup, chars: v.text.length,
-        media: v.media.images.length + v.media.audio.length + v.media.video.length + v.media.docs.length,
-        decision: 'accepted', schemaVersion: v.schemaVersion, truncated: v.truncated,
-        ...(parsed.ignoredFields.length ? { ignored: parsed.ignoredFields } : {}),
-      },
+      detail: { ...detail, decision: 'accepted', ...(dedupe ? { dedupe } : {}) },
     });
     // Reply-to: the contract carries the quoted CONTENT alongside the id when the plugin forwarded
     // it, so the model sees what was replied to even if the id can't be resolved to a stored

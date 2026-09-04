@@ -54,6 +54,7 @@ test('contract: a full payload parses into exactly the fields the door forwards'
     from: 'eng:whatsapp:+1555',
     text: 'what is the weather',
     messageId: 'm1',
+    hasPlatformMessageId: true,
     media: { images: [{ url: 'https://x/p.jpg', mimeType: 'image/jpeg', filename: undefined }], audio: [], video: [], docs: [] },
     mediaCount: 1,
     replyTo: { message_id: 'root9', content: '  here is the report  ' },
@@ -175,6 +176,7 @@ test('contract: with the gate off the parsed value is the pre-refactor field set
       from: 'eng:telegram:-777',
       text: 'in the topic',
       messageId: '42',
+      hasPlatformMessageId: true,
       media: { images: [], audio: [], video: [], docs: [] },
       mediaCount: 0,
       replyTo: undefined,
@@ -216,6 +218,8 @@ test('contract: a quote with no id gets a synthetic id, derived from the parse c
   assert.ok(res.ok);
   assert.equal(res.value.replyTo?.content, 'the earlier one');
   assert.equal(res.value.replyTo?.message_id, `eng-quote-${NOW.toString(36)}`);
-  // No message_id at all → the synthetic inbound id, from the same clock.
+  // No message_id at all → the synthetic inbound id, from the same clock, and flagged as such so
+  // idempotency never claims a key that changes every request.
   assert.equal(res.value.messageId, `eng-in-${NOW.toString(36)}`);
+  assert.equal(res.value.hasPlatformMessageId, false);
 });

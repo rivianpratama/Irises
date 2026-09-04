@@ -11,6 +11,7 @@ import type { Server } from 'node:http';
 import { bridgeChannel, parseBridgeChatId, noteBridgeChat } from './channel.js';
 import { createBridgeInboundRouter, mapBridgeMedia, normalizeTimestamp } from './inboundRouter.js';
 import { parseChannelKind } from '../registry.js';
+import { resetStorageForTests, stmt } from '../../db/sqlite.js';
 import { resetEngineBackendCache, type EngineBackend } from '../../agents/ops/engineBackend.js';
 import type { AgentClient, EnqueueInbound } from '../../index.js';
 import type { IncomingMedia, ReplyTo } from '../../webhook/types.js';
@@ -239,6 +240,82 @@ test('inbound: a forwarded platform timestamp becomes receivedAt; absent/bogus f
 
   await post(base, { platform: 'telegram', chat_id: '-1', text: 'b', message_id: 'm2', timestamp: 'garbage' }, 'brtok');
   assert.equal(queued[1].receivedAt, undefined, 'garbage → undefined → caller falls back to now');
+});
+
+// ── inbound idempotency ───────────────────────────────────────────────────────
+/** Rows in the claim table — the off-path assertion needs to see that nothing was written. */
+function seenRowCount(): number {
+  return Number((stmt('SELECT COUNT(*) AS n FROM bridge_inbound_seen').get() as { n: number }).n);
+}
+
+
+// The Hermes plugin retries a forward three times and claims the turn before Irises acknowledges,
+// so a 202 that never lands is up to three duplicate turns. These are the drills that stop that.
+
+test('inbound: the same message_id twice is one turn and an honest 200', async (t) => {
+  process.env.ENGINE_PUSH_TOKEN = 'brtok';
+  t.after(() => { delete process.env.ENGINE_PUSH_TOKEN; });
+  resetStorageForTests();
+  const queued: Queued[] = [];
+  const { server, base } = await startApp(queued);
+  t.after(() => server.close());
+
+  const body = { platform: 'whatsapp', chat_id: '+1555', text: 'what is the weather', message_id: 'm-1' };
+  assert.equal((await post(base, body, 'brtok')).status, 202);
+  const again = await post(base, body, 'brtok');
+  assert.equal(again.status, 200, 'a retry is not an error — the first POST is being honoured');
+  assert.deepEqual(await again.json(), { ok: true, chatId: 'eng:whatsapp:+1555', duplicate: true });
+  assert.equal(queued.length, 1, 'exactly one turn');
+});
+
+test('inbound: the same message_id on two platforms is two turns', async (t) => {
+  process.env.ENGINE_PUSH_TOKEN = 'brtok';
+  t.after(() => { delete process.env.ENGINE_PUSH_TOKEN; });
+  resetStorageForTests();
+  const queued: Queued[] = [];
+  const { server, base } = await startApp(queued);
+  t.after(() => server.close());
+
+  // Platforms number their own messages; "42" from telegram and "42" from signal are two people
+  // talking, which is why the key is (platform, chat_id, message_id) and not the id alone.
+  assert.equal((await post(base, { platform: 'telegram', chat_id: '-1', text: 'a', message_id: '42' }, 'brtok')).status, 202);
+  assert.equal((await post(base, { platform: 'signal', chat_id: '+1', text: 'b', message_id: '42' }, 'brtok')).status, 202);
+  assert.equal((await post(base, { platform: 'telegram', chat_id: '-2', text: 'c', message_id: '42' }, 'brtok')).status, 202);
+  assert.equal(queued.length, 3);
+});
+
+test('inbound: a payload with no message_id is undeduped — the documented gap', async (t) => {
+  process.env.ENGINE_PUSH_TOKEN = 'brtok';
+  t.after(() => { delete process.env.ENGINE_PUSH_TOKEN; });
+  resetStorageForTests();
+  const queued: Queued[] = [];
+  const { server, base } = await startApp(queued);
+  t.after(() => server.close());
+
+  // The synthetic eng-in- id is minted per REQUEST, so it can never identify a retry. Claiming it
+  // would poison the table with keys nothing will ever match. Task 33 is what closes this: the
+  // plugins send a stable digest when the platform gives them no id.
+  const body = { platform: 'signal', chat_id: '+1', text: 'same words twice' };
+  assert.equal((await post(base, body, 'brtok')).status, 202);
+  assert.equal((await post(base, body, 'brtok')).status, 202);
+  assert.equal(queued.length, 2);
+  assert.notEqual(queued[0].messageId, queued[1].messageId);
+});
+
+test('inbound: with the dedup gate off a retry is a second turn, exactly as before', async (t) => {
+  process.env.ENGINE_PUSH_TOKEN = 'brtok';
+  process.env.BRIDGE_INBOUND_DEDUP = 'off';
+  t.after(() => { delete process.env.ENGINE_PUSH_TOKEN; delete process.env.BRIDGE_INBOUND_DEDUP; });
+  resetStorageForTests();
+  const queued: Queued[] = [];
+  const { server, base } = await startApp(queued);
+  t.after(() => server.close());
+
+  const body = { platform: 'whatsapp', chat_id: '+1555', text: 'yo', message_id: 'm-1' };
+  assert.equal((await post(base, body, 'brtok')).status, 202);
+  assert.equal((await post(base, body, 'brtok')).status, 202);
+  assert.equal(queued.length, 2);
+  assert.equal(seenRowCount(), 0, 'off touches the table not at all');
 });
 
 test('normalizeTimestamp: seconds↔ms, future/ancient clamp, garbage', () => {

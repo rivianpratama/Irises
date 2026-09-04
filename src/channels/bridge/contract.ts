@@ -107,6 +107,9 @@ export interface BridgeInboundValue {
   from: string;
   text: string;
   messageId: string;
+  /** False when `messageId` is the synthetic `eng-in-…` fallback — minted per REQUEST, so it can
+   *  never identify a retry and must never be claimed for idempotency. */
+  hasPlatformMessageId: boolean;
   media: IncomingMedia;
   /** How many media entries the plugin FORWARDED (not how many mapped) — the receipt reports this,
    *  so an entry dropped for carrying neither url nor path is visible as a gap. */
@@ -197,6 +200,7 @@ export function parseBridgeInbound(body: unknown, nowMs: number = Date.now()): B
       from: `eng:${platform}:${b.sender_id != null ? String(b.sender_id) : rawChatId}`,
       text,
       messageId: String(b.message_id ?? `eng-in-${nowMs.toString(36)}`),
+      hasPlatformMessageId: b.message_id != null,
       media,
       mediaCount: mediaItems?.length ?? 0,
       replyTo,
