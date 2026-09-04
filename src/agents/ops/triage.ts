@@ -55,6 +55,25 @@ export function retryTaskFor(task: OpsTask, decision: TriageDecision): OpsTask {
   return { ...retry, metaPrompt: [task.metaPrompt, decision.directive].filter(Boolean).join('\n\n') };
 }
 
+/**
+ * The REPLAY LEG for an addition the engine accepted but never applied — hermes's `pending_steer`,
+ * which happens when a steer lands after the final model response (turn_finalizer had already run).
+ *
+ * The first leg's answer is real, it just does not contain the last thing the user asked for.
+ * Delivering it as-is would read as Irises ignoring them, so the addition is folded onto the REQUEST
+ * — the field `buildTaskPrompt` renders as the brief — and the whole ask runs again with it in.
+ *
+ * `retryOf` does the same two jobs it does above: it keeps the role on `ops` and, through
+ * `canRetry`, makes this the LAST leg. That bound matters more here than on a retry: a replay
+ * follows a leg that already succeeded, so a third leg would be spending a full engine run on top of
+ * an answer that was already good enough to deliver.
+ *
+ * Pure: no clock, no env, no engine read.
+ */
+export function steerReplayTaskFor(task: OpsTask, steer: string): OpsTask {
+  return { ...task, retryOf: task.id, request: `${task.request}\nThe user added mid-run: ${steer.trim()}` };
+}
+
 /** A second leg has already run for this attempt (the cheap retry). Blocks a further RETRY
  *  (canRetry): at most one retry per attempt. */
 export function isSecondLeg(task: OpsTask): boolean {

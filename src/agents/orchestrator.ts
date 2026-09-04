@@ -4,7 +4,7 @@ import { setPreference } from '../db/repositories/memory.js';
 import { addShortTerm } from '../db/repositories/memoryShort.js';
 import { composeWithComposer } from './composerCore.js';
 import { markOpsDone, isOpsCancelled, noteOpsProgress, markOpsRetry, getOpsEtaStatus, normalizeRequest } from '../state/opsCoordination.js';
-import { detectCause, decide, splitMiss, retryTaskFor, type TriageDecision } from './ops/triage.js';
+import { detectCause, decide, splitMiss, retryTaskFor, steerReplayTaskFor, type TriageDecision } from './ops/triage.js';
 import { selectInterveningUserMessages } from './interveningMessages.js';
 import { redactInternalTools } from './guardrails.js';
 import { describeGap } from '../pipeline/chatTime.js';
@@ -371,6 +371,49 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
       return;
     }
 
+    // ── Steer replay ─────────────────────────────────────────────────────────
+    // The engine ACCEPTED a mid-run addition and then never applied it: the steer landed after its
+    // final model response (hermes reports it as `pending_steer` on the terminal event). So the
+    // answer in hand is real but does not contain the last thing the user asked for, and delivering
+    // it as-is reads as Irises having ignored them. Replay it ONCE as a refinement leg — the same
+    // `retryOf` path a triage retry uses, which is also what makes the replay the LAST leg (its
+    // task's retryOf turns canRetry false, so triage below cannot add a third run on top of an
+    // answer that already succeeded).
+    //
+    // No seed corpus, for the same reason the retry leg carries none: this is a fresh pass at the
+    // whole ask, and grounding must rest on what it actually re-fetches.
+    const unapplied = result.steerUnapplied?.trim();
+    let ladderTask = task;
+    if (unapplied && !task.retryOf && !isOpsCancelled(task.chatId, task.id)) {
+      record({
+        type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
+        label: 'ops:steer-replay', detail: { steer: unapplied.slice(0, 200), attempt: task.attempt ?? 1 },
+      });
+      // Keep the in-flight clock fresh so "still on it" and the dedupe guard stay truthful across a
+      // second leg the user never explicitly asked for (see markOpsRetry).
+      markOpsRetry(task.chatId, task.id);
+      const replayTask = steerReplayTaskFor(task, unapplied);
+      const replay = makePings(PROGRESS_QUIET_MS);
+      pingStops.push(() => replay.gate.stop());
+      const replayAbort = new AbortController();
+      const replayRun = runTask(replayTask, milestoneKey => { noteOpsProgress(replayTask.chatId, replayTask.id, milestoneKey); void replay.voiceAndPing('progress', milestoneKey); }, combineSignals(signal, replayAbort.signal), undefined, undefined);
+      try {
+        result = await withDeadline(replayRun, legBudgetFor(replayTask), `ops steer-replay ${task.id}`);
+        ladderTask = replayTask;
+      } catch (err) {
+        // The replay died — keep the FIRST leg's answer. It is a real answer that merely misses the
+        // addition, which beats voicing a snag over work that succeeded. The engine was asked to say
+        // in FLAGS when a steer arrived too late (ops/steer.ts), so the gap is not silent either.
+        console.warn('[orchestrator] steer replay failed; keeping the pre-steer answer', err);
+        if (err instanceof DeadlineError) {
+          replayAbort.abort();
+          await Promise.race([replayRun.catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
+        }
+      }
+      replay.gate.stop();
+      record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:steer-replay-result', detail: { status: result.status, replayed: ladderTask !== task } });
+    }
+
     let moment = classifyResult(result);
     let triage: TriageDecision | undefined;
 
@@ -380,7 +423,9 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
     if (moment !== 'answer') {
       const cause = detectCause(result, timedOut);
       // Only a genuine empty miss needs the LLM splitter; every other cause is deterministic.
-      triage = cause === 'empty_miss' ? await splitMiss(result, task) : decide(cause, task);
+      // `ladderTask` is the original task on every ordinary path and the REPLAY task when a steer
+      // replay ran — its retryOf is what keeps the ladder at two legs total.
+      triage = cause === 'empty_miss' ? await splitMiss(result, ladderTask) : decide(cause, ladderTask);
       record({
         type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:triage',
         // `directive` rides along so a trace says what the second pass was actually told (it is what
