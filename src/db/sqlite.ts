@@ -155,6 +155,25 @@ CREATE TABLE IF NOT EXISTS bridge_inbound_seen (
 );
 CREATE INDEX IF NOT EXISTS idx_bridge_inbound_seen_created ON bridge_inbound_seen(created_at);
 
+-- One row per background ops run. The registry that decides "is research running right now?" is a
+-- process-local map by design (state/opsCoordination.ts) — it dies with the VM, which is correct,
+-- because a crashed run never resumes. But then nothing can say afterwards that a run was CUT OFF,
+-- and the user is left holding a "give me a minute" that never lands. This row is that memory, and
+-- only that: it is NOT a queue. Nothing re-runs off it — a stranded row is marked 'lost' and owned
+-- up to once, in her voice, because re-running a leg costs real money and can repeat a side effect.
+-- 'pending_approval' is the other end of the same table: an action parked waiting for the user's yes.
+CREATE TABLE IF NOT EXISTS ops_tasks (
+  id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, kind TEXT NOT NULL, request TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'running'
+    CHECK (status IN ('pending_approval','running','retrying','delivered','failed','cancelled','lost','declined','expired')),
+  started_at INTEGER NOT NULL, leg_started_at INTEGER NOT NULL, budget_ms INTEGER,
+  retry_of TEXT, meta_json TEXT NOT NULL DEFAULT '{}',
+  updated_at INTEGER NOT NULL, settled_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_ops_tasks_live ON ops_tasks(status, leg_started_at)
+  WHERE status IN ('running','retrying');
+CREATE INDEX IF NOT EXISTS idx_ops_tasks_chat ON ops_tasks(chat_id, started_at DESC);
+
 -- Cold storage under every tier: rows retired anywhere upstream (a superseded medium entry,
 -- an expired short row, a pruned message, an evicted profile fact) land here so "search your
 -- own past" has something to read. The source column is deliberately CHECK-less — the repo owns
@@ -383,6 +402,7 @@ export function resetStorageForTests(): void {
     DELETE FROM forget_epochs;
     DELETE FROM proactive_deliveries;
     DELETE FROM bridge_inbound_seen;
+    DELETE FROM ops_tasks;
     DELETE FROM token_usage;
     DELETE FROM error_log;
     DELETE FROM diagnostic_turns;
