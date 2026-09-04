@@ -1280,6 +1280,10 @@ interface PendingApprovalPref {
   /** True on the marker the re-confirm wrote: a yes to THIS one is a fresh approval, and it never
    *  re-asks a second time. */
   reconfirm?: boolean;
+  /** When the ask ran out of clock. The row is already settled 'expired' by then; the marker lives
+   *  one more TTL so a yes that arrives a couple of turns late still gets its one re-ask rather than
+   *  landing on nothing (user decision 2026-09-04). */
+  expiredAt?: number;
 }
 
 /** What the resolution hands back: at most one of the two, and usually neither. */
@@ -1340,8 +1344,9 @@ function approvedTask(pa: PendingApprovalPref, chatId: string, sender: string, n
  *   • yes, inside the TTL → promote the row, hand the task back, drop the marker;
  *   • no → settle the row 'declined', drop the marker (Convo's own line acknowledges it);
  *   • unclear → nothing moves; the ask stays live and the section asks again next turn;
- *   • expired → settle 'expired'; a yes on that turn RE-ASKS (never runs) and parks a fresh row,
- *     and the yes after that is a fresh approval;
+ *   • expired → settle 'expired'; a yes on that turn (or on any turn in the ONE grace window after
+ *     it) RE-ASKS instead of running, and parks a fresh row whose yes is a real approval; past the
+ *     grace window the marker lapses and the gate is out of it;
  *   • nothing pending → nothing happens, and the classify lane is never consulted.
  */
 async function resolvePendingApproval(a: {
@@ -1362,13 +1367,12 @@ async function resolvePendingApproval(a: {
   const drop = () => setPreference(a.sender, 'pending_approval', null)
     .catch(err => console.error('[convo] failed to clear pending_approval', err));
 
-  if (expired) {
-    // The ask is dead either way — thirty minutes is the whole point of the TTL.
-    settleOpsTask(String(pa.taskId), 'expired');
-    rec({ decision: 'expired', taskId: pa.taskId, ageMs: latencyMs, consent });
-    // A yes that arrives after the clock ran out is NOT authorization (user decision 2026-09-04):
-    // re-ask once, and only once — a marker that already carries `reconfirm` retires instead.
-    if (consent !== 'yes' || pa.reconfirm) { await drop(); return NO_APPROVAL; }
+  /**
+   * A yes that arrived too late: park the SAME action again as its own row and ask once more. Its
+   * fresh row is what a later yes promotes, so the second yes is a real approval with its own clock
+   * — the expired row stays expired, terminally, and is never the thing that runs.
+   */
+  const armReconfirm = async (): Promise<ApprovalOutcome> => {
     const { task } = approvedTask(pa, a.chatId, a.sender, now);
     const fresh: OpsTask = { ...task, id: randomUUID(), approval: { askedAt: now, reconfirm: true }, createdAt: now };
     if (!insertPendingApproval({ id: fresh.id, chatId: a.chatId, kind: fresh.kind, request: fresh.request, meta: { task: fresh } }, now)) {
@@ -1378,6 +1382,41 @@ async function resolvePendingApproval(a: {
       .catch(err => console.error('[convo] failed to persist pending_approval', err));
     rec({ decision: 'reconfirm', taskId: fresh.id, of: pa.taskId, ageMs: latencyMs });
     return { task: null, reconfirm: fresh.request };
+  };
+
+  // The grace window: this ask expired on an EARLIER turn (the row is already settled), and the
+  // marker was kept because a yes routinely lands a turn or two after the thing it answers.
+  if (typeof pa.expiredAt === 'number') {
+    if (now - pa.expiredAt > PENDING_ASK_TTL_MS) {
+      // Out of clock twice over. Nothing here can ever run again, so the marker goes — and the
+      // receipt fires on that no-op, because "she stopped noticing my yes" is otherwise invisible.
+      await drop();
+      rec({ decision: 'lapsed', taskId: pa.taskId, ageMs: latencyMs });
+      return NO_APPROVAL;
+    }
+    if (consent === 'yes' && !pa.reconfirm) return await armReconfirm();
+    if (consent === 'no') {
+      await drop();
+      rec({ decision: 'declined', taskId: pa.taskId, latencyMs, stage: 'expired' });
+      return NO_APPROVAL;
+    }
+    rec({ decision: 'unclear', taskId: pa.taskId, latencyMs, stage: 'expired' });
+    return NO_APPROVAL;
+  }
+
+  if (expired) {
+    // The ROW is dead either way — thirty minutes is the whole point of the TTL.
+    settleOpsTask(String(pa.taskId), 'expired');
+    rec({ decision: 'expired', taskId: pa.taskId, ageMs: latencyMs, consent });
+    // A yes that arrives after the clock ran out is NOT authorization (user decision 2026-09-04):
+    // re-ask once, and only once — a marker that already carries `reconfirm` retires instead.
+    if (consent === 'yes' && !pa.reconfirm) return await armReconfirm();
+    // A no, or an ask that was ALREADY the re-ask (one re-ask, ever): the marker goes now.
+    if (consent === 'no' || pa.reconfirm) { await drop(); return NO_APPROVAL; }
+    // Nothing was answered on this turn. Keep the marker, stamped, for one grace window.
+    await setPreference(a.sender, 'pending_approval', { ...pa, expiredAt: now })
+      .catch(err => console.error('[convo] failed to persist pending_approval', err));
+    return NO_APPROVAL;
   }
 
   if (consent === 'yes') {

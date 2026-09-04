@@ -479,17 +479,57 @@ test('a yes after the ask expired re-asks instead of running, and the next yes i
   assert.equal(receipt('ops:approval')?.decision, 'approved');
 });
 
-test('an expired ask with no yes just retires — the row is expired and the marker is dropped', async () => {
+test('an expired ask the turn did not answer settles the row and keeps one grace window open', async () => {
   const { a, row } = await park();
   await age(a);
   laneVerdict = 'UNCLEAR';
   const out = await processConvoResult({ ...answer(a, 'anyway what about the rent thing'), res: makeResult(['what about it?']), turn: reasker([]).turn });
 
   assert.equal(out.delegatedTask, null);
-  assert.equal(getOpsTask(row.id)?.status, 'expired');
-  assert.equal(await getPreference(a.handle, 'pending_approval'), null, 'nothing keeps asking');
+  assert.equal(getOpsTask(row.id)?.status, 'expired', 'the row is settled the moment the clock runs out');
   assert.equal(receipt('ops:approval')?.decision, 'expired');
-  assert.equal(listPendingApprovals(a.chatId).length, 0);
+  assert.equal(listPendingApprovals(a.chatId).length, 0, 'nothing is parked any more');
+  const pref = await getPreference<{ expiredAt?: number }>(a.handle, 'pending_approval');
+  assert.equal(typeof pref?.expiredAt, 'number', 'the marker stays, stamped, for a yes that is still coming');
+});
+
+test('a yes inside the grace window re-asks; past it the marker lapses and a yes means nothing', async () => {
+  // Inside: the yes arrives two turns after the ask expired, and still gets one re-ask.
+  const { a } = await park();
+  await age(a);
+  laneVerdict = 'UNCLEAR';
+  await processConvoResult({ ...answer(a, 'hmm let me think about that'), res: makeResult(['sure']), turn: reasker([]).turn });
+  const { turn, seen } = reasker(['that one expired — still want me to send it?']);
+  const late = await processConvoResult({ ...answer(a, 'yes do it'), res: makeResult(['sending it']), turn });
+  assert.equal(late.delegatedTask, null, 'a stale yes still never executes');
+  assert.equal(seen.length, 1, 'it re-asks, exactly as it does on the expiring turn');
+  assert.equal(listPendingApprovals(a.chatId).length, 1, 'and parks a fresh row for the answer');
+
+  // Past it: the whole grace window has gone by, so the marker retires and the gate is out of it.
+  const b = await park('cancel my gym membership');
+  await age(b.a);
+  await processConvoResult({ ...answer(b.a, 'hmm let me think about that'), res: makeResult(['sure']), turn: reasker([]).turn });
+  const stale = await getPreference<{ expiredAt: number }>(b.a.handle, 'pending_approval');
+  await setPreference(b.a.handle, 'pending_approval', { ...stale!, expiredAt: Date.now() - PENDING_ASK_TTL_MS - 1 });
+  const gone = await processConvoResult({ ...answer(b.a, 'yes do it'), res: makeResult(['do what?']), turn: reasker(['x']).turn });
+  assert.equal(gone.delegatedTask, null);
+  assert.equal(gone.text, 'do what?', 'no re-ask — there is nothing left to re-ask about');
+  assert.equal(await getPreference(b.a.handle, 'pending_approval'), null, 'the marker is gone');
+  assert.equal(receipt('ops:approval')?.decision, 'lapsed');
+  assert.equal(listPendingApprovals(b.a.chatId).length, 0);
+});
+
+test('a no during the grace window drops the ask without re-asking', async () => {
+  const { a, row } = await park();
+  await age(a);
+  laneVerdict = 'UNCLEAR';
+  await processConvoResult({ ...answer(a, 'hmm let me think about that'), res: makeResult(['sure']), turn: reasker([]).turn });
+  const out = await processConvoResult({ ...answer(a, 'no, forget it'), res: makeResult(['okay']), turn: reasker(['x']).turn });
+  assert.equal(out.delegatedTask, null);
+  assert.equal(out.text, 'okay', 'her own line stands');
+  assert.equal(getOpsTask(row.id)?.status, 'expired', 'the row settled on the expiring turn and stays settled');
+  assert.equal(await getPreference(a.handle, 'pending_approval'), null);
+  assert.equal(receipt('ops:approval')?.decision, 'declined');
 });
 
 test('a yes with nothing pending is not the gate\'s business', async () => {
