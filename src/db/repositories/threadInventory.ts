@@ -25,6 +25,7 @@
 import { logDbError } from '../client.js';
 import { stmt } from '../sqlite.js';
 import { getForgetEpoch } from './memory.js';
+import { isNullLiteral } from '../../persona/status.js';
 import {
   defaultThreadInventory, THEME_KINDS,
   type LoopStatus, type OpenLoop, type PendingOffer, type ThemeKind, type ThemeStatus,
@@ -136,7 +137,10 @@ function coerceThemes(raw: unknown): ThreadTheme[] {
     const t = item as Record<string, unknown>;
     const id = str(t.id).trim();
     const label = str(t.label).trim();
-    if (!id || !label) continue;
+    // A label that is the WORD "null" (or "none", "undefined") has lost its identity exactly as a
+    // missing one has: it is what a weak model writes when it has nothing to report, and a theme
+    // labeled that way is a pattern nobody can be asked about. Dropped on the way in as well as out.
+    if (!id || !label || isNullLiteral(label)) continue;
     // A duplicated id would let the engine's own "find it and update it" read one row and its
     // caps evict the other — two lives for one theme.
     if (seen.has(id)) continue;
@@ -185,7 +189,8 @@ function coerceLoops(raw: unknown): OpenLoop[] {
     const l = item as Record<string, unknown>;
     const id = str(l.id).trim();
     const label = str(l.label).trim();
-    if (!id || !label || seen.has(id)) continue;
+    // Same null-literal rule as themes: "undefined" is not a question anyone could ask.
+    if (!id || !label || isNullLiteral(label) || seen.has(id)) continue;
     if (typeof l.status !== 'string' || !LOOP_STATUSES.has(l.status)) continue;
     seen.add(id);
     out.push({

@@ -8,6 +8,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { processConvoResult, coerceReactionIndex, type ChatContext } from './shared.js';
+import { STANDARD_REACTION_TYPES } from './tools.js';
+import { getConversation } from '../../db/repositories/conversations.js';
 import { emptyMedia } from '../../webhook/types.js';
 import { __resetOpsCoordination } from '../../state/opsCoordination.js';
 import type { LlmResult, LlmToolCall } from '../../llm/types.js';
@@ -73,4 +75,46 @@ test('custom-emoji arm carries re too', async () => {
   __resetOpsCoordination();
   const out = await processConvoResult({ ...baseArgs(), res: makeResult([], [reaction({ type: 'custom', emoji: '🔥', re: '3' })]), textToSend: 'x' });
   assert.deepEqual(out.reaction, { type: 'custom', emoji: '🔥', re: 3 });
+});
+
+// ── the type guard ───────────────────────────────────────────────────────────
+// The old parse was a NEGATIVE test (`input.type !== 'custom'`), so every value that wasn't the
+// string 'custom' — a missing type, a hallucinated 'wave' — became a Reaction whose type was
+// whatever the model wrote. That is how `[reacted with undefined]` reached the live transcript.
+// A tapback glyph is a closed set: an unknown one is dropped, and the turn records nothing.
+
+async function reactionHistory(chatId: string): Promise<string[]> {
+  return (await getConversation(chatId)).map(m => m.content);
+}
+
+test('a missing type is dropped — no reaction, no history line', async () => {
+  __resetOpsCoordination();
+  const args = baseArgs();
+  const out = await processConvoResult({ ...args, res: makeResult([], [reaction({})]), textToSend: 'x' });
+  assert.equal(out.reaction, null);
+  assert.equal((await reactionHistory(args.chatId)).some(c => c.includes('[reacted with')), false);
+});
+
+test('an unknown tapback type is dropped — no reaction, no history line', async () => {
+  __resetOpsCoordination();
+  const args = baseArgs();
+  const out = await processConvoResult({ ...args, res: makeResult([], [reaction({ type: 'wave' })]), textToSend: 'x' });
+  assert.equal(out.reaction, null);
+  assert.equal((await reactionHistory(args.chatId)).some(c => c.includes('[reacted with')), false);
+});
+
+test('custom with no emoji is dropped — no reaction, no history line', async () => {
+  __resetOpsCoordination();
+  const args = baseArgs();
+  const out = await processConvoResult({ ...args, res: makeResult([], [reaction({ type: 'custom' })]), textToSend: 'x' });
+  assert.equal(out.reaction, null);
+  assert.equal((await reactionHistory(args.chatId)).some(c => c.includes('[reacted with')), false);
+});
+
+test('every standard type still survives the guard', async () => {
+  for (const type of STANDARD_REACTION_TYPES) {
+    __resetOpsCoordination();
+    const out = await processConvoResult({ ...baseArgs(), res: makeResult([], [reaction({ type })]), textToSend: 'x' });
+    assert.deepEqual(out.reaction, { type }, type);
+  }
 });

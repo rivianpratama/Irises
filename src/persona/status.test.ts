@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   coerceStatus, extractStatus, clampGauge, affectGaugesFrom, mergeStatus, mergeStatusWithDrift,
   coerceStoredStatus, pushMood, renderStatusForPrompt,
-  renderStatusForComposer, sanitizeThreadText,
+  renderStatusForComposer, sanitizeThreadText, isNullLiteral,
   ENVELOPE_FIELDS, STATUS_SCHEMA_PROP, MOOD_HISTORY_CAP, META_PROMPT_CHARS,
   renderStatusContract, feelingVocabulary,
   type AffectGauges, type AffectStatus, type ComputedState, type EmittedStatus, type MoodPoint,
@@ -124,6 +124,26 @@ test('sanitizeThreadText collapses to one line, strips the injection characters,
   assert.equal(sanitizeThreadText(42, 200), undefined);
   assert.equal(sanitizeThreadText(null, 200), undefined);
   assert.equal(sanitizeThreadText(undefined, 200), undefined);
+});
+
+// A weak model that has nothing to report sometimes writes the WORD instead of the JSON null, and a
+// theme labeled "null" is what shipped to the live thread inventory once. The literal is not a note.
+test('isNullLiteral catches a stringified nothing without eating a real phrase', () => {
+  for (const s of ['null', 'None', 'undefined', 'n/a', 'N/A', ' NULL ', 'nil', 'Nil']) {
+    assert.equal(isNullLiteral(s), true, s);
+  }
+  for (const s of ['null hypothesis', 'none of it landed', 'nine', 'a/b', '']) {
+    assert.equal(isNullLiteral(s), false, s);
+  }
+});
+
+test('sanitizeThreadText drops a null literal rather than quoting it back into a prompt', () => {
+  assert.equal(sanitizeThreadText('null', 200), undefined);
+  assert.equal(sanitizeThreadText('None', 200), undefined);
+  assert.equal(sanitizeThreadText('undefined', 200), undefined);
+  assert.equal(sanitizeThreadText('n/a', 200), undefined);
+  assert.equal(sanitizeThreadText(' NULL ', 200), undefined);
+  assert.equal(sanitizeThreadText('null hypothesis', 200), 'null hypothesis');
 });
 
 test('coerceStatus sanitizes thread_note to 200 chars and drops it when nothing survives', () => {

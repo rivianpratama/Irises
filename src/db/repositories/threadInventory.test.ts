@@ -216,6 +216,30 @@ test('a malformed loop row is dropped while its siblings survive', async () => {
   assert.deepEqual((await getThreadInventory(h)).loops.map(l => l.id), ['lp-a', 'lp-d']);
 });
 
+// A weak model with nothing to report writes the WORD "null" instead of the JSON null, and that is
+// what reached the live inventory once: a taggable theme labeled "null" at confidence 45, ready to
+// be offered back to the person as something they keep circling. The literal has lost its identity
+// exactly as a missing label has, so it goes the same way — on the way in AND on the way out.
+test('a theme or loop labeled with a null literal is dropped, siblings kept', async () => {
+  const h = '+15551110017';
+  const ok = await saveThreadInventory(h, {
+    ...defaultThreadInventory(),
+    themes: [
+      theme({ id: 'th-x', label: 'null', note: 'null' }),
+      theme({ id: 'th-y', label: 'the shed project' }),
+      theme({ id: 'th-z', label: 'None' }),
+    ],
+    loops: [
+      loop({ id: 'lp-x', label: 'undefined', note: 'null' }),
+      loop({ id: 'lp-y', label: 'the interview' }),
+    ],
+  });
+  assert.equal(ok, true);
+  const inv = await getThreadInventory(h);
+  assert.deepEqual(inv.themes.map(t => t.id), ['th-y']);
+  assert.deepEqual(inv.loops.map(l => l.id), ['lp-y']);
+});
+
 test('a garbled counter is coerced back into range rather than costing the theme', async () => {
   const h = '+15551110009';
   const days = [Date.UTC(2026, 0, 1), Date.UTC(2026, 0, 4)];

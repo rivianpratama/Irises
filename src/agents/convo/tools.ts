@@ -1,13 +1,19 @@
 import { provenanceEnabled } from '../../memory/provenance.js';
 import type { LlmToolDef } from '../../llm/types.js';
 
+/** The tapback glyphs the channels actually carry. ONE source of truth: the tool's enum is built
+ *  from this list, and the dispatch in shared.ts tests membership against it — a value the model
+ *  invents (or a missing `type`) has to be rejected there, not passed through, or it reaches the
+ *  transcript as `[reacted with undefined]`. 'custom' is the escape hatch and rides beside it. */
+export const STANDARD_REACTION_TYPES = ['love', 'like', 'dislike', 'laugh', 'emphasize', 'question'] as const;
+
 export const REACTION_TOOL: LlmToolDef = {
   name: 'send_reaction',
   description: "React to one of the user's messages with a standard tapback (love, like, dislike, laugh, emphasize, question). These are the built-in messaging glyphs, NOT emoji in your text — prefer them and avoid the 'custom' type, since your voice never uses emoji. Defaults to their latest message; on a burst set `re` to tapback a specific numbered [msg N] instead. Supplementary to a real answer — but when a message asks nothing and everything in it is already settled ground, a reaction ALONE (this tool + \"bubbles\":[]) is a complete, human reply. Never reaction-only when they actually asked something still open.",
   inputSchema: {
     type: 'object',
     properties: {
-      type: { type: 'string', enum: ['love', 'like', 'dislike', 'laugh', 'emphasize', 'question', 'custom'] },
+      type: { type: 'string', enum: [...STANDARD_REACTION_TYPES, 'custom'] },
       emoji: { type: 'string', description: 'Required when type is "custom".' },
       re: { type: 'number', description: 'Only on a burst (their messages are numbered [msg N] this turn): the number of the specific message to react to. Omit to react to their latest message.' },
     },

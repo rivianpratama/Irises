@@ -321,7 +321,19 @@ export function sanitizeThreadText(v: unknown, cap: number): string | undefined 
     .trim()
     .slice(0, cap)
     .trim(); // the cap can land mid-gap; don't keep a dangling space
+  // A model with nothing to report sometimes writes the WORD rather than the JSON null. Left alone
+  // it becomes a real note: the live inventory once held a taggable theme labeled "null" at
+  // confidence 45, queued to be handed back to the person as something they keep circling.
+  if (isNullLiteral(out)) return undefined;
   return out || undefined;
+}
+
+/** The whole string is a stringified nothing — the word a weak model writes in place of JSON null.
+ *  Anchored on both ends and tested on the TRIMMED text, so a note that merely opens with one of
+ *  these words ("null hypothesis", "none of it landed") is a real note and survives. */
+const NULL_LITERAL_RE = /^(null|none|undefined|nil|n\/a)$/i;
+export function isNullLiteral(s: string): boolean {
+  return NULL_LITERAL_RE.test(s.trim());
 }
 
 /** Coerce a raw `status` object (as emitted, possibly loose) into a validated EmittedStatus, or

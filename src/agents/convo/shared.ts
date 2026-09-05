@@ -25,6 +25,7 @@ import { latestShortTerm } from '../../db/repositories/memoryShort.js';
 import {
   searchArchive, archiveSearchBackend, archiveScopeHasVectors, type ArchiveHit,
 } from '../../db/repositories/memoryArchive.js';
+import { STANDARD_REACTION_TYPES } from './tools.js';
 import { validateDirective } from '../../memory/preferences.js';
 import { FACT_KEYS } from '../../memory/mediumTerm.js';
 import { updateDossier, PENDING_ASK_TTL_MS, PENDING_CLARIFICATION_TTL_MS } from '../../memory/dossier.js';
@@ -1709,7 +1710,21 @@ export async function processConvoResult(args: {
     if (call.name === 'send_reaction') {
       const re = coerceReactionIndex(input.re);
       if (input.type === 'custom' && input.emoji) reaction = { type: 'custom', emoji: String(input.emoji), ...(re != null ? { re } : {}) };
-      else if (input.type !== 'custom') reaction = { type: input.type as StandardReactionType, ...(re != null ? { re } : {}) };
+      // POSITIVE membership, never `!== 'custom'`. The old negative test let every other value
+      // through as a Reaction type — a missing `type` became `[reacted with undefined]` in the
+      // live transcript, and a hallucinated glyph would reach the channel as itself. The set is
+      // closed (tools.ts owns it), so an unknown type is a dropped arg, recorded as one.
+      else if (STANDARD_REACTION_TYPES.includes(input.type as StandardReactionType)) {
+        reaction = { type: input.type as StandardReactionType, ...(re != null ? { re } : {}) };
+      } else {
+        record({
+          type: 'event', label: 'convo:tool_arg_ignored', chatId, handle,
+          detail: {
+            tool: 'send_reaction', arg: 'type', value: String(input.type ?? '').slice(0, 40),
+            reason: input.type === 'custom' ? 'custom_without_emoji' : 'not_a_tapback_type',
+          },
+        });
+      }
     } else if (call.name === 'rename_group_chat') {
       renameChat = String(input.name);
     } else if (call.name === 'remove_member') {
