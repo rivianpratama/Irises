@@ -40,6 +40,7 @@ import { annotateDates } from './datedMemory.js';
 import { DEFAULT_TZ } from '../pipeline/zonedTime.js';
 import { formatDirectiveBullet, looksUnsafe, sanitizeDirectives } from './preferences.js';
 import { REPLY_LANGUAGE_KEY, renderReplyLanguageLine } from './standingSettings.js';
+import { stripEditStamps } from './dossierEdits.js';
 import { stripScopeSections } from './userContext.js';
 import { isGroupHandle } from './identity.js';
 import { dataTag, neutralizeTagBreakouts } from '../llm/promptTag.js';
@@ -107,8 +108,14 @@ export function splitSections(md: string): string[] {
  */
 export function sanitizeLongDoc(md: string, opts: { quiet?: boolean } = {}): string {
   if (!md.trim()) return '';
+  // 0. The line-edit protocol's date stamps come OFF here, once, for every read path this function
+  //    is the gate for: the renderer (renderFlexibleBlockWithGates), the turn-relevance router's
+  //    section split (memory/dossier.ts), the identity anchor's clip and the length cap. The stamps
+  //    are storage-side bookkeeping the dossier's own writer needs and nobody downstream does — and
+  //    left in, "since" and the year would be harvested as topic tokens out of every single line.
+  //    Byte-identical on a document written before stamps existed.
   // 1. Scope/capability sections can't dictate what Irises refuses (the poisoned-dossier precedent).
-  let doc = stripScopeSections(md);
+  let doc = stripScopeSections(stripEditStamps(md));
   // 2. Per-section unsafe screen — drop the offending section, never the whole doc.
   const kept: string[] = [];
   for (const section of splitSections(doc)) {

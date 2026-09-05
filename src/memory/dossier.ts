@@ -12,6 +12,7 @@ import {
   LEGACY_FACT_PROV, PROVENANCE_LINE, SEED_FACT_KEY, provenanceEnabled,
 } from './provenance.js';
 import { PENDING_EMAIL_TTL_MS } from './shortTerm.js';
+import { splitStamp } from './dossierEdits.js';
 import {
   renderUserMemoryWithHot, sanitizeLongDoc, splitSections, profileIsThin,
   type MemoryAudience, type UserMemoryData,
@@ -547,16 +548,23 @@ export function enforceKeyedFactsWithChanges(md: string, confirmed: ConfirmedFac
   const scoped = sectionOf.some(s => s !== null && SUBJECT_SECTIONS.has(s));
 
   const out = lines.map((line, i) => {
+    // The rules above anchor their VALUE on the end of the line, so the line-edit protocol's
+    // trailing "(since YYYY-MM-DD)" has to come off before they read it and go back on after: left
+    // in, it is captured as part of the value — the addressing rule stops matching a stamped line
+    // at all, and the style rule reports a line that agrees as a correction just to strip the date.
+    // A line with no stamp splits to itself, so nothing about the legacy behaviour moves.
+    const { body, since } = splitStamp(line);
     for (const rule of KEYED_FACT_LINES) {
       const section = sectionOf[i];
       if (scoped && !(section !== null && KEYED_FACT_SECTIONS[rule.key].includes(section))) continue;
       const want = rule.value(confirmed);
       if (!want) continue;
-      const m = rule.re.exec(line);
+      const m = rule.re.exec(body);
       if (!m) continue;
       if (sameValue(m[2], want)) return line;         // it already agrees: nothing to do, no report
       if (!changed.includes(rule.key)) changed.push(rule.key);
-      return line.slice(0, m.index) + m[1] + want + m[3] + line.slice(m.index + m[0].length);
+      const fixed = body.slice(0, m.index) + m[1] + want + m[3] + body.slice(m.index + m[0].length);
+      return since === null ? fixed : `${fixed} (since ${since})`;
     }
     return line;
   });

@@ -293,6 +293,34 @@ test('enforceKeyedFacts leaves a line that already AGREES exactly as it is', () 
   assert.equal(out.md, md, 'byte-identical: agreement is not a change');
 });
 
+test('enforceKeyedFacts reads THROUGH a line-edit date stamp, and puts it back', () => {
+  // The guard's rules anchor on the end of the line, so an unsplit "(since …)" is captured as part
+  // of the value: the addressing rule stops matching at all, and the style rule "corrects" a line
+  // that agrees just to drop the stamp off it.
+  const md = [
+    '## Who they are',
+    '- They go by Mike (since 2026-09-04)',
+    '## How to text them',
+    '- Comms style is clipped, lowercase (since 2026-09-04)',
+  ].join('\n');
+
+  const out = enforceKeyedFactsWithChanges(md, { address_as: 'Chief', comms_style: 'clipped, lowercase' });
+  assert.deepEqual(out.changed, ['address_as'], 'the agreeing style line is not a change');
+  assert.equal(out.md, [
+    '## Who they are',
+    '- They go by Chief (since 2026-09-04)',
+    '## How to text them',
+    '- Comms style is clipped, lowercase (since 2026-09-04)',
+  ].join('\n'));
+});
+
+test('enforceKeyedFacts leaves an agreeing stamped line byte-identical', () => {
+  const md = '## Who they are\n- They go by Chief (since 2026-08-30)';
+  const out = enforceKeyedFactsWithChanges(md, { address_as: 'chief' });
+  assert.deepEqual(out.changed, []);
+  assert.equal(out.md, md);
+});
+
 test('enforceKeyedFacts with nothing confirmed is the identity function', () => {
   const md = '## Who they are\nThey go by Mike.\nName: Michael';
   assert.equal(enforceKeyedFacts(md, {}), md);
