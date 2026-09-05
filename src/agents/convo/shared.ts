@@ -28,6 +28,12 @@ import {
 import { STANDARD_REACTION_TYPES } from './tools.js';
 import { validateDirective } from '../../memory/preferences.js';
 import { FACT_KEYS } from '../../memory/mediumTerm.js';
+// The reply-language slot: the pure core decides WHAT this turn asked for, the glue writes it to
+// both stores and retires the old language rule (memory/standingSettings.ts, memory/replyLanguage.ts).
+import {
+  REPLY_LANGUAGE_KEY, applyLanguageRequest, detectEnglishAsk, parseLanguageDirective,
+} from '../../memory/standingSettings.js';
+import { clearReplyLanguage, setReplyLanguage } from '../../memory/replyLanguage.js';
 import { updateDossier, PENDING_ASK_TTL_MS, PENDING_CLARIFICATION_TTL_MS } from '../../memory/dossier.js';
 import { updateRelationshipClimate } from '../../memory/climateDrift.js';
 import { updateThreadInventory, type ThreadTurn } from '../../memory/threadHarvest.js';
@@ -55,7 +61,7 @@ import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '
 import { timestampLabel, renderConversationTiming, describeGap } from '../../pipeline/chatTime.js';
 import { DEFAULT_TZ } from '../../pipeline/zonedTime.js';
 import {
-  renderStatusForPrompt, renderStatusContract, coerceStatus, mergeStatusWithDrift,
+  renderStatusForPrompt, renderStatusContract, coerceStatus, mergeStatusWithDrift, sanitizeLanguageName,
   type AffectState, type ComputedState,
 } from '../../persona/status.js';
 import { renderThreadForPrompt } from '../../persona/threads.js';
@@ -388,6 +394,11 @@ async function handleUpdateDirectives(input: Record<string, unknown>, handle: st
 
     if (op === 'remove') {
       const ok = await retractEntry(handle, hits[0].id);
+      // A legacy language RULE and the slot are the same setting seen from two eras. Dropping the
+      // rule without emptying the slot would leave the setting standing in every lane's addressing
+      // header — the user asked for it to stop and it would not stop. Sequential, never nested:
+      // both mutators take the per-handle lock at their own boundary.
+      if (ok && parseLanguageDirective(hits[0].text) !== null) await clearReplyLanguage(handle);
       return ok ? { note: null, acted: true } : { note: { kind: 'failed', summary: 'dropping that preference hit a snag', nextStep: 'ask them to try again' }, acted: false };
     }
     if (op === 'update') {
@@ -1701,6 +1712,10 @@ export async function processConvoResult(args: {
   // A directive/preference that saved silently (no failure note) — the turn must still acknowledge it
   // (a tapback, or a voiced line on SMS) so a tool-only reply never leaves the user hanging.
   let directiveActed = false;
+  // The model already wrote the reply-language slot itself this turn (set_preference, or a language
+  // it tried to save as a rule). The post-reply hook reads this and stands down: a second write
+  // would repeat the value and run the supersede pass twice over rows that are already retired.
+  let replyLanguageWrittenByTool = false;
   // The FIRST recall_memory query this turn (a second call in the same envelope is ignored — one
   // archive search per turn, and the second pass below is what answers from it).
   let recallQuery: string | null = null;
@@ -1796,6 +1811,23 @@ export async function processConvoResult(args: {
         // Group identities skip this: a group has no person's name to set.
         await setUserName(handle, String(input.value));
         await setPreference(handle, 'name', undefined);
+      } else if (String(input.key) === REPLY_LANGUAGE_KEY) {
+        // The standing setting, and the reason it is not just another FACT_KEYS row: the write also
+        // retires whatever language RULE was standing, in one path (memory/replyLanguage.ts). Ahead
+        // of the FACT_KEYS branch deliberately — `reply_language` is in that set (it renders as a
+        // fact), so without this the plain dual-write would land and the old rule would survive.
+        const lang = sanitizeLanguageName(input.value);
+        if (lang) {
+          await setReplyLanguage(handle, lang, { source: 'convo', via: 'tool', prov: coerceBasis(input.basis), chatId });
+          replyLanguageWrittenByTool = true;
+        } else {
+          // Not a language name — a sentence, an instruction, a stringified nothing. Dropped rather
+          // than trimmed into one: this value is obeyed by every lane until the user asks again.
+          record({
+            type: 'event', label: 'convo:tool_arg_ignored', chatId, handle,
+            detail: { tool: 'set_preference', arg: 'value', key: REPLY_LANGUAGE_KEY, value: String(input.value ?? '').slice(0, 40), reason: 'not_a_language_name' },
+          });
+        }
       } else if (input.key && FACT_KEYS.has(String(input.key))) {
         // Medium tier first; legacy prefs copy keeps the soak-window fallback readable. A medium
         // failure here is logged, not voiced — fact writes have no confirmation beat to correct,
@@ -2007,9 +2039,25 @@ export async function processConvoResult(args: {
       const q = String(input.query ?? '').trim();
       if (q && recallQuery == null) recallQuery = q;
     } else if (call.name === 'update_directives' && handle) {
-      const { note, acted } = await handleUpdateDirectives(input, handle);
-      if (note) outcomeParts.push(note);
-      else if (acted) directiveActed = true;
+      // A language ask saved as a RULE is the old vocabulary — the tool doc now sends it to
+      // set_preference, but a model that reaches for the rule anyway must not create the thing the
+      // slot exists to replace. Routed by SHAPE (memory/standingSettings.ts), so the row is never
+      // written and the ask still lands as the standing setting it is.
+      const dirOp = String(input.op ?? '').toLowerCase();
+      const asLanguage = dirOp === 'add' || dirOp === 'update'
+        ? parseLanguageDirective(String(input.text ?? ''))
+        : null;
+      if (asLanguage) {
+        await setReplyLanguage(handle, asLanguage, { source: 'convo', via: 'tool', chatId });
+        replyLanguageWrittenByTool = true;
+        // The turn still owes an acknowledgment beat: the setting DID land, so a tool-only envelope
+        // must not fall through to the silent-turn floor.
+        directiveActed = true;
+      } else {
+        const { note, acted } = await handleUpdateDirectives(input, handle);
+        if (note) outcomeParts.push(note);
+        else if (acted) directiveActed = true;
+      }
     } else if (call.name === 'update_self') {
       // Chat-triggered self-update: spawns the detached updater and returns an "on it" ack (or a
       // reason it can't). A 'confirmed' ack only voices if the model wrote no holding bubble; a
@@ -2516,6 +2564,24 @@ export async function processConvoResult(args: {
   // against — the group identity is tuned via explicit tools (set_preference, directives,
   // update_memory) only, where every write is deliberate and attributable.
   if (handle && !isGroupHandle(handle)) {
+    // ── the standing reply language ──────────────────────────────────────────────────────────
+    // Charter §10.1: a rule the relay lanes can never see reversed has to be backed by code. So the
+    // turn's three inputs are resolved HERE, on the pass that reaches the final return, and the one
+    // that wins is written before the turn ends — the tool call the model may not have made, the
+    // English fast path over their own words, or the hidden `language_request` tag that is the only
+    // channel a language the fast path cannot read has. AWAITED, unlike the harvests below it: the
+    // next turn's prompt is built from this row, and a fire-and-forget write could lose the race
+    // with a fast follow-up message.
+    //
+    // Group identities are skipped for the same reason the dossier is: a room's language would be
+    // set by whichever member spoke last. A group tunes it deliberately, through the tool.
+    const wantLanguage = applyLanguageRequest({
+      fastPathAsk: detectEnglishAsk(textToSend),
+      toolWrote: replyLanguageWrittenByTool,
+      tag: emitted?.language_request,
+    });
+    if (wantLanguage) await setReplyLanguage(handle, wantLanguage.value, { source: 'convo', via: wantLanguage.via, chatId });
+
     // Stamped like the rows getConversation hands back, so this window is uniformly timestamped:
     // the climate eval cuts it at `at > lastEvalAt` and a row that arrived without an `at` would
     // dodge that cut and be counted a second time by tomorrow's pass (climateDrift.ts).
