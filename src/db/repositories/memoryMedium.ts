@@ -442,16 +442,18 @@ export async function addDirective(handle: string, text: string, source = 'convo
 }
 
 /** Replace the text of an active directive/note by id (supersede + insert, one rewrite).
- *  Returns false when the id wasn't found active. */
-export async function updateDirective(handle: string, id: string, text: string, source = 'convo'): Promise<boolean> {
+ *  Returns the REPLACEMENT entry, or null when the id wasn't found active — the caller needs the
+ *  new row itself, not just a boolean: an edited rule can contradict a THIRD rule, and the
+ *  contradiction pass (memory/mediumSupersede.ts) supersedes those in the replacement's name. */
+export async function updateDirective(handle: string, id: string, text: string, source = 'convo'): Promise<MediumEntry | null> {
   const clean = text.trim();
-  if (!clean) return false;
+  if (!clean) return null;
   return withHandleLock(handle, async () => {
     let archived: Promise<void> = Promise.resolve();
     const ok = durably('updateDirective', () => {
       const file = loadActive(handle);
       const old = file.entries.find(e => e.id === id && e.status === 'active');
-      if (!old) return false;
+      if (!old) return null;
       const now = Date.now();
       const replacement: MediumEntry = {
         id: randomUUID(), agentHandle: handle, kind: old.kind, body: clean,
@@ -464,7 +466,7 @@ export async function updateDirective(handle: string, id: string, text: string, 
       file.entries.push(replacement);
       archived = appendArchive(handle, [old]);
       writeActive(handle, file);
-      return true;
+      return replacement;
     });
     await archived;
     return ok;
@@ -637,10 +639,11 @@ export async function retractAllForHandle(handle: string): Promise<void> {
   });
 }
 
-/** Append an important note (deduped case-insensitively, FIFO-capped like the legacy
- *  ledger). Returns the stored text — including on dedupe, so the caller's confirmation
- *  stands either way. */
-export async function addImportantNote(handle: string, note: string, source = 'convo', prov?: Provenance): Promise<string | null> {
+/** Append an important note (deduped case-insensitively, FIFO-capped like the legacy ledger).
+ *  Returns the STORED ENTRY — the row it deduped onto when the note was a restatement, so the
+ *  caller's confirmation stands either way, and the entry itself (rather than just its text)
+ *  because the contradiction pass (memory/mediumSupersede.ts) retires in that row's name. */
+export async function addImportantNote(handle: string, note: string, source = 'convo', prov?: Provenance): Promise<MediumEntry | null> {
   const clean = note.trim();
   if (!clean) return null;
   const stamp = stampFor(source, prov);
@@ -656,7 +659,7 @@ export async function addImportantNote(handle: string, note: string, source = 'c
       if (dup) {
         outcome = 'unchanged';
         prior = entryProvenance(dup);
-        return clean;
+        return dup;
       }
       const now = Date.now();
       const entry: MediumEntry = {
@@ -669,7 +672,7 @@ export async function addImportantNote(handle: string, note: string, source = 'c
       enforceCap(file, 'important_note', MAX_ACTIVE_NOTES, retired);
       archived = appendArchive(handle, retired);
       writeActive(handle, file);
-      return clean;
+      return entry;
     });
     await archived;
     recordFactProvenance({

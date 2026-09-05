@@ -39,8 +39,9 @@ test('updateDirective supersedes: old row survives with a forward pointer', asyn
   const h = freshHandle();
   const first = await addDirective(h, 'no emojis');
   assert.ok(first);
-  const ok = await updateDirective(h, first!.id, 'no emojis except thumbs up');
-  assert.equal(ok, true);
+  // The REPLACEMENT row comes back, not a boolean: the contradiction pass retires in its name.
+  const replacement = await updateDirective(h, first!.id, 'no emojis except thumbs up');
+  assert.equal(replacement?.body, 'no emojis except thumbs up');
 
   const all = await listMediumAll(h);
   assert.equal(all.length, 2); // NOTHING deleted
@@ -50,9 +51,10 @@ test('updateDirective supersedes: old row survives with a forward pointer', asyn
   assert.equal(old.supersededBy, neu.id); // chain points forward
   assert.equal(neu.status, 'active');
   assert.equal(neu.body, 'no emojis except thumbs up');
+  assert.equal(replacement!.id, neu.id);
 
-  assert.equal(await updateDirective(h, first!.id, 'again'), false); // already superseded
-  assert.equal(await updateDirective(h, 'no-such-id', 'x'), false);
+  assert.equal(await updateDirective(h, first!.id, 'again'), null); // already superseded
+  assert.equal(await updateDirective(h, 'no-such-id', 'x'), null);
 });
 
 test('retractEntry soft-removes; retractAllForHandle sweeps active rows', async () => {
@@ -67,10 +69,15 @@ test('retractEntry soft-removes; retractAllForHandle sweeps active rows', async 
   assert.equal((await listMediumAll(h)).length, 2); // rows preserved, just retracted
 });
 
-test('addImportantNote dedupes and returns text either way (confirmation stands)', async () => {
+test('addImportantNote dedupes and returns an entry either way (confirmation stands)', async () => {
   const h = freshHandle();
-  assert.equal(await addImportantNote(h, 'gate code 88'), 'gate code 88');
-  assert.equal(await addImportantNote(h, 'GATE CODE 88'), 'GATE CODE 88'); // dedupe, still confirmed
+  const first = await addImportantNote(h, 'gate code 88');
+  assert.equal(first?.body, 'gate code 88');
+  // A restatement returns the row it deduped ONTO — truthy, so the caller's confirmation stands,
+  // and identifiable, so the contradiction pass gets a real id rather than a bare string.
+  const again = await addImportantNote(h, 'GATE CODE 88');
+  assert.equal(again?.id, first!.id);
+  assert.equal(again?.body, 'gate code 88', 'the stored wording is unchanged by a restatement');
   assert.equal((await listMediumActive(h, ['important_note'])).length, 1);
 });
 

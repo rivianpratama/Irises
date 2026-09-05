@@ -218,10 +218,12 @@ function acceptClusters(plan: MergePlan, candidates: MediumEntry[]): MergeCluste
 }
 
 /** Reject `work` after `ms`. Same shape as Ops triage's own bound (agents/ops/triage.ts) —
- *  unref'd so a pending groom can never hold the process open. */
-async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+ *  unref'd so a pending groom can never hold the process open. `what` names the pass in the
+ *  rejection, because the medium-tier supersede pass (memory/mediumSupersede.ts) shares this bound
+ *  and a timeout attributed to the wrong background pass sends the next reader to the wrong file. */
+export async function withTimeout<T>(work: Promise<T>, ms: number, what = 'note groom'): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('note groom timeout')), ms);
+    const timer = setTimeout(() => reject(new Error(`${what} timeout`)), ms);
     (timer as { unref?: () => void }).unref?.();
     work.then(v => { clearTimeout(timer); resolve(v); }, e => { clearTimeout(timer); reject(e); });
   });

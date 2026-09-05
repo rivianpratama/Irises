@@ -19,7 +19,7 @@ import { getPreference, setPreference } from '../../db/repositories/memory.js';
 // never confirmed. The legacy prefs arrays stay frozen as a backup until Stage 3.
 import {
   addImportantNote, addDirective, updateDirective, retractEntry,
-  listMediumActive, upsertFact, MediumWriteError,
+  listMediumActive, upsertFact, MediumWriteError, type MediumEntry,
 } from '../../db/repositories/memoryMedium.js';
 import { latestShortTerm } from '../../db/repositories/memoryShort.js';
 import {
@@ -38,6 +38,9 @@ import { updateDossier, PENDING_ASK_TTL_MS, PENDING_CLARIFICATION_TTL_MS } from 
 import { updateRelationshipClimate } from '../../memory/climateDrift.js';
 import { updateThreadInventory, type ThreadTurn } from '../../memory/threadHarvest.js';
 import { groomNotes } from '../../memory/noteGroomer.js';
+// The medium tier's contradiction pass — what a NEW rule or note replaces is retired with lineage
+// instead of stacked beside it (memory/mediumSupersede.ts).
+import { supersedeContradicted } from '../../memory/mediumSupersede.js';
 import { expandRecallQuery, recallExpansionEnabled } from '../../memory/recallExpansion.js';
 import { isGroupHandle } from '../../memory/identity.js';
 import { coerceBasis } from '../../memory/provenance.js';
@@ -366,7 +369,7 @@ export function handleSteerResearch(
 // own acknowledgment beat (a tapback) instead of leaving the user hanging. `acted` is false for pure
 // no-ops (empty text, unknown op) and for anything with a `note` (a rejection/ambiguity/snag is its
 // own reply — never also react).
-async function handleUpdateDirectives(input: Record<string, unknown>, handle: string): Promise<{ note: Outcome | null; acted: boolean }> {
+async function handleUpdateDirectives(input: Record<string, unknown>, handle: string, chatId: string): Promise<{ note: Outcome | null; acted: boolean }> {
   const op = String(input.op ?? '').toLowerCase();
   const text = String(input.text ?? '').trim();
   const match = String(input.match ?? '').trim().toLowerCase();
@@ -381,7 +384,12 @@ async function handleUpdateDirectives(input: Record<string, unknown>, handle: st
       if (!text) return { note: null, acted: false };
       const v = await validateDirective(text, handle);
       if (!v.ok) return { note: { kind: 'failed', summary: `that can't be saved as a preference because it ${v.reason}`, nextStep: 'note you can still tweak how you talk or what you flag' }, acted: false };
-      await addDirective(handle, text); // dedupes a restated pref silently; the acknowledgment beat stands
+      const created = await addDirective(handle, text); // dedupes a restated pref silently; the acknowledgment beat stands
+      // A NEW rule can be the reversal of one they gave weeks ago ("actually, be sarcastic"), and
+      // the tier only ever appended — every lane then read both. The pass names what this replaces
+      // and retires it with lineage. Fire-and-forget: it costs one small classify call, the
+      // acknowledgment beat below is already earned, and a pass that fails changes nothing.
+      if (created) void supersedeContradicted(handle, created, chatId);
       return { note: null, acted: true };
     }
 
@@ -405,8 +413,11 @@ async function handleUpdateDirectives(input: Record<string, unknown>, handle: st
       if (!text) return { note: null, acted: false };
       const v = await validateDirective(text, handle);
       if (!v.ok) return { note: { kind: 'failed', summary: `that change can't be made because it ${v.reason}` }, acted: false };
-      const ok = await updateDirective(handle, hits[0].id, text);
-      return ok ? { note: null, acted: true } : { note: { kind: 'failed', summary: 'updating that preference hit a snag', nextStep: 'ask them to try again' }, acted: false };
+      const replacement = await updateDirective(handle, hits[0].id, text);
+      // The edited rule's own predecessor is already superseded by this write; what the pass looks
+      // for is a THIRD rule the new text contradicts.
+      if (replacement) void supersedeContradicted(handle, replacement, chatId);
+      return replacement ? { note: null, acted: true } : { note: { kind: 'failed', summary: 'updating that preference hit a snag', nextStep: 'ask them to try again' }, acted: false };
     }
     return { note: null, acted: false };
   } catch (err) {
@@ -1709,6 +1720,8 @@ export async function processConvoResult(args: {
   let noteConfirmation: Outcome | null = null;
   // A note actually landed this turn — the groomer's trigger (see the post-reply block).
   let noteSaved = false;
+  // …and the row it landed on, which the contradiction pass retires stale notes in the name of.
+  let savedNote: MediumEntry | null = null;
   // A directive/preference that saved silently (no failure note) — the turn must still acknowledge it
   // (a tapback, or a voiced line on SMS) so a tool-only reply never leaves the user hanging.
   let directiveActed = false;
@@ -1796,6 +1809,7 @@ export async function processConvoResult(args: {
           if (saved) {
             noteConfirmation = { kind: 'confirmed', summary: "their note is saved — you'll keep it in mind" };
             noteSaved = true;
+            savedNote = saved;
           }
         } catch (err) {
           if (!(err instanceof MediumWriteError)) throw err;
@@ -2054,7 +2068,7 @@ export async function processConvoResult(args: {
         // must not fall through to the silent-turn floor.
         directiveActed = true;
       } else {
-        const { note, acted } = await handleUpdateDirectives(input, handle);
+        const { note, acted } = await handleUpdateDirectives(input, handle, chatId);
         if (note) outcomeParts.push(note);
         else if (acted) directiveActed = true;
       }
@@ -2611,7 +2625,18 @@ export async function processConvoResult(args: {
   // against harvesting a multi-party TRANSCRIPT into one person's memory, and the groomer never
   // reads a transcript — it only ever rewrites the handle's own explicitly-saved notes, so nothing
   // can cross a handle boundary. A group's notes crowd each other out exactly like a person's.
-  if (handle && noteSaved) void groomNotes(handle);
+  //
+  // The contradiction pass runs FIRST and the groom waits for it: the groomer folds near-DUPLICATES
+  // into one synthesized note, so a note about to be retired for contradicting the new one must not
+  // be merged into something first — the merge would carry the stale half of the fact forward under
+  // a fresh timestamp, out of reach of both passes.
+  if (handle && noteSaved) {
+    const note = savedNote;
+    void (async () => {
+      if (note) await supersedeContradicted(handle, note, chatId);
+      await groomNotes(handle);
+    })().catch(err => console.warn('[convo] note upkeep failed', err));
+  }
 
   // Nothing the user or the thread can see: no bubble, no tapback, and no action taken on their
   // behalf. ONE predicate with two readers — the tripwire immediately below and the turn receipt's
