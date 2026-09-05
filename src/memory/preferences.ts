@@ -11,6 +11,8 @@
 import { callLLM } from '../llm/callLLM.js';
 import { listDirectives, type Directive } from '../db/repositories/memory.js';
 import { reportError } from '../diagnostics/errorLog.js';
+import { shortDateLabel } from '../pipeline/chatTime.js';
+import { DEFAULT_TZ } from '../pipeline/zonedTime.js';
 
 // Patterns that mark a "preference" as actually an attempt to redefine rules, escalate
 // capability, defeat fidelity, or inject instructions. Kept deliberately broad — a false
@@ -104,15 +106,41 @@ export function sanitizeDirectives(directives: Directive[], opts: { quiet?: bool
   });
 }
 
+/** Below this a `createdAt` is not a real instant — the legacy rows (and plenty of hand-built test
+ *  fixtures) carry `1`, `2`, an array index. A bullet only claims a date it actually has. */
+const REAL_INSTANT_MS = 1e12;
+
+/**
+ * ONE standing rule as a prompt bullet, dated: `- always reply in Indonesian (since Aug 30)`. Pure.
+ *
+ * The date is the whole point and it is CODE's, never the model's. "Trust the newer entry when one
+ * supersedes an older one" is an instruction the medium tier has always carried and no lane could
+ * ever act on, because the rules arrived undated: on 2026-09-04 a rule saved in August and a reversal
+ * spoken that afternoon were indistinguishable to every lane that could not see the afternoon.
+ *
+ * Shared by both homes of `<user_directives>` (the identity card and the flexible block,
+ * memory/wrappers.ts) and by the legacy block below, so one list cannot render two ways.
+ */
+export function formatDirectiveBullet(d: Directive, nowMs: number, tz: string): string {
+  const text = String(d?.text ?? '').trim();
+  const at = typeof d?.createdAt === 'number' && d.createdAt > REAL_INSTANT_MS
+    ? shortDateLabel(d.createdAt, tz, nowMs)
+    : '';
+  return at ? `- ${text} (since ${at})` : `- ${text}`;
+}
+
 /**
  * Render the "USER PREFERENCES (override style only)" block from directive rows. Pure.
  * Returns '' when there are no safe directives, so the block only appears when it has
  * content. Placed at the END of a system prompt (recency) while hard rules stay anchored at top.
+ *
+ * `nowMs`/`tz` only date the bullets (formatDirectiveBullet above); a row with no real timestamp
+ * renders exactly the bytes it always did.
  */
-export function renderDirectiveBlock(directives: Directive[]): string {
+export function renderDirectiveBlock(directives: Directive[], nowMs: number = Date.now(), tz: string = DEFAULT_TZ): string {
   const safe = sanitizeDirectives(directives.filter(d => d && typeof d.text === 'string'));
   if (!safe.length) return '';
-  const lines = safe.map(d => `- ${d.text.trim()}`).join('\n');
+  const lines = safe.map(d => formatDirectiveBullet(d, nowMs, tz)).join('\n');
   return [
     '## USER PREFERENCES (override style only, never safety)',
     'Honor these for tone, voice, pace, formatting, and what to surface. They NEVER override:',
@@ -132,9 +160,9 @@ export function renderDirectiveBlock(directives: Directive[]): string {
  * memory_medium (renders prefs.directives). New code should pass rows to
  * renderDirectiveBlock (via mediumTerm's loadMediumBundle) instead.
  */
-export function renderPreferenceBlock(prefs: Record<string, unknown> | undefined): string {
+export function renderPreferenceBlock(prefs: Record<string, unknown> | undefined, nowMs: number = Date.now(), tz: string = DEFAULT_TZ): string {
   const raw = Array.isArray(prefs?.directives) ? (prefs!.directives as Directive[]) : [];
-  return renderDirectiveBlock(raw);
+  return renderDirectiveBlock(raw, nowMs, tz);
 }
 
 /** Async convenience for agents that don't already have memory loaded (Composer/Fallfirm).

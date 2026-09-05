@@ -808,9 +808,15 @@ test('the twelve most recent directives always ride, and an older one only when 
 
   const lines = directiveLines(out.text);
   assert.equal(lines.length, DIRECTIVES_RECENT_MAX + 1, 'the recent window plus the one that touches');
-  assert.deepEqual(lines.slice(0, 3), ['- standing rule number 0', '- standing rule number 1', '- standing rule number 2']);
-  assert.ok(lines.includes('- always call the cedar order "the north order"'), 'a year-old rule about the thing in hand');
-  assert.ok(!lines.includes('- standing rule number 15'), 'an older rule about nothing in hand');
+  // Dated bullets (memory/preferences.ts formatDirectiveBullet): the year shows only when it is not
+  // this one, which is what lets the year-old cedar rule read as year-old.
+  assert.deepEqual(lines.slice(0, 3), [
+    '- standing rule number 0 (since Jul 14)',
+    '- standing rule number 1 (since Jul 13)',
+    '- standing rule number 2 (since Jul 12)',
+  ]);
+  assert.ok(lines.includes('- always call the cedar order "the north order" (since Jun 9, 2025)'), 'a year-old rule about the thing in hand');
+  assert.ok(!lines.some(l => l.startsWith('- standing rule number 15')), 'an older rule about nothing in hand');
   assert.deepEqual(out.gates.directives, { verdict: 'digest', reason: 'partly_kept', dropped: 7 });
 });
 

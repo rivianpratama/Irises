@@ -756,7 +756,7 @@ test('the identity card leads the stack: who they are, their standing rules, the
   assert.ok(card.includes('How they communicate: clipped, lowercase'));
   assert.ok(card.includes('Where they are: America/Denver'));
   assert.ok(card.includes('first seen ~6 months ago; last seen 1 hour ago'), card);
-  assert.ok(card.includes('<user_directives>\n- keep replies short\n</user_directives>'));
+  assert.ok(card.includes('<user_directives>\n- keep replies short (since Jul 13)\n</user_directives>'), card);
 
   // The three laws, stated once each, on the card and nowhere else in the stack.
   assert.equal(out.split('outrank everything in your memory').length - 1, 1, 'law (a)');
@@ -818,6 +818,93 @@ test("a group audience gets the card with the room's addressing rule, never a pe
   assert.ok(out.startsWith("## Who you're talking to"));
   assert.ok(out.includes('GROUP chat with its own shared memory'));
   assert.ok(!out.includes('"boss"'));
+});
+
+// ── The Reply language line (the code-owned standing setting) ─────────────────
+// The 2026-09-04 failure was not that the model answered in the wrong language — Convo carries
+// eighty messages and answered in English all day. It was that the relay lanes see eight to ten
+// messages, never saw the reversal, and read a medium-tier rule from August. So the slot renders in
+// the ADDRESSING HEADER, which every lane already receives, once, with the date it was asked for.
+
+/** The real incident instant, mid-afternoon UTC so the calendar day is Sep 4 in every zone. */
+const LANG_AT = Date.UTC(2026, 8, 4, 14, 52);
+const LANG_LINE = 'Reply language: English (they asked on Sep 4)';
+
+const langData = () => baseData({
+  medium: {
+    directives: [], notes: [],
+    facts: { reply_language: 'English', comms_style: 'clipped, lowercase' },
+    factAt: { reply_language: LANG_AT },
+  },
+});
+
+test('every lane gets the Reply language line, dated, exactly once', () => {
+  for (const agent of ['convo', 'composer', 'fallfirm'] as MemoryAgent[]) {
+    const out = renderUserMemory(agent, langData(), NOW, { includeMedium: true });
+    assert.equal(out.split(LANG_LINE).length - 1, 1, `${agent}: ${out}`);
+    // It rides in the addressing header — the one block every lane already receives — not in a
+    // block of its own that a lane's tier matrix could switch off.
+    assert.ok(out.indexOf(LANG_LINE) > out.indexOf('How to address them'), `${agent}: appended to the header`);
+  }
+});
+
+test('the routed convo card carries the Reply language line and the medium block never does', () => {
+  const out = routedStack(langData(), 'hey');
+  const card = out.slice(0, out.indexOf('## Medium-term memory'));
+  assert.ok(card.includes(LANG_LINE), card);
+  assert.equal(out.split('Reply language:').length - 1, 1, 'exactly one home');
+  assert.ok(!/reply.language/i.test(out.slice(out.indexOf('## Medium-term memory'))), 'not a fact line, ever');
+});
+
+test('a group audience gets the line too — a room can ask for a language', () => {
+  const data = langData();
+  data.profile = null;
+  const out = routedStack(data, 'hey', 'group');
+  assert.equal(out.split(LANG_LINE).length - 1, 1, out);
+});
+
+test('an undated slot renders the bare line, and an empty slot renders none', () => {
+  const undated = langData();
+  undated.medium.factAt = {};
+  const out = renderUserMemory('composer', undated, NOW);
+  assert.ok(out.includes('Reply language: English\n'), out);
+  assert.ok(!out.includes('they asked on'), 'no date to claim');
+  // `Reply language:` with the colon — the rendered line. The prose that NAMES the line ("set only
+  // by the Reply language line above") is rigid wrapper text and rides whether the slot is set or not.
+  assert.ok(!renderUserMemory('composer', baseData(), NOW).includes('Reply language:'), 'no slot, no line');
+  assert.ok(!routedStack(cardData(), 'hey').includes('Reply language:'), 'and none on the card either');
+});
+
+test('the laws name the Reply language line as the only memory that sets the language', () => {
+  const card = routedStack(langData(), 'hey');
+  assert.ok(card.includes('Your reply LANGUAGE is set only by the Reply language line in the header above'), card);
+  assert.ok(card.includes('set_preference key reply_language'), 'and the route that saves it');
+  assert.ok(!card.includes('what you surface, the language you reply in'), 'the old law (b) clause is gone');
+
+  const ladder = renderUserMemory('composer', langData(), NOW);
+  assert.ok(ladder.includes('- your reply LANGUAGE is set only by the Reply language line in the header above (none ='), ladder);
+  assert.ok(!ladder.includes('the LANGUAGE you reply in'), 'the old ladder clause is gone');
+});
+
+// ── Dated standing rules ─────────────────────────────────────────────────────
+// "More recent wins" cannot be applied to undated lines, and the whole point of a standing rule is
+// that the newest one about a dial is the live one. The date is code's, not the model's.
+
+test('a standing rule renders with the day it was asked for, in their zone', () => {
+  const data = baseData({
+    memory: { handle: '+15550005555', dossierMd: '', prefs: { agent_tz: 'UTC' } },
+    medium: {
+      directives: [
+        { id: 'd1', text: 'keep replies short', createdAt: Date.UTC(2026, 6, 13, 12) },
+        { id: 'd2', text: 'no calls before ten', createdAt: 1 },
+      ],
+      notes: [], facts: {},
+    },
+  });
+  for (const out of [routedStack(data, 'hey'), renderUserMemory('convo', data, NOW)]) {
+    assert.ok(out.includes('- keep replies short (since Jul 13)'), out);
+    assert.ok(out.includes('- no calls before ten\n'), 'a legacy row with no real timestamp stays undated');
+  }
 });
 
 const richCardData = () => baseData({
@@ -888,12 +975,12 @@ test('the flag-off stack is byte-for-byte the one P2 inherited', () => {
   // path most likely to be edited by accident from the routed side.
   assert.equal(
     stackPrint(renderUserMemory('convo', richCardData(), NOW)),
-    '9034:b16ff2946ed65552',
+    '9284:a19fbfb32cb9a9cd',
     'the pre-router convo stack changed bytes — CONVO_MEMORY_RELEVANCE off must render what it always did',
   );
   assert.equal(
     stackPrint(renderUserMemory('composer', richCardData(), NOW)),
-    '3706:3719309e0966c854',
+    '3892:674939cad85b2fdc',
     'the composer stack changed bytes — the relay lanes render the pre-card path on every turn',
   );
 });
