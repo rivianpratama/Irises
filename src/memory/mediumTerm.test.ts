@@ -8,7 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   loadMediumBundle, partitionMediumRows, renderNotesBlock, renderFactsBlock, renderKnownFacts,
-  renderDirectiveBlock, FACT_KEYS, PROV_GROUPS,
+  renderDirectiveBlock, FACT_KEYS, CARD_FACT_KEYS, PROV_GROUPS,
 } from './mediumTerm.js';
 import { renderPreferenceBlock } from './preferences.js';
 import { PROVENANCES, SEED_FACT_KEY, SEED_NOTE, SEED_SOURCE, stampFact } from './provenance.js';
@@ -56,10 +56,37 @@ test('renderFactsBlock renders comms_style first, then any other durable slot; s
 });
 
 test('FACT_KEYS is exactly the canonical renderable slots', () => {
-  assert.equal(FACT_KEYS.size, 2);
-  for (const k of ['comms_style', 'address_as']) {
+  assert.equal(FACT_KEYS.size, 3);
+  for (const k of ['comms_style', 'address_as', 'reply_language']) {
     assert.ok(FACT_KEYS.has(k), k);
   }
+});
+
+test('reply_language never renders in the facts block — the addressing header owns it', () => {
+  // Unconditional, not gated on omitCardKeys: the pre-card path consults CARD_FACT_KEYS only
+  // under that flag, so a gated skip would print the standing setting twice, undated, in the
+  // one place the prompt laws do NOT name as its authority.
+  const rendered = renderFactsBlock({ reply_language: 'English', comms_style: 'brief' });
+  assert.equal(rendered, 'comms style: brief');
+  assert.ok(!/reply.?language/i.test(rendered));
+  assert.equal(renderFactsBlock({ reply_language: 'English' }, { omitCardKeys: true }), '');
+  assert.ok(CARD_FACT_KEYS.has('reply_language'));
+});
+
+test('partitionMediumRows records when each fact was written (factAt)', () => {
+  const aug30 = Date.UTC(2026, 7, 30, 11, 9, 27);
+  const row = (over: Partial<MediumEntry>): MediumEntry => ({
+    id: 'x', agentHandle: HANDLE, kind: 'fact', body: 'b', status: 'active',
+    source: 'convo', createdAt: 1, updatedAt: 1, ...over,
+  });
+  const bundle = partitionMediumRows([
+    row({ id: 'f1', key: 'reply_language', body: 'Indonesian', createdAt: aug30 }),
+    row({ id: 'f2', key: 'comms_style', body: 'brief', createdAt: 42 }),
+    row({ id: 'd1', kind: 'directive', body: 'no emojis', createdAt: 7 }),
+  ]);
+  assert.equal(bundle.factAt?.reply_language, aug30);
+  assert.equal(bundle.factAt?.comms_style, 42);
+  assert.ok(!('no emojis' in (bundle.factAt ?? {})));
 });
 
 test('loadMediumBundle partitions rows by kind', async () => {

@@ -10,7 +10,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   listMediumActive, listMediumAll, listMediumPreserved, addDirective, updateDirective, retractEntry,
-  retractAllForHandle, addImportantNote, upsertFact, mergeNotes,
+  retractAllForHandle, addImportantNote, upsertFact, mergeNotes, supersedeEntries,
   MAX_ACTIVE_DIRECTIVES, MAX_ACTIVE_NOTES, CAP_EVICTED, MERGED_NOTE_MAX_CHARS,
   MEDIUM_ARCHIVE_MAX_BYTES, MEDIUM_ARCHIVE_KEEP, entryProvenance,
 } from './memoryMedium.js';
@@ -148,6 +148,53 @@ test('entries live in MEDIUM.md; retired lineage lands in MEDIUM.archive.md', as
   const archive = fs.readFileSync(path.join(memoriesDir(h), 'MEDIUM.archive.md'), 'utf8');
   assert.ok(archive.includes('status=retracted'));
   assert.ok(!fs.readFileSync(path.join(memoriesDir(h), 'MEDIUM.md'), 'utf8').includes('anything'));
+});
+
+test('upsertFact opts.at dates the new row when the value comes from an older source', async () => {
+  // The legacy fold writes a value the user gave in August; dating the row today would render
+  // "they asked on Sep 5" about a sentence spoken on Aug 30.
+  const h = freshHandle();
+  const aug30 = Date.UTC(2026, 7, 30, 11, 9, 27);
+  await upsertFact(h, 'reply_language', 'Indonesian', 'fold', undefined, { at: aug30 });
+  const row = (await listMediumActive(h, ['fact']))[0];
+  assert.equal(row.createdAt, aug30);
+  assert.equal(row.updatedAt, aug30);
+});
+
+test('supersedeEntries retires a batch pointing at one replacement, in one rewrite', async () => {
+  // The lineage shape a code-owned standing setting needs: the slot that now holds the answer is
+  // what the retired rules point AT, so "why is this rule gone" reads off the row itself.
+  const h = freshHandle();
+  const indo = await addDirective(h, 'always reply in Indonesian');
+  const jav = await addDirective(h, 'always reply in Javanese');
+  await addDirective(h, 'full sarcasm mode always');
+  await upsertFact(h, 'reply_language', 'English');
+  const factId = (await listMediumActive(h, ['fact']))[0].id;
+
+  assert.equal(await supersedeEntries(h, [indo!.id, jav!.id], factId), 2);
+
+  assert.deepEqual(
+    (await listMediumActive(h, ['directive'])).map(e => e.body),
+    ['full sarcasm mode always'],
+    'a rule on another subject is untouched',
+  );
+  const all = await listMediumAll(h);
+  for (const id of [indo!.id, jav!.id]) {
+    const row = all.find(e => e.id === id)!;
+    assert.equal(row.status, 'superseded');
+    assert.equal(row.supersededBy, factId);
+  }
+  const archived = await listArchiveFor(h);
+  const bySource = new Map(archived.map(a => [a.content, a.source]));
+  assert.equal(bySource.get('always reply in Indonesian'), 'medium_superseded');
+  assert.equal(bySource.get('always reply in Javanese'), 'medium_superseded');
+  const ledger = fs.readFileSync(path.join(memoriesDir(h), 'MEDIUM.archive.md'), 'utf8');
+  assert.ok(ledger.includes(`superseded_by=${factId}`), 'the file ledger agrees with the table');
+
+  // Idempotent: a row that already left the active file is not retired twice.
+  assert.equal(await supersedeEntries(h, [indo!.id], factId), 0);
+  assert.equal(await supersedeEntries(h, [], factId), 0);
+  assert.equal(await supersedeEntries(h, [factId], factId), 0, 'the replacement never retires itself');
 });
 
 test('hand-edited (unannotated) segments are preserved verbatim across rewrites', async () => {

@@ -572,6 +572,45 @@ export async function retractEntry(handle: string, id: string): Promise<boolean>
   });
 }
 
+/**
+ * Retire a BATCH of active entries as superseded by one replacement, in a single rewrite.
+ *
+ * `retractEntry` is "the user asked me to drop this"; this is "something else now holds the
+ * answer" — the shape a code-owned standing setting needs, because the row the user withdrew is
+ * not gone, it has a successor, and `supersededBy` is where "why is this rule missing" reads from.
+ * The replacement is usually a FACT row (the `reply_language` slot), which is why the pointer is a
+ * plain id rather than an entry of the same kind.
+ *
+ * Skips ids that are not active (so a re-run is a no-op) and never retires the replacement itself.
+ * Returns how many rows actually moved. One rewrite, one archive append — a caller retiring three
+ * stale rules does not touch the file three times.
+ */
+export async function supersedeEntries(handle: string, ids: readonly string[], supersededBy: string): Promise<number> {
+  const wanted = new Set(ids.filter(id => typeof id === 'string' && id && id !== supersededBy));
+  if (!wanted.size || !supersededBy) return 0;
+  return withHandleLock(handle, async () => {
+    let archived: Promise<void> = Promise.resolve();
+    const moved = durably('retire:superseded', () => {
+      const file = loadActive(handle);
+      const rows = file.entries.filter(e => e.status === 'active' && wanted.has(e.id));
+      if (!rows.length) return 0;
+      const now = Date.now();
+      for (const row of rows) {
+        row.status = 'superseded';
+        row.supersededBy = supersededBy;
+        row.updatedAt = now;
+      }
+      const gone = new Set(rows.map(r => r.id));
+      file.entries = file.entries.filter(e => !gone.has(e.id));
+      archived = appendArchive(handle, rows);
+      writeActive(handle, file);
+      return rows.length;
+    });
+    await archived; // still inside the lock — same reason as every other retire path
+    return moved;
+  });
+}
+
 /** Retract every active entry for a handle (the /forget path's medium-tier sweep). */
 export async function retractAllForHandle(handle: string): Promise<void> {
   await withHandleLock(handle, async () => {
@@ -651,8 +690,17 @@ export async function addImportantNote(handle: string, note: string, source = 'c
  *     A provenance that would not rise writes nothing at all, so the no-op stays a no-op.
  *   • a CHANGED value carries its OWN basis, not the slot's. Provenance rides a claim, and a new
  *     value is a new claim — `promote` guards the same fact against demotion, never the slot.
+ *
+ * `opts.at` dates the NEW row (createdAt and updatedAt) at something other than now, for a value
+ * whose source is older than the write: the legacy language fold carries an August directive into
+ * the `reply_language` slot, and a row stamped today would render "they asked on Sep 5" about a
+ * sentence spoken on Aug 30. It never rewrites the row it supersedes — that one really did stop
+ * being current now.
  */
-export async function upsertFact(handle: string, key: string, body: string, source = 'convo', prov?: Provenance): Promise<void> {
+export async function upsertFact(
+  handle: string, key: string, body: string, source = 'convo', prov?: Provenance,
+  opts: { at?: number } = {},
+): Promise<void> {
   const clean = body.trim();
   if (!clean) return;
   const stamp = stampFor(source, prov);
@@ -676,9 +724,10 @@ export async function upsertFact(handle: string, key: string, body: string, sour
         return;
       }
       const now = Date.now();
+      const at = typeof opts.at === 'number' && Number.isFinite(opts.at) ? opts.at : now;
       const entry: MediumEntry = {
         id: randomUUID(), agentHandle: handle, kind: 'fact', key, body: clean,
-        status: 'active', source, createdAt: now, updatedAt: now,
+        status: 'active', source, createdAt: at, updatedAt: at,
         ...(stamp ? { prov: stamp } : {}),
       };
       const retired: MediumEntry[] = [];

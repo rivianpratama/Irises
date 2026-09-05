@@ -9,6 +9,8 @@ import {
   LEGACY_FACT_PROV, PROVENANCES, SEED_FACT_KEY, SEED_NOTE, isProvenance, normalizeFact,
   parseProvenance, provenanceEnabled, type Provenance,
 } from './provenance.js';
+import { REPLY_LANGUAGE_KEY, parseLanguageDirective } from './standingSettings.js';
+import { foldLanguageDirectives } from './replyLanguage.js';
 
 // The directive block renderer stays in preferences.ts beside its sanitizer and framing
 // (the safety layers); re-exported here so tier consumers import one module.
@@ -18,7 +20,7 @@ export { renderDirectiveBlock } from './preferences.js';
  *  like chat_id). The canonical list: set_preference routes these to the medium tier, and
  *  renderFactsBlock renders them. Curation may also mint descriptive new slots beyond these. */
 export const FACT_KEYS: ReadonlySet<string> = new Set([
-  'comms_style', 'address_as',
+  'comms_style', 'address_as', REPLY_LANGUAGE_KEY,
 ]);
 
 /** The three medium-kind partitions, adapted to the shapes the legacy renderers expect. */
@@ -31,17 +33,37 @@ export interface MediumBundle {
    *  answers, off its `source`. OPTIONAL because plenty of callers hand-build a bundle from facts
    *  alone; a key with no answer falls back to `factLineProv`'s default. */
   factProv?: Record<string, Provenance>;
+  /** WHEN each fact was written (the row's `createdAt`), per key. A standing setting renders with
+   *  its date — a lane that knows the language was asked for yesterday can weigh it against what
+   *  it sees in the visible thread, which an undated rule made impossible. OPTIONAL for the same
+   *  reason `factProv` is: plenty of callers hand-build a bundle from a facts map alone, and a key
+   *  with no answer simply renders without a date. */
+  factAt?: Record<string, number>;
 }
 
-/** One listMediumActive call, partitioned by kind. Reads degrade to an empty bundle. */
+/**
+ * One listMediumActive call, partitioned by kind. Reads degrade to an empty bundle.
+ *
+ * The fold hook: a language rule from the era when a language WAS a directive gets carried into
+ * the `reply_language` slot the first time this handle is read (memory/replyLanguage.ts), and the
+ * tier is re-listed so the caller never renders both. Task A4 stops new language directives being
+ * created, so only legacy rows ever qualify and this write-on-read fires at most once per handle —
+ * which is also the migration, since VPS memory files are never hand-edited.
+ */
 export async function loadMediumBundle(handle: string): Promise<MediumBundle> {
-  return partitionMediumRows(await listMediumActive(handle));
+  let rows = await listMediumActive(handle);
+  if (rows.some(r => r.status === 'active' && r.kind === 'directive' && parseLanguageDirective(r.body) !== null)) {
+    await foldLanguageDirectives(handle);
+    rows = await listMediumActive(handle);
+  }
+  return partitionMediumRows(rows);
 }
 
 /** Rows-in variant for callers that already listed the tier (avoids a second read). */
 export function partitionMediumRows(rows: MediumEntry[]): MediumBundle {
   const factProv: Record<string, Provenance> = {};
-  const bundle: MediumBundle = { directives: [], notes: [], facts: {}, factProv };
+  const factAt: Record<string, number> = {};
+  const bundle: MediumBundle = { directives: [], notes: [], facts: {}, factProv, factAt };
   for (const row of rows) {
     if (row.status !== 'active') continue;
     if (row.kind === 'directive') bundle.directives.push({ id: row.id, text: row.body, createdAt: row.createdAt });
@@ -49,6 +71,7 @@ export function partitionMediumRows(rows: MediumEntry[]): MediumBundle {
     else if (row.kind === 'fact' && row.key) {
       bundle.facts[row.key] = row.body;
       factProv[row.key] = entryProvenance(row);
+      factAt[row.key] = row.createdAt;
     }
   }
   return bundle;
@@ -65,7 +88,7 @@ export function renderNotesBlock(notes: string[]): string {
  *  them, how they text, where they are. `address_as` was always the addressing header's; the other
  *  two join it once the card is in the stack, so no identity value reaches the model twice. */
 export const CARD_FACT_KEYS: ReadonlySet<string> = new Set([
-  'address_as', 'comms_style', 'agent_tz',
+  'address_as', 'comms_style', 'agent_tz', REPLY_LANGUAGE_KEY,
 ]);
 
 /**
@@ -125,6 +148,11 @@ export function renderFactsBlock(
   // durable fact never goes unseen. address_as is rendered by the addressing header, not here.
   for (const [key, value] of Object.entries(facts)) {
     if (key === 'comms_style' || key === 'address_as' || !value) continue;
+    // The standing setting is rendered ONCE, dated, by the addressing header — the only memory the
+    // prompt laws name as its authority (memory/wrappers.ts law (b)). Unconditional, unlike the
+    // card keys below: `omitCardKeys` is off on the pre-card path, so a gated skip would print an
+    // undated second copy exactly where nothing is allowed to set the language.
+    if (key === REPLY_LANGUAGE_KEY) continue;
     if (opts.omitCardKeys && CARD_FACT_KEYS.has(key)) continue;
     push(key, `${key.replace(/_/g, ' ')}: ${value}`);
   }
