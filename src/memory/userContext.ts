@@ -23,7 +23,10 @@ import type { UserProfile } from '../db/types.js';
 // whose heading is about scope/capabilities/out-of-scope so a legacy/poisoned dossier (written
 // before updateDossier was hardened) can't make Irises refuse in-scope work. (Moved here from
 // dossier.ts so the shared renderer can reuse it without a circular import; re-exported there.)
-const SCOPE_HEADING = /scope|capabilit|out of scope|in scope|what (i|she|irises) can/i;
+// Exported (rather than copied) for memory/dossierEdits.ts: the line-edit normalizer has to REPORT
+// which sections it dropped, so it screens headings itself — and two copies of this pattern would
+// eventually disagree about what counts as a scope section.
+export const SCOPE_HEADING = /scope|capabilit|out of scope|in scope|what (i|she|irises) can/i;
 export function stripScopeSections(md: string): string {
   const lines = md.split('\n');
   const out: string[] = [];
