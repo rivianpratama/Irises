@@ -366,6 +366,48 @@ test('content is sliced to ARCHIVE_CONTENT_MAX_CHARS', async () => {
   assert.equal(entry.content.length, ARCHIVE_CONTENT_MAX_CHARS);
 });
 
+// A dossier line the cap evicted (or a stray section's line, relocated) is not thrown away: it
+// lands here under 'long_evicted' with its section, its (since …) date and why it left, so
+// recall_memory can still answer for something the long doc no longer has room to say.
+test('long_evicted: an evicted dossier line keeps its section, stamp date and reason', async () => {
+  const h = freshHandle();
+  await archive([
+    {
+      source: 'long_evicted', agentHandle: h, kind: 'dossier_line',
+      request: '## Running jokes',
+      content: 'calls the neighbour cat the landlord',
+      meta: { section: '## Running jokes', since: '2026-07-13', reason: 'cap' },
+      createdAt: Date.UTC(2026, 6, 13, 12, 0, 0),
+    },
+    {
+      source: 'long_evicted', agentHandle: h, kind: 'dossier_line',
+      request: '## Their world',
+      content: 'brother visits from Surabaya every Ramadan',
+      meta: { section: '## Their world', since: null, reason: 'relocated' },
+    },
+  ]);
+
+  const rows = await listArchiveFor(h);
+  assert.equal(rows.length, 2, 'both lines were stored — long_evicted is a known source');
+  const byContent = new Map(rows.map(r => [r.content, r]));
+
+  const capped = byContent.get('calls the neighbour cat the landlord')!;
+  assert.equal(capped.source, 'long_evicted');
+  assert.equal(capped.kind, 'dossier_line');
+  assert.equal(capped.request, '## Running jokes');
+  assert.deepEqual(capped.meta, { section: '## Running jokes', since: '2026-07-13', reason: 'cap' });
+  assert.equal(capped.createdAt, Date.UTC(2026, 6, 13, 12, 0, 0), 'the stamp date at noon UTC, not the eviction time');
+
+  const relocated = byContent.get('brother visits from Surabaya every Ramadan')!;
+  assert.deepEqual(relocated.meta, { section: '## Their world', since: null, reason: 'relocated' });
+  assert.ok(relocated.createdAt > Date.UTC(2026, 6, 13), 'an unstamped line falls back to now');
+
+  // The point of archiving it: it is still recallable.
+  const hits = await searchArchive({ query: 'landlord', handle: h });
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].entry.source, 'long_evicted');
+});
+
 test('an unknown source is refused, not stored', async () => {
   const h = freshHandle();
   await archiveEntries([{ source: 'not_a_real_source' as never, agentHandle: h, content: 'should not land' }]);

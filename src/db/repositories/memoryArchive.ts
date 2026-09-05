@@ -37,12 +37,28 @@ export type ArchiveSource =
   | 'medium_merged'
   | 'short_expired'
   | 'message_pruned'
-  | 'profile_fact_evicted';
+  | 'profile_fact_evicted'
+  | 'long_evicted';
 
 const ARCHIVE_SOURCES: ReadonlySet<string> = new Set<ArchiveSource>([
   'medium_superseded', 'medium_retracted', 'medium_cap_evicted', 'medium_merged',
-  'short_expired', 'message_pruned', 'profile_fact_evicted',
+  'short_expired', 'message_pruned', 'profile_fact_evicted', 'long_evicted',
 ]);
+
+/** 'long_evicted' is the long tier's feed: one row per dossier LINE that left the document —
+ *  pushed out by the size cap, or carried off a section that is no longer written. The dossier
+ *  is the one tier a model rewrites, so a line leaving it is the easiest place in the system to
+ *  lose something quietly; a cold copy makes it recallable instead. Written as:
+ *
+ *    { source: 'long_evicted', agentHandle, kind: 'dossier_line',
+ *      request: <section heading, e.g. '## Their world'>,
+ *      content: <the line's text, stamp-free>,
+ *      meta: { section, since: <'YYYY-MM-DD' | null>, reason: 'cap' | 'relocated' },
+ *      createdAt: <the (since …) date at noon UTC, or now when the line was never stamped> }
+ *
+ *  Noon UTC, not midnight: the stamp is a day in the user's zone, and noon is the only hour that
+ *  lands on that same day in every zone. `since: null` means the line predates stamping, so the
+ *  archive time is the closest honest answer for when it was known. */
 
 export interface ArchiveEntry {
   id: number;
