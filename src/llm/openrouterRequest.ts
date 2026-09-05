@@ -113,7 +113,7 @@ function toOpenRouterEffort(effort: EffortLevel | null): 'low' | 'medium' | 'hig
  * Omitting the field does not mean no reasoning — it means the MODEL's default decides. Engine
  * discovery puts the host engine's model on EVERY voice role (agents/ops/engineDiscovery.ts's
  * applyModel), so a reasoning-family engine model runs the classify lane, whose per-call caps are
- * tiny by design (the climate eval's 200, validateDirective's 20, updateDossier's 900). The whole cap
+ * tiny by design (the climate eval's 200, validateDirective's 20, the dossier line edit's 600). The whole cap
  * goes to thinking and the reply arrives with finish_reason='length' and nothing in it — the
  * starvation shape isLengthStarved names below, and the reason the relationship climate never moved
  * in production.

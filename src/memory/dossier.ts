@@ -12,7 +12,15 @@ import {
   LEGACY_FACT_PROV, PROVENANCE_LINE, SEED_FACT_KEY, provenanceEnabled,
 } from './provenance.js';
 import { PENDING_EMAIL_TTL_MS } from './shortTerm.js';
-import { splitStamp } from './dossierEdits.js';
+import {
+  splitStamp, numberDoc, parseEditOps, applyEditOps, normalizeDoc, docStats, overCap, evictOldest,
+  CANONICAL_HEADINGS, LONG_DOC_MAX_WORDS, LONG_DOC_MAX_CHARS,
+  type EditOp, type RejectedOp,
+} from './dossierEdits.js';
+import { archiveEntries, type ArchiveInput } from '../db/repositories/memoryArchive.js';
+import { wrapPrompt, dataTag } from '../llm/promptTag.js';
+import { dayKey } from '../pipeline/chatTime.js';
+import { DEFAULT_TZ } from '../pipeline/zonedTime.js';
 import {
   renderUserMemoryWithHot, sanitizeLongDoc, splitSections, profileIsThin,
   type MemoryAudience, type UserMemoryData,
@@ -40,10 +48,18 @@ export { formatDaySpan } from './tenure.js';
 
 const THROTTLE_MS = 2 * 60 * 1000; // refresh a dossier at most this often
 const lastUpdate = new Map<string, number>();
-// The rewrite is a FULL-document merge, so the cap has to fit the whole ~400-word dossier plus
+// The legacy rewrite is a FULL-document merge, so the cap has to fit the whole dossier plus
 // whatever is being merged in — a cut-off reply is a truncated document, not a shorter one
-// (see dossierUpdateUsable).
-const DOSSIER_MAX_TOKENS = 900;
+// (see dossierUpdateUsable). 900 was that cap for a ~400-word target and it stopped fitting: the
+// VPS document reached 581 words / 3,608 chars and every pass from 2026-09-04 came back truncated
+// and was discarded, 37 times in a week. 1,800 clears LONG_DOC_MAX_CHARS (4,000 ≈ 1,000-1,300
+// tokens of markdown) with room for the merge. The line-edit protocol below needs a fraction of it.
+const DOSSIER_MAX_TOKENS = 1800;
+
+/** The edit and compaction replies are a short JSON op list, never a document — so the budget that
+ *  froze the rewrite does not apply to them at all. Exported for the pin: this number is the whole
+ *  reason a dossier pass costs a few dozen tokens instead of a few hundred. */
+export const DOSSIER_EDIT_MAX_TOKENS = 600;
 
 // How long a "Irises asked a steering question after a thin look" marker stays live. The agent's
 // reply within this window is treated as the answer to that question (Convo re-delegates a refined
@@ -308,11 +324,19 @@ export async function buildContextBlockWithHot(
   return { block: parts.join('\n\n'), hotLook: wrapped.hotEntry, turn, gates, craft };
 }
 
-/** The dossier updater's harvest contract — exported so tests can pin the two-family
- *  capture (operational + personal color), the canonical section order, and the attribution
- *  clause that keeps ANOTHER participant's "call me X" out of this user's dossier when a
- *  thread has ever carried more than one person. */
-export const DOSSIER_SYSTEM_PROMPT = `You maintain a concise markdown dossier of durable facts ABOUT THE USER, for an assistant to reference. Capture ONLY long-lived facts, in two families:
+// ── THE UPDATER'S PROMPTS ────────────────────────────────────────────────────────────────────────
+// One set of CAPTURE rules — what a durable fact is, which headings hold it, what may never be
+// recorded, who a fact may be attributed to — and three ways of asking for the result: the legacy
+// whole-document merge, the line-edit protocol that replaced it, and the compaction pass that runs
+// when the document outgrows its budget. The rules are shared rather than restated so a change to
+// what she harvests cannot land on one prompt and miss the other two.
+//
+// The legacy prompt is assembled from the same pieces, in its ORIGINAL order (rules → merge clause
+// → attribution), so it stays byte-identical to what this call has always sent: the flag below is a
+// kill switch, and a kill switch that changes the prompt it falls back to is not one.
+
+/** The capture rules, minus any instruction about the RETURN FORMAT. */
+const CAPTURE_RULES_HEAD = `You maintain a concise markdown dossier of durable facts ABOUT THE USER, for an assistant to reference. Capture ONLY long-lived facts, in two families:
 
 OPERATIONAL: name/how they like to be addressed (e.g. a nickname or "call me Chief"), where they are and their timezone, communication style (e.g. casual/lowercase, brief), what they do for work and who they do it with or for, the tools and services they live in, recurring working habits.
 
@@ -320,11 +344,55 @@ PERSONAL COLOR (what lets the assistant sound like it knows them): active projec
 
 Keep the dossier under these headings, in this order, merging into them (create a heading only when it has content): "## Who they are", "## How they work", "## How to text them", "## Their world", "## Running jokes". Order matters — later sections are dropped first when space runs out.
 
-NEVER record anything about the ASSISTANT's scope, capabilities, or what it can/can't do. Specifically, do NOT write "Scope", "Capabilities", "Out of scope", "in scope", "not my lane", "requires a connected account", or any list of things the assistant does or refuses — the assistant's abilities are defined by its own instructions, NOT learned from conversations, and recording them here corrupts its behavior. Also skip ephemeral chatter and one-off questions. Transient TASK detail (a one-off lookup, a figure from a single request, a date on someone else's calendar) lives elsewhere — but a personal or professional project of THEIRS (something they're building, a side venture, an exam they're grinding for) is NOT transient detail; it belongs in "## Their world". For sensitive ground (health, faith, family, money beyond the professional), keep only what they volunteered, phrased as they phrased it, and never infer or record the reason behind a habit or rule.
+NEVER record anything about the ASSISTANT's scope, capabilities, or what it can/can't do. Specifically, do NOT write "Scope", "Capabilities", "Out of scope", "in scope", "not my lane", "requires a connected account", or any list of things the assistant does or refuses — the assistant's abilities are defined by its own instructions, NOT learned from conversations, and recording them here corrupts its behavior. Also skip ephemeral chatter and one-off questions. Transient TASK detail (a one-off lookup, a figure from a single request, a date on someone else's calendar) lives elsewhere — but a personal or professional project of THEIRS (something they're building, a side venture, an exam they're grinding for) is NOT transient detail; it belongs in "## Their world". For sensitive ground (health, faith, family, money beyond the professional), keep only what they volunteered, phrased as they phrased it, and never infer or record the reason behind a habit or rule.`;
 
-Merge new facts into the existing dossier, dedupe, drop anything contradicted, and DELETE any pre-existing scope/capability/out-of-scope section you find. Keep it under ~400 words. Return ONLY the updated markdown, no preamble.
+/** The whole-document merge's own return instruction — the only clause the line-edit protocol
+ *  replaces rather than reuses. */
+const LEGACY_MERGE_CLAUSE = `Merge new facts into the existing dossier, dedupe, drop anything contradicted, and DELETE any pre-existing scope/capability/out-of-scope section you find. Keep it under ~400 words. Return ONLY the updated markdown, no preamble.`;
 
-ATTRIBUTION: the transcript contains ONLY this user's own messages (labeled "user (<their handle>):") plus the assistant's replies. The assistant may be addressing or quoting OTHER people — record ONLY facts, names, nicknames, and style signals the user stated in their own "user (…)" lines, never something harvested from an assistant line alone.`;
+/** Whose words a fact may be harvested from. Last in the legacy prompt, last in the shared rules —
+ *  it is the clause that keeps ANOTHER participant's "call me X" out of this user's dossier when a
+ *  thread has ever carried more than one person. */
+const CAPTURE_RULES_ATTRIBUTION = `ATTRIBUTION: the transcript contains ONLY this user's own messages (labeled "user (<their handle>):") plus the assistant's replies. The assistant may be addressing or quoting OTHER people — record ONLY facts, names, nicknames, and style signals the user stated in their own "user (…)" lines, never something harvested from an assistant line alone.`;
+
+/** The dossier updater's harvest contract, shared by all three prompts — exported so tests can pin
+ *  the two-family capture (operational + personal color), the canonical section order, and the
+ *  attribution clause. Says WHAT to capture and nothing about how to return it. */
+export const DOSSIER_CAPTURE_RULES = `${CAPTURE_RULES_HEAD}\n\n${CAPTURE_RULES_ATTRIBUTION}`;
+
+/** The legacy whole-document prompt, byte-identical to what it always was (see the note above). */
+export const DOSSIER_SYSTEM_PROMPT = `${CAPTURE_RULES_HEAD}\n\n${LEGACY_MERGE_CLAUSE}\n\n${CAPTURE_RULES_ATTRIBUTION}`;
+
+/**
+ * The line-edit protocol's prompt: the same capture rules, then the op grammar. Everything about
+ * VERIFICATION is stated as a consequence the model can act on ("an op whose match is not found in
+ * its line is discarded") rather than as a rule it is asked to keep, because the verification is
+ * code's (dossierEdits.applyEditOps) and the model's compliance is not what makes it hold.
+ */
+export const DOSSIER_EDIT_SYSTEM_PROMPT = `${DOSSIER_CAPTURE_RULES}
+
+HOW YOU WRITE: the dossier arrives as numbered lines ("N| text") inside <current_dossier>. You do not return the document. You return ONLY a JSON object {"ops":[...]} — no prose, no code fences — where each op is one of:
+{"op":"add","section":"## How to text them","text":"one durable fact, their words where it matters"}
+{"op":"replace","line":N,"match":"at least 12 characters copied exactly from line N","text":"the corrected fact"}
+{"op":"delete","line":N,"match":"at least 12 characters copied exactly from line N"}
+"section" is one of the five headings exactly as written above. "match" proves you mean that line: an op whose match is not found in its line is discarded, so copy, never paraphrase. Line numbers refer to the snapshot you were shown.
+
+RESOLVE, NEVER STACK: when the conversation shows a fact has changed, or contradicts a line, replace or delete that line — never add a second line that disagrees with it. When an arc moves on, replace its line in place.
+
+DATES: a trailing "(since YYYY-MM-DD)" shows when a line was last written; an unstamped line is older than any stamped one. Do not write stamps yourself — the system stamps every line you add or replace.
+
+NOT YOURS TO RECORD: which language the assistant should reply in is a standing setting kept elsewhere — never write a line about it. Record how THEY write (what they do), never what the assistant should do.
+
+Nothing durable happened → {"ops":[]}.`;
+
+/** The compaction pass: the same rules and the same op grammar, minus `add` — a document over its
+ *  budget is not short of facts. */
+export const DOSSIER_COMPACT_SYSTEM_PROMPT = `${DOSSIER_CAPTURE_RULES}
+
+The dossier is over its size budget. It arrives as numbered lines ("N| text") inside <current_dossier>, with the budget inside <target>. Return ONLY a JSON object {"ops":[...]} of replace and delete ops — no add, no prose, no code fences:
+{"op":"replace","line":N,"match":"at least 12 characters copied exactly from line N","text":"one tighter line that carries what the merged lines said"}
+{"op":"delete","line":N,"match":"at least 12 characters copied exactly from line N"}
+An op whose match is not found in its line is discarded, so copy, never paraphrase. Keep every line under "## Who they are". Trim "## Running jokes" and "## Their world" first, then "## How to text them", then "## How they work". Merge overlapping lines into one; drop a line that is stale, redundant, or the least durable. Keep their own words for the things they named. Bring the document under the target with the fewest ops that do it.`;
 
 /**
  * Render the dossier updater's transcript from an ALREADY-SCOPED window: the user's own
@@ -372,6 +440,15 @@ export function dossierUpdateUsable(res: { truncated: boolean }): boolean {
  *  parse shape as `threadingEnabled()` (db/repositories/threadInventory.ts). */
 export function dossierFactGuardEnabled(): boolean {
   const v = (process.env.DOSSIER_FACT_GUARD_ENABLED || '').trim().toLowerCase();
+  if (v === '') return true;
+  return ['true', '1', 'on', 'yes'].includes(v);
+}
+
+/** The line-edit protocol (env: MEMORY_DOSSIER_EDITS). Default ON, read at call time, same parse
+ *  shape as its siblings. Off, `updateDossier` runs the whole-document rewrite verbatim — same
+ *  prompt bytes, same persist path, just the bigger token cap. */
+export function dossierEditsEnabled(): boolean {
+  const v = (process.env.MEMORY_DOSSIER_EDITS || '').trim().toLowerCase();
   if (v === '') return true;
   return ['true', '1', 'on', 'yes'].includes(v);
 }
@@ -717,12 +794,281 @@ export async function persistDossierMerge(
   }
 }
 
+// ── THE LINE-EDIT PASS ───────────────────────────────────────────────────────────────────────────
+// The wiring around the pure engine in memory/dossierEdits.ts: two LLM calls at most, the size
+// budget, the /forget fences, the cold-archive writes, and the receipts. See that file's header for
+// why the whole-document rewrite had to go.
+
+/** What one pass needs from the caller — everything already read, so this function opens no store
+ *  it does not have to. */
+interface EditPassInput {
+  base: string;
+  transcript: string;
+  facts: DossierKeyedFacts | undefined;
+  epoch0: number;
+  tz: string;
+  nowMs: number;
+  llm: typeof callLLM;
+}
+
+/** The user half of both dossier calls: the numbered snapshot, what durable memory already
+ *  confirms, the transcript, and (compaction only) the budget. Every payload is text somebody else
+ *  wrote, so every payload rides in its own data tag inside the one <prompt> wrapper. */
+function dossierEditUserMessage(snapshot: string, confirmed: ConfirmedFacts, transcript: string, target?: string): string {
+  return wrapPrompt([
+    dataTag('current_dossier', snapshot),
+    renderConfirmedFacts(confirmed).trim(),
+    dataTag('recent_conversation', transcript),
+    target ? dataTag('target', target) : '',
+  ].filter(Boolean).join('\n\n'));
+}
+
+/** A dossier line that left the document → a cold-archive row. Noon UTC for a stamped line (the
+ *  stamp is a day in the user's zone, and noon lands on that day in every zone); now for a line
+ *  that predates stamping, which is the closest honest answer for when it was known. */
+function evictionRow(
+  handle: string,
+  line: { section: string; text: string; since: string | null },
+  reason: 'cap' | 'relocated',
+  nowMs: number,
+): ArchiveInput {
+  const stamped = line.since ? Date.parse(`${line.since}T12:00:00Z`) : NaN;
+  return {
+    agentHandle: handle,
+    source: 'long_evicted',
+    kind: 'dossier_line',
+    request: line.section,
+    content: line.text,
+    meta: { section: line.section, since: line.since, reason },
+    createdAt: Number.isFinite(stamped) ? stamped : nowMs,
+  };
+}
+
+/** How many canonical headings the batch brought into existence. */
+function headingsCreated(before: string, after: string): number {
+  const has = (doc: string, heading: string) =>
+    doc.split('\n').some(l => l.trim().toLowerCase() === heading.toLowerCase());
+  return CANONICAL_HEADINGS.filter(h => !has(before, h) && has(after, h)).length;
+}
+
+/**
+ * One line-edit pass: normalize → show → verify → apply → fit → persist → archive.
+ *
+ * ORDER MATTERS in two places and only two:
+ *   • the cold-archive writes happen AFTER the save is confirmed AND the forget epoch is re-checked.
+ *     Archiving a line the write never landed would leave a copy of a fact the document does not
+ *     have; archiving after a /forget would be a forget leak, which is the one thing the archive
+ *     may never be.
+ *   • the compaction call runs at most ONCE, and eviction only after it. A model that will not cut
+ *     is not asked twice; code finishes the job (evictOldest) rather than spending another call.
+ */
+async function runDossierEditPass(handle: string, input: EditPassInput): Promise<void> {
+  const { base, transcript, facts, epoch0, tz, nowMs, llm } = input;
+  // The stamp is the user's calendar day, not the server's. A zone Intl refuses is a stored value
+  // this pass has no business failing over — the default zone is a worse date, never a wrong doc.
+  let today: string;
+  try {
+    today = dayKey(nowMs, tz);
+  } catch {
+    today = dayKey(nowMs, DEFAULT_TZ);
+  }
+
+  const normalized = normalizeDoc(base);
+  const { snapshot } = numberDoc(normalized.doc);
+  const before = docStats(normalized.doc);
+
+  const res = await llm({
+    role: 'classify',
+    maxTokens: DOSSIER_EDIT_MAX_TOKENS,
+    system: DOSSIER_EDIT_SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: dossierEditUserMessage(snapshot, facts?.confirmed ?? {}, transcript) }],
+    trace: { handle, label: 'dossier_edit' },
+  });
+
+  // A cut-off op list is MANGLED, not shorter: the last op is half-written and jsonrepair would
+  // happily hand back an op the model never finished deciding on. Same verdict the whole-document
+  // rewrite reaches, for the same reason, and reported on the same label so the dashboard's
+  // "memory stopped growing" signal keeps working across the protocol change.
+  if (!dossierUpdateUsable(res)) {
+    console.warn(`[memory] dossier edit truncated (stop=${res.stopReason}) — NOT persisting`);
+    record({
+      type: 'event',
+      label: 'memory:dossier_truncated',
+      handle,
+      response: 'ERROR: dossier edit truncated — persist skipped (durable memory protected)',
+      detail: { phase: 'edit', stopReason: res.stopReason, chars: (res.text ?? '').length, maxTokens: DOSSIER_EDIT_MAX_TOKENS },
+    });
+    reportError({
+      source: 'memory',
+      category: 'truncation',
+      severity: 'warn',
+      message: 'dossier edit truncated — persist skipped (durable memory protected)',
+      handle,
+      detail: { phase: 'edit', stopReason: res.stopReason, maxTokens: DOSSIER_EDIT_MAX_TOKENS },
+      trace: false,   // the ERROR event above already counts against this turn
+    });
+    return;
+  }
+
+  const parsed = parseEditOps(res.text);
+  if (!parsed) {
+    // No JSON object anywhere — the cheap model answered in prose. Distinct from `{"ops":[]}`,
+    // which is a real answer, and from `all_rejected`, which means it tried and missed.
+    record({
+      type: 'event',
+      label: 'memory:dossier_edit',
+      handle,
+      response: 'ERROR: dossier edit reply carried no op list — nothing applied',
+      detail: { outcome: 'unparsable', ops: 0, applied: 0, rejected: [], wordsBefore: before.words, charsBefore: before.chars },
+    });
+    reportError({
+      source: 'memory',
+      category: 'classifier_failure',
+      severity: 'warn',
+      message: 'dossier edit reply carried no op list — nothing applied',
+      handle,
+      detail: { chars: (res.text ?? '').length },
+      trace: false,
+    });
+    return;
+  }
+
+  const editResult = applyEditOps(normalized.doc, parsed.ops, today);
+  let doc = editResult.doc;
+  const rejected: RejectedOp[] = [...parsed.rejected, ...editResult.rejected];
+  const opsSeen = parsed.ops.length + parsed.rejected.length;
+  const outcome: 'applied' | 'noop' | 'all_rejected' =
+    editResult.applied.length ? 'applied' : opsSeen ? 'all_rejected' : 'noop';
+
+  // OVER BUDGET: one compaction call, then code finishes the job. Both legs are optional and both
+  // fail toward "the document stays as it is", which still renders (the budget sits well under
+  // MEMORY_LONG_MAX_CHARS).
+  const cap = overCap(doc);
+  if (cap) {
+    const beforeCompaction = docStats(doc);
+    const compactRes = await llm({
+      role: 'classify',
+      maxTokens: DOSSIER_EDIT_MAX_TOKENS,
+      system: DOSSIER_COMPACT_SYSTEM_PROMPT,
+      messages: [{
+        role: 'user',
+        content: dossierEditUserMessage(
+          numberDoc(doc).snapshot, facts?.confirmed ?? {}, transcript,
+          `under ${LONG_DOC_MAX_WORDS} words and ${LONG_DOC_MAX_CHARS} characters`,
+        ),
+      }],
+      trace: { handle, label: 'dossier_compact' },
+    });
+    let compactApplied: EditOp[] = [];
+    let compactRejected = 0;
+    if (!compactRes.truncated) {
+      const compactParsed = parseEditOps(compactRes.text);
+      // `add` is not in this pass's vocabulary: a document over budget is not short of facts.
+      const ops = (compactParsed?.ops ?? []).filter(o => o.op !== 'add');
+      const applied = applyEditOps(doc, ops, today);
+      doc = applied.doc;
+      compactApplied = applied.applied;
+      compactRejected = (compactParsed?.rejected.length ?? 0) + applied.rejected.length;
+    }
+    record({
+      type: 'event',
+      label: 'memory:dossier_compaction',
+      handle,
+      detail: {
+        trigger: cap,
+        before: beforeCompaction.words,
+        after: docStats(doc).words,
+        applied: compactApplied.length,
+        rejected: compactRejected,
+        truncated: compactRes.truncated,
+      },
+    });
+  }
+
+  const evicted = overCap(doc) ? evictOldest(doc) : { doc, evicted: [] as ReturnType<typeof evictOldest>['evicted'] };
+  doc = evicted.doc;
+  const after = docStats(doc);
+
+  record({
+    type: 'event',
+    label: 'memory:dossier_edit',
+    handle,
+    detail: {
+      outcome,
+      ops: opsSeen,
+      applied: editResult.applied.length,
+      rejected: rejected.map(r => ({ reason: r.reason })),
+      wordsBefore: before.words, wordsAfter: after.words,
+      charsBefore: before.chars, charsAfter: after.chars,
+      headingsCreated: headingsCreated(normalized.doc, doc),
+      relocated: normalized.relocated.length,
+    },
+  });
+
+  if (doc.trim() === base.trim()) return;   // nothing moved: no write, no revision, no archive row
+
+  // The document may have changed under us while the model was thinking (another pass, a /forget,
+  // the engine seed). The ops were verified against the snapshot THIS pass was shown, so applying
+  // them over somebody else's document is exactly the clobber the protocol exists to avoid.
+  const current = await getMemory(handle);
+  if ((current?.dossierMd ?? '').trim() !== base.trim()) {
+    console.warn('[memory] dossier edit aborted — the document moved while the model was thinking');
+    return;
+  }
+
+  const saved = await persistDossierMerge(handle, doc, { epoch: epoch0, dossierMd: base }, { facts });
+
+  // ARCHIVE LAST, and only over a confirmed save whose forget epoch still holds. A RELOCATED line
+  // is archived too: it is still in the document, but the heading it was filed under is gone, and
+  // "which section said this" is the part a cold copy is the only remaining record of.
+  const relocatedRow = (raw: string): ArchiveInput => {
+    const { body, since } = splitStamp(raw);
+    return evictionRow(
+      handle,
+      { section: '## Their world', text: body.replace(/^\s*[-*+]\s+/, '').trim(), since },
+      'relocated',
+      nowMs,
+    );
+  };
+  const rows: ArchiveInput[] = saved.dossierSaved && getForgetEpoch(handle) === epoch0
+    ? [
+        ...evicted.evicted.map(l => evictionRow(handle, l, 'cap', nowMs)),
+        ...normalized.relocated.map(relocatedRow),
+      ]
+    : [];
+  if (rows.length) await archiveEntries(rows);
+
+  if (evicted.evicted.length) {
+    record({
+      type: 'event',
+      label: 'memory:dossier_evicted',
+      handle,
+      detail: {
+        count: evicted.evicted.length,
+        sections: [...new Set(evicted.evicted.map(l => l.section))],
+        wordsAfter: after.words,
+        archived: rows.length ? evicted.evicted.length : 0,
+      },
+    });
+  }
+}
+
 /**
  * Refresh the durable dossier from recent conversation. Async + throttled; never
- * blocks a turn. A cheap Haiku pass merges new durable facts into the existing doc.
+ * blocks a turn. A cheap classify pass folds new durable facts into the existing doc — as verified
+ * line edits (`MEMORY_DOSSIER_EDITS`, default on) or, with the flag off, as the legacy
+ * whole-document merge.
+ *
+ * `deps` is the DI seam for tests (no module mocks in this repo): the lane and the clock.
  */
-export async function updateDossier(handle: string, recent: StoredMessage[]): Promise<void> {
-  const now = Date.now();
+export async function updateDossier(
+  handle: string,
+  recent: StoredMessage[],
+  deps: { llm?: typeof callLLM; now?: () => number } = {},
+): Promise<void> {
+  const llm = deps.llm ?? callLLM;
+  const clock = deps.now ?? Date.now;
+  const now = clock();
   if (now - (lastUpdate.get(handle) ?? 0) < THROTTLE_MS) return;
   lastUpdate.set(handle, now);
 
@@ -752,7 +1098,23 @@ export async function updateDossier(handle: string, recent: StoredMessage[]): Pr
     const transcript = buildDossierTranscript(handle, scoped);
     if (!transcript.trim()) return;
 
-    const res = await callLLM({
+    if (dossierEditsEnabled()) {
+      // The `(since …)` stamp is a day in THEIR zone, so the pass needs the same zone every other
+      // dated render reads — the stored `agent_tz`, or the deployment default when nothing is held.
+      const storedTz = memory?.prefs?.agent_tz;
+      await runDossierEditPass(handle, {
+        base: memory?.dossierMd ?? '',
+        transcript,
+        facts,
+        epoch0,
+        tz: typeof storedTz === 'string' && storedTz.trim() ? storedTz.trim() : DEFAULT_TZ,
+        nowMs: now,
+        llm,
+      });
+      return;
+    }
+
+    const res = await llm({
       role: 'classify',
       maxTokens: DOSSIER_MAX_TOKENS,
       system: DOSSIER_SYSTEM_PROMPT,

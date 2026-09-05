@@ -31,7 +31,7 @@ import { routingGateMemoryAwareEnabled } from '../src/agents/routingGate.js';
 import { affectDeterministicEnabled } from '../src/persona/status.js';
 import { personaModulesEnabled } from '../src/agents/convo/personaModules.js';
 import { provenanceEnabled } from '../src/memory/provenance.js';
-import { dossierFactGuardEnabled } from '../src/memory/dossier.js';
+import { dossierFactGuardEnabled, dossierEditsEnabled } from '../src/memory/dossier.js';
 import { mediumSupersedeEnabled } from '../src/memory/mediumSupersede.js';
 import { convoHistoryMax } from '../src/db/repositories/conversations.js';
 import { walledUrlHintEnabled } from '../src/llm/models.js';
@@ -66,6 +66,7 @@ const FLAGS: readonly FlagDoc[] = [
   { name: 'CONVO_PERSONA_MODULES', probe: () => onOff(personaModulesEnabled()) },
   { name: 'MEMORY_PROVENANCE_ENABLED', probe: () => onOff(provenanceEnabled()) },
   { name: 'DOSSIER_FACT_GUARD_ENABLED', probe: () => onOff(dossierFactGuardEnabled()) },
+  { name: 'MEMORY_DOSSIER_EDITS', probe: () => onOff(dossierEditsEnabled()) },
   { name: 'MEMORY_MEDIUM_SUPERSEDE', probe: () => onOff(mediumSupersedeEnabled()) },
   { name: 'CONVO_HISTORY_MAX', probe: () => String(convoHistoryMax()) },
   { name: 'OPS_WALLED_URL_HINT', probe: () => onOff(walledUrlHintEnabled()) },

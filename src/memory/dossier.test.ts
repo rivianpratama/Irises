@@ -7,6 +7,7 @@
 // already scoped to ONE user, its lines are labeled with the handle that said them, and the
 // prompt tells the model to harvest only from those labeled user lines.
 process.env.TZ = 'UTC';
+process.env.DATA_BACKEND = 'memory';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,10 +17,14 @@ import {
   dossierFactGuardEnabled, enforceKeyedFacts, enforceKeyedFactsWithChanges, keyedFactsForDossier,
   reinjectSeedProvenance, renderConfirmedFacts,
   renderPendingApproval, gatePendingApproval, PENDING_ASK_TTL_MS, PENDING_CLARIFICATION_TTL_MS,
+  DOSSIER_CAPTURE_RULES, DOSSIER_EDIT_SYSTEM_PROMPT, DOSSIER_COMPACT_SYSTEM_PROMPT,
+  DOSSIER_EDIT_MAX_TOKENS, dossierEditsEnabled, updateDossier,
 } from './dossier.js';
+import { LONG_DOC_MAX_WORDS } from './dossierEdits.js';
 import { addShortTerm } from '../db/repositories/memoryShort.js';
 import { saveDossier, clearDossier, getMemory, getForgetEpoch, setPreference } from '../db/repositories/memory.js';
 import { getLongDoc, listLongRevisions, saveLongDoc } from '../db/repositories/memoryLong.js';
+import { listArchiveFor } from '../db/repositories/memoryArchive.js';
 import { PROVENANCE_LINE } from './seedFromEngine.js';
 import { SEED_FACT_KEY, type Provenance } from './provenance.js';
 import type { MediumBundle } from './mediumTerm.js';
@@ -603,4 +608,268 @@ test('no pending approval renders nothing at all — the section is free until i
   const h = freshHandle();
   const block = await buildContextBlock(h, 'hey');
   assert.doesNotMatch(block, /approve an action/);
+});
+
+// ── The line-edit protocol (MEMORY_DOSSIER_EDITS, default ON) ────────────────
+// The full-document rewrite froze: 581 words against a 900-token reply budget meant every pass
+// after 2026-09-04 came back truncated and was (correctly) thrown away, and nothing in it could
+// RESOLVE a contradiction — two lines that disagreed just sat there. The updater now sends the
+// document as numbered lines and takes back a small list of verified add/replace/delete ops.
+
+/** A fake classify lane that answers per SYSTEM prompt, so one test can serve the edit call and
+ *  the compaction call different replies and still prove which was which. */
+function fakeDossierLlm(reply: (system: string) => string | { text: string; truncated?: boolean }) {
+  const calls: Array<{ system: string; user: string; maxTokens?: number; label?: string }> = [];
+  const llm = (async (req: any) => {
+    calls.push({
+      system: String(req.system ?? ''),
+      user: String(req.messages?.[0]?.content ?? ''),
+      maxTokens: req.maxTokens,
+      label: req.trace?.label,
+    });
+    const r = reply(String(req.system ?? ''));
+    const out = typeof r === 'string' ? { text: r, truncated: false } : { truncated: false, ...r };
+    return {
+      text: out.text, toolCalls: [], stopReason: out.truncated ? 'length' : 'end_turn',
+      truncated: !!out.truncated, provider: 'anthropic', model: 'test',
+    };
+  }) as any;
+  return { llm, calls };
+}
+
+const NOW = Date.UTC(2026, 8, 5, 12, 0, 0);   // 2026-09-05 in UTC
+const TODAY = '2026-09-05';
+const turn = (h: string) => ([
+  { role: 'user' as const, content: 'the shack needs a new roof', handle: h },
+  { role: 'assistant' as const, content: 'noted' },
+]);
+
+const withEdits = <T>(on: boolean, fn: () => Promise<T> | T) =>
+  withEnv('MEMORY_DOSSIER_EDITS', on ? 'true' : 'false', fn);
+
+/** A handle with a starting dossier and a deterministic zone, so `(since …)` is pinned. */
+async function seeded(doc: string): Promise<string> {
+  const h = freshHandle();
+  await setPreference(h, 'agent_tz', 'UTC');
+  if (doc) await saveDossier(h, doc);
+  return h;
+}
+
+const editReceipt = () => (getTraces().find(e => e.label === 'memory:dossier_edit')?.detail ?? {}) as Record<string, unknown>;
+
+test('MEMORY_DOSSIER_EDITS is default ON, read at call time, parsed like its siblings', () => {
+  const prior = process.env.MEMORY_DOSSIER_EDITS;
+  try {
+    delete process.env.MEMORY_DOSSIER_EDITS;
+    assert.equal(dossierEditsEnabled(), true, 'unset → on');
+    for (const v of ['true', '1', 'on', 'yes', 'ON', ' yes ']) {
+      process.env.MEMORY_DOSSIER_EDITS = v;
+      assert.equal(dossierEditsEnabled(), true, v);
+    }
+    for (const v of ['false', '0', 'off', 'no', 'nonsense']) {
+      process.env.MEMORY_DOSSIER_EDITS = v;
+      assert.equal(dossierEditsEnabled(), false, v);
+    }
+  } finally {
+    if (prior === undefined) delete process.env.MEMORY_DOSSIER_EDITS;
+    else process.env.MEMORY_DOSSIER_EDITS = prior;
+  }
+});
+
+test('the edit and compaction prompts carry the SAME capture rules the legacy rewrite always did', () => {
+  for (const p of [DOSSIER_EDIT_SYSTEM_PROMPT, DOSSIER_COMPACT_SYSTEM_PROMPT]) {
+    assert.ok(p.startsWith(DOSSIER_CAPTURE_RULES), 'the shared rules lead both protocol prompts');
+    assert.ok(p.includes('OPERATIONAL:'));
+    assert.ok(p.includes('PERSONAL COLOR'));
+    assert.ok(p.includes("NEVER record anything about the ASSISTANT's scope"));
+    assert.ok(p.includes('ATTRIBUTION:'));
+  }
+  // The legacy full-document prompt keeps every clause it ever had, in the order it had them.
+  for (const clause of ['OPERATIONAL:', 'PERSONAL COLOR', 'Merge new facts into the existing dossier', 'ATTRIBUTION:']) {
+    assert.ok(DOSSIER_SYSTEM_PROMPT.includes(clause), clause);
+  }
+  assert.ok(
+    DOSSIER_SYSTEM_PROMPT.indexOf('Return ONLY the updated markdown') < DOSSIER_SYSTEM_PROMPT.indexOf('ATTRIBUTION:'),
+    'the legacy prompt is byte-stable: the merge clause still sits where it always sat',
+  );
+});
+
+test('the edit prompt states the op grammar, the no-op answer, and the language ban', () => {
+  assert.ok(DOSSIER_EDIT_SYSTEM_PROMPT.includes('{"ops":[]}'), 'nothing durable has an answer');
+  assert.ok(DOSSIER_EDIT_SYSTEM_PROMPT.includes('at least 12 characters copied exactly'));
+  assert.ok(DOSSIER_EDIT_SYSTEM_PROMPT.includes('Do not write stamps yourself'));
+  assert.ok(DOSSIER_EDIT_SYSTEM_PROMPT.includes('RESOLVE, NEVER STACK'));
+  // The reply language is a code-owned standing setting now; a dossier line about it would be a
+  // second authority on the one dial that must have exactly one.
+  assert.ok(DOSSIER_EDIT_SYSTEM_PROMPT.includes('which language the assistant should reply in is a standing setting kept elsewhere'));
+  // Compaction never adds.
+  assert.ok(!DOSSIER_COMPACT_SYSTEM_PROMPT.includes('"op":"add"'));
+  assert.ok(DOSSIER_COMPACT_SYSTEM_PROMPT.includes('Keep every line under "## Who they are"'));
+  assert.equal(DOSSIER_EDIT_MAX_TOKENS, 600);
+});
+
+test('updateDossier applies the ops it got back, stamped with today, to BOTH stores', async () => {
+  const h = await seeded('');
+  const { llm, calls } = fakeDossierLlm(() => JSON.stringify({
+    ops: [
+      { op: 'add', section: '## Who they are', text: 'runs a print shop in east austin' },
+      { op: 'add', section: '## Their world', text: 'fixing up a lake cabin he calls "the shack"' },
+    ],
+  }));
+  clearTraces();
+  await updateDossier(h, turn(h), { llm, now: () => NOW });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].system, DOSSIER_EDIT_SYSTEM_PROMPT);
+  assert.equal(calls[0].maxTokens, DOSSIER_EDIT_MAX_TOKENS);
+  assert.equal(calls[0].user.includes('<current_dossier>'), false, 'an empty dossier has no snapshot tag to send');
+  assert.ok(calls[0].user.includes('<recent_conversation>'), 'the transcript rides inside its own data tag');
+
+  const stored = (await getMemory(h))?.dossierMd ?? '';
+  assert.equal(stored, [
+    '## Who they are',
+    `- runs a print shop in east austin (since ${TODAY})`,
+    '',
+    '## Their world',
+    `- fixing up a lake cabin he calls "the shack" (since ${TODAY})`,
+  ].join('\n'));
+  const long = await getLongDoc(h);
+  assert.equal(long?.docMd, stored, 'the versioned mirror got the same document');
+  assert.equal(long?.version, 1, 'the long tier moved again');
+
+  const d = editReceipt();
+  assert.equal(d.outcome, 'applied');
+  assert.equal(d.applied, 2);
+  assert.equal(d.headingsCreated, 2);
+});
+
+test('a replace RESOLVES a contradiction instead of stacking a third line beside it', async () => {
+  const h = await seeded([
+    '## How to text them',
+    '- prefers english conversation',
+    '- comfortable switching between english and indonesian casually',
+  ].join('\n'));
+  const { llm } = fakeDossierLlm(() => JSON.stringify({
+    ops: [
+      { op: 'replace', line: 2, match: 'prefers english', text: 'texts in lowercase, short bursts' },
+      { op: 'delete', line: 3, match: 'comfortable switching' },
+    ],
+  }));
+  await updateDossier(h, turn(h), { llm, now: () => NOW });
+
+  assert.equal((await getMemory(h))?.dossierMd, [
+    '## How to text them',
+    `- texts in lowercase, short bursts (since ${TODAY})`,
+  ].join('\n'), 'one line left, and it is dated');
+});
+
+test('an op whose match does not fit its line is discarded, and the receipt says why', async () => {
+  const base = '## How to text them\n- prefers english conversation';
+  const h = await seeded(base);
+  const { llm } = fakeDossierLlm(() => JSON.stringify({
+    ops: [{ op: 'replace', line: 2, match: 'likes long formal emails', text: 'writes like a lawyer' }],
+  }));
+  clearTraces();
+  await updateDossier(h, turn(h), { llm, now: () => NOW });
+
+  assert.equal((await getMemory(h))?.dossierMd, base, 'the document is byte-identical');
+  const d = editReceipt();
+  assert.equal(d.outcome, 'all_rejected');
+  assert.deepEqual(d.rejected, [{ reason: 'match_mismatch' }]);
+});
+
+test('a truncated edit reply writes NOTHING and files the truncation the way the rewrite always did', async () => {
+  const base = '## Who they are\n- runs a print shop';
+  const h = await seeded(base);
+  const { llm } = fakeDossierLlm(() => ({ text: '{"ops":[{"op":"add","section":"## Their', truncated: true }));
+  clearTraces();
+  await updateDossier(h, turn(h), { llm, now: () => NOW });
+
+  assert.equal((await getMemory(h))?.dossierMd, base);
+  const t = getTraces().find(e => e.label === 'memory:dossier_truncated');
+  assert.ok(t, 'the miss is on the record');
+  assert.equal((t!.detail as Record<string, unknown>).phase, 'edit');
+  assert.equal(getTraces().find(e => e.label === 'memory:dossier_edit'), undefined, 'a truncated reply is not an edit');
+});
+
+test('a reply with no JSON object in it at all is reported as unparsable, and nothing is written', async () => {
+  const base = '## Who they are\n- runs a print shop';
+  const h = await seeded(base);
+  const { llm } = fakeDossierLlm(() => 'I am sorry, I cannot help with that request.');
+  clearTraces();
+  await updateDossier(h, turn(h), { llm, now: () => NOW });
+
+  assert.equal((await getMemory(h))?.dossierMd, base);
+  assert.equal(editReceipt().outcome, 'unparsable');
+});
+
+test('a deliberate {"ops":[]} is a no-op, not a failure', async () => {
+  const base = '## Who they are\n- runs a print shop';
+  const h = await seeded(base);
+  const { llm } = fakeDossierLlm(() => '{"ops":[]}');
+  clearTraces();
+  await updateDossier(h, turn(h), { llm, now: () => NOW });
+
+  assert.equal((await getMemory(h))?.dossierMd, base, 'untouched');
+  assert.equal(editReceipt().outcome, 'noop');
+});
+
+test('an over-budget dossier gets ONE compaction call, then eviction, and the evicted lines are archived', async () => {
+  const bulk = Array.from({ length: 60 }, (_, i) =>
+    `- they mentioned the number ${i} while talking about the shop and the cabin roof`);
+  const base = ['## Who they are', '- runs a print shop in east austin', '', '## Their world', ...bulk].join('\n');
+  const h = await seeded(base);
+
+  const { llm, calls } = fakeDossierLlm(() => '{"ops":[]}');
+  clearTraces();
+  await updateDossier(h, turn(h), { llm, now: () => NOW });
+
+  assert.equal(calls.length, 2, 'the edit call, then exactly one compaction call');
+  assert.equal(calls[1].system, DOSSIER_COMPACT_SYSTEM_PROMPT);
+  assert.ok(calls[1].user.includes('<target>'), 'compaction is told the budget it is working to');
+
+  const stored = (await getMemory(h))?.dossierMd ?? '';
+  assert.ok((stored.match(/\S+/g) ?? []).length <= LONG_DOC_MAX_WORDS, 'the document came back under budget');
+  assert.ok(stored.includes('- runs a print shop in east austin'), '"## Who they are" is never evicted');
+
+  const archived = (await listArchiveFor(h, 500)).filter(a => a.source === 'long_evicted');
+  assert.ok(archived.length > 0, 'nothing left the document silently');
+  assert.equal(archived[0].kind, 'dossier_line');
+  assert.equal(archived[0].meta.section, '## Their world');
+  assert.equal(archived[0].meta.reason, 'cap');
+
+  const ev = (getTraces().find(e => e.label === 'memory:dossier_evicted')?.detail ?? {}) as Record<string, unknown>;
+  assert.equal(ev.count, archived.length);
+  assert.equal(ev.archived, archived.length);
+  const comp = (getTraces().find(e => e.label === 'memory:dossier_compaction')?.detail ?? {}) as Record<string, unknown>;
+  assert.equal(comp.trigger, 'words');
+});
+
+test('a /forget that lands while the model is thinking writes nothing and archives nothing', async () => {
+  const h = await seeded('## Who they are\n- runs a print shop');
+  const { llm } = fakeDossierLlm(() => JSON.stringify({
+    ops: [{ op: 'add', section: '## Their world', text: 'the cabin roof is leaking again' }],
+  }));
+  // The wipe lands between the read this pass started from and the write it is about to make.
+  const wiping = (async (req: any) => {
+    await clearDossier(h);
+    return llm(req);
+  }) as any;
+
+  await updateDossier(h, turn(h), { llm: wiping, now: () => NOW });
+  assert.equal((await getMemory(h))?.dossierMd, '', 'the wipe stands');
+  assert.equal((await listArchiveFor(h, 100)).filter(a => a.source === 'long_evicted').length, 0);
+});
+
+test('flag OFF: the whole-document rewrite runs exactly as it always did, on the bigger budget', async () => {
+  const h = await seeded('## Who they are\n- runs a print shop');
+  const merged = '## Who they are\n- runs a print shop and just hired two people';
+  const { llm, calls } = fakeDossierLlm(() => merged);
+  await withEdits(false, async () => {
+    await updateDossier(h, turn(h), { llm, now: () => NOW });
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].system, DOSSIER_SYSTEM_PROMPT, 'the legacy prompt, byte for byte');
+  assert.equal(calls[0].maxTokens, 1800, 'the cap that stops a 581-word doc truncating every pass');
+  assert.equal((await getMemory(h))?.dossierMd, merged);
 });

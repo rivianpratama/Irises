@@ -44,7 +44,7 @@ export function isStarvedError(err: unknown): boolean {
 }
 
 /** The budget a starved retry should run with: double what was sent, floored at 1024, clamped to
- *  the role ceiling. Only the tiny hardcoded per-call caps (20, 100, 500, 900) actually grow —
+ *  the role ceiling. Only the tiny hardcoded per-call caps (20, 100, 500, 600) actually grow —
  *  a call already at its role ceiling gets the same number back, because doubling past the ceiling
  *  is how a starving reasoning model turns one failure into an unbounded bill. `roleCeiling` is
  *  itself floored at 1024 so a misconfigured sub-1024 ceiling can't clamp the floor away. */
@@ -61,7 +61,7 @@ export const STARVED_RETRY_FLOOR = 600;
  *
  * Deliberately NOT clamped to the role ceiling, which is the one difference from bumpStarvedBudget
  * (the cross-lane leg): the caps that starve are the small per-call ones — the climate eval's 200,
- * validateDirective's 20, updateDossier's 900 — and `classify`'s role ceiling is itself 20, so
+ * validateDirective's 20, the dossier line edit's 600 — and `classify`'s role ceiling is itself 20, so
  * clamping there would hand the retry the very cap that just failed. The retry is ONCE per call and
  * the number stays small, so this cannot compound into a bill; a non-positive/NaN cap (a misread
  * ceiling) still gets the floor rather than 0.
