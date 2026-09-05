@@ -56,6 +56,27 @@ export function timestampLabel(at: number | undefined, tz = DEFAULT_TZ): string 
   }
 }
 
+/**
+ * "Sep 4" — a calendar day with no clock, for the places a STORED thing is dated rather than a
+ * message timed: the Reply language line and the directive bullets (memory/standingSettings.ts,
+ * memory/preferences.ts). The year appears only when it differs from today's in the same zone, so
+ * "Aug 30" can never read as this August while staying out of the way the other eleven months.
+ *
+ * Same failure mode as timestampLabel: '' for a missing/invalid instant or a zone Intl refuses, and
+ * the callers render the undated form.
+ */
+export function shortDateLabel(ms: number, tz = DEFAULT_TZ, nowMs = Date.now()): string {
+  if (ms == null || !Number.isFinite(ms)) return '';
+  try {
+    const sameYear = fmtInZone(ms, tz, { year: 'numeric' }) === fmtInZone(nowMs, tz, { year: 'numeric' });
+    return fmtInZone(ms, tz, sameYear
+      ? { month: 'short', day: 'numeric' }
+      : { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch {
+    return '';
+  }
+}
+
 /** The bracketed `[label]` form used where the timestamp rides inside prose/text (fenced transcripts, wire content). */
 export function timestampMarker(at: number | undefined, tz = DEFAULT_TZ): string {
   const label = timestampLabel(at, tz);

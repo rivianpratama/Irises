@@ -26,6 +26,11 @@
 // sanitized at the door (sanitizeThreadText) rather than at render time, and — unlike the enums —
 // they never fall back to a default: an unusable value is simply absent, because a made-up thread
 // is worse than no thread.
+//
+// `language_request` rides the same envelope for the same zero-extra-call reason, and it is the one
+// field here that is not a self-report OR a capture: it is how a STANDING SETTING gets set from a
+// language the English fast path cannot read (memory/standingSettings.ts). Sanitized at the door
+// like the threading pair, and stricter — the value is written to a setting every lane obeys.
 
 import {
   type MoodCore, MOOD_CORES, coreForLabel, normalizeMoodLabel, moodTexture, feelingWords, CORE_VALENCE_BAND,
@@ -79,6 +84,9 @@ export interface EmittedStatus {
   terminal_closure: boolean;  // conversation resolved / they're closing → reply minimal or react-only
   epistemic_trigger: EpistemicTrigger;
   meta_prompt: string;        // ≤~40w self-recursive note: what they'll likely do next + how to meet it
+  /** The one STANDING SETTING the envelope carries: a language they explicitly asked for THIS turn.
+   *  Optional for the same reason the two threading fields are — usually absent, never blank. */
+  language_request?: string;
   // Threading capture. OPTIONAL on purpose: hand-built fixtures keep type-checking, and an absent
   // field is dropped by JSON.stringify instead of persisting an empty string on every affect row.
   thread_note?: string;           // usually absent: a pending thing (`loop:`/`resolved:`) or a recurring theme
@@ -261,6 +269,15 @@ export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
     consumers: ['renderStatusForPrompt'],
   },
   {
+    // The envelope's third channel into the reply-language slot, and the one that reads every
+    // language: the English fast path (memory/standingSettings.ts) catches "talk english" for free
+    // and the tool call catches a model that reaches for one, but a Spanish "háblame en español"
+    // reaches code only here. `applyLanguageRequest` is what weighs it against the other two.
+    key: 'language_request', type: ['string', 'null'], required: true,
+    description: 'null unless they explicitly asked you, THIS turn, to reply in a language from now on — then that language named in English (e.g. "English", "Indonesian"). A message merely written in a language is never an ask.',
+    consumers: ['applyLanguageRequest'],
+  },
+  {
     key: 'thread_note', type: ['string', 'null'], required: true,
     // Two of the sentences here are CAPTURE rules re-homed from the field list P1 deleted out of
     // Context.md — the venting clause and the bare-fact exclusion. They were in the persona only, so
@@ -336,6 +353,21 @@ export function isNullLiteral(s: string): boolean {
   return NULL_LITERAL_RE.test(s.trim());
 }
 
+/** A language NAME, or undefined. Stricter than sanitizeThreadText because the value it guards is
+ *  not quoted back as prose but WRITTEN to a standing setting every lane obeys: letters, spaces and
+ *  hyphens only (a language named in English is exactly that), 30 characters at most, Title-Cased so
+ *  `english` and `ENGLISH` are one setting, and the stringified nothing a weak model writes in place
+ *  of JSON null is refused. Anything else — a sentence, a stray tag, a whole instruction — is not a
+ *  language and is dropped rather than trimmed into one. */
+export function sanitizeLanguageName(v: unknown): string | undefined {
+  if (typeof v !== 'string') return undefined;
+  const cleaned = v.replace(/\s+/g, ' ').trim().replace(/[.!,;:]+$/, '').trim();
+  if (!cleaned || cleaned.length > 30) return undefined;
+  if (!/^[A-Za-z][A-Za-z -]*$/.test(cleaned)) return undefined;
+  if (isNullLiteral(cleaned)) return undefined;
+  return cleaned.split(' ').map(w => w[0].toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+}
+
 /** Coerce a raw `status` object (as emitted, possibly loose) into a validated EmittedStatus, or
  *  undefined when it is null/missing/garbled. This is what the convo client calls on reply.statusRaw. */
 export function coerceStatus(raw: Record<string, unknown> | undefined | null): EmittedStatus | undefined {
@@ -353,6 +385,9 @@ export function coerceStatus(raw: Record<string, unknown> | undefined | null): E
   const rawOutcome = typeof o.thread_outcome === 'string' ? o.thread_outcome.trim().toLowerCase() : '';
   const outcome = (THREAD_OUTCOMES as readonly string[]).includes(rawOutcome) ? rawOutcome as ThreadOutcome : undefined;
   const note = sanitizeThreadText(o.thread_note, 200); // a thread is a phrase, not a paragraph
+  // Same no-default rule as threading, with more at stake: a guessed language would set a standing
+  // setting every lane obeys until the user asks again.
+  const lang = sanitizeLanguageName(o.language_request);
   // Any dead v1 key on the object (a gauge, `mood_core`, `profile_note`) is simply never read: this
   // is what makes a legacy affect row and a legacy model reply both load without a migration.
   return {
@@ -363,7 +398,9 @@ export function coerceStatus(raw: Record<string, unknown> | undefined | null): E
     epistemic_trigger: epistemic,
     meta_prompt: asString(o.meta_prompt).slice(0, META_PROMPT_CHARS),
     // Spread rather than assigned: an absent field must not exist as an `undefined` key, or every
-    // silent turn would persist two dead keys onto the affect row.
+    // silent turn would persist three dead keys onto the affect row. Spread in ENVELOPE_FIELDS
+    // order, so a coerced object's key order is still the table's.
+    ...(lang ? { language_request: lang } : {}),
     ...(note ? { thread_note: note } : {}),
     ...(outcome ? { thread_outcome: outcome } : {}),
   };

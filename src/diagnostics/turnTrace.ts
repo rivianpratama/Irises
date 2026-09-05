@@ -329,10 +329,11 @@ export interface TurnTraceTurnInputs {
 
 // ── the coercion diff ────────────────────────────────────────────────────────
 
-/** The only two fields coerceStatus can leave ABSENT rather than default (persona/status.ts: a
- *  wrong guess about a person's pending thing would invent a fact), so they are the only ones whose
- *  disappearance the diff has to look for by name. */
-const DROPPABLE_FIELDS = ['thread_note', 'thread_outcome'] as const;
+/** The only three fields coerceStatus can leave ABSENT rather than default (persona/status.ts: a
+ *  wrong guess about a person's pending thing would invent a fact, and a wrong guess about the
+ *  language they asked for would set a standing setting every lane obeys), so they are the only ones
+ *  whose disappearance the diff has to look for by name. */
+const DROPPABLE_FIELDS = ['language_request', 'thread_note', 'thread_outcome'] as const;
 
 // The three NUMBER reasons are unreachable on today's envelope: v2 emits eight fields and not one of
 // them is numeric (persona/status.ts). They are kept rather than deleted because this vocabulary is

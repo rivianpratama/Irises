@@ -2594,6 +2594,11 @@ export async function processConvoResult(args: {
         // what she noticed; where it LANDED (minted, evidence, same-day, dropped) is the separate
         // `threads:harvest` receipt, which only fires when something actually moved.
         thread_note: full.thread_note, thread_outcome: full.thread_outcome,
+        // The standing setting she reported this turn, as EMITTED — the same arrangement: whether it
+        // WON the turn (and retired an old language rule) is the separate `memory:reply_language`
+        // receipt, which only fires when the slot actually moved. Reading the two side by side is
+        // how a tag false positive is diagnosed.
+        language_request: full.language_request,
       },
     });
   }
