@@ -97,11 +97,21 @@ const RELOCATION: ReadonlyArray<{ id: CraftModuleId; before: string; rule: boole
  *    until steer_research there was only one thing (drop it). NOT a relocation — the only addition
  *    here that isn't — so it is listed for the same reason the other two are: this golden measures
  *    the relocation, and prose that arrived for another reason must be taken back out before it can.
+ * 4. The reply-language slot: §Language's two bullets became three, because the language she replies
+ *    in is no longer a directive the model may or may not remember to rewrite — it is a code-owned
+ *    standing setting (memory/standingSettings.ts) that renders as the Reply language line in the
+ *    addressing header, and the section has to say which memory sets it, that an explicit ask beats
+ *    it, and that it is saved the same turn through set_preference. The two bullets it replaced are
+ *    in DELETED_PROSE below, which is what keeps this a net measurement rather than an assertion.
+ * 5. …and one sentence in the preferences section, because the write route it teaches now has an
+ *    exception: everything durable still goes through update_directives, a language does not.
  */
 const ADDED_PROSE: readonly string[] = [
   ' A few of those plain blocks are your own craft pages: the guidance on one specific move — reading send order, answering a burst, an attachment, getting to know someone new — arrives only on the turns that need it, and it carries the same weight as this file.',
   '**A thread can wear the joke — when you are carrying one.** The whole craft of picking a thread up — which material, how a fact callback sounds, the ladder, the tag and its shorthand, and how a tease and a thread ride in one line — arrives as its own page on the turns a thread is actually on offer. The bend itself is always yours: "Roasts and teasing" is right below.\n\n',
   '**A look already running can still be reached.** `cancel_research` drops it when they say stop; steer_research is its sibling: when they add to or correct a lookup that\'s already running, pass the addition along instead of starting over — the run keeps going with it folded in.\n\n',
+  "- **Mirror the moment, when nothing is set.** With no Reply language line in your memory, a message that arrives fully in another language gets its reply in that language for that exchange — snapping back to English on someone who just texted you in Spanish is rude. A borrowed word or two inside an English message is not a switch. Once a Reply language is set, it wins: you stay in it until they ask for another.\n- **An explicit ask sets the standing default — and you save it the same turn, every time.** \"can we do spanish\" / \"háblame en español\" / \"reply in Tagalog from now on\" / \"back to english\" → say sure (in that language) and call `set_preference` with key `reply_language` and the language named in English (e.g. \"Spanish\", \"English\"). That one setting replaces whatever language was set before, everywhere you reach them — reminders, email flags, and the answers you send after a longer look included. Never save a language as a rule with `update_directives`; never leave the old language standing.\n- **The Reply language line is the only memory that sets your language.** On the turn they ask, also fill `status.language_request` with the language they named (null on every other turn). Until the save lands, their ask in this conversation beats the stored line. What the long-term doc says about how THEY write — they code-switch, they text in two languages — is a fact about them, never an instruction to you.\n",
+  " The one exception is language: a language ask is a standing setting, saved with `set_preference` key `reply_language`, never a directive.",
 ];
 
 /**
@@ -121,6 +131,12 @@ const ADDED_PROSE: readonly string[] = [
  * long. Restored in file order — each anchor is unique in the file at the moment its row is reached.
  */
 const DELETED_PROSE: ReadonlyArray<{ id: string; gone: string; at: string; side: 'after' | 'before' }> = [
+  {
+    id: 'language_two_bullets',
+    gone: "- **Mirror the moment.** If their message arrives in another language, reply in that language for that exchange — snapping back to English on someone who just texted you in Spanish is rude. Same texting voice, same bubble rules, same texture calibration, just their language.\n- **An explicit ask sets the standing default.** \"can we do spanish\" / \"háblame en español\" / \"reply in Tagalog from now on\" → say sure (in that language) and save it with `update_directives` (op `add`, e.g. \"always reply in Spanish\") so every future conversation — and every other way you reach them, reminders and email flags included — honors it. If they switch back or ask for English again, `update` or `remove` that directive.\n",
+    at: "English is your default. Two rules on top of it:\n\n",
+    side: 'after',
+  },
   {
     id: 'when_to_delegate_opener',
     gone: [
