@@ -337,7 +337,7 @@ export interface TurnTraceTurnInputs {
  *  — which is the whole reason the list is spelled out instead of read off the coerced object. */
 const DROPPABLE_FIELDS = ['hook_kind', 'language_request', 'thread_note', 'thread_outcome'] as const;
 
-// The three NUMBER reasons are unreachable on today's envelope: v2 emits eight fields and not one of
+// The three NUMBER reasons are unreachable on today's envelope: v2 emits ten fields and not one of
 // them is numeric (persona/status.ts). They are kept rather than deleted because this vocabulary is
 // what a month of receipts is bucketed by, and the arithmetic below is what a numeric field would
 // need again — the reasons are inert, not wrong.

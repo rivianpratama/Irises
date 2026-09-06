@@ -8,6 +8,8 @@
 //   • THE EXAMPLES ARE EXAMPLES. Nothing in the English list is a law: the same stall in another
 //     language reaches the same answer through the injected classifier, and a token nobody listed
 //     costs one call rather than a wrong reading.
+//   • AND THE FAST PATH ONLY SPEAKS FOR WHAT IT READ WHOLE. A mixed message ("ok 볼래") tokenizes
+//     down to its one English token, so it is the classifier's — the ASCII half is not a verdict.
 //   • IT FAILS TOWARD TASK. `ask`, `unclear`, a garbled verdict, a thrown call, a deadline — every
 //     one of them is a task, and the layer on the receipt still says the classifier ran.
 //   • PURE. No clock, no lane, no network: the classifier is injected, so every layer here is
@@ -17,7 +19,7 @@ process.env.TZ = 'UTC';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  isIdleTurn, idleVetoes, leafTokens, leafExamplesExtra, endsInQuestion,
+  isIdleTurn, idleVetoes, leafTokens, leafExamplesExtra, endsInQuestion, fastPathCanRead,
   LEAF_EXAMPLES, IDLE_LAYERS, IDLE_MAX_TOKENS, IDLE_MAX_CHARS, QUESTION_MARKS,
   type IdleFacts, type IdleVerdict,
 } from './idle.js';
@@ -161,8 +163,41 @@ test('a short message made only of examples is idle, with no call at all', async
 });
 
 test('the fast path is case- and apostrophe-insensitive, the way a token is', async () => {
-  for (const text of ['OK', "I'm bored", 'Hey', '  hmm  ']) {
+  // Both apostrophes: the straight one and the curly one an iPhone actually types.
+  for (const text of ['OK', "I'm bored", 'I’m bored', 'Hey', '  hmm  ']) {
     assert.deepEqual(await isIdleTurn(text, CLEAR, NEVER), { idle: true, layer: 'fast_path' }, text);
+  }
+});
+
+test('the fast path never decides a message it only half read', async () => {
+  // The MIXED-script message is the one that bites: "ok 볼래" tokenizes to ['ok'] — one perfect
+  // example token, and a request the ASCII tokenizer never saw. Judged on those tokens alone it
+  // reads as a stall, so the fast path is barred from it and the classifier gets the whole message.
+  const mixed = ['ok 볼래', 'hmm 明日は', 'ok 👍'];
+
+  const asked = stub('ask');
+  for (const text of mixed) {
+    assert.deepEqual(await isIdleTurn(text, CLEAR, asked.fn), { idle: false, layer: 'classify' }, text);
+  }
+  assert.deepEqual(asked.calls, mixed, 'and it was asked about the WHOLE message, not the ASCII half');
+
+  // …and the bar is not a veto: the same messages come back idle when the classifier reads them as
+  // stalls. The fast path gave up the answer, not the outcome.
+  const stalled = stub('stall');
+  for (const text of mixed) {
+    assert.deepEqual(await isIdleTurn(text, CLEAR, stalled.fn), { idle: true, layer: 'classify' }, text);
+  }
+
+  // The ASCII half on its own is still the free path it always was.
+  assert.deepEqual(await isIdleTurn('ok', CLEAR, NEVER), { idle: true, layer: 'fast_path' });
+});
+
+test('fastPathCanRead is exactly "the tokenizer dropped nothing"', () => {
+  for (const text of ['ok', 'nothing much', "i'm bored", 'i’m bored', 'ok.thanks', '  hmm  ', '']) {
+    assert.equal(fastPathCanRead(text), true, JSON.stringify(text));
+  }
+  for (const text of ['ok 볼래', 'hmm 明日は', 'ok 👍', 'café', 'да', 'ok ¡vale']) {
+    assert.equal(fastPathCanRead(text), false, JSON.stringify(text));
   }
 });
 

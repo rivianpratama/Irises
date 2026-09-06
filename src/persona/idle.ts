@@ -17,12 +17,22 @@
 //   2. THE ENGLISH FAST PATH — LEAF_EXAMPLES below. EXAMPLES, NOT A LAW: a short message every one
 //      of whose tokens is a known English stall is idle, for free, with no call. The list is small
 //      on purpose and extensible without a code change (LEAF_EXAMPLES_EXTRA), because it is a
-//      shortcut for the commonest case and never a definition of the case.
+//      shortcut for the commonest case and never a definition of the case. It may only speak for a
+//      message it can READ WHOLE — see `fastPathCanRead`, and the paragraph under it.
 //   3. THE CLASSIFY FALLBACK — everything short and veto-free the fast path could not read: a
 //      Spanish "nada", an Indonesian "bosan", a Japanese stall with no Latin tokens at all. The
 //      caller injects it (T7 wires the classify lane); this module only knows it returns one of
 //      three words. `stall` is idle. Anything else — `ask`, `unclear`, a garbled answer, a thrown
 //      call, a lane that timed out — is a task.
+//
+// AND THE FAST PATH NEVER HALF-READS A MESSAGE. A person may text in any language, and a real
+// message is often MIXED: one English ack and a clause in another script ("ok 볼래", "hmm 明日は").
+// `words` below drops every non-Latin character, so a message like that tokenizes down to its one
+// ASCII token — and a fast path that judged those tokens alone would read a request as a stall on
+// the strength of the single word it happened to be able to see. The English list is English by
+// design; the honest consequence is that layer 2 may decide ONLY a message with nothing in it the
+// tokenizer would drop (`fastPathCanRead`). Everything else belongs to layer 3, which reads any
+// script — one small call, never a wrong reading.
 //
 // This file is a LEAF: it imports nothing, from anywhere. `words` below is MIRRORED from
 // convo/turnFocus.ts rather than imported for exactly that reason (that module imports the prompt
@@ -112,13 +122,37 @@ const BASE_EXAMPLES: ReadonlySet<string> = new Set(LEAF_EXAMPLES);
  *
  * MIRRORED from convo/turnFocus.ts `words` (see the file header for why it is not imported), which
  * means it is an ASCII-Latin tokenizer and knows it: a message in a non-Latin script tokenizes to
- * NOTHING here. That is deliberate and harmless — zero tokens can never match the English examples,
- * so such a message falls straight through to the classify layer, which is exactly where it belongs.
- * It is also why the token cap below is not the load-bearing length veto: the CHARACTER cap is, and
- * that one counts every script.
+ * NOTHING here. A WHOLLY non-Latin message is therefore harmless — zero tokens can never match the
+ * English examples, so it falls straight through to the classify layer, which is exactly where it
+ * belongs. A MIXED one is the dangerous case, and `fastPathCanRead` below is what handles it.
+ * All of this is also why the token cap below is not the load-bearing length veto: the CHARACTER cap
+ * is, and that one counts every script.
  */
 function words(text: string): string[] {
   return text.toLowerCase().replace(/['’]/g, '').split(/[^a-z0-9%]+/).filter(Boolean);
+}
+
+/**
+ * Everything `words` can read without dropping any of it: ASCII letters, digits, whitespace and
+ * ASCII punctuation, plus the curly apostrophe an iPhone types (which `words` strips exactly the way
+ * it strips the straight one, so "I’m bored" is still two tokens and still the fast path's).
+ */
+const FAST_PATH_READABLE = /^[\t\n\r\x20-\x7e’]*$/;
+
+/**
+ * May the English fast path speak for this message at all?
+ *
+ * Only if the message holds nothing the tokenizer would silently drop. "ok 볼래" tokenizes to
+ * ['ok'] — one perfect example token and a request the tokenizer never saw — and a fast path reading
+ * those tokens alone calls that idle. So the fast path is barred from any message with a character
+ * outside what `words` reads, and those go to the classify layer, which reads every script.
+ *
+ * Deliberately a read of the RAW characters rather than of the tokens: the whole failure is that the
+ * tokens no longer contain the evidence. An emoji or an accented letter costs one classify call for
+ * the same reason, which is the cheap side of the trade.
+ */
+export function fastPathCanRead(text: string): boolean {
+  return FAST_PATH_READABLE.test(text);
 }
 
 /**
@@ -256,12 +290,17 @@ export async function isIdleTurn(
 
   if (idleVetoes(t, facts).length) return { idle: false, layer: 'veto' };
 
-  // The fast path needs at least one token: a message that tokenizes to nothing would otherwise
-  // pass "every token is an example" vacuously, and a non-Latin stall would be called idle for the
-  // wrong reason — right answer, unreadable receipt, and wrong on the first message that isn't one.
+  // Two conditions before the examples are even consulted. The message has to be one the tokenizer
+  // read WHOLE (`fastPathCanRead`) — otherwise "ok 볼래" is judged on its one ASCII token and a
+  // request is read as a stall. And it has to have produced at least one token: a message that
+  // tokenizes to nothing would otherwise pass "every token is an example" vacuously, and a non-Latin
+  // stall would be called idle for the wrong reason — right answer, unreadable receipt, and wrong on
+  // the first message that isn't one.
   const tokens = words(t);
   const examples = leafTokens();
-  if (tokens.length && tokens.every(tok => examples.has(tok))) return { idle: true, layer: 'fast_path' };
+  if (fastPathCanRead(t) && tokens.length && tokens.every(tok => examples.has(tok))) {
+    return { idle: true, layer: 'fast_path' };
+  }
 
   try {
     const verdict = await classify(t);

@@ -39,6 +39,7 @@ import { hermesSessionRotation, runsTransportEnabled } from '../src/agents/ops/h
 import { unkeptPromiseGuardEnabled } from '../src/agents/convo/unkeptPromise.js';
 import { starvedRetryEnabled, reasoningDisableEnabled, llmCallTimeoutMs } from '../src/llm/openrouterRequest.js';
 import { browserLegBudgetMs, opsCancelEngineAbortEnabled } from '../src/agents/ops/engineBackend.js';
+import { leafExamplesExtra } from '../src/persona/idle.js';
 
 const REPO = process.cwd();
 const APP_ENV = readFileSync(join(REPO, 'deploy/app.env'), 'utf8');
@@ -80,6 +81,11 @@ const FLAGS: readonly FlagDoc[] = [
   { name: 'OPS_CANCEL_ENGINE_ABORT', probe: () => onOff(opsCancelEngineAbortEnabled()) },
   // Not a boolean — the token IS the transport name, same shape as HERMES_SESSION_ROTATION above.
   { name: 'HERMES_RUN_TRANSPORT', probe: () => (runsTransportEnabled() ? 'runs' : 'chat') },
+  // Not a switch at all — a token LIST, and what an operator needs stated is what the idle gate's
+  // fast path runs on when nobody has added anything: the built-in examples alone. `empty` is the
+  // parser's own answer to that (an unset or blank var parses to no tokens), so the doc and the code
+  // still cannot drift apart, which is the only thing this table is for.
+  { name: 'LEAF_EXAMPLES_EXTRA', probe: () => leafExamplesExtra().join(',') || 'empty' },
 ];
 
 /** The default a flag applies with nothing set — the var is removed for the read and put back. */
