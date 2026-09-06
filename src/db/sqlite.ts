@@ -97,6 +97,26 @@ CREATE TABLE IF NOT EXISTS thread_inventory (
   updated_at        INTEGER NOT NULL
 );
 
+-- The rhythm ledger: the last few extra beats a chat's replies carried, the idle streak, and the
+-- spacing clock for moment offers. Four small numbers read before every turn and written after
+-- every turn, which is why they ride as one json blob rather than four columns.
+--
+-- Keyed by CHAT, following affect_state rather than the memory tiers beside it, and deliberately:
+-- rhythm is a property of the ROOM. Three sharp replies in a group are three sharp replies whoever
+-- typed at her, and the fourth turn goes quiet for everyone in it. The handle column is carried
+-- alongside (not as the key) purely so the dashboard and a per-person sweep can find the rows a
+-- handle is responsible for.
+--
+-- Costs no LLM call to fill: the kind comes from the hidden status envelope the convo model already
+-- emits, everything else is arithmetic. A chat with no row reads back as the default state, which
+-- renders nothing at all.
+CREATE TABLE IF NOT EXISTS hook_state (
+  chat_id    TEXT PRIMARY KEY,
+  handle     TEXT NOT NULL DEFAULT '',
+  state_json TEXT NOT NULL DEFAULT '{}',
+  updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sent_messages (
   message_id    TEXT PRIMARY KEY,
   chat_id       TEXT NOT NULL,
@@ -396,6 +416,7 @@ export function resetStorageForTests(): void {
     DELETE FROM affect_state;
     DELETE FROM relationship_climate;
     DELETE FROM thread_inventory;
+    DELETE FROM hook_state;
     DELETE FROM sent_messages;
     DELETE FROM inbound_messages;
     DELETE FROM memory_short;
