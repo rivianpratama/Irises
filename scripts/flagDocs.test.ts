@@ -40,6 +40,7 @@ import { unkeptPromiseGuardEnabled } from '../src/agents/convo/unkeptPromise.js'
 import { starvedRetryEnabled, reasoningDisableEnabled, llmCallTimeoutMs } from '../src/llm/openrouterRequest.js';
 import { browserLegBudgetMs, opsCancelEngineAbortEnabled } from '../src/agents/ops/engineBackend.js';
 import { leafExamplesExtra } from '../src/persona/idle.js';
+import { hooksEnabled, momentsEnabled, thesisEnabled } from '../src/persona/featureFlags.js';
 
 const REPO = process.cwd();
 const APP_ENV = readFileSync(join(REPO, 'deploy/app.env'), 'utf8');
@@ -69,6 +70,9 @@ const FLAGS: readonly FlagDoc[] = [
   { name: 'DOSSIER_FACT_GUARD_ENABLED', probe: () => onOff(dossierFactGuardEnabled()) },
   { name: 'MEMORY_DOSSIER_EDITS', probe: () => onOff(dossierEditsEnabled()) },
   { name: 'MEMORY_MEDIUM_SUPERSEDE', probe: () => onOff(mediumSupersedeEnabled()) },
+  { name: 'CONVO_HOOKS_ENABLED', probe: () => onOff(hooksEnabled()) },
+  { name: 'MEMORY_MOMENTS_ENABLED', probe: () => onOff(momentsEnabled()) },
+  { name: 'MEMORY_THESIS_ENABLED', probe: () => onOff(thesisEnabled()) },
   { name: 'CONVO_HISTORY_MAX', probe: () => String(convoHistoryMax()) },
   { name: 'OPS_WALLED_URL_HINT', probe: () => onOff(walledUrlHintEnabled()) },
   { name: 'HERMES_SESSION_ROTATION', probe: () => hermesSessionRotation() },
