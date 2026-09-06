@@ -95,10 +95,70 @@ test('renderTurnFocus restates the message, names the shape, and closes on the a
   assert.ok(block.startsWith("## This turn — what you're answering\n"), 'the header leads');
   assert.ok(block.includes(`<their_message>\nso are they coming or not\n</their_message>`), 'their words, data-tagged');
   assert.ok(block.includes('\nShape: question\n'), 'the classified shape');
+  assert.ok(!block.includes('\nTurn: '), 'and no turn reading, because this caller never ran the gate');
   assert.ok(
     block.endsWith('Answer THIS. Everything above is background — it may shape HOW you answer, never WHAT.'),
     'and the counterweight is the last thing in it',
   );
+});
+
+// ── the turn reading ─────────────────────────────────────────────────────────
+//
+// One line between the shape and the hits, filled by the idle gate (persona/idle.ts) before the
+// prompt is built. It is the only place in the prompt that says whether this turn is WORK, and the
+// hook engine's whole contract hangs off the distinction: a task turn gets the answer flat, an idle
+// turn may carry one extra beat, and a beat spent on a piece of work is the failure the gate exists
+// to stop.
+
+test('an idle turn reports itself, with the two checkable facts a hook can be built from', () => {
+  const block = renderTurnFocus({ text: 'hmm', hits: [], idle: true, messageChars: 3, idleStreak: 2 });
+  assert.ok(block.includes('\nShape: statement\nTurn: idle · their message: 3 characters · 2nd idle in a row\nWhat you hold'),
+    'spliced between the shape and the hits, in that order');
+});
+
+test('a task turn says so in one word — the facts are not its business', () => {
+  const block = renderTurnFocus({ text: 'deploy prod', hits: [], idle: false, messageChars: 11, idleStreak: 0 });
+  assert.ok(block.includes('\nTurn: task\n'), 'the whole line');
+  assert.ok(!block.includes('characters'), 'a task turn carries no message length');
+  assert.ok(!block.includes('in a row'), 'and no streak');
+});
+
+test('the streak is written with an ordinal, digits and all', () => {
+  const line = (n: number) => renderTurnFocus({ text: 'hmm', hits: [], idle: true, idleStreak: n })
+    .split('\n').find(l => l.startsWith('Turn: '))!;
+  assert.equal(line(1), 'Turn: idle · 1st idle in a row');
+  assert.equal(line(2), 'Turn: idle · 2nd idle in a row');
+  assert.equal(line(3), 'Turn: idle · 3rd idle in a row');
+  assert.equal(line(4), 'Turn: idle · 4th idle in a row');
+  assert.equal(line(11), 'Turn: idle · 11th idle in a row');
+  assert.equal(line(12), 'Turn: idle · 12th idle in a row');
+  assert.equal(line(13), 'Turn: idle · 13th idle in a row');
+  assert.equal(line(21), 'Turn: idle · 21st idle in a row');
+  assert.equal(line(22), 'Turn: idle · 22nd idle in a row');
+});
+
+test('a clause with no honest number behind it is dropped, never rendered empty', () => {
+  const line = (input: Partial<TurnFocusInput>) =>
+    renderTurnFocus({ text: 'hmm', hits: [], idle: true, ...input }).split('\n').find(l => l.startsWith('Turn: '))!;
+  assert.equal(line({}), 'Turn: idle', 'no facts at all is still a reading');
+  assert.equal(line({ messageChars: 1 }), 'Turn: idle · their message: 1 character', 'and it counts in English');
+  assert.equal(line({ messageChars: 0 }), 'Turn: idle · their message: 0 characters');
+  assert.equal(line({ idleStreak: 0 }), 'Turn: idle', 'a streak of zero on an idle turn is not a fact');
+  assert.equal(line({ messageChars: -4, idleStreak: -1 }), 'Turn: idle', 'nor is a negative one');
+  assert.equal(line({ messageChars: Number.NaN, idleStreak: Number.POSITIVE_INFINITY }), 'Turn: idle');
+  assert.equal(line({ messageChars: 3.7, idleStreak: 2.9 }), 'Turn: idle · their message: 3 characters · 2nd idle in a row');
+});
+
+test('no idle reading at all → the block is byte-identical to the one before the gate existed', () => {
+  // This is what keeps every existing golden, budget and placement pin valid until the caller is
+  // wired: `idle` absent is a third state, not a false.
+  const base: TurnFocusInput = { text: 'so are they coming or not', hits: HITS };
+  const before = renderTurnFocus(base);
+  assert.equal(renderTurnFocus({ ...base, idleStreak: 3, messageChars: 25 }), before,
+    'the two facts render nothing on their own — the reading is what admits them');
+  assert.ok(!before.includes('Turn: '));
+  assert.equal(before.split('\n').length, 7, 'seven physical lines, as it always was (the data tag is three of them)');
+  assert.equal(renderTurnFocus({ ...base, idle: false }).split('\n').length, 8, 'and one more with the reading');
 });
 
 test('renderTurnFocus lists the hits it was handed, source-labelled, at most two', () => {

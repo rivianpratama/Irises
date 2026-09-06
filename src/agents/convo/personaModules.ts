@@ -1,9 +1,9 @@
 // The craft modules: the pages of Convo's persona that only some turns need.
 //
 // Context.md is the always-on core — who she is, how she writes, the laws that rank with the bubble
-// rule. Beside it, under craft/, sit eight pages that teach ONE move each: how to pick up a thread of
+// rule. Beside it, under craft/, sit nine pages that teach ONE move each: how to pick up a thread of
 // theirs, how to read a thread in send order, how to answer a burst, what to do with an attachment,
-// how to get to know somebody new.
+// how to get to know somebody new, what an idle turn may carry.
 // Every one of them used to be a section of Context.md, which meant every one of them was in front
 // of the model on every turn — the burst tradecraft on a single message, nine thousand characters of
 // onboarding craft nine months into a relationship, the send-order read on a turn with no history to
@@ -21,9 +21,10 @@
 // here is a boolean somebody else already computed for a different reason, which is what makes the
 // receipt (`turn:trace.prompt.craft`) worth reading and the whole thing testable.
 //
-// What this module does NOT do: decide, shorten, or reword anything. P4a moved prose and edited
-// none of it; the golden in personaModules.test.ts reconstructs the pre-change Context.md out of
-// these files and pins its sha256.
+// What this module does NOT do: decide, shorten, or reword anything. It renders pages it was told
+// to render, in one fixed order, and the corpus those pages add up to is pinned by sha256 in
+// personaModules.test.ts — so a page edited by accident, or a registry row that quietly changes what
+// reaches the model, fails there rather than in production.
 
 import { loadContext } from '../loadContext.js';
 import { SCHEDULE_AUTOMATION_TOOL } from './tools.js';
@@ -59,6 +60,13 @@ export interface ModuleGateInput {
   /** Their long-term picture is still thin — an identity slot is open, or the day-to-day picture is
    *  empty, or too few personal facts are banked (memory/wrappers.ts profileIsThin). */
   thinProfile: boolean;
+  /** This turn asked for nothing: the idle gate read it as a stall (persona/idle.ts) before the
+   *  prompt was built. Structural in the same sense as the rest of this list — three layers of
+   *  script-independent reads and at most one tiny classify call, all of it decided elsewhere and
+   *  handed here as a boolean. It is the ONE turn shape the hook craft has anything to say about,
+   *  and on every other turn that page is nine hundred characters teaching a beat the reply is not
+   *  allowed to carry. */
+  idleTurn: boolean;
 }
 
 /**
@@ -148,6 +156,16 @@ export const CRAFT_MODULES = [
     file: 'craft/attachments.md',
     gateName: 'attachment_note',
     gate: (ctx: ModuleGateInput) => ctx.attachmentNote,
+  },
+  {
+    id: 'hooks',
+    file: 'craft/hooks.md',
+    // LAST in the registry because it is the only page that never lived in Context.md — the canonical
+    // order above is the order those sections stood in before P4a, and appending keeps that reading
+    // true. The gate is the idle turn itself: the hook craft is instructions for a turn that asked
+    // for nothing, and a task turn that read it would be a task turn tempted to add a beat.
+    gateName: 'idle_turn',
+    gate: (ctx: ModuleGateInput) => ctx.idleTurn,
   },
 ] as const satisfies readonly CraftModule[];
 

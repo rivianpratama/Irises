@@ -809,6 +809,11 @@ export function buildSystemPromptSections(
     tappedReply: tapped,
     emailFlag: !!craftFacts?.emailFlag,
     thinProfile: !!craftFacts?.thinProfile,
+    // Read off the turn-focus input rather than added as a seventeenth positional parameter: the
+    // caller already hands the idle gate's reading in there for the `Turn:` line (convo/turnFocus.ts),
+    // and one fact arriving by two routes is one fact two callers can disagree about. Absent → false,
+    // which is the honest answer for every caller that never ran the gate.
+    idleTurn: !!turnFocus?.idle,
   };
   const craft = modulesOn ? renderCraftModules(craftGate) : { text: '', modules: [] };
   if (craft.text) push('craft_modules', craft.text);

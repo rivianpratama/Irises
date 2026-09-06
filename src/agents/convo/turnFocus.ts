@@ -3,14 +3,17 @@
 // Convo's system prompt runs ~45k characters, and roughly a dozen of its instructions push in one
 // direction: bring the thread up, connect the dots, tie today to what you hold. Nothing in it said
 // "answer what they just said." This block is that sentence, placed where the recency edge is
-// strongest (charter §11.3: volatile per-turn data last), and it does three things in ~350-600
+// strongest (charter §11.3: volatile per-turn data last), and it does four things in ~350-650
 // characters:
 //
 //   1. RESTATES their message, data-tagged — so the thing to answer is the freshest text in the
 //      prompt rather than something 40k characters back up in the transcript;
 //   2. NAMES its shape, classified in code (see classifyTurnShape) — a greeting is not a work ask,
 //      and the fast tier should not have to infer that from a wall of prose;
-//   3. SHOWS the one or two held items that actually touch it. This is the inversion the block
+//   3. SAYS WHAT THE TURN IS FOR — work, or a turn that asked for nothing, decided by the idle gate
+//      (persona/idle.ts) before the prompt was built, plus the two checkable facts an idle turn
+//      carries. That line is ABSENT, not false, on a caller that never ran the gate;
+//   4. SHOWS the one or two held items that actually touch it. This is the inversion the block
 //      exists for: association arrives as EVIDENCE ("here is what touches this, and nothing else
 //      does") rather than as another instruction to associate. When nothing touches it, the block
 //      says so — which is the only place in the prompt that ever gives her permission to hold
@@ -56,6 +59,25 @@ export interface TurnFocusInput {
   text: string;
   /** Held things that touch it, best first. At most TURN_FOCUS_MAX_HITS are rendered. */
   hits: readonly TurnFocusHit[];
+  /**
+   * Did this turn ask for anything? Decided by the idle gate before the prompt is built
+   * (persona/idle.ts), which is three layers of structural reads and at most one tiny classify call
+   * — none of which belongs in a renderer.
+   *
+   * ABSENT is a third state, not a false: a caller that never ran the gate (the composer's second
+   * pass, an install with the hook machinery off) renders NO `Turn:` line at all, and the block is
+   * byte-identical to the one it produced before this field existed. `false` is the positive claim
+   * "this is work", which is a different thing to say and worth one line to say it.
+   */
+  idle?: boolean;
+  /** How many turns in a row have now been idle, including this one (persona/hooks.ts keeps the
+   *  count). Rendered only on an idle turn: how many times running somebody has sent nothing is a
+   *  checkable fact about them, and checkable facts are what a hook is made of. */
+  idleStreak?: number;
+  /** How long their message is, in characters — the raw inbound length, not the clipped restatement
+   *  above it. The other checkable fact an idle turn carries: "hey" and a three-line stall are both
+   *  idle and are not the same turn. */
+  messageChars?: number;
 }
 
 /** How much of their message is restated. The block is a RESTATEMENT, not the message itself — the
@@ -73,6 +95,8 @@ export const TURN_FOCUS_LABEL_CHARS = 80;
 export const TURN_FOCUS_MAX_HITS = 2;
 
 const HEADER = "## This turn — what you're answering";
+const TURN_IDLE = 'Turn: idle';
+const TURN_TASK = 'Turn: task';
 const HITS_LABEL = 'What you hold that touches it: ';
 const NO_HITS = 'nothing here touches it; answer from the thread above.';
 const CLOSER = 'Answer THIS. Everything above is background — it may shape HOW you answer, never WHAT.';
@@ -239,6 +263,46 @@ export function renderedTurnFocusHits(hits: readonly TurnFocusHit[]): TurnFocusH
 }
 
 /**
+ * "1st", "2nd", "3rd", "11th" — the streak, written the way a person writes a count.
+ *
+ * DIGITS ARE FINE HERE. The no-digit rule belongs to the anchors and the affect block, where a
+ * number would leak into her voice as something she could say out loud; this block is the turn's
+ * own data and already prints a character count two clauses earlier. Spelling the ordinal would
+ * make a fourteen-idle-turn streak read as prose instead of a counter.
+ */
+function ordinal(n: number): string {
+  const teens = Math.abs(n) % 100;
+  const unit = Math.abs(n) % 10;
+  if (teens >= 11 && teens <= 13) return `${n}th`;
+  return `${n}${unit === 1 ? 'st' : unit === 2 ? 'nd' : unit === 3 ? 'rd' : 'th'}`;
+}
+
+/**
+ * The turn's own reading: work, or a turn that asked for nothing plus the two checkable facts a
+ * hook may be built out of (persona/hooks.ts, craft/hooks.md).
+ *
+ * '' when the caller never ran the idle gate — see `TurnFocusInput.idle`. Each clause of the idle
+ * form is dropped when its number is absent or nonsensical rather than rendered as "undefined" or
+ * "0th": the line is evidence, and a made-up count is worse than a missing one.
+ */
+function renderTurnLine(input: TurnFocusInput): string {
+  if (input.idle === undefined) return '';
+  if (!input.idle) return TURN_TASK;
+
+  const parts = [TURN_IDLE];
+  const chars = input.messageChars;
+  if (typeof chars === 'number' && Number.isFinite(chars) && chars >= 0) {
+    const n = Math.floor(chars);
+    parts.push(`their message: ${n} ${n === 1 ? 'character' : 'characters'}`);
+  }
+  const streak = input.idleStreak;
+  if (typeof streak === 'number' && Number.isFinite(streak) && streak >= 1) {
+    parts.push(`${ordinal(Math.floor(streak))} idle in a row`);
+  }
+  return parts.join(' · ');
+}
+
+/**
  * Render the block. Returns '' when there is no message to restate — a turn with no text at all has
  * nothing to point at, and an empty block would be a header promising something it does not carry.
  *
@@ -250,9 +314,13 @@ export function renderTurnFocus(input: TurnFocusInput): string {
   if (!message) return '';
 
   const hits = renderedTurnFocusHits(input.hits);
+  // Between the shape and the hits: the shape says what the message IS, this says what the turn is
+  // FOR, and the hits say what touches it. One line, or none at all on a caller that never ran the
+  // gate — which is what keeps every prompt built before the gate existed byte-identical.
+  const turnLine = renderTurnLine(input);
 
   // The label stays on both paths so the block's line structure is constant turn to turn: the fast
-  // tier reads a fixed five-line shape, and only the values move.
+  // tier reads a fixed shape (five lines, six with the turn reading), and only the values move.
   const held = hits.length
     ? hits.map(h => `${h.label} (${h.source})`).join(' · ')
     : NO_HITS;
@@ -263,6 +331,7 @@ export function renderTurnFocus(input: TurnFocusInput): string {
     // Defused for the same reason the labels are: a typed `</prompt>` must not close the wrapper.
     dataTag('their_message', clip(neutralizeTagBreakouts(message), TURN_FOCUS_TEXT_CHARS)),
     `Shape: ${classifyTurnShape(message)}`,
+    ...(turnLine ? [turnLine] : []),
     `${HITS_LABEL}${held}`,
     CLOSER,
   ].join('\n');
