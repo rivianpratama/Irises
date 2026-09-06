@@ -329,11 +329,13 @@ export interface TurnTraceTurnInputs {
 
 // ── the coercion diff ────────────────────────────────────────────────────────
 
-/** The only three fields coerceStatus can leave ABSENT rather than default (persona/status.ts: a
- *  wrong guess about a person's pending thing would invent a fact, and a wrong guess about the
- *  language they asked for would set a standing setting every lane obeys), so they are the only ones
- *  whose disappearance the diff has to look for by name. */
-const DROPPABLE_FIELDS = ['language_request', 'thread_note', 'thread_outcome'] as const;
+/** The only four fields coerceStatus can leave ABSENT rather than default (persona/status.ts: a
+ *  wrong guess about a person's pending thing would invent a fact, a wrong guess about the language
+ *  they asked for would set a standing setting every lane obeys, and a wrong guess about the hook
+ *  spends a turn of the kill switch's window), so they are the only ones whose disappearance the diff
+ *  has to look for by name. A field refused here is therefore receipted BY NAME rather than vanishing
+ *  — which is the whole reason the list is spelled out instead of read off the coerced object. */
+const DROPPABLE_FIELDS = ['hook_kind', 'language_request', 'thread_note', 'thread_outcome'] as const;
 
 // The three NUMBER reasons are unreachable on today's envelope: v2 emits eight fields and not one of
 // them is numeric (persona/status.ts). They are kept rather than deleted because this vocabulary is
@@ -370,7 +372,7 @@ export function describeStatusCoercions(
   const from = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
   const to = coerced as unknown as Record<string, unknown>;
   const out: StatusCoercion[] = [];
-  // The coerced object IS the field list (it defaults everything it keeps), plus the two it can drop.
+  // The coerced object IS the field list (it defaults everything it keeps), plus the four it can drop.
   for (const field of new Set<string>([...Object.keys(to), ...DROPPABLE_FIELDS])) {
     const wrote = from[field];
     const read = to[field];

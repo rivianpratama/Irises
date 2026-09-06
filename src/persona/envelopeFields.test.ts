@@ -8,7 +8,7 @@
 // (`conviction`, `engagement`, `epistemic_trigger`, `profile_note`) — an empty `consumers` list was a
 // documented fact. It is now a failure: every field costs the model a decision on every single turn
 // and costs the prompt a bullet in the contract, so a field nobody reads back is weight in two places
-// at once. Nine fields, nine rows, nine readers.
+// at once. Ten fields, ten rows, and every one of them named somewhere in code.
 process.env.TZ = 'UTC';
 
 import test from 'node:test';
@@ -21,17 +21,19 @@ import { ENVELOPE_FIELDS, STATUS_SCHEMA_PROP, type EnvelopeField } from './statu
  *  from the table, because a table that lost or gained a field would derive its own new answer. */
 const V2_KEYS: readonly string[] = [
   'mood_label', 'mood_shift', 'intent_mode', 'terminal_closure',
-  'epistemic_trigger', 'meta_prompt', 'language_request', 'thread_note', 'thread_outcome',
+  'epistemic_trigger', 'meta_prompt', 'hook_kind', 'language_request', 'thread_note', 'thread_outcome',
 ];
 
 /** The modules that declare every name the `consumers` column can use. Read as SOURCE rather than
  *  imported: pulling threadHarvest.ts into a persona unit test would drag the repositories (and
  *  node:sqlite) in behind it, and the question being asked is only "does this name still exist".
  *  `mood.ts` and `affectDrift.ts` joined the list in v2 — the two modules that took over the fields
- *  the model stopped reporting. */
+ *  the model stopped reporting; `hooks.ts` joined with `hook_kind`, and it is the one source here
+ *  that a plain import would have been safe to take (a leaf that imports nothing) — read as text
+ *  anyway, because the rule is about the list, not about any one module's dependencies. */
 const CONSUMER_SOURCES = [
   './status.ts', './mood.ts', './affectDrift.ts', './threads.ts', '../memory/threadHarvest.ts',
-  '../memory/standingSettings.ts',
+  '../memory/standingSettings.ts', './hooks.ts',
 ] as const;
 
 /** The rule, as a function, so the negative case below can be a real assertion rather than a claim
@@ -40,7 +42,7 @@ function unreadFields(rows: readonly EnvelopeField[]): string[] {
   return rows.filter(f => f.consumers.length === 0).map(f => f.key);
 }
 
-test('the envelope is exactly the nine v2 fields, in emission order', () => {
+test('the envelope is exactly the ten v2 fields, in emission order', () => {
   assert.deepEqual(
     ENVELOPE_FIELDS.map(f => f.key), V2_KEYS,
     'the shrink from seventeen fields to eight is a one-way migration — a field added back here is '
@@ -48,7 +50,7 @@ test('the envelope is exactly the nine v2 fields, in emission order', () => {
   );
 });
 
-test('the schema both lanes validate against requires those nine keys and nothing else', () => {
+test('the schema both lanes validate against requires those ten keys and nothing else', () => {
   const p = STATUS_SCHEMA_PROP as { required: string[]; properties: Record<string, unknown> };
   assert.deepEqual(p.required, V2_KEYS);
   assert.deepEqual(Object.keys(p.properties), V2_KEYS);
@@ -99,25 +101,26 @@ test('every consumer the table names is still an exported function', () => {
 
 /**
  * What `JSON.stringify(STATUS_SCHEMA_PROP)` stands at TODAY, in characters, rounded up inside the 2%
- * PROMPT_BUDGET holds its own lines to. 3,195 measured — 2,899 before `language_request` joined the
- * table (+296: the standing-settings row, the one field here that SETS something rather than
- * reporting it, and the only channel through which a language the English fast path cannot read
- * reaches code at all).
+ * PROMPT_BUDGET holds its own lines to. 3,413 measured — 3,195 before `hook_kind` joined the table
+ * (+218: a 193-character row for the rhythm engine's one input, plus 25 for its key on both of the
+ * wrapper's lists), and 2,899 before `language_request` joined it (+296: the standing-settings row,
+ * the one field here that SETS something rather than reporting it, and the only channel through
+ * which a language the English fast path cannot read reaches code at all).
  *
- * It is deliberately NOT the 1,600 the task brief targeted, and the arithmetic says why. The nine
- * rows are 2,817 of the 3,195; the wrapper (`required`, the types, `additionalProperties`) is the
- * remaining 378. `thread_note` alone is 1,022 and `thread_outcome` 454 — 46% of the schema in
+ * It is deliberately NOT the 1,600 the task brief targeted, and the arithmetic says why. The ten
+ * rows are 3,010 of the 3,413; the wrapper (`required`, the types, `additionalProperties`) is the
+ * remaining 403. `thread_note` alone is 1,022 and `thread_outcome` 454 — 43% of the schema in
  * two rows — because those two descriptions are where P1 re-homed three CAPTURE rules that had lived
  * in Context.md only: the venting clause, the bare-fact exclusion and the anti-optimism read
  * (RESCUED_CAPTURE_RULES in status.test.ts, `thread_note_precedence` and
  * `thread_note_capture_when_heavy` in CLAUSE_INVENTORY). Deleting the pair would land the schema at
- * ~1,719, under the target — and would delete three behaviour rules with no other home. Every other
+ * ~1,937, under the target — and would delete three behaviour rules with no other home. Every other
  * row is already one sentence or an enum list.
  *
  * So the number to hold is the measurement, and the way to move it is to shorten a rule, in the
  * table, where both copies change together. Ratchet it here in the same commit when one does.
  */
-const SCHEMA_JSON_CEILING = 3_250;
+const SCHEMA_JSON_CEILING = 3_470;
 
 test('the status schema both lanes validate against is inside its budget', () => {
   const json = JSON.stringify(STATUS_SCHEMA_PROP);

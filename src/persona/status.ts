@@ -1,4 +1,4 @@
-// The hidden per-turn affect record. The model EMITS eight JUDGMENTS in a `status` object on its
+// The hidden per-turn affect record. The model EMITS ten JUDGMENTS in a `status` object on its
 // reply envelope (a sibling of confidence_level/bubbles); code COMPUTES everything numeric — the
 // cycle + circadian state from the clock, and the 1-100 gauges from those plus the model's reported
 // direction (applyAffectDrift, persona/affectDrift.ts). Neither half is ever shown to the user —
@@ -31,6 +31,12 @@
 // field here that is not a self-report OR a capture: it is how a STANDING SETTING gets set from a
 // language the English fast path cannot read (memory/standingSettings.ts). Sanitized at the door
 // like the threading pair, and stricter — the value is written to a setting every lane obeys.
+//
+// `hook_kind` is the newest, and it rides here for a third version of the same bargain: the rhythm
+// engine (persona/hooks.ts) needs to know what the reply she just wrote actually carried, and only
+// she can say. Everything else about the rhythm — the run, the window, the kill switch, the forbidden
+// kinds — is arithmetic over one stored row. It follows the threading pair's no-default rule rather
+// than the enums': a guessed kind is a beat the ledger counts and the fourth turn is billed for.
 
 import {
   type MoodCore, MOOD_CORES, coreForLabel, normalizeMoodLabel, moodTexture, feelingWords, CORE_VALENCE_BAND,
@@ -43,6 +49,12 @@ import {
   type AffectDriftReport, type AffectGauges, type AffectMove, type GaugeKey, type MoodShift,
   type TargetedGaugeKey,
 } from './affectDrift.js';
+// The three words the model may put in `hook_kind`, and the type they satisfy. A VALUE import, for
+// the same reason and with the same safety argument as MOOD_SHIFTS above: hooks.ts is a LEAF that
+// imports nothing from anywhere (its own header says so), so this edge is terminal and nothing can
+// load back. Imported rather than re-typed because a fourth kind added there and not here would be a
+// word the ledger recorded and the schema refused — the THEME_KINDS single-source rule.
+import { HOOK_WORDS, type HookWord } from './hooks.js';
 import type { CycleState } from './cycle.js';
 import type { CircadianState } from './circadian.js';
 import { climateLines, climateLinesForComposer, type RelationshipClimate } from './climate.js';
@@ -73,7 +85,7 @@ export type ThreadOutcome = 'took' | 'passed' | 'pushed_back';
 
 export const THREAD_OUTCOMES: readonly ThreadOutcome[] = ['took', 'passed', 'pushed_back'];
 
-/** The eight JUDGMENTS the MODEL emits each turn (all flat primitives) — what only it can know.
+/** The ten JUDGMENTS the MODEL emits each turn (all flat primitives) — what only it can know.
  *  Every number that used to sit here is now computed (persona/affectDrift.ts); the model's whole
  *  influence over the gauges is `mood_shift`'s direction, `epistemic_trigger`'s widening and
  *  `thread_outcome`'s evidence. Field order is ENVELOPE_FIELDS order. */
@@ -84,6 +96,10 @@ export interface EmittedStatus {
   terminal_closure: boolean;  // conversation resolved / they're closing → reply minimal or react-only
   epistemic_trigger: EpistemicTrigger;
   meta_prompt: string;        // ≤~40w self-recursive note: what they'll likely do next + how to meet it
+  /** The one extra beat the reply carried beyond the answer (persona/hooks.ts). OPTIONAL for the
+   *  same reason the threading pair is, and it is the honest reading of the absence: a reply that
+   *  said nothing about a hook did not hook, which is exactly what `recordHook` writes down. */
+  hook_kind?: HookWord;
   /** The one STANDING SETTING the envelope carries: a language they explicitly asked for THIS turn.
    *  Optional for the same reason the two threading fields are — usually absent, never blank. */
   language_request?: string;
@@ -269,6 +285,19 @@ export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
     consumers: ['renderStatusForPrompt'],
   },
   {
+    // The rhythm engine's one input (persona/hooks.ts). It sits here rather than last because it is
+    // a self-report about the reply she just wrote — the same kind of thing as the six above it —
+    // while the two below are CAPTURE about the person, and those stay the envelope's tail.
+    //
+    // Droppable like the threading pair, and for a sharper version of the same reason: a guessed
+    // kind is a beat `recordHook` writes into the ledger, and three of those in a row force the
+    // fourth turn quiet. So an unreadable value leaves the key ABSENT, which `recordHook` reads as
+    // `none` — the reading that costs her nothing she did not spend.
+    key: 'hook_kind', type: ['string', 'null'], required: true,
+    description: `null on a flat task answer or a quiet reply; otherwise the one extra beat this reply carried beyond the answer — one of: ${HOOK_WORDS.join(' | ')}`,
+    consumers: ['recordHook', 'quietViolation'],
+  },
+  {
     // The envelope's third channel into the reply-language slot, and the one that reads every
     // language: the English fast path (memory/standingSettings.ts) catches "talk english" for free
     // and the tool call catches a model that reaches for one, but a Spanish "háblame en español"
@@ -388,6 +417,12 @@ export function coerceStatus(raw: Record<string, unknown> | undefined | null): E
   // Same no-default rule as threading, with more at stake: a guessed language would set a standing
   // setting every lane obeys until the user asks again.
   const lang = sanitizeLanguageName(o.language_request);
+  // And the same rule again for the rhythm engine's one input: the three exact words or nothing.
+  // `recordHook` (persona/hooks.ts) reads an absent key as `none`, so a near miss ("a judgment",
+  // "witty") costs her nothing — while a defaulted one would spend a beat of the kill switch's
+  // three-turn window on a reply that never carried a hook at all.
+  const rawHook = typeof o.hook_kind === 'string' ? o.hook_kind.trim().toLowerCase() : '';
+  const hook = (HOOK_WORDS as readonly string[]).includes(rawHook) ? rawHook as HookWord : undefined;
   // Any dead v1 key on the object (a gauge, `mood_core`, `profile_note`) is simply never read: this
   // is what makes a legacy affect row and a legacy model reply both load without a migration.
   return {
@@ -398,8 +433,9 @@ export function coerceStatus(raw: Record<string, unknown> | undefined | null): E
     epistemic_trigger: epistemic,
     meta_prompt: asString(o.meta_prompt).slice(0, META_PROMPT_CHARS),
     // Spread rather than assigned: an absent field must not exist as an `undefined` key, or every
-    // silent turn would persist three dead keys onto the affect row. Spread in ENVELOPE_FIELDS
+    // silent turn would persist four dead keys onto the affect row. Spread in ENVELOPE_FIELDS
     // order, so a coerced object's key order is still the table's.
+    ...(hook ? { hook_kind: hook } : {}),
     ...(lang ? { language_request: lang } : {}),
     ...(note ? { thread_note: note } : {}),
     ...(outcome ? { thread_outcome: outcome } : {}),

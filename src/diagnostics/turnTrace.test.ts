@@ -157,12 +157,24 @@ test('the coercion diff names the field, what the model wrote, and what it becam
     { field: 'mood_label', from: 'very high', to: 'content', reason: 'replaced' },
   ]);
 
-  // The two threading fields are the only ones the coercer can REFUSE outright (a wrong guess there
-  // would invent a fact about the person's life), so a refusal is its own reason.
+  // Four fields the coercer can REFUSE outright rather than default (a wrong guess would invent a
+  // fact about the person's life, set a standing setting every lane obeys, or spend a beat of the
+  // rhythm ledger's window), so a refusal is its own reason.
   const refused = { ...GOOD_STATUS, thread_outcome: 'delighted' };
   assert.deepEqual(describeStatusCoercions(refused, coerceStatus(refused)), [
     { field: 'thread_outcome', from: 'delighted', to: null, reason: 'dropped' },
   ]);
+
+  // `hook_kind` is the newest of the four, and it is on DROPPABLE_FIELDS for exactly this: a word
+  // that never reaches the coerced object still has to be receipted BY NAME, or a model quietly
+  // emitting an off-enum beat every turn looks identical to one that never hooks at all.
+  const offEnum = { ...GOOD_STATUS, hook_kind: 'witty' };
+  assert.deepEqual(describeStatusCoercions(offEnum, coerceStatus(offEnum)), [
+    { field: 'hook_kind', from: 'witty', to: null, reason: 'dropped' },
+  ]);
+  // …and the sanctioned null is not news, the same as it is not for the other three.
+  const noHook = { ...GOOD_STATUS, hook_kind: null };
+  assert.deepEqual(describeStatusCoercions(noHook, coerceStatus(noHook)), []);
 
   // An over-long note is truncated, an unknown enum is replaced, and a missing field is named as
   // absent rather than silently defaulted.

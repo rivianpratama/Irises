@@ -60,7 +60,7 @@ export type BudgetKey = SectionId | 'memory_stack';
  * plain part a routed block can still have, and the thread-offer fixture carries one so that the two
  * numbers keep measuring two things.
  *
- * `status_contract` is prose too, but GENERATED prose: the eight ENVELOPE_FIELDS descriptions plus
+ * `status_contract` is prose too, but GENERATED prose: the ten ENVELOPE_FIELDS descriptions plus
  * the feeling wheel (persona/status.ts), identical on every turn. It is the one line here that cannot
  * be tightened in the prompt alone — those descriptions are also the response schema both lanes
  * validate against, so shrinking this number means editing the table and moving both copies at once.
@@ -93,14 +93,14 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
   burst: 1_130,                // 1,110 — three messages, group-labelled (was 1,160)
   current_time: 295,           // 291 — fixed prose plus the formatted instant (was 305)
   weather: 2_030,              // 1,995 — affect + cycle + circadian + a moved climate. P3 part 3 took −269: the momentum sentence is deleted (applyAffectDrift enforces it now) and the five carried gauges are four words instead of five numbers. Was 2,300 for 2,264 (+2 when the mood core became derived and 'powerful' cost two characters more than 'joyful'); was 2,700 for 2,581, before P1 pointed the block's tail at the status contract instead of re-listing the fields
-  status_contract: 4_180,      // 4,112 — STATIC (ENVELOPE_FIELDS + the wheel), the same on every turn. +234 for `language_request`'s bullet: the standing-settings row, the one field of the envelope that SETS something instead of reporting it, and the only channel by which a language the English fast path cannot read (memory/standingSettings.ts) reaches code at all. Was 3,950 for 3,878. P3 part 3 added +251: one line saying the level and the gauges are kept FOR her, which is the half of the bargain no surviving field can state. Was 3,690 for 3,627 after the envelope shrink took −349 (ten bullets deleted, one added, `mood_label` reworded off the core it can no longer point at); was 4,000 for 3,976; was 3,650 for 3,591 before +353 re-homed three capture rules onto the two threading descriptions and +32 said whose mode `intent_mode` reads
+  status_contract: 4_350,      // 4,279 — STATIC (ENVELOPE_FIELDS + the wheel), the same on every turn. +167 for `hook_kind`'s bullet, spliced in at index 6: the rhythm engine's one input (persona/hooks.ts), and the fourth field of the envelope the coercer may leave ABSENT rather than default — a guessed beat is one the ledger counts against the kill switch's window. Was 4_180 for 4,112. +234 for `language_request`'s bullet: the standing-settings row, the one field of the envelope that SETS something instead of reporting it, and the only channel by which a language the English fast path cannot read (memory/standingSettings.ts) reaches code at all. Was 3,950 for 3,878. P3 part 3 added +251: one line saying the level and the gauges are kept FOR her, which is the half of the bargain no surviving field can state. Was 3,690 for 3,627 after the envelope shrink took −349 (ten bullets deleted, one added, `mood_label` reworded off the core it can no longer point at); was 4,000 for 3,976; was 3,650 for 3,591 before +353 re-homed three capture rules onto the two threading descriptions and +32 said whose mode `intent_mode` reads
   thread: 1_230,               // 1,211 — a pattern-rung theme offer plus a loop outcome ask (was 1,270)
   conversation_timing: 270,    // 266 — the widest of the gap/regime readings on these fixtures (was 278)
   reply_order: 620,            // 613 — renderArrivalGap (the backward-order variant, the larger one) (was 640)
   extra: 590,                  // 583 — the pending version note (update/announce.ts) (was 610)
   turn_focus: 550,             // 544 — a 400-char restatement plus two hits (was 570)
   behavior_anchor: 705,        // 699 — P1: six lines that drift first (was 1,740 for 1,659 / 14 lines)
-  json_anchor: 2_950,          // 2,928 — the envelope contract, last in the prompt (+20 in P3: the one-line description of `status` stopped asking for the gauges the schema no longer carries). Was 3,050 for 2,908
+  json_anchor: 3_000,          // 2,975 — the envelope contract, last in the prompt. +47 for the one clause the closing `status` paragraph owes the rhythm engine: the recency edge now names the extra beat a reply may have carried, so the field the contract describes is also asked for in the last thing she reads. Was 2_950 for 2,928 (+20 in P3: the one-line description of `status` stopped asking for the gauges the schema no longer carries). Was 3,050 for 2,908
   memory_stack: 6_350,         // 6,278 — +305, the same two edits `context_block` carries (it wraps this stack): law (b)'s reply-language clause and the `(since <date>)` suffix on every standing rule. Was 6_050 for 5,973 — the mature stack, card through long doc, on a turn that touches none of it (+6 when law (b) started naming the layers that are really in the prompt). Was 5,950 for 5,837; +130 gave the medium tier back its hard-personal-rules line. Was 12,500 for 12,290; the card is +43 on the preamble it replaced and absorbed the tenure section, then the three ladders and the three seed stances came off)
 };
 
@@ -162,6 +162,12 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
  * band: the phase spent 4,070 characters of scaffolding to stop a stale rule outliving its reversal
  * in the four lanes that never see the reversal, and the floor is re-measured under it rather than
  * left a phase behind.
+ *
+ * `hook_kind` re-measures it at **0.0076** and leaves it there (1,207 characters against 158,771,
+ * up from 158,557). The envelope's tenth field costs 167 characters of contract and 47 of anchor,
+ * and the share falls in the fifth decimal place — under the floor's own band, so the number stands
+ * rather than being nudged down to make room. Stated here rather than left silent: a floor that is
+ * re-measured and holds is a different fact from one nobody looked at.
  */
 export const MIN_TRANSCRIPT_SHARE = 0.0076;
 
