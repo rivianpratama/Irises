@@ -70,14 +70,19 @@ export interface ModuleGateInput {
 }
 
 /**
- * The three facts the prompt assembler cannot see for itself, handed in by the caller that already
+ * The four facts the prompt assembler cannot see for itself, handed in by the caller that already
  * knows them (convo/client.ts). Absent reads as false — which is what every non-Convo caller of the
  * assembler gets, and the honest answer for a lane that never did those reads.
+ *
+ * This is the ONE route a craft gate's fact may arrive by. A gate read off a RENDERING input instead
+ * would tie which pages load to whether some other section is switched on, and a rendering flag that
+ * changes the page set is no longer byte-inert.
  */
 export interface CraftTurnFacts {
   attachmentNote?: boolean;
   emailFlag?: boolean;
   thinProfile?: boolean;
+  idleTurn?: boolean;
 }
 
 /** One page of craft, its file, and the structural fact it loads on. */
@@ -160,9 +165,9 @@ export const CRAFT_MODULES = [
   {
     id: 'hooks',
     file: 'craft/hooks.md',
-    // LAST in the registry because it is the only page that never lived in Context.md — the canonical
-    // order above is the order those sections stood in before P4a, and appending keeps that reading
-    // true. The gate is the idle turn itself: the hook craft is instructions for a turn that asked
+    // LAST in the registry because it is the only page written for the prompt rather than moved into
+    // it — the canonical order above is the order those sections stood in before P4a, and appending
+    // keeps that reading true. The gate is the idle turn itself: the hook craft is instructions for a turn that asked
     // for nothing, and a task turn that read it would be a task turn tempted to add a beat.
     gateName: 'idle_turn',
     gate: (ctx: ModuleGateInput) => ctx.idleTurn,

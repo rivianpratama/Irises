@@ -11,10 +11,12 @@
 //
 // The first is the CORPUS PIN: the persona plus every craft page, joined in canonical order, has a
 // length and a sha256 written down below. It replaces the pre-P4a relocation golden, which
-// reconstructed the pre-split Context.md out of these files and hashed it — a measurement only a
-// corpus made entirely of relocated prose can pass, and craft/hooks.md is the first page that never
-// lived in Context.md at all. What the pin buys is narrower and still worth having: prose has no
-// other test, and an accidental edit moves these two numbers and nothing else in the suite.
+// reconstructed the pre-split Context.md out of these files and hashed it. That golden was not
+// broken by the commit that swapped it out — it is retired on the plan's instruction, because the
+// persona rewrite this branch is building rewrites the relocated prose itself, and a document none
+// of these pages is a copy of any more cannot be reconstructed out of them. What the pin buys is
+// narrower and still worth having: prose has no other test, and an accidental edit moves these two
+// numbers and nothing else in the suite.
 //
 // The second is the gates: which modules a turn loads, and that the ones it doesn't are reported
 // with the fact they read. Those are unit assertions over `renderCraftModules`, plus the placement
@@ -46,12 +48,15 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * `convoPersonaWithCraft()` — Context.md plus every craft page, in registry order — as it stands
  * right now: its length, and the sha256 of exactly those bytes.
  *
- * This REPLACES the pre-P4a relocation golden, and the replacement was forced rather than chosen.
- * That golden reconstructed the pre-split Context.md out of these files and pinned its sha256, which
- * is a measurement only a corpus made ENTIRELY of relocated prose can pass. craft/hooks.md is the
- * first page that never lived in Context.md at all, so the reconstruction could not be made to
- * balance without pretending that it had — and a golden kept alive by a pretence stops being
- * evidence. The relocation was checked, commit by commit, for as long as there was one to check.
+ * This REPLACES the pre-P4a relocation golden, and the swap is scheduled, not forced. That golden
+ * reconstructed the pre-split Context.md out of these files and pinned its sha256; the reconstruction
+ * walks its own RELOCATION table, so a page that table does not name is never spliced, and the ninth
+ * craft page left the golden passing byte for byte. What ends it is the prose commit later on this
+ * branch: it rewrites the relocated sections themselves, and once the pages stop being copies of what
+ * was moved out there is no pre-split document left to reconstruct. The plan's test-wall row retires
+ * the golden there; it is retired HERE, one wave early, on this task's instruction, with the pin
+ * below covering the same prose from this commit onward. The relocation was checked, commit by
+ * commit, for as long as there was one to check.
  *
  * What this pin is worth is narrower and quite specific: the persona corpus is prose, prose has no
  * other test, and an accidental edit — a stray page, a registry row that drops one, a rewrite dressed
@@ -91,7 +96,7 @@ test('the off path puts the same bytes in the cached prefix instead of the block
 // ── the registry ─────────────────────────────────────────────────────────────
 
 test('the registry is a usable table — unique ids, unique files, every file loads', () => {
-  assert.equal(CRAFT_MODULES.length, 9, 'the seven sections P4a relocated, P4b\'s threading craft, and the hook craft — the first page that was never a section of Context.md');
+  assert.equal(CRAFT_MODULES.length, 9, 'the seven sections P4a relocated, P4b\'s threading craft, and the hook craft — the first page written for the prompt rather than moved into it');
   assert.equal(CRAFT_MODULES[0].id, 'threading', 'canonical order: the threading craft came from Context.md ahead of the seven P4a moved');
   const ids = CRAFT_MODULES.map(m => m.id);
   assert.equal(new Set(ids).size, ids.length, 'no id is used twice');
@@ -286,6 +291,31 @@ test('an outcome ask alone is enough — the craft is for reading how they took 
   askOnly[12] = { offer: null, outcomeAsk: { label: 'the dock boards', material: 'loop' } };
   const built = buildSystemPromptSections(...askOnly);
   assert.ok(built.system.includes(craftModuleText('threading')));
+});
+
+test('the hook page loads off the caller\'s fact, never off the turn-focus block', () => {
+  // The idle reading reaches the assembler twice — once as a craft FACT and once inside the
+  // turn-focus input, which is a RENDERING input behind its own operator flag (CONVO_TURN_FOCUS_BLOCK).
+  // Gating a page on the rendering would load the hook craft on a turn whose prompt carries no `Turn:`
+  // line at all, and would make a rendering flag decide which pages the model reads. Both halves
+  // pinned: the block alone loads nothing, the fact alone loads the page.
+  const blockOnly = args();
+  blockOnly[14] = { text: 'hey', hits: [], idle: true, idleStreak: 1, messageChars: 3 };
+  const rendering = buildSystemPromptSections(...blockOnly);
+  assert.ok(rendering.system.includes('Turn: idle'), 'the turn-focus block really did render the idle line');
+  assert.ok(
+    !rendering.system.includes(craftModuleText('hooks')),
+    'but the page is gated on the caller\'s fact, which this turn did not set',
+  );
+
+  const factOnly = args();
+  factOnly[15] = { attachmentNote: false, emailFlag: false, thinProfile: false, idleTurn: true };
+  const gated = buildSystemPromptSections(...factOnly);
+  assert.ok(gated.system.includes(craftModuleText('hooks')), 'the fact alone loads it');
+  assert.ok(!gated.system.includes('Turn: idle'), 'with no turn-focus block in sight');
+  assert.deepEqual(
+    gated.craft.filter(m => m.rendered).map(m => m.id), ['send_order', 'reminders', 'hooks'],
+  );
 });
 
 test('a turn that needs no craft assembles no craft section', () => {

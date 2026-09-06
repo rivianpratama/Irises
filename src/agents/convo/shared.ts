@@ -757,10 +757,12 @@ export function buildSystemPromptSections(
   // has, and rendered LAST inside the block. Absent → nothing pushed, prompt byte-identical to the
   // install that never had the block — which is also what every non-Convo caller gets for free.
   turnFocus?: TurnFocusInput,
-  // The three facts the craft-module gates need that this function cannot see for itself: whether a
-  // file arrived, whether a flagged email is live, and whether their long-term picture is still thin
-  // (convo/personaModules.ts). All three were decided by reads the caller already did. Absent → all
-  // three read false, which is the honest answer for a caller that never did those reads.
+  // The four facts the craft-module gates need that this function cannot see for itself: whether a
+  // file arrived, whether a flagged email is live, whether their long-term picture is still thin, and
+  // whether the idle gate read this turn as a stall (convo/personaModules.ts). All four were decided
+  // by reads the caller already did, and they arrive HERE rather than off any rendering input, so no
+  // section's flag can change which pages load. Absent → all four read false, which is the honest
+  // answer for a caller that never did those reads.
   craftFacts?: CraftTurnFacts,
 ): PromptSectionsResult {
   // The persona head: the always-on core with the craft pages loading per-turn inside the block
@@ -809,11 +811,13 @@ export function buildSystemPromptSections(
     tappedReply: tapped,
     emailFlag: !!craftFacts?.emailFlag,
     thinProfile: !!craftFacts?.thinProfile,
-    // Read off the turn-focus input rather than added as a seventeenth positional parameter: the
-    // caller already hands the idle gate's reading in there for the `Turn:` line (convo/turnFocus.ts),
-    // and one fact arriving by two routes is one fact two callers can disagree about. Absent → false,
+    // Arrives on the same caller object as the attachment note, the email flag and the thin profile
+    // — NOT off the turn-focus input, which is a rendering input behind its own operator flag. A gate
+    // that read the rendering would load the hook page on an idle turn whose prompt carries no `Turn:`
+    // line at all, which is the page teaching the beat arriving with the fact it depends on stripped
+    // out, and a rendering flag that changes the page set has stopped being byte-inert. Absent → false,
     // which is the honest answer for every caller that never ran the gate.
-    idleTurn: !!turnFocus?.idle,
+    idleTurn: !!craftFacts?.idleTurn,
   };
   const craft = modulesOn ? renderCraftModules(craftGate) : { text: '', modules: [] };
   if (craft.text) push('craft_modules', craft.text);
