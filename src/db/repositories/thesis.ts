@@ -56,12 +56,19 @@
 // `void next.finally(...)`, which publishes a SECOND, unowned copy of the rejection beside the one
 // the caller catches, and diagnostics/errorLog.ts exits on `unhandledRejection` — so a caller-side
 // try/catch cannot contain a throw from in there, and the suppression has to happen inside the
-// locked section itself. That is what `opts.onFailure: 'drop'` is for, and the two BACKGROUND
-// writers pass it: the nightly note and the `/forget` wipe log and return null where the weekly
-// rewrite throws. Losing one night's note or one wipe attempt is a cost; taking the VM down over a
+// locked section itself. That is what `opts.onFailure: 'drop'` is for, and EVERY BACKGROUND WRITER
+// passes it — the nightly note, the `/forget` wipe, and (since the T12 review) the weekly rewrite
+// too. Losing one night's note or one week's rewrite is a cost; taking the VM down over a
 // hand-edited file or a full disk is a bug, and the memory note for this deployment records the VPS
-// disk as near-full. The refusal still stands for the weekly rewrite, which is the write whose loss
-// actually costs a week — and which a person is never waiting on when it fails.
+// disk as near-full.
+//
+// The weekly rewrite was the last holdout, on the argument that its loss is the one that actually
+// costs a week. That argument is right about the COST and wrong about the remedy: a throw does not
+// make the loss loud, it makes it fatal, and fatal here is a LOOP — the process dies inside the
+// turn, the backoff map dies with it, `rewritten=` never moved, and the next non-group turn with a
+// week's worth of lines in it does the whole thing again. So the refusal survives only as the
+// DEFAULT (`onFailure: 'throw'`), which is what a foreground caller would get; every writer that
+// nobody is waiting on drops, logs, and returns null.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -107,9 +114,15 @@ export interface ThesisDoc {
  * exactly the thing the user erased. `appendThesisEvidence` short-circuits its own retry on it.
  *
  * `onFailure: 'drop'` turns this store's fail-loud write policy off FOR ONE CALL: the throwing
- * branches log and return null instead. Only the two background writers pass it, and the reason is
- * in the header — a throw out of a locked section takes the process down rather than the pass, and a
- * caller-side catch provably cannot contain it.
+ * branches log and return null instead. Every background writer passes it — the nightly note, the
+ * wipe and the weekly rewrite — and the reason is in the header: a throw out of a locked section
+ * takes the process down rather than the pass, a caller-side catch provably cannot contain it, and
+ * on a failure that persists (a hand-edited file, a full disk) the exit repeats every turn. A caller
+ * that omits it is asking for the throw, which is right for anything a person is waiting on.
+ *
+ * A dropped write shares the `null` return with a version conflict and with the fence, and only the
+ * conflict is worth retrying — `memory/thesisRewrite.ts`'s `attemptSave` tells the three apart by
+ * re-reading the epoch and the version, which is the only information the null carries.
  */
 export interface ThesisSaveOptions {
   ifForgetEpoch?: number;
@@ -233,17 +246,39 @@ async function readHead(handle: string): Promise<HeadRead> {
   }
 }
 
-/** The current read + its evidence tail, or null when this person has none yet. Reads degrade to
- *  null: a missing file is the normal state of somebody she met this week, and the reply path wants
- *  an empty section rather than a thrown turn. A WRITE against an unreadable file does not degrade
- *  (see `saveThesis`). */
-export async function getThesis(handle: string): Promise<ThesisDoc | null> {
+/**
+ * A head read plus the ONE thing `getThesis`'s `null` cannot say: whether the file is ABSENT or
+ * present-and-unreadable. Same field and same name as `MomentsFile.degraded`, so the two stores
+ * read as one from a caller's side.
+ *
+ * The distinction exists for WRITERS, exactly as it does in the moments store. A read that degrades
+ * an unreadable head to `null` also degrades its `lastRewriteAt` to 0, which reads as "never
+ * rewritten" — an OPEN cooldown, forever, on a file that will not parse tomorrow either. So the
+ * weekly pass would spend one classify call per reply and then reach a save that must refuse: it
+ * needs to see the unreadable file BEFORE it opens its own window (memory/thesisRewrite.ts's
+ * `degraded` gate). The reply path wants the opposite and keeps `getThesis`.
+ */
+export interface ThesisRead {
+  doc: ThesisDoc | null;
+  degraded: boolean;
+}
+
+/** The head read with the degraded flag — see `ThesisRead` for who needs it and why. */
+export async function readThesisHead(handle: string): Promise<ThesisRead> {
   const head = await readHead(handle);
   if (head.kind === 'unreadable') {
     logDbError('getThesis', head.error);
-    return null;
+    return { doc: null, degraded: true };
   }
-  return head.kind === 'parsed' ? head.doc : null;
+  return { doc: head.kind === 'parsed' ? head.doc : null, degraded: false };
+}
+
+/** The current read + its evidence tail, or null when this person has none yet. Reads degrade to
+ *  null: a missing file is the normal state of somebody she met this week, and the reply path wants
+ *  an empty section rather than a thrown turn. A WRITE against an unreadable file does not degrade
+ *  (see `saveThesis`); a WRITER that needs to tell the two nulls apart reads `readThesisHead`. */
+export async function getThesis(handle: string): Promise<ThesisDoc | null> {
+  return (await readThesisHead(handle)).doc;
 }
 
 /**

@@ -452,7 +452,18 @@ export async function chat(
       // which is what makes the `moments:offer` receipt below mean anything.
       const sample = sampleMoments(file.entries, nowMs, excludeIds, nowMs);
       momentLines = renderMomentLines(sample, nowMs);
-      if (sample.length > 0) {
+      // THE RENDERED LINES, not the sample, are what decides whether an offer happened — and the two
+      // can differ. `renderMomentLines` drops an entry whose text collapses to empty, and the store
+      // mints exactly that from a segment that is only an annotation line (a hand edit, a truncated
+      // write — db/repositories/moments.ts `parseSegment` keeps the id, the tag and the clock and
+      // hands back `text: ''`). Billed off the sample, such a file would charge `offered` and
+      // `last_offered` on a moment nothing put in front of her, reset the spacing counter — costing
+      // the next four idle turns their callback — and render no lead at all.
+      //
+      // What IS still billed off the sample is which ids the bill touches, deliberately: an entry
+      // that rendered nothing rode out beside ones that did, and stamping it keeps it out of the next
+      // day's draws instead of letting it eat a slot every turn.
+      if (momentLines.length > 0) {
         momentOffered = true;
         const ids = new Set(sample.map(e => e.id));
         void writeMoments(handle, billOffers(file.entries, ids, nowMs), file.lastHarvestAt, file.preserved, {

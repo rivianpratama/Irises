@@ -14,8 +14,13 @@
 //   • LAST WEEK'S READ STANDS unless a validated one replaced it: a truncation, a dead lane, a
 //     label instead of a read — none of them write, and none of them stamp.
 //   • NO TEST HERE REACHES A LANE. The LLM is injected on every call (opts.llm).
+//   • A BROKEN FILE OR A FULL DISK COSTS THE WEEK, NOT THE VM. A throw out of a locked section is
+//     process-fatal, and on a failure that persists it is a LOOP — so the unreadable head is gated
+//     before the call and the write itself is dropped rather than thrown.
 process.env.TZ = 'UTC';
 
+import fs from 'node:fs';
+import path from 'node:path';
 import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -31,7 +36,8 @@ import { groupHandle } from './identity.js';
 import { resetStorageForTests } from '../db/sqlite.js';
 import { getThesis, saveThesis, appendThesisEvidence, THESIS_REWRITE_WRITER } from '../db/repositories/thesis.js';
 import { writeMoments } from '../db/repositories/moments.js';
-import { bumpForgetEpoch } from '../db/repositories/memory.js';
+import { bumpForgetEpoch, withHandleLock } from '../db/repositories/memory.js';
+import { memoriesDir } from '../db/stateDir.js';
 import { getTraces, clearTraces } from '../diagnostics/trace.js';
 import { PROMPT_TAG } from '../llm/promptTag.js';
 import type { callLLM } from '../llm/callLLM.js';
@@ -93,6 +99,40 @@ function week(at: number, handle: string, lines = THESIS_MIN_USER_LINES): Stored
     out.push({ role: 'assistant', content: `her reply ${i}`, at: at + i * 60_000 + 1_000 });
   }
   return out;
+}
+
+function headPath(handle: string): string {
+  return path.join(memoriesDir(handle), 'THESIS.md');
+}
+
+/** The next macrotask. The two tests below rely on ONE property of it: every microtask the pass has
+ *  queued drains before a timer callback runs, so a bump scheduled in here lands strictly after the
+ *  pass's next unlocked read — which is what makes an ordering test out of what is otherwise a race. */
+function macrotask(): Promise<void> {
+  return new Promise<void>(r => { setTimeout(r, 0); });
+}
+
+/** A competing version, landed by editing the one token the optimistic check reads. Called only from
+ *  INSIDE the handle lock, which is the only writer allowed to touch these bytes, and it edits rather
+ *  than re-renders so the test carries no copy of the store's header format. */
+function bumpHeadVersion(handle: string, to: number): void {
+  const p = headPath(handle);
+  fs.writeFileSync(p, fs.readFileSync(p, 'utf8').replace(/version=\d+/, `version=${to}`));
+}
+
+/** Run `body` with console.warn and console.error swallowed — the store logs loudly on a fence, a
+ *  dropped write and an unreadable head, and a passing test should not print like a failing one. */
+async function quietly(body: () => Promise<void>): Promise<void> {
+  const warn = console.warn;
+  const error = console.error;
+  console.warn = () => {};
+  console.error = () => {};
+  try {
+    await body();
+  } finally {
+    console.warn = warn;
+    console.error = error;
+  }
 }
 
 function receipts(): Record<string, unknown>[] {
@@ -402,4 +442,91 @@ test('a nightly note landing mid-pass costs ONE re-read, not the rewrite', async
   // read and the conflict is dropped, because what this pass writes is the read with an empty tail.
   // One note, once, on a pass that runs weekly — against a lost rewrite, which is a week.
   assert.deepEqual(splitThesisDoc(doc!.docMd).evidence, []);
+});
+
+test('a version that moves on BOTH attempts is a CONFLICT, and burns no hour', async () => {
+  const h = freshHandle();
+  assert.equal(await saveThesis(h, READ, 0, THESIS_REWRITE_WRITER), 1);
+  const now = (await rewrittenAt(h)) + THESIS_COOLDOWN_MS + DAY;
+
+  // Two competing versions, ORDERED rather than raced, because the second one is the whole point:
+  // the retry re-reads the version before it saves, so a bump that lands before that read would let
+  // the retry succeed. Both bumps run inside the handle lock, so the pass's two saves queue behind
+  // them; both are timed off a macrotask, so every microtask the pass has queued — its own
+  // unlocked re-read included — has already drained when they land.
+  const { llm, calls } = stubLlm(replyWith(NEXT), {
+    before: async () => {
+      void withHandleLock(h, async () => {
+        bumpHeadVersion(h, 2); // the version the pass read (1) is now stale — the first conflict
+        await macrotask();     // …and the pass enqueues its first save behind this section meanwhile
+        void withHandleLock(h, async () => {
+          await macrotask();   // let the retry re-read version 2 first
+          bumpHeadVersion(h, 3); // …then invalidate it — the second conflict
+        });
+      });
+      // Long enough for the section above to have taken the lock and stamped version 2.
+      await macrotask();
+    },
+  });
+  await quietly(() => updateThesis(h, week(now - DAY, h), { llm, now }));
+
+  assert.equal(calls.length, 1, 'one call, two attempts');
+  assert.deepEqual(receipt(), { skipped: 'conflict', changed: true });
+  // A double conflict means the nightly note is winning the race, which the cooldown spaces out on
+  // its own: nothing is broken, so no hour is burned — and it is NOT reported as the fence, which is
+  // the other null the store hands back.
+  assert.equal(__thesisBackoffAtForTests(h), undefined);
+  assert.equal(splitThesisDoc((await getThesis(h))!.docMd).thesis, READ, "last week's read stands");
+});
+
+// ── the file that will not parse, and the disk that will not write ───────────
+// Both of these were a process EXIT before the T12 review: `saveThesis` threw from inside
+// `withHandleLock`, whose queue publishes a second, unowned copy of the rejection, and
+// `installProcessErrorHandlers` exits on `unhandledRejection`. Neither cause goes away by itself, so
+// each was a restart LOOP — the VM died inside the turn, the process-local backoff died with it, and
+// the next non-group turn with a week's lines in it ran the whole pass again. node:test fails on that
+// unowned rejection too, which is what makes these two tests the guard and not just the coverage.
+
+test('an unreadable head doc skips BEFORE the call, and stamps nothing', async () => {
+  const h = freshHandle();
+  fs.mkdirSync(memoriesDir(h), { recursive: true });
+  const hand = 'somebody hand-wrote a read with no header\n';
+  fs.writeFileSync(headPath(h), hand);
+
+  const { llm, calls } = stubLlm(replyWith(READ));
+  await quietly(() => updateThesis(h, week(T0, h), { llm, now: T0 }));
+
+  // The gate is BEFORE the lane, which is the point of having it: an unreadable head degrades to
+  // "never rewritten" through the store's read, i.e. to an open cooldown on a file that will not
+  // parse tomorrow either — so every reply would otherwise spend a classify call to reach a write
+  // that cannot land.
+  assert.equal(calls.length, 0);
+  assert.deepEqual(receipt(), { skipped: 'degraded' });
+  assert.equal(fs.readFileSync(headPath(h), 'utf8'), hand, 'the bytes stay exactly where they were');
+  // No backoff: this failure is a file on disk, not a lane, and re-reading it next turn costs
+  // nothing (the nightly pass's own reasoning for the same gate).
+  assert.equal(__thesisBackoffAtForTests(h), undefined);
+});
+
+test('a durable write failure costs the week, not the process', async () => {
+  const h = freshHandle();
+  assert.equal(await saveThesis(h, READ, 0, THESIS_REWRITE_WRITER), 1);
+  const now = (await rewrittenAt(h)) + THESIS_COOLDOWN_MS + DAY;
+  // A full disk or an EACCES, reproduced the way db/repositories/thesis.test.ts reproduces it: put a
+  // FILE where the revisions DIRECTORY has to go, so the first of the store's two writes throws.
+  fs.rmSync(path.join(memoriesDir(h), 'revisions'), { recursive: true, force: true });
+  fs.writeFileSync(path.join(memoriesDir(h), 'revisions'), 'not a directory');
+
+  const { llm, calls } = stubLlm(replyWith(NEXT));
+  await quietly(() => updateThesis(h, week(now - DAY, h), { llm, now }));
+
+  assert.equal(calls.length, 1);
+  // Told apart from a conflict, which is what the null out of the store would otherwise have read
+  // as: nothing landed and nothing raced, so the version on disk never moved.
+  assert.deepEqual(receipt(), { skipped: 'write_failed', changed: true });
+  assert.equal(splitThesisDoc((await getThesis(h))!.docMd).thesis, READ, "last week's read stands");
+  assert.equal((await getThesis(h))!.version, 1, 'nothing was written');
+  // The sticky kind, so it takes the hour: the clock it could not stamp leaves the cooldown wide
+  // open, and without the backoff a full disk bills one classify call per reply until it is fixed.
+  assert.equal(__thesisBackoffAtForTests(h), now + THESIS_FAILURE_BACKOFF_MS);
 });

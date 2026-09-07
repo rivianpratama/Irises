@@ -16,7 +16,9 @@
 //   • A /forget IS NOT UNDONE. Both passes read, think for fifteen seconds, then write; a wipe that
 //     lands inside that window fences the save out rather than being reverted by it.
 //   • A BACKGROUND WRITER NEVER KILLS THE PROCESS. A throw out of a locked section is process-fatal,
-//     so the nightly note and the wipe drop on a durable failure where the weekly rewrite throws.
+//     so every writer nobody is waiting on — the nightly note, the wipe and (since the T12 review)
+//     the weekly rewrite — asks for `onFailure: 'drop'`. The throw survives as the DEFAULT, which is
+//     what these tests exercise it as.
 process.env.TZ = 'UTC';
 
 import fs from 'node:fs';
@@ -24,8 +26,8 @@ import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  getThesis, saveThesis, listThesisRevisions, appendThesisEvidence, clearThesis, ThesisWriteError,
-  THESIS_REWRITE_WRITER,
+  getThesis, readThesisHead, saveThesis, listThesisRevisions, appendThesisEvidence, clearThesis,
+  ThesisWriteError, THESIS_REWRITE_WRITER,
 } from './thesis.js';
 import { saveLongDoc, listLongRevisions } from './memoryLong.js';
 import { getForgetEpoch, bumpForgetEpoch } from './memory.js';
@@ -235,11 +237,14 @@ test('a present-but-unreadable head doc degrades the READ and no PASS ever clobb
   fs.writeFileSync(filePath(h), hand);
   // The read degrades to null — a turn must not die over a file — while the bytes stay exactly
   // where they were. Everything that reads this store therefore behaves like a handle with no read
-  // at all, which is the safe half of the fail-loud policy.
+  // at all, which is the safe half of the fail-loud policy. A WRITER that must not confuse the two
+  // nulls reads `readThesisHead` instead, and gets the same `degraded` flag the moments store gives.
   assert.equal(await getThesis(h), null);
+  assert.deepEqual(await readThesisHead(h), { doc: null, degraded: true });
+  assert.deepEqual(await readThesisHead(freshHandle()), { doc: null, degraded: false }, 'absent is not degraded');
   assert.equal(fs.readFileSync(filePath(h), 'utf8'), hand);
 
-  // And the NIGHTLY pass DROPS its note rather than reaching the refusal, which is the one
+  // And the NIGHTLY pass DROPS its note rather than reaching the refusal, which is the
   // asymmetry in the fail-loud policy and the reason for it: a throw out of a locked section is
   // process-fatal, not pass-fatal (withHandleLock keeps its queue with `void next.finally(...)`,
   // so the rejection is also published unowned, and diagnostics/errorLog.ts exits the process on

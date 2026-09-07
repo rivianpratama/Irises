@@ -230,6 +230,30 @@ test('a moment offered in the last day is held back, and the turn renders no lea
   assert.equal((await getHookState(chatId)).idleSinceMoment, MOMENT_IDLE_INTERVAL + 1, 'the counter keeps climbing');
 });
 
+test('a moment that renders to nothing is not an offer, and is billed for nothing', async () => {
+  const chatId = randomUUID();
+  await primeSpacing(chatId);
+  // What the store hands back from a segment that is only an annotation line — a hand edit, or a
+  // half-written file: `parseSegment` keeps the id, the tag and the clock, which are the three
+  // things it refuses to guess, and gives back an empty text. The sampler draws it like any other
+  // row and `renderMomentLines` then drops it, so NOTHING was put in front of her this turn.
+  assert.equal(await writeMoments(SENDER, [moment({ text: '' })], FROZEN_MS - DAY, []), true);
+  assert.equal((await readMoments(SENDER)).entries[0].text, '', 'the empty row really does round-trip');
+
+  const { seen, call } = fakeLane(envelope(['mm']));
+  await chat(chatId, 'hey', emptyMedia(), clientCtx(), call);
+
+  const system = seen[0].system ?? '';
+  assert.ok(system.includes(HOOK_HEADING), 'still an idle hook turn');
+  assert.ok(!system.includes(MOMENTS_LEAD), 'no lead, because there was no line to lead with');
+  assert.equal(receipt('moments:offer'), undefined, 'nothing rendered, so nothing was offered');
+  const file = await readMoments(SENDER);
+  assert.equal(file.entries[0].offered, 0, 'and nothing was billed');
+  assert.equal(file.entries[0].lastOfferedAt, 0);
+  // The counter keeps climbing, so the next real moment is not four idle turns away.
+  assert.equal((await getHookState(chatId)).idleSinceMoment, MOMENT_IDLE_INTERVAL + 1);
+});
+
 test('a TASK turn is offered nothing, whatever the file holds', async () => {
   const chatId = randomUUID();
   await primeSpacing(chatId);

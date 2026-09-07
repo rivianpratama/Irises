@@ -31,7 +31,7 @@ import { jsonrepair } from 'jsonrepair';
 import { callLLM } from '../llm/callLLM.js';
 import { wrapPrompt, dataTag } from '../llm/promptTag.js';
 import { getForgetEpoch } from '../db/repositories/memory.js';
-import { getThesis, saveThesis, THESIS_REWRITE_WRITER } from '../db/repositories/thesis.js';
+import { readThesisHead, saveThesis, THESIS_REWRITE_WRITER } from '../db/repositories/thesis.js';
 import { readMoments } from '../db/repositories/moments.js';
 import { thesisEnabled } from '../persona/featureFlags.js';
 import { momentAgeWords, MAX_MOMENTS, type MomentEntry } from '../persona/moments.js';
@@ -189,19 +189,34 @@ export function parseThesisReply(text: string | null): string | null {
  * `rejected` and `conflict` are the two this pass has that the nightly one does not. `rejected` is a
  * lane that answered with something that is not a read (the reason rides beside it); `conflict` is
  * the optimistic version check losing twice, which means a nightly note landed inside the same
- * second both times. `fenced` is the /forget check refusing the save, and it is told apart from
- * `conflict` by re-reading the epoch — the two share `null` out of `saveThesis` and only one of them
- * is worth retrying.
+ * second both times.
+ *
+ * THREE causes share the one `null` that comes back out of `saveThesis`, and they are told apart
+ * here because a receipt that could not name which is a receipt nobody can act on:
+ *   • `fenced` — the /forget check refused the write. Nothing is broken and nothing is retried.
+ *   • `conflict` — the version moved under the pass, twice. The cooldown spaces this out itself.
+ *   • `write_failed` — the write was DROPPED (`onFailure: 'drop'`): an unreadable head doc, or a
+ *     durable failure like a full disk. This one takes the backoff, because it is the sticky kind
+ *     and the alternative is one classify call per reply for the rest of the week.
+ * `attemptSave` does the telling-apart, off the epoch and the version — see there.
+ *
+ * `degraded` mirrors the nightly pass's own bucket (`MomentsSkip.degraded`) and is the gate that
+ * makes the common case of `write_failed` cost nothing at all. An unreadable head doc reads as
+ * `lastRewriteAt = 0` through `getThesis`, i.e. as a person who has never had a read — an OPEN
+ * cooldown on a file that will not parse tomorrow either. Left ungated, every non-group turn with a
+ * week's lines in it would spend a call and then drop the write.
  */
 export type ThesisSkip =
   | 'flag_off'
   | 'group'
   | 'in_flight'
   | 'backoff'
+  | 'degraded'
   | 'cooldown'
   | 'thin_window'
   | 'fenced'
   | 'conflict'
+  | 'write_failed'
   | 'rejected'
   | 'lane_error'
   | 'truncated'
@@ -218,19 +233,24 @@ export type ThesisSkip =
  *   1. group identity      → skip (see the header)
  *   2. already in flight   → skip
  *   3. backed off after a FAILED pass → skip. Process-local, and it does NOT stamp the clock.
- *   4. inside the cooldown → skip. THE SOURCE OF TRUTH IS THESIS.MD'S OWN `rewritten=` STAMP: six and
+ *   4. an unreadable head doc → skip WITHOUT stamping and WITHOUT spending a call (see
+ *      `ThesisSkip.degraded`; the nightly pass has the same gate for the same hazard)
+ *   5. inside the cooldown → skip. THE SOURCE OF TRUTH IS THESIS.MD'S OWN `rewritten=` STAMP: six and
  *      a half days has to survive a restart, and gating on the write stamp would let one nightly
  *      note reset the week (db/repositories/thesis.ts).
- *   5. scope + trim the window to what has happened since that stamp
- *   6. too few of their own lines → skip WITHOUT stamping
- *   7. fence the /forget epoch, ask, validate, save as `weekly` (which stamps the clock and clears
+ *   6. scope + trim the window to what has happened since that stamp
+ *   7. too few of their own lines → skip WITHOUT stamping
+ *   8. fence the /forget epoch, ask, validate, save as `weekly` (which stamps the clock and clears
  *      the notes the rewrite just consumed).
  *
- * NOT wrapped against a durable write failure, deliberately, and this is the one place this pass
- * differs from its two siblings: `saveThesis` throws when the write itself fails or when the head
- * doc cannot be read, and the plan keeps that refusal for the weekly rewrite (T11's recorded
- * deviation drops it only for the nightly note and the `/forget` wipe). The loss it refuses to make
- * silent costs a week to earn back, and nobody is ever waiting on this call when it fails.
+ * NEVER THROWS, and this is where it stopped differing from its two siblings. The save asks for
+ * `onFailure: 'drop'`, so an unreadable head doc or a full disk costs this week's rewrite rather
+ * than the process. T11 recorded the opposite for this one pass — "the weekly rewrite still throws",
+ * on the argument that its loss is the one that costs a week — and the T12 review took it back on
+ * the ground that a throw out of `withHandleLock` is not loud, it is FATAL, and fatal here is a
+ * loop: the VM dies inside the turn, the process-local backoff dies with it, `rewritten=` never
+ * moved, and the next non-group turn with a week's lines in it runs the whole pass again. A week's
+ * read is worth a receipt and an hour's backoff, not a restart cycle.
  */
 export async function updateThesis(
   handle: string,
@@ -264,12 +284,15 @@ export async function updateThesis(
 
   inFlight.add(handle);
   try {
-    // Null for a person with no read yet AND for a head doc that could not be read — the store
-    // degrades reads to null on purpose (a missing file is the normal state of somebody she met this
-    // week, and the reply path wants an empty section rather than a thrown turn). The write does not
-    // degrade: a save against an unreadable head is REFUSED rather than clobbering a read that costs
-    // a week to earn.
-    const doc = await getThesis(handle);
+    // `getThesis`'s null means two different things to a WRITER — nobody has a read yet, or the file
+    // will not parse — so this pass reads the flagged form. An unreadable head degrades its
+    // `lastRewriteAt` to 0 along with everything else, i.e. to an OPEN cooldown, and a file that
+    // will not parse today will not parse tomorrow: ungated, this is one classify call per reply
+    // followed by a dropped write, forever. No backoff on it either (the nightly pass's reasoning):
+    // the failure is a file on disk, not a lane, and re-reading it next turn costs nothing.
+    const head = await readThesisHead(handle);
+    if (head.degraded) return skip('degraded');
+    const doc = head.doc;
     const lastRewriteAt = doc?.lastRewriteAt ?? 0;
     if (now - lastRewriteAt < THESIS_COOLDOWN_MS) {
       return skip('cooldown', { daysSinceLastRewrite: daysSince(lastRewriteAt, now) });
@@ -330,19 +353,21 @@ export async function updateThesis(
     // note that survived its own rewrite would be read again next week against a read that already
     // contains it. `joinThesisDoc(text, [])` is what "the read with no tail" is spelled as.
     const docMd = joinThesisDoc(verdict.text, []);
-    const version = await saveVersioned(handle, docMd, doc?.version ?? 0, epoch0);
-    if (version === null) {
-      const fenced = getForgetEpoch(handle) !== epoch0;
-      // No backoff for either: a fence is the user erasing this person (there is nothing to retry
-      // and nothing broken), and a double conflict means the nightly note is winning the race, which
-      // the cooldown will space out on its own.
-      return skip(fenced ? 'fenced' : 'conflict', { changed });
+    const outcome = await saveVersioned(handle, docMd, doc?.version ?? 0, epoch0);
+    if (outcome.kind !== 'saved') {
+      // No backoff on the first two: a fence is the user erasing this person (there is nothing to
+      // retry and nothing broken), and a double conflict means the nightly note is winning the race,
+      // which the cooldown will space out on its own. A DROPPED write does take one, because it is
+      // the sticky kind — a hand-edited file or a full disk fails again on the next reply, and the
+      // clock it could not stamp leaves the cooldown wide open.
+      if (outcome.kind === 'write_failed') nextRetryAt.set(handle, now + THESIS_FAILURE_BACKOFF_MS);
+      return skip(outcome.kind, { changed });
     }
     nextRetryAt.delete(handle);
 
     receipt({
       skipped: null,
-      version,
+      version: outcome.version,
       // False is the writer prompt's own sanctioned answer for a week that gave her nothing new, and
       // it STILL stamped the clock (see the header) — so the two have to be told apart in the report
       // rather than inferred from whether a version appeared.
@@ -377,24 +402,61 @@ export async function updateThesis(
   }
 }
 
+/** What one save attempt did. The four `kind`s are the four `ThesisSkip` buckets a save can produce
+ *  (plus the one that is not a skip), so the caller never has to re-derive a reason. */
+type SaveOutcome =
+  | { kind: 'saved'; version: number }
+  | { kind: 'fenced' }
+  | { kind: 'conflict' }
+  | { kind: 'write_failed' };
+
 /**
- * Save the read, with the ONE re-read the store's own contract asks of every writer: a `null` is
- * either a version conflict — a nightly note landed while the model was thinking — or the /forget
- * fence, and only the first is worth another attempt. So the epoch is re-checked before the retry,
- * outside the lock and therefore approximately, which is harmless: the authoritative refusal already
- * happened inside it and the worst an approximate check costs is one attempt the fence refuses again.
+ * Save the read, with the ONE re-read the store's own contract asks of every writer: only a version
+ * conflict — a nightly note that landed while the model was thinking — is worth another attempt. A
+ * fence and a dropped write are not: the first is the user erasing this person, and the second would
+ * fail the same way twice.
  *
  * The KNOWN cost of the retry, stated rather than discovered: a note that arrived between the read
  * and the conflict is dropped by the second save, because the document this pass writes is the read
  * with an empty tail. One note, once, on a pass that only runs weekly — against a lost rewrite,
  * which is a week.
  */
-async function saveVersioned(handle: string, docMd: string, expected: number, epoch0: number): Promise<number | null> {
-  const first = await saveThesis(handle, docMd, expected, THESIS_REWRITE_WRITER, { ifForgetEpoch: epoch0 });
-  if (first !== null) return first;
-  if (getForgetEpoch(handle) !== epoch0) return null;
-  const again = await getThesis(handle);
-  return saveThesis(handle, docMd, again?.version ?? 0, THESIS_REWRITE_WRITER, { ifForgetEpoch: epoch0 });
+async function saveVersioned(handle: string, docMd: string, expected: number, epoch0: number): Promise<SaveOutcome> {
+  const first = await attemptSave(handle, docMd, expected, epoch0);
+  if (first.kind !== 'conflict') return first;
+  const again = await readThesisHead(handle);
+  // The file went unreadable between the two attempts. There is nothing to retry against a version
+  // this pass cannot read, and the second save would be dropped anyway.
+  if (again.degraded) return { kind: 'write_failed' };
+  return attemptSave(handle, docMd, again.doc?.version ?? 0, epoch0);
+}
+
+/**
+ * One save, with the store's `null` decoded into WHY. Three causes share that null and the store
+ * cannot say which (`ThesisSaveOptions`), so it is inferred from the only two things that can still
+ * be read afterwards:
+ *
+ *   • the EPOCH moved  → the /forget fence refused it. Read outside the lock and therefore
+ *     approximately, which is harmless: the authoritative refusal already happened inside it, and
+ *     the worst an approximate answer costs is one label on a receipt.
+ *   • the VERSION moved past what this attempt expected → a conflict, because a conflict means
+ *     somebody else's write LANDED. Versions only ever go up, so this is exact.
+ *   • the version did NOT move (or the head is now unreadable) → the write was dropped. Nothing
+ *     landed and nothing raced: a hand-edited head doc, or a durable failure like a full disk.
+ *
+ * `onFailure: 'drop'` is what makes the third case a value instead of a process exit — see
+ * `updateThesis`'s header for the argument and db/repositories/thesis.ts's for the mechanism.
+ */
+async function attemptSave(handle: string, docMd: string, expected: number, epoch0: number): Promise<SaveOutcome> {
+  const version = await saveThesis(handle, docMd, expected, THESIS_REWRITE_WRITER, {
+    ifForgetEpoch: epoch0,
+    onFailure: 'drop',
+  });
+  if (version !== null) return { kind: 'saved', version };
+  if (getForgetEpoch(handle) !== epoch0) return { kind: 'fenced' };
+  const after = await readThesisHead(handle);
+  if (after.degraded) return { kind: 'write_failed' };
+  return (after.doc?.version ?? 0) !== expected ? { kind: 'conflict' } : { kind: 'write_failed' };
 }
 
 /** The two failures worth telling apart from a dead lane, as errors so the one catch above can name
