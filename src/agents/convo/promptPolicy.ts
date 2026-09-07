@@ -15,7 +15,7 @@
 //
 // It ENFORCES NOTHING AT RUNTIME. No prompt path reads any of this — the assembler will happily
 // build a prompt twice this size, and a real turn whose dossier is longer than the fixture's is not
-// an error. These are test-time ceilings measured on five representative turns, so the failure they
+// an error. These are test-time ceilings measured on six representative turns, so the failure they
 // produce is "a prose block grew since someone last looked", which is exactly the failure that has
 // no other detector.
 //
@@ -34,9 +34,9 @@ export type BudgetKey = SectionId | 'memory_stack';
 
 /**
  * The size each part of the prompt stands at TODAY, in characters — measured through the real
- * `buildSystemPromptSections` on the five fixtures in promptBudget.test.ts (cold thin profile ·
+ * `buildSystemPromptSections` on the six fixtures in promptBudget.test.ts (cold thin profile ·
  * mature profile with a plain question · media turn · burst + tapped reply in a group · thread
- * offer), then rounded UP to a tidy number.
+ * offer · the same mature turn on a long thread), then rounded UP to a tidy number.
  *
  * How much headroom: at most 2%, and less than that wherever a tidy number allows — 2% of `persona`
  * is already 2,700 characters, i.e. room for a whole new section to arrive unnoticed, which is the
@@ -100,7 +100,7 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
   reply_order: 620,            // 613 — renderArrivalGap (the backward-order variant, the larger one) (was 640)
   extra: 590,                  // 583 — the pending version note (update/announce.ts) (was 610)
   turn_focus: 550,             // 544 — a 400-char restatement plus two hits. UNMOVED by the idle gate, and for the same reason `craft_modules` is: no fixture here passes `idle`, so no fixture renders the `Turn:` line and the measurement is the one it always was. Read it as the same debt — a live idle turn adds roughly sixty characters (`Turn: idle · their message: 3 characters · 12th idle in a row`) and 544 becomes ~606, past this ceiling. The commit that gives a fixture an idle turn re-measures and ratchets this line. Was 570
-  behavior_anchor: 730,        // 726 — the DRIFT ANCHOR, rendered per turn now (persona/policy.ts renderDriftAnchor) instead of the static string it replaced: three identity bullets picked by the transcript window, three stating the law for this turn's mode. Still six bullets and still digit-free, so what moved is what the six SAY (+27). Measured on the variant every fixture here renders — task mode, short window — and that is a debt to state rather than a size: the six variants run 698 (quiet/short) to 910 (task/long), and the long band is bought at twelve thousand characters of transcript, which no fixture here reaches. A live turn on a long thread assembles 910 and is past this ceiling. The commit that gives a fixture a long window, or a hook directive, re-measures and ratchets this line — the same debt `turn_focus` and `craft_modules` carry, and stated the same way. Was 705 for 699 — P1: six lines that drift first (was 1,740 for 1,659 / 14 lines)
+  behavior_anchor: 928,        // 910 — the DRIFT ANCHOR, rendered per turn now (persona/policy.ts renderDriftAnchor) instead of the static string it replaced: three identity bullets picked by the transcript window, three stating the law for this turn's mode. Still six bullets and still digit-free, so what moved is what the six SAY. There are six variants and they run 698 (quiet on a short window) to 910 (task on a long one); this ceiling is the widest, measured on the sixth fixture — the mature turn on the eighty-row window the box ships (deploy/app.env CONVO_HISTORY_MAX=80), the only one past DRIFT_LONG_WINDOW_CHARS. The MODE dimension costs nothing further: task states the longest of the three laws in BOTH bands, so hook and quiet fit under a ceiling measured on task, and the commit that first hands a fixture a hook directive will not move this number. The WINDOW is the dimension that moves it, which is why a fixture had to reach the band rather than leave it as a note here — this key is enforced live (convergence/focusBattery.ts prose_budget scores every PROSE budget key), so a maximum measured only on short windows is not a paper debt, it is a breach on the first long thread. Was 730 for 726, task/short, the only band any fixture then reached. Was 705 for 699 — P1: six lines that drift first (was 1,740 for 1,659 / 14 lines)
   json_anchor: 3_000,          // 2,975 — the envelope contract, last in the prompt. +47 for the one clause the closing `status` paragraph owes the rhythm engine: the recency edge now names the extra beat a reply may have carried, so the field the contract describes is also asked for in the last thing she reads. Was 2_950 for 2,928 (+20 in P3: the one-line description of `status` stopped asking for the gauges the schema no longer carries). Was 3,050 for 2,908
   memory_stack: 6_350,         // 6,278 — +305, the same two edits `context_block` carries (it wraps this stack): law (b)'s reply-language clause and the `(since <date>)` suffix on every standing rule. Was 6_050 for 5,973 — the mature stack, card through long doc, on a turn that touches none of it (+6 when law (b) started naming the layers that are really in the prompt). Was 5,950 for 5,837; +130 gave the medium tier back its hard-personal-rules line. Was 12,500 for 12,290; the card is +43 on the preamble it replaced and absorbed the tenure section, then the three ladders and the three seed stances came off)
 };
@@ -287,9 +287,19 @@ export interface ClauseCount {
  * P0 measured four of these arriving TWICE — once in the persona's own section, once in the
  * behaviour anchor at the recency edge. The second copy was a deliberate retelling of rules that
  * decay across a 146k-character prompt (charter §11.3), but a retelling can drift from its source,
- * and a rule stated twice is a rule nobody can edit. P1 collapsed those four: the behaviour anchor
- * now holds six identity lines and states no rule that has its own section, so every row below is
- * pinned at exactly ONE copy, in the one place that owns it.
+ * and a rule stated twice is a rule nobody can edit. P1 collapsed those four: the anchor went to six
+ * identity lines and stated no rule that had its own section, so every row below is pinned at
+ * exactly ONE copy, in the one place that owns it.
+ *
+ * T6 re-opened the second copy, deliberately and in one place only. The drift anchor that replaced
+ * the static one holds THREE identity bullets plus three MODE bullets, and the mode bullets restate
+ * the task, idle and quiet laws — laws that DO have a home of their own, the shared persona block
+ * (persona/policy.ts PERSONA_BLOCK). What makes that copy invisible here is that it is SEMANTIC
+ * rather than literal: the block hard-wraps its paragraphs, so the bullet and the sentence it
+ * restates share no exact substring, and every row below is counted by substring. No row counts the
+ * copy and none can until a prose commit writes the two halves as one shared sentence — so
+ * `anchorCopies` is still 0 everywhere, and still means exactly what it says: of the copies this
+ * table COUNTS, how many are the recency-edge retelling.
  *
  * Read `anchorCopies` and `where` before changing a `count`. `predict_named` in particular is 2/0
  * for a reason that is NOT duplication: both copies are in Context.md because the second one is a

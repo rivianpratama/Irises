@@ -2,7 +2,7 @@
 //
 // The ratchet. Convo's system prompt assembles to ~177k characters — ~138k of it the persona — and
 // it had only ever grown, one well-argued block at a time. This file measures the prompt through
-// the real assembler (buildSystemPromptSections, the Task-1 seam) on five representative turns and
+// the real assembler (buildSystemPromptSections, the Task-1 seam) on six representative turns and
 // holds every part under the ceiling it stands at TODAY (promptPolicy.ts) — so the next block that
 // quietly doubles fails here instead of quietly costing the live thread its share of the context.
 //
@@ -25,6 +25,7 @@ import assert from 'node:assert/strict';
 import { buildSystemPromptSections, formatHistory, type ChatContext } from './shared.js';
 import { SECTION_IDS, sectionsTotalChars, type SectionId } from './promptSections.js';
 import { PROMPT_BUDGET, MIN_TRANSCRIPT_SHARE, type BudgetKey } from './promptPolicy.js';
+import { renderDriftAnchor, DRIFT_LONG_WINDOW_CHARS } from '../../persona/policy.js';
 import { buildTurnTraceDraft, type MeasuredPrompt, type TranscriptMessage } from '../../diagnostics/turnTrace.js';
 import {
   REACTION_TOOL, REMEMBER_USER_TOOL, delegateToOpsTool, SET_PREFERENCE_TOOL, SCHEDULE_AUTOMATION_TOOL,
@@ -414,13 +415,43 @@ const TEXTS: Array<[StoredMessage['role'], string]> = [
   ['assistant', 'and the expedite fee is the disputed line, not the freight'],
 ];
 
-function history(rows: number): StoredMessage[] {
+/** The same two people on a working day rather than a passing one: sentences instead of acks, the
+ *  reasons attached, the numbers said out loud. Same twenty-row shape and the same alternation, and
+ *  the difference that matters here is SIZE — these rows average about a hundred and sixty
+ *  characters where the ones above average thirty. Eighty of them is the transcript band where the
+ *  drift anchor stops trusting the middle of the prompt (persona/policy.ts
+ *  DRIFT_LONG_WINDOW_CHARS), and there is no honest way to reach that band with one-word texts:
+ *  forty "ok"s are nine hundred characters. This is what twelve thousand actually looks like. */
+const DENSE_TEXTS: Array<[StoredMessage['role'], string]> = [
+  ['user', 'the north supplier finally sent the schedule, they have us down for the second week of april for the cedar and the third week for the fir, which is backwards from what we asked for'],
+  ['assistant', 'backwards and late. the fir was the one you wanted first because the dock rebuild is the only job with a permit date on it, everything else can slide'],
+  ['user', 'right. can you write the mill and ask them to swap the two, and say the permit inspection is the reason, they respond better to a date than to a complaint'],
+  ['assistant', 'drafted it and left it in your outbox. one paragraph, the permit date, the two loads, no adjectives. read it before it goes because i put the expedite fee in there too'],
+  ['user', 'the expedite fee is the part i keep going back and forth on, they quoted four hundred on the first load and then nine hundred on the second with no explanation at all'],
+  ['assistant', 'that is the disputed line. the freight is fine, the fee is what doubled, and the invoice does not say why. ask for the tariff sheet and the number either holds or it does not'],
+  ['user', 'ok ask for the sheet. separate thing, the dock boards. six of the twenty came in warped and the supplier wants photos before they will talk about a return at all'],
+  ['assistant', 'photos of the whole pallet, not the six, so the warp reads as a batch problem instead of six boards somebody stacked wrong. take them in daylight against a straight edge'],
+  ['user', 'good call, the straight edge is in the truck. also i am not going to get to the irrigation permit this week, the renewal window is open until the end of the month right'],
+  ['assistant', 'end of the month, and the county takes ten working days on a renewal, so the last day you can send it and still be covered is the eighteenth. that one is a wednesday'],
+  ['user', 'put it on the list for the fifteenth then. what else is sitting there that i have not looked at, i feel like there is something with the invoice from february'],
+  ['assistant', 'february is closed. what is open is the cedar order, the dock return, the permit renewal and the mill swap. the february invoice was paid short by the expedite fee and nobody chased it'],
+  ['user', 'nobody chased it because i forgot. is it worth chasing now or does it just make the current fee conversation harder than it already is'],
+  ['assistant', 'it makes it easier. same fee, same supplier, twice, and the second time they doubled it. one conversation, two examples, that is a pattern instead of a complaint'],
+  ['user', 'fine, chase both. saturday is soccer at ten so i am useless until noon, and the shack has the plumber coming at one which i will also be useless for'],
+  ['assistant', 'nothing before eleven, i know, and i will not put anything on saturday. the plumber is the one who quoted the well pump or the one who did the kitchen line'],
+  ['user', 'the well pump. he wants to look at the pressure tank before he quotes, which is fair, but he has already rescheduled twice and i am not holding a day for a maybe'],
+  ['assistant', 'then tell him one o clock or the next opening is in two weeks. a person who reschedules twice is telling you what his week looks like, not what yours is worth'],
+  ['user', 'i will send that. last thing, my sister is coming the last weekend of the month like always and i want the shack liveable by then, what is actually left to do'],
+  ['assistant', 'the dock is not liveable, it is nice to have. what is left is the pump, the kitchen line and the warped boards off the deck so nobody puts a foot through it. three things'],
+];
+
+function history(rows: number, texts: Array<[StoredMessage['role'], string]> = TEXTS): StoredMessage[] {
   const out: StoredMessage[] = [];
   // Built newest-first and unshifted, so the finished array is in send order with the freshest row
   // last — the shape the store returns, and the shape both timing reads assume. It therefore ends on
   // one of HER bubbles, which is what gives the reply-order read a run of her own sends to point at.
   for (let i = 0; i < rows; i++) {
-    const [role, content] = TEXTS[TEXTS.length - 1 - (i % TEXTS.length)];
+    const [role, content] = texts[texts.length - 1 - (i % texts.length)];
     out.unshift({
       role, content,
       handle: role === 'user' ? HANDLE : undefined,
@@ -433,8 +464,13 @@ function history(rows: number): StoredMessage[] {
 const HISTORY_40 = history(40);
 const HISTORY_6 = history(6);
 const HISTORY_12 = history(12);
+/** The window the box actually ships — `CONVO_HISTORY_MAX=80` in deploy/app.env, twice the code
+ *  default — filled with the dense rows. Twelve thousand eight hundred characters of transcript,
+ *  which is the only reason this fixture exists: it is the one turn here that renders the drift
+ *  anchor's LONG band, and therefore the one that measures `behavior_anchor` at its real maximum. */
+const HISTORY_80_DENSE = history(80, DENSE_TEXTS);
 
-// ── the five fixtures ────────────────────────────────────────────────────────
+// ── the six fixtures ─────────────────────────────────────────────────────────
 
 interface Fixture {
   name: string;
@@ -599,6 +635,39 @@ const FIXTURES: Fixture[] = [
       'extra', 'turn_focus', 'behavior_anchor', 'json_anchor',
     ],
   },
+  {
+    // 6. THE LONG THREAD: fixture 2's turn — same person, same memory, same ask — on the eighty-row
+    // window the box ships (deploy/app.env CONVO_HISTORY_MAX=80) with the dense rows in it. Twelve
+    // thousand eight hundred characters of transcript, and it exists for ONE section: past
+    // DRIFT_LONG_WINDOW_CHARS the drift anchor buys the identity clauses back (persona/policy.ts),
+    // and `behavior_anchor` is a prose ceiling the live battery enforces (convergence/focusBattery.ts
+    // prose_budget), so a maximum measured only on short windows is a breach waiting for the first
+    // real thread. Everything else here is deliberately fixture 2's, so this row moves exactly two
+    // numbers — the anchor's, and whatever the two timing reads make of a longer window.
+    name: 'mature profile on a long thread',
+    spec: {
+      chatContext: {
+        isGroupChat: false, participantNames: [], chatName: null,
+        senderHandle: HANDLE, senderProfile: MATURE_PROFILE,
+      },
+      contextBlock: contextBlockWith(MATURE_STACK),
+      tools: TOOLS_1TO1,
+      history: HISTORY_80_DENSE,
+      incomingText: MATURE_TURN_TEXT,
+      affect: affect(),
+      computed: COMPUTED,
+      capability: { classes: ['web', 'files', 'code', 'media', 'scheduling'], complete: true },
+      climate: MOVED_CLIMATE,
+      turnFocus: { text: MATURE_TURN_TEXT, hits: [{ label: 'cedar lead times from the north supplier', source: 'research' }] },
+      craft: craftFacts(MATURE_DATA, MATURE_TURN_TEXT),
+    },
+    memoryStack: MATURE_STACK,
+    sections: [
+      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'context_block',
+      'current_time', 'weather', 'status_contract', 'conversation_timing', 'reply_order',
+      'turn_focus', 'behavior_anchor', 'json_anchor',
+    ],
+  },
 ];
 
 /** The messages array the live turn sends alongside the prompt: the stored window as the model sees
@@ -664,7 +733,23 @@ test('the memory stack is inside its budget on every fixture that carries one', 
   }
 });
 
-/** The largest each budget line reaches across the five fixtures — the number its ceiling is meant to
+/** The window band fixture 6 exists to reach, asserted rather than assumed: a rewrite of DENSE_TEXTS
+ *  that quietly fell under DRIFT_LONG_WINDOW_CHARS would leave `behavior_anchor` measured on the
+ *  short variant again, and the ceiling would go stale in exactly the silent way that fixture was
+ *  added to stop. */
+test("the long-thread fixture really is past the drift anchor's window band", () => {
+  const f = FIXTURES[5];
+  assert.equal(f.name, 'mature profile on a long thread');
+  const windowChars = (f.spec.history ?? []).reduce((n, m) => n + m.content.length, 0);
+  assert.ok(
+    windowChars >= DRIFT_LONG_WINDOW_CHARS,
+    `the long fixture's transcript is ${windowChars} characters, under the ${DRIFT_LONG_WINDOW_CHARS} band — the anchor renders its short variant and nothing here measures the wide one`,
+  );
+  const anchor = buildSystemPromptSections(...argsFor(f.spec)).sections.find(s => s.name === 'behavior_anchor');
+  assert.equal(anchor?.chars, renderDriftAnchor('task', windowChars).length, 'and the anchor it rendered is the long task variant');
+});
+
+/** The largest each budget line reaches across the six fixtures — the number its ceiling is meant to
  *  be a rounded-up copy of. `memory_stack` comes off the fixtures' own stacks because it is a part of
  *  `context_block` rather than a section of its own. */
 function measuredMaxima(): Map<BudgetKey, number> {

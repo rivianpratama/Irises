@@ -415,7 +415,11 @@ test('every reported section carries a real size, and the frame sections match t
   assert.equal(personaChars, convoPersona().length, 'personaChars is the persona head itself');
   assert.equal(by('persona'), personaChars, 'the persona section agrees with personaChars');
   assert.equal(by('json_anchor'), anchorChars, 'anchorChars is the trailing JSON anchor');
-  // The anchors are static bookends: identical on every turn, whatever the fixture.
+  // The JSON anchor is the invariant bookend: identical on every turn, whatever the fixture. The
+  // drift anchor is not, and these two fixtures agree on it for a reason worth naming rather than
+  // relying on — both are task turns on a short window, so they pick the same six bullets. The mode
+  // and window wiring is pinned by the two tests below; if a fixture ever carries a hook directive
+  // or a long history, the second assertion here moves instead of going quietly vacuous.
   const other = buildSystemPromptSections(...FIXTURES[2].args);
   assert.equal(other.anchorChars, anchorChars);
   assert.equal(other.sections.find(s => s.name === 'behavior_anchor')?.chars, by('behavior_anchor'));

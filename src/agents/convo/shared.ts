@@ -1037,9 +1037,13 @@ export function buildSystemPromptSections(
   //     DRIFT_LONG_WINDOW_CHARS).
   //
   // Identity still owns these lines; the mode bullets are the one deliberate second copy of a law
-  // stated elsewhere, and CLAUSE_INVENTORY's `anchorCopies` column is where that copy is counted
-  // rather than discovered. Behaviour goes here; the format contract stays LAST below (a persona
-  // slip is recoverable, a broken envelope is not).
+  // stated elsewhere — the task, idle and quiet laws the shared persona block owns. That copy is
+  // SEMANTIC rather than literal: the block hard-wraps its paragraphs, so a bullet here shares no
+  // exact substring with the sentence it restates, and CLAUSE_INVENTORY (promptPolicy.ts) counts
+  // substrings. It cannot see this copy, which is why every `anchorCopies` there is still 0 — a
+  // countable row waits on a prose commit authoring the two halves as one shared sentence.
+  // Behaviour goes here; the format contract stays LAST below (a persona slip is recoverable, a
+  // broken envelope is not).
   const windowChars = history?.reduce((n, m) => n + m.content.length, 0) ?? 0;
   const behaviorAnchor = renderDriftAnchor(personaTurn?.hooks?.mode ?? 'task', windowChars);
 
