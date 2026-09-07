@@ -220,7 +220,7 @@ test('the persona no longer claims her state has momentum — the drift engine e
     section, /Your state has momentum/i,
     'the momentum claim is back in the persona. applyAffectDrift (persona/affectDrift.ts) is what '
     + 'carries the state forward now, bounded by AFFECT_TURN_CAP and the two rolling windows — so '
-    + 'this is prose telling her to do what she cannot help doing, in the most expensive 138k in the repo',
+    + 'this is prose telling her to do what she cannot help doing, in the most expensive 84k in the repo',
   );
   assert.doesNotMatch(section, /drifts by a few points|never resets to neutral/);
 

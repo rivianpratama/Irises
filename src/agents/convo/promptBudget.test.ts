@@ -1,6 +1,6 @@
 // Run with: npm test   (TZ=UTC tsx --test — runner pins DATA_BACKEND=memory)
 //
-// The ratchet. Convo's system prompt assembles to ~177k characters — ~138k of it the persona — and
+// The ratchet. Convo's system prompt assembles to ~136k characters — ~84k of it the persona — and
 // it had only ever grown, one well-argued block at a time. This file measures the prompt through
 // the real assembler (buildSystemPromptSections, the Task-1 seam) on six representative turns and
 // holds every part under the ceiling it stands at TODAY (promptPolicy.ts) — so the next block that
