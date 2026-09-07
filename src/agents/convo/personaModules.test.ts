@@ -126,9 +126,24 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * The largest prose move in that commit is NOT in this number: composer/Context.md came down 376
  * characters in the same pass (seven pairs, the same rule), and the Composer's file is not part of
  * this corpus. Nothing pins its bytes — the sha256 here covers convo's persona and craft only.
+ *
+ * Then **−55** in the fourth supervisor-corrections commit, ONE file and two clauses, and the beat it
+ * retires is out of the convo corpus entirely after it:
+ *   · craft/send-order.md −55 (3,705 → 3,650), itemised: −39 where the reply-order paragraph stopped
+ *     illustrating a run of bubbles as an answer followed by a little passing-mention trailer — it
+ *     reads "picking up the first of them, not the last", which is the ORDER claim the paragraph is
+ *     about and needs no example beat to make it; and −16 where the short-ack bullet stopped naming
+ *     that trailer as the thing an "ok" is not consent to run, and names "anything else you
+ *     named" instead, because the bullet has to hold after the beat is gone and a rule that turns on
+ *     a beat she no longer sends holds nothing.
+ * Context.md did not move: the third commit above took its last two copies. The other half of this
+ * commit is not in this number either and never could be — shared.ts's `json_anchor` capped her at
+ * three items and then said where to leave the overflow, and it now says "the top of it now and
+ * stop" (−18); the anchor is generated prose at the recency edge rather than a page of the corpus
+ * (promptSections.test.ts pins its bytes, promptPolicy.ts its size).
  */
-const CORPUS_CHARS = 121_885;
-const CORPUS_SHA256 = '2b9753308065196e735b54fbea04a348bbcf91d68ff3ed72b4bd9d7730dd556d';
+const CORPUS_CHARS = 121_830;
+const CORPUS_SHA256 = 'e5e782799716a4983b217907228343683dce2b0d5fa7ec0c54863a94c01d8bd6';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
