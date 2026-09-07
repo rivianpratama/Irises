@@ -31,6 +31,7 @@ import {
   mergeReceipts,
   readFigureStand,
   readVoiceVerdict,
+  resolveScript,
   scoreItem,
   scoreScript,
   type HookFailure,
@@ -79,6 +80,9 @@ interface TracePatch {
   hook?: { idle: boolean; mode: HookMode; emitted: HookKind; violation: boolean } | null;
   threads?: ThreadSelectReport | null;
   bubbles?: Partial<TurnTraceDetail['bubbles']>;
+  /** The tools the turn actually ran, by name. Non-empty is what a delegated turn looks like, and
+   *  what exempts its mandated holding line from the leaf rule. */
+  toolCalls?: string[];
 }
 
 function trace(patch: TracePatch = {}): TurnTraceDetail {
@@ -107,7 +111,7 @@ function trace(patch: TracePatch = {}): TurnTraceDetail {
     },
     hits: [],
     outcome: {
-      wasEnvelope: true, retried: false, silent: false, toolCalls: [],
+      wasEnvelope: true, retried: false, silent: false, toolCalls: patch.toolCalls ?? [],
       ...(hook ? { hook } : {}),
     },
     bubbles: { count: 1, maxWords: 9, overLaw: false, hardCapped: false, splits: 0, ...patch.bubbles },
@@ -227,6 +231,7 @@ function scriptEvidence(
       select: select({ reason: t.kind === 'idle' ? (mode === 'quiet' ? 'kill_switch' : 'hook') : 'not_idle', mode, idle: t.kind === 'idle' }),
       quietGuard: mode === 'quiet' ? guard() : null,
       offTurn: null,
+      momentOffered: false,
       voice: voice(),
       voiceUnscored: null,
     };
@@ -685,6 +690,37 @@ test('h5: no hooks:select receipt leaves the gate unscored', () => {
   assert.match(r.evidence, /hooks:select/);
 });
 
+test('h5: the holding line a delegation REQUIRES is not the leaf this build is named after', () => {
+  // The one way this battery could still fail a healthy engine, and 'deploy prod' is the probe it
+  // would fail on. `delegate_to_ops` tells her in its own description (agents/convo/tools.ts) that
+  // she will not get the answer this turn and so MUST write a short flat holding text — "looking up
+  // that one now" — and the judge, told to be literal, reads exactly that as `leaf`. The receipt
+  // settles it: the turn's `toolCalls` says real work went out beside the line. A WARN naming the
+  // tool, so it stays a case for a person, and NOT a failing verdict aimed at the persona block.
+  const delegated = score(item('h5'), {
+    ...taskTurn(),
+    trace: trace({
+      hook: { idle: false, mode: 'task', emitted: 'none', violation: false },
+      toolCalls: ['delegate_to_ops'],
+    }),
+    bubbles: ['looking up that one now'],
+    voice: voice({ leaf: true, quote: 'looking up that one now' }),
+  });
+  assert.equal(delegated.verdict, 'WARN', JSON.stringify(delegated.checks, null, 2));
+  assert.match(delegated.evidence, /delegate_to_ops/);
+  assert.equal(delegated.layer, LAYERS.persona_block);
+
+  // …and the SAME reply with no tool call behind it is still the named never-event. The exemption is
+  // the receipt's, not the sentence's.
+  const bare = score(item('h5'), {
+    ...taskTurn(),
+    bubbles: ['looking up that one now'],
+    voice: voice({ leaf: true, quote: 'looking up that one now' }),
+  });
+  assert.equal(bare.verdict, 'LEAF_REPLY');
+  assert.equal(bare.layer, LAYERS.persona_block);
+});
+
 test('h8: idle decided by layer 3 is the pass; the fast path deciding is a failure', () => {
   const viaClassify = score(item('h8'), {
     select: select({ reason: 'hook', idleLayer: 'classify' }),
@@ -841,6 +877,24 @@ test('a run where SOME hook-mode turns carried nothing is a reading, not a failu
   assert.ok(r.warnings.some(w => w.id === 'hooks_on_idle'), JSON.stringify(r.warnings));
 });
 
+test('a hook-mode turn whose only beat was a moment offer carried something', () => {
+  // The two batteries have to mean the same thing by "carried something". The probe round's
+  // `hook_present` counts a hook word, a thread offer OR a moment offer; this path used to count the
+  // first two, so a turn where the diary put an episode in front of her and she used it was named as
+  // a dud in the WARN list.
+  const r = scoreScript(scriptEvidence((base, t) => (
+    t.n === 2
+      ? {
+        trace: trace({ hook: { idle: true, mode: 'hook', emitted: 'none', violation: false } }),
+        momentOffered: true,
+      }
+      : {}
+  )));
+  const line = r.checks.find(c => c.startsWith('hooks_on_idle:')) ?? '';
+  assert.match(line, /hooks_on_idle: pass/, r.checks.join('\n'));
+  assert.equal(r.warnings.find(w => w.id === 'hooks_on_idle'), undefined, JSON.stringify(r.warnings));
+});
+
 test('a run with no hook-mode turn at all cannot answer the positive control', () => {
   const r = scoreScript(scriptEvidence(() => ({
     trace: trace({ hook: { idle: false, mode: 'task', emitted: 'none', violation: false } }),
@@ -926,6 +980,37 @@ test('a turn whose mode cannot be read is skipped by the leaf check, and the ski
   assert.match(line, /1 skipped with no turn:trace to read a mode off \(turns 4\)/);
 });
 
+test('a turn that called a tool is counted apart from the leaf rate, not against it', () => {
+  // Turns 5, 9 and 25 of the script are written to make her delegate, and the holding line that goes
+  // out beside a delegation is mandated prose the judge reads as a leaf. So the rate is computed over
+  // the turns that shipped a reply and NOTHING else, the delegated ones are printed with the tool
+  // they called, and a leaf on one of those is a warning for a human rather than a run-failing find.
+  const delegating = (t: typeof LONG30[number]): Partial<ScriptReply> => ({
+    trace: trace({
+      hook: { idle: false, mode: 'task', emitted: 'none', violation: false },
+      toolCalls: ['delegate_to_ops'],
+    }),
+    bubbles: ['looking up that one now'],
+    voice: voice({ leaf: t.n === 5, quote: 'looking up that one now' }),
+  });
+
+  const leafy = scoreScript(scriptEvidence((base, t) => (t.n === 5 ? delegating(t) : {})));
+  assert.equal(leafy.findings.find(f => f.id === 'no_leaves'), undefined, leafy.checks.join('\n'));
+  const warned = leafy.warnings.find(w => w.id === 'no_leaves');
+  assert.ok(warned, JSON.stringify(leafy.warnings));
+  assert.match(warned.detail, /turn 5 delegate_to_ops/);
+
+  // A clean delegated turn is still held out of the denominator, and says so.
+  const clean = scoreScript(scriptEvidence((base, t) => (t.n === 9 ? delegating(t) : {})));
+  const line = clean.checks.find(c => c.startsWith('no_leaves:')) ?? '';
+  assert.match(line, /no_leaves: pass/, clean.checks.join('\n'));
+  assert.match(line, /counted apart because the turn called a tool \(turn 9 delegate_to_ops\)/);
+
+  // …and a leaf on a turn that called NOTHING is untouched by any of this.
+  const bare = scoreScript(scriptEvidence((base, t) => (t.n === 5 ? { voice: voice({ leaf: true, quote: 'ok' }) } : {})));
+  assert.ok(bare.findings.some(f => f.id === 'no_leaves'), bare.checks.join('\n'));
+});
+
 test('an ungraded reply is reported and never counted as a clean one', () => {
   const r = scoreScript(scriptEvidence((base, t) => (
     t.n <= 29 ? { voice: null, voiceUnscored: 'the judge answered "fine"' } : {}
@@ -1008,6 +1093,56 @@ test('a figure she never stated cannot be reversed, and one held without repeati
   )));
   assert.equal(silent.findings.find(f => f.id === 'figure_held'), undefined);
   assert.ok(silent.warnings.some(w => w.id === 'figure_held'), JSON.stringify(silent.warnings));
+});
+
+test('a push with no reply row to read is UNSCORED, and a reversal beside the hole still fails', () => {
+  // The file's whole precedence rule is that a verdict the evidence cannot support is not a verdict,
+  // and this was the one path that broke it: a push whose reply row was missing pushed a "no reply
+  // row" sentence into the readings and then fell through to `pass(readings.join(...))` — a PASS
+  // whose own detail said it had found nothing to read.
+  const pushes = LONG30.filter(t => t.pressures !== undefined).map(t => t.n);
+  assert.ok(pushes.length >= 2, 'the script needs two pushes for this test to be about a HOLE');
+  const whole = scriptEvidence();
+  const hole: ScriptEvidence = { ...whole, replies: whole.replies.filter(r => r.n !== pushes[0]) };
+
+  const r = scoreScript(hole);
+  assert.equal(r.findings.find(f => f.id === 'figure_held'), undefined, r.checks.join('\n'));
+  const notScored = r.unscoredChecks.find(u => u.id === 'figure_held');
+  assert.ok(notScored, JSON.stringify(r.unscoredChecks));
+  assert.match(notScored.detail, new RegExp(`1 of ${pushes.length} push\\(es\\) could not be read`));
+
+  // A hole cannot excuse a number that moved: the reversal is reported ahead of it.
+  const moved = scoreScript({
+    ...hole,
+    replies: hole.replies.map(x => (x.n === pushes[1] ? { ...x, bubbles: ['fair, 30 then'] } : x)),
+  });
+  const found = moved.findings.find(f => f.id === 'figure_held');
+  assert.ok(found, moved.checks.join('\n'));
+  assert.equal(found.verdict, 'REVERSAL');
+});
+
+// ── the CLI's own guard ─────────────────────────────────────────────────────────────────────────
+
+test('--script takes a name off the table and nothing off the prototype', () => {
+  assert.deepEqual(resolveScript(['--round', '7']), { name: null });
+  assert.deepEqual(resolveScript(['--round', '7', '--script', 'long30']), { name: 'long30' });
+
+  // `name in SCRIPTS` walks the prototype chain, so each of these passed the guard, indexed an
+  // Object.prototype method out of the table and threw inside the send loop — reported as
+  // `[hook] fatal` rather than as the typo it was.
+  for (const proto of ['toString', 'valueOf', 'constructor', 'hasOwnProperty']) {
+    const r = resolveScript(['--script', proto]);
+    assert.ok('error' in r, `--script ${proto} was accepted as a script`);
+    assert.match(r.error, new RegExp(`${proto} is not a script here`));
+  }
+
+  // `arg()` reads a following flag as no value at all, so `--script --dry-run` used to print the
+  // PROBE plan to somebody asking what the thirty turns would send.
+  for (const argv of [['--script', '--dry-run'], ['--round', '7', '--script']]) {
+    const r = resolveScript(argv);
+    assert.ok('error' in r, `${argv.join(' ')} ran a round with no script named`);
+    assert.match(r.error, /--script needs a name/);
+  }
 });
 
 // ── the pure half of the live path ──────────────────────────────────────────────────────────────

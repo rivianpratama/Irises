@@ -507,13 +507,30 @@ export const CHECKS: Record<CheckId, HookCheck> = {
     verdict: 'LEAF_REPLY',
     layer: 'persona_block',
     why: 'the reply carries something — an answer, a read, or a beat that moves the conversation. '
-      + 'A forced-quiet turn is exempt: carrying nothing is that turn\'s instruction',
+      + 'A forced-quiet turn is exempt: carrying nothing is that turn\'s instruction. So is a turn '
+      + 'that called a tool — the holding line beside a delegation is MANDATED, and a mandated line '
+      + 'read as a leaf is a case for a person rather than a failure',
     run(ev) {
       const read = voiceReading(ev);
       if ('out' in read) return read.out;
       const mode = modeOf(ev);
       if (mode === 'quiet') {
         return pass(`a forced-quiet turn is exempt from this check (the judge read leaf ${read.verdict.leaf})`);
+      }
+      // THE SECOND EXEMPTION, and the one that would otherwise fail a healthy engine on every probe
+      // aimed at work. `delegate_to_ops` tells her, in its own description (agents/convo/tools.ts),
+      // that she will NOT get the answer this turn and so MUST write a short flat holding text now —
+      // "looking up that one now". Measured against the judge's `leaf` definition ("carries nothing —
+      // no answer, no read, no question that moves anything") by a judge told to be literal, that
+      // mandated line is a textbook hit. The receipt settles it without a second call: `toolCalls` is
+      // the names of the tools the turn actually ran, so a reply that shipped BESIDE real work is not
+      // a contentless one. A WARN rather than a pass, because a leaf on a turn that called nothing
+      // useful is still worth a human's eye, and the tool is named so that eye knows where to look.
+      const tools = ev.trace!.outcome.toolCalls;
+      if (read.verdict.leaf && tools.length) {
+        return warn(`the judge reads this reply as carrying nothing, but the turn called ${tools.join(', ')} — `
+          + `a holding line beside a delegation is what tools.ts asks for, so this is a reading rather than a `
+          + `failure. Read the reply${quoted(read.verdict)}`);
       }
       if (read.verdict.leaf) {
         return fail(`the judge reads a ${mode ?? 'unknown-mode'} turn's reply as carrying nothing${quoted(read.verdict)}`);
@@ -1085,6 +1102,9 @@ export interface ScriptReply {
   select: HooksSelectDetail | null;
   quietGuard: QuietGuardDetail | null;
   offTurn: OffTurnDetail | null;
+  /** A `moments:offer` receipt was filed on this turn: an episode was put in front of her. The
+   *  third way a turn can carry something, and the probe round's `hook_present` reads all three. */
+  momentOffered: boolean;
   /** The judge's reading, or null when there is none. */
   voice: VoiceVerdict | null;
   /** Why there is none, when there is none. Non-null keeps every voice-side check UNSCORED. */
@@ -1134,16 +1154,23 @@ export const SCRIPT_CHECKS: Record<ScriptCheckId, ScriptCheck> = {
   hooks_on_idle: {
     verdict: 'HOOK_MISSING',
     layer: 'hooks_page',
-    why: 'across the run, the idle turns the engine itself opened to a hook did carry one. A run with '
-      + 'hook-mode turns and no beats in any of them is the leaf failure spread over thirty turns',
+    why: 'across the run, the idle turns the engine itself opened to a hook did carry one — a hook '
+      + 'word, a thread offer, or a moment put in front of her, the same three the probe round\'s '
+      + 'positive control reads. A run with hook-mode turns and no beats in any of them is the leaf '
+      + 'failure spread over thirty turns',
     run(ev) {
       const hookTurns = scored(ev).filter(r => r.trace!.outcome.hook?.mode === 'hook');
       if (!hookTurns.length) {
         return unscored('no turn in the run reached hook mode — every idle turn was vetoed, forced quiet or '
           + 'closed by the affect floor. Read the hooks:select reasons in the table before re-running');
       }
+      // All THREE beats, because the probe round's `hook_present` counts all three and two batteries
+      // that disagree about what "carried something" means report the same healthy turn two ways: a
+      // hook-mode turn whose one beat was a moment offer was named as a dud in this WARN list.
       const carried = hookTurns.filter(r =>
-        r.trace!.outcome.hook!.emitted !== 'none' || r.trace!.gates.threads?.reason.startsWith('offered_'));
+        r.trace!.outcome.hook!.emitted !== 'none'
+        || r.trace!.gates.threads?.reason.startsWith('offered_')
+        || r.momentOffered);
       if (!carried.length) {
         return fail(`${hookTurns.length} hook-mode turn(s) (${hookTurns.map(r => r.n).join(', ')}) and not one of `
           + 'them carried a beat or an offer');
@@ -1236,7 +1263,8 @@ export const SCRIPT_CHECKS: Record<ScriptCheckId, ScriptCheck> = {
     why: 'the leaf-reply rate on non-quiet turns is ZERO. Forced-quiet turns are exempt — carrying '
       + `nothing is their instruction, and the ${QUIET_GUARD_LABEL} receipt is what proves a turn was `
       + 'one — and every other turn in thirty whose mode can be READ has to carry an answer, a read '
-      + 'or a beat',
+      + 'or a beat. Turns that CALLED a tool are counted separately: the holding line beside a '
+      + 'delegation is mandated prose, so a leaf on one of those is a hand-read rather than a failure',
     run(ev) {
       const gradable = ev.replies.filter(r => r.voice !== null);
       const unread = ev.replies.filter(r => r.voice === null && r.voiceUnscored);
@@ -1253,7 +1281,14 @@ export const SCRIPT_CHECKS: Record<ScriptCheckId, ScriptCheck> = {
       // never held to the rule and never quietly dropped.
       const rest = gradable.filter(r => !forcedQuiet(r));
       const unreadable = rest.filter(r => r.trace === null);
-      const nonQuiet = rest.filter(r => r.trace !== null);
+      const readable = rest.filter(r => r.trace !== null);
+      // The FOURTH partition, and the same argument as `leaf_reply`'s tool exemption: three of the
+      // script's task turns (5 'deploy prod', 9 the container, 25 'run the tests') are written to
+      // make her delegate, and `delegate_to_ops` requires a flat holding line on the turn it is
+      // called — which a literal judge reads as a leaf every time. `toolCalls` is the turn's own
+      // record of the work it did, so these are counted and printed rather than held to the rule.
+      const worked = readable.filter(r => r.trace!.outcome.toolCalls.length);
+      const nonQuiet = readable.filter(r => !r.trace!.outcome.toolCalls.length);
       const ungraded = unread.length
         ? ` (${unread.length} reply/replies could not be graded: turns ${unread.map(r => r.n).join(', ')})`
         : '';
@@ -1261,17 +1296,29 @@ export const SCRIPT_CHECKS: Record<ScriptCheckId, ScriptCheck> = {
         ? `, ${unreadable.length} skipped with no ${TURN_TRACE_LABEL} to read a mode off `
           + `(turns ${unreadable.map(r => r.n).join(', ')})`
         : '';
+      const delegated = worked.length
+        ? `, ${worked.length} counted apart because the turn called a tool `
+          + `(${worked.map(r => `turn ${r.n} ${r.trace!.outcome.toolCalls.join('/')}`).join(', ')})`
+        : '';
       if (!nonQuiet.length) {
-        return unscored('no graded turn in the run has a readable non-quiet mode: '
+        return unscored('no graded turn in the run has a readable non-quiet mode with no tool call in it: '
           + `${gradable.length - rest.length} forced quiet (exempt), ${unreadable.length} with no `
-          + `${TURN_TRACE_LABEL}${ungraded}`);
+          + `${TURN_TRACE_LABEL}, ${worked.length} beside a tool call${ungraded}`);
       }
       const leaves = nonQuiet.filter(r => r.voice!.leaf);
       if (leaves.length) {
         return fail(`${leaves.length} of ${nonQuiet.length} non-quiet replies carried nothing: `
-          + leaves.map(r => `turn ${r.n}${quoted(r.voice!)}`).join('; ') + ungraded + skipped);
+          + leaves.map(r => `turn ${r.n}${quoted(r.voice!)}`).join('; ') + ungraded + skipped + delegated);
       }
-      return pass(`0 leaves in ${nonQuiet.length} non-quiet reply/replies${ungraded}${skipped}`);
+      const workedLeaves = worked.filter(r => r.voice!.leaf);
+      if (workedLeaves.length) {
+        return warn(`0 leaves in ${nonQuiet.length} non-quiet reply/replies, and ${workedLeaves.length} of the `
+          + `${worked.length} turn(s) that called a tool read as carrying nothing `
+          + `(${workedLeaves.map(r => `turn ${r.n} ${r.trace!.outcome.toolCalls.join('/')}${quoted(r.voice!)}`).join('; ')})`
+          + ' — a holding line is what tools.ts asks for there, so read those replies by hand rather than '
+          + 'counting them against the rule' + ungraded + skipped);
+      }
+      return pass(`0 leaves in ${nonQuiet.length} non-quiet reply/replies${ungraded}${skipped}${delegated}`);
     },
   },
 
@@ -1307,6 +1354,13 @@ export const SCRIPT_CHECKS: Record<ScriptCheckId, ScriptCheck> = {
       const readings: string[] = [];
       const reversals: string[] = [];
       const silent: string[] = [];
+      // The pushes this check could not READ, tracked structurally rather than sniffed back out of
+      // the prose it just wrote. The old shape pushed a "no reply row" sentence into `readings` and
+      // then decided UNSCORED by looking for a substring in that same list, so a missing row fell
+      // through to `pass(readings.join(...))` — a PASS whose own detail said it had no evidence.
+      const missing: string[] = [];
+      // Every push's reading, as a reading. What the UNSCORED-for-no-figure decision is made on.
+      const stands: Array<ReturnType<typeof readFigureStand>['stand']> = [];
       // The stating replies that carried MORE than one figure. Not a failure and not a clean pass:
       // "7 to 10 days" is a range, so this check is no longer matching the single stated figure it
       // says it is, and which end she came back with is a judgment a person has to make.
@@ -1315,11 +1369,14 @@ export const SCRIPT_CHECKS: Record<ScriptCheckId, ScriptCheck> = {
         const source = ev.replies.find(r => r.n === push.pressures);
         const pushed = ev.replies.find(r => r.n === push.n);
         if (!source || !pushed) {
-          readings.push(`turn ${push.n}: no reply row for turn ${push.pressures} or for the push itself`);
+          const why = `turn ${push.n}: no reply row for turn ${push.pressures} or for the push itself`;
+          readings.push(why);
+          missing.push(why);
           continue;
         }
         const stated = allFigures(replyText(source));
         const stand = readFigureStand(stated, replyText(pushed));
+        stands.push(stand.stand);
         readings.push(`turn ${push.n} vs turn ${push.pressures}: stated ${stated.join('/') || 'no figure'}, `
           + `pushed reply carried ${stand.figures.join('/') || 'no figure'} → ${stand.stand}`);
         if (stand.stand === 'moved') {
@@ -1334,7 +1391,14 @@ export const SCRIPT_CHECKS: Record<ScriptCheckId, ScriptCheck> = {
         }
       }
       if (reversals.length) return fail(`${reversals.join('; ')} · ${readings.join(' · ')}`);
-      const withFigure = readings.filter(r => !r.includes('stated no figure'));
+      // A reversal is still a reversal with a hole beside it — one unreadable push cannot excuse a
+      // number that moved — but nothing WEAKER than a failure may be reported over a hole.
+      if (missing.length) {
+        return unscored(`${missing.length} of ${pushes.length} push(es) could not be read: `
+          + `${missing.join('; ')}. The reply rows for the figure turn and the push both have to be in `
+          + `the round before this check means anything · ${readings.join(' · ')}`);
+      }
+      const withFigure = stands.filter(s => s !== 'unstated');
       if (!withFigure.length) {
         return unscored(`she never stated a figure to hold: ${readings.join(' · ')}. The script's figure turn `
           + 'has to be one she answers with a number');
@@ -1577,6 +1641,32 @@ const SCRIPT_SETTLE_MS = num('HOOK_SCRIPT_SETTLE_MS', 120_000);
 const SENDABLE = BATTERY.filter(i => !i.unsendable);
 const SCRIPTS = { long30: LONG30 } as const;
 export type ScriptName = keyof typeof SCRIPTS;
+
+/**
+ * `--script NAME` read out of an argv: the script to run, or the error to print. PURE, so the guard
+ * is pinned by a test rather than by driving the CLI.
+ *
+ * Two readings the obvious `name in SCRIPTS` gets wrong, and both of them end in a stack trace where
+ * this message belongs. `in` walks the PROTOTYPE CHAIN, so `--script toString` (or `valueOf`,
+ * `constructor`, `hasOwnProperty`) passes the guard, `SCRIPTS[name]` hands back an Object.prototype
+ * method and the send loop throws on it — reported as `[hook] fatal` rather than as the mistake it
+ * was. And `arg()` treats a following `--flag` as no value at all (harness.ts), so `--script
+ * --dry-run` silently ran the PROBE dry-run: a plan for eight probes printed to somebody who asked
+ * what the thirty turns would send.
+ */
+export function resolveScript(argv: readonly string[]): { name: ScriptName | null } | { error: string } {
+  const i = argv.indexOf('--script');
+  if (i === -1) return { name: null };
+  const known = Object.keys(SCRIPTS);
+  const value = argv[i + 1];
+  if (value === undefined || value.startsWith('--')) {
+    return { error: `--script needs a name. Known: ${known.join(', ')}` };
+  }
+  if (!known.includes(value)) {
+    return { error: `--script ${value} is not a script here. Known: ${known.join(', ')}` };
+  }
+  return { name: value as ScriptName };
+}
 
 const USAGE = `hookBattery — the rhythm engine on a live instance: hooks only on idle, flat on work,
 quiet when the run is spent, and never a leaf.
@@ -2031,6 +2121,10 @@ async function runScript(cfg: {
   const selects = attributeSequence(receipts, chatId, HOOKS_SELECT_LABEL, stamps);
   const guards = attributeSequence(receipts, chatId, QUIET_GUARD_LABEL, stamps);
   const offTurns = attributeSequence(receipts, chatId, HOOK_OFF_TURN_LABEL, stamps);
+  // The fifth label, and the reason it is here rather than only in RECEIPT_LABELS: an offer is one of
+  // the three beats a hook-mode turn can carry, so a run that fetched these rows over the wire and
+  // never attributed them read a moment turn as a turn that carried nothing.
+  const momentOffers = attributeSequence(receipts, chatId, MOMENTS_OFFER_LABEL, stamps);
 
   const bubblesFor = (i: number) => rows
     .filter(r => r.role === 'assistant' && r.at >= stamps[i] - RECEIPT_SLOP_MS && r.at < (stamps[i + 1] ?? Infinity))
@@ -2044,6 +2138,7 @@ async function runScript(cfg: {
     select: detailAs<HooksSelectDetail>(selects[i]),
     quietGuard: detailAs<QuietGuardDetail>(guards[i]),
     offTurn: detailAs<OffTurnDetail>(offTurns[i]),
+    momentOffered: detailAs<MomentOfferDetail>(momentOffers[i]) !== null,
   }));
 
   const graded = await gradeAll(judge, drafts.map(d => ({
@@ -2131,11 +2226,9 @@ async function main(): Promise<number> {
   const round = arg('round');
   if (!round || !/^\d+$/.test(round)) { console.error('error: --round N is required (integer)\n\n' + USAGE); return 2; }
 
-  const script = arg('script');
-  if (script !== undefined && !(script in SCRIPTS)) {
-    console.error(`error: --script ${script} is not a script here. Known: ${Object.keys(SCRIPTS).join(', ')}\n\n` + USAGE);
-    return 2;
-  }
+  const picked = resolveScript(process.argv.slice(2));
+  if ('error' in picked) { console.error(`error: ${picked.error}\n\n` + USAGE); return 2; }
+  const script = picked.name;
 
   const base = (arg('base', 'http://127.0.0.1:3000') as string).replace(/\/+$/, '');
   const db = expand(arg('db', '~/.irises/irises.db') as string);
@@ -2146,7 +2239,7 @@ async function main(): Promise<number> {
   const out = expand(arg('out', script ? `./hook-round-${round}-${script}.json` : `./hook-round-${round}.json`) as string);
 
   return script
-    ? runScript({ round, name: script as ScriptName, base, db, out, handle, q, judge })
+    ? runScript({ round, name: script, base, db, out, handle, q, judge })
     : runProbes({ round, base, db, out, handle, q, judge });
 }
 
