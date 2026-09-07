@@ -493,8 +493,14 @@ const HISTORY_80_DENSE = history(80, DENSE_TEXTS);
 // turn would measure a shape the assembler can no longer build. That fixture is where
 // `craft_modules` reaches its maximum, and the hook page is now part of that maximum.
 
+// `sleepQuiet` is not a choice either. These fixtures run on a frozen clock of 02:00 UTC
+// (`FROZEN_MS`), which `computeCircadian` reads as `dead_night`, and `compileAffect` sets the flag
+// straight off that slot (persona/affectCompiler.ts — no flag, no store, no mood in it). A hook
+// directive compiled from this turn's own `COMPUTED` therefore carries the sleep line, and a fixture
+// that turned it off would be measuring a shape the clock cannot produce. It is also the WIDEST the
+// block gets — 462 characters against 338 without it — which is what the `hooks` ceiling is for.
 const HOOK_TURN: PersonaTurn = {
-  hooks: { idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: false, offerAllowed: true },
+  hooks: { idle: true, mode: 'hook', forbidden: [], sleepQuiet: true, moments: false, offerAllowed: true },
   moments: [],
   thesis: '',
 };

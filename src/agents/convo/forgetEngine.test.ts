@@ -17,7 +17,9 @@ import { addShortTerm } from '../../db/repositories/memoryShort.js';
 import { saveDossier, getForgetEpoch, getMemory } from '../../db/repositories/memory.js';
 import { getRelationshipClimate, saveRelationshipClimate } from '../../db/repositories/relationshipClimate.js';
 import { getThreadInventory, saveThreadInventory } from '../../db/repositories/threadInventory.js';
+import { getHookState, saveHookState } from '../../db/repositories/hookState.js';
 import { defaultClimate } from '../../persona/climate.js';
+import { defaultHookState } from '../../persona/hooks.js';
 import { defaultThreadInventory } from '../../persona/threads.js';
 import { stmt } from '../../db/sqlite.js';
 import type { ChatContext } from './shared.js';
@@ -209,6 +211,37 @@ test('/forget me resets the thread inventory to defaults', async () => {
     assert.deepEqual(after.loops, [], 'the questions she was still holding go with it');
     assert.equal(after.pending, null, 'and nothing is left in flight to be answered');
     assert.equal(after.harvestCount, 0, 'the tenure the rung ceiling reads is reset too');
+  } finally {
+    resetEngineBackendCache(undefined);
+  }
+});
+
+// The rhythm ledger is the third accreted read a forget takes, and the one keyed by CHAT rather
+// than by handle (db/repositories/hookState.ts) — how many hooks the last few replies carried, how
+// long they have been sending nothing, when a moment was last offered. A wipe that left it standing
+// would answer the next message with a kill switch the person had just asked her to forget.
+test('/forget me resets the rhythm ledger to defaults', async () => {
+  resetEngineBackendCache(null);
+  const chatId = 'chat-forget-8';
+  const h = '+15550004444';
+  const ctx: ChatContext = { ...CTX, senderHandle: h };
+  try {
+    await saveHookState(chatId, h, {
+      lastKinds: ['judgment', 'callback', 'tangent'],
+      idleStreak: 3,
+      idleSinceMoment: 3,
+      updatedAt: Date.UTC(2026, 0, 1),
+    });
+    assert.equal((await getHookState(chatId)).lastKinds.length, 3);
+
+    const res = await chat(chatId, '/forget me', emptyMedia(), ctx);
+    assert.ok(res.text.length > 0);
+    await new Promise(r => setTimeout(r, 25)); // the fire-and-forget beat, as elsewhere on this path
+
+    const after = await getHookState(chatId);
+    assert.deepEqual(after, defaultHookState());
+    assert.deepEqual(after.lastKinds, [], 'the run the kill switch reads goes with it');
+    assert.equal(after.idleStreak, 0, 'and so does the streak the turn line names');
   } finally {
     resetEngineBackendCache(undefined);
   }

@@ -904,30 +904,6 @@ function themeCooldownMs(t: ThreadTheme): number {
 }
 
 /**
- * Choose at most one thing to put in front of the model this turn, and bill it. PURE: when nothing
- * is offered, `next` is the inventory that came in, unchanged and unbilled.
- *
- * The gate order is the user's combined decision rule, and the ORDER is the design:
- *   1. `awaiting_outcome` — one thing in flight, globally, across both materials.
- *   2. LOOP STAGE, which wins outright. Loops SKIP the mode and mood gates entirely: asking how the
- *      surgery went is care, not analysis, and a venting turn is often exactly when it belongs. What
- *      loops need instead is an OPENING (a real gap before the message) and the thing not already
- *      being the topic — both read from this turn, not from a stale gauge.
- *   3. THEME STAGE — the mode/mood gates, the turn gate, the day cap, then per-theme eligibility,
- *      whose LAST check is the topic gate: a theme has to touch the message in hand.
- *   4. The rung ceiling on whoever won.
- *
- * The two stages read the incoming text in OPPOSITE directions, and that inversion is the design:
- * a theme must TOUCH this turn (a pattern named out of nowhere is drift), while a loop must NOT
- * already be the topic (asking how it went while they are telling you how it went is a stored
- * question read off a list). Neither is a bug in need of the other's shape.
- *
- * `opts.topicGate` is the CONVO_THEME_TOPIC_GATE flag, read by the caller
- * (`themeTopicGateEnabled()`, beside the store) and injected rather than read here: this module is
- * pure — `now` in, no clock, no DB, no env — and the store it would import from imports this file.
- * Omitted means ON, matching the flag's default. Off is byte-identical to the pre-gate engine.
- */
-/**
  * The report for a turn on which the OFFER was closed before selection ran — the rhythm engine's
  * verdict, not the thread engine's (persona/hooks.ts). PURE, and the inventory comes back untouched:
  * nothing was considered, so nothing may be billed.
@@ -956,6 +932,30 @@ export function suppressedSelection(
   };
 }
 
+/**
+ * Choose at most one thing to put in front of the model this turn, and bill it. PURE: when nothing
+ * is offered, `next` is the inventory that came in, unchanged and unbilled.
+ *
+ * The gate order is the user's combined decision rule, and the ORDER is the design:
+ *   1. `awaiting_outcome` — one thing in flight, globally, across both materials.
+ *   2. LOOP STAGE, which wins outright. Loops SKIP the mode and mood gates entirely: asking how the
+ *      surgery went is care, not analysis, and a venting turn is often exactly when it belongs. What
+ *      loops need instead is an OPENING (a real gap before the message) and the thing not already
+ *      being the topic — both read from this turn, not from a stale gauge.
+ *   3. THEME STAGE — the mode/mood gates, the turn gate, the day cap, then per-theme eligibility,
+ *      whose LAST check is the topic gate: a theme has to touch the message in hand.
+ *   4. The rung ceiling on whoever won.
+ *
+ * The two stages read the incoming text in OPPOSITE directions, and that inversion is the design:
+ * a theme must TOUCH this turn (a pattern named out of nowhere is drift), while a loop must NOT
+ * already be the topic (asking how it went while they are telling you how it went is a stored
+ * question read off a list). Neither is a bug in need of the other's shape.
+ *
+ * `opts.topicGate` is the CONVO_THEME_TOPIC_GATE flag, read by the caller
+ * (`themeTopicGateEnabled()`, beside the store) and injected rather than read here: this module is
+ * pure — `now` in, no clock, no DB, no env — and the store it would import from imports this file.
+ * Omitted means ON, matching the flag's default. Off is byte-identical to the pre-gate engine.
+ */
 export function selectThreadCandidate(
   inventory: ThreadInventory,
   affect: ThreadAffect | null | undefined,
