@@ -14,10 +14,10 @@ prerequisites:
 
 # Irises Setup (hermes engine)
 
-Irises is a user-facing texting assistant — a fast conversational front line —
-that delegates ALL deep work (research, email, files, reminders, memory) to a hermes-agent it is
-pointed at. This hermes stays completely unmodified; Irises talks to it only through the
-OpenAI-compatible API server (`API_SERVER_ENABLED`) and the cron REST API.
+Irises is a user-facing texting assistant — a fast conversational front line — that delegates
+ALL deep work (research, email, files, reminders, memory) to a hermes-agent it is pointed at.
+This hermes stays completely unmodified; Irises talks to it only through the OpenAI-compatible
+API server (`API_SERVER_ENABLED`) and the cron REST API.
 
 Irises rides **on top of** this hermes: on boot it auto-detects it (sets `OPS_BACKEND=hermes`),
 reuses this hermes's API key, and makes its own voice **inherit this hermes's provider, endpoint, and

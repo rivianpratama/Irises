@@ -91,7 +91,7 @@ A quick map of the code, if you want to read along:
 - **Channels** (`src/channels`) — one `Channel` abstraction with `web` (SSE + CLI) and `bridge` adapters. See [docs/CHANNELS.md](docs/CHANNELS.md).
 - **LLM layer** (`src/llm`) — one `callLLM` entry point, per-role primary provider, automatic fallback lane, token budget guards.
 - **Persona & affect** (`src/persona`) — the hidden per-turn affect engine, the relationship climate, and the conversational-thread selection described above: `policy.ts` (the shared personality block and the mode-selected drift anchor), `affectCompiler.ts` (gauges → directives), `hooks.ts` (the idle-turn hook selector and kill switch), `moments.ts`.
-- **State & memory** (`src/state`, `src/memory`) — burst-batching, per-chat send lock, typing pacing, a durable registry of in-flight engine runs (so a restart can find and own up to the one it killed), the short/medium/long memory tiers, plus the thread harvest, the note groomer, and the optional semantic-recall leg.
+- **State & memory** (`src/state`, `src/memory`) — burst-batching, per-chat send lock, typing pacing, a durable registry of in-flight engine runs (so a restart can find and own up to the one it killed), the short/medium/long memory tiers, plus the thread harvest, the note groomer, the optional semantic-recall leg, and the nightly moments and weekly thesis passes.
 - **Data** (`src/db`) — a local store under `IRISES_HOME` (default `~/.irises`): SQLite (builtin `node:sqlite`) for machine data, plus per-user markdown for the curated memory tiers. `DATA_BACKEND=memory` runs the same code but ephemeral, nothing persists.
 - **Diagnostics** (`src/diagnostics`) — `/debug` prompt traces and the `/dashboard` GUI with cost, error, memory and inner-state views.
 
@@ -390,7 +390,7 @@ The web package also carries its own suites: `npm --prefix web run test` (Vitest
 
 Issues and PRs are very welcome — even a small one. If you found the docs confusing somewhere, that is a bug too; please open an issue and tell me where you got lost.
 
-Before opening a PR, please run the [verification](#verification) commands, and keep the machinery that makes Irises feel like one person intact: the JSON bubble envelope, the delegation seam, and the grounding rules, the shared personality block and the idle-turn gate. [docs/PROMPTING_CHARTER.md](docs/PROMPTING_CHARTER.md) explains the principles behind the prompts — its [§3a](docs/PROMPTING_CHARTER.md#3a-the-never-send-a-leaf-laws-with-their-reasons) is the character itself, as laws with their reasons — bear in mind the rest is an inherited document that predates the engine split.
+Before opening a PR, please run the [verification](#verification) commands, and keep the machinery that makes Irises feel like one person intact: the JSON bubble envelope, the delegation seam, the grounding rules, the shared personality block, and the idle-turn gate. [docs/PROMPTING_CHARTER.md](docs/PROMPTING_CHARTER.md) explains the principles behind the prompts — its [§3a](docs/PROMPTING_CHARTER.md#3a-the-never-send-a-leaf-laws-with-their-reasons) is the character itself, as laws with their reasons — bear in mind the rest is an inherited document that predates the engine split.
 
 ## License
 

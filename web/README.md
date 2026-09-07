@@ -66,20 +66,21 @@ synthesized into Irises's voice without changing their factual status.
 ## Adaptive documents
 
 Irises publishes baseline templates at `/PERSONA.md`, `/ARCHETYPE.md`, and
-`/JOURNAL.md`. After each completed turn, a separate reflection request may
+`/JOURNAL.md`. No reflection path is wired in this repo today: the three
+templates are published as static baselines and nothing under `src/` reads or
+rewrites them at runtime. The live personality is rendered from
+`src/persona/policy.ts`.
+
+The template's design allows a reflection request, after each completed turn, to
 update only Irises's allowed adaptive behavior lines (tone, directness, hooks,
 verbosity, language, interaction), revisable user hypotheses, and a rolling
 journal organized by 1-hour, 3-hour, 12-hour, 24-hour, and 7-day windows with
 high, medium, and low importance.
 
-No reflection path is wired in this repo today: the three templates are
-published as static baselines and nothing under `src/` reads or rewrites them at
-runtime. The live personality is rendered from `src/persona/policy.ts`.
-
-Live documents are visible and downloadable from the Documents panel. On a
-single-user Node.js deployment they are stored under the ignored `.irises/`
-directory. The browser retains a complete fallback copy when server files are
-unavailable. Clearing the thread also resets learned context.
+In the original design, live documents are visible and downloadable from the
+Documents panel. On a single-user Node.js deployment they are stored under the
+ignored `.irises/` directory. The browser retains a complete fallback copy when
+server files are unavailable. Clearing the thread also resets learned context.
 
 ## Data and keys
 
