@@ -68,6 +68,8 @@ import {
   type AffectState, type ComputedState,
 } from '../../persona/status.js';
 import { renderThreadForPrompt } from '../../persona/threads.js';
+import { renderDriftAnchor } from '../../persona/policy.js';
+import type { HookDirective } from '../../persona/hooks.js';
 import { getAffectState, saveAffectState } from '../../db/repositories/affectState.js';
 import type { RelationshipClimate } from '../../persona/climate.js';
 import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
@@ -649,10 +651,12 @@ export function renderArrivalGap(
  *  instead of cache-writing the whole per-turn-varying system every call. loadContext is in-process
  *  cached, so this is a cheap length read, not a re-read.
  *
- *  It is the shrunken Context.md since P4a — the craft pages moved into the per-turn block, so they
- *  are not part of THIS prefix; they have a breakpoint of their own behind it (promptSections.ts
- *  promptCacheBreakpoints). With CONVO_PERSONA_MODULES off it measures the whole corpus again
- *  (convoPersona), because that is then what the head really is. */
+ *  It is the shared persona block plus the shrunken Context.md — the block is stable for the life of
+ *  the deployment, so it belongs in the cached prefix rather than in a dyn section that would be
+ *  cache-written every turn, and the craft pages moved the other way at P4a into the per-turn block,
+ *  so they are not part of THIS prefix; they have a breakpoint of their own behind it
+ *  (promptSections.ts promptCacheBreakpoints). With CONVO_PERSONA_MODULES off it measures the whole
+ *  corpus again (convoPersona), because that is then what the head really is. */
 export function convoPersonaChars(): number {
   return convoPersona().length;
 }
@@ -699,6 +703,26 @@ export interface PromptSectionsResult {
    *  receipt. Empty with CONVO_PERSONA_MODULES off: no registry ran, because the pages are in the
    *  persona head instead. */
   craft: CraftModuleTrace[];
+}
+
+/**
+ * What the per-turn persona engines decided for THIS turn, handed to the assembler as ONE trailing
+ * struct rather than three more positional parameters — sixteen positional arguments is already the
+ * point where a fixture measures the wrong section, and these three always travel together anyway:
+ * they are all "what this turn earned", computed by the same pre-read.
+ *
+ * `hooks` is the rhythm decision (persona/hooks.ts selectHook): the turn's MODE, which kinds are
+ * closed, whether a moment or a thread offer may ride along. Null means the selector never ran — the
+ * flag is off, or the caller is not Convo — and the assembler then reads the turn as a task turn,
+ * which is what it read on every turn before this existed.
+ *
+ * `moments` and `thesis` are the earned material the hooks section and the thesis section render
+ * (Wave 3). Empty and '' until the stores exist, and empty renders nothing at all.
+ */
+export interface PersonaTurn {
+  hooks: HookDirective | null;
+  moments: string[];
+  thesis: string;
 }
 
 /**
@@ -764,6 +788,10 @@ export function buildSystemPromptSections(
   // section's flag can change which pages load. Absent → all four read false, which is the honest
   // answer for a caller that never did those reads.
   craftFacts?: CraftTurnFacts,
+  // What the per-turn persona engines decided for THIS turn (see PersonaTurn above). Absent — every
+  // non-Convo caller, and Convo itself until the pre-read lands — reads as a task turn with nothing
+  // earned, which is the same prompt this function built before the struct existed.
+  personaTurn?: PersonaTurn,
 ): PromptSectionsResult {
   // The persona head: the always-on core with the craft pages loading per-turn inside the block
   // below, or — with CONVO_PERSONA_MODULES off — the whole corpus, pages included, exactly as it
@@ -989,17 +1017,31 @@ export function buildSystemPromptSections(
 
   // The LAST tokens of the system prompt get the strongest recency attention (charter §11.3), so the
   // assembled prompt ends on the persona's #1 rule — the JSON bubble contract — AFTER the <prompt>
-  // block. This static anchor is the byte-identical bookend that holds the split rule when a long
+  // block. The anchor ahead of it is the byte-identical bookend that holds the split rule when a long
   // dossier/burst has pushed the persona's own format section far back in context.
-  // Six lines of WHO SHE IS, sitting at the recency edge where a 1100-line persona has the least
-  // pull (charter: identity decays — anchor high, re-anchor late). It holds IDENTITY only: the lines
-  // that have no section of their own to decay back to. Every rule that DOES own a section is stated
-  // there and nowhere else — the bubble law in the JSON anchor below, predict/probe, the tease
-  // frame, the greeting and the settled-ground rule in Context.md — because a rule stated twice is a
-  // rule that drifts (P1: this list was fourteen lines and 1,659 chars, and clauseInventory.test.ts
-  // now pins each of those clauses at exactly one copy). Behaviour goes here; the format contract
-  // stays LAST below (a persona slip is recoverable, a broken envelope is not).
-  const behaviorAnchor = `## Still the same Irises, this far down\nEverything above is context; none of it changes who is typing. What drifts first, hold hardest:\n- You're a person to them, never a bot: warm, quick, a little nerdy.\n- Your English stays yours: articles slip, prepositions run on instinct — numbers, names, dates, links stay exact.\n- No emoji in your text, ever. A tapback is the only icon you own.\n- Memory connects quietly: one anchor per reply, their words, never cite the ledger.\n- A thread in your weather is an offer, not an errand: when unsure, don't, and a fact callback beats a theme.\n- The machinery is invisible: never name tools, engines, notes, memory, status, weather, or a thread you were handed.`;
+  //
+  // Six lines of WHO SHE IS and WHAT THIS TURN IS, sitting at the recency edge where a 1100-line
+  // persona has the least pull (charter: identity decays — anchor high, re-anchor late). It used to
+  // be a static string that said the same six things on every turn, which spent the prompt's
+  // strongest position on rules that mostly did not apply: the one law that DID apply — answer it
+  // flat and nothing else, on the great majority of turns — stood a hundred thousand characters back.
+  // It is now rendered per turn from persona/policy.ts, three bullets of identity plus three of the
+  // law for THIS turn's mode, and the two inputs are both things the caller already computed:
+  //
+  //   • the MODE, off the hook directive the selector produced for this turn. Absent (a non-Convo
+  //     caller, the flag off, the pre-read not yet wired) falls back to 'task' — the flat-answer law
+  //     is the safe default, because a turn wrongly told it may carry a hook is a leaf and a turn
+  //     wrongly told to answer flat is merely plain;
+  //   • the WINDOW, the character length of the history rows this same call was handed. Characters,
+  //     not rows: what buries the persona head is bytes between it and the reply (policy.ts
+  //     DRIFT_LONG_WINDOW_CHARS).
+  //
+  // Identity still owns these lines; the mode bullets are the one deliberate second copy of a law
+  // stated elsewhere, and CLAUSE_INVENTORY's `anchorCopies` column is where that copy is counted
+  // rather than discovered. Behaviour goes here; the format contract stays LAST below (a persona
+  // slip is recoverable, a broken envelope is not).
+  const windowChars = history?.reduce((n, m) => n + m.content.length, 0) ?? 0;
+  const behaviorAnchor = renderDriftAnchor(personaTurn?.hooks?.mode ?? 'task', windowChars);
 
   // The bubble numbers in the law sentence below are interpolated from the constants the code
   // ENFORCES (pipeline/bubbles.ts, pipeline/bubbleJson.ts), never spelled out: what the model is

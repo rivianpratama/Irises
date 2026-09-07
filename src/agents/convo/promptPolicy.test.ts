@@ -32,9 +32,12 @@ import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '
 import { ENVELOPE_FIELDS, STATUS_CONTRACT_HEADER } from '../../persona/status.js';
 import { MOOD_CORES, CORE_VALENCE_BAND } from '../../persona/mood.js';
 import type { ThreadRung } from '../../persona/threads.js';
-import { FORMAT_ANCHOR } from '../composerCore.js';
+import { FORMAT_ANCHOR, buildComposerDynamic } from '../composerCore.js';
 import { buildOutcomeBrief } from '../fallfirm/client.js';
 import { buildProgressBrief } from '../fallfirm/voiceInstant.js';
+import { renderPersonaBlock, DRIFT_MODES, type DriftMode, type PersonaLane } from '../../persona/policy.js';
+import type { HookDirective } from '../../persona/hooks.js';
+import type { PersonaTurn } from './shared.js';
 
 // ── the persona's load-bearing clauses ───────────────────────────────────────
 
@@ -162,9 +165,27 @@ test('the persona describes no envelope field and copies no wheel — it points 
 
 // ── the bubble law, as stated vs as enforced ─────────────────────────────────
 
-/** The two static bookends after `</prompt>`: the identity anchor, then the JSON contract. */
-function anchors(): { behavior: string; json: string } {
-  const { system } = buildSystemPromptSections(undefined, '');
+/** A hook directive in one mode and nothing else going on — the ONE input the drift anchor reads off
+ *  the per-turn struct (convo/shared.ts PersonaTurn). Built as a literal rather than through
+ *  selectHook: what is under test here is what the anchor SAYS in each mode, not how a turn earns
+ *  one, and hooks.test.ts owns the selector. */
+function turnInMode(mode: DriftMode): PersonaTurn {
+  const hooks: HookDirective = {
+    idle: mode !== 'task', mode, forbidden: [], sleepQuiet: false,
+    moments: false, offerAllowed: mode === 'hook',
+  };
+  return { hooks, moments: [], thesis: '' };
+}
+
+/** The two static bookends after `</prompt>`: the drift anchor, then the JSON contract. The bare
+ *  build carries no history, so the anchor's window band is the short one; `personaTurn` is what
+ *  picks its mode, and omitting it is the task-turn fallback every non-Convo caller gets. */
+function anchors(personaTurn?: PersonaTurn): { behavior: string; json: string } {
+  const { system } = buildSystemPromptSections(
+    undefined, '', [], undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    personaTurn,
+  );
   const behaviorAt = system.lastIndexOf('## Still the same Irises');
   const jsonAt = system.lastIndexOf('## Last thing before you type');
   assert.ok(behaviorAt > 0 && jsonAt > behaviorAt, 'both anchors are where the assembler puts them');
@@ -180,16 +201,33 @@ test('the JSON anchor states the bubble law in the numbers the pipeline enforces
   assert.ok(json.includes(String(BUBBLE_LAW_MAX)), 'the count the model is told is the exported one');
 });
 
-test('the behaviour anchor states no bubble number at all — the JSON anchor owns the law', () => {
+test('the drift anchor states no bubble number at all, in any mode — the JSON anchor owns the law', () => {
   // Until P1 the behaviour anchor retold the law in its own words ("5-12 words, three at most"), so
   // raising a constant left it quietly telling her the old number. The fix was not a better
   // interpolation but a deletion: the law is stated ONCE, in the JSON anchor above. This holds that —
   // any digit reappearing here is a second statement of a number, which is how the two drift apart.
-  const { behavior } = anchors();
-  const digits = behavior.match(/\d+/g) ?? [];
-  assert.deepEqual(digits, [], 'a number came back into the behaviour anchor — state it in the JSON anchor instead');
-  const bullets = behavior.split('\n').filter(l => l.startsWith('- '));
-  assert.equal(bullets.length, 6, 'the anchor is the six lines that drift first, and stays that short');
+  //
+  // It runs once per mode now, and that is the point of running it here rather than in policy.test.ts
+  // (which pins the same two properties over the renderer directly): what the model actually reads at
+  // the recency edge is whatever the ASSEMBLER put there, and only one of the three modes can be the
+  // one a given turn renders. A mode that grew a seventh bullet, or a spelled number that came back as
+  // a digit, would otherwise fail on whichever mode a fixture happened to pick.
+  const cases: ReadonlyArray<readonly [string, PersonaTurn | undefined]> = [
+    ['no directive at all (the task-turn fallback)', undefined],
+    ...DRIFT_MODES.map(mode => [`mode ${mode}`, turnInMode(mode)] as const),
+  ];
+  for (const [name, personaTurn] of cases) {
+    const { behavior } = anchors(personaTurn);
+    const digits = behavior.match(/\d+/g) ?? [];
+    assert.deepEqual(digits, [], `${name}: a number came back into the drift anchor — state it in the JSON anchor instead`);
+    const bullets = behavior.split('\n').filter(l => l.startsWith('- '));
+    assert.equal(bullets.length, 6, `${name}: the anchor is the six lines that drift first, and stays that short`);
+  }
+
+  // …and the three modes really do say different things, or the mode input is decoration.
+  const rendered = DRIFT_MODES.map(mode => anchors(turnInMode(mode)).behavior);
+  assert.equal(new Set(rendered).size, DRIFT_MODES.length, 'each mode puts its own law at the edge');
+  assert.equal(anchors().behavior, anchors(turnInMode('task')).behavior, 'no directive reads as a task turn');
 });
 
 // ── the confidence bands, as taught vs as anchored ───────────────────────────
@@ -277,6 +315,54 @@ test("Fallfirm's two anchors state the same target, ceiling and count", () => {
     assert.ok(
       prompt.includes(`one to ${SPELLED[BUBBLE_LAW_MAX]} items`),
       `${lane}: its anchor should say "one to ${SPELLED[BUBBLE_LAW_MAX]} items" — it has drifted from BUBBLE_LAW_MAX`,
+    );
+  }
+});
+
+// ── one personality, four surfaces ───────────────────────────────────────────
+//
+// The sibling of the bubble-law checks above, and the same question asked about the PERSON rather
+// than about a number. Convo, the Composer relay, Fallfirm's outcome voice and Fallfirm's holding
+// voice each used to carry their own description of who is typing, and nobody ever read two of them
+// side by side — so the lane with the thinnest paragraph drifted toward the assistant default first
+// and nothing failed. The personality lives in one string now (persona/policy.ts), and each lane's
+// own Context.md keeps only how that lane works.
+//
+// What this test is worth depends entirely on running the REAL assembly on each surface. Asserting
+// that renderPersonaBlock returns the same bytes four times is a tautology and policy.test.ts already
+// pins it; the failure mode this catches is a lane whose prompt builder simply never renders it —
+// which is exactly what all four lanes looked like the day before this landed.
+
+/** The four surfaces, each built the way its own lane builds it. Convo's is the whole system prompt;
+ *  the other three are the `<prompt>` block their voicer hands the model. */
+function surfacePrompts(): ReadonlyArray<readonly [PersonaLane, string]> {
+  return [
+    ['convo', buildSystemPromptSections(undefined, '').system],
+    ['composer', buildComposerDynamic('', '## What just landed\nthe cedars ship thursday', '')],
+    ['fallfirm', buildOutcomeBrief({ kind: 'confirmed', summary: 'the reminder is set for 7pm' }, '')],
+    ['fallfirm_progress', buildProgressBrief({ kind: 'holding', request: 'cedar lead times' }, '')],
+  ];
+}
+
+test('the shared persona block reaches all four prompt surfaces, verbatim and once', () => {
+  for (const [lane, prompt] of surfacePrompts()) {
+    const block = renderPersonaBlock(lane);
+    assert.ok(block.length > 1000, `${lane}: the block is a real one, not an empty string`);
+    assert.equal(
+      prompt.split(block).length - 1, 1,
+      `${lane}: its prompt carries the shared persona block ${prompt.split(block).length - 1}×, not once. Zero means the lane never renders it and is back to whatever its own Context.md happens to say about her; two means it is stated twice and can be edited in one of them.`,
+    );
+  }
+});
+
+test('the four surfaces carry the SAME block — a lane-specific sentence is the drift', () => {
+  const [[, convo]] = surfacePrompts();
+  const block = renderPersonaBlock('convo');
+  assert.ok(convo.includes(block), 'the Convo prompt is the reference copy');
+  for (const [lane, prompt] of surfacePrompts()) {
+    assert.ok(
+      prompt.includes(block),
+      `${lane}: it renders a persona block, but not the SAME bytes Convo renders — four descriptions of one person are four people, which is what persona/policy.ts exists to stop`,
     );
   }
 });

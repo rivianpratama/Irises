@@ -10,6 +10,7 @@
 // phrases as before, now truly last-resort. Never throws.
 import { callLLM } from '../../llm/callLLM.js';
 import { loadContext } from '../loadContext.js';
+import { renderPersonaBlock } from '../../persona/policy.js';
 import { getConversation, StoredMessage } from '../../state/conversation.js';
 import { buildUserMemory } from '../../memory/wrappers.js';
 import { redactInternalTools } from '../guardrails.js';
@@ -92,8 +93,14 @@ export function buildProgressBrief(opts: VoiceInstantOpts, userCtx: string): str
   }
   lines.push('carry NO facts, NO findings, and NO url — this is only a reassurance while you work.');
 
+  // The shared persona block leads, exactly as it does in the outcome voicer (client.ts): Progress.md
+  // is the holding lane's FUNCTION file — where the look is, what a wait line may and may not carry —
+  // and the person doing the waiting is the same one who answered on the front line. Same bytes, all
+  // four surfaces (persona/policy.ts).
+  //
   // userCtx arrives pre-wrapped (buildUserMemory) — not re-wrapped in a data tag here.
   const block = [
+    renderPersonaBlock('fallfirm_progress'),
     userCtx,
     dataTag('progress', lines.join('\n')),
   ].filter(Boolean).join('\n\n');

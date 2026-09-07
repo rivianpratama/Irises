@@ -8,6 +8,7 @@
 // fallfirmFloor() — the only hardcoded user-facing copy left.
 import { callLLM } from '../../llm/callLLM.js';
 import { loadContext } from '../loadContext.js';
+import { renderPersonaBlock } from '../../persona/policy.js';
 import { getConversation, StoredMessage } from '../../state/conversation.js';
 import { buildUserMemory } from '../../memory/wrappers.js';
 import { redactInternalTools } from '../guardrails.js';
@@ -46,9 +47,16 @@ export function buildOutcomeBrief(o: Outcome, userMemory: string, timingLine?: s
   if (o.nextStep) lines.push(`A next move to leave in their hands — say it as something you can do or that's within reach, never as a "want me to?" question: ${o.nextStep}`);
   if (o.originalRequest) lines.push(`What they asked, for continuity: "${o.originalRequest}"`);
 
+  // The shared persona block leads: this lane's system prompt (fallfirm/Context.md) says how the
+  // outcome voice WORKS — the floor, the fidelity rules — and carries nothing about who is speaking,
+  // so who is speaking has to arrive here, ahead of the memory layer and ahead of the outcome. It is
+  // the same bytes Convo and the Composer render (persona/policy.ts), which is the whole point: a
+  // confirmation voiced by this lane must read as the same person who took the ask.
+  //
   // userMemory arrives pre-wrapped (buildUserMemory: guidance outside the tags, payloads inside)
   // — it is NOT re-wrapped in a data tag here.
   const block = [
+    renderPersonaBlock('fallfirm'),
     userMemory,
     dataTag('outcome', lines.join('\n')),
   ].filter(Boolean).join('\n\n');

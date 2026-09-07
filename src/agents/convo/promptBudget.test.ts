@@ -48,6 +48,7 @@ import type { ThreadCandidate } from '../../persona/threads.js';
 import type { ThreadTurn } from '../../memory/threadHarvest.js';
 import type { TurnFocusInput } from './turnFocus.js';
 import type { CraftTurnFacts } from './personaModules.js';
+import type { PersonaTurn } from './shared.js';
 import type { ActiveOps } from '../../state/opsCoordination.js';
 import type { CapabilitySummary } from '../ops/engineBackend.js';
 import type { MediumBundle } from '../../memory/mediumTerm.js';
@@ -98,6 +99,12 @@ interface TurnSpec {
    *  stack is rendered from, so the `craft_modules` ceiling is measured on the pages a live turn of
    *  this shape would really load. */
   craft?: CraftTurnFacts;
+  /** What the per-turn persona engines decided for this turn (convo/shared.ts PersonaTurn): the hook
+   *  directive, the sampled moments, the thesis. Absent on every fixture today, which reads as a task
+   *  turn with nothing earned — the mode the drift anchor falls back to. It is a named field rather
+   *  than a trailing `undefined` because the sections it feeds are measured ones: the fixture that
+   *  first carries a directive is the fixture that first measures them. */
+  personaTurn?: PersonaTurn;
 }
 
 type BuildArgs = Parameters<typeof buildSystemPromptSections>;
@@ -108,7 +115,7 @@ function argsFor(s: TurnSpec): BuildArgs {
   return [
     s.chatContext, s.contextBlock ?? '', s.activeOps ?? [], s.extraSection, s.tools, s.history,
     s.incomingText, 'UTC', s.affect, s.computed, s.capability ?? null, s.climate, s.thread,
-    s.introWeave, s.turnFocus, s.craft,
+    s.introWeave, s.turnFocus, s.craft, s.personaTurn,
   ];
 }
 

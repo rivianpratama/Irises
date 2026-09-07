@@ -1,9 +1,11 @@
 // The craft modules: the pages of Convo's persona that only some turns need.
 //
-// Context.md is the always-on core — who she is, how she writes, the laws that rank with the bubble
-// rule. Beside it, under craft/, sit nine pages that teach ONE move each: how to pick up a thread of
-// theirs, how to read a thread in send order, how to answer a burst, what to do with an attachment,
-// how to get to know somebody new, what an idle turn may carry.
+// Context.md is the always-on core — how the front line works, the laws that rank with the bubble
+// rule — with the shared persona block ahead of it saying who is typing (persona/policy.ts, the same
+// bytes all four prompt surfaces render). Beside it, under craft/, sit nine pages that teach ONE
+// move each: how to pick up a thread of theirs, how to read a thread in send order, how to answer a
+// burst, what to do with an attachment, how to get to know somebody new, what an idle turn may
+// carry.
 // Every one of them used to be a section of Context.md, which meant every one of them was in front
 // of the model on every turn — the burst tradecraft on a single message, nine thousand characters of
 // onboarding craft nine months into a relationship, the send-order read on a turn with no history to
@@ -27,6 +29,7 @@
 // reaches the model, fails there rather than in production.
 
 import { loadContext } from '../loadContext.js';
+import { renderPersonaBlock } from '../../persona/policy.js';
 import { SCHEDULE_AUTOMATION_TOOL } from './tools.js';
 
 /**
@@ -238,15 +241,32 @@ export function personaModulesEnabled(): boolean {
   return ['true', '1', 'on', 'yes'].includes(v);
 }
 
-/** Context.md plus every craft page, joined in canonical order: the whole persona corpus, which is
- *  the off path's cached prefix and the thing "exactly once" is now measured over (promptPolicy.ts —
- *  a rule anchored in a craft page is still a rule the model reads). */
+/**
+ * The shared persona block, then Context.md, then every craft page, joined in canonical order: the
+ * whole persona corpus, which is the off path's cached prefix and the thing "exactly once" is now
+ * measured over (promptPolicy.ts — a rule anchored in a craft page is still a rule the model reads).
+ *
+ * The block LEADS, and that position is the point. It is the one description of who is typing that
+ * all four prompt surfaces share (persona/policy.ts), so on this surface it has to sit where a
+ * reader — and the attention pattern — takes it as the frame everything after is read inside: the
+ * precedence list first, then identity, then the lane's own Context.md saying how THIS lane works.
+ * Put it after Context.md and the personality reads as an addendum to the function file, which is
+ * the ordering the whole module exists to undo.
+ */
 export function convoPersonaWithCraft(): string {
-  return [loadContext('convo'), ...CRAFT_MODULES.map(m => craftModuleText(m.id))].join('\n\n');
+  return [
+    renderPersonaBlock('convo'), loadContext('convo'), ...CRAFT_MODULES.map(m => craftModuleText(m.id)),
+  ].join('\n\n');
 }
 
-/** The persona head the assembler puts in front of `<prompt>`: the core alone with the flag on (the
- *  pages ride inside the block), the whole corpus with it off. */
+/** The persona head the assembler puts in front of `<prompt>`: the shared block plus the core alone
+ *  with the flag on (the pages ride inside the block), the whole corpus with it off.
+ *
+ *  The shared block is on BOTH paths, and it is inside the head on both — it is stable for the life
+ *  of the deployment, so it belongs in the first Anthropic cache breakpoint rather than in a dyn
+ *  section that would be cache-written on every turn (promptSections.ts promptCacheBreakpoints). */
 export function convoPersona(): string {
-  return personaModulesEnabled() ? loadContext('convo') : convoPersonaWithCraft();
+  return personaModulesEnabled()
+    ? `${renderPersonaBlock('convo')}\n\n${loadContext('convo')}`
+    : convoPersonaWithCraft();
 }

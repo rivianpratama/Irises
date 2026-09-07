@@ -134,7 +134,10 @@ const { system: PROMPT } = buildSystemPromptSections(
   MEMORY_STACK, [], undefined, [TOOL], HISTORY, TURN_TEXT, 'UTC',
   AFFECT, COMPUTED, { classes: ['web', 'code'], complete: true }, MOVED_CLIMATE,
   { offer: THEME, outcomeAsk: null }, undefined,
-  { text: TURN_TEXT, hits: [{ label: 'speed vs craft', source: 'thread' }] },
+  { text: TURN_TEXT, hits: [{ label: 'speed vs craft', source: 'thread' }] }, undefined,
+  // No per-turn persona struct: this census reads a TASK turn, which is the mode the drift anchor
+  // falls back to and the one nearly every live turn is (convo/shared.ts PersonaTurn).
+  undefined,
 );
 
 /** Plain substring occurrences — the same number a reader gets from a plain text search. */

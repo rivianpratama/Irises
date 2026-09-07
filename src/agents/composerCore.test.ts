@@ -8,7 +8,8 @@ process.env.TZ = 'UTC';
 
 import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { composeWithComposer, FORMAT_ANCHOR } from './composerCore.js';
+import { composeWithComposer, buildComposerDynamic, FORMAT_ANCHOR } from './composerCore.js';
+import { renderPersonaBlock } from '../persona/policy.js';
 import { addMessage } from '../db/repositories/conversations.js';
 import { saveAffectState } from '../db/repositories/affectState.js';
 import { coerceStatus, mergeStatus, type ComputedState } from '../persona/status.js';
@@ -166,8 +167,12 @@ test('a fresh carried affect state is injected — weather BEFORE the facts, anc
   assert.match(content, /hopeful/);                   // the carried mood rode in
   assert.ok(content.endsWith(FORMAT_ANCHOR), 'FORMAT_ANCHOR is still the very last thing');
 
-  // read-only: the composer is never asked to (re-)emit a status field, and keeps its own envelope
-  assert.doesNotMatch(content, /status/i);
+  // read-only: the composer is never asked to (re-)emit a status field, and keeps its own envelope.
+  // Read OUTSIDE the shared persona block: that block is the one personality all four surfaces render
+  // (persona/policy.ts) and it uses the word once, in the machinery-is-invisible line telling her
+  // never to NAME a status to anyone. Everything this lane is actually asked for is in the rest.
+  const askedFor = content.split(renderPersonaBlock('composer')).join('');
+  assert.doesNotMatch(askedFor, /status/i);
   assert.equal(captured[0].envelopeSchema, undefined); // default bubbles+confidence envelope, unchanged
   assert.equal(captured[0].jsonBubbles, true);
 });
@@ -245,4 +250,27 @@ test('a group identity never renders a register, even with a moved row stored un
   const g = groupHandle('web:a');
   await saveRelationshipClimate(g, MOVED);
   assert.doesNotMatch(await composedFor(g), /standing register/);
+});
+
+// --- the dynamic block's own order ---------------------------------------------------------------
+// buildComposerDynamic is the pure half of the assembly above: four strings in, one <prompt> body
+// out. It is exported because the four-surface verbatim test (convo/promptPolicy.test.ts) has to
+// assert the shared persona block against the REAL assembly rather than a re-typed copy — and once it
+// is a named function, the order it fixes is worth pinning here, where a reader of this lane looks.
+
+test('the dynamic block is persona, weather, facts, memory — in that order', () => {
+  const block = renderPersonaBlock('composer');
+  const dynamic = buildComposerDynamic('## Where you are right now\nweather', 'the deadline is march 14', 'how to address them: Sam');
+  assert.ok(dynamic.startsWith(block), 'who is typing comes before anything about how she feels');
+  const at = (needle: string) => dynamic.indexOf(needle);
+  assert.ok(at(block) < at('## Where you are right now'), 'persona before weather');
+  assert.ok(at('## Where you are right now') < at('the deadline is march 14'), 'weather before the facts');
+  assert.ok(at('the deadline is march 14') < at('how to address them: Sam'), 'the facts before the memory layer');
+  assert.equal(dynamic.split(block).length - 1, 1, 'the block is stated once');
+});
+
+test('an empty weather or memory layer drops out, and the block still leads', () => {
+  const block = renderPersonaBlock('composer');
+  const dynamic = buildComposerDynamic('', 'the deadline is march 14', '');
+  assert.equal(dynamic, `${block}\n\nthe deadline is march 14`, 'no blank joins, no empty sections');
 });

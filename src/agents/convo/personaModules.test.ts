@@ -9,8 +9,8 @@
 // are now files under convo/craft/, each behind a STRUCTURAL gate (a fact about this turn, never a
 // judgement about it), and this file holds two very different claims about them.
 //
-// The first is the CORPUS PIN: the persona plus every craft page, joined in canonical order, has a
-// length and a sha256 written down below. It replaces the pre-P4a relocation golden, which
+// The first is the CORPUS PIN: the shared persona block, the persona and every craft page, joined in
+// canonical order, has a length and a sha256 written down below. It replaces the pre-P4a relocation golden, which
 // reconstructed the pre-split Context.md out of these files and hashed it. That golden was not
 // broken by the commit that swapped it out — it is retired on the plan's instruction, because the
 // persona rewrite this branch is building rewrites the relocated prose itself, and a document none
@@ -29,9 +29,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  CRAFT_MODULES, renderCraftModules, craftModuleText, convoPersonaWithCraft, personaModulesEnabled,
-  type CraftModuleId, type ModuleGateInput,
+  CRAFT_MODULES, renderCraftModules, craftModuleText, convoPersona, convoPersonaWithCraft,
+  personaModulesEnabled, type CraftModuleId, type ModuleGateInput,
 } from './personaModules.js';
+import { renderPersonaBlock } from '../../persona/policy.js';
 import { buildSystemPromptSections, convoPersonaChars, type ChatContext } from './shared.js';
 import { chat } from './client.js';
 import { addShortTerm } from '../../db/repositories/memoryShort.js';
@@ -45,8 +46,8 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
 // ── the corpus pin ───────────────────────────────────────────────────────────
 
 /**
- * `convoPersonaWithCraft()` — Context.md plus every craft page, in registry order — as it stands
- * right now: its length, and the sha256 of exactly those bytes.
+ * `convoPersonaWithCraft()` — the shared persona block, Context.md, then every craft page in
+ * registry order — as it stands right now: its length, and the sha256 of exactly those bytes.
  *
  * This REPLACES the pre-P4a relocation golden, and the swap is scheduled, not forced. That golden
  * reconstructed the pre-split Context.md out of these files and pinned its sha256; the reconstruction
@@ -62,9 +63,15 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * other test, and an accidental edit — a stray page, a registry row that drops one, a rewrite dressed
  * as a tidy-up — moves these two numbers and nothing else in the suite. The prose commit re-measures
  * them, says what changed, and writes the new pair in here.
+ *
+ * Re-measured once since: +7,174 characters when the shared persona block took its place at the head
+ * of the corpus (persona/policy.ts renderPersonaBlock — 7,172 bytes, plus the `\n\n` join). Not a
+ * page and not an edit to one: the block is the personality all four prompt surfaces now render
+ * byte-identically, and this is the surface where it lands inside the cached persona head. Every
+ * other byte of the corpus is untouched, which is why exactly one addend moved.
  */
-const CORPUS_CHARS = 139_374;
-const CORPUS_SHA256 = 'd278752515a788d311afdb5af3a63acf0e96304831c8dd1d2061031474f00041';
+const CORPUS_CHARS = 146_548;
+const CORPUS_SHA256 = 'ac0b21f759438df0c405b494d7bc409ee6ff70ff1cd4974ac53810f23a5e5a09';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
@@ -83,14 +90,19 @@ test('the persona corpus is the bytes it was last measured at', () => {
 test('the off path puts the same bytes in the cached prefix instead of the block', () => {
   const corpus = convoPersonaWithCraft();
   const persona = loadContext('convo');
-  assert.ok(corpus.startsWith(`${persona}\n\n`), 'Context.md still leads the concatenation');
-  let expected = persona.length;
+  // The shared persona block leads, then Context.md, then the pages: who is typing frames the file
+  // that says how this lane works, never the other way round (personaModules.ts).
+  assert.ok(
+    corpus.startsWith(`${renderPersonaBlock('convo')}\n\n${persona}\n\n`),
+    'the shared persona block leads the concatenation, with Context.md behind it',
+  );
+  let expected = renderPersonaBlock('convo').length + 2 + persona.length;
   for (const m of CRAFT_MODULES) {
     const text = craftModuleText(m.id);
     assert.equal(corpus.split(text).length - 1, 1, `${m.id} appears exactly once in the concatenation`);
     expected += 2 + text.length; // the `\n\n` join, then the module
   }
-  assert.equal(corpus.length, expected, 'the concatenation is the persona plus every module and nothing else');
+  assert.equal(corpus.length, expected, 'the concatenation is the block, the persona and every module — and nothing else');
 });
 
 // ── the registry ─────────────────────────────────────────────────────────────
@@ -259,7 +271,7 @@ test('the craft section sits right after the tool docs, once, inside the block',
   // section, so the first occurrence of either is prose, not the wrapper.
   assert.ok(at > system.lastIndexOf('<prompt>\n'), 'it renders inside the per-turn block');
   assert.ok(at < system.lastIndexOf('\n</prompt>'), 'and before the block closes');
-  assert.ok(at > loadContext('convo').length, 'and NOT in the cached persona prefix');
+  assert.ok(at > convoPersona().length, 'and NOT in the cached persona prefix');
 
   assert.deepEqual(
     craft.filter(m => m.rendered).map(m => m.id), ['send_order', 'reminders'],
@@ -349,11 +361,13 @@ test('with the flag off the prose is back in the cached prefix and no section is
   assert.equal(personaModulesEnabled(), true, 'the flag is restored for the rest of the file');
 });
 
-test('on the default path the cached prefix is the shrunken Context.md alone', () => {
+test('on the default path the cached prefix is the shared block plus the shrunken Context.md', () => {
   const { system, personaChars } = buildSystemPromptSections(...args());
-  assert.equal(personaChars, loadContext('convo').length);
-  assert.equal(convoPersonaChars(), loadContext('convo').length);
-  assert.ok(system.startsWith(`${loadContext('convo')}\n\n`));
+  const head = `${renderPersonaBlock('convo')}\n\n${loadContext('convo')}`;
+  assert.equal(personaChars, head.length);
+  assert.equal(convoPersonaChars(), head.length);
+  assert.equal(convoPersona(), head, 'the head is the block and the core, joined the one way');
+  assert.ok(system.startsWith(`${head}\n\n`));
   assert.ok(personaChars < convoPersonaWithCraft().length, 'the pages really are outside the cached prefix');
 });
 

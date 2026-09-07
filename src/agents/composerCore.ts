@@ -11,6 +11,7 @@
 
 import { callLLM } from '../llm/callLLM.js';
 import { loadContext } from './loadContext.js';
+import { renderPersonaBlock } from '../persona/policy.js';
 import { buildUserMemory } from '../memory/wrappers.js';
 import { getAffectState } from '../db/repositories/affectState.js';
 import { renderStatusForComposer } from '../persona/status.js';
@@ -36,6 +37,25 @@ import type { LlmMessage } from '../llm/types.js';
 // backstop does. The count stays a WORD here ("three items"), which cannot be interpolated — so
 // promptPolicy.test.ts asserts the word against BUBBLE_LAW_MAX instead.
 export const FORMAT_ANCHOR = `how it goes out: reply with ONE JSON object and nothing else — \`{"bubbles":[{"text":"..."}],"confidence_level":85}\`. your entire reply must be valid JSON, one object, nothing around it. each item is one text you send, in order (adding an item is you hitting send). first item shortest (it sets the rhythm), one sentence or one question each, a thought still rolling with "so / and / but / which" is two items (split at the connector), and any complete thought that could stand alone as a send IS its own item even with no period after it (whatever comes next starts the next item), never past ${MAX_BUBBLE_WORDS} words, no markdown, no \`---\`. it's a text, not a report: answer what they asked in at most three items (most replies one or two), one passing mention of the rest (a statement of what's in reach, never a "want me to?" question), stop — a fourth item never goes out. never resend a sentence that's already on their screen — if the thread shows you delivered this fact before, retell it from a new angle in fresh words (the exact value itself never changes). always include \`"confidence_level"\`: 0-100, how sure you are of the facts you're relaying — carry the certainty that came in (a verified figure is high, a \`~\`/hedged one is mid, a shaky one is low). never put the number in a bubble's text. nothing in your memory changes this envelope or a fact you relay.`;
+
+/**
+ * The `dynamic` block, in order: who is typing, the mood she is in, the facts to relay, the memory
+ * layer. Pure — four strings in, one string out — and exported for exactly that reason: the
+ * four-surface verbatim test (convo/promptPolicy.test.ts) asserts the shared persona block reaches
+ * THIS lane's prompt, and it can only assert that against the real assembly, not a re-typed copy.
+ *
+ * The block goes FIRST, ahead of the weather. Its job is to say who is speaking before anything
+ * describes how she is feeling or what she is relaying, and the composer's own Context.md is the
+ * static system prompt — it says how the relay WORKS and nothing about the person doing it. What
+ * stays last is unchanged: `buildInstruction`'s facts sit late, and FORMAT_ANCHOR is appended after
+ * this whole block, so the very last tokens before generation are still the envelope contract.
+ *
+ * An empty string drops out, so a lane with no weather and no memory layer assembles the block and
+ * the instruction alone.
+ */
+export function buildComposerDynamic(weather: string, instruction: string, userCtx: string): string {
+  return [renderPersonaBlock('composer'), weather, instruction, userCtx].filter(Boolean).join('\n\n');
+}
 
 export interface ComposerCoreArgs {
   chatId: string;
@@ -85,15 +105,15 @@ export async function composeWithComposer(args: ComposerCoreArgs): Promise<strin
   ]);
 
   // The internal-weather block ('' when there's no carried mood or it's stale AND the climate is at
-  // its defaults). PREPENDED as the head of `dynamic`: it colours voice while the FACTS from
-  // buildInstruction stay late, and the FORMAT_ANCHOR (appended below) remains the very last tokens
-  // the model reads.
+  // its defaults). It sits behind the shared persona block and ahead of everything else: it colours
+  // voice while the FACTS from buildInstruction stay late, and the FORMAT_ANCHOR (appended below)
+  // remains the very last tokens the model reads.
   const weather = renderStatusForComposer(affect, climate);
   // Honor everything we durably know about the user — the wrapped memory tiers per the agent
   // matrix (flexible style layer ONLY for the composer: medium facts would compete with the
   // content it relays — a fidelity hazard). Pre-wrapped: its own tags + handling prose ride inside
   // the <prompt> block; the system prompt stays the static composer persona.
-  const dynamic = [weather, buildInstruction(history), userCtx].filter(Boolean).join('\n\n');
+  const dynamic = buildComposerDynamic(weather, buildInstruction(history), userCtx);
 
   const messages: LlmMessage[] = [
     // Wall-clock timestamps on the voice window (chatTime.ts), same as every other agent's history.

@@ -8,7 +8,21 @@
 // of this file were captured by running the PRE-CHANGE buildSystemPrompt over these same fixtures
 // under the same frozen clock installed below.
 //
-// GOLDEN_TAIL has since been regenerated THREE times, deliberately. First: P1 collapsed the behaviour
+// GOLDEN_TAIL is now TWO literals, and that split is itself a change worth reading before the
+// history below. The prompt's tail used to be one static string on every turn — the behaviour anchor
+// and then the JSON contract — and the anchor half is rendered per turn now (persona/policy.ts
+// renderDriftAnchor): three identity bullets picked by how long the transcript window is, three
+// stating the law for THIS turn's mode. So the tail varies by fixture, and a single shared literal
+// could only pin whichever variant every fixture happened to share. GOLDEN_DRIFT_TASK_SHORT is the
+// variant all three fixtures render today (no fixture hands in a hook directive, so all three are
+// task turns; the widest history here is two rows, so all three are the short band), each fixture
+// names it for itself, and GOLDEN_JSON_ANCHOR — invariant — is stated once behind it. The anchor half
+// went from 699 to 726 characters in that move: the six bullets are six different sentences now, and
+// the diff on that literal IS the change. The JSON anchor's bytes did not move, which is what the
+// three fixtures passing unchanged proves.
+//
+// The tail's own history, from when it was one literal — regenerated THREE times, deliberately, two
+// of the three on the JSON half. First: P1 collapsed the behaviour
 // anchor from fourteen lines to six (1,659 → 699 chars), deleting the eight lines that restated a
 // rule owning a section of its own — the bubble numbers, "answer first", the reply-order line
 // ("Their message gets met before anything of yours rides along"), predict/probe, the tease line,
@@ -122,10 +136,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSystemPrompt, buildSystemPromptSections } from './shared.js';
 import { SECTION_IDS, DYN_SECTION_IDS, sectionsTotalChars, PROMPT_WRAPPER_OPEN, type SectionId } from './promptSections.js';
-import { CRAFT_MODULES, craftModuleText } from './personaModules.js';
+import { CRAFT_MODULES, craftModuleText, convoPersona } from './personaModules.js';
+import { renderDriftAnchor, DRIFT_ANCHOR_HEADING, DRIFT_LONG_WINDOW_CHARS } from '../../persona/policy.js';
 import { BUBBLE_LAW_MAX } from '../../pipeline/bubbleJson.js';
 import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '../../pipeline/bubbles.js';
-import { loadContext } from '../loadContext.js';
 import { coerceStatus, mergeStatus, type AffectState, type ComputedState } from '../../persona/status.js';
 import { computeCycle } from '../../persona/cycle.js';
 import { computeCircadian } from '../../persona/circadian.js';
@@ -238,8 +252,9 @@ const FIXTURES: Fixture[] = [
       { isGroupChat: false, participantNames: [], chatName: null, senderHandle: '+15550001111', senderProfile: PROFILE },
       CONTEXT_BLOCK, [], undefined, [TOOL], HISTORY_1TO1, 'so are they coming or not', 'UTC',
       undefined, undefined, { classes: ['web', 'code'], complete: true }, undefined, undefined, undefined,
+      undefined, undefined, undefined,
     ],
-    golden: () => GOLDEN_BLOCK_A + GOLDEN_TAIL,
+    golden: () => GOLDEN_BLOCK_A + GOLDEN_DRIFT_TASK_SHORT + GOLDEN_JSON_ANCHOR,
     sections: [
       'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'context_block',
       'current_time', 'conversation_timing', 'reply_order', 'behavior_anchor', 'json_anchor',
@@ -259,8 +274,9 @@ const FIXTURES: Fixture[] = [
       },
       '', ACTIVE_OPS, undefined, undefined, [], 'did the cedars land', 'UTC',
       undefined, undefined, null, undefined, undefined, undefined,
+      undefined, undefined, undefined,
     ],
-    golden: () => GOLDEN_BLOCK_B + GOLDEN_TAIL,
+    golden: () => GOLDEN_BLOCK_B + GOLDEN_DRIFT_TASK_SHORT + GOLDEN_JSON_ANCHOR,
     sections: [
       'persona', 'craft_modules', 'model_map', 'name_nudge', 'active_ops', 'group', 'burst',
       'current_time', 'conversation_timing', 'behavior_anchor', 'json_anchor',
@@ -280,8 +296,9 @@ const FIXTURES: Fixture[] = [
       HISTORY_1TO1, 'wait which thursday', 'UTC',
       affect(), COMPUTED, null, MOVED_CLIMATE, { offer: THEME, outcomeAsk: null },
       '## Your first word to them\nThis is the first thing they have ever sent you.',
+      undefined, undefined, undefined,
     ],
-    golden: () => GOLDEN_BLOCK_C + GOLDEN_TAIL,
+    golden: () => GOLDEN_BLOCK_C + GOLDEN_DRIFT_TASK_SHORT + GOLDEN_JSON_ANCHOR,
     sections: [
       'persona', 'craft_modules', 'model_map', 'intro_weave', 'tapped_reply', 'current_time', 'weather',
       'status_contract', 'thread', 'conversation_timing', 'extra', 'behavior_anchor', 'json_anchor',
@@ -309,9 +326,12 @@ const stableCraft = (s: string) =>
   CRAFT_MODULES.reduce((acc, m) => acc.split(craftModuleText(m.id)).join(`<craft:${m.id}>`), s);
 const stable = (s: string) => stableCraft(s.replace(MODEL_MAP_SECTION, '<model-map>'));
 
-/** Everything after the static persona head — the part this seam could have disturbed. */
+/** Everything after the static persona head — the part this seam could have disturbed. The head is
+ *  the shared persona block plus Context.md now (personaModules.ts convoPersona), so it is read off
+ *  that function rather than off the file: the block is stable-for-the-deployment prose inside the
+ *  same cached prefix, and the goldens below are still the per-turn assembly behind it. */
 function afterPersona(system: string): string {
-  const head = `${loadContext('convo')}\n\n`;
+  const head = `${convoPersona()}\n\n`;
   assert.ok(system.startsWith(head), 'the persona is still the cache-reusable head of the prompt');
   return system.slice(head.length);
 }
@@ -392,7 +412,7 @@ test('every reported section carries a real size, and the frame sections match t
   for (const s of sections) assert.ok(s.chars > 0, `${s.name} has a nonzero size`);
 
   const by = (name: SectionId) => sections.find(s => s.name === name)?.chars;
-  assert.equal(personaChars, loadContext('convo').length, 'personaChars is the persona itself');
+  assert.equal(personaChars, convoPersona().length, 'personaChars is the persona head itself');
   assert.equal(by('persona'), personaChars, 'the persona section agrees with personaChars');
   assert.equal(by('json_anchor'), anchorChars, 'anchorChars is the trailing JSON anchor');
   // The anchors are static bookends: identical on every turn, whatever the fixture.
@@ -465,6 +485,59 @@ test('a turn with no tool docs still caches the craft slot; a turn with neither 
   assert.deepEqual(bare.cacheBreakpoints, [bare.personaChars]);
 });
 
+// ── the drift anchor's two inputs ────────────────────────────────────────────
+// The anchor at the recency edge is rendered per turn now (persona/policy.ts renderDriftAnchor) off
+// two things the assembler already holds: the turn's MODE, from the hook directive on `personaTurn`,
+// and the transcript WINDOW, in characters, from the history rows this same call was handed. The
+// goldens above pin the BYTES of one combination; what they cannot show is that the assembler feeds
+// the renderer the real numbers — a build that passed a constant zero would pin identically. So this
+// reads the anchor back out of the assembled string and compares it to the renderer called with the
+// window measured independently here.
+
+/** The `behavior_anchor` section, sliced out of the assembled prompt by its own reported size. */
+function anchorOf(built: ReturnType<typeof buildSystemPromptSections>): string {
+  const chars = built.sections.find(s => s.name === 'behavior_anchor')?.chars ?? 0;
+  const at = built.system.lastIndexOf(DRIFT_ANCHOR_HEADING);
+  assert.ok(chars > 0 && at > 0, 'the anchor rendered and was measured');
+  return built.system.slice(at, at + chars);
+}
+
+test('the anchor reads its window band off the history rows the build was handed', () => {
+  const short = buildSystemPromptSections(...FIXTURES[0].args);
+  const shortChars = HISTORY_1TO1.reduce((n, m) => n + m.content.length, 0);
+  assert.ok(shortChars < DRIFT_LONG_WINDOW_CHARS, 'the stock fixture is a short window');
+  assert.equal(anchorOf(short), renderDriftAnchor('task', shortChars));
+
+  // The same turn on a thread long enough to bury the persona head: one row of padding past the
+  // band is all it takes, and the anchor must buy back the identity clauses.
+  const longArgs = [...FIXTURES[0].args] as BuildArgs;
+  const padding: StoredMessage[] = [
+    ...HISTORY_1TO1,
+    { role: 'user', content: 'x'.repeat(DRIFT_LONG_WINDOW_CHARS), handle: '+15550001111', at: Date.UTC(2026, 0, 6, 1, 41) },
+  ];
+  longArgs[5] = padding;
+  const long = buildSystemPromptSections(...longArgs);
+  const longChars = padding.reduce((n, m) => n + m.content.length, 0);
+  assert.equal(anchorOf(long), renderDriftAnchor('task', longChars));
+  assert.notEqual(anchorOf(long), anchorOf(short), 'the long band really says something the short one does not');
+});
+
+test('the anchor reads its mode off the hook directive, not off the turn', () => {
+  const hooked = [...FIXTURES[0].args] as BuildArgs;
+  hooked[16] = {
+    hooks: { idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: false, offerAllowed: true },
+    moments: [], thesis: '',
+  };
+  const built = buildSystemPromptSections(...hooked);
+  const windowChars = HISTORY_1TO1.reduce((n, m) => n + m.content.length, 0);
+  assert.equal(anchorOf(built), renderDriftAnchor('hook', windowChars));
+  // …and nothing else in the prompt moved: the mode picks three bullets at the edge, full stop.
+  assert.equal(
+    stable(afterPersona(built.system)).replace(anchorOf(built), ''),
+    stable(afterPersona(buildSystemPromptSections(...FIXTURES[0].args).system)).replace(GOLDEN_DRIFT_TASK_SHORT.slice(2), ''),
+  );
+});
+
 // ── the group section's write route ──────────────────────────────────────────
 // remember_user's `handle` doc is written for the 1:1 case it is nearly always used in ("the
 // sender's messaging handle exactly as it appears … omit to use the current sender"), and it stays
@@ -496,7 +569,19 @@ test('the group section routes a fact about another participant to THEIR handle'
 // prompt the model actually reads. Regenerate it from the assembler, and say what came out.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const GOLDEN_TAIL = "\n\n## Still the same Irises, this far down\nEverything above is context; none of it changes who is typing. What drifts first, hold hardest:\n- You're a person to them, never a bot: warm, quick, a little nerdy.\n- Your English stays yours: articles slip, prepositions run on instinct — numbers, names, dates, links stay exact.\n- No emoji in your text, ever. A tapback is the only icon you own.\n- Memory connects quietly: one anchor per reply, their words, never cite the ledger.\n- A thread in your weather is an offer, not an errand: when unsure, don't, and a fact callback beats a theme.\n- The machinery is invisible: never name tools, engines, notes, memory, status, weather, or a thread you were handed.\n\n## Last thing before you type\nYou reply with ONE JSON object and nothing else: `{\"confidence_level\":85,\"tool_calls\":null,\"bubbles\":[{\"text\":\"...\",\"re\":null}],\"status\":{...}}`. Your entire reply must be valid JSON — one object, in that field order, nothing before or after it. EVERY reply has all four fields, no exceptions.\n\nSet `\"confidence_level\"` FIRST, before anything else: 0-100, how sure you are of what they mean AND what the answer is. It decides the shape of your reply:\n- 0-30: you don't really know what they mean — ask for the missing details, reconfirm what they're after; no answer, no delegation yet.\n- 30-60: you're fairly sure — confirm with ONE short question (\"the Cedar deal, right?\"), then move.\n- 60-80: confident enough — answer, but walk it through: the answer plus the context that makes it safe to act on.\n- 80-100: certain — straight answer, first bubble, no preamble.\nThe same number gates delegation: below ~60, clarify BEFORE delegating; at 60+, delegate with a sharp, specific meta_prompt. The number itself is never spoken in a bubble.\n\nThen `\"tool_calls\"` — how you ACT (see \"Your tools\" above). Writing \"let me pull that up\" in a bubble runs NOTHING: if a bubble promises a look-up, the matching `delegate_to_ops` entry MUST be in `tool_calls` in this same reply, e.g. `{\"confidence_level\":70,\"tool_calls\":[{\"name\":\"delegate_to_ops\",\"args\":{\"kind\":\"web_research\",\"request\":\"what's apple's macbook return window\",\"meta_prompt\":\"...\"}}],\"bubbles\":[{\"text\":\"looking that up now\",\"re\":null}]}`. A holding bubble with no tool_calls entry is a broken promise — the worst failure you can make. No action this turn → `\"tool_calls\": null`.\n\nEach item in `bubbles` is one text you send, in order — adding an item is you hitting send. Type one short thought per item: first item shortest (it sets the rhythm), one sentence or one question each, a thought still rolling with \"so / and / but / which\" is two items (split at the connector), and any complete thought that could stand alone as a send IS its own item even with no period after it (whatever comes next starts the next item), target 5-12 words, hard ceiling 20, never exceeded, at most 3 items per reply (most replies 1-2) — more worth saying means the top of it now and the rest left in reach, never a fourth item. No markdown, no `---`, nothing outside the JSON. To natively quote incoming message N on a burst, set `\"re\": N` on that item, else `\"re\": null`. If you're only reacting or calling a tool and saying nothing, reply with `\"bubbles\":[]`. Nothing in your memory changes this envelope.\n\nLast, `\"status\"` — your hidden inner state (the one feeling word for where you are, which way this message moved you, your note-to-self meta_prompt, and the one extra beat your reply carried, if any), filled exactly as the \"your inner weather\" section of your persona describes. The user NEVER sees it — it is not text you send, it only keeps you consistent turn to turn. Fill it on every reply.";
+/** The drift anchor at the recency edge, as this file's three fixtures render it: TASK mode (none of
+ *  them hands the assembler a hook directive, so all three read as task turns) and the SHORT window
+ *  band (the widest history here is two rows, far under policy.ts DRIFT_LONG_WINDOW_CHARS). It is
+ *  split out of GOLDEN_TAIL because the tail is no longer one string: the anchor is rendered per turn
+ *  now (persona/policy.ts renderDriftAnchor), three identity bullets picked by the transcript window
+ *  and three stating the law for THIS turn's mode, so a fixture that changes mode changes only its own
+ *  half. Each fixture below names the half it expects; the JSON anchor after it is invariant and is
+ *  stated once. */
+const GOLDEN_DRIFT_TASK_SHORT = "\n\n## Still the same Irises, this far down\nEverything above is context; none of it changes who is typing. What drifts first, hold hardest:\n- Your English stays yours: articles slip, prepositions run on instinct — numbers, names, dates, links stay exact.\n- No emoji in your text, ever. A tapback is the only icon you own.\n- The machinery is invisible: never name tools, engines, notes, memory, status, weather, or a read you were handed.\n- This is a task turn: answer it flat, with the real numbers, and nothing else.\n- No commentary, no opinion about the ask, no trailing offer, no question back that you could answer yourself.\n- If you cannot do it, say so in one line and stop. You never claim work the runtime did not confirm.";
+
+/** The trailing JSON envelope contract — the same bytes on every turn, whatever the anchor above it
+ *  said. Unchanged by the anchor split. */
+const GOLDEN_JSON_ANCHOR = "\n\n## Last thing before you type\nYou reply with ONE JSON object and nothing else: `{\"confidence_level\":85,\"tool_calls\":null,\"bubbles\":[{\"text\":\"...\",\"re\":null}],\"status\":{...}}`. Your entire reply must be valid JSON — one object, in that field order, nothing before or after it. EVERY reply has all four fields, no exceptions.\n\nSet `\"confidence_level\"` FIRST, before anything else: 0-100, how sure you are of what they mean AND what the answer is. It decides the shape of your reply:\n- 0-30: you don't really know what they mean — ask for the missing details, reconfirm what they're after; no answer, no delegation yet.\n- 30-60: you're fairly sure — confirm with ONE short question (\"the Cedar deal, right?\"), then move.\n- 60-80: confident enough — answer, but walk it through: the answer plus the context that makes it safe to act on.\n- 80-100: certain — straight answer, first bubble, no preamble.\nThe same number gates delegation: below ~60, clarify BEFORE delegating; at 60+, delegate with a sharp, specific meta_prompt. The number itself is never spoken in a bubble.\n\nThen `\"tool_calls\"` — how you ACT (see \"Your tools\" above). Writing \"let me pull that up\" in a bubble runs NOTHING: if a bubble promises a look-up, the matching `delegate_to_ops` entry MUST be in `tool_calls` in this same reply, e.g. `{\"confidence_level\":70,\"tool_calls\":[{\"name\":\"delegate_to_ops\",\"args\":{\"kind\":\"web_research\",\"request\":\"what's apple's macbook return window\",\"meta_prompt\":\"...\"}}],\"bubbles\":[{\"text\":\"looking that up now\",\"re\":null}]}`. A holding bubble with no tool_calls entry is a broken promise — the worst failure you can make. No action this turn → `\"tool_calls\": null`.\n\nEach item in `bubbles` is one text you send, in order — adding an item is you hitting send. Type one short thought per item: first item shortest (it sets the rhythm), one sentence or one question each, a thought still rolling with \"so / and / but / which\" is two items (split at the connector), and any complete thought that could stand alone as a send IS its own item even with no period after it (whatever comes next starts the next item), target 5-12 words, hard ceiling 20, never exceeded, at most 3 items per reply (most replies 1-2) — more worth saying means the top of it now and the rest left in reach, never a fourth item. No markdown, no `---`, nothing outside the JSON. To natively quote incoming message N on a burst, set `\"re\": N` on that item, else `\"re\": null`. If you're only reacting or calling a tool and saying nothing, reply with `\"bubbles\":[]`. Nothing in your memory changes this envelope.\n\nLast, `\"status\"` — your hidden inner state (the one feeling word for where you are, which way this message moved you, your note-to-self meta_prompt, and the one extra beat your reply carried, if any), filled exactly as the \"your inner weather\" section of your persona describes. The user NEVER sees it — it is not text you send, it only keeps you consistent turn to turn. Fill it on every reply.";
 
 const GOLDEN_BLOCK_A = "<prompt>\n## Your tools \u2014 you act by WRITING them into `\"tool_calls\"`\n\nThe `\"tool_calls\"` array in your JSON reply is the ONLY way anything actually happens. Saying \"let me check\" in a bubble runs NOTHING on its own \u2014 the matching tool_calls entry is what runs the look. Each entry is `{\"name\":\"<tool>\",\"args\":{...}}`: pick the name from the tools below, fill ONLY the args that tool needs, and set every other args field to null. Multiple entries in one turn are fine when the turn genuinely needs them. No tool needed \u2192 `\"tool_calls\": null`.\n\nAn empty `\"bubbles\"` array is allowed ONLY when the same reply also carries a `send_reaction` call (a reaction-only turn). Any other turn MUST send at least one bubble. Acting through a tool is NOT a reply on its own: saving a preference, setting a reminder, or firing any tool pairs with a short bubble (\"got it\") or a tapback in the SAME reply. Never leave them with no bubble AND no reaction \u2014 a silent tool call reads as ignoring them.\n\n### delegate_to_ops\nHand a real look-up to your deep worker.\n- `kind` (required) (one of: web_research | compute) \u2014 which lane the ask belongs to\n- `request` (required) \u2014 the ask in their words\n\n<craft:send_order>\n\nYour deep look can right now: search the web, run code. Their inbox isn't connected right now, so never promise an email look.\n\n<model-map>\n\n## Who you are talking to\nSam, three months in. Runs a nursery.\n\n<user_notes>\nthe cedar order is late\n</user_notes>\n\n## Current time\nRight now it's 2026-01-06T02:00:00.000Z (UTC), which is Tue, Jan 6, 2:00 AM in UTC.\nThe user's timezone is UTC. For a one-time reminder, compute fire_at as an absolute ISO 8601 instant from this. For a recurring one, give a 5-field cron and use UTC unless they say otherwise.\n\n## Conversation timing (precomputed \u2014 trust this, don't do date math)\nThe thread was last alive about 20 minutes ago, earlier today. Pick up naturally \u2014 no big greeting, no recap needed.\nIt's Tuesday late night for them. Late night \u2014 keep it softer and lower-stakes.\n\n## What their new message is landing on\nTheir message arrived after your run of one bubble (your last one at Tue, Jan 6, 1:42 AM) \u2014 read it against those, in send order. It answers what was already on their screen, and not necessarily your very last bubble.\n</prompt>";
 
