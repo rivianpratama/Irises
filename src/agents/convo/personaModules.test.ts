@@ -76,9 +76,12 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * other byte held.
  *   · Context.md −23,926 (100,746 → 76,820). It is the FRONT-LINE FUNCTION file now: "Who Irises is",
  *     "Adaptive style" and "How you address them" are deleted outright (the block carries all three),
- *     the Lowndes playbook is replaced by twelve first-principle moves, "run the stack" is rebuilt on
+ *     the Lowndes playbook is replaced by ELEVEN first-principle moves, "run the stack" is rebuilt on
  *     the task/idle split, "How you write" keeps only the floor state, and the inner-weather section
- *     is re-authored around a block that instructs instead of describing.
+ *     is re-authored around a block that instructs instead of describing. The opening ABSOLUTE RULE
+ *     blockquote went with the head replacement too — the one deletion here that nothing in
+ *     Context.md restates — and the envelope contract now stands ONCE, in shared.ts's `json_anchor`
+ *     at the recency edge: all four fields, in that order, every reply, no exceptions.
  *   · craft/onboarding.md −3,151 and craft/threading.md −1,373: both rewritten in the new register
  *     rather than trimmed, and both lighter for it — the threading page's ladder, materials and modes
  *     are intact, and the first-contact page trades charm framing for one flat read.

@@ -201,16 +201,19 @@ function innerWeatherSection(): string {
  * silent: a ceiling that is re-measured and holds is a different fact from one nobody looked at.
  *
  * The prose commit is the phase the note above said this section was waiting for, and it measures
- * **2,431**, from 2,680. Not a paragraph deleted, though: five paragraphs went in and six came out.
- * What changed is what they SAY. The block she is handed is described as instructions she obeys
- * rather than a temperature she interprets ("You do not interpret it; you obey it"), because that is
- * what it is now (persona/affectCompiler.ts); the list of what it contains names the compiled things
- * — the one feeling word and what it does to this reply, the bubble cap, the sleep line, the
- * self-note — instead of the body-clock and cycle paragraphs the compiler deleted at their source;
- * the standing-register paragraph drops "how much polite runway"; and the thread-offer paragraph is
- * now one sentence pointing at the hooks section, because a thread is a hook and a hook lives on an
- * idle turn. The three pins this file holds are all still here and all still doing their job — the
- * leak guard verbatim, "where you are right now" naming the block, the contract pointer — and so is
+ * **2,431**, from 2,680. Not a paragraph deleted, though: six body paragraphs went in and six came
+ * out, five of them re-authored and "**The `status` you report.**" byte-identical across the old
+ * file, the spec's fence and the new file. What changed is what they SAY. The block she is handed is
+ * described as instructions she obeys rather than a temperature she interprets ("You do not interpret
+ * it; you obey it"), because that is what it is now (persona/affectCompiler.ts); the list of what it
+ * contains names the compiled things — the one feeling word and what it does to this reply, the
+ * bubble cap, the sleep line, the self-note — instead of the body-clock and cycle paragraphs the
+ * compiler deleted at their source; the standing-register paragraph drops "how much polite runway";
+ * and the thread-offer paragraph is now one sentence pointing at the hooks section, because a thread
+ * is a hook and a hook lives on an idle turn.
+ *
+ * The three pins this file holds are all still here and all still doing their job — the leak guard
+ * verbatim, "where you are right now" naming the block, the contract pointer — and so is
  * promptPolicy.test.ts's adjacency pin (`epistemic_trigger` within 80 characters of the concede
  * sentence). The ceiling sits +0.8% over the measurement, inside the same band as every other line.
  */

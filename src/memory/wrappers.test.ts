@@ -432,7 +432,8 @@ test('the discovery scaffold is the slot list and its two notes — never a craf
 });
 
 /**
- * The onboarding page as ONE FLOW — every run of whitespace collapsed to a single space.
+ * The onboarding page as ONE FLOW — each single newline INSIDE a paragraph folded to a space, and
+ * paragraph breaks left standing.
  *
  * The prose commit rewrote the page hard-wrapped at a hundred columns, so a pinned phrase can now
  * straddle a line break: "A life fact is worth" ends one line and "exactly as much to you" opens the
@@ -440,10 +441,15 @@ test('the discovery scaffold is the slot list and its two notes — never a craf
  * a space, and so does the model reading it, so a raw-substring pin fails on the wrapping rather than
  * on the prose — which is the opposite of what these pins are for. Flowing the file first asks the
  * question the pins mean to ask: is the sentence still there.
+ *
+ * Which is exactly why this folds SINGLE newlines and not every run of whitespace. Collapsing blank
+ * lines too would let a pin be satisfied by words that span two unrelated paragraphs — a phrase pin
+ * that matches across a paragraph boundary is not evidence the page still says the phrase, and
+ * discriminating that is the whole job of these pins.
  */
 function onboardingFlowed(): string {
   const md = readFileSync(new URL('../agents/convo/craft/onboarding.md', import.meta.url), 'utf8');
-  return md.replace(/\s+/g, ' ');
+  return md.replace(/[ \t]*\n(?!\n)[ \t]*/g, ' ');
 }
 
 test('the coaching that left the scaffold is intact in the onboarding craft module', () => {
