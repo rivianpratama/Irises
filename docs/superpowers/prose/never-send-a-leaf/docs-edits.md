@@ -106,3 +106,7 @@ Architecture: an execution layer (the engine) that never speaks, and a voice lay
 ## `package.json` L4: `"Irises — a private, general, casual do-anything assistant.` → `"Irises — a private, deadpan do-anything companion with one read on you.` (rest unchanged).
 
 ## `scripts/convergence/multiturn-threading-test.md` L310: `- The reply is warm and follows THEIR answer. She does not produce her next stored question.` → `- The reply follows THEIR answer, flat, with no praise and no re-ask. She does not produce her next stored question.`
+
+## scripts/convergence/multiturn-threading-test.md — addendum (2026-09-07)
+
+- **L398 (the loop-callback PASS rubric):** REPLACE the two-line bullet beginning `- First bubble places the thing in **their** words and is not question-shaped. The question is the` (through `kind that ends on a question.`) with: `- First bubble places the thing in **their** words and is not question-shaped. The ask comes once, flat, as the last bubble, and it ends the message. This is the only proactive kind that ends on a question.` (matches `proactive.ts` and composer `Context.md` after the prose commit).

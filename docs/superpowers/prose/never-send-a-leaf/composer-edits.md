@@ -141,3 +141,7 @@ is warmth and none of it is performed:
 - `proactive.test.ts` L26-33 / L210-217 read the two mark phrases from this file — untouched.
 - `promptPolicy.test.ts` L255-282 reads `FORMAT_ANCHOR` (code) — see strings.md.
 - `composerParaphrase.test.ts` fixtures are voice-agnostic — no change.
+
+## Accepted deviation (2026-09-07)
+
+The implementer relabelled the first-ever-text RIGHT example `RIGHT (intro line, one flat judgment, then stop):` so the label matches the rule above it. Accepted by Fable; see supervisor-corrections.md.
