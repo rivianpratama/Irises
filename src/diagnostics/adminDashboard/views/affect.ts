@@ -1,8 +1,13 @@
 // Inner state: read-only per-user view of what colours a reply without ever being said — the mood
 // she carried into the last turn and the trail behind it, the weeks-scale climate dials inside their
-// code-owned bounds, the thread inventory as counts and labels, and the last twenty `turn:trace`
-// receipts (section sizes, the transcript's share of the prompt, every gate's verdict, the affect
-// drift). One picker, four panels, no writes.
+// code-owned bounds, her one read on this person, the moments a callback is sampled from, the hook
+// rhythm that decides whether either is reached for, the thread inventory as counts and labels, and
+// the last twenty `turn:trace` receipts (section sizes, the transcript's share of the prompt, every
+// gate's verdict, the affect drift). One picker, nine panels, no writes.
+//
+// The thesis panel prints its text and the moments panel does not, and that asymmetry is the
+// server's decision, documented where it is made (api/affect.ts `ThesisSummary`, `MomentRow`):
+// what arrives here is already the list of what an operator is shown.
 //
 // The shaping is all server-side and tested (api/affect.ts); this file only renders what that hands
 // back. Client JS carries no backticks and no ${ — views.test.ts scans for both.
@@ -105,6 +110,60 @@ export const AFFECT_JS = `
       + '<span class="gauges">the bar spans the dial\\u2019s own floor and ceiling; the notch is its default</span></div>';
   }
 
+  function thesisPanel(d){
+    var t = d.thesis||{text:'',version:0,updatedAt:0,revisions:[]};
+    // No document at all is the normal state of somebody she met this week. An EMPTY document at
+    // version three is a different fact — a /forget wipe, or a rewrite that has not landed since —
+    // and the revision list beside it says which.
+    if (!t.text && !t.version) return '<div class="empty">no read on them yet \\u2014 the weekly rewrite wants a week of their lines first</div>';
+    return '<div class="kv"><span>version <b>'+t.version+'</b></span>'
+      + '<span>written '+(t.updatedAt ? M.esc(M.ago(t.updatedAt))+' ago' : 'never')+'</span>'
+      + '<span class="gauges">internal \\u2014 rendered into her prompt, never recited to them</span></div>'
+      + (t.text
+          ? '<div class="prewrap">'+M.esc(t.text)+'</div>'
+          : '<div class="empty">the read is empty</div>')
+      + ((t.revisions||[]).length
+          ? '<div class="kv">' + t.revisions.map(function(r){
+              return '<span>v'+r.version+' <b>'+M.esc(r.writtenBy)+'</b> '+M.esc(M.ago(r.createdAt))+' ago</span>';
+            }).join('') + '</div>'
+          : '');
+  }
+
+  function momentsPanel(d){
+    var rows = d.moments||[];
+    // The pointer, not the prose: the server hands over tags and clocks on purpose (api/affect.ts
+    // MomentRow), so the one line an operator needs is where the text actually is.
+    var hint = '<div class="kv"><span class="gauges">tags and clocks only \\u2014 the line she kept is in '
+      + 'memories/&lt;handle&gt;/MOMENTS.md and is not re-published here</span></div>';
+    if (!rows.length) return '<div class="empty">nothing kept about them yet</div>' + hint;
+    return '<div class="tablewrap"><table class="t"><thead><tr>'
+      + '<th>tag</th><th>age</th><th>folded</th><th>offered</th><th>last offered</th>'
+      + '</tr></thead><tbody>' + rows.map(function(m){
+        return '<tr><td><span class="chip" style="color:var(--acc);border-color:var(--acc)">'+M.esc(m.tag)+'</span></td>'
+          + '<td>'+m.ageDays+'d</td><td>'+m.count+'</td><td>'+m.offers+'</td>'
+          + '<td>'+(m.lastOfferedAt ? M.esc(M.ago(m.lastOfferedAt))+' ago' : '<span class="gauges">never</span>')+'</td></tr>';
+      }).join('') + '</tbody></table></div>' + hint;
+  }
+
+  // One beat, as a chip. Muted for 'none' — a reply that carried nothing is a beat the ledger
+  // remembers, and it is what breaks a run, so it is shown rather than left blank.
+  function hookChip(k){
+    var col = k==='none' ? 'var(--mut)' : 'var(--acc)';
+    return '<span class="chip" style="color:'+col+';border-color:'+col+'">'+M.esc(k)+'</span>';
+  }
+
+  function rhythmPanel(d){
+    var r = d.rhythm||{lastKinds:[],idleStreak:0,idleSinceMoment:0,updatedAt:0};
+    var kinds = (r.lastKinds||[]).length
+      ? r.lastKinds.map(hookChip).join('')
+      : '<span class="gauges">\\u2014</span>';
+    return '<div class="kv"><span>last beats '+kinds+'</span>'
+      + '<span>idle turns in a row <b>'+r.idleStreak+'</b></span>'
+      + '<span>idle since a moment <b>'+r.idleSinceMoment+'</b></span>'
+      + '<span>ledger '+(r.updatedAt ? M.esc(M.ago(r.updatedAt))+' ago' : 'never written')+'</span></div>'
+      + '<div class="kv"><span class="gauges">oldest beat first; three hooked beats in a row and the next idle turn is forced quiet</span></div>';
+  }
+
   function countsHtml(c){
     var keys = Object.keys(c.byStatus||{});
     return '<b>'+c.total+'</b>' + (keys.length ? ' \\u00B7 ' + keys.map(function(k){
@@ -193,6 +252,9 @@ export const AFFECT_JS = `
           + '<td>'+gatesSummary(r)+'</td>'
           + '<td>'+shiftChip(r.shift)+driftSummary(r)+'</td>'
           + '<td>'+(r.silent ? '<span class="pill warn">silent</span>' : (r.bubbles.count==null?'\\u2014':r.bubbles.count+' bubbles'))
+          // Absent when the rhythm engine never ran on the turn, which is the negative control's
+          // reading and deliberately not the same cell as a flat reply's 'none'.
+          + (r.hook_kind==null ? '' : ' '+hookChip(r.hook_kind))
           + (r.bubbles.overLaw ? ' <span class="pill err">over law '+r.bubbles.overLaw+'</span>' : '')
           + (r.wasEnvelope ? '' : ' <span class="pill err">not envelope</span>')
           + (r.affectSource==='defaulted' ? ' <span class="pill warn">status defaulted</span>' : '')
@@ -209,6 +271,9 @@ export const AFFECT_JS = `
     el.innerHTML = '<h3 class="sh">Right now</h3>' + moodPanel(d)
       + '<h3 class="sh">Mood trail (last '+(d.trail||[]).length+')</h3>' + trailPanel(d)
       + '<h3 class="sh">Relationship climate</h3>' + dialsPanel(d)
+      + '<h3 class="sh">Her read on them</h3>' + thesisPanel(d)
+      + '<h3 class="sh">Moments kept ('+(d.moments||[]).length+')</h3>' + momentsPanel(d)
+      + '<h3 class="sh">Hook rhythm</h3>' + rhythmPanel(d)
       + '<h3 class="sh">Threads</h3>' + threadsPanel(d)
       + '<h3 class="sh">Waiting on their yes</h3>' + approvalsPanel(d)
       + '<h3 class="sh">Last turns, as the receipt saw them</h3>' + tracesPanel(d);

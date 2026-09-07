@@ -86,6 +86,18 @@ export interface ThesisDoc {
    *  document last moved should not have to list revisions to find out. */
   writtenBy: string;
   /**
+   * When THIS version was written (epoch ms), off the header's own `updated` stamp — the last write
+   * by any of the three writers, which is not the same clock as `lastRewriteAt` below.
+   *
+   * Parsed either way (the header carries it and the version check needs the same line), so it is
+   * free here; nothing on the reply path reads it. It exists for the operator surface
+   * (`diagnostics/adminDashboard/api/affect.ts`), where "the read is four days old" and "a note was
+   * appended last night" are two different answers to why the document says what it says, and the
+   * alternative was deriving it from the newest revision's stamp — the same bytes, one directory
+   * listing away, and a number that can silently disagree once a revision file goes missing.
+   */
+  updatedAt: number;
+  /**
    * When the READ was last rewritten (epoch ms), off the header's own `rewritten` stamp — the
    * cooldown clock the weekly pass gates on, and the cut the weekly window ratchets from
    * (`buildThesisWindow`'s `lastRewriteAt`).
@@ -238,6 +250,7 @@ async function readHead(handle: string): Promise<HeadRead> {
         docMd: parsed.docMd,
         version: parsed.version,
         writtenBy: parsed.writtenBy,
+        updatedAt: parsed.createdAt,
         lastRewriteAt: parsed.rewrittenAt,
       },
     };

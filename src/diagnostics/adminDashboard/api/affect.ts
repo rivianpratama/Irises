@@ -3,6 +3,9 @@ import { getPreference } from '../../../db/repositories/memory.js';
 import { getAffectState } from '../../../db/repositories/affectState.js';
 import { getRelationshipClimate } from '../../../db/repositories/relationshipClimate.js';
 import { getThreadInventory } from '../../../db/repositories/threadInventory.js';
+import { getThesis, listThesisRevisions, type ThesisDoc, type ThesisRevision } from '../../../db/repositories/thesis.js';
+import { readMoments } from '../../../db/repositories/moments.js';
+import { getHookState } from '../../../db/repositories/hookState.js';
 import { listPendingApprovals, type OpsTaskRow } from '../../../db/repositories/opsTasks.js';
 import { listFullTurnHistory } from '../../../db/repositories/diagnosticTurnHistory.js';
 import { getTurns, type Turn } from '../../turns.js';
@@ -12,25 +15,30 @@ import {
   DIALS, CLIMATE_WINDOW_CAP, spentInWindow, type DialKey, type RelationshipClimate,
 } from '../../../persona/climate.js';
 import type { ThreadInventory } from '../../../persona/threads.js';
+import type { MomentEntry, MomentTag } from '../../../persona/moments.js';
+import { defaultHookState, type HookKind, type HookState } from '../../../persona/hooks.js';
 import { MIN_TRANSCRIPT_SHARE } from '../../../agents/convo/promptPolicy.js';
 import { PENDING_ASK_TTL_MS } from '../../../memory/dossier.js';
 import { authed } from '../auth.js';
 import { cached } from '../cache.js';
 
 // Inner state: read-only per-user view of the state that colours a reply without ever being said —
-// the affect trail, the climate dials, the thread inventory, and the last twenty `turn:trace`
-// receipts. Four stores, no writes, no LLM call, and nothing computed that the turn did not already
-// decide: everything below is the persisted record re-shaped for reading.
+// the affect trail, the climate dials, the thread inventory, her one read on this person and the
+// moments and hook rhythm that read is made of, and the last twenty `turn:trace` receipts. Seven
+// stores, no writes, no LLM call, and nothing computed that the turn did not already decide:
+// everything below is the persisted record re-shaped for reading.
 //
 // The trace rows come out of the persisted turn payloads (diagnostic_turn_history, 30 days) merged
 // with whatever is still live in the ring, which is the same two-source read the Turn cost view
 // does. `turn:trace` carries NAMES AND NUMBERS ONLY by design (diagnostics/turnTrace.ts), so this
 // endpoint can hand the whole receipt to the client without a leak guard of its own — and the thread
 // summary below keeps that property for the one store that does hold model-authored prose, by
-// counting statuses and passing labels rather than notes.
+// counting statuses and passing labels rather than notes. The moment rows keep it too, for the store
+// where it matters most (see `MomentRow`). The THESIS text is the one deliberate exception, and the
+// reason is in `ThesisSummary`: a read the operator cannot read is a read nobody can check.
 //
 // Every shaper is pure with its clock injected; affect.test.ts covers them. The route is the usual
-// auth + cache wrapper around four reads.
+// auth + cache wrapper around seven reads.
 
 /** How many receipts the panel shows. Twenty is what the persisted history keeps per key anyway. */
 export const TRACE_ROWS = 20;
@@ -191,6 +199,138 @@ export function threadSummary(inv: ThreadInventory): ThreadSummary {
   };
 }
 
+// ── her read on them ─────────────────────────────────────────────────────────
+
+/** One accepted version of THESIS.md, as the panel lists it: WHEN and BY WHICH WRITER, never the
+ *  text it carried. The head document's text is below and is the read that is live; ten superseded
+ *  copies of it on one payload would be a diary of everything she has ever thought about somebody,
+ *  which is not what "the operator can check her read" needs. `db/repositories/thesis.ts` still has
+ *  the bytes for anyone who wants a specific version. */
+export interface ThesisRevisionRow {
+  version: number;
+  /** `'weekly'` (the read itself was rewritten), `'evidence'` (a nightly note appended), `'forget'`
+   *  (a wipe) — the answer to why the document moved, without opening it. */
+  writtenBy: string;
+  createdAt: number;
+}
+
+/**
+ * Her one read on this person, as the operator reads it.
+ *
+ * The TEXT is here, and it is the one place in this codebase that is true of: the thesis is rendered
+ * into her prompt under an INTERNAL heading she may never recite, and the dashboard is the operator
+ * surface for exactly the material the user is not shown. An unreadable read is a read nobody can
+ * check, and a read nobody can check is the failure this panel exists to prevent — so `text` is the
+ * document verbatim, evidence tail and all.
+ *
+ * `updatedAt` is the head's own `updated=` stamp and `version` its own version; neither is derived
+ * from the revision list, so a missing revision file cannot make this panel disagree with the
+ * document it is describing.
+ */
+export interface ThesisSummary {
+  /** The document verbatim (the read plus its `## evidence` tail), or `''` for a person she has no
+   *  read on yet — which is the normal state of somebody she met this week. */
+  text: string;
+  version: number;
+  updatedAt: number;
+  revisions: ThesisRevisionRow[];
+}
+
+/** How many revisions the panel lists. The same ten the Memory view lists for the long tier. */
+export const THESIS_REVISION_ROWS = 10;
+
+/** The head document and its revision list, shaped for reading. Pure. */
+export function thesisSummary(
+  doc: ThesisDoc | null,
+  revisions: readonly ThesisRevision[],
+): ThesisSummary {
+  return {
+    text: doc?.docMd ?? '',
+    version: doc?.version ?? 0,
+    updatedAt: doc?.updatedAt ?? 0,
+    revisions: revisions.map(r => ({
+      version: r.version,
+      writtenBy: r.writtenBy,
+      createdAt: r.createdAt,
+    })),
+  };
+}
+
+// ── the moments ──────────────────────────────────────────────────────────────
+
+/** One kept episode as the panel lists it: its TAG and its clocks, never her line about it.
+ *
+ *  The prose is deliberately absent, and this is the one store where that is more than the thread
+ *  summary's tidiness rule. A moment is something the person would rather she had not noticed
+ *  (`persona/moments.ts`), it is written in her voice about them, and it archives nothing — so an
+ *  operator page that printed forty of them would be a roast diary rendered on a dashboard. What
+ *  this panel answers is whether the machinery is alive and fair: how many she is holding, how old
+ *  they are, which ones have folded, and which are being reached for. The text is on disk in
+ *  `memories/<handle>/MOMENTS.md` for anyone who needs to read one. */
+export interface MomentRow {
+  tag: MomentTag;
+  /** Whole days since the episode (its `at`, which a fold resets to the fold). Days, not a stamp:
+   *  the prune reads sixty of them, so days are the unit the row is judged in. */
+  ageDays: number;
+  /** How many episodes have folded into this one. One means it has happened once. */
+  count: number;
+  /** How many turns it has been handed to. */
+  offers: number;
+  /** When it was last handed to a turn, or `0` for never — the stamp the prune actually reads. */
+  lastOfferedAt: number;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** The kept moments, newest episode first, as tags and clocks. Pure. */
+export function momentRows(entries: readonly MomentEntry[], nowMs: number): MomentRow[] {
+  return entries
+    .map(e => ({
+      tag: e.tag,
+      ageDays: Math.max(0, Math.floor((nowMs - e.at) / DAY_MS)),
+      count: e.count,
+      offers: e.offered,
+      lastOfferedAt: e.lastOfferedAt,
+      at: e.at,
+    }))
+    .sort((a, b) => b.at - a.at)
+    .map(({ at: _at, ...row }) => row);
+}
+
+// ── the hook rhythm ──────────────────────────────────────────────────────────
+
+/**
+ * The rhythm ledger for this chat (`persona/hooks.ts`), as the panel reads it.
+ *
+ * The same four fields the store holds, copied rather than passed through, and that copy is the
+ * whole job: `HookState` is read before every turn and written after it, so it is the field most
+ * likely to grow — and a stored ledger that grew a fifth field would otherwise appear on an
+ * operator payload the day it was added, unlabelled and undocumented. This interface is the list of
+ * what an operator is shown, exactly as `ThreadSummary` is the list of what a thread inventory
+ * shows.
+ *
+ * Nothing is re-derived. The kill switch is not a field here because it is not a stored fact: it is
+ * `lastKinds` being a full window with no `none` in it, which is what the panel prints.
+ */
+export interface RhythmSummary {
+  /** The last kinds she carried, oldest first — the window the kill switch reads. */
+  lastKinds: HookKind[];
+  idleStreak: number;
+  idleSinceMoment: number;
+  /** When the ledger last moved, or `0` for a chat that has never taken a turn. */
+  updatedAt: number;
+}
+
+/** The stored ledger, shaped for reading. Pure. */
+export function rhythmSummary(state: HookState): RhythmSummary {
+  return {
+    lastKinds: [...state.lastKinds],
+    idleStreak: state.idleStreak,
+    idleSinceMoment: state.idleSinceMoment,
+    updatedAt: state.updatedAt,
+  };
+}
+
 // ── the turn:trace rows ──────────────────────────────────────────────────────
 
 /** One receipt, flattened for a table row. Every field is read off the recorded detail; nothing is
@@ -208,6 +348,17 @@ export interface TraceRow {
   sections: Array<{ name: string; chars: number }>;
   /** What threading decided, by its own reason bucket, or null on a turn where it never ran. */
   threads: string | null;
+  /**
+   * The one extra beat the reply reported carrying (`persona/status.ts`'s envelope field, recorded
+   * on the trace as `outcome.hook.emitted`): a hook word, or `'none'` for a reply that carried
+   * nothing.
+   *
+   * `null` is the THIRD reading and the one worth having: the rhythm engine never ran on this turn
+   * — the flag is off, or the caller was not Convo — which is not the same fact as a flat reply. The
+   * negative control in the plan's Verification section is exactly this distinction, and a row that
+   * printed `none` for both would make it unreadable.
+   */
+  hook_kind: string | null;
   memory: Array<{ block: string; verdict: string; reason: string; dropped: number | null }>;
   hits: string[];
   routingGate: string | null;
@@ -290,6 +441,7 @@ function rowFor(turnId: string, at: number, detail: unknown): TraceRow | null {
   const outcome = asRecord(d?.outcome);
   const bubbles = asRecord(d?.bubbles);
   const threads = asRecord(asRecord(gates?.threads));
+  const hook = asRecord(outcome?.hook);
   return {
     turnId,
     at,
@@ -302,6 +454,7 @@ function rowFor(turnId: string, at: number, detail: unknown): TraceRow | null {
     cacheBreakpoints: asNum(prompt.cacheBreakpoints),
     sections: sectionsOf(prompt.sections),
     threads: threads ? asStr(threads.reason) : null,
+    hook_kind: hook ? asStr(hook.emitted) : null,
     memory: memoryOf(gates),
     hits: asStrs(d?.hits),
     routingGate: outcome ? asStr(outcome.routingGate) : null,
@@ -398,12 +551,21 @@ export function registerAffectRoutes(router: Router): void {
         // door the thread pings reach them through (db/repositories/memory.ts ensureChatId).
         const chatId = (await getPreference<string>(handle, 'chat_id'))?.trim() || '';
         const key = chatId || `handle:${handle}`;
-        const [state, climate, inventory, turns] = await Promise.all([
-          chatId ? getAffectState(chatId) : Promise.resolve({ moodHistory: [] } as AffectState),
-          getRelationshipClimate(handle),
-          getThreadInventory(handle),
-          turnsFor(key),
-        ]);
+        // The rhythm ledger is keyed by CHAT like affect (a run of three hooked replies is a fact
+        // about one room); the thesis and the moments file are keyed by HANDLE like climate. No read
+        // here is gated on its feature flag: a flag removes the machinery that WRITES, and what is
+        // already on disk is exactly what an operator turning a flag off wants to look at.
+        const [state, climate, inventory, turns, thesisDoc, thesisRevs, momentsFile, hookState] =
+          await Promise.all([
+            chatId ? getAffectState(chatId) : Promise.resolve({ moodHistory: [] } as AffectState),
+            getRelationshipClimate(handle),
+            getThreadInventory(handle),
+            turnsFor(key),
+            getThesis(handle),
+            listThesisRevisions(handle, THESIS_REVISION_ROWS),
+            readMoments(handle),
+            chatId ? getHookState(chatId) : Promise.resolve(defaultHookState()),
+          ]);
         const now = Date.now();
         return {
           handle,
@@ -424,6 +586,12 @@ export function registerAffectRoutes(router: Router): void {
           trail: affectTrail(state),
           dials: climateDialRows(climate, now),
           climate: { lastEvalAt: climate.lastEvalAt, evalCount: climate.evalCount },
+          // The three earned-material stores, in the order a reply builds on them: the read, the
+          // moments a callback is sampled from, and the rhythm that decides whether either is
+          // reached for at all.
+          thesis: thesisSummary(thesisDoc, thesisRevs),
+          moments: momentRows(momentsFile.entries, now),
+          rhythm: rhythmSummary(hookState),
           threads: threadSummary(inventory),
           // The actions waiting on this person's yes. A synchronous read of the durable half of the
           // registry (the same rows the resolution promotes), and the only place outside the chat

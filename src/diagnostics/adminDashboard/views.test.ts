@@ -47,6 +47,25 @@ test('assembled page contains every view section, tab, and the boot call', () =>
   assert.equal(page.split('</script>').length, 2, 'expected exactly one closing </script>');
 });
 
+// The Inner-state view is the operator surface for the three earned-material stores (the read, the
+// moments, the hook rhythm). A panel that is defined and never called from render() renders nothing
+// and fails no other test in this file, so each one is pinned as DEFINED AND CALLED — two
+// occurrences of its name — and the order they appear in is the order a reply builds on them.
+test('the Inner state view defines and calls the thesis, moments and rhythm panels', () => {
+  const js = VIEWS.find(v => v.id === 'affect')?.js ?? '';
+  assert.ok(js, 'no affect view');
+  for (const panel of ['thesisPanel', 'momentsPanel', 'rhythmPanel']) {
+    assert.ok(js.includes(`function ${panel}(`), `${panel} is not defined`);
+    assert.ok(js.split(`${panel}(`).length >= 3, `${panel} is defined but never called from render()`);
+  }
+  const order = ['dialsPanel(d)', 'thesisPanel(d)', 'momentsPanel(d)', 'rhythmPanel(d)', 'threadsPanel(d)']
+    .map(call => js.lastIndexOf(call));
+  assert.deepEqual(
+    order.slice().sort((a, b) => a - b), order,
+    'the three panels render after Relationship climate and before Threads',
+  );
+});
+
 test('login page stays standalone and self-closing', () => {
   assert.ok(LOGIN_PAGE.includes('/dashboard/login'));
   assert.equal(LOGIN_PAGE.split('<script>').length, 2);

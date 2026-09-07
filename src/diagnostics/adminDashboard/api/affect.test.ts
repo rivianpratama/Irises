@@ -11,6 +11,11 @@
 //   • the climate dials, which mean nothing without their own floor/ceiling and what the rolling
 //     week has already spent;
 //   • the thread inventory, summarized without leaking a note's text;
+//   • her one read on this person, whose TEXT is shown here on purpose and whose superseded
+//     revisions are not — the asymmetry is the panel's whole design, so it gets a pin either way;
+//   • the moments, as tags and clocks with the kept line left on disk;
+//   • the rhythm ledger, as the four fields an operator is shown rather than whatever the store
+//     happens to hold;
 //   • the last N `turn:trace` receipts, flattened out of the persisted turn payloads.
 //
 // Every one of them is pure and takes its clock injected.
@@ -18,14 +23,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { affectTrail, climateDialRows, threadSummary, traceRows, pendingApprovalRows } from './affect.js';
+import {
+  affectTrail, climateDialRows, threadSummary, traceRows, pendingApprovalRows,
+  thesisSummary, momentRows, rhythmSummary,
+} from './affect.js';
 import { MOOD_HISTORY_CAP, type AffectState, type AffectStatus } from '../../../persona/status.js';
 import { CLIMATE_WINDOW_CAP, type RelationshipClimate } from '../../../persona/climate.js';
 import { defaultThreadInventory, type ThreadInventory } from '../../../persona/threads.js';
+import { defaultHookState, type HookState } from '../../../persona/hooks.js';
+import type { MomentEntry } from '../../../persona/moments.js';
 import { TURN_TRACE_LABEL } from '../../traceLabels.js';
 import type { Turn } from '../../turns.js';
 import type { TraceEvent } from '../../trace.js';
 import type { OpsTaskRow } from '../../../db/repositories/opsTasks.js';
+import type { ThesisDoc, ThesisRevision } from '../../../db/repositories/thesis.js';
 
 const NOW = Date.UTC(2026, 8, 3, 12, 0, 0);
 const MIN = 60_000;
@@ -155,6 +166,106 @@ test('an empty inventory summarizes to zeros rather than to nothing', () => {
   assert.equal(s.turnsSinceOffer, 0);
 });
 
+// ── her read on them ─────────────────────────────────────────────────────────
+// The one panel that prints stored prose, and the one store where that is the point: a read she
+// applies to everything and never says out loud is unreviewable anywhere else.
+
+const DAY = 86_400_000;
+
+test('the thesis summary carries the head text and its revisions as provenance only', () => {
+  const doc: ThesisDoc = {
+    docMd: 'they decide fast and then look for permission.\n\n## evidence\n- re-did the job alone',
+    version: 7,
+    writtenBy: 'weekly',
+    updatedAt: NOW - 2 * DAY,
+    lastRewriteAt: NOW - 2 * DAY,
+  };
+  const revisions: ThesisRevision[] = [
+    { version: 7, docMd: 'CURRENT READ', writtenBy: 'weekly', createdAt: NOW - 2 * DAY },
+    { version: 6, docMd: 'SUPERSEDED READ', writtenBy: 'evidence', createdAt: NOW - 3 * DAY },
+  ];
+  const s = thesisSummary(doc, revisions);
+  assert.equal(s.text, doc.docMd, 'the operator surface for the read shows the read');
+  assert.deepEqual({ version: s.version, updatedAt: s.updatedAt }, { version: 7, updatedAt: NOW - 2 * DAY });
+  assert.deepEqual(s.revisions, [
+    { version: 7, writtenBy: 'weekly', createdAt: NOW - 2 * DAY },
+    { version: 6, writtenBy: 'evidence', createdAt: NOW - 3 * DAY },
+  ], 'when and by which writer, in the listing order the store returned');
+  // The head text is the live read; ten superseded copies of it would be a diary of everything she
+  // has ever thought about somebody, on a page that only has to answer "is the read fair".
+  const json = JSON.stringify(s.revisions);
+  for (const body of ['CURRENT READ', 'SUPERSEDED READ']) {
+    assert.ok(!json.includes(body), `a revision row carried its document: ${body}`);
+  }
+});
+
+test('a person she has no read on yet summarizes to an empty read, not to nothing', () => {
+  assert.deepEqual(thesisSummary(null, []), { text: '', version: 0, updatedAt: 0, revisions: [] });
+  // A wipe leaves the revisions behind and the document empty — the panel has to say both.
+  const wiped = thesisSummary(
+    { docMd: '', version: 3, writtenBy: 'forget', updatedAt: NOW, lastRewriteAt: NOW },
+    [{ version: 3, docMd: '', writtenBy: 'forget', createdAt: NOW }],
+  );
+  assert.deepEqual({ text: wiped.text, version: wiped.version, revs: wiped.revisions.length }, { text: '', version: 3, revs: 1 });
+});
+
+// ── the moments ──────────────────────────────────────────────────────────────
+
+function moment(over: Partial<MomentEntry> = {}): MomentEntry {
+  return {
+    id: 'm1', text: 'THE LINE SHE KEPT', tag: 'habit', at: NOW - DAY,
+    count: 1, offered: 0, lastOfferedAt: 0,
+    ...over,
+  };
+}
+
+test('the moment rows are tags and clocks, newest episode first, with no kept line in them', () => {
+  const rows = momentRows([
+    moment({ id: 'a', text: 'OLDEST PROSE', tag: 'obsession', at: NOW - 9 * DAY, count: 3, offered: 2, lastOfferedAt: NOW - 2 * DAY }),
+    moment({ id: 'b', text: 'NEWEST PROSE', tag: 'embarrassing', at: NOW - 30 * 60_000 }),
+    moment({ id: 'c', text: 'MIDDLE PROSE', tag: 'habit', at: NOW - 3 * DAY }),
+  ], NOW);
+  assert.deepEqual(rows.map(r => r.tag), ['embarrassing', 'habit', 'obsession'], 'newest first — an operator reads down from now');
+  assert.deepEqual(rows[0], { tag: 'embarrassing', ageDays: 0, count: 1, offers: 0, lastOfferedAt: 0 },
+    'half an hour old is zero whole days, not a rounded-up one');
+  assert.deepEqual(rows[2], { tag: 'obsession', ageDays: 9, count: 3, offers: 2, lastOfferedAt: NOW - 2 * DAY });
+  const json = JSON.stringify(rows);
+  for (const prose of ['OLDEST PROSE', 'NEWEST PROSE', 'MIDDLE PROSE']) {
+    assert.ok(!json.includes(prose), `a moment row carried her line: ${prose}`);
+  }
+  assert.ok(!json.includes('"id"'), 'nor the id it is offered under');
+});
+
+test('an empty moments file rows to nothing, and a clock ahead of now never reads negative', () => {
+  assert.deepEqual(momentRows([], NOW), []);
+  // A hand-edited or clock-skewed `at` in the future: zero days, never a negative age.
+  assert.equal(momentRows([moment({ at: NOW + 5 * DAY })], NOW)[0].ageDays, 0);
+});
+
+// ── the hook rhythm ──────────────────────────────────────────────────────────
+
+test('the rhythm summary shows the four ledger fields and nothing the store grew', () => {
+  const state: HookState = {
+    lastKinds: ['judgment', 'none', 'tangent'], idleStreak: 3, idleSinceMoment: 6, updatedAt: NOW - MIN,
+  };
+  assert.deepEqual(rhythmSummary(state), {
+    lastKinds: ['judgment', 'none', 'tangent'], idleStreak: 3, idleSinceMoment: 6, updatedAt: NOW - MIN,
+  }, 'oldest kind first — the window the kill switch reads, in the order it reads it');
+  // The ledger is written after every turn and is the state most likely to grow a field. A widened
+  // store must not put an undocumented number on an operator payload the day it is added.
+  const widened = { ...state, secretCounter: 41 } as HookState;
+  assert.ok(!JSON.stringify(rhythmSummary(widened)).includes('secretCounter'));
+  // And the window is COPIED: the panel's array is not the stored one, which the 5s route cache
+  // holds a reference to.
+  const out = rhythmSummary(state);
+  out.lastKinds.push('callback');
+  assert.equal(state.lastKinds.length, 3);
+});
+
+test('a chat that has never taken a turn reads as a resting ledger', () => {
+  assert.deepEqual(rhythmSummary(defaultHookState()), { lastKinds: [], idleStreak: 0, idleSinceMoment: 0, updatedAt: 0 });
+});
+
 // ── the turn:trace rows ──────────────────────────────────────────────────────
 
 function traceEvent(at: number, over: Record<string, unknown> = {}): TraceEvent {
@@ -180,7 +291,10 @@ function traceEvent(at: number, over: Record<string, unknown> = {}): TraceEvent 
         targets: null,
       },
       hits: ['dana'],
-      outcome: { wasEnvelope: true, retried: false, silent: false, routingGate: 'skipped_memory_hit' },
+      outcome: {
+        wasEnvelope: true, retried: false, silent: false, routingGate: 'skipped_memory_hit',
+        hook: { idle: true, mode: 'hook', emitted: 'judgment', violation: false },
+      },
       bubbles: { count: 2, overLaw: 0, maxWords: 11, hardCapped: false },
       ...over,
     },
@@ -209,7 +323,7 @@ test('the trace rows are the newest receipts, flattened, newest first', () => {
     { systemChars: 102_700, messagesChars: 800, share: 0.0077, rows: 12, breakpoints: 2 },
   );
   assert.deepEqual(r.sections, [{ name: 'persona', chars: 90_000 }, { name: 'turn_focus', chars: 400 }]);
-  assert.equal(r.threads, 'offered_theme');
+  assert.deepEqual({ threads: r.threads, hook_kind: r.hook_kind }, { threads: 'offered_theme', hook_kind: 'judgment' });
   assert.deepEqual(r.memory, [{ block: 'notes', verdict: 'digest', reason: 'partly_kept', dropped: 3 }]);
   assert.equal(r.routingGate, 'skipped_memory_hit');
   assert.deepEqual(r.drift, { changed: ['warmth'], capped: ['anxiety'], atBound: [], applied: { warmth: 3 }, brokeDowngraded: false });
@@ -229,6 +343,22 @@ test('the row limit is honoured and a receipt with no drift claims none', () => 
   const row = traceRows([turn('x', NOW, [noDrift])], 20)[0];
   assert.equal(row.drift, null, 'null drift is a fact about the turn, not an empty report');
   assert.deepEqual({ shift: row.shift, source: row.affectSource }, { shift: null, source: 'defaulted' });
+});
+
+test('the trace row tells a flat reply apart from a turn the rhythm engine never ran on', () => {
+  // Three readings, one column. `none` is a reply that carried no beat; a MISSING hook field is the
+  // negative control — CONVO_HOOKS_ENABLED off, or a caller that is not Convo — and the two must not
+  // print the same thing, or the flag-off spot-check in the plan's Verification section proves
+  // nothing.
+  const flat = traceEvent(NOW, {
+    outcome: { wasEnvelope: true, silent: false, hook: { idle: false, mode: 'task', emitted: 'none', violation: false } },
+  });
+  assert.equal(traceRows([turn('flat', NOW, [flat])], 20)[0].hook_kind, 'none');
+  const neverRan = traceEvent(NOW, { outcome: { wasEnvelope: true, silent: false } });
+  assert.equal(traceRows([turn('off', NOW, [neverRan])], 20)[0].hook_kind, null);
+  // A receipt from before the field existed reads the same as the flag being off.
+  const noOutcome = traceEvent(NOW, { outcome: undefined });
+  assert.equal(traceRows([turn('old', NOW, [noOutcome])], 20)[0].hook_kind, null);
 });
 
 test('a corrupt or partial receipt is skipped rather than crashing the panel', () => {
