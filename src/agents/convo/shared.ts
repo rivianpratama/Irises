@@ -595,7 +595,7 @@ export function renderReplyOrder(history: StoredMessage[], incomingText: string,
   ];
   const words = incomingText.trim().split(/\s+/).filter(Boolean).length;
   if (words > 0 && words <= 4) {
-    lines.push('And it\'s only a few words: a reply this short most likely CLOSES THE LOOP on what you delivered — "thanks, got it" — not new work, and not consent to anything you left as a passing mention.');
+    lines.push('And it\'s only a few words: a reply this short most likely CLOSES THE LOOP on what you delivered — "thanks, got it" — not new work, and not consent to anything else you named.');
   }
   return lines.join('\n');
 }
@@ -2011,8 +2011,10 @@ export async function processConvoResult(args: {
   // So EVERY pass evaluates, and the two things that must not double are handled where they are:
   //
   //   • the RE-ASK — `quietSpent` rides the recursion, and a pass that inherits it evaluates
-  //     without calling the lane (`retry: false`). One corrective call per user-visible turn,
-  //     counting the honesty guard's, which is the rule the stand-down below states for one pass;
+  //     without calling the lane (`retry: false`). That is one corrective call per user-visible
+  //     turn from THIS guard, and none at all once the honesty guard has fired on this pass, which
+  //     is what the stand-down below enforces. The honesty guard keeps its own per-pass design, so
+  //     the total across both is not what is pinned here;
   //   • the ROW — held in `quietReceipt` and filed by the pass that reaches the FINAL return. A
   //     pass that recurses discards its draft, so it discards the receipt about it too, exactly as
   //     it already discards its text. Same discipline as `emitted`, the ledger write and the turn

@@ -113,9 +113,22 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  *   · craft/send-order.md +2 (3,776 → 3,778): the one page on this branch that GREW, and it grew
  *     for a reason worth the line — the thumbs-up emoji spelled out as "a thumbs-up tapback" is +17,
  *     against −14 for a close that is flat rather than warm and −1 for the RIGHT label above it.
+ *
+ * Then **−140** in the third supervisor-corrections commit, which is the same rule reaching the last
+ * two convo files that still taught the beat it retires. Two files moved and every other byte held:
+ *   · Context.md −67 (76,932 → 76,865): the three-bubble demo's RIGHT label reads "then stop" and its
+ *     third bubble is the third fact rather than a trailer, and self-check 6 stops telling her to
+ *     leave the overflow in reach when the count runs over — it says cut to three and stop.
+ *   · craft/send-order.md −73 (3,778 → 3,705): the passing-mention bullet becomes the rule it was
+ *     always written for — only an explicit ask is work — which settles their "ok" without first
+ *     teaching the beat in order to exempt it. The page that GREW last commit gives it back.
+ *
+ * The largest prose move in that commit is NOT in this number: composer/Context.md came down 376
+ * characters in the same pass (seven pairs, the same rule), and the Composer's file is not part of
+ * this corpus. Nothing pins its bytes — the sha256 here covers convo's persona and craft only.
  */
-const CORPUS_CHARS = 122_025;
-const CORPUS_SHA256 = 'be19f187a7dfdc1deaa69ab92cae4d513d97a2325e48f7373cd5bf92969f2ecf';
+const CORPUS_CHARS = 121_885;
+const CORPUS_SHA256 = '2b9753308065196e735b54fbea04a348bbcf91d68ff3ed72b4bd9d7730dd556d';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 

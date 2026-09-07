@@ -252,6 +252,18 @@ test('hookKindOpen answers whether a beat is OPEN, never what the mode says', ()
     assert.equal(hookKindOpen({ ...hook, forbidden: HOOK_WORDS.filter(k => k !== w) }), true, w);
   }
   assert.equal(hookKindOpen({ ...hook, forbidden: [...HOOK_WORDS] }), false, 'the sleep shape');
+  // Which is why the reading is taken over the SET and not off `forbidden.length`: a list that
+  // carries a duplicate has HOOK_WORDS.length entries and still leaves a kind open. The renderer
+  // always read the set (`allowed.length > 0`), so a counting predicate would have called this turn
+  // closed while the section it ships names tangent — the disagreement this predicate exists to end.
+  const dupe: HookDirective = { ...hook, forbidden: ['judgment', 'judgment', 'callback'] };
+  assert.equal(dupe.forbidden.length, HOOK_WORDS.length, 'the shape that fools a count');
+  assert.equal(hookKindOpen(dupe), true, 'tangent is still open');
+  assert.equal(
+    renderHooksSection(dupe),
+    renderHooksSection({ ...hook, forbidden: ['judgment', 'callback'] }),
+    'and the renderer agrees — the same section as the deduped directive, naming tangent',
+  );
   // The other two modes never populate `forbidden` — the MODE forbade every kind already — so the
   // predicate must not read an empty list there as "everything is open".
   assert.equal(hookKindOpen({ ...hook, mode: 'quiet', forbidden: [] }), false);

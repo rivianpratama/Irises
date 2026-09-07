@@ -307,10 +307,11 @@ const BAND_LINES: Record<DialKey, Record<Exclude<Band, 'none'>, string>> = {
  *
  * They are the register's half of the rhythm engine, and they only mean anything on a turn that has
  * a hook to spend. "A tangent is welcome" on a task turn is an invitation to garnish an answer that
- * is supposed to arrive flat with the real numbers and stop; "Hold the judgment kind of hook this
- * turn" on a quiet turn names a beat that was already taken away, which is an instruction to think
- * about it. Both are the drift this build is named after, arriving through the one door that was
- * still open — the standing register, which renders on every Convo turn whatever the mode.
+ * is supposed to arrive flat with the real numbers and stop; "No judgment this turn." on a quiet
+ * turn says no to a beat that was already taken away, and saying no to it still names it, which is
+ * an instruction to think about it. Both are the drift this build is named after, arriving through
+ * the one door that was still open — the standing register, which renders on every Convo turn
+ * whatever the mode.
  *
  * So `climateLines` takes one boolean about the turn and drops these four unless it is true. What
  * that boolean must be is the thing worth stating here: whether a hook KIND IS OPEN, never whether

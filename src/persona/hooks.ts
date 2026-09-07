@@ -136,10 +136,13 @@ export interface HookDirective {
  *
  * The renderer itself builds the same reading out of the same two fields (`allowed.length > 0` in
  * `renderHooksSection`), because it needs the LIST and not just the answer; this is the predicate
- * for every consumer that only needs the answer.
+ * for every consumer that only needs the answer. It is computed the same way the renderer computes
+ * it — over the SET of kinds, never by counting `forbidden` — so a directive whose `forbidden`
+ * happened to carry a duplicate could not tell the predicate "closed" and the renderer "open".
  */
 export function hookKindOpen(directive: HookDirective | null | undefined): boolean {
-  return !!directive && directive.mode === 'hook' && directive.forbidden.length < HOOK_WORDS.length;
+  return !!directive && directive.mode === 'hook'
+    && HOOK_WORDS.some(w => !directive.forbidden.includes(w));
 }
 
 /** Why this turn got the mode it got. The buckets are DISJOINT and cover every path: a receipt that
