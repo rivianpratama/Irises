@@ -6,9 +6,10 @@
 //     carry — the annotation is percent-encoded and the text may be anything she wrote.
 //   • HAND EDITS SURVIVE. A segment without a valid annotation is preserved verbatim at the top of
 //     every rewrite, and the warning about it fires once per handle, not once per read.
-//   • FAILURE IS EMPTY, NOT FATAL. An unreadable file degrades to an empty read (this tier is
-//     re-derivable and renders on the reply path), and a fenced or failed write returns false so
-//     the pass never stamps a harvest clock for a harvest that is not on disk.
+//   • FAILURE IS EMPTY, NOT FATAL — AND IT SAYS SO. An unreadable file degrades to an empty read
+//     (this tier is re-derivable and renders on the reply path) but comes back flagged `degraded`,
+//     so a whole-file writer can tell it from a genuinely absent file; and a fenced or failed write
+//     returns false so the pass never stamps a harvest clock for a harvest that is not on disk.
 //   • COUNTERS DEGRADE ONE AT A TIME. Only id, tag and at can fail an entry; each counter falls back
 //     to its default on its own, which means `offered` and `last_offered` can disagree — pinned here
 //     and survived by `pruneMoments`, because losing a moment to a typo is unrecoverable in a tier
@@ -51,7 +52,7 @@ function entry(over: Partial<MomentEntry> = {}): MomentEntry {
 
 test('an absent file reads as an empty file with an open harvest window', async () => {
   const h = freshHandle();
-  assert.deepEqual(await readMoments(h), { entries: [], lastHarvestAt: 0, preserved: [] });
+  assert.deepEqual(await readMoments(h), { entries: [], lastHarvestAt: 0, preserved: [], degraded: false });
 });
 
 test('write then read round-trips every field, the harvest clock included', async () => {
@@ -228,11 +229,38 @@ test('an unreadable file degrades to an empty read instead of killing the turn',
   const errors: string[] = [];
   console.error = (...args: unknown[]) => { errors.push(args.map(String).join(' ')); };
   try {
-    assert.deepEqual(await readMoments(h), { entries: [], lastHarvestAt: 0, preserved: [] });
+    assert.deepEqual(await readMoments(h), { entries: [], lastHarvestAt: 0, preserved: [], degraded: true });
   } finally {
     console.error = original;
   }
   assert.ok(errors.some(e => e.includes('readMoments')), errors.join(' | '));
+});
+
+test('a degraded read is distinguishable from an empty one, so a whole-file writer can skip', async () => {
+  // The whole point of the flag: `readMoments` returns the same empty shape for "no file yet" and
+  // for "present and unreadable", and every write here is whole-file. A nightly pass that cannot
+  // tell the two apart turns one transient EACCES into a fresh file that drops every moment AND
+  // every hand edit, permanently, in the tier that archives nothing.
+  const absent = freshHandle();
+  assert.equal((await readMoments(absent)).degraded, false, 'an absent file is not a failure');
+
+  const real = freshHandle();
+  await writeMoments(real, [entry({ id: 'a' })], T0, ['a hand edit worth keeping']);
+  assert.equal((await readMoments(real)).degraded, false, 'nor is a file that parses');
+
+  const broken = freshHandle();
+  fs.mkdirSync(filePath(broken), { recursive: true });
+  const original = console.error;
+  console.error = () => {};
+  try {
+    const read = await readMoments(broken);
+    assert.equal(read.degraded, true, 'an unreadable file says so');
+    assert.deepEqual(read.entries, [], 'and still degrades to empty for the reply path');
+    assert.deepEqual(read.preserved, []);
+    assert.equal(read.lastHarvestAt, 0);
+  } finally {
+    console.error = original;
+  }
 });
 
 test('a write that cannot land returns false rather than reporting a phantom harvest', async () => {
@@ -291,5 +319,5 @@ test('clearMoments wipes entries and hand edits, and stamps the window at the wi
 test('clearMoments on a handle with no file is a no-op that still leaves a clean file', async () => {
   const h = freshHandle();
   await clearMoments(h, T0);
-  assert.deepEqual(await readMoments(h), { entries: [], lastHarvestAt: T0, preserved: [] });
+  assert.deepEqual(await readMoments(h), { entries: [], lastHarvestAt: T0, preserved: [], degraded: false });
 });

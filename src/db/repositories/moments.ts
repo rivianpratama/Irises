@@ -27,6 +27,8 @@
 // same transcript), they are deleted rather than archived by design, and they render into a prompt
 // on the reply path where a throw would cost a turn. So an unreadable file degrades to empty here,
 // and a later write starts a fresh one. Losing a diary is a cost; losing a reply is a bug.
+// The degrade is FLAGGED, not silent (`MomentsFile.degraded`): a reader may ignore an unreadable
+// file, but a writer must not mistake one for an empty file and rewrite it from nothing.
 //
 // Writes are atomic (db/files.ts), serialized on the shared per-handle queue, and carry the /forget
 // fence: the nightly pass reads → thinks for fifteen seconds → writes, and a /forget that lands
@@ -46,6 +48,19 @@ export interface MomentsFile {
   lastHarvestAt: number;
   /** Unannotated segments (hand edits, mangled annotations) — re-emitted verbatim on rewrite. */
   preserved: string[];
+  /**
+   * The read FAILED and this shape is a fallback, not the file. `false` for a genuinely absent file
+   * and for every successful parse; `true` only when something was there and could not be read.
+   *
+   * The reply path may ignore this — an empty read is exactly what it wants, and a turn must not die
+   * over a diary. A WRITER may not. Every write here is whole-file, so a pass that read a degraded
+   * file and then saved would replace every moment AND every hand-edited segment with whatever it
+   * happened to be holding, permanently, in the one tier that archives nothing (db/files.ts's
+   * `readTextIfExists` names this hazard in its own doc comment). A pass that sees `degraded` must
+   * SKIP WITHOUT STAMPING the harvest clock, exactly as the failure-backoff rule does, and try again
+   * on the next tick.
+   */
+  degraded: boolean;
 }
 
 const DELIM = '\n§\n';
@@ -145,11 +160,15 @@ const warnedPreserved = new Set<string>();
  * Read MOMENTS.md. Degrades to an empty file on ANY failure (missing, unreadable, half-written by a
  * hand edit) — see the header for why this tier degrades where the medium tier throws. The read is
  * lock-free: writes are whole-file and atomic, so a reader either sees the old file or the new one.
+ *
+ * A degraded read is FLAGGED rather than silent (`degraded`), because the two callers want opposite
+ * things from it: the reply path wants an empty sample and a turn that survives, and a writer must
+ * not treat "unreadable" as "empty" and rewrite the file from nothing. See `MomentsFile.degraded`.
  */
 export async function readMoments(handle: string): Promise<MomentsFile> {
   try {
     const raw = readTextIfExists(momentsPath(handle));
-    if (raw === null) return { entries: [], lastHarvestAt: 0, preserved: [] };
+    if (raw === null) return { entries: [], lastHarvestAt: 0, preserved: [], degraded: false };
     let content = raw;
     let lastHarvestAt = 0;
     if (content.startsWith(HEADER_PREFIX)) {
@@ -173,10 +192,10 @@ export async function readMoments(handle: string): Promise<MomentsFile> {
       warnedPreserved.add(handle);
       console.warn(`[moments] ${preserved.length} unannotated segment(s) in ${momentsPath(handle)} — preserved verbatim, not rendered`);
     }
-    return { entries, lastHarvestAt, preserved };
+    return { entries, lastHarvestAt, preserved, degraded: false };
   } catch (error) {
     logDbError('readMoments', error);
-    return { entries: [], lastHarvestAt: 0, preserved: [] };
+    return { entries: [], lastHarvestAt: 0, preserved: [], degraded: true };
   }
 }
 

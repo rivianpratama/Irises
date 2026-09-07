@@ -10,9 +10,14 @@
 //     pinned too: a fold that only containment matched keeps the LONGER text, so a fragment cannot
 //     truncate a moment nothing archives.
 //   • PRUNE DELETES. Decayed rows leave the returned array and go nowhere else. There is no archive
-//     in this file and no test here that looks for one.
+//     in this file and no test here that looks for one. It reads the offer STAMP and never the
+//     counter, and both directions of that pair are pinned — the store can degrade either attribute
+//     alone, and in this tier a mistyped attribute must not cost the moment.
 //   • REPLAYABLE. Same entries, same `now`, same seed → the same offer, forever. A sampler that
 //     cannot be replayed cannot be scored by the battery.
+//   • ONE MOMENT PER LINE, BOUNDED. An offer never carries the same id twice, however the file came
+//     to hold it twice, and a rendered line is clamped to `MOMENT_TEXT_MAX` at the render seam —
+//     the `hooks` section it lands in is a measured one.
 //   • NOT ONE DIGIT in a rendered line's format, and no date anywhere in it.
 //   • PURE. `now` is injected and every input is deep-frozen here, so a mutation is a test failure.
 process.env.TZ = 'UTC';
@@ -97,6 +102,28 @@ test('a sample is at most three recent plus two old, and never repeats an id', (
       assert.ok(T0 - e.at > MOMENT_OLD_MS, `${e.id} is not old enough for the second half`);
     }
   }
+});
+
+test('a duplicated id is offered once, however the file came to hold it twice', () => {
+  // A hand-copied segment is the reachable way in: the store parses both rows, and the sampler keeps
+  // its two pools disjoint by POSITION, which is enough for UUIDs and not for this. The same moment
+  // rendered twice in one prompt is the "bot with one anecdote" failure the no-repeat window exists
+  // to prevent, and `billOffers` would charge it twice.
+  const entries = [
+    moment({ id: 'dup', daysAgo: 1, text: 'checked the volcano again' }),
+    moment({ id: 'dup', daysAgo: 40, text: 'checked the volcano again (a hand-copied segment)' }),
+    moment({ id: 'other', daysAgo: 30 }),
+  ];
+  for (let seed = 0; seed < 30; seed++) {
+    const ids = sampleMoments(entries, T0, NONE, seed).map(e => e.id);
+    assert.equal(new Set(ids).size, ids.length, `seed ${seed}: ${ids.join(',')}`);
+    assert.deepEqual([...ids].sort(), ['dup', 'other']);
+  }
+  // The FIRST row per id is the one kept, so the choice does not depend on the file's tail.
+  assert.deepEqual(
+    sampleMoments([entries[0], entries[1]], T0, NONE, 1).map(e => e.text),
+    ['checked the volcano again'],
+  );
 });
 
 test('same seed → the same offer; a different seed generally moves it', () => {
@@ -219,6 +246,31 @@ test('rendering collapses whitespace, drops an empty text, and never mutates the
   assert.deepEqual(renderMomentLines(sample, T0), ['- (habit, today) two lines of moment']);
   assert.equal(sample[0].text, '  two   lines\nof   moment  ', 'the entry is untouched');
   assert.deepEqual(renderMomentLines([], T0), []);
+});
+
+test('an oversized text is clamped at the render seam, on a word boundary', () => {
+  // `foldHarvest` caps what the writer proposes, but the store parses `text` verbatim — one legacy
+  // or hand-written segment with a valid annotation and a huge body would otherwise ride unbounded
+  // into the `hooks` section, which is a MEASURED section with a ratcheted ceiling.
+  const huge = Array.from({ length: 200 }, (_, i) => `word${i}`).join(' ');
+  assert.ok(huge.length > 1000, 'the fixture is genuinely oversized');
+  const [line] = renderMomentLines([moment({ id: 'huge', tag: 'habit', daysAgo: 0, text: huge })], T0);
+  const prefix = '- (habit, today) ';
+  assert.ok(line.startsWith(prefix), line);
+  const text = line.slice(prefix.length);
+  assert.ok(text.length <= MOMENT_TEXT_MAX, `${text.length} chars rendered`);
+  assert.ok(line.length <= prefix.length + MOMENT_TEXT_MAX, `${line.length} chars on the line`);
+  assert.ok(huge.startsWith(text), 'it is a prefix of her text, not a rewrite of it');
+  assert.doesNotMatch(text, /\s$/, 'and it does not end mid-whitespace');
+  // A word boundary, not a hard cut: the last word survives whole.
+  assert.match(text, /word\d+$/);
+  // A text with no space inside the cap is cut hard rather than dropped or kept whole.
+  const unbroken = 'x'.repeat(MOMENT_TEXT_MAX + 50);
+  const cut = renderMomentLines([moment({ id: 'unbroken', text: unbroken })], T0)[0].slice(prefix.length);
+  assert.equal(cut.length, MOMENT_TEXT_MAX);
+  // A text exactly at the cap is untouched.
+  const exact = 'y'.repeat(MOMENT_TEXT_MAX);
+  assert.equal(renderMomentLines([moment({ id: 'exact', text: exact })], T0)[0].slice(prefix.length), exact);
 });
 
 // ── Folding ──────────────────────────────────────────────────────────────────────────────────────
@@ -449,6 +501,19 @@ test('an offer count with no stamp is read as never offered, not as an ancient o
     moment({ id: 'negative-stamp', daysAgo: 1, offered: 3, lastOfferedAt: -1 }),
   ];
   assert.deepEqual(pruneMoments(entries, T0).map(e => e.id), ['stampless', 'negative-stamp']);
+});
+
+test('a stamp with no offer count is read as offered, so the mirror hand edit is safe too', () => {
+  // The other half of the same pair, and the same one-attribute reach: `parseCount` clamps a mangled
+  // or negative `offered=` to zero while an intact `last_offered=` survives. Consulting the counter
+  // at all would send this row down the `at` leg and DELETE a moment she used yesterday, because it
+  // was first written down two hundred days ago. The stamp is the whole test.
+  const entries = [
+    moment({ id: 'mangled-counter', daysAgo: 200, offered: 0, lastOfferedAt: T0 - DAY }),
+    // And the counter cannot rescue a stamp that really has gone quiet, either way round.
+    moment({ id: 'mangled-counter-gone-quiet', daysAgo: 1, offered: 0, lastOfferedAt: T0 - 61 * DAY }),
+  ];
+  assert.deepEqual(pruneMoments(entries, T0).map(e => e.id), ['mangled-counter']);
 });
 
 test('prune is pure, and returns a plain array with nothing archived anywhere', () => {

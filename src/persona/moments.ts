@@ -57,9 +57,11 @@ export interface MomentEntry {
   at: number;
   /** How many episodes have folded into this one. Starts at one. Never rendered as a digit. */
   count: number;
-  /** How many times it has been handed to a turn. `0` and an old `at` is what decay looks for. */
+  /** How many times it has been handed to a turn. A statistic — `pruneMoments` reads the STAMP
+   *  below and never this, because the store can degrade the two apart (see `pruneMoments`). */
   offered: number;
-  /** When it was last handed to a turn (epoch ms). `0` means never. */
+  /** When it was last handed to a turn (epoch ms). `0` means never, and the prune reads exactly
+   *  this: no stamp → the row decays on its date, a stamp → it decays on the stamp. */
   lastOfferedAt: number;
 }
 
@@ -188,6 +190,12 @@ function drawWeighted(pool: MomentEntry[], weights: number[], rng: () => number)
  * this function enforces itself: the 24-hour law belongs beside the constant that defines it, not
  * in whichever caller remembers to apply it.
  *
+ * "Never the same id twice" is enforced on the ID, not on the position: the two pools are kept
+ * disjoint by splicing out of one array, which is enough for the store's UUIDs but not for a file
+ * with a hand-copied segment in it. A duplicated id would be the same moment rendered twice in one
+ * prompt — the exact "bot with one anecdote" failure `MOMENT_RECENT_EXCLUDE_MS` exists to prevent —
+ * and `billOffers` would charge it twice. So the pool keeps the FIRST row per id and drops the rest.
+ *
  * PURE and REPLAYABLE: `now` and `seed` are the only clocks, entries are neither mutated nor
  * reordered, and the returned entries are the caller's own objects (billing them is `billOffers`'
  * job, and it copies).
@@ -199,7 +207,12 @@ export function sampleMoments(
   seed: number,
 ): MomentEntry[] {
   const rng = mulberry32(seed);
-  const pool = entries.filter(e => !excludeIds.has(e.id) && !offeredRecently(e, now));
+  const seen = new Set<string>();
+  const pool = entries.filter(e => {
+    if (excludeIds.has(e.id) || offeredRecently(e, now) || seen.has(e.id)) return false;
+    seen.add(e.id);
+    return true;
+  });
   const picked: MomentEntry[] = [];
   for (let i = 0; i < MOMENT_SAMPLE_RECENT; i++) {
     const drawn = drawWeighted(pool, pool.map(e => recencyWeight(e, now)), rng);
@@ -248,6 +261,16 @@ export function momentAgeWords(at: number, now: number): string {
   return MOMENT_AGE_WORDS[MOMENT_AGE_WORDS.length - 1];
 }
 
+/** Cut an over-long text to `MOMENT_TEXT_MAX` on a WORD boundary — threads.ts's `labelFrom` rule,
+ *  for the same reason: this string is interpolated into a prompt block, and a severed word reads as
+ *  a typo she made. A text with no space inside the cap is cut hard rather than kept. */
+function clampMomentText(text: string): string {
+  if (text.length <= MOMENT_TEXT_MAX) return text;
+  const cut = text.slice(0, MOMENT_TEXT_MAX);
+  const space = cut.lastIndexOf(' ');
+  return (space > 0 ? cut.slice(0, space) : cut).trim();
+}
+
 /**
  * The sampled moments as the lines `renderHooksSection` interpolates: `- (habit, last week) they
  * checked the volcano again`. The tag and the age are hers to use and never to say; the text is her
@@ -258,10 +281,18 @@ export function momentAgeWords(at: number, now: number): string {
  * moment on an unlabelled line of the prompt, and the store's own grammar is line-oriented too.
  * The count is deliberately absent — it is a digit, and "third time this month" belongs in the text
  * the writer chose, not in a machine-rendered suffix.
+ *
+ * `MOMENT_TEXT_MAX` is enforced HERE as well as at mint, and this is the enforcement that matters:
+ * `foldHarvest` caps what the nightly writer proposes, but the store parses `text` verbatim and does
+ * not cap it (db/repositories/moments.ts `parseSegment`), so one hand-written or legacy segment
+ * carrying a valid annotation and a ten-kilobyte body would otherwise ride unbounded into the
+ * `hooks` section — a MEASURED prompt section with a ratcheted ceiling. A ceiling that depends on a
+ * file's history is not a ceiling; this makes it a property of the code, the way threads.ts clamps
+ * at its own render and derive seams rather than only at mint.
  */
 export function renderMomentLines(sample: readonly MomentEntry[], now: number): string[] {
   return sample
-    .map(e => ({ e, text: e.text.replace(/\s+/g, ' ').trim() }))
+    .map(e => ({ e, text: clampMomentText(e.text.replace(/\s+/g, ' ').trim()) }))
     .filter(({ text }) => text !== '')
     .map(({ e, text }) => `- (${e.tag}, ${momentAgeWords(e.at, now)}) ${text}`);
 }
@@ -445,20 +476,28 @@ function defaultNewId(): string {
  *     fold refreshing `at` is exactly the pattern recurring.
  *   • stamped — kept while `lastOfferedAt` is inside the window. She used it, and a thing she has
  *     not reached for in two months has stopped being worth reaching for.
- * Branching on the STAMP rather than on the `offered` counter is load-bearing, not a stylistic
- * choice. `lastOfferedAt` is `0` for "never", and `now - 0` is past every window, so a stamp read
- * unconditionally deletes the row — and the two fields can disagree, because the store degrades each
- * annotation attribute INDEPENDENTLY (db/repositories/moments.ts `parseSegment`): one hand-mangled
- * `last_offered=` leaves `offered: 3, lastOfferedAt: 0`, and a counter-shaped guard would then read
- * that row's absent stamp and delete it. In the one tier here with no archive, a mistyped attribute
- * must not cost the moment, so a missing stamp means never-offered and the row falls back to its
- * date. The known edge of the second clause: a moment that recurred today but was last used sixty
- * days ago still goes, and the next pass re-mints it at count one if it is genuinely still
- * happening. That is the plan's rule as written, and the cost is a count, not a memory.
+ * The stamp is the WHOLE test, and the `offered` counter is deliberately not consulted. That is
+ * load-bearing, not a stylistic choice, because the store degrades each annotation attribute
+ * INDEPENDENTLY (db/repositories/moments.ts `parseSegment`, `parseCount`, `parseStamp`), so one
+ * hand-mangled attribute can leave the pair disagreeing — and BOTH directions have to be safe in the
+ * one tier here with no archive:
+ *   • `offered: 3, lastOfferedAt: 0` (the stamp was mangled). A counter-shaped guard would read the
+ *     absent stamp, and `now - 0` is past every window, so a moment from yesterday would be deleted.
+ *     A missing stamp therefore means never-offered, and the row falls back to its date.
+ *   • `offered: 0, lastOfferedAt: <yesterday>` (the counter was mangled). Reading the counter would
+ *     send a moment she used yesterday down the `at` leg and delete it for being written long ago.
+ *     The stamp is intact, so the stamp decides.
+ * Adding `offered === 0` back as a disjunct buys nothing and costs the second row: every
+ * machine-written row has the two fields agreeing, and in the only case where they disagree the
+ * counter picks the destructive direction.
+ *
+ * The known edge of the second clause: a moment that recurred today but was last used sixty days ago
+ * still goes, and the next pass re-mints it at count one if it is genuinely still happening. That is
+ * the plan's rule as written, and the cost is a count, not a memory.
  */
 export function pruneMoments(entries: readonly MomentEntry[], now: number): MomentEntry[] {
   return entries.filter(e => {
-    if (e.offered === 0 || e.lastOfferedAt <= 0) return now - e.at <= MOMENT_DECAY_MS;
+    if (e.lastOfferedAt <= 0) return now - e.at <= MOMENT_DECAY_MS;
     return now - e.lastOfferedAt <= MOMENT_DECAY_MS;
   });
 }
