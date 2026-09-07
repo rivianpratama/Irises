@@ -35,6 +35,15 @@
 // once (`appendThesisEvidence` and `clearThesis` below do exactly that, so no caller has to
 // remember). The re-read happens under withHandleLock, so in-process racers serialize.
 //
+// The /forget fence rides the same lock, and it is not the same problem as the version check. A
+// version says "somebody else wrote"; the epoch says "the user asked to be forgotten". Both passes
+// here read, think for fifteen seconds against a lane, and then write, and a `/forget` that lands
+// inside that window must not have its wipe undone by a save that read the pre-forget document —
+// `saveThesis(…, { ifForgetEpoch })` re-reads the epoch INSIDE the locked section, which is the only
+// place the question has a definite answer (`clearDossier` bumps under the same queue), and the
+// caller cannot supply the check itself because withHandleLock is not re-entrant. Same shape as
+// `writeMoments`, `saveHookState` and `saveDossier`; `climateDrift.ts`'s caller is the pattern.
+//
 // Failure policy: FAIL LOUD like memoryLong and memoryMedium. This is not the moments store, which
 // degrades an unreadable file to empty because it renders on the reply path and is re-derivable
 // from tonight's transcript: a read costs a week to earn back, and a write that quietly failed
@@ -43,19 +52,23 @@
 // against a head file that exists and cannot be parsed is refused with a throw.
 //
 // ONE exception, and it is a crash-radius decision rather than a policy change: a throw out of a
-// locked section is process-fatal (withHandleLock publishes an unowned rejection and
-// diagnostics/errorLog.ts exits on `unhandledRejection`), so the two background writers that would
-// otherwise meet a hand-edited file — the nightly note and the wipe — pre-read the head and DROP
-// their write with a warning instead of entering `saveThesis` against a version they cannot know.
-// The refusal still stands for the weekly rewrite, which is the write whose loss actually costs a
-// week.
+// locked section is process-FATAL, not pass-fatal. withHandleLock keeps its queue with
+// `void next.finally(...)`, which publishes a SECOND, unowned copy of the rejection beside the one
+// the caller catches, and diagnostics/errorLog.ts exits on `unhandledRejection` — so a caller-side
+// try/catch cannot contain a throw from in there, and the suppression has to happen inside the
+// locked section itself. That is what `opts.onFailure: 'drop'` is for, and the two BACKGROUND
+// writers pass it: the nightly note and the `/forget` wipe log and return null where the weekly
+// rewrite throws. Losing one night's note or one wipe attempt is a cost; taking the VM down over a
+// hand-edited file or a full disk is a bug, and the memory note for this deployment records the VPS
+// disk as near-full. The refusal still stands for the weekly rewrite, which is the write whose loss
+// actually costs a week — and which a person is never waiting on when it fails.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { logDbError } from '../client.js';
 import { memoriesDir } from '../stateDir.js';
 import { atomicWriteText, readTextIfExists } from '../files.js';
-import { withHandleLock } from './memory.js';
+import { withHandleLock, getForgetEpoch } from './memory.js';
 import { splitThesisDoc, joinThesisDoc, THESIS_EVIDENCE_MAX } from '../../memory/thesisEngine.js';
 
 export interface ThesisDoc {
@@ -77,11 +90,30 @@ export interface ThesisDoc {
    *
    * NOT the last write. A nightly note bumps the version and moves `updated=`, and it deliberately
    * does not move this — see the header comment above for what gating on the write stamp would have
-   * cost. `0` means "never rewritten", which is also what an unparseable or pre-`rewritten=` stamp
-   * reads as: an OPEN window, the safe direction for a cooldown (one extra rewrite, never a year of
-   * skipped ones).
+   * cost. A WIPE does move it (see `saveThesis`). `0` means "never rewritten", which is also what an
+   * unparseable or pre-`rewritten=` stamp reads as: an OPEN window, the safe direction for a
+   * cooldown (one extra rewrite, never a year of skipped ones).
    */
   lastRewriteAt: number;
+}
+
+/**
+ * What a caller may ask of a save beyond the version it read.
+ *
+ * `ifForgetEpoch` is the epoch the caller read BEFORE it started working (`getForgetEpoch`): when it
+ * no longer matches at write time, a `/forget` landed mid-pass and this save would put back a read
+ * the user asked to be forgotten, so it is refused. It shares the `null` return with a version
+ * conflict, and unlike a conflict it must NOT be retried — the document the caller is holding is
+ * exactly the thing the user erased. `appendThesisEvidence` short-circuits its own retry on it.
+ *
+ * `onFailure: 'drop'` turns this store's fail-loud write policy off FOR ONE CALL: the throwing
+ * branches log and return null instead. Only the two background writers pass it, and the reason is
+ * in the header — a throw out of a locked section takes the process down rather than the pass, and a
+ * caller-side catch provably cannot contain it.
+ */
+export interface ThesisSaveOptions {
+  ifForgetEpoch?: number;
+  onFailure?: 'throw' | 'drop';
 }
 
 /** The one `writtenBy` word that advances the rewrite clock. Exported so the weekly pass and this
@@ -216,27 +248,52 @@ export async function getThesis(handle: string): Promise<ThesisDoc | null> {
 
 /**
  * Save a new version. `expectedVersion` is what the writer read (0 for "no doc yet"). Returns the
- * new version number, or null on a version conflict — the caller re-reads and retries once.
+ * new version number, or null on a version conflict (the caller re-reads and retries once) or on the
+ * `/forget` fence refusing the write (the caller must NOT retry — see `ThesisSaveOptions`).
  * Throws ThesisWriteError when the write itself fails durably (including a head file that exists
- * but cannot be read or parsed — clobbering it would lose a read that costs a week to earn back).
+ * but cannot be read or parsed — clobbering it would lose a read that costs a week to earn back),
+ * unless the caller asked for `onFailure: 'drop'`.
  *
  * `writtenBy` is a short provenance word that lands in the header and in every revision: 'weekly'
  * (`THESIS_REWRITE_WRITER`) for the rewrite pass, 'evidence' for a nightly note, 'forget' for a
- * wipe. It is also what decides the rewrite clock: ONLY a 'weekly' save stamps `rewritten=`, every
- * other writer carries the previous stamp forward untouched. A wipe carries it too rather than
- * clearing it — after a `/forget` the cooldown stays shut until the read it erased would have been
- * due anyway, which is the direction that does not re-mint a read minutes after somebody asked to
- * be forgotten.
+ * wipe.
+ *
+ * TWO writers advance the rewrite clock and everything else carries the previous stamp forward: a
+ * 'weekly' save, and a save of an EMPTY document — a wipe, whoever wrote it. Keying the second on
+ * the document rather than on the writer word is deliberate; the clock has to move for the wipe
+ * whether or not the wipe came through `clearThesis`.
+ *
+ * The wipe stamps at the WIPE rather than carrying the pre-forget stamp forward, and this is the
+ * same decision `clearMoments` records (db/repositories/moments.ts — the two stores read as one).
+ * `lastRewriteAt` is not only the cooldown: it is the weekly window's CUT (`buildThesisWindow`), and
+ * `/forget` does not clear the transcript — that is `/clear`. Carried forward, the first pass after
+ * the cooldown reopened would read the pre-forget rows and re-mint substantially the read the user
+ * asked to erase. Stamped at the wipe, the cooldown stays shut a full 6.5 days FROM the wipe (which
+ * is strictly longer than "until the erased read would have been due anyway") and the next window
+ * starts there. The rejected third option — clearing the stamp to 0 — is the worst of the three: an
+ * open window over the whole pre-forget transcript, immediately.
  */
 export async function saveThesis(
   handle: string,
   docMd: string,
   expectedVersion: number,
   writtenBy: string,
+  opts?: ThesisSaveOptions,
 ): Promise<number | null> {
   return withHandleLock(handle, async () => {
+    // The epoch is re-read INSIDE the lock: clearDossier's bump happens under the same queue, so
+    // this is the point where "did a forget land while the pass was thinking?" has a definite
+    // answer. Checked before the head read, so a fenced-out write cannot reach the refusal below.
+    if (opts?.ifForgetEpoch != null && getForgetEpoch(handle) !== opts.ifForgetEpoch) {
+      console.warn(`[memory-thesis] save aborted for ${handle} — /forget landed mid-pass`);
+      return null;
+    }
     const head = await readHead(handle);
     if (head.kind === 'unreadable') {
+      if (opts?.onFailure === 'drop') {
+        console.warn(`[memory-thesis] write dropped for ${handle} — head doc unreadable`, head.error);
+        return null;
+      }
       console.error(`[memory-thesis] WRITE REFUSED for ${handle} — head doc unreadable`, head.error);
       throw new ThesisWriteError('saveThesis (head read)', head.error);
     }
@@ -245,7 +302,8 @@ export async function saveThesis(
     if (currentVersion !== expectedVersion) return null;
     const version = currentVersion + 1;
     const now = Date.now();
-    const rewrittenAt = writtenBy === THESIS_REWRITE_WRITER ? now : (current?.lastRewriteAt ?? 0);
+    const isWipe = !docMd.trim();
+    const rewrittenAt = writtenBy === THESIS_REWRITE_WRITER || isWipe ? now : (current?.lastRewriteAt ?? 0);
     const file = renderDoc(version, writtenBy, now, rewrittenAt, docMd);
     try {
       // Revision first: a crash between the two writes leaves an orphan revision that a retry at
@@ -254,6 +312,10 @@ export async function saveThesis(
       atomicWriteText(thesisPath(handle), file);
       return version;
     } catch (error) {
+      if (opts?.onFailure === 'drop') {
+        console.warn(`[memory-thesis] write dropped for ${handle} — durable write failed`, error);
+        return null;
+      }
       console.error(`[memory-thesis] WRITE FAILED for ${handle} — thesis update lost`, error);
       throw new ThesisWriteError('saveThesis', error);
     }
@@ -310,21 +372,31 @@ export async function listThesisRevisions(handle: string, limit = 10): Promise<T
  * store where one writer could mutate a document without moving its version is a store where the
  * other writer's optimistic check means nothing.
  *
- * Returns the new version, or null when nothing was written: an empty note (nothing to append), an
- * unreadable head doc, or a conflict that survived one retry. The retry is the caller contract the
- * long tier documents, done here so that neither pass has to remember it — the nightly note and the
- * weekly rewrite race by design, and one lost note is worse than one extra read.
+ * `opts.ifForgetEpoch` is the epoch the nightly pass read before it started thinking (the moments
+ * call is the same fifteen-second window `writeMoments` fences), passed straight through.
  *
- * The unreadable case is pre-checked HERE rather than left to `saveThesis`'s fail-loud throw, and
- * that asymmetry is the point. This is the one route to the throw that a BACKGROUND pass takes, and
- * a throw out of a locked section is process-fatal rather than pass-fatal (withHandleLock keeps its
- * queue with `void next.finally(...)`, so the rejection is also published unowned, and
- * diagnostics/errorLog.ts exits the process on `unhandledRejection`). One human who opened
- * THESIS.md and typed would take the VM down on that night's pass. So a note is DROPPED on an
- * unreadable head — the same answer `clearThesis` already gives to the same file — while the
- * fail-loud policy stands unchanged for the two writers a person is waiting on.
+ * Returns the new version, or null when nothing was written: an empty note (nothing to append), an
+ * unreadable head doc, a durable write failure, the `/forget` fence, or a conflict that survived one
+ * retry. The retry is the caller contract the long tier documents, done here so that neither pass
+ * has to remember it — the nightly note and the weekly rewrite race by design, and one lost note is
+ * worse than one extra read. It is NOT taken on the fence: a save the fence refused would be refused
+ * again for the same reason, and the document this loop is holding is exactly what the user erased.
+ *
+ * NOTHING here may throw, and that asymmetry with the weekly rewrite is the point. This is one of the
+ * two routes to the fail-loud branches that a BACKGROUND pass takes, and a throw out of a locked
+ * section is process-fatal rather than pass-fatal (withHandleLock keeps its queue with
+ * `void next.finally(...)`, so a second, unowned copy of the rejection is published beside the one a
+ * caller catches, and diagnostics/errorLog.ts exits the process on `unhandledRejection` — which is
+ * also why a try/catch around this call could never have contained it). One human who opened
+ * THESIS.md and typed, or one full disk, would otherwise take the VM down on that night's pass. So
+ * the head read is pre-checked here for its own warning, and `onFailure: 'drop'` suppresses BOTH
+ * throwing branches inside the locked section, the write half included.
  */
-export async function appendThesisEvidence(handle: string, note: string): Promise<number | null> {
+export async function appendThesisEvidence(
+  handle: string,
+  note: string,
+  opts?: { ifForgetEpoch?: number },
+): Promise<number | null> {
   if (!(note ?? '').trim()) return null;
   for (let attempt = 0; attempt < 2; attempt++) {
     const head = await readHead(handle);
@@ -335,11 +407,79 @@ export async function appendThesisEvidence(handle: string, note: string): Promis
     const cur = head.kind === 'parsed' ? head.doc : null;
     const parts = splitThesisDoc(cur?.docMd ?? '');
     const evidence = [...parts.evidence, note].slice(-THESIS_EVIDENCE_MAX);
-    const version = await saveThesis(handle, joinThesisDoc(parts.thesis, evidence), cur?.version ?? 0, 'evidence');
+    const version = await saveThesis(
+      handle,
+      joinThesisDoc(parts.thesis, evidence),
+      cur?.version ?? 0,
+      'evidence',
+      { ...opts, onFailure: 'drop' },
+    );
     if (version !== null) return version;
+    // A fenced-out save and a version conflict share the null, and only one of them is worth
+    // retrying. The re-check here is outside the lock and therefore approximate, which is harmless:
+    // the authoritative refusal already happened inside it, and the worst this costs is one extra
+    // attempt that the fence refuses again.
+    if (opts?.ifForgetEpoch != null && getForgetEpoch(handle) !== opts.ifForgetEpoch) {
+      console.warn(`[memory-thesis] evidence note dropped for ${handle} — /forget landed mid-pass`);
+      return null;
+    }
   }
   console.warn(`[memory-thesis] evidence note dropped for ${handle} — version conflict twice`);
   return null;
+}
+
+/** The highest version any revision FILE claims, read off the names rather than the contents — a
+ *  corrupt newest revision must not make the next version number go backwards and overwrite a
+ *  sibling. `0` for a handle with no revisions folder. Only the unversioned wipe below needs it;
+ *  every other write gets its number from the head doc's own header. */
+function highestRevisionVersion(handle: string): number {
+  try {
+    return fs.readdirSync(path.join(memoriesDir(handle), 'revisions'))
+      .map(n => n.match(/^THESIS\.v(\d+)\.md$/))
+      .reduce((max, m) => (m ? Math.max(max, Number(m[1])) : max), 0);
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Wipe a head doc that cannot be READ — the one write in this store that ignores the version it is
+ * replacing, because there is no version to be had.
+ *
+ * The fail-loud policy points the other way for every other writer and it is right to: a save must
+ * not turn a file it cannot version into something else, because the read in there costs a week to
+ * earn back. A WIPE is the exception, and it is the exception for the plainest possible reason —
+ * losing that content is the request. `/forget` asked for her read of somebody to stop existing, and
+ * a hand edit or a half-written head is the one shape where refusing would leave it sitting on disk
+ * in plaintext instead. The sibling store gives the same answer (`clearMoments` overwrites
+ * unconditionally, hand edits included).
+ *
+ * The version is `max(existing revision) + 1` rather than 1, so the revision this mints cannot
+ * overwrite a real one, and a later save still moves forward. Failure logs and returns null: a wipe
+ * has nothing left to protect by throwing, and this call is on the background side of the
+ * crash-radius rule in the header.
+ *
+ * Null also means "the head healed under the lock" — a racing save parsed and versioned the file
+ * between the caller's read and this one — in which case the caller's next attempt takes the normal
+ * versioned path instead.
+ */
+async function wipeUnversioned(handle: string, why: unknown): Promise<number | null> {
+  return withHandleLock(handle, async () => {
+    const head = await readHead(handle);
+    if (head.kind !== 'unreadable') return null;
+    const version = highestRevisionVersion(handle) + 1;
+    const now = Date.now();
+    const file = renderDoc(version, 'forget', now, now, '');
+    try {
+      atomicWriteText(revisionPath(handle, version), file);
+      atomicWriteText(thesisPath(handle), file);
+      console.warn(`[memory-thesis] wiped an UNREADABLE head doc for ${handle} — /forget outranks a version nothing can read`, why);
+      return version;
+    } catch (error) {
+      console.error(`[memory-thesis] WIPE FAILED for ${handle} — an unreadable read survives /forget`, error);
+      return null;
+    }
+  });
 }
 
 /**
@@ -353,24 +493,28 @@ export async function appendThesisEvidence(handle: string, note: string): Promis
  * own call site in agents/convo/client.ts (`if (cur?.docMd) …`), lifted in here so the wipe list
  * stays one line per store.
  *
- * An unreadable head doc is refused rather than wiped, on the same read: `/forget` must not turn a
- * file it cannot version into an empty one, and refusing here also keeps the wipe out of
- * `saveThesis`'s throwing branch.
+ * An unreadable head doc IS wiped — see `wipeUnversioned` for why this one write outranks the
+ * version it cannot read.
  *
- * Returns the new version, or null when there was nothing to clear, the file was unreadable, or the
- * retry also conflicted. A durable write failure still throws ThesisWriteError like any other save
- * — the /forget path wraps every wipe in its own catch.
+ * No `ifForgetEpoch`: this call is not a pass that might be overtaken by a `/forget`, it is what a
+ * `/forget` does.
+ *
+ * Returns the new version, or null when there was nothing to clear, the write failed durably, or the
+ * retry also conflicted. NOTHING here throws — `onFailure: 'drop'` keeps a full disk out of
+ * `saveThesis`'s fail-loud branch, because a throw from inside a locked section is process-fatal and
+ * the /forget path's own catch could not have contained it (see the header).
  */
 export async function clearThesis(handle: string): Promise<number | null> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const head = await readHead(handle);
     if (head.kind === 'unreadable') {
-      console.warn(`[memory-thesis] wipe refused for ${handle} — head doc unreadable`, head.error);
-      return null;
+      const wiped = await wipeUnversioned(handle, head.error);
+      if (wiped !== null) return wiped;
+      continue; // the head healed under the lock, or the write failed — one more attempt either way
     }
     const cur = head.kind === 'parsed' ? head.doc : null;
     if (!cur || !cur.docMd.trim()) return null;
-    const version = await saveThesis(handle, '', cur.version, 'forget');
+    const version = await saveThesis(handle, '', cur.version, 'forget', { onFailure: 'drop' });
     if (version !== null) return version;
   }
   console.warn(`[memory-thesis] wipe lost a race twice for ${handle} — thesis may survive /forget`);

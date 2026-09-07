@@ -279,15 +279,21 @@ export function buildThesisWindow(
  * read yet — an install with no thesis renders nothing and the prompt is byte-identical to one that
  * never had the feature (agents/convo/shared.ts pushes nothing for an empty string).
  *
- * Takes the READ ALONE, never the document: the evidence tail is the weekly pass's private input
- * and has no business in a prompt (`splitThesisDoc(doc.docMd).thesis` is the caller's line). The
- * text is collapsed to one line and clamped to `THESIS_MAX_CHARS` at a word boundary — a validated
- * read is already inside that bound, and the clamp is here for the other two ways text reaches this
- * seam: a file written before a bound moved, and a human who opened THESIS.md and typed. Nothing
- * else in a prompt is measured against a length the store cannot enforce.
+ * Wants the READ ALONE, and SPLITS AGAIN rather than trusting that it got one. The evidence tail is
+ * the weekly pass's private input and has no business in a prompt, and `splitThesisDoc(doc.docMd)
+ * .thesis` is the caller's line — but one caller writing `doc.docMd` instead would put seven machine
+ * notes into a measured section on every Convo turn for a week, and this function is already
+ * defending the same seam against an over-long read for a strictly less likely cause. Splitting is
+ * free and the output is identical for every read the store validates, so the contract is enforced
+ * here rather than documented here.
+ *
+ * The text is then collapsed to one line and clamped to `THESIS_MAX_CHARS` at a word boundary — a
+ * validated read is already inside that bound, and the clamp is here for the other two ways text
+ * reaches this seam: a file written before a bound moved, and a human who opened THESIS.md and
+ * typed. Nothing else in a prompt is measured against a length the store cannot enforce.
  */
 export function renderThesisSection(text: string): string {
-  const line = clampWords(oneLine(text ?? ''), THESIS_MAX_CHARS);
+  const line = clampWords(oneLine(splitThesisDoc(text ?? '').thesis), THESIS_MAX_CHARS);
   if (!line) return '';
   return `${THESIS_SECTION_HEADING}\n${line}`;
 }

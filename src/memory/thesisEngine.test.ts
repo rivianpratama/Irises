@@ -342,3 +342,18 @@ test('the render seam collapses and clamps, so no file can ride unbounded into t
   const exact = 'y'.repeat(THESIS_MAX_CHARS);
   assert.equal(renderThesisSection(exact).split('\n')[1], exact, 'a read exactly at the bound is untouched');
 });
+
+test('a whole DOCUMENT renders only its read — the tail never reaches a prompt', () => {
+  // The caller's line is `splitThesisDoc(doc.docMd).thesis`, and one caller writing `doc.docMd`
+  // instead would put seven machine notes — 200 characters each — into a measured section on every
+  // Convo turn for a week. Splitting again here is free, and the output is identical for every read
+  // the store validates, so the contract holds rather than merely being written down.
+  const doc = joinThesisDoc(GOOD, ['they asked about the volcano again', 'they re-did the job alone']);
+  assert.equal(renderThesisSection(doc), renderThesisSection(GOOD));
+  assert.equal(renderThesisSection(doc).split('\n').length, 2);
+  assert.ok(!renderThesisSection(doc).includes(THESIS_EVIDENCE_HEADING));
+  assert.ok(!renderThesisSection(doc).includes('volcano'));
+  // A document whose read was wiped and whose tail is still filling renders NOTHING, not a heading
+  // over somebody's notes.
+  assert.equal(renderThesisSection(joinThesisDoc('', ['a note after the wipe'])), '');
+});

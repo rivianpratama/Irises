@@ -11,7 +11,12 @@
 //     loser conflicts and retries rather than clobbering.
 //   • TWO STORES, ONE REVISIONS FOLDER. LONG.vNNNN.md and THESIS.vNNNN.md live side by side and
 //     neither listing sees the other's files.
-//   • A WRITE IS REFUSED, NOT GUESSED. An unreadable head doc throws instead of being overwritten.
+//   • A WRITE IS REFUSED, NOT GUESSED. An unreadable head doc throws instead of being overwritten —
+//     for every writer except the wipe, which is the one write whose whole point is losing content.
+//   • A /forget IS NOT UNDONE. Both passes read, think for fifteen seconds, then write; a wipe that
+//     lands inside that window fences the save out rather than being reverted by it.
+//   • A BACKGROUND WRITER NEVER KILLS THE PROCESS. A throw out of a locked section is process-fatal,
+//     so the nightly note and the wipe drop on a durable failure where the weekly rewrite throws.
 process.env.TZ = 'UTC';
 
 import fs from 'node:fs';
@@ -23,6 +28,7 @@ import {
   THESIS_REWRITE_WRITER,
 } from './thesis.js';
 import { saveLongDoc, listLongRevisions } from './memoryLong.js';
+import { getForgetEpoch, bumpForgetEpoch } from './memory.js';
 import { memoriesDir } from '../stateDir.js';
 import { splitThesisDoc, joinThesisDoc, THESIS_EVIDENCE_MAX } from '../../memory/thesisEngine.js';
 
@@ -79,7 +85,7 @@ test('the header carries the REWRITE clock the weekly pass gates on', async () =
   assert.equal(head.slice(head.indexOf('\n') + 1), READ);
 });
 
-test('a nightly note does NOT move the rewrite clock — and a wipe does not either', async () => {
+test('a nightly note does NOT move the rewrite clock — and a wipe DOES', async () => {
   // THE bug this store exists to not have. The document has two writers at two rhythms: gate the
   // 6.5-day cooldown on the last WRITE and one nightly note inside the window resets it, so the
   // steady state of somebody she texts daily is a read written once, ever. `updated=` is the write
@@ -99,11 +105,18 @@ test('a nightly note does NOT move the rewrite clock — and a wipe does not eit
   assert.equal(Date.parse(m[2]), clock);
   assert.ok(Date.parse(m[1]) >= clock);
 
-  // A wipe carries it forward rather than clearing it: after a /forget the cooldown stays shut
-  // until the erased read would have been due anyway, so nothing re-mints a read minutes after
-  // somebody asked to be forgotten.
+  // A WIPE stamps the clock, so the next window starts at the wipe — the same decision
+  // clearMoments records for its harvest stamp, and for the same reason: this stamp is also the
+  // weekly window's CUT (buildThesisWindow), and /forget does not clear the transcript (that is
+  // /clear). Carried forward, the first pass after the cooldown reopened would read the pre-forget
+  // rows and re-mint substantially the read the user asked to erase. Stamped here, the cooldown
+  // also stays shut a full 6.5 days FROM the wipe, which is longer than carrying it forward.
+  const wipedAt = Date.now();
   assert.equal(await clearThesis(h), 3);
-  assert.equal((await getThesis(h))!.lastRewriteAt, clock);
+  const wiped = fs.readFileSync(filePath(h), 'utf8').match(/updated=(\S+) rewritten=(\S+)/)!;
+  assert.equal(wiped[2], wiped[1], 'the wipe\'s two stamps are ONE instant — the wipe itself');
+  const afterWipe = (await getThesis(h))!.lastRewriteAt;
+  assert.ok(afterWipe >= wipedAt, 'and the clock the next window cuts at is the wipe, not last week');
 
   // And the writer word that DOES advance it, advances it.
   const before = Date.now();
@@ -159,7 +172,63 @@ test('two racing writers: exactly one wins, the loser conflicts', async () => {
   assert.equal((await getThesis(h))?.version, 2);
 });
 
-test('a present-but-unreadable head doc degrades the READ and never gets clobbered', async () => {
+// ── the /forget fence ────────────────────────────────────────────────────────
+
+test('a /forget that lands mid-pass fences the save out, and nothing is versioned', async () => {
+  const h = freshHandle();
+  const epoch0 = getForgetEpoch(h);
+  assert.equal(await saveThesis(h, READ, 0, 'weekly', { ifForgetEpoch: epoch0 }), 1);
+
+  // The shape of the real race: the weekly pass reads the document, spends fifteen seconds in a
+  // classify call, and writes. A /forget inside that window wipes — and the version check alone
+  // cannot see it, because the wipe left the version exactly where the pass expects it.
+  const epoch1 = getForgetEpoch(h);
+  assert.equal(await clearThesis(h), 2);
+  bumpForgetEpoch(h); // what clearDossier does, under the same per-handle queue
+  assert.equal(
+    await saveThesis(h, 'the read the pass was holding', 2, 'weekly', { ifForgetEpoch: epoch1 }),
+    null,
+    'the version matched — only the epoch could refuse this',
+  );
+  assert.equal((await getThesis(h))?.docMd, '', 'the wipe stands');
+  assert.deepEqual((await listThesisRevisions(h)).map(r => r.version), [2, 1], 'and nothing new was minted');
+
+  // The fence is per-call, not a latch: a pass that read the epoch AFTER the forget writes normally.
+  assert.equal(await saveThesis(h, READ, 2, 'weekly', { ifForgetEpoch: getForgetEpoch(h) }), 3);
+});
+
+test('the nightly note carries the fence too, and does NOT retry through it', async () => {
+  const h = freshHandle();
+  await saveThesis(h, READ, 0, 'weekly');
+  // The nightly pass fences the same window the moments call spans (writeMoments takes the same
+  // option off the same read).
+  const epoch0 = getForgetEpoch(h);
+  bumpForgetEpoch(h);
+  assert.equal(await appendThesisEvidence(h, 'a note from before the wipe', { ifForgetEpoch: epoch0 }), null);
+  assert.equal((await getThesis(h))?.version, 1, 'nothing was written');
+  assert.equal((await listThesisRevisions(h)).length, 1);
+  // A fenced-out save shares the null with a version conflict and must not be retried — the
+  // document the loop is holding is exactly what the user erased. Without the fence the note lands.
+  assert.equal(await appendThesisEvidence(h, 'a note after the wipe', { ifForgetEpoch: getForgetEpoch(h) }), 2);
+});
+
+test('a durable write failure DROPS a nightly note and a wipe rather than the process', async () => {
+  const h = freshHandle();
+  await saveThesis(h, READ, 0, 'weekly');
+  // A full disk or an EACCES, reproduced the only way a test can without root: put a FILE where the
+  // revisions DIRECTORY has to go, so atomicWriteText's mkdir throws on the way to the first of the
+  // two writes. This is the half of the fail-loud policy the head-read test above cannot fire, and
+  // the reason these two writers must not fire it: node:test would fail this test on the unowned
+  // rejection withHandleLock publishes, which is precisely the signal that the VM would have died.
+  fs.rmSync(path.join(memoriesDir(h), 'revisions'), { recursive: true, force: true });
+  fs.writeFileSync(path.join(memoriesDir(h), 'revisions'), 'not a directory');
+  assert.equal(await appendThesisEvidence(h, 'a note on a full disk'), null);
+  assert.equal(await clearThesis(h), null);
+  assert.equal((await getThesis(h))?.docMd, READ, 'the document is untouched by either failure');
+  assert.equal((await getThesis(h))?.version, 1);
+});
+
+test('a present-but-unreadable head doc degrades the READ and no PASS ever clobbers it', async () => {
   const h = freshHandle();
   fs.mkdirSync(memoriesDir(h), { recursive: true });
   const hand = 'somebody hand-wrote a read with no header\n';
@@ -168,10 +237,6 @@ test('a present-but-unreadable head doc degrades the READ and never gets clobber
   // where they were. Everything that reads this store therefore behaves like a handle with no read
   // at all, which is the safe half of the fail-loud policy.
   assert.equal(await getThesis(h), null);
-  assert.equal(fs.readFileSync(filePath(h), 'utf8'), hand);
-  // The wipe refuses it too, on the same read, so /forget never turns an unparseable file into an
-  // empty one it cannot version — and never reaches the throwing branch below.
-  assert.equal(await clearThesis(h), null);
   assert.equal(fs.readFileSync(filePath(h), 'utf8'), hand);
 
   // And the NIGHTLY pass DROPS its note rather than reaching the refusal, which is the one
@@ -184,12 +249,15 @@ test('a present-but-unreadable head doc degrades the READ and never gets clobber
   assert.equal(fs.readFileSync(filePath(h), 'utf8'), hand, 'the bytes stay exactly where they were');
   assert.equal(fs.existsSync(path.join(memoriesDir(h), 'revisions')), false, 'and nothing was versioned');
 
-  // THE WRITE HALF IS NOT EXERCISED HERE, and the reason is worth writing down rather than leaving
-  // as a coverage hole for the next reader to "fix": `saveThesis` refuses this file with a
-  // ThesisWriteError from INSIDE withHandleLock, and that queue keeps itself with
-  // `void next.finally(...)` (db/repositories/memory.ts) — so a throwing locked section publishes a
-  // second, unowned copy of the rejection beside the one the caller catches, and node:test fails
-  // the running test on it whatever listeners the test installs. It is not this store's wart: it is
+  // ONLY HALF the write path is exercised here — the HEAD-READ refusal — and the reason the other
+  // half is not is worth writing down rather than leaving as a coverage hole for the next reader to
+  // "fix": `saveThesis` refuses this file with a ThesisWriteError from INSIDE withHandleLock, and
+  // that queue keeps itself with `void next.finally(...)` (db/repositories/memory.ts) — so a
+  // throwing locked section publishes a second, unowned copy of the rejection beside the one the
+  // caller catches, and node:test fails the running test on it whatever listeners the test
+  // installs. It is also exactly why a caller-side try/catch was never an option and the two
+  // background writers pass `onFailure: 'drop'` instead: the DURABLE-WRITE half of the same policy
+  // is now non-fatal for them and IS exercised, two tests below. It is not this store's wart: it is
   // why memoryLong's and memoryMedium's identical fail-loud branches have no test either. What can
   // be pinned without firing it is the contract itself.
   assert.equal(typeof ThesisWriteError, 'function');
@@ -197,6 +265,38 @@ test('a present-but-unreadable head doc degrades the READ and never gets clobber
   assert.equal(err.name, 'ThesisWriteError');
   assert.match(err.message, /^\[memory-thesis\] durable write failed: /);
   assert.ok(err instanceof Error);
+});
+
+test('/forget wipes an unreadable head anyway — the one write that outranks the version', async () => {
+  const h = freshHandle();
+  fs.mkdirSync(memoriesDir(h), { recursive: true });
+  fs.writeFileSync(filePath(h), 'somebody hand-wrote a read with no header\n');
+  // Every OTHER writer refuses a file it cannot version, because the read in there costs a week to
+  // earn back. A wipe is the exception on the plainest possible grounds: losing that content is the
+  // request. Refusing here would leave her read of somebody sitting on disk in plaintext through
+  // the one command that exists to remove it — and `clearMoments` overwrites unconditionally for
+  // the same reason.
+  assert.equal(await clearThesis(h), 1);
+  const doc = await getThesis(h);
+  assert.equal(doc?.docMd, '');
+  assert.equal(doc?.writtenBy, 'forget');
+  assert.ok(doc!.lastRewriteAt > 0, 'and the wipe stamps the clock like any other wipe');
+  assert.ok(fs.existsSync(path.join(memoriesDir(h), 'revisions', 'THESIS.v0001.md')));
+});
+
+test('an unversioned wipe numbers itself above the revisions it cannot read', async () => {
+  const h = freshHandle();
+  await saveThesis(h, 'read one', 0, 'weekly');
+  await saveThesis(h, 'read two', 1, 'weekly');
+  // The head is mangled at v2; the revisions folder still holds v1 and v2. A wipe that started at
+  // version 1 would mint THESIS.v0002.md again and overwrite a real revision, and the next save
+  // would then be a version that already exists.
+  fs.writeFileSync(filePath(h), 'half a write, no header');
+  assert.equal(await clearThesis(h), 3);
+  assert.deepEqual((await listThesisRevisions(h)).map(r => [r.version, r.docMd]), [
+    [3, ''], [2, 'read two'], [1, 'read one'],
+  ]);
+  assert.equal(await saveThesis(h, 'a read after the wipe', 3, 'weekly'), 4);
 });
 
 test('the head doc and revisions land as files, and share the folder with the long tier', async () => {
