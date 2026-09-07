@@ -104,11 +104,13 @@ test('every consumer the table names is still an exported function', () => {
 
 /**
  * What `JSON.stringify(STATUS_SCHEMA_PROP)` stands at TODAY, in characters, rounded up inside the 2%
- * PROMPT_BUDGET holds its own lines to. 3,413 measured — 3,195 before `hook_kind` joined the table
- * (+218: a 193-character row for the rhythm engine's one input, plus 25 for its key on both of the
- * wrapper's lists), and 2,899 before `language_request` joined it (+296: the standing-settings row,
- * the one field here that SETS something rather than reporting it, and the only channel through
- * which a language the English fast path cannot read reaches code at all).
+ * PROMPT_BUDGET holds its own lines to. 3,413 measured. The Never-Send-a-Leaf rewrite: +218, from
+ * 3,195, and all of it `hook_kind` joining the table — a 193-character row for the rhythm engine's
+ * one input, plus 25 for its key on both of the wrapper's lists. Nothing else in the phase reached
+ * this copy: the character rebuild happened in prose the schema does not carry, and re-measuring at
+ * the end of it found the same 3,413. Was 2,899 before `language_request` joined the table (+296:
+ * the standing-settings row, the one field here that SETS something rather than reporting it, and
+ * the only channel through which a language the English fast path cannot read reaches code at all).
  *
  * It is deliberately NOT the 1,600 the task brief targeted, and the arithmetic says why. The ten
  * rows are 3,010 of the 3,413; the wrapper (`required`, the types, `additionalProperties`) is the

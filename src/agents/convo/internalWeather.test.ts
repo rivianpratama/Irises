@@ -182,40 +182,35 @@ function innerWeatherSection(): string {
 /**
  * What that section stands at TODAY, in characters — the same measure-then-ratchet discipline as
  * PROMPT_BUDGET (promptPolicy.ts), at the granularity a persona editor actually works in. The whole
- * persona has a ceiling already, but at 138k it cannot tell this section growing back from any other
- * paragraph arriving: a sentence re-added here lands inside the +0.1% the persona line carries.
+ * persona has a ceiling already, but even at 84k it cannot tell this section growing back from any
+ * other paragraph arriving: a sentence re-added here lands inside the +0.1% the persona line carries.
  *
- * 2,680 today, from 2,859 — the 179 characters of the momentum sentence. It is deliberately NOT the
+ * 2,680, from 2,859 — the 179 characters of the momentum sentence. It was deliberately NOT the
  * 1,200 the task brief targeted: that estimate assumed this section's other paragraphs had already
- * moved out, and they have not. What is left is the leak guard, the list of what the per-turn block
- * contains, the standing-register and thread-offer framings, the pointer at the contract, and the
- * one rescued anti-sycophancy rule — five paragraphs of live persona, ~1,480 characters more than
- * the target, and not one of them a duplicate of anything the prompt says elsewhere. Reaching 1,200
- * means deciding which of those paragraphs the persona can lose, which is a phase of its own.
+ * moved out, and they had not.
  *
- * The affect compiler RE-MEASURES it at 2,680 and leaves it there, which is the honest number: the
- * compiler deleted the per-turn BLOCK's prose (-937 characters of weather, PROMPT_BUDGET.weather
- * ratcheted in the same commit) and did not touch this section, which is Context.md's own half of
- * the subject and belongs to the persona rewrite. The ceiling stands at +0.7% over the measurement,
- * inside the same 2% band promptBudget.test.ts holds every other line to. Stated rather than left
- * silent: a ceiling that is re-measured and holds is a different fact from one nobody looked at.
+ * The Never-Send-a-Leaf rewrite: **2,431**, from 2,680, and not one paragraph deleted to get there.
+ * Six body paragraphs went in and six came out, five of them re-authored and "**The `status` you
+ * report.**" byte-identical across the old file, the spec's fence and the new one — what changed is
+ * what they SAY. The block she is handed is described as instructions she obeys rather than a
+ * temperature she interprets ("You do not interpret it; you obey it"), because that is what it is
+ * now (persona/affectCompiler.ts); the list of what it contains names the compiled things — the one
+ * feeling word and what it does to this reply, the bubble cap, the sleep line, the self-note —
+ * instead of the body-clock and cycle paragraphs the compiler deleted at their source; the
+ * standing-register paragraph drops "how much polite runway"; and the thread-offer paragraph is one
+ * sentence pointing at the hooks section, because a thread is a hook and a hook lives on an idle
+ * turn. The compiler commit itself measured 2,680 and left it there, which was the honest number at
+ * the time: it deleted the per-turn BLOCK's prose (−937 of `PROMPT_BUDGET.weather`, ratcheted in the
+ * same commit) and this section is Context.md's own half of the subject, which belonged to the
+ * persona rewrite.
  *
- * The prose commit is the phase the note above said this section was waiting for, and it measures
- * **2,431**, from 2,680. Not a paragraph deleted, though: six body paragraphs went in and six came
- * out, five of them re-authored and "**The `status` you report.**" byte-identical across the old
- * file, the spec's fence and the new file. What changed is what they SAY. The block she is handed is
- * described as instructions she obeys rather than a temperature she interprets ("You do not interpret
- * it; you obey it"), because that is what it is now (persona/affectCompiler.ts); the list of what it
- * contains names the compiled things — the one feeling word and what it does to this reply, the
- * bubble cap, the sleep line, the self-note — instead of the body-clock and cycle paragraphs the
- * compiler deleted at their source; the standing-register paragraph drops "how much polite runway";
- * and the thread-offer paragraph is now one sentence pointing at the hooks section, because a thread
- * is a hook and a hook lives on an idle turn.
- *
- * The three pins this file holds are all still here and all still doing their job — the leak guard
- * verbatim, "where you are right now" naming the block, the contract pointer — and so is
+ * Re-measured at the end of the phase and unchanged at 2,431, so the ceiling stands at +0.8% over
+ * the measurement, inside the same 2% band promptBudget.test.ts holds every other line to. The three
+ * pins this file holds are all still here and all still doing their job — the leak guard verbatim,
+ * "where you are right now" naming the block, the contract pointer — and so is
  * promptPolicy.test.ts's adjacency pin (`epistemic_trigger` within 80 characters of the concede
- * sentence). The ceiling sits +0.8% over the measurement, inside the same band as every other line.
+ * sentence). Reaching the 1,200 the old brief wanted still means deciding which of these six
+ * paragraphs the persona can lose, which is a phase of its own.
  */
 const INNER_WEATHER_CEILING = 2_450;
 
