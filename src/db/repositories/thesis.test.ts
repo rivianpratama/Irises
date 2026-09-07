@@ -20,6 +20,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   getThesis, saveThesis, listThesisRevisions, appendThesisEvidence, clearThesis, ThesisWriteError,
+  THESIS_REWRITE_WRITER,
 } from './thesis.js';
 import { saveLongDoc, listLongRevisions } from './memoryLong.js';
 import { memoriesDir } from '../stateDir.js';
@@ -63,18 +64,75 @@ test('every accepted save snapshots a revision — a wipe included', async () =>
   assert.equal((await getThesis(h))?.docMd, '');
 });
 
-test('the header carries the cooldown clock the weekly pass reads', async () => {
+test('the header carries the REWRITE clock the weekly pass gates on', async () => {
   const h = freshHandle();
   const before = Date.now();
   await saveThesis(h, READ, 0, 'weekly');
   const doc = await getThesis(h);
-  assert.ok(doc!.updatedAt >= before);
-  assert.ok(doc!.updatedAt <= Date.now());
+  assert.equal(doc?.writtenBy, 'weekly');
+  assert.ok(doc!.lastRewriteAt >= before);
+  assert.ok(doc!.lastRewriteAt <= Date.now());
   // One file, one clock: the stamp the pass gates on is the same line that carries the version it
   // writes against, so a cooldown can never disagree with the document it guards.
   const head = fs.readFileSync(filePath(h), 'utf8');
-  assert.match(head, /^<!-- irises:thesis version=1 written_by=weekly updated=\S+ -->\n/);
+  assert.match(head, /^<!-- irises:thesis version=1 written_by=weekly updated=\S+ rewritten=\S+ -->\n/);
   assert.equal(head.slice(head.indexOf('\n') + 1), READ);
+});
+
+test('a nightly note does NOT move the rewrite clock — and a wipe does not either', async () => {
+  // THE bug this store exists to not have. The document has two writers at two rhythms: gate the
+  // 6.5-day cooldown on the last WRITE and one nightly note inside the window resets it, so the
+  // steady state of somebody she texts daily is a read written once, ever. `updated=` is the write
+  // stamp; `rewritten=` is the clock; only a 'weekly' save advances it.
+  const h = freshHandle();
+  await saveThesis(h, READ, 0, 'weekly');
+  const clock = (await getThesis(h))!.lastRewriteAt;
+  assert.ok(clock > 0);
+
+  assert.equal(await appendThesisEvidence(h, 'they asked about the volcano again'), 2);
+  const noted = await getThesis(h);
+  assert.equal(noted?.writtenBy, 'evidence');
+  assert.equal(noted?.version, 2, 'a note is still a version — the optimistic check depends on it');
+  assert.equal(noted?.lastRewriteAt, clock, 'but it is not a rewrite');
+  // In the bytes: the write stamp moved, the rewrite stamp is the one the read was written at.
+  const m = fs.readFileSync(filePath(h), 'utf8').match(/updated=(\S+) rewritten=(\S+)/)!;
+  assert.equal(Date.parse(m[2]), clock);
+  assert.ok(Date.parse(m[1]) >= clock);
+
+  // A wipe carries it forward rather than clearing it: after a /forget the cooldown stays shut
+  // until the erased read would have been due anyway, so nothing re-mints a read minutes after
+  // somebody asked to be forgotten.
+  assert.equal(await clearThesis(h), 3);
+  assert.equal((await getThesis(h))!.lastRewriteAt, clock);
+
+  // And the writer word that DOES advance it, advances it.
+  const before = Date.now();
+  assert.equal(await saveThesis(h, 'a sharper read of them', 3, THESIS_REWRITE_WRITER), 4);
+  assert.ok((await getThesis(h))!.lastRewriteAt >= before);
+});
+
+test('a doc that was never rewritten reads a zero clock — an OPEN window, not a fresh one', async () => {
+  const h = freshHandle();
+  // The nightly pass runs for days before the first rewrite, so a tail can exist with no read.
+  assert.equal(await appendThesisEvidence(h, 'a note before there was a read'), 1);
+  assert.equal((await getThesis(h))!.lastRewriteAt, 0, 'never rewritten must not read as just rewritten');
+  assert.match(
+    fs.readFileSync(filePath(h), 'utf8'),
+    /^<!-- irises:thesis version=1 written_by=evidence updated=\S+ rewritten=never -->\n/,
+    'and a human opening the file reads the answer instead of doing arithmetic on 1970',
+  );
+});
+
+test('a header written before the rewrite stamp existed still parses, and heals on the next save', async () => {
+  const h = freshHandle();
+  fs.mkdirSync(memoriesDir(h), { recursive: true });
+  fs.writeFileSync(filePath(h), `<!-- irises:thesis version=4 written_by=weekly updated=2026-09-01T00:00:00.000Z -->\n${READ}`);
+  const doc = await getThesis(h);
+  assert.equal(doc?.version, 4, 'a field that was ADDED must not fail-loud a write over a real read');
+  assert.equal(doc?.docMd, READ);
+  assert.equal(doc?.lastRewriteAt, 0, 'and it reads as never-rewritten: one extra rewrite, never a year of skipped ones');
+  assert.equal(await saveThesis(h, 'a fresh read of them', 4, 'weekly'), 5);
+  assert.ok((await getThesis(h))!.lastRewriteAt > 0);
 });
 
 test('stale expectedVersion returns null and writes NOTHING', async () => {
@@ -115,6 +173,16 @@ test('a present-but-unreadable head doc degrades the READ and never gets clobber
   // empty one it cannot version — and never reaches the throwing branch below.
   assert.equal(await clearThesis(h), null);
   assert.equal(fs.readFileSync(filePath(h), 'utf8'), hand);
+
+  // And the NIGHTLY pass DROPS its note rather than reaching the refusal, which is the one
+  // asymmetry in the fail-loud policy and the reason for it: a throw out of a locked section is
+  // process-fatal, not pass-fatal (withHandleLock keeps its queue with `void next.finally(...)`,
+  // so the rejection is also published unowned, and diagnostics/errorLog.ts exits the process on
+  // unhandledRejection). This store's own render seam cites "a human who opened THESIS.md and
+  // typed" as a real case; that hand edit must cost one dropped note, not the VM.
+  assert.equal(await appendThesisEvidence(h, 'a note with nowhere to land'), null);
+  assert.equal(fs.readFileSync(filePath(h), 'utf8'), hand, 'the bytes stay exactly where they were');
+  assert.equal(fs.existsSync(path.join(memoriesDir(h), 'revisions')), false, 'and nothing was versioned');
 
   // THE WRITE HALF IS NOT EXERCISED HERE, and the reason is worth writing down rather than leaving
   // as a coverage hole for the next reader to "fix": `saveThesis` refuses this file with a

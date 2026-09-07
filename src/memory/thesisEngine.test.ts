@@ -21,11 +21,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   THESIS_COOLDOWN_MS, THESIS_MIN_USER_LINES, THESIS_MIN_CHARS, THESIS_MAX_CHARS,
-  THESIS_MAX_SENTENCES, THESIS_EVIDENCE_MAX, THESIS_EVIDENCE_HEADING, THESIS_SECTION_HEADING,
+  THESIS_MAX_SENTENCES, THESIS_EVIDENCE_MAX, THESIS_EVIDENCE_NOTE_MAX, THESIS_EVIDENCE_HEADING,
+  THESIS_SECTION_HEADING,
   countSentences, validateThesis, splitThesisDoc, joinThesisDoc, buildThesisWindow,
   renderThesisSection, type ThesisRejection,
 } from './thesisEngine.js';
 import { groupHandle } from './identity.js';
+import { MOMENT_TEXT_MAX } from '../persona/moments.js';
 import type { StoredMessage } from '../db/types.js';
 
 const H = '+15551230001';
@@ -50,6 +52,11 @@ test('the constants are the numbers the plan and the writer prompt agree on', ()
   assert.equal(THESIS_EVIDENCE_MAX, 7);
   // Seven nightly notes is exactly one rewrite window — anything older is already in the read.
   assert.ok(THESIS_EVIDENCE_MAX * 24 * 60 * 60 * 1000 > THESIS_COOLDOWN_MS);
+  // A note is one observation, the size the sibling store gives one moment line — the nightly pass
+  // writes a moment and a note in ONE call, so two different caps would be an accident.
+  assert.equal(THESIS_EVIDENCE_NOTE_MAX, 200);
+  assert.equal(THESIS_EVIDENCE_NOTE_MAX, MOMENT_TEXT_MAX);
+  assert.ok(THESIS_EVIDENCE_NOTE_MAX < THESIS_MAX_CHARS, 'a note is evidence for a read, never a read');
 });
 
 // ── countSentences ───────────────────────────────────────────────────────────
@@ -186,6 +193,22 @@ test('join is the seam the seven-note FIFO is enforced at', () => {
   assert.equal(evidence[evidence.length - 1], 'note 12');
 });
 
+test('and LENGTH is enforced at the same seam — the notes are the weekly prompt input', () => {
+  // Count is not the only way a tail gets too big. A model that answered with a paragraph, or a
+  // human who typed into the tail, would otherwise ride into the rewrite prompt unbounded: the
+  // store bounds nothing it did not write itself, so this is the only place it can hold.
+  const long = `${'word '.repeat(200)}tail`;
+  const [note] = splitThesisDoc(joinThesisDoc(GOOD, [long])).evidence;
+  assert.ok(note.length <= THESIS_EVIDENCE_NOTE_MAX, `${note.length} chars kept`);
+  assert.ok(long.startsWith(note), 'it is a prefix of the note, not a rewrite of it');
+  assert.ok(note.split(' ').every(w => w === 'word'), 'cut on a word boundary');
+  // A note inside the cap is untouched, and the read above the tail is NOT held to a note's cap.
+  const exact = 'y'.repeat(THESIS_EVIDENCE_NOTE_MAX);
+  assert.deepEqual(splitThesisDoc(joinThesisDoc(GOOD, [exact])), { thesis: GOOD, evidence: [exact] });
+  const overNote = 'z'.repeat(THESIS_EVIDENCE_NOTE_MAX + 60);
+  assert.equal(splitThesisDoc(joinThesisDoc(overNote, [])).thesis, overNote);
+});
+
 test('a note is collapsed to one line, because the tail is line-oriented', () => {
   const doc = joinThesisDoc(GOOD, ['they said\nthis over\n\ntwo lines']);
   assert.equal(doc.split('\n').filter(l => l.startsWith('- ')).length, 1);
@@ -217,6 +240,11 @@ test('a body with no heading is all read', () => {
   // A heading that is only part of a line is not the boundary.
   const inline = 'they treat every ## evidence request as an accusation';
   assert.deepEqual(splitThesisDoc(inline), { thesis: inline, evidence: [] });
+  // A nothing that slipped past the type degrades, in BOTH branches — the no-heading branch is the
+  // one a null actually reaches, and it used to dereference the argument it had just defaulted.
+  for (const nothing of [undefined, null] as unknown as string[]) {
+    assert.deepEqual(splitThesisDoc(nothing), { thesis: '', evidence: [] });
+  }
 });
 
 // ── buildThesisWindow ────────────────────────────────────────────────────────
@@ -305,4 +333,12 @@ test('the render seam collapses and clamps, so no file can ride unbounded into t
   assert.ok(!body.endsWith(' '), 'the clamp cuts at a word boundary, never mid-gap');
   assert.ok(body.split(' ').every(w => w === 'word'), 'and never mid-word');
   assert.equal(renderThesisSection('one\nread\nover lines').split('\n').length, 2);
+
+  // The documented exception: one token with no space inside the cap is cut HARD (persona/moments.ts
+  // `clampMomentText`, same rule). A six-hundred-character word is a model malfunction, and keeping
+  // it whole would defeat the cap it arrived at.
+  const unbroken = 'x'.repeat(THESIS_MAX_CHARS + 50);
+  assert.equal(renderThesisSection(unbroken).split('\n')[1], 'x'.repeat(THESIS_MAX_CHARS));
+  const exact = 'y'.repeat(THESIS_MAX_CHARS);
+  assert.equal(renderThesisSection(exact).split('\n')[1], exact, 'a read exactly at the bound is untouched');
 });

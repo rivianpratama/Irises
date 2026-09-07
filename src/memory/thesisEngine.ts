@@ -73,6 +73,17 @@ export const THESIS_MAX_SENTENCES = 4;
  *  read. */
 export const THESIS_EVIDENCE_MAX = 7;
 
+/** The longest one evidence note may be. Two hundred characters, the same cap the sibling store
+ *  puts on one moment line (persona/moments.ts `MOMENT_TEXT_MAX`): the nightly pass writes a moment
+ *  and a note in ONE call, so a note is an observation of the same size, and two stores disagreeing
+ *  about how long a line about one evening is would be an accident rather than a decision.
+ *
+ *  Clamped, never refused: a note is a machine's line about a day, half of one is still evidence,
+ *  and a refusal loses the day. It holds at `joinThesisDoc` for the same reason the count does —
+ *  that is the seam every writer passes through, and the notes are the weekly rewrite's own prompt
+ *  input, which nothing between the file and that prompt measures again. */
+export const THESIS_EVIDENCE_NOTE_MAX = 200;
+
 /** The line that separates the read from its notes. Lower-case and plain: it is a machine boundary
  *  in a file a human may open, not a heading in a document. */
 export const THESIS_EVIDENCE_HEADING = '## evidence';
@@ -109,7 +120,10 @@ function oneLine(s: string): string {
   return s.replace(/\s+/g, ' ').trim();
 }
 
-/** Cut to `max` at a word boundary, never mid-word. Used only at the render seam. */
+/** Cut to `max` on a WORD boundary, so a severed word never reads as a typo she made. A text with
+ *  no space inside the cap is cut HARD rather than kept whole — persona/moments.ts
+ *  `clampMomentText`, same rule and same exception, because a single two-hundred-character token is
+ *  a model malfunction and letting it through whole would defeat the cap it arrived at. */
 function clampWords(s: string, max: number): string {
   if (s.length <= max) return s;
   const cut = s.slice(0, max);
@@ -190,9 +204,10 @@ export function validateThesis(text: unknown): ThesisVerdict {
  * exactly what a first save looks like.
  */
 export function splitThesisDoc(md: string): { thesis: string; evidence: string[] } {
-  const lines = (md ?? '').split('\n');
+  const body = md ?? '';
+  const lines = body.split('\n');
   const cut = lines.findIndex(l => l.trim() === THESIS_EVIDENCE_HEADING);
-  if (cut === -1) return { thesis: md.trim(), evidence: [] };
+  if (cut === -1) return { thesis: body.trim(), evidence: [] };
   const evidence: string[] = [];
   for (const raw of lines.slice(cut + 1)) {
     const m = raw.match(/^\s*-\s+(.*)$/);
@@ -208,15 +223,19 @@ export function splitThesisDoc(md: string): { thesis: string; evidence: string[]
  * read and no notes has no file content, and `db/repositories/thesis.ts` writes exactly that on a
  * `/forget`.
  *
- * Two clamps live HERE rather than only at the append site, for the reason the moments engine
+ * THREE clamps live HERE rather than only at the append site, for the reason the moments engine
  * clamps its text at the render seam: every write to this file is whole-document, so the seam that
  * every writer passes through is the only place a cap can actually hold. Notes are collapsed to one
- * line each (the tail is line-oriented), and only the newest `THESIS_EVIDENCE_MAX` survive.
+ * line each (the tail is line-oriented), cut to `THESIS_EVIDENCE_NOTE_MAX` on a word boundary, and
+ * only the newest `THESIS_EVIDENCE_MAX` survive. Length as well as count, because the notes are the
+ * weekly rewrite's prompt input: one oversized note — a model that answered with a paragraph, a
+ * human who typed into the tail — would otherwise ride into that prompt unbounded, and the store
+ * bounds nothing it did not write itself.
  */
 export function joinThesisDoc(thesis: string, evidence: readonly string[]): string {
   const read = (thesis ?? '').trim();
   const notes = (evidence ?? [])
-    .map(n => oneLine(n ?? ''))
+    .map(n => clampWords(oneLine(n ?? ''), THESIS_EVIDENCE_NOTE_MAX))
     .filter(Boolean)
     .slice(-THESIS_EVIDENCE_MAX);
   const parts: string[] = [];
