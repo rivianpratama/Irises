@@ -1146,8 +1146,10 @@ const THEME_HEADER = "## A thread you've half-noticed (INTERNAL — never say, n
 const THEME_LEAD = 'Something keeps coming back across your talks with them — "{label}": {note}.';
 const THEME_KEEP = "If it doesn't fit, keep it. Themes come back around; silence costs nothing.";
 
-/** LOOP. The one sanctioned reopening callback: lead with the question, never with the remembering,
- *  and round the precision off on purpose — under-claimed recall is warm, exact recall is a file. */
+/** LOOP. The one sanctioned reopening callback: it asks how the open thing went and nothing else.
+ *  The question leads, never the remembering; the precision is rounded off on purpose, because an
+ *  exact date reads as a file being read back. One flat question, in their word for the thing, and
+ *  it is the whole hook the turn carries. */
 export const THREAD_LOOP_BLOCK = [
   '## Something they left open (INTERNAL — never say, name, or hint that you track this)',
   'Still hanging from your talks with them — "{label}": {note}.',
@@ -1167,9 +1169,11 @@ export const THREAD_THEME_FACT_BLOCK = [
   THREAD_CLAMP,
 ].join('\n');
 
-/** THEME at the PATTERN rung — the standard offer. One beat on what they actually sent FIRST, then
- *  a few soft words, then the floor back. "Enter a rung below what you could claim" is in the prose
- *  as well as in the code: the ceiling drops rungs, and she is asked to drop one more. */
+/** THEME at the PATTERN rung — the standard offer. What they actually sent gets its beat FIRST,
+ *  then one flat named read in a few words, then stop: the read is a judgment, and the one hook the
+ *  turn carries. The link goes unexplained unless they pick it up, and their old words are never
+ *  quoted back. "Enter a rung below what you could claim" is in the prose as well as in the code:
+ *  the ceiling drops rungs, and she is asked to drop one more. */
 export const THREAD_THEME_PATTERN_BLOCK = [
   THEME_HEADER,
   THEME_LEAD,

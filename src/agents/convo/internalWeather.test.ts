@@ -214,6 +214,12 @@ function innerWeatherSection(): string {
  */
 const INNER_WEATHER_CEILING = 2_450;
 
+/** How much the ceiling may sit above the measurement, copied from promptBudget.test.ts so this
+ *  section is held to the same band as every other prose line. The downward assertion below is the
+ *  half this pin was missing: a ceiling that only fails when the section GROWS leaves a deletion's
+ *  slack lying around for the next arrival to land in for free. */
+const MAX_HEADROOM = 0.02;
+
 test('the persona no longer claims her state has momentum — the drift engine enforces it', () => {
   const section = innerWeatherSection();
   assert.doesNotMatch(
@@ -237,5 +243,12 @@ test('the persona no longer claims her state has momentum — the drift engine e
     section.length <= INNER_WEATHER_CEILING,
     `the inner-weather section is ${section.length} chars, over its ${INNER_WEATHER_CEILING}-char ceiling — `
     + 'ratchet it here in the same commit, or delete something the per-turn block already says',
+  );
+  assert.ok(
+    INNER_WEATHER_CEILING <= section.length * (1 + MAX_HEADROOM),
+    `the inner-weather section measures ${section.length} chars but its ceiling stands at `
+    + `${INNER_WEATHER_CEILING} (+${(((INNER_WEATHER_CEILING - section.length) / section.length) * 100).toFixed(1)}%), `
+    + `over the ${MAX_HEADROOM * 100}% band — ratchet it down here in the commit that shortened the section, `
+    + 'so what the deletion bought is what is held',
   );
 });

@@ -127,6 +127,12 @@ test('every consumer the table names is still an exported function', () => {
  */
 const SCHEMA_JSON_CEILING = 3_470;
 
+/** How much the ceiling may sit above the measurement, copied from promptBudget.test.ts so this copy
+ *  of the descriptions is held to the same band as the `status_contract` copy of them. The downward
+ *  assertion below is the half this pin was missing: shortening a row and leaving the old number
+ *  standing hands the next row that joins the table free space nobody voted for. */
+const MAX_HEADROOM = 0.02;
+
 test('the status schema both lanes validate against is inside its budget', () => {
   const json = JSON.stringify(STATUS_SCHEMA_PROP);
   const props = (STATUS_SCHEMA_PROP as { properties: Record<string, unknown> }).properties;
@@ -138,6 +144,13 @@ test('the status schema both lanes validate against is inside its budget', () =>
     json.length <= SCHEMA_JSON_CEILING,
     `the status schema is ${json.length} chars, over its ${SCHEMA_JSON_CEILING}-char ceiling. It rides `
     + 'every request to both lanes, so a description that grows is paid for on every turn twice over. '
+    + `Where it sits:\n${rows.join('\n')}`,
+  );
+  assert.ok(
+    SCHEMA_JSON_CEILING <= json.length * (1 + MAX_HEADROOM),
+    `the status schema measures ${json.length} chars but its ceiling stands at ${SCHEMA_JSON_CEILING} `
+    + `(+${(((SCHEMA_JSON_CEILING - json.length) / json.length) * 100).toFixed(1)}%), over the `
+    + `${MAX_HEADROOM * 100}% band — ratchet it down here in the commit that shortened a row. `
     + `Where it sits:\n${rows.join('\n')}`,
   );
 });

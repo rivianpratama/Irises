@@ -8,7 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildProgressBrief } from './voiceInstant.js';
 
-const CTX = 'how to address them: boss';
+const CTX = 'how to address them: Sam';
 
 test('every kind wraps in <prompt>, tags the situation, and steers against repeating', () => {
   for (const kind of ['holding', 'still_on_it', 'heartbeat', 'progress'] as const) {
@@ -35,5 +35,5 @@ test('still_on_it and heartbeat both say NOT to repeat the earlier "on it"', () 
 
 test('the user_context is carried through for addressing/style', () => {
   const brief = buildProgressBrief({ kind: 'holding', request: 'x' }, CTX);
-  assert.match(brief, /how to address them: boss/);
+  assert.match(brief, /how to address them: Sam/);
 });

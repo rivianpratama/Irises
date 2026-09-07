@@ -79,9 +79,7 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  *     the Lowndes playbook is replaced by ELEVEN first-principle moves, "run the stack" is rebuilt on
  *     the task/idle split, "How you write" keeps only the floor state, and the inner-weather section
  *     is re-authored around a block that instructs instead of describing. The opening ABSOLUTE RULE
- *     blockquote went with the head replacement too — the one deletion here that nothing in
- *     Context.md restates — and the envelope contract now stands ONCE, in shared.ts's `json_anchor`
- *     at the recency edge: all four fields, in that order, every reply, no exceptions.
+ *     blockquote came out here too, which was a mistake — see the +438 below, where it goes back.
  *   · craft/onboarding.md −3,151 and craft/threading.md −1,373: both rewritten in the new register
  *     rather than trimmed, and both lighter for it — the threading page's ladder, materials and modes
  *     are intact, and the first-contact page trades charm framing for one flat read.
@@ -89,9 +87,22 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  *     the real one — the three kinds, what each is built from, the predict-then-collect move, the
  *     quiet reply, and the clause `RULE_ANCHORS.response_overrules` now anchors on, which moved here
  *     from Context.md because this is where the beat it governs is taught.
+ *
+ * Then **+438** in the supervisor-corrections commit, all of it Context.md (76,820 → 77,258) and all
+ * three moves prose fixes rather than design:
+ *   · +489 — the opening ABSOLUTE RULE blockquote is BACK as line 3, byte-identical to `main`. Its
+ *     deletion was an accident of a mislabelled spec range ("title + three intro paragraphs" also
+ *     swallowed the blockquote), never an editorial call, and the four-field envelope rule belongs at
+ *     the primacy edge as well as the recency one — the two-copy drift strategy CLAUSE_INVENTORY's
+ *     header in promptPolicy.ts describes.
+ *   · −53 — the confidence section's tone paragraph stated its own law twice ("Their emotion tunes
+ *     your TONE, never your score" and then "your register, never your score" one clause later); the
+ *     second statement goes, the paragraph keeps its lead-in and its close.
+ *   · +2 — §Language's lead-in said "Two rules on top of it" over three bullets. A miscount that
+ *     predates this branch and sat inside a KEEP range.
  */
-const CORPUS_CHARS = 121_950;
-const CORPUS_SHA256 = '0e792b2dac9f39efcf2e338b6923a7567b3f3614bbe55ca24c78ea712dd390ad';
+const CORPUS_CHARS = 122_388;
+const CORPUS_SHA256 = 'ac92be429090ed956e6da8a4baeb61cd780cbb7cd7cc1ee516a4e9b9c7df6602';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 

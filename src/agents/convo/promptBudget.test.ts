@@ -741,6 +741,31 @@ function transcriptShare(prompt: MeasuredPrompt, messages: readonly TranscriptMe
 
 // ── the assertions ───────────────────────────────────────────────────────────
 
+/** The zone guard, and the reason it is the first test in the file. The header asks every fixture to
+ *  run under TZ=UTC and `argsFor` pins each one's `agentTz` to 'UTC', but that only covers the clock
+ *  section: `conversation_timing` takes no zone from the assembler at all and falls back to
+ *  `DEFAULT_TZ` — the HOST's own zone, resolved once at import (pipeline/zonedTime.ts) and therefore
+ *  already fixed before this file's own `process.env.TZ` line runs. So a run started outside UTC
+ *  renders a different wall clock inside that section: the mature fixture measures 136,993 characters
+ *  under TZ=UTC against 136,944 on a UTC+7 host and 136,943 on a US Central one — 49 characters of
+ *  prose that reads "late night" in one zone and something else in another — and every ceiling below
+ *  is then a number taken on a prompt this process cannot build. The clock section is the readable
+ *  witness for the same fallback: hand it no stored `agent_tz` and it prints DEFAULT_TZ's wall clock,
+ *  so the frozen 02:00 instant shows up as "2:00 AM" in UTC and as something else everywhere else. */
+test('the process is in UTC — every ceiling below was measured there', () => {
+  const args = argsFor({});
+  args[7] = '';  // no stored agent_tz, so the clock falls back to DEFAULT_TZ like the timing block does
+  const { system } = buildSystemPromptSections(...args);
+  const clockLine = system.split('\n').find(l => l.startsWith("Right now it's")) ?? '';
+  assert.match(
+    clockLine, /2:00 AM/,
+    `the frozen clock is ${new Date(FROZEN_MS).toISOString()}, but the current-time section renders `
+    + `"${clockLine}" — this process is not in UTC, so the wall-clock sections measure a different `
+    + 'length than the ceilings in promptPolicy.ts were taken at. Run the suite with TZ=UTC '
+    + '(npm test does), or export TZ=UTC before tsx --test on this file alone.',
+  );
+});
+
 test('the fixtures assemble the sections they claim to, and nothing is left unmeasured', () => {
   for (const f of FIXTURES) {
     const names = buildSystemPromptSections(...argsFor(f.spec)).sections.map(s => s.name);
