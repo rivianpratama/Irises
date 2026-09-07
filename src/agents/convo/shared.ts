@@ -91,6 +91,7 @@ import { renderTurnFocus, turnFocusBlockEnabled, type TurnFocusInput } from './t
 import { detectUnkeptPromise, renderPromiseCorrection, unkeptPromiseGuardEnabled } from './unkeptPromise.js';
 import { callLLM } from '../../llm/callLLM.js';
 import { record } from '../../diagnostics/trace.js';
+import { HOOK_OFF_TURN_LABEL, QUIET_GUARD_LABEL } from '../../diagnostics/traceLabels.js';
 import {
   buildTurnTraceDraft, turnTraceEnabled, type TurnTraceDraft, type TurnTraceTurnInputs,
 } from '../../diagnostics/turnTrace.js';
@@ -1442,7 +1443,7 @@ export async function enforceQuiet(
   const violated = quietViolation(emitted, bubbles);
   const file = (retried: boolean, resolved: 'clean' | 'quiet' | 'kept_original') => {
     record({
-      type: 'event', label: 'convo:quiet_guard', chatId, handle,
+      type: 'event', label: QUIET_GUARD_LABEL, chatId, handle,
       detail: { forced: true, emitted: emitted ?? null, bubbles: bubbles.length, retried, resolved },
     });
   };
@@ -2819,7 +2820,7 @@ export async function processConvoResult(args: {
     // scores. Only on a turn the gate actually read as work.
     if (hookTurn.directive.mode === 'task' && emitted?.hook_kind) {
       record({
-        type: 'event', label: 'hook:off_turn', chatId, handle,
+        type: 'event', label: HOOK_OFF_TURN_LABEL, chatId, handle,
         detail: { emitted: emitted.hook_kind, idle: hookTurn.directive.idle },
       });
     }

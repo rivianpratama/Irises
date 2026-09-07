@@ -23,6 +23,7 @@
 import { callLLM } from '../../llm/callLLM.js';
 import { dataTag, wrapPrompt } from '../../llm/promptTag.js';
 import { record } from '../../diagnostics/trace.js';
+import { IDLE_CLASSIFY_LABEL } from '../../diagnostics/traceLabels.js';
 import type { IdleVerdict } from '../../persona/idle.js';
 
 /**
@@ -143,7 +144,7 @@ export function makeIdleClassifier(
     const file = (verdict: IdleVerdict, cached: boolean, failed?: string) => {
       record({
         type: 'event',
-        label: 'idle:classify',
+        label: IDLE_CLASSIFY_LABEL,
         chatId: ctx.chatId,
         handle: ctx.handle,
         // Names and numbers only: the message itself never enters the ring, the way no receipt in

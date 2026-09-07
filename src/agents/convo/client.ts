@@ -44,6 +44,7 @@ import type { ComputedState } from '../../persona/status.js';
 import { hasMedia, type IncomingMedia } from '../../webhook/types.js';
 import { reportError } from '../../diagnostics/errorLog.js';
 import { record } from '../../diagnostics/trace.js';
+import { HOOKS_SELECT_LABEL, MOMENTS_OFFER_LABEL } from '../../diagnostics/traceLabels.js';
 import type { LlmMessage, LlmRequest, LlmResult, LlmToolDef } from '../../llm/types.js';
 import { buildSystemPromptSections, processConvoResult, formatHistory, emptyExtras, callConvoLLM, annotateTappedReply } from './shared.js';
 import { voiceOutcome } from '../fallfirm/client.js';
@@ -417,7 +418,7 @@ export async function chat(
     // engine that stopped running and an engine that keeps finding nothing to say are otherwise
     // indistinguishable.
     record({
-      type: 'event', label: 'hooks:select', chatId, handle,
+      type: 'event', label: HOOKS_SELECT_LABEL, chatId, handle,
       detail: { ...picked.report, mode: picked.directive.mode, idle: picked.directive.idle, moments: picked.directive.moments },
     });
   }
@@ -470,7 +471,7 @@ export async function chat(
           ifForgetEpoch: getForgetEpoch(handle),
         }).catch(err => console.warn('[convo] moment offer bill failed', err));
         record({
-          type: 'event', label: 'moments:offer', chatId, handle,
+          type: 'event', label: MOMENTS_OFFER_LABEL, chatId, handle,
           detail: { offered: sample.length, rendered: momentLines.length, held: file.entries.length, excluded: excludeIds.size },
         });
       }

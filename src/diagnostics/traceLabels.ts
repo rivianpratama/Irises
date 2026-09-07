@@ -15,3 +15,32 @@
 
 /** The `turn:trace` label — one receipt per user-visible turn (diagnostics/turnTrace.ts). */
 export const TURN_TRACE_LABEL = 'turn:trace';
+
+// ── the rhythm engine's five ─────────────────────────────────────────────────
+//
+// That day arrived for these: the hook battery (scripts/convergence/hookBattery.ts) picks all five
+// out of `diagnostic_turn_history` with SQL and out of the trace ring over HTTP, and it scores the
+// idle gate, the kill switch and the moment spacing off nothing else. A battery that retyped them
+// would score an empty round as clean the first time one was renamed, which is the exact failure
+// this file was built to prevent.
+
+/** The idle gate's own reading, filed on EVERY turn the rhythm selector ran — a healthy no-op
+ *  included (agents/convo/client.ts). Carries which layer decided and which reason won. */
+export const HOOKS_SELECT_LABEL = 'hooks:select';
+
+/** Layer 3 of the idle gate: one receipt per reading, cache hit or lane call
+ *  (agents/convo/idleClassify.ts). */
+export const IDLE_CLASSIFY_LABEL = 'idle:classify';
+
+/** The forced-quiet backstop's evaluation, filed whether or not the quiet was broken
+ *  (agents/convo/shared.ts `enforceQuiet`). The healthy no-op is what makes the kill switch
+ *  scorable at all. */
+export const QUIET_GUARD_LABEL = 'convo:quiet_guard';
+
+/** A hook word that rode a TASK turn: counted and receipted, never re-asked
+ *  (agents/convo/shared.ts). */
+export const HOOK_OFF_TURN_LABEL = 'hook:off_turn';
+
+/** The moment sampler's bill — how many episodes were put in front of her, how many rendered, how
+ *  many the 24-hour window held out (agents/convo/client.ts). */
+export const MOMENTS_OFFER_LABEL = 'moments:offer';

@@ -60,6 +60,53 @@ export type { ThreadSelectReport, ThreadHarvestReport, ThreadTheme, OpenLoop } f
 export { TURN_TRACE_LABEL } from '../../src/diagnostics/traceLabels.js';
 export type { TurnTraceDetail, MemoryGateBlock, MemoryGateReports } from '../../src/diagnostics/turnTrace.js';
 
+// ── the rhythm engine's receipts (diagnostics/traceLabels.ts) ────────────────────────────────────
+// The five labels hookBattery.ts matches on, from the same leaf and for the same reason as
+// TURN_TRACE_LABEL above: a battery that retyped one would score an empty round as clean the first
+// time it was renamed. All five are constants at their `record` call sites now (agents/convo's
+// client.ts, shared.ts and idleClassify.ts), so there is nothing left here to retype.
+export {
+  HOOKS_SELECT_LABEL,
+  IDLE_CLASSIFY_LABEL,
+  QUIET_GUARD_LABEL,
+  HOOK_OFF_TURN_LABEL,
+  MOMENTS_OFFER_LABEL,
+} from '../../src/diagnostics/traceLabels.js';
+
+// ── the rhythm engine's numbers and vocabulary (persona/hooks.ts) ────────────────────────────────
+// VALUES, every one of them, because hookBattery does arithmetic with all four: the run limit is
+// how many seed turns the kill-switch probe has to fill the ledger with, the word list is what a
+// receipt's `emitted` is checked against, the quiet ceiling is what a forced-quiet reply is measured
+// by, and the moment interval is how far apart two offers must sit before a round can test the
+// 24-hour no-repeat at all. Retyped, each of them would be a threshold that silently stopped
+// describing the engine — a "clean" round measuring a rule nobody enforces any more.
+export {
+  HOOK_WORDS,
+  HOOK_RUN_LIMIT,
+  QUIET_MAX_WORDS,
+  MOMENT_IDLE_INTERVAL,
+} from '../../src/persona/hooks.js';
+export type {
+  HookWord,
+  HookKind,
+  HookMode,
+  HookSelectReason,
+  HookSelectReport,
+} from '../../src/persona/hooks.js';
+
+// ── the idle gate (persona/idle.ts) ──────────────────────────────────────────────────────────────
+// A VALUE, because the battery has to be able to say which of its probes the English fast path can
+// answer on its own: a stall the examples already hold could never exercise the classify layer, and
+// a probe aimed at layer 3 has to be written against a token that is NOT in this list. The list is
+// documented upstream as examples rather than a law, and the battery treats it as exactly that.
+export { LEAF_EXAMPLES } from '../../src/persona/idle.js';
+export type { IdleLayer, IdleVerdict } from '../../src/persona/idle.js';
+
+// ── the moment store's one clock (persona/moments.ts) ────────────────────────────────────────────
+// A VALUE: the "never offered twice" probe divides it to print a window in hours, and the sentence
+// it prints is the instruction an operator acts on.
+export { MOMENT_RECENT_EXCLUDE_MS } from '../../src/persona/moments.js';
+
 import { PROMPT_BUDGET, type BudgetKey } from '../../src/agents/convo/promptPolicy.js';
 
 /**
