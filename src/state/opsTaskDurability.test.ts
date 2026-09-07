@@ -153,6 +153,10 @@ test('the follow-up claims no result and never offers to re-run by itself', () =
   assert.match(text, /nothing came back/);
   assert.equal(text, text.toLowerCase(), 'her register is lowercase');
   assert.ok(!/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(text), 'no emoji');
+  // The re-run is a statement of what is in reach, not a question they have to answer: her one line
+  // about a killed run ends on "say the word and i run it again", and carries no question mark at all.
+  assert.match(text, /say the word and i run it again/);
+  assert.ok(!text.includes('?'), 'no question shape — the decision is theirs without being homework');
   // A paragraph-long ask cannot become the whole text.
   assert.ok(opsLostText('x'.repeat(500)).length < 300);
 });

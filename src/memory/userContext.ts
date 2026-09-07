@@ -52,8 +52,8 @@ function renderStructuredPrefs(prefs: Record<string, unknown>): string {
 }
 
 /**
- * Identity + the one rule for how to address the user. Always present — the "boss" fallback needs
- * no stored data. Precedence: an explicit `address_as` preference > their known name > "boss".
+ * Identity + the one rule for how to address the user. Always present — the no-address-term fallback
+ * needs no stored data. Precedence: an explicit `address_as` preference > their known name > nothing.
  * A free-form addressing directive in USER PREFERENCES also wins (it sits below this block).
  */
 function renderAddressing(profile: UserProfile | null, prefs: Record<string, unknown>): string {
@@ -69,7 +69,7 @@ function renderAddressing(profile: UserProfile | null, prefs: Record<string, unk
   let rule: string;
   if (addressAs) rule = `call them "${addressAs}" — that's how they asked to be addressed, and it overrides everything else`;
   else if (name) rule = `use their name, "${name}"`;
-  else rule = `you don't know their name yet, so call them "boss"`;
+  else rule = `you don't know their name yet, so use no address term at all — second person only, never an invented nickname`;
   lines.push(
     `How to address them: ${rule}. Do it occasionally, the way a real person texting drops a name in — ` +
     `not in every bubble. If a preference below says how they want to be addressed, that wins. ` +

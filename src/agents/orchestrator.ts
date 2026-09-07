@@ -7,7 +7,6 @@ import { markOpsDone, isOpsCancelled, noteOpsProgress, markOpsRetry, getOpsEtaSt
 import { detectCause, decide, splitMiss, retryTaskFor, steerReplayTaskFor, type TriageDecision } from './ops/triage.js';
 import { selectInterveningUserMessages } from './interveningMessages.js';
 import { redactInternalTools } from './guardrails.js';
-import { describeGap } from '../pipeline/chatTime.js';
 import { voiceOutcome } from './fallfirm/client.js';
 import { type Outcome } from './fallfirm/floor.js';
 import { voiceInstant, type VoiceInstantOpts } from './fallfirm/voiceInstant.js';
@@ -153,7 +152,7 @@ async function composeFollowUp(
     // READING of the question, so the user deserves one light "here's what i looked at" caveat and
     // an open door to re-aim. In-flight signal only (task field), never from memory.
     if (typeof task.originConfidence === 'number' && task.originConfidence < 60) {
-      instruction += `\n\none more thing about this one: when you started this look you were only partly sure what they meant (you read it as "${task.request}"). so as you answer, make WHICH thing you looked at unmistakable — name the deal/property/document in your first or second bubble, the way a person says "so for the maple st contract..." — and leave one short, natural opening to re-aim if you guessed wrong ("if you meant a different one, say the word"). one light touch, not an apology tour: never say you were unsure, never mention scores, checks, or anything behind the curtain. the facts themselves stay exact as always.`;
+      instruction += `\n\none more thing about this one: when you started this look you were only partly sure what they meant (you read it as "${task.request}"). so as you answer, make WHICH thing you looked at unmistakable — name the deal/property/document in your first or second bubble, the way a person says "so for the maple st contract..." — flat, no opening added, no apology tour: never say you were unsure, never mention scores, checks, or anything behind the curtain. the facts themselves stay exact as always.`;
     }
   }
 
@@ -169,11 +168,12 @@ async function composeFollowUp(
 
   // How long they actually waited on the holding line (single app clock: task.createdAt and now
   // are both stamped by this process). Most looks land in seconds-to-minutes and deserve no
-  // mention; past 10 minutes a person would give the wait one light beat, so tell the composer —
-  // capped hard at one, folded into the delivery, never an apology tour.
+  // mention; past 10 minutes the composer is told the look ran long — and told to say NOTHING about
+  // it. The gate stays because the note only makes sense on a real wait; the duration is gone
+  // because a wait she names is a wait she made theirs to absorb.
   const waitMs = Date.now() - task.createdAt;
   if (waitMs > 10 * 60_000) {
-    instruction += `\n\nthis look ran long on your end — they've been waiting ${describeGap(waitMs)}. ONE light half-beat nod to the wait ("took me a minute, but got it" energy), folded into the delivery, never an apology tour, never a precise duration.`;
+    instruction += `\n\nthis look ran long on your end. deliver the answer flat: no apology, no nod to the wait, never a duration.`;
   }
 
   try {

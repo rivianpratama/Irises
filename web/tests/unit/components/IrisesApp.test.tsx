@@ -41,7 +41,7 @@ describe("Irises thin client", () => {
   it("renders the composer and opens the stream on mount", () => {
     render(<IrisesApp />);
     expect(
-      screen.getByPlaceholderText("What's been on your mind lately?")
+      screen.getByPlaceholderText("Message")
     ).toBeInTheDocument();
     // openStream captured our handler.
     expect(typeof mocks.emit.current).toBe("function");

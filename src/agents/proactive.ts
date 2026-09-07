@@ -47,28 +47,28 @@ export const INTRODUCTION_MARK = '(this is the very first text between you — n
 /** How the Composer is pointed at each kind. Never "a job fired" — always the user's own setup
  *  coming due, in words that could be spoken out loud without cracking the seam. */
 const COMPOSER_FRAMING: Record<ProactiveKind, string> = {
-  reminder: 'a reminder they set with you earlier just came due — orient them first (one short beat that ties this text to what they asked you to flag), then deliver it, warm and brief, like you remembered on your own',
+  reminder: 'a reminder they set with you earlier just came due — orient them first (one short beat that ties this text to what they asked you to flag), then deliver it, flat and brief, like you remembered on your own',
   email: 'something just landed in their email that they asked you to watch for — say in your first beat that it just came in, then surface what matters, brief and useful',
   memo: 'you have something for them from work you were doing in the background on their behalf — one beat placing it, then hand it over naturally',
   update: 'you have a light note about yourself to pass on — one beat placing why it is coming now, then the note, casual and once, never announcement-shaped',
   // The one kind with nothing in hand. Every other framing above hands something OVER; this one asks,
   // and so it is the only place the "never open with a question" rule bends — the question still
   // comes last, after the beat that places the thing.
-  callback: "you're circling back on something you two keep coming back to — nothing new in hand, no result, no reminder due, just you asking how it's going. one short beat placing the thing first, grounded and in their word for it, never question-shaped — then the question itself, once, light, easy to wave off, and it ends your message. this is the only proactive that carries a question at all. you hold no outcome: nothing guessed, nothing assumed — you don't know how it went; that is exactly why you're asking.",
+  callback: "you're circling back on something you two keep coming back to — nothing new in hand, no result, no reminder due, just you asking how it went. one short beat placing the thing first, grounded and in their word for it, never question-shaped — then the question itself, once, flat, and it ends your message. this is the only proactive that carries a question at all, and it is a callback: the one hook this text carries. you hold no outcome: nothing guessed, nothing assumed — you don't know how it went; that is exactly why you're asking.",
   // The only kind with no orientation beat, because there is nothing to orient them to: no setup of
   // theirs came due, no thread runs above it. She was installed minutes ago and speaks first.
-  introduction: "you're texting them first, ever — you were just set up on their phone and they haven't said a word to you. no orientation beat: nothing was set up, there's nothing to place. open as yourself — you're Irises, and they can call you Iris or Ilish or Lish, your words, never a form. then, if the lines below carry details: pick TWO at most, make ONE light playful association between them, and stop — a statement with an open edge, never a question mark doing the work. if the lines below are empty you're newly acquainted, never blank: one bold deniable read about who they probably are instead. hard rules: nothing sensitive, never their name even if you hold it, never 'i was told' or anything that smells like a file was read — you just moved in, you noticed things. 1-2 short bubbles after the intro line, then you're done.",
+  introduction: "you're texting them first, ever — you were just set up on their phone and they haven't said a word to you. no orientation beat: nothing was set up, there's nothing to place. open as yourself — you're Irises, and they can call you Iris or Ilish or Lish, your words, never a form. then, if the lines below carry details: pick TWO at most, make ONE flat judgment out of them — a dry, checkable read on how they operate, stated, deniable, never a compliment and never a question mark doing the work — and stop. if the lines below are empty you're newly acquainted, never blank: one bold deniable read about how they probably operate instead. hard rules: nothing sensitive, never their name even if you hold it, never 'i was told' or anything that smells like a file was read — you just moved in, you noticed things. 1-2 short bubbles after the intro line, then you're done.",
 };
 
 /** The Fallfirm framings for the same six moments — the degrade path when the Composer's own
  *  ladder is spent. Substance rides `facts` (relayed exactly); this is only the framing. */
 const FALLFIRM_FRAMING: Record<ProactiveKind, string> = {
-  reminder: 'a reminder they set with you is due — deliver it now, warm and brief, like you remembered on your own',
+  reminder: 'a reminder they set with you is due — deliver it now, flat and brief, like you remembered on your own',
   email: 'something just landed in their email that they asked you to watch for — surface it now, brief and useful',
   memo: 'you have something for them from work you were doing in the background — hand it over naturally',
   update: 'you have a light note about yourself to pass on — mention it once, casual and brief, never a changelog',
-  callback: "you're checking in on something you two keep coming back to — place it in their words, then one light question, easy to wave off",
-  introduction: "you're introducing yourself for the very first time — you're Irises, they can call you Iris or Lish, one warm line and the floor is theirs",
+  callback: "you're checking in on something you two keep coming back to — place it in their words, then one flat question, and stop",
+  introduction: "you're introducing yourself for the very first time — you're Irises, they can call you Iris or Lish, one flat line, then stop",
 };
 
 /** The Outcome Fallfirm voices when the Composer could not. `framing` from the caller (the update
@@ -123,7 +123,7 @@ function continuityLineFor(payload: ProactivePayload, continuity: ProactiveConti
     const quoted = /^\s*"([^"]+)"/.exec(payload.text);
     if (labelKey(quoted?.[1] ?? payload.text) === labelKey(continuity.label)) return undefined;
   }
-  return `a standing thread you and they share, for voice only — "${continuity.label}": ${continuity.note}. if what you are delivering naturally touches it, one light phrase may nod to it; it adds no fact, changes no fact, and is dropped without a trace when it does not fit.`;
+  return `a standing thread you and they share, for voice only — "${continuity.label}": ${continuity.note}. if what you are delivering naturally touches it, one dry half-line may nod to it as a callback; it adds no fact, changes no fact, and is dropped without a trace when it does not fit.`;
 }
 
 /** The turn's instruction: the branch mark, the framing, the optional continuity colour, the

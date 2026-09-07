@@ -41,12 +41,13 @@ const REQUEST_QUOTE_CHARS = 120;
  * The one thing she says about a run a restart killed. Her register: lowercase, plain, no emoji,
  * and — the load-bearing part — it CLAIMS NOTHING. No result, no partial finding, no "I'll pick it
  * back up": the honest state is that the work stopped and nobody knows what it would have said. The
- * offer to run it again is a question, because running it again is the user's call to make.
+ * offer to run it again is a statement of what is in reach, because running it again is the
+ * user's call to make and a question would hand them the decision as homework.
  */
 export function opsLostText(request: string): string {
   const flat = request.trim().replace(/\s+/g, ' ');
   const quoted = flat.length > REQUEST_QUOTE_CHARS ? `${flat.slice(0, REQUEST_QUOTE_CHARS).trimEnd()}…` : flat;
-  return `that thing i was looking into for you — "${quoted}" — got cut off when i restarted. nothing came back from it. want me to run it again?`;
+  return `that thing i was looking into for you — "${quoted}" — got cut off when i restarted. nothing came back from it. say the word and i run it again.`;
 }
 
 export interface OpsTaskRecoveryDeps {

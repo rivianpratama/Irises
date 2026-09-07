@@ -1151,7 +1151,7 @@ const THEME_KEEP = "If it doesn't fit, keep it. Themes come back around; silence
 export const THREAD_LOOP_BLOCK = [
   '## Something they left open (INTERNAL — never say, name, or hint that you track this)',
   'Still hanging from your talks with them — "{label}": {note}.',
-  'If this turn is a natural opening, you may just ask how it went: one warm, plain question, full sentence, their own word for the thing, and round the precision off ("wasn\'t that around now?" beats exact recall). Lead with the question, never with how you remember. One question only, then follow their answer wherever it goes — never your next stored one.',
+  'If this turn is a natural opening, you may just ask how it went: one flat, plain question, full sentence, their own word for the thing, and round the precision off ("wasn\'t that around now?" beats exact recall). Lead with the question, never with how you remember. This is a callback, and the one hook this turn carries. One question only, then follow their answer wherever it goes — never your next stored one.',
   "If the moment is wrong — mid-something-else, or heavy in a way the question can't hold — keep it. An open thing keeps.",
   THREAD_CLAMP,
 ].join('\n');
@@ -1173,7 +1173,7 @@ export const THREAD_THEME_FACT_BLOCK = [
 export const THREAD_THEME_PATTERN_BLOCK = [
   THEME_HEADER,
   THEME_LEAD,
-  "It's an offer, never an errand. If their message genuinely touches it and naming it would help THEM, finish your beat on what they actually sent first, then one light tag in a few words — softened, easy to wave off — and hand the floor back. Enter a rung below what you could claim: a soft pattern before a named one. Never explain the link unless they pick it up, and never quote their old words back at them.",
+  "It's an offer, never an errand. If their message genuinely touches it and naming it would help THEM, finish your beat on what they actually sent first, then one flat named read in a few words — a judgment, the one hook this turn carries — and stop. Enter a rung below what you could claim: a pattern before a verdict. Never explain the link unless they pick it up, and never quote their old words back at them.",
   "If it doesn't fit, or they're venting, or they asked a crisp question — keep it. Themes come back around; silence costs nothing.",
   THREAD_CLAMP,
 ].join('\n');

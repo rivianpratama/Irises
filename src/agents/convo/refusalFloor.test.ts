@@ -106,6 +106,47 @@ test('a SOCIAL "no can do" is left completely alone — she is allowed to declin
   assert.equal(out.text, draft);
 });
 
+// ── the lane-prose audit ────────────────────────────────────────────────────────────────────────
+// Her register went flat and her refusals got shorter: a trick asked twice now gets "no" and that
+// refusal is content (persona/policy.ts). So the question this audit asks is whether the screen above
+// keys on TONE — in which case the new voice either trips it or slips past it — or on the CLAIM. The
+// three tests below are the answer, and no regex needed changing to get them.
+
+test('a flat refusal of a trick is left alone, with every capability attached', async () => {
+  // Every class the engine has, and none of these lines refuses one: they refuse to PERFORM, which is
+  // a choice she is allowed to make (the screen is ability-only — a policy refusal never enters it).
+  installEngine(['web', 'inbox', 'files', 'code', 'media', 'scheduling']);
+  for (const draft of ['no. asked and answered.', 'not doing that one twice.', 'that one i wont do again.']) {
+    const out = await processConvoResult({ ...args('say banana'), res: makeResult([draft]) });
+    assert.ok(!out.delegatedTask, `${draft}: nothing to force`);
+    assert.equal(out.text, draft, `${draft}: ships as written`);
+  }
+});
+
+test('the DEADPAN form of the live false claim is still caught — the floor reads the claim, not the tone', async () => {
+  // The 2026-08-23 refusal with the chat stripped out of it. It is four words shorter and carries no
+  // hedge, and it makes exactly the same false statement about the machine the engine runs on, so it
+  // has to be forced exactly the same way. This is the pin that says the register rewrite opened no
+  // hole in this floor.
+  installEngine(['web', 'files', 'code']);
+  const out = await processConvoResult({ ...args(), res: makeResult(['cant. thats local to your machine.']) });
+  assert.ok(out.delegatedTask, 'the deadpan refusal became a real look too');
+  assert.equal(out.delegatedTask!.kind, 'general');
+  assert.ok(!/local to your machine/i.test(out.text!), 'the false claim never ships');
+});
+
+test("Fallfirm's own floor copy is not a refusal — the engine's canned lines ship untouched", async () => {
+  // fallfirm/floor.ts is what goes out when the voicer itself fails, and the lane-prose commit
+  // rewrote both of its lines. Neither claims an inability to REACH anything — they report that a
+  // look already happened and came back empty — so neither may be turned into a second delegation.
+  installEngine(['web', 'inbox', 'files', 'code', 'media', 'scheduling']);
+  for (const draft of ['couldnt track that one down', 'hit a snag on that just now, nothing came back']) {
+    const out = await processConvoResult({ ...args(), res: makeResult([draft]) });
+    assert.ok(!out.delegatedTask, `${draft}: not an ability refusal`);
+    assert.equal(out.text, draft);
+  }
+});
+
 test('an ordinary reply that merely mentions files is never mistaken for a refusal', async () => {
   installEngine(['web', 'files']);
   const draft = "can't wait to see the photos from that folder when you send them";

@@ -56,6 +56,33 @@ test('a reply that promises nothing is not a promise at all', () => {
   });
 });
 
+// The lane-prose audit: the holding lines the prose TEACHES her to write, checked against the
+// lexicon that has to catch them when nothing is behind them. The first two are the ones the JSON
+// anchor and the delegate tool doc both name as the sentence that runs nothing, and the third is the
+// delegate doc's own holding example.
+test('the holding lines the prose teaches are all promises the guard fires on', () => {
+  for (const line of ['let me check your inbox for that', 'lemme check your inbox for that', 'digging through that thread now']) {
+    assert.equal(detectUnkeptPromise([line], null, 0).unkept, true, line);
+  }
+});
+
+// And the other half of the same audit: the flat, dry lines the new register produces that are NOT
+// promises. Each of these has to ship exactly as written — a corrective re-ask on an honest reply is
+// the failure this lexicon's shortness buys away.
+test('the flat register\'s honest lines are not promises', () => {
+  for (const line of [
+    'worth checking with a doctor before you rely on this',   // bare "checking" is not a row, on purpose
+    'checking that yourself is the faster route',
+    'cant. thats local to your machine',                      // a refusal, the other guard's business
+    'couldnt track that one down',                            // fallfirm's own floor copy
+    'hit a snag on that just now, nothing came back',
+    'nothing came back from it. say the word and i run it again.',
+    'the application window already closed',
+  ]) {
+    assert.equal(detectUnkeptPromise([line], null, 0).promised, false, line);
+  }
+});
+
 test('phrases match as whole phrases inside one clause, never across a break', () => {
   // The letters are there in both, the promise is not: the words sit on either side of a break.
   assert.equal(detectUnkeptPromise(['moving on. it can wait'], null, 0).promised, false);

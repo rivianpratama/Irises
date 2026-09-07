@@ -88,7 +88,7 @@ export function buildProgressBrief(opts: VoiceInstantOpts, userCtx: string): str
       if (req) lines.push(`what's taking longer than usual: "${req}"`);
       if (hint) lines.push(`it's about: ${hint} — name it if it reads natural`);
       pushPaceBeat();
-      lines.push('you already told them you were on it (see the thread). do NOT repeat that line. name what is slow in fresh words, or add one small warm beat. one short bubble.');
+      lines.push('you already told them you were on it (see the thread). do NOT repeat that line. name what is slow in fresh words. one short bubble.');
       break;
   }
   lines.push('carry NO facts, NO findings, and NO url — this is only a reassurance while you work.');

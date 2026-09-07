@@ -23,6 +23,22 @@
  * array, so a phrase can never be one the guard fires on but the retry is not held to. Deliberately
  * short — every entry is a phrase whose plain reading is "work is happening right now", which is
  * exactly the claim a turn with no tool call and no active run cannot back.
+ *
+ * THREE ROWS ADDED IN THE LANE-PROSE COMMIT, from auditing this array against the holding lines the
+ * prose actually teaches. `let me check` / `lemme check` are the gap worth naming: the JSON anchor
+ * (convo/shared.ts) and the delegate tool doc (convo/tools.ts) BOTH use "let me check" as their
+ * example of the sentence that runs nothing, and the phrase the persona names as the canonical broken
+ * promise was not a phrase the guard fired on. `digging through` is the delegate doc's own holding
+ * example ("digging through that thread now"), which `digging into` did not reach.
+ *
+ * What the audit did NOT add, and why, because the plan asked the question: bare `checking` and bare
+ * `looking`. Her register is flatter now, so a one-word holding line ("checking.") is a shape she
+ * will write — but the matcher below is clause-CONTAINS, not clause-EQUALS, so a row of `checking`
+ * would fire on "worth checking with a doctor before you rely on this" and "checking that yourself
+ * is the faster route", neither of which promises anything. A one-word entry cannot be restricted to
+ * a whole-clause reading without changing the matcher, and a guard that re-asks an honest reply is
+ * worse than one that misses a one-word holding line — the delegate doc asks for a SPECIFIC holding
+ * line anyway, so the one-word form is off-register in the first place. Multi-word rows only.
  */
 export const PROMISE_PHRASES = [
   'on it',
@@ -30,6 +46,9 @@ export const PROMISE_PHRASES = [
   'pulling that up',
   'checking on that',
   'digging into',
+  'digging through',
+  'let me check',
+  'lemme check',
   'still on it',
   'still digging',
   'hang tight',

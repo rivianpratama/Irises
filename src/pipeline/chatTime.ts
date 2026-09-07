@@ -229,7 +229,7 @@ export function renderConversationTiming(
     if (gapMs < 3 * HOUR) {
       lines.push(`Their last message came in ${gap} ago and you're answering now. An unremarkable pause — no acknowledgment needed, just reply.`);
     } else {
-      lines.push(`Their last message sat ${gap} before this reply — the wait is YOURS. Fold in at most ONE light half-sentence acknowledgment ("sorry, just seeing this" energy), never groveling — and if your recent turns show you already acknowledged this gap, don't do it again.`);
+      lines.push(`Their last message sat ${gap} before this reply — the wait is YOURS. Do not apologise for it and do not measure it; if you name it at all it is one flat clause ("just seeing this"), once — and if your recent turns already named this gap, not again.`);
     }
   } else {
     // Irises spoke last; the user is coming back after a while. Their silence is never measured or

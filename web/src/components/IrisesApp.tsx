@@ -278,7 +278,7 @@ export function IrisesApp() {
               value={input}
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={handleComposerKeyDown}
-              placeholder="What's been on your mind lately?"
+              placeholder="Message"
               rows={1}
               maxLength={16_000}
               aria-label="Message Irises"

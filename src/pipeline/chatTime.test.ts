@@ -117,10 +117,13 @@ test('a short unanswered user message is an unremarkable pause (<3h: no apology)
   assert.match(block, /no acknowledgment needed/i);
 });
 
-test('a long-unanswered user message makes the wait Irises\'s — one light beat max', () => {
+test('a long-unanswered user message makes the wait Irises\'s — no apology, no measurement', () => {
   const block = renderConversationTiming([{ role: 'user', at: NOW - 6 * HOUR }], NOW);
   assert.match(block, /the wait is YOURS/);
-  assert.match(block, /ONE light half-sentence/);
+  assert.match(block, /Do not apologise for it and do not measure it/);
+  assert.match(block, /one flat clause \("just seeing this"\), once/);
+  // The gap is still handed to her in words, so the ceiling has to say what she may do with it.
+  assert.doesNotMatch(block, /sorry|grovel/i);
 });
 
 test('user returning after days: fresh greeting, their silence never mentioned', () => {

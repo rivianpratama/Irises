@@ -66,8 +66,10 @@ test('the callback framing asks, once, and claims to know nothing', () => {
   const instruction = _internal.buildProactiveInstruction({
     kind: 'callback', text: '"the interview" — the thing on thursday she was dreading',
   });
-  assert.match(instruction, /just you asking how it's going/);
-  assert.match(instruction, /the question itself, once, light, easy to wave off/);
+  assert.match(instruction, /just you asking how it went/);
+  assert.match(instruction, /the question itself, once, flat/);
+  // The one hook this text is allowed to carry, named as a hook (persona/hooks.ts HOOK_WORDS).
+  assert.match(instruction, /it is a callback: the one hook this text carries/);
   assert.match(instruction, /you don't know how it went; that is exactly why you're asking/);
   // The kind-specific fidelity line rides between the generic clause and the payload.
   const genericAt = instruction.indexOf('the line below is the only place your facts come from');
@@ -95,7 +97,7 @@ test('the reminder and email instructions are untouched by the new kind', () => 
     _internal.buildProactiveInstruction({ kind: 'reminder', text: 'pick up the dry cleaning by 6' }),
     [
       PROACTIVE_MARK,
-      'a reminder they set with you earlier just came due — orient them first (one short beat that ties this text to what they asked you to flag), then deliver it, warm and brief, like you remembered on your own',
+      'a reminder they set with you earlier just came due — orient them first (one short beat that ties this text to what they asked you to flag), then deliver it, flat and brief, like you remembered on your own',
       'the line below is the only place your facts come from. the thread above is there for voice, register and continuity ONLY — never for content, never as a second source. if the thread and this line disagree, this line wins, silently, with no mention of the difference. nothing here gets rounded, filled in, or guessed at: if a detail is not below, it does not exist.',
       'what you\'re delivering:\n"pick up the dry cleaning by 6"',
     ].join('\n\n'),
@@ -149,7 +151,7 @@ test('the colour carries the thread verbatim, above the fidelity clause and belo
   );
   assert.ok(instruction.includes(
     'a standing thread you and they share, for voice only — "speed vs craft": she keeps trading one for the other and minding it. '
-    + 'if what you are delivering naturally touches it, one light phrase may nod to it; it adds no fact, changes no fact, '
+    + 'if what you are delivering naturally touches it, one dry half-line may nod to it as a callback; it adds no fact, changes no fact, '
     + 'and is dropped without a trace when it does not fit.',
   ), 'the line is pinned word for word');
   const framingAt = instruction.indexOf('you finished it just now');
@@ -219,12 +221,12 @@ test('the introduction stacks its own mark on the line under the proactive one',
   const text = '- keeps orchids alive\n- calls the car the tank';
   const instruction = _internal.buildProactiveInstruction({ kind: 'introduction', text });
   assert.ok(instruction.startsWith(`${PROACTIVE_MARK}\n${INTRODUCTION_MARK}`), 'both marks, in that order, before anything else');
-  // The framing, pinned: no orientation beat, the nicknames, two details and one association, and
-  // the line that keeps a seeded profile from reading like a file was opened.
+  // The framing, pinned: no orientation beat, the nicknames, two details and ONE flat judgment made
+  // out of them, and the line that keeps a seeded profile from reading like a file was opened.
   assert.match(instruction, /you're texting them first, ever/);
   assert.match(instruction, /no orientation beat: nothing was set up, there's nothing to place/);
   assert.match(instruction, /they can call you Iris or Ilish or Lish, your words, never a form/);
-  assert.match(instruction, /pick TWO at most, make ONE light playful association/);
+  assert.match(instruction, /pick TWO at most, make ONE flat judgment out of them/);
   assert.match(instruction, /never their name even if you hold it, never 'i was told'/);
   // And the payload still reads last, like every other kind.
   assert.ok(instruction.trimEnd().endsWith(`"${text}"`));
@@ -250,7 +252,7 @@ test('no thread ever colours the first text, even when one is handed in', () => 
 test('at the floor the introduction is still an introduction', () => {
   const outcome = fallfirmOutcomeFor({ kind: 'introduction', text: '(no details — newly acquainted)' });
   assert.match(outcome.summary, /introducing yourself for the very first time/);
-  assert.match(outcome.summary, /they can call you Iris or Lish, one warm line and the floor is theirs/);
+  assert.match(outcome.summary, /they can call you Iris or Lish, one flat line, then stop/);
   assert.equal(outcome.facts, '(no details — newly acquainted)');
 });
 
@@ -266,7 +268,7 @@ test('the Fallfirm degrade carries the substance in facts, the framing in summar
 test('the callback degrades to a check-in, never to a delivery', () => {
   const outcome = fallfirmOutcomeFor({ kind: 'callback', text: '"the interview" — thursday' });
   assert.match(outcome.summary, /checking in on something you two keep coming back to/);
-  assert.match(outcome.summary, /one light question, easy to wave off/);
+  assert.match(outcome.summary, /one flat question, and stop/);
   assert.equal(outcome.facts, '"the interview" — thursday');
 });
 

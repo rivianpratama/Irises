@@ -197,12 +197,16 @@ test('empty tiers: short renders nothing, medium/long carry their self-retiring 
   assert.ok(out.includes('### Your default way of being with them (the seed — it retires itself)')); // empty long tier → the default stance
 });
 
-test('addressing precedence: address_as > name > boss (legacy parity)', () => {
+test('addressing precedence: address_as > name > no address term at all (legacy parity)', () => {
   const withPref = baseData({ memory: { handle: 'h', dossierMd: '', prefs: { address_as: 'Chief' } } });
   assert.ok(renderUserMemory('convo', withPref, NOW).includes('call them "Chief"'));
 
+  // The bottom of the ladder is now NOTHING rather than a placeholder nickname: an unknown name gets
+  // second person and no address term, because a nickname she was not given is a nickname she made up.
   const noName = baseData({ profile: null });
-  assert.ok(renderUserMemory('convo', noName, NOW).includes('call them "boss"'));
+  const out = renderUserMemory('convo', noName, NOW);
+  assert.ok(out.includes('use no address term at all — second person only, never an invented nickname'));
+  assert.ok(!out.includes('"boss"'), 'no invented placeholder anywhere in the stack');
 });
 
 test('legacy fallbacks: dossier_md fills an empty long doc; prefs.directives fill empty rows', () => {
@@ -1047,14 +1051,21 @@ test('the flag-off stack is byte-for-byte the one P2 inherited', () => {
   // off-path bytes back — or the change is deliberate, in which case re-take the print in the same
   // commit and say so. Both stacks, because the relay lanes have no card and no router and are the
   // path most likely to be edited by accident from the routed side.
+  //
+  // Both prints were RE-TAKEN in the lane-prose commit, deliberately and on both paths: the seed
+  // stance is re-authored in the new register, the addressing rule's bottom rung is no address term
+  // at all rather than a placeholder nickname, the style-defaults ladder no longer lists warmth or a
+  // texture dial, and law three says a bare greeting gets a greeting or one hook instead of the same
+  // greeting back. Convo 9,284 → 9,132; the relay lanes 3,892 → 3,926 (the neutral stance is one word
+  // different, and the addressing rule they share is the longer sentence).
   assert.equal(
     stackPrint(renderUserMemory('convo', richCardData(), NOW)),
-    '9284:a19fbfb32cb9a9cd',
+    '9132:4b4791298c0d13f1',
     'the pre-router convo stack changed bytes — CONVO_MEMORY_RELEVANCE off must render what it always did',
   );
   assert.equal(
     stackPrint(renderUserMemory('composer', richCardData(), NOW)),
-    '3892:674939cad85b2fdc',
+    '3926:427ab729a4383225',
     'the composer stack changed bytes — the relay lanes render the pre-card path on every turn',
   );
 });

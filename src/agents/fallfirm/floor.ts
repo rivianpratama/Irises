@@ -35,10 +35,10 @@ export function fallfirmFloor(o: Outcome): string {
     case 'confirmed':
       return o.facts ? `done, all set\n---\n${o.facts}` : 'done, all set';
     case 'nothing_found':
-      return "couldnt track that one down\n---\ni can try come at it another way though";
+      return "couldnt track that one down";
     case 'failed':
     default:
-      return "hit a snag on that just now\n---\ngive me a nudge in a bit and i sort it";
+      return "hit a snag on that just now, nothing came back";
   }
 }
 
@@ -84,7 +84,7 @@ export function holdingFloor(kind: TaskKind): string {
   return pick(HOLDING[kind] ?? HOLDING_DEFAULT);
 }
 
-const STILL_ON_IT_POOL: readonly string[] = ['still on that, hang tight', 'still working on that one', 'still on it, one sec more', 'still on it, almost theree'];
+const STILL_ON_IT_POOL: readonly string[] = ['still on that, hang tight', 'still working on that one', 'still on it, one sec more', 'still on it, almost there'];
 
 /** Instant "still working" reassurance when a duplicate delegation was suppressed (nothing new to pull). */
 export function stillOnItText(): string {
