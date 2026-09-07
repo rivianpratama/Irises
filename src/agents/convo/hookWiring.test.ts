@@ -350,6 +350,9 @@ function hookArgs(directive: HookDirective, state?: Partial<HookState>) {
     report,
     state: { lastKinds: [], idleStreak: 0, idleSinceMoment: 0, updatedAt: 0, ...state },
     forgetEpoch: 0,
+    // The sampler's own answer for the turn (convo/client.ts). False everywhere in this file: what a
+    // moment offer does to the ledger is pinned next door, in convo/earnedMaterial.test.ts.
+    momentOffered: false,
   };
 }
 

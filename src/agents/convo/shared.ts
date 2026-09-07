@@ -36,6 +36,10 @@ import {
 import { clearReplyLanguage, setReplyLanguage } from '../../memory/replyLanguage.js';
 import { updateDossier, PENDING_ASK_TTL_MS, PENDING_CLARIFICATION_TTL_MS } from '../../memory/dossier.js';
 import { updateRelationshipClimate } from '../../memory/climateDrift.js';
+// The two earned-material passes, both throttled off their own file header and both fire-and-forget
+// beside the climate eval (memory/momentsHarvest.ts, memory/thesisRewrite.ts).
+import { updateMoments } from '../../memory/momentsHarvest.js';
+import { updateThesis } from '../../memory/thesisRewrite.js';
 import { updateThreadInventory, type ThreadTurn } from '../../memory/threadHarvest.js';
 import { groomNotes } from '../../memory/noteGroomer.js';
 // The medium tier's contradiction pass — what a NEW rule or note replaces is retired with lineage
@@ -73,7 +77,7 @@ import {
   QUIET_LAW, quietViolation, recordHook, renderHooksSection,
   type HookDirective, type HookSelectReport, type HookState, type HookWord,
 } from '../../persona/hooks.js';
-import { hooksEnabled, thesisEnabled } from '../../persona/featureFlags.js';
+import { hooksEnabled, momentsEnabled, thesisEnabled } from '../../persona/featureFlags.js';
 import { saveHookState } from '../../db/repositories/hookState.js';
 import { getAffectState, saveAffectState } from '../../db/repositories/affectState.js';
 import type { RelationshipClimate } from '../../persona/climate.js';
@@ -1819,11 +1823,16 @@ export async function processConvoResult(args: {
   // `state` is the ledger row as it was READ this turn — the input the next state is computed from —
   // and `forgetEpoch` is the fence that row was read under, so a /forget landing mid-turn cannot have
   // its wipe undone by the save at the end of this one.
+  //
+  // `momentOffered` is whether the sampler actually put a moment in front of her this turn — read
+  // off the OFFER, not off whether she used one, because the offer is what was billed
+  // (persona/moments.ts `billOffers`) and the spacing counter has to move with the bill.
   hooks?: {
     directive: HookDirective;
     report: HookSelectReport | null;
     state: HookState;
     forgetEpoch: number;
+    momentOffered: boolean;
   } | null;
 }): Promise<ChatResponse> {
   const { chatId, handle, chatContext, textToSend, history, media } = args;
@@ -2795,7 +2804,9 @@ export async function processConvoResult(args: {
   //
   // A shipped violation counts as its emitted kind, not as `none`: the guard above tried and the loud
   // reply went out anyway, so the run really did get another sharp beat and the switch has to see it.
-  // `momentOffered` is false until the sampler exists (Wave 3).
+  // `momentOffered` is the sampler's own answer, decided before the prompt was built (convo/client.ts)
+  // and carried down here so the counter that spaces callbacks apart moves with the BILL rather than
+  // with whether she happened to reach for what she was handed.
   const hookTurn = args.hooks;
   if (hookTurn) {
     // Read of what is SHIPPING, not of the draft: the guard above may have replaced the reply, and a
@@ -2812,7 +2823,7 @@ export async function processConvoResult(args: {
         detail: { emitted: emitted.hook_kind, idle: hookTurn.directive.idle },
       });
     }
-    const next = recordHook(hookTurn.state, emitted?.hook_kind, hookTurn.directive.idle, false, Date.now());
+    const next = recordHook(hookTurn.state, emitted?.hook_kind, hookTurn.directive.idle, hookTurn.momentOffered, Date.now());
     await saveHookState(chatId, handle ?? '', next, { ifForgetEpoch: hookTurn.forgetEpoch });
   }
 
@@ -2869,6 +2880,19 @@ export async function processConvoResult(args: {
     // its own reason, on top of the transcript one: the eval prompt is single-relationship, and in a
     // room one member could move a dial that colours her voice for everyone else in it.
     void updateRelationshipClimate(handle, recent, { chatId });
+    // And the two EARNED-MATERIAL passes, off the SAME assembled window and under the same group
+    // skip — a moment is an episode with one person in it, and a read is what she thinks about one
+    // person; a room's transcript is several people's words interleaved. Both are throttled off
+    // their own file's header stamp rather than off a process Map (20h for the nightly harvest, six
+    // and a half days for the weekly rewrite), so a burst of replies costs one pass, a restart
+    // costs nothing, and neither can be talked into running twice on the same window.
+    //
+    // The flag is read HERE as well as inside each pass. Not belt-and-braces: the house rule is that
+    // a gate at the CALL site is what makes a flag-off install cost nothing at all (no import-time
+    // work, no store read, no receipt on every single turn), while the arm inside each pass is what
+    // any other caller gets, and is the one a test reaches to pin the `flag_off` receipt.
+    if (momentsEnabled()) void updateMoments(handle, recent, { chatId });
+    if (thesisEnabled()) void updateThesis(handle, recent, { chatId });
     // And fold this turn's threading material — at most one short note and one outcome word, both
     // riding the status envelope she already emits, so this costs no call at all — into the stored
     // inventory. Rides the same group skip for the same reason as the two above, plus one of its

@@ -45,6 +45,9 @@ import { coerceStatus, mergeStatus, type AffectState, type ComputedState } from 
 import { computeCycle } from '../../persona/cycle.js';
 import { computeCircadian } from '../../persona/circadian.js';
 import { defaultClimate, type RelationshipClimate } from '../../persona/climate.js';
+import {
+  renderMomentLines, MOMENT_AGE_WORDS, MOMENT_TEXT_MAX, type MomentEntry,
+} from '../../persona/moments.js';
 import type { ThreadCandidate } from '../../persona/threads.js';
 import type { ThreadTurn } from '../../memory/threadHarvest.js';
 import type { TurnFocusInput } from './turnFocus.js';
@@ -506,6 +509,38 @@ const HOOK_TURN: PersonaTurn = {
   thesis: '',
 };
 
+/**
+ * The moment sample at its WIDEST, because `hooks` is a prose ceiling the live battery enforces
+ * (convergence/focusBattery.ts `prose_budget`) and the moment lead is the one part of that section
+ * whose size is data. Five is `MOMENT_SAMPLE_RECENT + MOMENT_SAMPLE_OLD`, the most `sampleMoments`
+ * can ever hand a turn; two hundred characters is `MOMENT_TEXT_MAX`, which `renderMomentLines` clamps
+ * to at the render seam whatever the file holds; `embarrassing` is the longest tag; and the `at`
+ * stamp lands every one of them in `a month or two ago`, the longest of the seven age phrases. Any
+ * real sample is therefore smaller than this one, which is exactly what the `hooks` line's own
+ * history asks for — it was once ceilinged on a variant the clock could not produce, and that was a
+ * breach waiting for the first late-night idle turn rather than a paper debt.
+ *
+ * Rendered through the REAL renderer rather than written out as literals, the way `stack()` renders
+ * the memory tiers above: the prefix this ceiling is measured on is then whatever production would
+ * really print, including the day the prefix changes.
+ */
+const MOMENT_TEXTS: readonly string[] = [
+  "spent twenty minutes at midnight making you identify a girl in a mcdonald's japan advert, then asked how you knew, and then asked again the following night about a different ad from that same campaign",
+  'checked the volcano dashboard for the third time this month, read out two of the numbers, decided on nothing at all, and then asked whether the dock boards were still on order at the northern supplier',
+  'opened the week with a plan for the whole of the back yard, narrowed it down to one bed, then bought the cedar for a fence that is in neither version of that plan and told you it was that same project',
+  're-did the whole side gate himself rather than ask the joiner to come back for one afternoon, and then he mentioned the joiner by name twice while explaining why the hinges now sit crooked on the gate',
+  'asked you for the schedule, argued with the schedule, then set himself a deadline half a day earlier than the one you had given him and treated the difference as his own idea from the very start of it',
+];
+
+/** Forty days back: inside the 35–75 day band `momentAgeWords` renders as the longest phrase. */
+const MOMENT_AT = FROZEN_MS - 40 * 24 * 60 * 60 * 1000;
+
+const MOMENT_SAMPLE: MomentEntry[] = MOMENT_TEXTS.map((text, i) => ({
+  id: `mo-${i}`, text, tag: 'embarrassing', at: MOMENT_AT, count: 1, offered: 0, lastOfferedAt: 0,
+}));
+
+const MOMENT_LINES: string[] = renderMomentLines(MOMENT_SAMPLE, FROZEN_MS);
+
 /** Her one read on this person (memory/thesisEngine.ts), at about the length the writer prompt asks
  *  for — two to four sentences, behaviour only. A DATA budget line: the size is a property of the
  *  person, not of the checkout, which is why it sits with `context_block` in
@@ -674,7 +709,12 @@ const FIXTURES: Fixture[] = [
         messageChars: 43,
       },
       craft: craftFacts(MATURE_DATA, 'honestly i just want it done right this time', 'individual', true),
-      personaTurn: { ...HOOK_TURN, thesis: THESIS },
+      // The one fixture that carries earned material: her read behind the dossier, and the widest
+      // moment sample the engine can build inside the hooks section. Both live on THIS turn rather
+      // than on the cold one because both are things a nine-month relationship has and a first
+      // reply does not — and because the directive has to open the moment lead for them to render
+      // at all (`moments: true`, which `sampleMoments`' own spacing interval earns).
+      personaTurn: { hooks: { ...HOOK_TURN.hooks!, moments: true }, moments: MOMENT_LINES, thesis: THESIS },
     },
     memoryStack: MATURE_STACK,
     sections: [
@@ -820,6 +860,22 @@ test("the long-thread fixture really is past the drift anchor's window band", ()
   );
   const anchor = buildSystemPromptSections(...argsFor(f.spec)).sections.find(s => s.name === 'behavior_anchor');
   assert.equal(anchor?.chars, renderDriftAnchor('task', windowChars).length, 'and the anchor it rendered is the long task variant');
+});
+
+/** The other silent-narrowing guard, the same shape as the one above it: `hooks` is a prose ceiling
+ *  the live battery enforces, and the widest thing that section can hold is five moment lines at the
+ *  render cap wearing the longest tag and the longest age phrase. A later edit that shortened one of
+ *  those texts, or moved a stamp into a narrower age band, would leave the ceiling measured on a
+ *  sample smaller than production can build — which is the same failure the `hooks` line already had
+ *  once, and which no other test in this file would notice. */
+test('the moment sample really is the widest one the renderer can build', () => {
+  assert.equal(MOMENT_LINES.length, 5, 'five is MOMENT_SAMPLE_RECENT + MOMENT_SAMPLE_OLD');
+  const widestAge = [...MOMENT_AGE_WORDS].sort((a, b) => b.length - a.length)[0];
+  for (const [i, text] of MOMENT_TEXTS.entries()) {
+    assert.equal(text.length, MOMENT_TEXT_MAX, `moment ${i} is not at the render cap`);
+    assert.ok(MOMENT_LINES[i].includes(`(embarrassing, ${widestAge})`), `moment ${i} is not wearing the widest prefix`);
+    assert.ok(MOMENT_LINES[i].endsWith(text), `moment ${i} was clamped, so it is not measuring the cap`);
+  }
 });
 
 /** The largest each budget line reaches across the six fixtures — the number its ceiling is meant to

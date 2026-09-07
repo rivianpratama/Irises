@@ -23,11 +23,17 @@ import {
 } from '../../db/repositories/relationshipClimate.js';
 import { clearThreadInventory } from '../../db/repositories/threadInventory.js';
 import { clearHookState, getHookState } from '../../db/repositories/hookState.js';
+import { clearMoments, readMoments, writeMoments } from '../../db/repositories/moments.js';
+import { clearThesis, getThesis } from '../../db/repositories/thesis.js';
+import { renderThesisSection } from '../../memory/thesisEngine.js';
+import {
+  billOffers, renderMomentLines, sampleMoments, MOMENT_RECENT_EXCLUDE_MS,
+} from '../../persona/moments.js';
 import { pickThreadForTurn, type ThreadTurn } from '../../memory/threadHarvest.js';
 import { endsInQuestion, isIdleTurn, type IdleFacts, type IdleReading } from '../../persona/idle.js';
 import { makeIdleClassifier } from './idleClassify.js';
 import { defaultHookState, selectHook, type HookDirective, type HookSelectReport } from '../../persona/hooks.js';
-import { hooksEnabled } from '../../persona/featureFlags.js';
+import { hooksEnabled, momentsEnabled, thesisEnabled } from '../../persona/featureFlags.js';
 import { compileAffect } from '../../persona/affectCompiler.js';
 import { classifyConsent } from '../ops/consent.js';
 import { defaultClimate } from '../../persona/climate.js';
@@ -164,6 +170,15 @@ export async function chat(
         // here, which is why this is the one wipe on this list that does not take `h`. It archives
         // nothing, so it needs no place in the ordering the purge below depends on.
         clearHookState(chatId).catch(err => console.error('[convo] /forget hook state clear failed', err)),
+        // The two earned-material stores, both handle-keyed files under memories/<handle>/. Neither
+        // ARCHIVES anything — moments are deleted rather than retired by design, and the thesis
+        // wipe writes an empty document as a new version whose revision history nothing searches —
+        // so neither needs a place in the ordering the purge below depends on. The wipes stamp their
+        // own clocks at the wipe (db/repositories/moments.ts, db/repositories/thesis.ts): `/forget`
+        // does not clear the TRANSCRIPT — that is `/clear` — so a reset stamp would hand the next
+        // pass the very rows the user just asked to be forgotten and re-mint them before morning.
+        clearMoments(h).catch(err => console.error('[convo] /forget moments clear failed', err)),
+        clearThesis(h).catch(err => console.error('[convo] /forget thesis clear failed', err)),
       ]);
       // LAST: nothing may archive after this. (The medium retraction above is the only archive
       // writer on this path; the short tier hard-DELETEs and the long doc writes a revision.)
@@ -201,7 +216,7 @@ export async function chat(
     // must not repoint it, or a member's private delivery lands in the room.
     void ensureChatId(handle, chatId); // so engine-initiated pushes can reach them
   }
-  const [context, agentTz, climate] = handle
+  const [context, agentTz, climate, thesisDoc] = handle
     ? await Promise.all([
         // Pass the current turn text so the short-tier renderer can gate whether the freshest research
         // look renders in full (on-topic follow-up) or collapses to a settled digest line (topic moved on).
@@ -218,9 +233,22 @@ export async function chat(
         relationshipClimateEnabled() && !isGroupHandle(handle)
           ? getRelationshipClimate(handle)
           : Promise.resolve(defaultClimate()),
+        // Her ONE read on this person (memories/<handle>/THESIS.md), rewritten weekly by
+        // memory/thesisRewrite.ts and rendered right behind the dossier it is the conclusion of. Read
+        // HERE, in the same parallel batch as the dossier, because the prompt assembler is
+        // synchronous and this is a file read — the same reason the intro weave arrives as a value.
+        // Two structural gates, both resolving to no section at all: the feature flag, and a GROUP
+        // identity — a room has no `them` for her to have a read about, and the pass that writes the
+        // file skips a group for the same reason, so a group file can only be legacy or hand-written.
+        thesisEnabled() && !isGroupHandle(handle) ? getThesis(handle) : Promise.resolve(null),
       ])
-    : [{ block: '', hotLook: null, turn: null, gates: {}, craft: {}, pendingAsk: false }, undefined, defaultClimate()];
+    : [{ block: '', hotLook: null, turn: null, gates: {}, craft: {}, pendingAsk: false }, undefined, defaultClimate(), null];
   const contextBlock = context.block;
+  // The read as the `thesis` dyn section, or '' — which pushes nothing, so an install with no thesis
+  // builds a prompt byte-identical to one that never had the feature. `renderThesisSection` splits
+  // the document again on its way through: the evidence tail is the weekly pass's private input and
+  // has no business in a prompt (memory/thesisEngine.ts).
+  const thesisSection = thesisDoc ? renderThesisSection(thesisDoc.docMd) : '';
 
   // Irises's hidden affect state: her persisted prior-turn mood/gauges/meta-prompt for THIS chat,
   // plus the clock-computed cycle/circadian baseline for right now (anchored to the user's tz).
@@ -394,6 +422,50 @@ export async function chat(
     });
   }
 
+  // ── the moment offer ─────────────────────────────────────────────────────────────────────────
+  // At most five of the episodes she keeps about this person, put in front of her so a callback has
+  // something to be made of (persona/moments.ts). Gated three ways, and each gate closes it for its
+  // own reason: the DIRECTIVE (an idle hook turn, callback not forbidden, the spacing interval spent,
+  // not a group — persona/hooks.ts decided all four), the FLAG, and a group identity, which the
+  // directive already covers and which is repeated here because every per-person read in this file
+  // is fenced off a room at its own call site.
+  //
+  // Billed on the OFFER, not on the use: the model may well decline all five, and billing only what
+  // she reached for would let the same three ride out on every idle turn until one of them stuck.
+  // The write is fire-and-forget under the /forget fence, exactly like the thread offer's own bill —
+  // a turn must never wait on a diary, and a wipe that lands mid-turn must not be undone by it.
+  let momentLines: string[] = [];
+  let momentOffered = false;
+  if (hookDirective?.moments && momentsEnabled() && handle && !isGroupHandle(handle)) {
+    const file = await readMoments(handle);
+    // A degraded read is NOT an empty file (db/repositories/moments.ts), and this branch would
+    // WRITE: billing what a mangled file happened to parse would rewrite it from that fragment, in
+    // the one tier that archives nothing. So an unreadable file offers nothing and is left alone.
+    if (!file.degraded) {
+      // The store enforces the 24-hour no-repeat itself, and this is the caller's own copy of the
+      // same veto — the extra one `sampleMoments` documents. Same window, computed off the same
+      // rows, so the two can never disagree about what "just used" means.
+      const excludeIds = new Set(
+        file.entries.filter(e => e.lastOfferedAt > 0 && nowMs - e.lastOfferedAt < MOMENT_RECENT_EXCLUDE_MS).map(e => e.id),
+      );
+      // `now` is also the seed: the same turn replayed against the same file makes the same offer,
+      // which is what makes the `moments:offer` receipt below mean anything.
+      const sample = sampleMoments(file.entries, nowMs, excludeIds, nowMs);
+      momentLines = renderMomentLines(sample, nowMs);
+      if (sample.length > 0) {
+        momentOffered = true;
+        const ids = new Set(sample.map(e => e.id));
+        void writeMoments(handle, billOffers(file.entries, ids, nowMs), file.lastHarvestAt, file.preserved, {
+          ifForgetEpoch: getForgetEpoch(handle),
+        }).catch(err => console.warn('[convo] moment offer bill failed', err));
+        record({
+          type: 'event', label: 'moments:offer', chatId, handle,
+          detail: { offered: sample.length, rendered: momentLines.length, held: file.entries.length, excluded: excludeIds.size },
+        });
+      }
+    }
+  }
+
   // At most ONE standing thread of theirs to put in front of her this turn — an open loop worth a
   // plain "how did it go", or a theme that has earned a light tag — chosen, budgeted and billed by
   // pure code (memory/threadHarvest.ts → persona/threads.ts). Awaited: it is a single indexed row
@@ -464,10 +536,11 @@ export async function chat(
   // loaders answered on the way past (memory/dossier.ts). Everything else a gate needs — the
   // reply-order read, the burst, the tapped reply, the tool list — the assembler is already holding.
   const craftFacts: CraftTurnFacts = { ...context.craft, attachmentNote: !!attachNote, idleTurn: idle.idle };
-  // What the per-turn persona engines decided (convo/shared.ts PersonaTurn). `moments` and `thesis`
-  // are Wave 3's stores and are empty here, which renders nothing at all — the hook directive is the
-  // one live member today, and it is what the `hooks` section and the drift anchor's mode read.
-  const personaTurn = { hooks: hookDirective, moments: [] as string[], thesis: '' };
+  // What the per-turn persona engines decided (convo/shared.ts PersonaTurn), all three live now: the
+  // hook directive (which the `hooks` section and the drift anchor's mode read), the sampled moment
+  // lines that ride inside that section when the directive allows one, and her one read on this
+  // person. Each renders nothing when it is empty.
+  const personaTurn = { hooks: hookDirective, moments: momentLines, thesis: thesisSection };
   const prompt = buildSystemPromptSections(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined, affectState, computed, capabilitySummary, climate, thread, introWeave, turnFocus, craftFacts, personaTurn);
   const system = prompt.system;
 
@@ -499,7 +572,9 @@ export async function chat(
       // What the rhythm engine decided for this turn, and its receipt — both by reference, both
       // already computed above. The ledger write, the quiet guard and the trace all read THESE, so
       // nothing downstream can re-derive a different answer to "what kind of turn was this".
-      hooks: hookDirective ? { directive: hookDirective, report: hookReport, state: hookState, forgetEpoch: hookEpoch } : null,
+      hooks: hookDirective
+        ? { directive: hookDirective, report: hookReport, state: hookState, forgetEpoch: hookEpoch, momentOffered }
+        : null,
       // What was in front of the model this turn, for its one receipt (diagnostics/turnTrace.ts).
       // Every value here is already computed above — nothing is re-derived, nothing is re-read, and
       // no prompt text travels: the assembler's own section sizes, the verdicts the pre-turn reads
