@@ -211,6 +211,15 @@ function innerWeatherSection(): string {
  * promptPolicy.test.ts's adjacency pin (`epistemic_trigger` within 80 characters of the concede
  * sentence). Reaching the 1,200 the old brief wanted still means deciding which of these six
  * paragraphs the persona can lose, which is a phase of its own.
+ *
+ * Re-measured a third time at the very end of the phase, after the earned material was wired into
+ * the turn, and unchanged again at 2,431 — so the ceiling still stands at +0.8%. Wave 3 wrote no
+ * prose into Context.md at all, which is the thing this ceiling exists to check rather than assume:
+ * MOMENTS.md and THESIS.md are STORES, and the two sections that read them are per-turn dyn sections
+ * (`hooks` and `thesis` in promptPolicy.ts) instead of paragraphs of the persona. This section is
+ * the one place a description of the two new stores could plausibly have grown back — it is the
+ * paragraph that tells her what the per-turn block she is handed contains — and the audit found it
+ * had not.
  */
 const INNER_WEATHER_CEILING = 2_450;
 

@@ -124,6 +124,15 @@ test('every consumer the table names is still an exported function', () => {
  *
  * So the number to hold is the measurement, and the way to move it is to shorten a rule, in the
  * table, where both copies change together. Ratchet it here in the same commit when one does.
+ *
+ * Re-measured once more at the end of the phase, after the earned material landed, and unchanged
+ * again at 3,413 — +1.7%, inside the band. The earned material never reaches this copy and was never
+ * going to: moments and the thesis are written by BACKGROUND passes off the transcript
+ * (memory/momentsHarvest.ts, memory/thesisRewrite.ts), not reported by the model through the
+ * envelope, so the phase's one new row is still `hook_kind` and this table still has ten. Worth
+ * stating rather than leaving as silence, because the cheap way to have built either feature was a
+ * field asking her to nominate her own moments — which would have been paid for on every request to
+ * both lanes, twice over, whether or not a moment was ever minted.
  */
 const SCHEMA_JSON_CEILING = 3_470;
 

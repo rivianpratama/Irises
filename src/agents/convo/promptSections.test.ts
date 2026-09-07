@@ -139,6 +139,20 @@
 // closing anchor moved with the model-map tail it matches on (`swing back to them.` → `then stop.`),
 // which is why the blank still lands in all three fixtures.
 //
+// The FOURTEENTH is not a regeneration at all, and that is the whole of what it records. The
+// goldens were dumped out of the live assembler one last time after the earned material was wired
+// into the turn — the moment sampler filling the hook section's lead, the thesis section reading its
+// store — and all five literals came back BYTE-IDENTICAL: the three blocks, the drift half all three
+// fixtures share, and the invariant JSON anchor, each dumped and compared rather than eyeballed. The
+// splice was a no-op. It could only have been: the two sections the earned material reaches are in
+// GOLDEN_EXEMPT below and no fixture here hands the assembler a hook directive or a thesis, so those
+// bytes are pinned exactly where the exemption note says they are (persona/hooks.test.ts for the
+// section's text, convo/promptBudget.test.ts for its size, convo/hookWiring.test.ts for its place in
+// the block) and not in a literal here. Recorded rather than skipped because "regenerated, nothing
+// moved" is a reading about where a per-turn feature's bytes live, and the next person to add a dyn
+// section is the one who needs it: a feature whose bytes land in these literals is a feature every
+// fixture pays for on every turn.
+//
 // Every regeneration was produced by dumping `stable(afterPersona(...))` out of the live assembler —
 // under TZ=UTC, or the frozen clock reads as a different time of day and the timing section moves
 // with it — and splicing it into the literal programmatically, never typed by hand, then diffed
