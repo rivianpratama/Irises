@@ -8,7 +8,7 @@ process.env.TZ = 'UTC';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSystemPrompt, type ChatContext } from './shared.js';
+import { buildSystemPrompt, type ChatContext, type PersonaTurn } from './shared.js';
 import { coerceStatus, mergeStatus, type AffectState, type ComputedState } from '../../persona/status.js';
 import { computeCycle } from '../../persona/cycle.js';
 import { computeCircadian } from '../../persona/circadian.js';
@@ -55,9 +55,10 @@ const THEME: ThreadCandidate = {
   label: 'speed vs craft', note: 'they keep landing back on shipping fast versus doing it right',
 };
 
-function build(thread?: ThreadTurn): string {
+function build(thread?: ThreadTurn, personaTurn?: PersonaTurn): string {
   return buildSystemPrompt(
     ctx, '', [], undefined, undefined, HISTORY, 'hey', undefined, affect(), COMPUTED, null, undefined, thread,
+    undefined, undefined, undefined, personaTurn,
   );
 }
 
@@ -94,6 +95,26 @@ test('an offered thread lands between the internal-weather block and conversatio
   const block = prompt.slice(thread, timing);
   assert.doesNotMatch(block, /rungCeiling|material|confidence|evidence/i);
   assert.doesNotMatch(block, /\d/, 'the block is numberless — a number is a thing to optimize');
+});
+
+// A thread OFFER is now only ever made on a hook turn (persona/hooks.ts — `offerAllowed` is true in
+// that mode and no other), so the two blocks co-occur on every turn either of them renders on, and
+// their order is a real adjacency rather than a hypothetical one. The offer comes FIRST because it
+// is material — here is a thing of theirs you could pick up — and the rhythm block comes last
+// because it is the contract that says whether this turn may pick anything up at all.
+test('the thread offer leads and the rhythm contract follows it, at the recency edge', () => {
+  const prompt = build({ offer: THEME, outcomeAsk: null }, {
+    hooks: { idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: false, offerAllowed: true },
+    moments: [], thesis: '',
+  });
+  const thread = prompt.indexOf("## A thread you've half-noticed");
+  const timing = prompt.indexOf('## Conversation timing');
+  const hooks = prompt.indexOf('## This turn may carry one hook (INTERNAL)');
+  assert.ok(thread !== -1 && timing !== -1 && hooks !== -1, 'all three blocks are present');
+  assert.ok(thread < timing, 'the offer keeps its place ahead of the timing read');
+  assert.ok(timing < hooks, 'and the rhythm contract is behind both');
+  // …and it is still inside the wrapper: everything per-turn lives in one <prompt> block.
+  assert.ok(hooks < prompt.lastIndexOf('</prompt>'));
 });
 
 test('a theme at the pattern rung renders the offer prose, and no rung word', () => {

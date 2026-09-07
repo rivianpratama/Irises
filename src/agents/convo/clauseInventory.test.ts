@@ -38,6 +38,7 @@ import { computeCycle } from '../../persona/cycle.js';
 import { computeCircadian } from '../../persona/circadian.js';
 import { defaultClimate, type RelationshipClimate } from '../../persona/climate.js';
 import type { ThreadCandidate } from '../../persona/threads.js';
+import type { HookDirective } from '../../persona/hooks.js';
 import type { LlmToolDef } from '../../llm/types.js';
 import type { StoredMessage, UserProfile } from '../../db/types.js';
 
@@ -129,15 +130,26 @@ const HISTORY: StoredMessage[] = [
   { role: 'assistant', content: 'six to eight weeks from the north supplier', at: FROZEN_MS - 38 * 60_000 },
 ];
 
+/** The rhythm decision this census is taken under: an idle turn with every kind still open, which
+ *  is the widest the `hooks` section gets (persona/hooks.ts). */
+const HOOK_DIRECTIVE: HookDirective = {
+  idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: false, offerAllowed: true,
+};
+
 const { system: PROMPT } = buildSystemPromptSections(
   { isGroupChat: false, participantNames: [], chatName: null, senderHandle: HANDLE, senderProfile: PROFILE },
   MEMORY_STACK, [], undefined, [TOOL], HISTORY, TURN_TEXT, 'UTC',
   AFFECT, COMPUTED, { classes: ['web', 'code'], complete: true }, MOVED_CLIMATE,
   { offer: THEME, outcomeAsk: null }, undefined,
-  { text: TURN_TEXT, hits: [{ label: 'speed vs craft', source: 'thread' }] }, undefined,
-  // No per-turn persona struct: this census reads a TASK turn, which is the mode the drift anchor
-  // falls back to and the one nearly every live turn is (convo/shared.ts PersonaTurn).
-  undefined,
+  { text: TURN_TEXT, hits: [{ label: 'speed vs craft', source: 'thread' }] },
+  { attachmentNote: false, emailFlag: false, thinProfile: false, idleTurn: true },
+  // A HOOK turn, deliberately, even though nearly every live turn is a task one. The census counts
+  // substrings across the whole assembled prompt, and the two things only an idle turn puts in it —
+  // the `hooks` section and the craft page that teaches the beat — are exactly where a clause could
+  // quietly acquire a second copy. A census taken on a task turn would count a corpus the live idle
+  // turn does not have. (The drift anchor's mode moves with it, which is the point: `anchorCopies`
+  // in promptPolicy.ts exists to account for a law restated at the recency edge.)
+  { hooks: HOOK_DIRECTIVE, moments: [], thesis: '' },
 );
 
 /** Plain substring occurrences — the same number a reader gets from a plain text search. */

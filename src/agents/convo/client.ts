@@ -3,7 +3,7 @@ import { transcribeAudio } from '../../llm/transcribe.js';
 import { convoToolList } from './tools.js';
 import { selfUpdateEnabled } from '../../update/selfUpdate.js';
 import { rememberMedia } from './mediaRecall.js';
-import { getPreference, ensureChatId, clearDossier } from '../../db/repositories/memory.js';
+import { getPreference, ensureChatId, clearDossier, getForgetEpoch } from '../../db/repositories/memory.js';
 import { memoryHandle, isGroupHandle } from '../../memory/identity.js';
 import { retractAllForHandle } from '../../db/repositories/memoryMedium.js';
 import { deleteShortTermForHandle } from '../../db/repositories/memoryShort.js';
@@ -22,7 +22,14 @@ import {
   getRelationshipClimate, clearRelationshipClimate, relationshipClimateEnabled,
 } from '../../db/repositories/relationshipClimate.js';
 import { clearThreadInventory } from '../../db/repositories/threadInventory.js';
+import { clearHookState, getHookState } from '../../db/repositories/hookState.js';
 import { pickThreadForTurn, type ThreadTurn } from '../../memory/threadHarvest.js';
+import { endsInQuestion, isIdleTurn, type IdleFacts, type IdleReading } from '../../persona/idle.js';
+import { makeIdleClassifier } from './idleClassify.js';
+import { defaultHookState, selectHook, type HookDirective, type HookSelectReport } from '../../persona/hooks.js';
+import { hooksEnabled } from '../../persona/featureFlags.js';
+import { compileAffect } from '../../persona/affectCompiler.js';
+import { classifyConsent } from '../ops/consent.js';
 import { defaultClimate } from '../../persona/climate.js';
 import { computeCycle } from '../../persona/cycle.js';
 import { computeCircadian } from '../../persona/circadian.js';
@@ -30,6 +37,7 @@ import { cycleAnchorMs } from '../../persona/config.js';
 import type { ComputedState } from '../../persona/status.js';
 import { hasMedia, type IncomingMedia } from '../../webhook/types.js';
 import { reportError } from '../../diagnostics/errorLog.js';
+import { record } from '../../diagnostics/trace.js';
 import type { LlmMessage, LlmRequest, LlmResult, LlmToolDef } from '../../llm/types.js';
 import { buildSystemPromptSections, processConvoResult, formatHistory, emptyExtras, callConvoLLM, annotateTappedReply } from './shared.js';
 import { voiceOutcome } from '../fallfirm/client.js';
@@ -150,6 +158,12 @@ export async function chat(
         // exactly the kind of thing a forget means. It also takes the ping budget stamp with it,
         // so a wiped handle starts the week fresh.
         clearThreadInventory(h).catch(err => console.error('[convo] /forget threads clear failed', err)),
+        // And the rhythm ledger for THIS chat — how many hooks the last few replies carried, how
+        // long they have been sending nothing, when a moment was last offered. Keyed by chat id
+        // rather than by handle (db/repositories/hookState.ts), and the chat id is in scope right
+        // here, which is why this is the one wipe on this list that does not take `h`. It archives
+        // nothing, so it needs no place in the ordering the purge below depends on.
+        clearHookState(chatId).catch(err => console.error('[convo] /forget hook state clear failed', err)),
       ]);
       // LAST: nothing may archive after this. (The medium retraction above is the only archive
       // writer on this path; the short tier hard-DELETEs and the long doc writes a revision.)
@@ -205,7 +219,7 @@ export async function chat(
           ? getRelationshipClimate(handle)
           : Promise.resolve(defaultClimate()),
       ])
-    : [{ block: '', hotLook: null, turn: null, gates: {}, craft: {} }, undefined, defaultClimate()];
+    : [{ block: '', hotLook: null, turn: null, gates: {}, craft: {}, pendingAsk: false }, undefined, defaultClimate()];
   const contextBlock = context.block;
 
   // Irises's hidden affect state: her persisted prior-turn mood/gauges/meta-prompt for THIS chat,
@@ -230,6 +244,16 @@ export async function chat(
     const t = transcriptions.join('\n');
     textToSend = textToSend ? `[Voice memo transcript: "${t}"]\n\n${textToSend}` : `[Voice memo transcript: "${t}"]\n\nRespond naturally.`;
   }
+
+  // THEIR OWN WORDS, before any of the machinery below is folded in: what they typed, plus a voice
+  // memo's transcript, and nothing else. The idle gate reads THIS rather than `textToSend`
+  // (persona/idle.ts's `none` layer names the arrangement — "the attachment note the caller
+  // stripped"), because the two annotations below are app metadata rather than a message: the
+  // attachment note is already a structural veto in its own right, and the tapped-reply tag would
+  // push every settled-ground comment past the length veto and make an idle turn impossible to have
+  // by tapping one. A caption-less media turn leaves this EMPTY, and an empty message is a turn no
+  // layer can read, which the gate calls work.
+  const typedText = textToSend;
 
   // The Convo model doesn't receive the raw image/video/doc bytes (or a memo whose transcription
   // failed). A bracketed note tells it a file arrived and to open it via delegate_to_mm; on a
@@ -303,13 +327,87 @@ export async function chat(
   // the backend doesn't do capability discovery, or before the first refresh has answered.
   const capabilitySummary = engine?.getCapabilitySummary?.() ?? null;
 
+  // ── the rhythm pre-read ───────────────────────────────────────────────────────────────────────
+  // What KIND of turn this is, and what a reply to it is allowed to carry. It runs HERE, ahead of
+  // the thread pre-read, because its answer gates that one: a task turn makes no thread offer.
+  //
+  // Three steps, all of them decided before a single prompt byte is assembled:
+  //   1. the idle gate (persona/idle.ts) — structural vetoes, then the English fast path, then at
+  //      most one tiny classify call for a short message in a script the fast path cannot read;
+  //   2. the compiled affect directive (persona/affectCompiler.ts) — the same gauges the weather
+  //      block renders, read for what they CLOSE rather than for what they say;
+  //   3. the selector (persona/hooks.ts) — the ledger, the kill switch, the group rules.
+  //
+  // The whole block is gated by CONVO_HOOKS_ENABLED. Off means no idle gate runs at all (so no
+  // classify call is ever made), the directive is null, the `Turn:` line and the `hooks` section are
+  // never rendered, the hook craft page never loads, and the thread engine offers exactly as it did
+  // before any of this existed.
+  const hooksOn = hooksEnabled();
+  // Her question is outstanding: an approval or a steering question the memory read just told us is
+  // live, or her previous turn simply ending on a question mark of any script. Their next short
+  // message is an ANSWER — "yes please" after "want me to send it?" is the most load-bearing task
+  // turn there is — so this is a veto, not a hint.
+  const lastAssistant = [...history].reverse().find(m => m.role === 'assistant');
+  const idleFacts: IdleFacts = {
+    attachmentNote: !!attachNote,
+    burstSize: chatContext?.burstManifest?.length ?? 1,
+    activeOps: activeOps.length > 0,
+    pendingQuestion: context.pendingAsk || endsInQuestion(lastAssistant?.content),
+    // The consent reader's PURE half only (agents/ops/consent.ts classifyConsent). The lane half of
+    // that module is for a turn where an approval is really parked and the words are worth a call;
+    // here the question is only "did they answer yes or no", one settled word is the whole signal,
+    // and an idle gate that could spend a second call on every stall would be a per-turn tax.
+    consent: classifyConsent(typedText),
+  };
+  const idle: IdleReading = hooksOn
+    ? await isIdleTurn(typedText, idleFacts, makeIdleClassifier({ chatId, handle }))
+    : { idle: false, layer: 'none' };
+
+  // The ledger row for this chat, and the epoch it was read under: the write at the end of the turn
+  // is fenced on the epoch, so a /forget landing mid-turn cannot have its wipe undone by a save that
+  // read the pre-forget state. Defaults (and epoch 0) with the flag off — nothing is read and
+  // nothing will be written.
+  const hookState = hooksOn ? await getHookState(chatId) : defaultHookState();
+  const hookEpoch = hooksOn ? getForgetEpoch(handle ?? '') : 0;
+  const isGroupChat = chatContext?.isGroupChat ?? false;
+  let hookDirective: HookDirective | null = null;
+  let hookReport: HookSelectReport | null = null;
+  if (hooksOn) {
+    // The affect directive is compiled from exactly the row the weather block is rendered from, so
+    // "her mood closed the hook" and "her mood set the register" can never be two different reads of
+    // the same turn.
+    const affectDirective = compileAffect(affectState.last, computed, climate);
+    const picked = selectHook(
+      hookState, idle.idle, idle.layer,
+      { hooks: affectDirective.hooks, sleepQuiet: affectDirective.sleepQuiet },
+      isGroupChat, nowMs,
+    );
+    hookDirective = picked.directive;
+    hookReport = picked.report;
+    // EVERY turn the selector ran, including — especially — the ordinary task turn where it decided
+    // nothing. Same doctrine as `threads:select` next door: a healthy no-op IS the receipt, and an
+    // engine that stopped running and an engine that keeps finding nothing to say are otherwise
+    // indistinguishable.
+    record({
+      type: 'event', label: 'hooks:select', chatId, handle,
+      detail: { ...picked.report, mode: picked.directive.mode, idle: picked.directive.idle, moments: picked.directive.moments },
+    });
+  }
+
   // At most ONE standing thread of theirs to put in front of her this turn — an open loop worth a
   // plain "how did it go", or a theme that has earned a light tag — chosen, budgeted and billed by
   // pure code (memory/threadHarvest.ts → persona/threads.ts). Awaited: it is a single indexed row
   // read, and its output shapes the system prompt built on the next line. `gapMs` — the loop stage's
   // hard gate — is computed above, beside the other gate that reads it.
+  //
+  // `allowOffer` is the rhythm engine's one veto over it: the OFFER is closed on a task turn and on
+  // a quiet one, so nothing is selected and nothing is billed, while the outcome ask and the pending
+  // machine keep running exactly as they always have (see pickThreadForTurn). With the hook flag off
+  // the directive is null and this reads `true`, which is the pre-hook behaviour byte for byte.
   const thread: ThreadTurn = handle && !isGroupHandle(handle)
-    ? await pickThreadForTurn(handle, affectState, { incomingText: textToSend, gapMs, chatId })
+    ? await pickThreadForTurn(handle, affectState, {
+        incomingText: textToSend, gapMs, chatId, allowOffer: hookDirective?.offerAllowed ?? true,
+      })
     : { offer: null, outcomeAsk: null };
 
   // The install introduction, when this turn is the very first word they have ever sent her: the
@@ -342,7 +440,17 @@ export async function chat(
         ...(thread.offer ? [{ label: thread.offer.label, source: 'thread' as const }] : []),
         ...(context.hotLook ? [{ label: shortEntryLabel(context.hotLook), source: 'research' as const }] : []),
       ];
-  const turnFocus: TurnFocusInput = { text: textToSend, hits };
+  const turnFocus: TurnFocusInput = {
+    text: textToSend, hits,
+    // …plus the turn's own reading, when the gate actually ran. The three fields travel together and
+    // are absent together: with CONVO_HOOKS_ENABLED off no `Turn:` line renders at all and the block
+    // is byte-identical to the one every install built before the gate existed (convo/turnFocus.ts).
+    // The streak is the STORED count plus this turn — the ledger row is written after the reply, so
+    // what is in hand here is how many idle turns came BEFORE this one.
+    ...(hooksOn
+      ? { idle: idle.idle, idleStreak: hookState.idleStreak + 1, messageChars: [...typedText].length }
+      : {}),
+  };
 
   // Held in a variable (not inlined): recall_memory's second pass re-invokes the model with this
   // SAME system + messages, minus the recall tool (see processConvoResult).
@@ -355,8 +463,12 @@ export async function chat(
   // re-derived: the attachment note this turn's text already carries, and the two reads the memory
   // loaders answered on the way past (memory/dossier.ts). Everything else a gate needs — the
   // reply-order read, the burst, the tapped reply, the tool list — the assembler is already holding.
-  const craftFacts: CraftTurnFacts = { ...context.craft, attachmentNote: !!attachNote };
-  const prompt = buildSystemPromptSections(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined, affectState, computed, capabilitySummary, climate, thread, introWeave, turnFocus, craftFacts);
+  const craftFacts: CraftTurnFacts = { ...context.craft, attachmentNote: !!attachNote, idleTurn: idle.idle };
+  // What the per-turn persona engines decided (convo/shared.ts PersonaTurn). `moments` and `thesis`
+  // are Wave 3's stores and are empty here, which renders nothing at all — the hook directive is the
+  // one live member today, and it is what the `hooks` section and the drift anchor's mode read.
+  const personaTurn = { hooks: hookDirective, moments: [] as string[], thesis: '' };
+  const prompt = buildSystemPromptSections(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined, affectState, computed, capabilitySummary, climate, thread, introWeave, turnFocus, craftFacts, personaTurn);
   const system = prompt.system;
 
   try {
@@ -384,6 +496,10 @@ export async function chat(
       // carries those hits into its brief. Null with CONVO_MEMORY_RELEVANCE off, which is the gate's
       // pre-P2 text-only behavior.
       relevance: context.turn,
+      // What the rhythm engine decided for this turn, and its receipt — both by reference, both
+      // already computed above. The ledger write, the quiet guard and the trace all read THESE, so
+      // nothing downstream can re-derive a different answer to "what kind of turn was this".
+      hooks: hookDirective ? { directive: hookDirective, report: hookReport, state: hookState, forgetEpoch: hookEpoch } : null,
       // What was in front of the model this turn, for its one receipt (diagnostics/turnTrace.ts).
       // Every value here is already computed above — nothing is re-derived, nothing is re-read, and
       // no prompt text travels: the assembler's own section sizes, the verdicts the pre-turn reads
@@ -395,6 +511,9 @@ export async function chat(
           // The selection engine's accounting, straight off the pre-turn read. Null when selection
           // never ran (threading off, or a group identity — a room has no threads of its own).
           threads: thread.report ?? null,
+          // The rhythm engine's, the same way. Null when the selector never ran (CONVO_HOOKS_ENABLED
+          // off), which is a different reading from a selector that ran and said `not_idle`.
+          hooks: hookReport,
           // Whether the freshest held look is in front of her in FULL (it touched this message), or
           // only as its settled digest line, or whether no memory rendered at all — plus everything
           // else the stack held that touched the message, which is the reading that says whether a

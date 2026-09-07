@@ -28,6 +28,7 @@ export const DYN_SECTION_IDS = [
   'name_nudge',           // "Getting their name" — no name on file yet
   'intro_weave',          // the one-shot install introduction (agents/ops/firstMove.ts)
   'context_block',        // buildContextBlock — the dossier plus the wrapped memory tiers
+  'thesis',               // her one read on this person (memory/thesisEngine.ts) — '' until it exists
   'active_ops',           // renderActiveOps — research already running for this chat
   'group',                // "Group chat"
   'tapped_reply',         // whichever ONE of the four ResolvedReply kinds rendered
@@ -39,6 +40,7 @@ export const DYN_SECTION_IDS = [
   'conversation_timing',  // renderConversationTiming
   'reply_order',          // renderArrivalGap OR renderReplyOrder — never both
   'extra',                // the caller's addendum (`extraSection`)
+  'hooks',                // renderHooksSection — this turn's rhythm contract; '' on a task turn
   'turn_focus',           // renderTurnFocus — LAST, always: what they just said and what touches it
 ] as const;
 

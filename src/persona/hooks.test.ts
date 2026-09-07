@@ -321,8 +321,8 @@ test('a task turn renders not one byte', () => {
 test('the hook block renders char-for-char', () => {
   assert.equal(renderHooksSection(HOOK_DIRECTIVE), [
     '## This turn may carry one hook (INTERNAL)',
-    'They asked you for nothing. That is the one place an extra beat belongs: you may carry one, and only one.',
-    'Open to you this turn: a judgment, a callback or a tangent. Nothing else, and never two of them.',
+    'They sent you nothing. This is the one turn that earns a hook, and it earns exactly one.',
+    'Open to you this turn: a judgment, a callback or a tangent. One of them, never two, never a kind not named here.',
     'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
   ].join('\n'));
 });
@@ -349,7 +349,7 @@ test('the sleep line rides along on a hook turn, and the quiet block never needs
 test('the quiet block renders char-for-char', () => {
   assert.equal(renderHooksSection({ ...HOOK_DIRECTIVE, mode: 'quiet', offerAllowed: false }), [
     '## This turn is quiet (INTERNAL)',
-    'Whatever you were about to carry, do not. One plain short bubble, or a tapback, or nothing at all — no hook, no question, no offer. Do not explain the quiet.',
+    'Three sharp things in a row already, or your weather says so, or it is late for them. One plain short bubble, or a tapback, or nothing — no hook, no question, no offer. Do not explain the quiet.',
     'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
   ].join('\n'));
 });

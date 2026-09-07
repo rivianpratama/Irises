@@ -164,11 +164,22 @@ function stack(data: UserMemoryData, turnText: string, audience: MemoryAudience 
  *  note) rather than hand-set per fixture. That is what makes the `craft_modules` ceiling a measured
  *  production size: it is whatever pages THIS data would load, including the day a fixture's data
  *  changes and loads a different set. */
-function craftFacts(data: UserMemoryData, turnText: string, audience: MemoryAudience = 'individual'): CraftTurnFacts {
+function craftFacts(
+  data: UserMemoryData,
+  turnText: string,
+  audience: MemoryAudience = 'individual',
+  idleTurn = false,
+): CraftTurnFacts {
   return {
     attachmentNote: turnText.includes('[they attached'),
     emailFlag: data.short.some(e => e.kind === 'email_flag' && e.expiresAt > FROZEN_MS),
     thinProfile: audience !== 'group' && profileIsThin(data),
+    // The one fact of the four the memory read cannot answer: the idle gate decided it before the
+    // prompt was built (persona/idle.ts), so it is passed per fixture rather than derived from the
+    // data. It gates craft/hooks.md, which is why the two fixtures that carry a hook directive set
+    // it — a fixture whose prompt says "you may carry one hook" and whose craft set is missing the
+    // page teaching the beat would be measuring a turn that cannot happen.
+    idleTurn,
   };
 }
 
@@ -470,6 +481,31 @@ const HISTORY_12 = history(12);
  *  anchor's LONG band, and therefore the one that measures `behavior_anchor` at its real maximum. */
 const HISTORY_80_DENSE = history(80, DENSE_TEXTS);
 
+// ── what the rhythm engine decided ───────────────────────────────────────────
+// Two of the six fixtures are IDLE turns, and they are the two that have to be: the `hooks` section
+// and the `thesis` section are measured budget lines, so a fixture has to render each of them or the
+// ceiling is a number nobody took.
+//
+// Which two is not arbitrary. The cold "hey" is the idle turn the manifesto is named after. The
+// THREAD-OFFER fixture is the other one because it now has no choice: an offer is only ever made on
+// a hook turn (persona/hooks.ts — `offerAllowed` is true in that mode and no other), so a thread
+// offer and a task turn cannot co-occur in production, and measuring the widest craft set on a task
+// turn would measure a shape the assembler can no longer build. That fixture is where
+// `craft_modules` reaches its maximum, and the hook page is now part of that maximum.
+
+const HOOK_TURN: PersonaTurn = {
+  hooks: { idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: false, offerAllowed: true },
+  moments: [],
+  thesis: '',
+};
+
+/** Her one read on this person (memory/thesisEngine.ts), at about the length the writer prompt asks
+ *  for — two to four sentences, behaviour only. A DATA budget line: the size is a property of the
+ *  person, not of the checkout, which is why it sits with `context_block` in
+ *  convergence/expectations.ts rather than with the prose ratchets. */
+const THESIS = `## Your read on them (INTERNAL — never recite, never name; every judgment is made of it)
+They decide fast on things that cost money and slowly on things that cost a conversation, which is why the supplier disputes sit open for weeks. They would rather re-do a job than ask someone to fix it, and they read a question about the schedule as a question about their competence.`;
+
 // ── the six fixtures ─────────────────────────────────────────────────────────
 
 interface Fixture {
@@ -495,14 +531,15 @@ const FIXTURES: Fixture[] = [
       history: [],
       incomingText: 'hey',
       introWeave: INTRO_WEAVE_BLOCK,
-      turnFocus: { text: 'hey', hits: [] },
-      craft: craftFacts(COLD_DATA, 'hey'),
+      turnFocus: { text: 'hey', hits: [], idle: true, idleStreak: 1, messageChars: 3 },
+      craft: craftFacts(COLD_DATA, 'hey', 'individual', true),
+      personaTurn: HOOK_TURN,
     },
     memoryStack: COLD_STACK,
     sections: [
       'persona', 'tool_docs', 'craft_modules', 'model_map', 'name_nudge', 'intro_weave',
-      'context_block', 'current_time', 'conversation_timing', 'turn_focus', 'behavior_anchor',
-      'json_anchor',
+      'context_block', 'current_time', 'conversation_timing', 'hooks', 'turn_focus',
+      'behavior_anchor', 'json_anchor',
     ],
   },
   {
@@ -625,14 +662,18 @@ const FIXTURES: Fixture[] = [
       turnFocus: {
         text: 'honestly i just want it done right this time',
         hits: [{ label: 'speed vs craft', source: 'thread' }, { label: 'cedar lead times from the north supplier', source: 'research' }],
+        idle: true,
+        idleStreak: 12,
+        messageChars: 43,
       },
-      craft: craftFacts(MATURE_DATA, 'honestly i just want it done right this time'),
+      craft: craftFacts(MATURE_DATA, 'honestly i just want it done right this time', 'individual', true),
+      personaTurn: { ...HOOK_TURN, thesis: THESIS },
     },
     memoryStack: MATURE_STACK,
     sections: [
-      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'context_block',
+      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'context_block', 'thesis',
       'current_time', 'weather', 'status_contract', 'thread', 'conversation_timing', 'reply_order',
-      'extra', 'turn_focus', 'behavior_anchor', 'json_anchor',
+      'extra', 'hooks', 'turn_focus', 'behavior_anchor', 'json_anchor',
     ],
   },
   {
@@ -685,7 +726,7 @@ function messagesFor(f: Fixture): TranscriptMessage[] {
  *  inputs are inert — this reads one number off the prompt measurement. */
 function transcriptShare(prompt: MeasuredPrompt, messages: readonly TranscriptMessage[]): number {
   return buildTurnTraceDraft({
-    turn: { prompt, messages, gates: { threads: null, memory: { shortHotLook: 'none', hits: [], blocks: {} }, extras: { updateNote: false, introWeave: false, activeOps: 0 } }, hits: [] },
+    turn: { prompt, messages, gates: { threads: null, hooks: null, memory: { shortHotLook: 'none', hits: [], blocks: {} }, extras: { updateNote: false, introWeave: false, activeOps: 0 } }, hits: [] },
     affect: { raw: null, coerced: null },
     outcome: { wasEnvelope: true, retried: false, silent: false, toolCalls: [] },
   }).prompt.transcriptShare;

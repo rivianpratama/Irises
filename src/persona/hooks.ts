@@ -276,23 +276,23 @@ export function quietViolation(emitted: HookWord | undefined, bubbles: string[])
 export const HOOK_CLAMP = 'Never mention notes, memory, a read you were handed, or that you were told which kind to use.';
 
 export const HOOK_HEADING = '## This turn may carry one hook (INTERNAL)';
-export const HOOK_LEAD = 'They asked you for nothing. That is the one place an extra beat belongs: you may carry one, and only one.';
+export const HOOK_LEAD = 'They sent you nothing. This is the one turn that earns a hook, and it earns exactly one.';
 
 /** `{kinds}` is filled from the ALLOWED set, never the forbidden one. What is off the table is not
  *  named: naming it is an instruction to think about it. */
-export const HOOK_OPEN_LINE = 'Open to you this turn: {kinds}. Nothing else, and never two of them.';
+export const HOOK_OPEN_LINE = 'Open to you this turn: {kinds}. One of them, never two, never a kind not named here.';
 
 /** Reachable, and rarely: a room (no judgment) plus a flattened mood (no tangent) plus a callback
  *  she just used twice leaves nothing open. The turn stays a hook turn — a thread offer or a plain
  *  short answer still belongs to it — but the extra beat is spent. */
-export const HOOK_NONE_OPEN = 'No kind is open to you this turn. Keep it short and flat, and let the beat pass.';
+export const HOOK_NONE_OPEN = 'No kind is open this turn. Short and flat, and let the beat pass.';
 
-export const HOOK_SLEEP_LINE = 'It is late where they are. The quiet reply is the better one now — one short bubble, or a tapback — and the hook keeps.';
+export const HOOK_SLEEP_LINE = 'It is late where they are. The right reply is that they should sleep — one short bubble, or a tapback — and the hook keeps.';
 
-export const MOMENTS_LEAD = 'Kept about them, if a callback fits: retell one in your own words, never read it out, and never more than one.';
+export const MOMENTS_LEAD = 'Kept about them, in case a callback fits. Retell one in fresh words, never read it out, never its date, never more than one.';
 
 export const QUIET_HEADING = '## This turn is quiet (INTERNAL)';
-export const QUIET_LAW = 'Whatever you were about to carry, do not. One plain short bubble, or a tapback, or nothing at all — no hook, no question, no offer. Do not explain the quiet.';
+export const QUIET_LAW = 'Three sharp things in a row already, or your weather says so, or it is late for them. One plain short bubble, or a tapback, or nothing — no hook, no question, no offer. Do not explain the quiet.';
 
 /** The allowed kinds as English. `a judgment, a callback or a tangent` — an oxford-less list because
  *  it is a sentence she reads, not a config value she parses. */

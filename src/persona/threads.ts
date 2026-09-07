@@ -868,7 +868,12 @@ export const THREAD_MOOD_FLOOR = 35;
 export interface ThreadSelectReport {
   reason:
     | 'awaiting_outcome' | 'empty' | 'mode' | 'mood' | 'turn_gate' | 'day_cap'
-    | 'no_eligible' | 'offered_loop' | 'offered_theme';
+    | 'no_eligible' | 'offered_loop' | 'offered_theme'
+    /** The rhythm engine closed the OFFER for this turn (persona/hooks.ts): a task turn, or a quiet
+     *  one. Selection never ran at all, so nothing was filtered, nothing was billed and no candidate
+     *  was even considered — which is why it is its own bucket rather than a flavour of
+     *  `no_eligible`. The outcome ask still rendered; see pickThreadForTurn's `allowOffer`. */
+    | 'offer_suppressed';
   /** Every candidate that vanished, in exactly one bucket. The healthy no-op IS the receipt, so a
    *  quiet turn has to be able to say WHY it was quiet. */
   filtered: {
@@ -922,6 +927,35 @@ function themeCooldownMs(t: ThreadTheme): number {
  * pure — `now` in, no clock, no DB, no env — and the store it would import from imports this file.
  * Omitted means ON, matching the flag's default. Off is byte-identical to the pre-gate engine.
  */
+/**
+ * The report for a turn on which the OFFER was closed before selection ran — the rhythm engine's
+ * verdict, not the thread engine's (persona/hooks.ts). PURE, and the inventory comes back untouched:
+ * nothing was considered, so nothing may be billed.
+ *
+ * Its own function rather than a branch inside `selectThreadCandidate`, because the honest thing to
+ * say about this turn is that selection did not happen — every `filtered` bucket is zero because no
+ * candidate was ever looked at, and a bucket that reads zero for "we did not look" must not be
+ * produced by the same code path that produces a zero meaning "nothing was filtered". The two budget
+ * numbers are still reported: they are properties of the inventory, they are what the NEXT turn's
+ * gates will read, and a receipt that dropped them would make a suppressed turn unreadable in a
+ * scan of the ring.
+ */
+export function suppressedSelection(
+  inventory: ThreadInventory,
+  now: number,
+): { candidate: null; next: ThreadInventory; report: ThreadSelectReport } {
+  return {
+    candidate: null,
+    next: inventory,
+    report: {
+      reason: 'offer_suppressed',
+      filtered: emptyFiltered(),
+      turnsSinceOffer: inventory.turnsSinceOffer,
+      offersLast24h: offersInWindow(inventory.offers, now),
+    },
+  };
+}
+
 export function selectThreadCandidate(
   inventory: ThreadInventory,
   affect: ThreadAffect | null | undefined,

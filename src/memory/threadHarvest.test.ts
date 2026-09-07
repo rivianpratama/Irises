@@ -346,6 +346,50 @@ test('an awaiting pending renders the outcome ask and blocks a new offer', async
   assert.equal(detail(trace('threads:select')).outcomeAsk, 'theme');
 });
 
+// ── the rhythm engine's one veto ─────────────────────────────────────────────
+// The thread engine keeps running on every non-group turn; what the hook directive closes is the
+// OFFER, and only the offer (persona/hooks.ts). The distinction is load-bearing in both directions:
+// the outcome ask is bookkeeping owed on the turn after an offer whatever this turn's mode is, and
+// the harvest's tick depends on the pending machine advancing.
+test('allowOffer:false skips selection outright — nothing chosen, nothing billed, the ask still renders', async () => {
+  await seed(H, {
+    themes: [taggableTheme(T0)],
+    pending: { themeId: 't1', at: T0 - 60_000, phase: 'awaiting', material: 'theme' },
+    turnsSinceOffer: 9,
+  });
+  const before = await getThreadInventory(H);
+
+  const picked = await pickThreadForTurn(H, affect(T0 - 60_000), {
+    incomingText: 'hmm', gapMs: 2 * LOOP_OPENING_GAP_MS, now: T0, allowOffer: false,
+  });
+
+  assert.equal(picked.offer, null, 'the offer is closed');
+  assert.deepEqual(picked.outcomeAsk, { label: 'speed vs craft', material: 'theme' }, 'the ask is not');
+  assert.deepEqual(await getThreadInventory(H), before, 'and NOTHING was billed — the row is untouched');
+
+  const d = detail(trace('threads:select'));
+  assert.equal(d.reason, 'offer_suppressed', 'its own disjoint bucket: selection did not run at all');
+  assert.equal(d.outcomeAsk, 'theme');
+  // Every filtered bucket is honestly zero, because no candidate was ever considered — the whole
+  // reason this is not a flavour of `no_eligible`.
+  assert.deepEqual(d.filtered, {
+    loops: { quiet: 0, cooldown: 0, present_topic: 0, no_opening: 0, asked: 0, budget: 0 },
+    themes: { open: 0, sore: 0, retired: 0, stale: 0, cooldown: 0, off_topic: 0 },
+  });
+  // …and the two budget numbers still describe where the gates stand, off the inventory itself.
+  assert.equal(d.turnsSinceOffer, 9);
+  assert.equal(d.offersLast24h, 0);
+});
+
+test('an absent allowOffer is an OPEN offer — the pre-hook behaviour, unchanged', async () => {
+  await seed(H, { themes: [taggableTheme(T0)], turnsSinceOffer: 9 });
+  const picked = await pickThreadForTurn(H, affect(T0 - 60_000), {
+    incomingText: 'still going back and forth on speed vs craft', gapMs: 60_000, now: T0,
+  });
+  assert.equal(picked.offer?.id, 't1');
+  assert.equal(detail(trace('threads:select')).reason, 'offered_theme');
+});
+
 // A pending id whose theme was evicted, retired, or pruned must not become a question about a thread
 // that no longer exists.
 test('an awaiting pending whose thread has vanished renders nothing', async () => {

@@ -30,10 +30,13 @@ const V2_KEYS: readonly string[] = [
  *  `mood.ts` and `affectDrift.ts` joined the list in v2 — the two modules that took over the fields
  *  the model stopped reporting; `hooks.ts` joined with `hook_kind`, and it is the one source here
  *  that a plain import would have been safe to take (a leaf that imports nothing) — read as text
- *  anyway, because the rule is about the list, not about any one module's dependencies. */
+ *  anyway, because the rule is about the list, not about any one module's dependencies.
+ *  `affectCompiler.ts` joined last: the weather block is compiled now, so the functions that read
+ *  `mood_label` and `meta_prompt` live there rather than in status.ts, and the column has to name
+ *  the reader that really runs. */
 const CONSUMER_SOURCES = [
   './status.ts', './mood.ts', './affectDrift.ts', './threads.ts', '../memory/threadHarvest.ts',
-  '../memory/standingSettings.ts', './hooks.ts',
+  '../memory/standingSettings.ts', './hooks.ts', './affectCompiler.ts',
 ] as const;
 
 /** The rule, as a function, so the negative case below can be a real assertion rather than a claim

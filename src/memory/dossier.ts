@@ -196,6 +196,12 @@ export async function buildContextBlockWithHot(
   turn: TurnRelevance | null;
   gates: MemoryGateReports;
   craft: CraftTurnFacts;
+  /** One of HER asks is still outstanding: the steering question after a thin look, or the approval
+   *  ask she parked an action behind. Reported because the idle gate (persona/idle.ts) needs it and
+   *  this is the only place that reads those two prefs — a caller computing it for itself would
+   *  re-read the memory row and, worse, would eventually disagree with the gates above about
+   *  whether an ask had aged out. Their next short message is an ANSWER, and answering is work. */
+  pendingAsk: boolean;
 }> {
   const [memory, profile, shortEntries, medium, longDoc] = await Promise.all([
     getMemory(handle),
@@ -297,7 +303,14 @@ export async function buildContextBlockWithHot(
   // started. Rendered on every turn while the ask is live — no topic gate, because the answer is
   // usually one bare word (see gatePendingApproval).
   const approval = prefs.pending_approval as PendingApprovalCtx | undefined;
-  if (gatePendingApproval(approval, nowMs).keep) parts.push(renderPendingApproval(approval as PendingApprovalCtx, nowMs));
+  const approvalLive = gatePendingApproval(approval, nowMs).keep;
+  if (approvalLive) parts.push(renderPendingApproval(approval as PendingApprovalCtx, nowMs));
+
+  // The same two verdicts, read once more as ONE fact for the idle gate: an outstanding question of
+  // hers makes their next short message an answer rather than a stall. Taken off the gates rather
+  // than off the prefs, so "the section rendered" and "the gate says an ask is live" can never
+  // disagree.
+  const pendingAsk = clarification.keep || approvalLive;
 
   // The wrapped memory tiers LAST: preamble → short → medium → flexible (identity/addressing +
   // long doc + directives) in the recency slot; the persona's hard rules stay anchored at the
@@ -321,7 +334,7 @@ export async function buildContextBlockWithHot(
     emailFlag: shortForWrapper.some(e => e.kind === 'email_flag' && e.expiresAt > nowMs),
     thinProfile: audience !== 'group' && profileIsThin(data),
   };
-  return { block: parts.join('\n\n'), hotLook: wrapped.hotEntry, turn, gates, craft };
+  return { block: parts.join('\n\n'), hotLook: wrapped.hotEntry, turn, gates, craft, pendingAsk };
 }
 
 // ── THE UPDATER'S PROMPTS ────────────────────────────────────────────────────────────────────────

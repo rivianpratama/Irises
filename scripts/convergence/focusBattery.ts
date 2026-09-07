@@ -233,6 +233,9 @@ export type CheckId =
  *  otherwise read as "nothing was filtered". */
 const PRE_THEME_REASONS: ReadonlyArray<ThreadSelectReport['reason']> = [
   'awaiting_outcome', 'empty', 'mode', 'mood', 'turn_gate', 'day_cap',
+  // The rhythm engine closed the offer before selection ran at all (persona/hooks.ts), so the theme
+  // stage is not merely unreached — it was never entered. The furthest-pre-theme reason there is.
+  'offer_suppressed',
 ];
 
 const reply = (ev: TurnEvidence) => ev.bubbles.join('\n');

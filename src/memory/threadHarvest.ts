@@ -28,7 +28,7 @@ import {
   getThreadInventory, saveThreadInventory, threadingEnabled, themeTopicGateEnabled,
 } from '../db/repositories/threadInventory.js';
 import {
-  applyThreadHarvest, selectThreadCandidate,
+  applyThreadHarvest, selectThreadCandidate, suppressedSelection,
   type ThreadCandidate, type ThreadMaterial, type ThreadSelectReport,
 } from '../persona/threads.js';
 import { isGroupHandle } from './identity.js';
@@ -170,11 +170,20 @@ export async function updateThreadInventory(
  *   • The save is fire-and-forget but effectively synchronous (better-sqlite3), which matters for
  *     ORDER: the harvest at the END of this same turn reads the row this write just made, and that
  *     read is what advances the pending slot from `offered` to `awaiting`.
+ *
+ * SUBORDINATE TO THE RHYTHM ENGINE, and only in ONE respect. `allowOffer:false` (a task turn or a
+ * quiet one — persona/hooks.ts decides) skips `selectThreadCandidate` entirely: no candidate, no
+ * billing, no ledger write, and a `offer_suppressed` receipt saying exactly that. Everything else
+ * still runs, deliberately — the inventory is still read, the pending slot is still resolved, and
+ * the OUTCOME ASK still renders. That half is bookkeeping: "how did the surgery go" is owed on the
+ * turn after it was offered whatever this turn's mode is, and the harvest's tick depends on the
+ * pending machine advancing. Stated plainly because the consequence is visible: theme offers now
+ * only reach an idle turn, and a theme must still touch the message, so themes surface rarely.
  */
 export async function pickThreadForTurn(
   handle: string,
   affect: AffectState | null | undefined,
-  opts: { incomingText: string; gapMs: number; chatId?: string; now?: number },
+  opts: { incomingText: string; gapMs: number; chatId?: string; now?: number; allowOffer?: boolean },
 ): Promise<ThreadTurn> {
   if (!threadingEnabled()) return NOTHING;
   if (!handle || isGroupHandle(handle)) return NOTHING;
@@ -204,10 +213,18 @@ export async function pickThreadForTurn(
     // the gauges she was carrying when she last spoke, which is what "were they venting an hour ago"
     // actually means. A chat with no affect row yet passes null and every mode/mood gate stands down.
     // The engine is pure, so the ONE env read the selection needs happens here and is injected.
-    const { candidate, next, report } = selectThreadCandidate(
-      inventory, affect?.last ?? null, opts.incomingText, opts.gapMs, now,
-      { topicGate: themeTopicGateEnabled() },
-    );
+    //
+    // …unless the rhythm engine closed the offer for this turn, in which case selection is not run
+    // at all. The report is hand-built rather than taken from a suppressed run: every `filtered`
+    // bucket is honestly zero, because no candidate was ever considered, and the two budget numbers
+    // are read straight off the inventory so the receipt still says where the budgets stood.
+    const allowOffer = opts.allowOffer ?? true;
+    const { candidate, next, report } = allowOffer
+      ? selectThreadCandidate(
+          inventory, affect?.last ?? null, opts.incomingText, opts.gapMs, now,
+          { topicGate: themeTopicGateEnabled() },
+        )
+      : suppressedSelection(inventory, now);
 
     if (candidate) {
       // Fenced like the harvest: a /forget that landed between the read above and here must not have

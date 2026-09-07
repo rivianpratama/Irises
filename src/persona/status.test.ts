@@ -786,9 +786,11 @@ test('renderStatusForPrompt always warns it is internal, and carries prior mood 
   // Swept over every line EXCEPT the compiled mood line, which is where three of the six core
   // imperatives legitimately use those words as English (`powerful` → "A judgment lands flat and
   // certain", policy-strings.md CORE_DIRECTIVES). That sentence describes the register the mood
-  // sets; it is not the field, and it never names last turn's beat. Everything else in the block —
-  // the shape lines, the self-note, the climate span, the tail — stays clean, and the field name
-  // itself appears nowhere at all.
+  // sets; it is not the field, and it never names last turn's beat. The sweeps run on a block with
+  // no climate in it at all, and that is the reason rather than an accident: the climate BAND lines
+  // are compiled imperatives too, and they legitimately reach for the same three words. What is
+  // swept is everything else — the shape lines, the self-note, the tail — and the field name itself
+  // appears nowhere at all.
   assert.doesNotMatch(warm, /hook_kind/);
   assert.doesNotMatch(cold, /hook_kind/);
   assert.doesNotMatch(withoutMoodLine(warm), /judgment|callback|tangent/);

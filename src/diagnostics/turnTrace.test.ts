@@ -111,6 +111,7 @@ function turnInputs(prompt = realPrompt()): TurnTraceTurnInputs {
     ],
     gates: {
       threads: null,
+      hooks: null,
       memory: {
         shortHotLook: 'full',
         hits: [
@@ -353,6 +354,71 @@ test('a turn whose gates all read false files a craft receipt of one skip per pa
   assert.equal(detail.prompt.craft.length, CRAFT_MODULES.length);
   assert.deepEqual(detail.prompt.craft.filter(c => c.rendered), []);
   assert.equal(detail.prompt.craft.reduce((n, c) => n + c.chars, 0), 0, 'and the whole registry cost nothing');
+});
+
+// ── the rhythm engine's half of the receipt ──────────────────────────────────
+
+test('gates.hooks rides through by reference, and null is its own reading', () => {
+  const report: HookSelectReport = {
+    reason: 'kill_switch', idleLayer: 'fast_path', forbidden: [],
+    lastKinds: ['judgment', 'callback', 'tangent'],
+  };
+  const turn = turnInputs();
+  const detail = buildTurnTrace({
+    draft: buildTurnTraceDraft({
+      turn: { ...turn, gates: { ...turn.gates, hooks: report } },
+      affect: { raw: GOOD_STATUS, coerced: coerceStatus(GOOD_STATUS) },
+      outcome: SPOKE,
+    }),
+    bubbles: TWO_BUBBLES,
+  });
+  // By reference, like `gates.threads` beside it: a finished report owned by the engine that made
+  // it, and deep-cloning a foreign shape here would go stale the moment that shape changed.
+  assert.equal(detail.gates.hooks, report);
+
+  // NULL is not "nothing happened" — it is "the selector never ran", which is what the plan's
+  // negative control (CONVO_HOOKS_ENABLED=off on the live box) is scored on.
+  const off = buildTurnTrace({
+    draft: buildTurnTraceDraft({ turn, affect: { raw: GOOD_STATUS, coerced: coerceStatus(GOOD_STATUS) }, outcome: SPOKE }),
+    bubbles: TWO_BUBBLES,
+  });
+  assert.equal(off.gates.hooks, null);
+});
+
+test('outcome.hook is present only on a turn the selector ran on', () => {
+  const turn = turnInputs();
+  const withHook = buildTurnTrace({
+    draft: buildTurnTraceDraft({
+      turn,
+      affect: { raw: GOOD_STATUS, coerced: coerceStatus(GOOD_STATUS) },
+      outcome: { ...SPOKE, hook: { idle: true, mode: 'quiet', emitted: 'judgment', violation: true } },
+    }),
+    bubbles: TWO_BUBBLES,
+  });
+  assert.deepEqual(withHook.outcome.hook, { idle: true, mode: 'quiet', emitted: 'judgment', violation: true });
+
+  const without = buildTurnTrace({
+    draft: buildTurnTraceDraft({ turn, affect: { raw: GOOD_STATUS, coerced: coerceStatus(GOOD_STATUS) }, outcome: SPOKE }),
+    bubbles: TWO_BUBBLES,
+  });
+  assert.ok(!('hook' in without.outcome), 'an absent field is the engine never running, not a defaulted one');
+});
+
+test('an ABSENT hook_kind is the sanctioned "no beat" and is not reported as a coercion', () => {
+  // The droppable-field rule (DROPPABLE_FIELDS): only a value the coercer REFUSED is news. A reply
+  // that said nothing about a hook did not hook, and `recordHook` reads the absence as `none`.
+  const quiet = { ...GOOD_STATUS };
+  delete (quiet as Record<string, unknown>).hook_kind;
+  assert.deepEqual(
+    describeStatusCoercions(quiet, coerceStatus(quiet)).filter(c => c.field === 'hook_kind'),
+    [],
+  );
+  // …and a kind the schema does not know is a DROP, which the receipt does report.
+  const invented = { ...GOOD_STATUS, hook_kind: 'zinger' };
+  assert.deepEqual(
+    describeStatusCoercions(invented, coerceStatus(invented)),
+    [{ field: 'hook_kind', from: 'zinger', to: null, reason: 'dropped' }],
+  );
 });
 
 test('the section list is capped, and the cap sits above the whole section vocabulary', () => {

@@ -145,6 +145,7 @@ import { computeCycle } from '../../persona/cycle.js';
 import { computeCircadian } from '../../persona/circadian.js';
 import { defaultClimate, type RelationshipClimate } from '../../persona/climate.js';
 import type { ThreadCandidate } from '../../persona/threads.js';
+import { renderHooksSection, type HookDirective } from '../../persona/hooks.js';
 import type { ActiveOps } from '../../state/opsCoordination.js';
 import type { LlmToolDef } from '../../llm/types.js';
 import type { StoredMessage, UserProfile } from '../../db/types.js';
@@ -392,8 +393,17 @@ test('every reported section is a known id, named once, in assembly order', () =
  *  a golden whose whole job is to hold the pre-change ones. Each must be verified somewhere else,
  *  named here so the exemption is a decision rather than a gap:
  *    • turn_focus — pushed only when the caller hands in a focus input, which these fixtures don't;
- *      its push site, its placement and its flag are covered by turnFocus.test.ts. */
-const GOLDEN_EXEMPT: ReadonlySet<string> = new Set(['turn_focus']);
+ *      its push site, its placement and its flag are covered by turnFocus.test.ts.
+ *    • hooks — pushed only when the caller hands in a hook directive. Its BYTES are pinned
+ *      char-for-char in persona/hooks.test.ts (every mode, every forbidden set, the clamp last), its
+ *      PUSH SITE and its position second-to-last in the block by the drift-anchor test below and by
+ *      convo/hookWiring.test.ts, and its SIZE by convo/promptBudget.test.ts, whose two idle fixtures
+ *      render it.
+ *    • thesis — same arrangement, one turn earlier in the block: pushed only when the caller hands
+ *      in a non-empty thesis, measured on promptBudget.test.ts's thread-offer fixture, and placed by
+ *      convo/hookWiring.test.ts. Its text is written per person by Wave 3's weekly pass, so there is
+ *      no repo prose here for a golden to hold in the first place. */
+const GOLDEN_EXEMPT: ReadonlySet<string> = new Set(['turn_focus', 'hooks', 'thesis']);
 
 test('the fixtures between them exercise every dyn section — no push site left unnamed', () => {
   const seen = new Set(FIXTURES.flatMap(f => buildSystemPromptSections(...f.args).sections.map(s => s.name)));
@@ -526,18 +536,26 @@ test('the anchor reads its window band off the history rows the build was handed
   assert.notEqual(anchorOf(long), anchorOf(short), 'the long band really says something the short one does not');
 });
 
-test('the anchor reads its mode off the hook directive, not off the turn', () => {
+test('the anchor reads its mode off the hook directive — and the directive buys one section besides', () => {
   const hooked = [...FIXTURES[0].args] as BuildArgs;
-  hooked[16] = {
-    hooks: { idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: false, offerAllowed: true },
-    moments: [], thesis: '',
+  const directive: HookDirective = {
+    idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: false, offerAllowed: true,
   };
+  hooked[16] = { hooks: directive, moments: [], thesis: '' };
   const built = buildSystemPromptSections(...hooked);
   const windowChars = HISTORY_1TO1.reduce((n, m) => n + m.content.length, 0);
   assert.equal(anchorOf(built), renderDriftAnchor('hook', windowChars));
-  // …and nothing else in the prompt moved: the mode picks three bullets at the edge, full stop.
+
+  // The section is the other half of what a directive costs, and it lands LAST inside the block on
+  // this fixture (which hands in no turn-focus input): the two things that decide the reply's shape
+  // — what beat it may carry, and what it is answering — sit together at the recency edge.
+  const hooksBlock = renderHooksSection(directive);
+  assert.deepEqual(built.sections.map(s => s.name).slice(-3), ['hooks', 'behavior_anchor', 'json_anchor']);
+
+  // …and those two are the WHOLE bill. Strip the anchor and the section (with the `\n\n` join it
+  // pays to its neighbour) and the remaining bytes are the task turn's, exactly.
   assert.equal(
-    stable(afterPersona(built.system)).replace(anchorOf(built), ''),
+    stable(afterPersona(built.system)).replace(anchorOf(built), '').replace(`\n\n${hooksBlock}`, ''),
     stable(afterPersona(buildSystemPromptSections(...FIXTURES[0].args).system)).replace(GOLDEN_DRIFT_TASK_SHORT.slice(2), ''),
   );
 });

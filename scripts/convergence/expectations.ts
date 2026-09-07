@@ -96,6 +96,11 @@ export const THREADS_SELECT_LABEL = 'threads:select';
  */
 export const DATA_BUDGET_KEYS: readonly BudgetKey[] = [
   'context_block', 'memory_stack', 'burst', 'group', 'active_ops', 'tapped_reply',
+  // Her one read on this person, written per person by the weekly pass (memory/thesisEngine.ts).
+  // Two to four sentences about somebody with nine months of history is legitimately longer than
+  // two to four about somebody with three weeks, so an overshoot here is a fact about them and is
+  // reported with its number rather than failed.
+  'thesis',
   // Host-dependent by promptPolicy's own note: its text is built from the resolved model map, so a
   // bare checkout and a configured install legitimately differ.
   'model_map',

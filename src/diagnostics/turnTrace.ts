@@ -30,6 +30,7 @@ import type { RelevanceHitKind } from '../memory/relevance.js';
 import type { CraftModuleTrace } from '../agents/convo/personaModules.js';
 import type { RoutingGateDecision } from '../agents/routingGate.js';
 import type { ThreadSelectReport } from '../persona/threads.js';
+import type { HookKind, HookMode, HookSelectReport } from '../persona/hooks.js';
 
 /**
  * The trace label, in one place — the dashboard and any later reader match on this string. It is
@@ -148,6 +149,12 @@ export interface TurnTraceGates {
   /** The threading engine's own receipt for this turn (persona/threads.ts), or null when threading
    *  did not run at all (flag off, a group identity, or a read that failed). */
   threads: ThreadSelectReport | null;
+  /** The rhythm engine's, for the turn the selector ran on (persona/hooks.ts selectHook): which idle
+   *  layer decided, which reason won, what the ledger window held and which kinds were closed. NULL
+   *  means the selector never ran — CONVO_HOOKS_ENABLED is off, or the caller is not Convo — which
+   *  is a different reading from a selector that ran and reported `not_idle`, and the negative
+   *  control in the plan's Verification section is exactly that distinction. */
+  hooks: HookSelectReport | null;
   memory: {
     shortHotLook: ShortHotLook;
     /** Everything the memory stack held that touched this turn, best first — the router's whole
@@ -257,6 +264,18 @@ export interface TurnTraceOutcome {
   routingGate?: RoutingGateDecision;
   /** Tool names the model called this turn, in order. Names only — never their arguments. */
   toolCalls: string[];
+  /** What the rhythm engine's turn actually came to (persona/hooks.ts), present ONLY on a turn the
+   *  selector ran on — an absent field means it never ran, the same reading `gates.hooks: null`
+   *  gives on the other side of the receipt. Four settled facts and no prose: whether the gate read
+   *  the turn as idle, which contract that produced, which beat the reply reported carrying (`none`
+   *  when it reported none), and whether a FORCED-QUIET turn broke the quiet anyway. The battery
+   *  scores the kill switch off this field and the `convo:quiet_guard` event, never off her text. */
+  hook?: {
+    idle: boolean;
+    mode: HookMode;
+    emitted: HookKind;
+    violation: boolean;
+  };
 }
 
 /** The prompt, measured. `transcriptShare` is the transcript's slice of everything the model read —
@@ -479,6 +498,7 @@ export function buildTurnTrace(inputs: { draft: TurnTraceDraft; bubbles: BubbleR
     },
     gates: {
       threads: draft.gates.threads,
+      hooks: draft.gates.hooks,
       memory: {
         ...draft.gates.memory,
         hits: draft.gates.memory.hits.map(h => ({ ...h })),

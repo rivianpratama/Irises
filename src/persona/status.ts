@@ -251,7 +251,7 @@ export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
     // core's valence band is what the level may sit in — so "delighted at 12" is no longer an
     // expressible state, and she can no longer contradict her own label with a core.
     description: 'one feeling word for how you actually are right now, from the vocabulary below (e.g. hopeful, drained, content, anxious)',
-    consumers: ['coreForLabel', 'renderStatusForPrompt', 'renderStatusForComposer', 'pushMood'],
+    consumers: ['coreForLabel', 'moodOf', 'renderStatusForPrompt', 'renderStatusForComposer', 'pushMood'],
   },
   {
     key: 'mood_shift', type: 'string', required: true,
@@ -288,7 +288,7 @@ export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
     key: 'meta_prompt', type: 'string', required: true,
     description: 'private note to yourself for next turn: what they will likely do and how to meet it, ~40 words',
     // The self-recursive loop: last turn's note is re-injected into this turn's weather block.
-    consumers: ['renderStatusForPrompt'],
+    consumers: ['renderAffectDirective'],
   },
   {
     // The rhythm engine's one input (persona/hooks.ts). It sits here rather than last because it is
@@ -689,8 +689,11 @@ export function renderStatusContract(): string {
     // The half of the bargain no FIELD can state, because the fields it is about are the ones v2
     // deleted. It frames the bullets rather than trailing them: it is the reason there are only eight.
     // Fable's wording (policy-strings.md, "Contract carries-between-turns line"): the bargain is the
-    // one it always was, and the three gauges it names are the three the compiler actually reads —
-    // it used to list four in the vocabulary the deleted weather prose used ("warmth", "nerves").
+    // one it always was, and the three gauges it names are three the affect engine still keeps FOR
+    // her — it used to list four, in the vocabulary the deleted weather prose used ("warmth",
+    // "nerves"). Which of them the compiler reads is a separate question with a smaller answer
+    // (persona/affectCompiler.ts reads `social_battery` and `mood_level`), and this line is not
+    // making that claim.
     'Your state CARRIES between turns, and it is kept FOR you: how far your mood moved, and where your patience, your social battery and your edge stand, are not yours to report.',
     ...ENVELOPE_FIELDS.map(f => `- \`${f.key}\` — ${f.description}`),
     'Your feeling words, by core — pick the one that is actually true, not the flattering one:',
@@ -737,10 +740,12 @@ export function renderStatusForComposer(
   const climatePart = climateLinesForComposer(climate);
   if (!moodPart.length && !climatePart.length) return '';
   return [
-    // The proven leak-guard wording PLUS one fidelity clause Convo doesn't need, byte-identical to
-    // what it has always been: the Composer's one job is faithful re-voicing, so tone may bend word
-    // choice but must never move a fact.
-    `${INTERNAL_WEATHER_HEADER}. It colours word choice and how much you hedge; it never adds, drops, softens, or sharpens a fact you relay.`,
+    // The proven leak-guard wording PLUS one fidelity clause Convo doesn't need: the Composer's one
+    // job is faithful re-voicing, so tone may bend how sharp and how short a line is but must never
+    // move a fact. Fable's re-authored lead-in (strings.md), and the half that carries the whole
+    // rule — `never adds, drops, softens, or sharpens a fact` — is byte-identical to what it has
+    // always been, because that is the half the pin below reads.
+    `${INTERNAL_WEATHER_HEADER}. It sets how sharp and how short you are; it never adds, drops, softens, or sharpens a fact you relay.`,
     ...moodPart,
     ...climatePart,
   ].join('\n');

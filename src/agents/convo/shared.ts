@@ -69,7 +69,12 @@ import {
 } from '../../persona/status.js';
 import { renderThreadForPrompt } from '../../persona/threads.js';
 import { renderDriftAnchor } from '../../persona/policy.js';
-import type { HookDirective } from '../../persona/hooks.js';
+import {
+  QUIET_LAW, quietViolation, recordHook, renderHooksSection,
+  type HookDirective, type HookSelectReport, type HookState, type HookWord,
+} from '../../persona/hooks.js';
+import { hooksEnabled, thesisEnabled } from '../../persona/featureFlags.js';
+import { saveHookState } from '../../db/repositories/hookState.js';
 import { getAffectState, saveAffectState } from '../../db/repositories/affectState.js';
 import type { RelationshipClimate } from '../../persona/climate.js';
 import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
@@ -883,6 +888,15 @@ export function buildSystemPromptSections(
   // tiered memory with its own data tags + handling prose) — injected bare, no outer data tag.
   if (contextBlock) push('context_block', contextBlock);
 
+  // Her ONE read on this person (memory/thesisEngine.ts), rendered right behind the dossier it is
+  // the conclusion of: everything above is what she knows, this is what she THINKS, and every
+  // judgment she is allowed to carry on an idle turn is made out of it. Handed in already rendered
+  // by the caller — the store is a file read and this assembler is synchronous, the same reason the
+  // intro weave arrives as a value. '' (an install with no thesis yet, the flag off, or any caller
+  // but Convo) pushes nothing, so the prompt is byte-identical to one that never had the feature.
+  const thesis = (personaTurn?.thesis ?? '').trim();
+  if (thesis && thesisEnabled()) push('thesis', thesis);
+
   // Synchronous, in-memory "research is running right now" awareness (NOT from durable prefs —
   // that path loses the read-after-write race against a fast follow-up). Stops the redundant
   // re-delegation + repeated holding line when the user acks mid-research.
@@ -1004,6 +1018,26 @@ export function buildSystemPromptSections(
 
   if (extraSection) push('extra', extraSection);
 
+  // This turn's rhythm contract (persona/hooks.ts selectHook), second-to-last and immediately ahead
+  // of the turn-focus block. The placement is the argument: the two lines that decide the SHAPE of
+  // the reply — what beat this turn may carry, and what she is actually answering — sit together at
+  // the recency edge, where a hundred and fifty thousand characters of persona have the least pull.
+  //
+  // Renders '' on a task turn, which is the no-regression pin the whole feature rests on: on the
+  // turns that are real work, this section does not exist.
+  //
+  // The flag is read HERE, once, and the directive it produces is what BOTH consumers use — this
+  // section and the drift anchor's mode further down. One read rather than two for the house reason
+  // (a gate at the push site is what makes `CONVO_HOOKS_ENABLED=off` cost nothing, joins included)
+  // and for a sharper one: two reads could answer differently if the env were flipped between them,
+  // and a turn whose recency edge says "answer it flat" while its section says "carry a hook" is the
+  // one contradiction this whole arrangement exists to prevent.
+  const hookDirective = personaTurn?.hooks && hooksEnabled() ? personaTurn.hooks : null;
+  if (hookDirective) {
+    const hooksBlock = renderHooksSection(hookDirective, personaTurn?.moments);
+    if (hooksBlock) push('hooks', hooksBlock);
+  }
+
   // LAST inside the block, and it has to be last: everything above urges her to bring something of
   // hers along, and this is the one place that says what she is answering. The recency edge is the
   // whole mechanism — a restatement of their message, its shape read in code, and the one or two
@@ -1028,10 +1062,11 @@ export function buildSystemPromptSections(
   // It is now rendered per turn from persona/policy.ts, three bullets of identity plus three of the
   // law for THIS turn's mode, and the two inputs are both things the caller already computed:
   //
-  //   • the MODE, off the hook directive the selector produced for this turn. Absent (a non-Convo
-  //     caller, the flag off, the pre-read not yet wired) falls back to 'task' — the flat-answer law
-  //     is the safe default, because a turn wrongly told it may carry a hook is a leaf and a turn
-  //     wrongly told to answer flat is merely plain;
+  //   • the MODE, off the hook directive the selector produced for this turn — the SAME gated
+  //     directive the hooks section above was rendered from, so the two can never disagree. Absent
+  //     (a non-Convo caller, the flag off, the pre-read not yet wired) falls back to 'task' — the
+  //     flat-answer law is the safe default, because a turn wrongly told it may carry a hook is a
+  //     leaf and a turn wrongly told to answer flat is merely plain;
   //   • the WINDOW, the character length of the history rows this same call was handed. Characters,
   //     not rows: what buries the persona head is bytes between it and the reply (policy.ts
   //     DRIFT_LONG_WINDOW_CHARS).
@@ -1045,7 +1080,7 @@ export function buildSystemPromptSections(
   // Behaviour goes here; the format contract stays LAST below (a persona slip is recoverable, a
   // broken envelope is not).
   const windowChars = history?.reduce((n, m) => n + m.content.length, 0) ?? 0;
-  const behaviorAnchor = renderDriftAnchor(personaTurn?.hooks?.mode ?? 'task', windowChars);
+  const behaviorAnchor = renderDriftAnchor(hookDirective?.mode ?? 'task', windowChars);
 
   // The bubble numbers in the law sentence below are interpolated from the constants the code
   // ENFORCES (pipeline/bubbles.ts, pipeline/bubbleJson.ts), never spelled out: what the model is
@@ -1361,6 +1396,100 @@ async function enforcePromiseKept(
   return { res: out, fired: true };
 }
 
+// ── The quiet guard ─────────────────────────────────────────────────────────────────────────────
+/**
+ * The system-authored correction a broken quiet turn gets, in the house voice: the law itself
+ * (persona/hooks.ts QUIET_LAW, the same sentence her prompt already carried this turn, so the
+ * re-ask restates rather than introduces), then what a fixed reply looks like.
+ *
+ * A CONSTANT rather than a template, because there is nothing per-turn to interpolate: she is not
+ * being told what she did wrong — a quiet turn has exactly one shape and the correction is to write
+ * that shape. Naming the violation back at her ("you wrote three bubbles") would be a number in the
+ * prompt and an invitation to argue with the count.
+ */
+export const QUIET_CORRECTION = [
+  QUIET_LAW,
+  'That last reply was not it. Send it again as one short bubble, or as a tapback with no words at all, and set `hook_kind` to null.',
+].join(' ');
+
+/**
+ * ONE corrective re-ask for a reply that broke a FORCED-QUIET turn — the rhythm backstop, built to
+ * the same pattern as the honesty one above and reading the pure `quietViolation` from
+ * persona/hooks.ts.
+ *
+ * Same seam, same accept discipline: show the model its own reply, append a system-authored
+ * correction, ask once, and accept the retry ONLY if it fixed the thing — here, only if the retry is
+ * itself quiet. Anything else keeps the ORIGINAL: a reply that is one bubble too long is a small
+ * failure and an empty screen is a large one, and this must never turn one into the other.
+ *
+ * NEVER DROPS A TURN AND NEVER EDITS TEXT. The two obvious cheaper fixes — ship the first bubble
+ * alone, or send nothing — are both a machine speaking in her voice, and the plan rules both out.
+ *
+ * The receipt fires on EVERY evaluation, violation or not (`convo:quiet_guard`, `forced: true`).
+ * That is what makes the kill switch scorable: a battery has to be able to tell a forced-quiet turn
+ * she got right from a forced-quiet turn that never happened, and only the healthy no-op says so.
+ */
+export async function enforceQuiet(
+  args: { res: LlmResult; chatId: string; handle: string | undefined; turn?: ConvoTurnContext },
+  bubbles: string[],
+  emitted: HookWord | undefined,
+): Promise<{ res: LlmResult; fired: boolean }> {
+  const { res, chatId, handle, turn } = args;
+  const violated = quietViolation(emitted, bubbles);
+  const file = (retried: boolean, resolved: 'clean' | 'quiet' | 'kept_original') => {
+    record({
+      type: 'event', label: 'convo:quiet_guard', chatId, handle,
+      detail: { forced: true, emitted: emitted ?? null, bubbles: bubbles.length, retried, resolved },
+    });
+  };
+  if (!violated) {
+    file(false, 'clean');
+    return { res, fired: false };
+  }
+  // chatId in the line, not just the trace event: a live round attributes the failure per-chat from
+  // the instance log when the trace buffer isn't reachable. Same reasoning as the promise guard.
+  console.warn(`[convo] a forced-quiet turn came back loud (${bubbles.length} bubble(s)${emitted ? `, hook ${emitted}` : ''}) — one corrective re-ask (chat ${chatId})`);
+  let out = res;
+  let resolved: 'quiet' | 'kept_original' = 'kept_original';
+  if (turn) {
+    try {
+      const retry = await (turn.call ?? callConvoLLM)({
+        role: 'convo',
+        system: turn.system,
+        systemCacheBreakpoints: turn.cacheBreakpoints ?? [convoPersonaChars()],
+        tools: turn.tools,
+        jsonBubbles: true,
+        toolsViaJson: true,
+        messages: [
+          ...turn.messages,
+          { role: 'assistant', content: res.text ?? '' },
+          { role: 'user', content: QUIET_CORRECTION },
+        ],
+        // The CALL's own label, distinct from the decision receipt above — the same split as
+        // `convo:unkept_retry`/`convo:unkept_promise`, and for the same reason.
+        trace: { chatId, handle, label: 'convo:quiet_retry' },
+      });
+      const retryReply = parseReply(retry.text);
+      const retryBubbles = replyBubbles(retryReply);
+      // STRICT: the retry has to be quiet. Zero bubbles passes deliberately — a tapback with no
+      // words is the ideal quiet reply, and the tapback path sends none.
+      if (!quietViolation(coerceStatus(retryReply.statusRaw)?.hook_kind, retryBubbles)) {
+        out = retry;
+        resolved = 'quiet';
+      } else {
+        console.warn(`[convo] the quiet re-ask came back loud again — keeping the original reply (chat ${chatId})`);
+      }
+    } catch (err) {
+      // The one recovery is spent and the loud reply ships. Same category as the promise guard's own
+      // exhaustion, and deliberately not `quiet_guard` — reportError mirrors the category into the
+      // ring, and that label belongs to the decision receipt below.
+      reportError({ source: 'convo', category: 'retry_exhausted', severity: 'warn', err, detail: { guard: 'quiet' }, chatId, handle });
+    }
+  }
+  file(!!turn, resolved);
+  return { res: out, fired: true };
+}
+
 // ── The approval ask ────────────────────────────────────────────────────────────────────────────
 /**
  * ONE corrective re-ask for a delegation the approval gate just parked — the same mechanism, the
@@ -1671,6 +1800,22 @@ export async function processConvoResult(args: {
   // no router; both read as "nothing of hers touches this". Forwarded by the recall second pass
   // via {...args}, like `computed`.
   relevance?: TurnRelevance | null;
+  // What the rhythm engine decided before the prompt was built (convo/client.ts → persona/hooks.ts),
+  // carried on this object rather than as a positional parameter for the reason PersonaTurn exists:
+  // these travel together and are read by three different places down here — the quiet guard, the
+  // ledger write and the turn receipt. NULL means the selector never ran (CONVO_HOOKS_ENABLED off,
+  // or a caller that is not Convo), and every one of those three then does nothing at all, which is
+  // byte-for-byte the behaviour of an install that never had a hook engine.
+  //
+  // `state` is the ledger row as it was READ this turn — the input the next state is computed from —
+  // and `forgetEpoch` is the fence that row was read under, so a /forget landing mid-turn cannot have
+  // its wipe undone by the save at the end of this one.
+  hooks?: {
+    directive: HookDirective;
+    report: HookSelectReport | null;
+    state: HookState;
+    forgetEpoch: number;
+  } | null;
 }): Promise<ChatResponse> {
   const { chatId, handle, chatContext, textToSend, history, media } = args;
   // Read ONCE for the turn: the routing gate and the delegation brief must not be able to disagree
@@ -1724,7 +1869,20 @@ export async function processConvoResult(args: {
   const guard = (settledTask || settledReconfirm)
     ? { res: args.res, fired: false }
     : await enforcePromiseKept(args, replyBubbles(firstReply));
-  const res = guard.res;
+
+  // …and the rhythm backstop beside it, on the turns the selector forced quiet. ONE corrective
+  // re-ask per turn, TOTAL: the promise guard goes first and this one stands down whenever it fired,
+  // because honesty outranks rhythm and a reply that gets asked twice is a reply that has stopped
+  // being hers. Stood down on the two approval-settled turns for the same reason the promise guard
+  // is (and they are task turns anyway — an outstanding ask of hers is a veto in the idle gate).
+  //
+  // The kind it reads is the DRAFT's own, coerced off the reply this guard is about to correct; the
+  // turn's one canonical coercion happens further down, on whatever ends up shipping.
+  const forcedQuiet = !!args.hooks && args.hooks.directive.mode === 'quiet' && hooksEnabled();
+  const quiet = (forcedQuiet && !guard.fired && !settledTask && !settledReconfirm)
+    ? await enforceQuiet(args, replyBubbles(firstReply), coerceStatus(firstReply.statusRaw)?.hook_kind)
+    : { res: guard.res, fired: false };
+  const res = quiet.res;
   // Re-parsed only when the re-ask actually replaced the reply — parseReply logs a line for a
   // non-envelope reply, and parsing the same one twice would double it.
   const reply = res === args.res ? firstReply : parseReply(res.text);
@@ -1764,6 +1922,10 @@ export async function processConvoResult(args: {
   // the turns that never reached it (a delegation already built, the recall second pass, no memory
   // identity). Rides the turn receipt so a month of turns can be bucketed by it.
   let routingGate: RoutingGateDecision | undefined;
+  // Did a FORCED-QUIET turn ship loud anyway? Settled in the ledger block near the bottom (the guard
+  // above may have replaced the reply, so the honest reading is of what is being processed now) and
+  // read once, by the turn receipt. False on every turn the selector did not force quiet.
+  let hookViolation = false;
   // Tool OUTCOMES appended after the model's text (an automations list, or a correction note when a
   // schedule/cancel/directive couldn't be carried out) — the model couldn't foresee these (it's
   // single-shot), so Fallfirm voices each in Irises's tone at assembly time.
@@ -2611,6 +2773,40 @@ export async function processConvoResult(args: {
   // everything below runs exactly once per user-visible turn, same as updateDossier.
   const emitted = coerceStatus(reply.statusRaw);
 
+  // ── the rhythm ledger ─────────────────────────────────────────────────────────────────────────
+  // What this turn did to the run, written down. AWAITED, unlike the harvests below it: the next
+  // turn's kill switch is arithmetic over this row, and a fire-and-forget write could lose the race
+  // with a fast follow-up — which is precisely the shape of conversation this engine exists for.
+  //
+  // OUTSIDE the non-group guard below, deliberately. Every other per-person write down there is
+  // fenced off a room because what it records is a property of a PERSON; this one records how fast
+  // SHE has been talking, and three sharp replies in a room are three sharp replies whoever typed at
+  // her. So a group accumulates a ledger exactly like a one-to-one chat, and the fourth turn in the
+  // room goes quiet for everyone in it.
+  //
+  // A shipped violation counts as its emitted kind, not as `none`: the guard above tried and the loud
+  // reply went out anyway, so the run really did get another sharp beat and the switch has to see it.
+  // `momentOffered` is false until the sampler exists (Wave 3).
+  const hookTurn = args.hooks;
+  if (hookTurn) {
+    // Read of what is SHIPPING, not of the draft: the guard above may have replaced the reply, and a
+    // turn it fixed did not break the quiet.
+    hookViolation = hookTurn.directive.mode === 'quiet'
+      && quietViolation(emitted?.hook_kind, replyBubbles(reply));
+    // A hook word on a TASK turn is not re-asked — the answer already went out flat or it did not,
+    // and a second call over one envelope field would spend a turn's recovery on bookkeeping. It is
+    // counted (the ledger line below reads the same field) and receipted, which is what the battery
+    // scores. Only on a turn the gate actually read as work.
+    if (hookTurn.directive.mode === 'task' && emitted?.hook_kind) {
+      record({
+        type: 'event', label: 'hook:off_turn', chatId, handle,
+        detail: { emitted: emitted.hook_kind, idle: hookTurn.directive.idle },
+      });
+    }
+    const next = recordHook(hookTurn.state, emitted?.hook_kind, hookTurn.directive.idle, false, Date.now());
+    await saveHookState(chatId, handle ?? '', next, { ifForgetEpoch: hookTurn.forgetEpoch });
+  }
+
   // …and this turn's FULL affect record, folded once, for the same reason. The gauges are code's
   // answer now (persona/affectDrift.ts through mergeStatusWithDrift), and two readers want the
   // number it settled on: the harvest's distress read, which used to take `mood_level` off the
@@ -2745,6 +2941,11 @@ export async function processConvoResult(args: {
         // receipt, which only fires when the slot actually moved. Reading the two side by side is
         // how a tag false positive is diagnosed.
         language_request: full.language_request,
+        // The one extra beat the reply reported carrying, as EMITTED — absent on the great majority
+        // of turns, which is the honest shape of a flat answer. Where it LANDED is the separate
+        // `hooks:select` / `convo:quiet_guard` pair; reading them side by side is how a hook on a
+        // task turn is diagnosed.
+        hook_kind: full.hook_kind,
       },
     });
   }
@@ -2778,6 +2979,19 @@ export async function processConvoResult(args: {
           toolCalls: res.toolCalls.map(c => c.name),
           // Only when the honesty backstop actually fired — see the field's note in turnTrace.ts.
           ...(guard.fired ? { unkeptPromise: true } : {}),
+          // …and only on a turn the rhythm selector ran on. Four settled facts, spread rather than
+          // defaulted, so an absent `hook` means the engine never ran rather than ran and found
+          // nothing (diagnostics/turnTrace.ts TurnTraceOutcome).
+          ...(args.hooks
+            ? {
+                hook: {
+                  idle: args.hooks.directive.idle,
+                  mode: args.hooks.directive.mode,
+                  emitted: emitted?.hook_kind ?? ('none' as const),
+                  violation: hookViolation,
+                },
+              }
+            : {}),
           // And only when the routing floor was actually evaluated: a turn that never reached it
           // must claim no decision rather than a defaulted one.
           ...(routingGate ? { routingGate } : {}),

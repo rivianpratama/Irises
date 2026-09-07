@@ -123,6 +123,7 @@ function trace(patch: TracePatch = {}): TurnTraceDetail {
     },
     gates: {
       threads: null,
+      hooks: null,
       memory: {
         shortHotLook: patch.shortHotLook ?? 'digest',
         hits: patch.hits ?? [{ label: 'sourdough starter', kind: 'note' }],
