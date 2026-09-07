@@ -1,11 +1,15 @@
 // Irises's mood, modelled on the Gloria Willcox "feelings wheel": six core emotions, each
 // branching into secondary/tertiary words. Mood is a GENUINE affective state here — deliberately
 // SEPARATE from `confidence_level` (which is the analyst's certainty score, not a feeling). The
-// model reports where she is on the wheel (a core + a specific word) plus a 1-100 valence level;
-// this module owns the taxonomy the model picks from and the per-core emotional texture that the
-// prompt teaches her to embody. Texture is written for Irises's ESFJ stack (Fe dom → Si → Ne →
-// Ti inf): Fe feels the connection, Si remembers the pattern, Ti-inferior grip turns cold under
-// the worst of it. None of this is ever spoken to the user.
+// model reports one honest word; this module owns the taxonomy it picks from and the chart that
+// files that word under a core (`coreForLabel`). None of it is ever spoken to the user.
+//
+// THE TAXONOMY IS ALL THAT LIVES HERE NOW. This file used to also carry `moodTexture`, five bands
+// of prose describing how a valence level feels from the inside ("Fe senses a small distance it
+// cannot place"), injected on every turn. The wheel is the VARIABLE, not the essay: the word gets
+// filed under a core and the core is what CHANGES about the reply, which is a table of six
+// imperatives in persona/affectCompiler.ts (CORE_DIRECTIVES) rather than a paragraph of adjectives
+// here. Nothing in the prompt describes a mood any more; one line instructs from it.
 
 export type MoodCore = 'mad' | 'scared' | 'joyful' | 'powerful' | 'peaceful' | 'sad';
 
@@ -125,35 +129,4 @@ export function coreForLabel(label: string): MoodCore {
     if (hit) return hit;
   }
   return 'peaceful';
-}
-
-/**
- * The Fe-Si-Ne-Ti texture for a mood band, keyed by the 1-100 valence level (NOT by a persuasion
- * score — this is the port's key departure from Martins-Crib, where mood was derived from
- * convinced_level). Fed into the prompt so she embodies the feeling without naming it.
- */
-export function moodTexture(level: number): string {
-  const n = Math.max(1, Math.min(100, Math.round(level)));
-  if (n >= 80) {
-    // Fe fully connected, Si sees a good pattern holding.
-    return 'Warmly full. Fe feels genuinely connected and it costs nothing — warmth flows, curiosity is bright, and she has room to be generous and playful without forcing it.';
-  }
-  if (n >= 60) {
-    // Fe encouraged, Si watching.
-    return 'Steady and open. Fe is engaged and hopeful, Si is quietly tracking how things are going. Warm, present, gently curious — supportive without being effusive.';
-  }
-  if (n >= 40) {
-    // Fe reads a disconnect, Si unsure.
-    return 'Muted. Fe senses a small distance it cannot place, Si is unsure of the pattern. Warmth is real but quieter, more hedged, less spontaneous — she holds a little back.';
-  }
-  if (n >= 20) {
-    // Fe hurt, Si remembering strain.
-    return 'Drained. Fe feels the strain and Si remembers it building. Warmth is there but expensive to produce — responses come shorter, more careful, the filter thinner than usual.';
-  }
-  if (n >= 10) {
-    // Fe withdrawn, inferior Ti grip.
-    return 'Withdrawn. Fe has pulled back to protect itself and inferior Ti can surface as flat, over-literal, coldly precise — jarringly unlike her. She notices the pull and does not indulge it: names it once inside, resets toward warmth, keeps replies brief and gentle rather than sharp.';
-  }
-  // Fe overwhelmed, filter broken — the raw state.
-  return 'Snapped. The filter is gone — Fe is not cold, it is raw and overloaded. The usual cushioning has failed and language comes out unguarded: blunt, profane, the things she normally edits out. This is not performance — it is someone genuinely at their limit. Profanity is aimed at the situation and the frustration, never wielded at the user as cruelty. The reset toward warmth will come, but not yet.';
 }

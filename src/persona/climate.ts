@@ -255,32 +255,50 @@ export function applyDrift(
 // numbers on purpose: a dial value in the prompt is a thing to reason about and optimize, and a
 // register is a thing to speak in. She gets a band, never a score.
 
-type Band = 'none' | 'below' | 'raised' | 'high';
+export type Band = 'none' | 'below' | 'raised' | 'high';
 
 /** Which band a dial's value falls in. `high` starts past the MIDPOINT between default and ceiling,
  *  so "high" means the same relative distance on every dial despite their different ranges. */
-function bandOf(value: number, spec: DialSpec): Band {
+export function bandOf(value: number, spec: DialSpec): Band {
   const delta = value - spec.dflt;
   if (Math.abs(delta) <= BAND_DEADZONE) return 'none';
   if (delta < 0) return 'below';
   return value > spec.dflt + (spec.ceiling - spec.dflt) / 2 ? 'high' : 'raised';
 }
 
+/** One dial's band on a whole climate — the spec lookup and the "a missing dial reads as its
+ *  default" fallback in one place, so `renderBands` and the affect compiler (affectCompiler.ts,
+ *  which reads the two FLOOR bands as hook permissions) can never disagree about where a dial sits.
+ *  An absent climate is a default one: every dial in its silent band, nothing restricted. */
+export function bandForDial(c: RelationshipClimate | undefined, key: DialKey): Band {
+  const spec = SPEC_BY_KEY[key];
+  return bandOf(c?.dials?.[key] ?? spec.dflt, spec);
+}
+
+/**
+ * Band → the one thing it changes about the reply. Fable's sentences, pasted byte-for-byte from the
+ * staging prose (policy-strings.md, "Climate band lines"), and they are IMPERATIVES now rather than
+ * descriptions: the old lines told her how the relationship felt ("you're properly at ease with
+ * them") and left the register to be inferred, these tell her what to do with the turn in front of
+ * her. Same bargain the affect compiler makes one block up — the machinery is kept, its prose is not.
+ *
+ * Still no digits, still one sentence per moved dial, still nothing about how much they matter.
+ */
 const BAND_LINES: Record<DialKey, Record<Exclude<Band, 'none'>, string>> = {
   ease: {
-    raised: "you're at ease enough here to skip some of the polite runway, and one sharp message doesn't reset where you stand",
-    high: "you're properly at ease with them — you can drop straight in mid-thought, no runway, and one bad day doesn't reset where you stand",
-    below: 'things have been stiffer lately — keep the full courtesy in place',
+    raised: 'You two skip the runway now. Drop straight in, no warm-up line.',
+    high: 'No runway at all with this person. Open on the thing itself.',
+    below: 'Give them a beat before the point this turn.',
   },
   candor: {
-    raised: 'they take a straight answer well — less cushioning before the point',
-    high: 'they take the unwelcome read plainly; lead with it, cushion after only if it still needs it',
-    below: 'directness has been landing badly here — keep the cushions on',
+    raised: 'A straight answer lands well with them. Say the hard thing first.',
+    high: 'Say the hard thing first and do not soften it after.',
+    below: 'Directness has been landing badly. Hold the judgment kind of hook this turn.',
   },
   playfulness: {
-    raised: 'a little teasing is fair game with them',
-    high: 'in-jokes and shorthand are part of how you two talk now',
-    below: "keep it straight — lightness hasn't been landing",
+    raised: 'In-jokes and shorthand carry between you now. A tangent is welcome.',
+    high: 'A tangent or a callback is expected of you here.',
+    below: 'No tangents this turn. Flat and useful.',
   },
 };
 

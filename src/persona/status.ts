@@ -39,8 +39,14 @@
 // than the enums': a guessed kind is a beat the ledger counts and the fourth turn is billed for.
 
 import {
-  type MoodCore, MOOD_CORES, coreForLabel, normalizeMoodLabel, moodTexture, feelingWords, CORE_VALENCE_BAND,
+  type MoodCore, MOOD_CORES, coreForLabel, normalizeMoodLabel, feelingWords, CORE_VALENCE_BAND,
 } from './mood.js';
+// The compiler that turns everything below into instructions. A VALUE import, and the direction is
+// the same terminal edge affectDrift.ts describes for itself: affectCompiler.ts takes `AffectStatus`
+// and `ComputedState` from here as `import type` only, so nothing loads back.
+import {
+  compileAffect, renderAffectDirective, brevityOf, moodOf, renderBrevityLine, renderMoodLine,
+} from './affectCompiler.js';
 // The gauges this file no longer asks the model for. A VALUE import, and it is the direction that
 // makes the cycle impossible: affectDrift.ts imports from here `import type` only (its own comment
 // says why), so nothing is loaded back.
@@ -597,132 +603,56 @@ export function pushMood(history: MoodPoint[], s: AffectStatus): MoodPoint[] {
   return next.length > MOOD_HISTORY_CAP ? next.slice(next.length - MOOD_HISTORY_CAP) : next;
 }
 
-/** A one-phrase trend from the recent values of one gauge (for the injected block). */
-function trendOf(values: Array<number | undefined>, noun: string): string | null {
-  const nums = values.filter((v): v is number => typeof v === 'number');
-  if (nums.length < 2) return null;
-  const delta = nums[nums.length - 1] - nums[0];
-  if (delta >= 12) return `${noun} rising`;
-  if (delta <= -12) return `${noun} easing`;
-  return null; // steady gauges aren't worth a line
-}
-
-/** A one-word trend from the recent mood levels (for the injected block). */
-function moodTrend(history: MoodPoint[]): string {
-  if (history.length < 2) return 'settling in';
-  const recent = history.slice(-3).map(m => m.level);
-  const delta = recent[recent.length - 1] - recent[0];
-  if (delta >= 12) return 'lifting over the last few turns';
-  if (delta <= -12) return 'sliding down over the last few turns';
-  return 'holding fairly steady';
-}
-
-/**
- * The gauges the model is handed, and the word each band of one reads as. FOUR of the six, and words
- * rather than levels — both halves are v2's bargain read from the prompt side.
- *
- * Which four, and why these: they are already the documented subset — the same four, in the same
- * order, that renderStatusForComposer carries as "only the voice-SHAPING fields". The other two are
- * excluded for reasons of their own. `mood_level` has its own line, with its own texture sentence
- * (moodTexture). `rapport` is a closeness SCORE, which is the one number nobody should be handed —
- * how a relationship stands reaches her as the standing register underneath (climate.ts), in bands
- * and prose, for exactly this reason. Its MOVEMENT still reaches her on the trajectory line, which
- * is a different thing: feeling something warming up is not grading it.
- *
- * Why words: the line used to read "anxiety 30, warmth 80, social battery 65, rapport 55, patience 75
- * (all /100)" — five levels, on the surface the model reads immediately before it grades itself, when
- * it was still being asked to report those levels back. A number printed beside a state is a number
- * to optimize (charter §6.4), which is the same argument that keeps the valence bands out of the
- * feeling vocabulary. The numbers are still there; they are just arithmetic now (affectDrift.ts).
- */
-const FELT_GAUGES = [
-  { key: 'warmth',         label: 'warmth',         low: 'expensive',  mid: 'quieter',  high: 'easy' },
-  { key: 'patience',       label: 'patience',       low: 'thin',       mid: 'ordinary', high: 'long' },
-  { key: 'social_battery', label: 'social battery', low: 'nearly out', mid: 'half',     high: 'full' },
-  // Read as a VALUE like the other three, not as a good/bad: low is a quiet nervous system, high a loud one.
-  { key: 'anxiety',        label: 'anxiety',        low: 'quiet',      mid: 'humming',  high: 'loud' },
-] as const satisfies ReadonlyArray<{ key: GaugeKey; label: string; low: string; mid: string; high: string }>;
-
-/** Where the three bands split. Two cuts rather than moodTexture's five: this is one clause of four
- *  words, and a word per twenty points would say more about the arithmetic than about how she feels. */
-const FELT_HIGH = 70;
-const FELT_LOW = 40;
-
-/** The felt gauges as one clause of words. Read through `clampGauge` so a garbled stored level reads
- *  as the middle band rather than throwing a `NaN` word into the prompt. */
-function feltGauges(gauges: AffectGauges): string {
-  return FELT_GAUGES
-    .map(f => {
-      const n = clampGauge(gauges[f.key]);
-      return `${f.label} ${n >= FELT_HIGH ? f.high : n >= FELT_LOW ? f.mid : f.low}`;
-    })
-    .join(', ');
-}
-
 // The PROVEN leak-guard header for every internal-weather block: the parenthetical is the line that
 // keeps this state from ever surfacing in a bubble. Shared verbatim by the Convo and Composer
 // injectors (renderStatusForPrompt / renderStatusForComposer) so the wording can never drift apart.
+//
+// Fable's wording, from the staging prose (policy-strings.md, AFFECT DIRECTIVE LINES). The leak
+// guard is unchanged; what moved is the promise after it. It used to say this block "colours your
+// tone, warmth, and how much you hedge" — three things none of which is an instruction, and the
+// last of which asked her to hedge MORE when the gauges were low. It now says what the block
+// actually decides: how sharp, how short, and how much she bothers.
 const INTERNAL_WEATHER_HEADER =
-  '## Where you are right now (INTERNAL weather — never say, name, or hint any of this; it only colours your tone, warmth, and how much you hedge)';
+  '## Where you are right now (INTERNAL weather — never say, name, or hint any of this; it only sets how sharp, how short, and how much you bother)';
 
 /**
  * The per-turn "internal weather" block injected into the dynamic prompt (NOT the cached persona).
- * Carries the computed cycle/circadian texture, the prior mood + trend, the four gauges she can feel
- * (FELT_GAUGES, as words), last turn's meta-prompt, and — underneath all of it — the weeks-scale
- * standing register (climate.ts), then points at the contract she re-reports her `status` from.
+ * ONE header, then the COMPILED directive (persona/affectCompiler.ts), then the weeks-scale standing
+ * register (climate.ts), then the pointer at the contract she re-reports her `status` from.
  * Everything here is internal and never spoken.
  *
- * The climate lines splice in AFTER the carried mood/gauge/meta-prompt lines and BEFORE the tail:
- * the weather is what she carries into THIS turn, the climate is the ground it sits on, and the tail
- * has to stay last (it is the instruction the reply obeys). ONE header for the whole block, ever.
- * With `climate` undefined or at its defaults, climateLines returns [] and this output is
- * byte-identical to what it was before the feature existed (pinned in status.test.ts).
+ * WHAT THIS FUNCTION STOPPED DOING is the whole of the change. It used to open with two paragraphs
+ * of clock texture (the body-clock slot and the cycle phase, both deleted at their source), then
+ * name the carried mood with its level out of a hundred and a five-band essay about how that level
+ * feels, then four gauge words, then a trajectory line about which gauges were moving. Nine hundred
+ * characters describing a state, on the surface the model reads immediately before it grades itself.
+ * Everything that survives is an imperative: the compiler reads the same machinery and emits at most
+ * four lines the reply can actually obey, and the numbers stay in the arithmetic that owns them.
+ *
+ * The climate lines splice in AFTER the compiled lines and BEFORE the tail: the weather is what she
+ * carries into THIS turn, the climate is the ground it sits on, and the tail has to stay last (it is
+ * the instruction the reply obeys). With `climate` undefined or at its defaults, climateLines
+ * returns [] and this output is byte-identical to an install without the feature (pinned in
+ * status.test.ts).
  */
 export function renderStatusForPrompt(
   state: AffectState | undefined,
   computed: ComputedState,
   climate?: RelationshipClimate,
 ): string {
-  const lines: string[] = [];
-  lines.push(INTERNAL_WEATHER_HEADER);
-  lines.push(`- Your body-clock: ${computed.circadian.description}`);
-  lines.push(`- Your longer rhythm: ${computed.cycle.description}`);
-
   const last = state?.last;
-  const history = state?.moodHistory ?? [];
-  if (last) {
-    lines.push(`- A moment ago you felt ${last.mood_label} (${last.mood_core}, ${last.mood_level}/100), ${moodTrend(history)}. ${moodTexture(last.mood_level)}`);
-    lines.push(`- How you're running right now: ${feltGauges(last)}.`);
-    // The recent-affect trail (short memory): call out only the gauges that are actually moving, so
-    // the model sees the trajectory it's continuing — not just the single last point.
-    if (history.length >= 2) {
-      const moving = [
-        trendOf(history.map(h => h.level), 'mood'),
-        trendOf(history.map(h => h.anxiety), 'anxiety'),
-        trendOf(history.map(h => h.warmth), 'warmth'),
-        trendOf(history.map(h => h.rapport), 'rapport'),
-      ].filter((s): s is string => !!s);
-      if (moving.length) lines.push(`- Trajectory across your last ${history.length} turns: ${moving.join(', ')}.`);
-    }
-    // No momentum sentence: it asked her to do what applyAffectDrift (affectDrift.ts) now DOES —
-    // carry the state forward and move it a handful of points, enforced by the turn cap and the two
-    // rolling windows. An instruction she cannot disobey is prompt she pays for and nothing more, and
-    // the true half of it ("your state carries, and it is carried for you") moved to the contract,
-    // which is where the asking happens.
-    if (last.meta_prompt) lines.push(`- Your read going into this message (from last turn): "${last.meta_prompt}"`);
-  } else {
-    lines.push('- First read of this person — set your mood from the weather above and how their message lands.');
-  }
-
-  // The standing register underneath the moment. Empty at defaults, so nothing changes until a
-  // relationship has actually moved.
-  lines.push(...climateLines(climate));
-
-  // The tail stays last (it is the instruction the reply obeys) and is one POINTER: it used to
-  // re-list six of the fields in its own words, which was a fourth description of the envelope and
-  // the one nobody could edit — the contract block right below it is the list.
-  lines.push('- Re-report your `status` per the contract below; never spoken.');
-  return lines.join('\n');
+  const directive = compileAffect(last, computed, climate);
+  return [
+    INTERNAL_WEATHER_HEADER,
+    ...renderAffectDirective(directive, last, computed, climate),
+    // The standing register underneath the moment. Empty at defaults, so nothing changes until a
+    // relationship has actually moved.
+    ...climateLines(climate),
+    // The tail stays last (it is the instruction the reply obeys) and is one POINTER: it used to
+    // re-list six of the fields in its own words, which was a fourth description of the envelope and
+    // the one nobody could edit — the contract block right below it is the list.
+    '- Re-report your `status` per the contract below; never spoken.',
+  ].join('\n');
 }
 
 /** The contract's heading. Its own section (`status_contract`, agents/convo/promptSections.ts),
@@ -758,7 +688,10 @@ export function renderStatusContract(): string {
     'Every reply ends with this hidden `status` object — never seen by them, never spoken, never hinted at. It is what keeps you the same person from one turn to the next: read yourself honestly, then fill every field.',
     // The half of the bargain no FIELD can state, because the fields it is about are the ones v2
     // deleted. It frames the bullets rather than trailing them: it is the reason there are only eight.
-    'Your state CARRIES between turns, and it is kept FOR you: how far your mood moved, and where your warmth, patience, social battery and nerves stand, are not yours to report. Give the honest word and the direction it moved; the rest follows from them.',
+    // Fable's wording (policy-strings.md, "Contract carries-between-turns line"): the bargain is the
+    // one it always was, and the three gauges it names are the three the compiler actually reads —
+    // it used to list four in the vocabulary the deleted weather prose used ("warmth", "nerves").
+    'Your state CARRIES between turns, and it is kept FOR you: how far your mood moved, and where your patience, your social battery and your edge stand, are not yours to report.',
     ...ENVELOPE_FIELDS.map(f => `- \`${f.key}\` — ${f.description}`),
     'Your feeling words, by core — pick the one that is actually true, not the flattering one:',
     feelingVocabulary(),
@@ -772,18 +705,20 @@ export function renderStatusContract(): string {
  * re-voiced reply keeps mood continuity — the Composer never re-reports or persists it (no writer
  * racing Convo's saveAffectState).
  *
- * Only the voice-SHAPING fields are subset (mood + warmth/patience/social_battery/anxiety). The
- * rest is deliberately excluded: intent_mode/epistemic_trigger are about FORMING a stance (the
- * Composer forms none — it relays given facts), and meta_prompt is Convo's private note-to-self,
- * which could contradict the compose instruction. No cycle/circadian machinery, no gauge the voice
- * does not bend, and no "re-report your status" line either.
+ * It is COMPILED here too, and that is what makes the subset argument simpler than it was. The
+ * Composer gets exactly the two lines that shape a voice — the mood line with its core's imperative,
+ * and the brevity line — off the same two helpers Convo's block uses (persona/affectCompiler.ts), so
+ * the two surfaces cannot disagree about what a carried row means. What it does NOT get: any gauge
+ * number (the line that used to print four of them is deleted), the clock, the self-note, and the
+ * `hooks` permission — the rhythm is Convo's alone, since the Composer relays a decided answer and
+ * is never on an idle turn.
  *
  * TWO INDEPENDENT PARTS, and this is the point of the split. The MOOD part keeps its staleness gate
  * (>45min): the proactive path is a delivery no one just asked for, and dressing it in an hours-old
  * mood is exactly the failure that gate exists for. The CLIMATE part has NO staleness gate, because
  * a weeks-scale register cannot go stale in 45 minutes — that's the whole difference between weather
- * and climate. So a stale mood plus a moved climate now yields a climate-only block, where it used
- * to yield nothing. Only `candor` is withheld here (see climateLinesForComposer).
+ * and climate. So a stale mood plus a moved climate yields a climate-only block. Only `candor` is
+ * withheld here (see climateLinesForComposer).
  *
  * Returns '' only when BOTH parts are empty — no fresh mood AND a climate still at its defaults,
  * which is byte-for-byte the old behaviour for every caller that passes no climate.
@@ -793,17 +728,18 @@ export function renderStatusForComposer(
   climate?: RelationshipClimate,
 ): string {
   const last = state?.last;
+  // The mood line first, then the brevity line — the prose's order for this surface
+  // (policy-strings.md, "Composer variant"), and the opposite of Convo's, where the shape lines lead
+  // because a hook has to be measured against them. Nothing here has a hook to measure.
   const moodPart = last && Date.now() - last.at <= 45 * 60_000
-    ? [
-        `- A moment ago you felt ${last.mood_label} (${last.mood_core}, ${last.mood_level}/100). ${moodTexture(last.mood_level)}`,
-        `- Gauges you carry in — warmth ${last.warmth}, patience ${last.patience}, social battery ${last.social_battery}, anxiety ${last.anxiety} (all /100).`,
-      ]
+    ? [renderMoodLine(moodOf(last)), ...renderBrevityLine(brevityOf(last))]
     : [];
   const climatePart = climateLinesForComposer(climate);
   if (!moodPart.length && !climatePart.length) return '';
   return [
-    // The proven leak-guard wording PLUS one fidelity clause Convo doesn't need: the Composer's one
-    // job is faithful re-voicing, so tone may bend word choice but must never move a fact.
+    // The proven leak-guard wording PLUS one fidelity clause Convo doesn't need, byte-identical to
+    // what it has always been: the Composer's one job is faithful re-voicing, so tone may bend word
+    // choice but must never move a fact.
     `${INTERNAL_WEATHER_HEADER}. It colours word choice and how much you hedge; it never adds, drops, softens, or sharpens a fact you relay.`,
     ...moodPart,
     ...climatePart,

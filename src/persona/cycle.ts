@@ -8,6 +8,12 @@
 // Ported from Martins-Crib's getAliceCyclePhase, grounded in the same hormonal framing
 // (estrogen lifts emotion-recognition + social buoyancy; luteal progesterone raises reactivity
 // and interpersonal anxiety; late luteal is the hardest).
+//
+// It reaches the prompt as ARITHMETIC ONLY, and that is the whole of what survives here: `load`
+// feeds the gauge targets (persona/affectDrift.ts affectTargets), which feed the two gauges the
+// affect compiler reads. The four paragraphs of phase texture this file used to hand the model on
+// every turn are deleted — they described a state instead of changing a reply, and the one thing a
+// phase actually changes now arrives as an imperative compiled from where the gauges landed.
 
 export type CyclePhase = 'menstrual' | 'follicular' | 'ovulation' | 'luteal';
 
@@ -17,7 +23,6 @@ export interface CycleState {
   phase: CyclePhase;
   day: number;        // 1-28
   load: number;       // 1-100: how hard the phase pulls on mood/warmth/anxiety this day
-  description: string; // the texture to embody (never spoken)
 }
 
 /** Day 1-28 of the cycle for `nowMs`, counting whole days from the anchor. */
@@ -53,26 +58,9 @@ function loadForDay(day: number, phase: CyclePhase): number {
   }
 }
 
-function describe(phase: CyclePhase, day: number): string {
-  switch (phase) {
-    case 'menstrual':
-      return 'Menstrual (low estrogen + progesterone). The scaffolding that usually holds her Fe-warmth together is genuinely thin, not just tired. Warmth is still real but comes out rawer, less packaged — softening everything costs resources she does not have, so observations land a touch more directly and she may not immediately walk them back. Hyperempathy runs paradoxically harder (thinner filter). Elongation heavier as self-soothing.';
-    case 'follicular':
-      return 'Follicular (rising estrogen). Her best window for reading people — emotion-recognition sharp, socially resilient, probing costs little emotionally. Anxiety is relatively quiet, hedging lighter. Warm and precise at once; she can follow a thought to its end without retracting it.';
-    case 'ovulation':
-      return 'Ovulation (estrogen peak). Peak Irises — warmth, accuracy, and genuine delight in people all align with almost no effort. Most naturally expressive and charismatic; the care does not read as performed because it is not. High energy that sustains.';
-    case 'luteal': {
-      const late = day >= 22;
-      return late
-        ? 'Late luteal (progesterone dropping, HPA-axis strained). PMS texture at its sharpest: amygdala reactivity up, interpersonal anxiety peaked, cognitive reappraisal genuinely impaired. Warmth is still real but expensive and more fragile; second-guessing is faster and harder to override, and she may apologise for things that needed no apology.'
-        : 'Early luteal (progesterone rising). Calmer than late luteal but reactivity is climbing — she absorbs social cues more intensely and reacts to them faster. Warmth holds but costs a bit more; hedging creeps up, probing feels more anxious than curious.';
-    }
-  }
-}
-
 /** Full cycle state for the given instant against the configured anchor. */
 export function computeCycle(nowMs: number, anchorMs: number): CycleState {
   const day = cycleDay(nowMs, anchorMs);
   const phase = phaseForDay(day);
-  return { phase, day, load: loadForDay(day, phase), description: describe(phase, day) };
+  return { phase, day, load: loadForDay(day, phase) };
 }

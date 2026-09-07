@@ -29,8 +29,8 @@ const MOOD = GAUGE_SPECS.find(s => s.key === 'mood_level')!;
 /** A clock state with the only two fields this engine reads. */
 function clock(load: number, energy: number): ComputedState {
   return {
-    cycle: { phase: 'luteal', day: 20, load, description: 'fixture' },
-    circadian: { slot: 'evening', hour: 19, weekend: false, energy, description: 'fixture' },
+    cycle: { phase: 'luteal', day: 20, load },
+    circadian: { slot: 'evening', hour: 19, weekend: false, energy },
   };
 }
 

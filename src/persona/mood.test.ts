@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MOOD_CORES, WILLCOX_WHEEL, EXTENDED_WORDS, wheelWords, feelingWords,
-  isMoodCore, normalizeMoodLabel, moodTexture, CORE_VALENCE_BAND, type MoodCore,
+  isMoodCore, normalizeMoodLabel, coreForLabel, CORE_VALENCE_BAND, type MoodCore,
 } from './mood.js';
 
 // The exact Gloria Willcox wheel, transcribed from the chart — the completeness contract.
@@ -54,7 +54,19 @@ test('isMoodCore + valence bands cover the six cores', () => {
   assert.ok(!isMoodCore('grumpy'));
 });
 
-test('moodTexture shifts across the valence range', () => {
-  assert.notEqual(moodTexture(90), moodTexture(10));
-  assert.ok(moodTexture(5).length > 0);
+// `moodTexture` is deleted: the five bands of prose it returned described a level instead of
+// changing a reply, and what a mood changes is now the core's own imperative (CORE_DIRECTIVES,
+// persona/affectCompiler.ts). What this module still owes that table is the CHART — every word the
+// model may report has to land on exactly one of the six cores, or the imperative is picked for a
+// mood she is not in.
+test('every word of the vocabulary files under exactly one core', () => {
+  for (const core of MOOD_CORES) {
+    for (const word of feelingWords(core)) {
+      assert.ok(isMoodCore(coreForLabel(word)), `${word} places somewhere on the chart`);
+    }
+  }
+  // The chart's own answers, at the two ends and at the fallback.
+  assert.equal(coreForLabel('hopeful'), 'powerful');
+  assert.equal(coreForLabel('MISERABLE'), 'sad');
+  assert.equal(coreForLabel('zzzqqq'), 'peaceful');
 });

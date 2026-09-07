@@ -42,12 +42,16 @@ test('weekend detection uses the zone', () => {
   assert.equal(computeCircadian(tue, 'UTC').weekend, false);
 });
 
-test('energy is bounded 1-100 and a description is present', () => {
+// The per-slot texture is deleted (see the file header): a slot now leaves this module as a number
+// the gauge targets read and a name the affect compiler reads, and nothing that describes a feeling.
+test('a slot carries a bounded energy and NOTHING that describes a mood', () => {
   const c = computeCircadian(atHourUTC(16), 'UTC'); // afternoon_peak
   assert.ok(c.energy >= 1 && c.energy <= 100);
-  assert.ok(c.description.length > 0);
   // afternoon peak should out-energize the post-lunch dip
   assert.ok(c.energy > computeCircadian(atHourUTC(13), 'UTC').energy);
+  // Four fields, and every one of them is arithmetic or a name. A fifth carrying prose is what this
+  // pins against: seven paragraphs of it used to ride the prompt on every single turn.
+  assert.deepEqual(Object.keys(c).sort(), ['energy', 'hour', 'slot', 'weekend']);
 });
 
 test('a bad timezone falls back without throwing', () => {

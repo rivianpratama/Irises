@@ -14,6 +14,10 @@ import { MOOD_CORES, WILLCOX_WHEEL, EXTENDED_WORDS } from './mood.js';
 import { GAUGE_SPECS } from './affectDrift.js';
 import { HOOK_WORDS } from './hooks.js';
 import { defaultClimate, type RelationshipClimate } from './climate.js';
+// The compiler behind the weather block. Its thresholds are READ here rather than repeated, so a cut
+// that moves cannot leave a stale number pinned in a second file (affectCompiler.test.ts owns the
+// compile itself; this file owns what reaches the prompt).
+import { SOCIAL_BATTERY_MINIMAL, SOCIAL_BATTERY_TIGHT } from './affectCompiler.js';
 
 /** The v2 envelope, exactly as the model is asked for it: ten judgments and not one number. */
 const RAW_V2 = {
@@ -412,8 +416,10 @@ test('AFFECT_DETERMINISTIC off freezes the gauges, and the block reads the same 
       + 'well as the numbers and there are two prompts to keep honest instead of one',
     );
 
-    // …and the comparison is not vacuous: what it rendered is the FROZEN row, band for band.
-    assert.match(off, /warmth easy, patience ordinary, social battery half, anxiety quiet/);
+    // …and the comparison is not vacuous: what it rendered is the FROZEN row's band. The social
+    // battery is 44, which is the tight band (persona/affectCompiler.ts), so the block carries the
+    // line that band compiles to — and would carry a different one if the frozen gauges had moved.
+    assert.match(off, /- Fewer words than usual\. Two bubbles at most\./);
   } finally {
     if (before === undefined) delete process.env.AFFECT_DETERMINISTIC;
     else process.env.AFFECT_DETERMINISTIC = before;
@@ -740,7 +746,7 @@ test('the contract asks for a direction and says the numbers are kept for her', 
   );
   const at = contract.indexOf(STATE_IS_CARRIED);
   assert.ok(at > 0 && at < contract.indexOf('- `mood_label`'), 'it frames the bullets rather than trailing them');
-  assert.match(contract.slice(at), /^kept FOR you: how far your mood moved, and where your warmth, patience, social battery and nerves stand, are not yours to report/);
+  assert.match(contract.slice(at), /^kept FOR you: how far your mood moved, and where your patience, your social battery and your edge stand, are not yours to report\./);
   // It is prose about gauges, not a description of one: no bullet, and no number.
   assert.doesNotMatch(contract.split('\n').find(l => l.includes(STATE_IS_CARRIED))!, /\d/);
 });
@@ -776,51 +782,90 @@ test('renderStatusForPrompt always warns it is internal, and carries prior mood 
   // else (persona/hooks.ts): what this turn may carry is decided in code and rendered as its own
   // section, so the weather block quoting last turn's word back would be a second authority on the
   // rhythm — and one she could read as an instruction to repeat herself.
-  assert.doesNotMatch(warm, /hook_kind|judgment|callback|tangent/);
-  assert.doesNotMatch(cold, /hook_kind|judgment|callback|tangent/);
+  //
+  // Swept over every line EXCEPT the compiled mood line, which is where three of the six core
+  // imperatives legitimately use those words as English (`powerful` → "A judgment lands flat and
+  // certain", policy-strings.md CORE_DIRECTIVES). That sentence describes the register the mood
+  // sets; it is not the field, and it never names last turn's beat. Everything else in the block —
+  // the shape lines, the self-note, the climate span, the tail — stays clean, and the field name
+  // itself appears nowhere at all.
+  assert.doesNotMatch(warm, /hook_kind/);
+  assert.doesNotMatch(cold, /hook_kind/);
+  assert.doesNotMatch(withoutMoodLine(warm), /judgment|callback|tangent/);
+  assert.doesNotMatch(withoutMoodLine(cold), /judgment|callback|tangent/);
+  // …and the exemption is exactly one line wide.
+  assert.equal(warm.split('\n').filter(l => l.startsWith('- You are ')).length, 1);
 });
 
-// ── the felt gauges: words, and only the four she can feel ───────────────────
-// v2 took the numbers off the envelope (Task 15); this is the other end of the same bargain. The
-// block used to hand back five gauges as "anxiety 30, warmth 80, … (all /100)" — five levels to
-// optimize against, on the surface the model reads immediately before grading itself. It now names
-// only what a person can actually feel, in a word per band.
+// ── the compiled directive: instructions, and not one number ────────────────
+// v2 took the numbers off the ENVELOPE; this is the other end of the same bargain, finished. The
+// block used to open with two paragraphs of clock texture, then name the carried mood with its level
+// out of a hundred and a five-band essay about it, then four gauge words, then a trajectory line —
+// nine hundred characters describing a state on the surface the model reads immediately before it
+// grades itself. It now carries at most four lines, every one of them an imperative compiled from
+// the same machinery (persona/affectCompiler.ts, whose own tests own the compile). What is pinned
+// HERE is what reaches the prompt: which lines, in which order, and with no gauge anywhere in them.
 
-/** The line, by its lead-in — the felt clause is asserted against this and nowhere else. */
-const FELT_LEAD = "- How you're running right now: ";
-
-function feltLine(gauges: Partial<AffectGauges>): string {
-  const out = renderStatusForPrompt({ last: carried(0, gauges), moodHistory: [] }, COMPUTED);
-  const line = out.split('\n').find(l => l.startsWith(FELT_LEAD));
-  assert.ok(line, `no felt-gauge line in the block:\n${out}`);
-  return line;
+/** The compiled lines of the block — everything between the header and the tail. */
+function directiveLines(gauges: Partial<AffectGauges> = {}, climate?: RelationshipClimate): string[] {
+  const out = renderStatusForPrompt({ last: carried(0, gauges), moodHistory: [] }, COMPUTED, climate);
+  const lines = out.split('\n');
+  assert.equal(lines[0], lines.find(l => l.startsWith('## ')), 'one header, and it leads');
+  return lines.slice(1, lines.indexOf('- Re-report your `status` per the contract below; never spoken.'));
 }
 
-test('the weather block names the four gauges she can feel, as words, with no gauge number at all', () => {
-  assert.equal(
-    feltLine({ warmth: 95, patience: 88, social_battery: 90, anxiety: 12 }),
-    `${FELT_LEAD}warmth easy, patience long, social battery full, anxiety quiet.`,
-  );
-  assert.equal(
-    feltLine({ warmth: 50, patience: 50, social_battery: 50, anxiety: 50 }),
-    `${FELT_LEAD}warmth quieter, patience ordinary, social battery half, anxiety humming.`,
-  );
-  assert.equal(
-    feltLine({ warmth: 20, patience: 15, social_battery: 10, anxiety: 90 }),
-    `${FELT_LEAD}warmth expensive, patience thin, social battery nearly out, anxiety loud.`,
-  );
-  // The two cuts, from both sides — a band boundary that slid would otherwise be invisible.
-  assert.match(feltLine({ patience: 70 }), /patience long/);
-  assert.match(feltLine({ patience: 69 }), /patience ordinary/);
-  assert.match(feltLine({ patience: 40 }), /patience ordinary/);
-  assert.match(feltLine({ patience: 39 }), /patience thin/);
+/** The block with the compiled MOOD line removed. Three of the six core imperatives use a hook word
+ *  as ordinary English (policy-strings.md CORE_DIRECTIVES), so the sweeps that must not see one are
+ *  run over everything else — the shape lines, the self-note, the climate span and the tail. */
+function withoutMoodLine(block: string): string {
+  return block.split('\n').filter(l => !l.startsWith('- You are ')).join('\n');
+}
 
-  // No digit on the line, and the "(all /100)" that invited five of them is gone.
-  assert.doesNotMatch(feltLine({}), /\d/);
+test('the weather block compiles the gauges to instructions, and hands back no gauge at all', () => {
+  // The fixture's carried row: hopeful → `powerful` on the chart, and a battery of 65 → the normal
+  // band, which renders NO shape line. So a wide-open turn is one line long.
+  assert.deepEqual(directiveLines(), [
+    '- You are hopeful (powerful). A judgment lands flat and certain. Do not explain it.',
+    '- Your read going into this message (from last turn): "they seem upbeat; keep it light and follow their lead"',
+  ]);
+  // Three points on the battery: full, tight, spent.
+  assert.deepEqual(directiveLines({ social_battery: 90 })[0], '- You are hopeful (powerful). A judgment lands flat and certain. Do not explain it.');
+  assert.deepEqual(directiveLines({ social_battery: 45 })[0], '- Fewer words than usual. Two bubbles at most.');
+  assert.deepEqual(directiveLines({ social_battery: 20 })[0], '- One bubble this turn. Say the one thing and stop.');
+
+  // Every boundary, from both sides — a cut that slid by a point is invisible otherwise. The
+  // thresholds are read off the compiler rather than repeated, so this cannot pin a stale number.
+  const shape = (social_battery: number) => directiveLines({ social_battery }).find(l => /bubble/.test(l));
+  assert.match(shape(SOCIAL_BATTERY_MINIMAL - 1)!, /One bubble this turn/);
+  assert.match(shape(SOCIAL_BATTERY_MINIMAL)!, /Fewer words than usual/);
+  assert.match(shape(SOCIAL_BATTERY_TIGHT - 1)!, /Fewer words than usual/);
+  assert.equal(shape(SOCIAL_BATTERY_TIGHT), undefined, 'the normal band renders nothing');
+
+  // The whole point: not one number in any of it, and the "(all /100)" that invited five of them is
+  // gone. `rapport` is not felt either — closeness reaches her as the standing register, in prose.
+  for (const gauges of [{}, { social_battery: 20 }, { social_battery: 45 }, { mood_level: 10 }]) {
+    for (const line of directiveLines(gauges)) assert.doesNotMatch(line, /\d/, line);
+  }
   const out = renderStatusForPrompt({ last: carried(0), moodHistory: [] }, COMPUTED);
   assert.ok(!out.includes('(all /100)'), 'the block still hands her a scale to grade herself on');
-  // `rapport` is not felt: closeness reaches her as the standing register (climate.ts), in prose.
   assert.doesNotMatch(out, /rapport/);
+});
+
+test('the descriptive prose is gone from the block entirely — clock, level, trajectory', () => {
+  const out = renderStatusForPrompt({ last: carried(0), moodHistory: [
+    { level: 40, core: 'sad', label: 'drained', at: 0 },
+    { level: 72, core: 'powerful', label: 'hopeful', at: 1 },
+  ] }, COMPUTED);
+  assert.doesNotMatch(out, /body-clock|longer rhythm/, 'the two clock paragraphs are deleted at their source');
+  assert.doesNotMatch(out, /Fe |Si |Ne |Ti /, 'the cognitive-stack texture went with them');
+  assert.doesNotMatch(out, /Trajectory across/, 'the trend line is gone: it named gauges and counted turns');
+  assert.doesNotMatch(out, /A moment ago you felt/, 'the carried-mood line is an instruction now, not a report');
+  assert.doesNotMatch(out, /\/100/);
+  // A cold start says the same KIND of thing a warm one does — one imperative — rather than a line
+  // asking her to set her mood from a description that no longer exists.
+  const cold = renderStatusForPrompt(undefined, COMPUTED);
+  assert.doesNotMatch(cold, /First read of this person/);
+  assert.match(cold, /- You are content \(peaceful\)\. Even and flat\. Nothing extra\./);
 });
 
 // The momentum sentence described what applyAffectDrift now DOES (persona/affectDrift.ts): the
@@ -856,13 +901,17 @@ test('renderStatusForComposer carries the mood + the leak-guard + the fidelity c
   const full = carried(Date.now());
   const out = renderStatusForComposer({ last: full, moodHistory: [] });
 
-  // mood label + the texture for its level (72 → the "Steady and open" band)
-  assert.match(out, /hopeful/);
-  assert.match(out, /powerful/);   // the core the chart files 'hopeful' under
-  assert.match(out, /Steady and open/);
-  // the carried voice-shaping gauges
-  assert.match(out, /warmth 80/);
-  assert.match(out, /patience 75/);
+  // The Composer is compiled too (persona/affectCompiler.ts): the mood line with its core's own
+  // imperative, and the shape line when there is one. Both off the same two helpers Convo's block
+  // uses, so the two surfaces cannot disagree about what a carried row means.
+  assert.equal(
+    out.split('\n')[1],
+    '- You are hopeful (powerful). A judgment lands flat and certain. Do not explain it.',
+  );
+  // The fixture's battery is 65 — the normal band, so no shape line. Drop it to the tight band and
+  // one appears, immediately under the mood line.
+  const tight = renderStatusForComposer({ last: carried(Date.now(), { social_battery: 45 }), moodHistory: [] });
+  assert.equal(tight.split('\n')[2], '- Fewer words than usual. Two bubbles at most.');
 
   // the proven leak-guard header + the added fidelity clause
   assert.match(out, /INTERNAL weather/);
@@ -879,9 +928,18 @@ test('renderStatusForComposer carries the mood + the leak-guard + the fidelity c
   assert.doesNotMatch(out, /body-clock|longer rhythm/); // no cycle/circadian machinery
   assert.doesNotMatch(out, /thread/i);                 // threading is capture-only; no render reads it
   assert.doesNotMatch(out, /visa interview/);          // …not even the carried note's text
+  assert.doesNotMatch(out, /Steady and open|Fe |Si /);  // the deleted mood essay
+  // NOT ONE GAUGE NUMBER. The line that used to print four of them ("warmth 80, patience 75, …")
+  // is deleted: the Composer gets the band, never the score, which is the same bargain Convo's
+  // block makes one function up.
+  assert.doesNotMatch(out, /\d/);
+  assert.doesNotMatch(tight, /\d/);
   // The rhythm is Convo's alone: the Composer relays a decided answer, so it is never on an idle
-  // turn and has no beat of its own to carry. Neither the field nor any of its three words.
-  assert.doesNotMatch(out, /hook_kind|judgment|callback|tangent/);
+  // turn and has no beat of its own to carry — so the FIELD appears nowhere, and neither do its
+  // three words outside the one compiled mood line, where a core imperative may legitimately use
+  // one as English (policy-strings.md CORE_DIRECTIVES).
+  assert.doesNotMatch(out, /hook_kind/);
+  assert.doesNotMatch(withoutMoodLine(out), /judgment|callback|tangent/);
 });
 
 // ── Relationship climate spliced into the same block ─────────────────────────
@@ -898,19 +956,19 @@ test('a moved climate rides ONE weather block, after the carried lines and befor
   // Exactly one header — a second one would read as a second, competing block.
   assert.equal(out.split('INTERNAL weather').length - 1, 1);
 
-  // Anchored on the felt-gauge line, which is the last of the carried lines the momentum sentence
-  // used to sit after. The ordering claim is unchanged: weather, then the ground under it, then the ask.
-  const felt = out.indexOf(FELT_LEAD);
+  // Anchored on the compiled mood line, which is the last of the carried lines. The ordering claim
+  // is unchanged: the moment, then the ground under it, then the ask.
+  const mood = out.indexOf('- You are hopeful (powerful).');
   const meta = out.indexOf('Your read going into this message');
   const leadIn = out.indexOf('standing register');
   const reReport = out.indexOf('Re-report your `status`');
-  assert.ok(felt !== -1 && meta !== -1 && leadIn !== -1 && reReport !== -1);
-  assert.ok(leadIn > felt, 'climate must sit after the carried gauges');
+  assert.ok(mood !== -1 && meta !== -1 && leadIn !== -1 && reReport !== -1);
+  assert.ok(leadIn > mood, 'climate must sit after the compiled directive');
   assert.ok(leadIn > meta, 'climate must sit after the carried meta-prompt');
   assert.ok(leadIn < reReport, 'the re-report instruction stays last');
 
   // Bands, never numbers — and the clamp that keeps a warmer register from touching the substance.
-  assert.match(out, /polite runway|drop straight in mid-thought/);
+  assert.match(out, /- No runway at all with this person\. Open on the thing itself\./);
   assert.match(out, /never changes a fact/);
   assert.doesNotMatch(out.slice(leadIn, reReport), /\d/);
 });
@@ -933,12 +991,14 @@ test('composer: a stale mood plus a moved climate yields a climate-ONLY block', 
 
   assert.match(out, /INTERNAL weather/);
   assert.match(out, /standing register/);
-  assert.match(out, /teasing|in-jokes/);
+  assert.match(out, /- A tangent or a callback is expected of you here\./);
   // The stale mood is gone — its gate still holds.
   assert.doesNotMatch(out, /hopeful/);
-  assert.doesNotMatch(out, /Gauges you carry in/);
-  // And candor never reaches the Composer, which relays a decided answer.
-  assert.doesNotMatch(out, /straight answer|unwelcome read/i);
+  assert.doesNotMatch(out, /- You are /);
+  // And candor never reaches the Composer, which relays a decided answer. Swept over the BULLETS:
+  // the clamp legitimately ends on "whether you say the hard thing", which is the §6.4 line.
+  const bullets = out.split('\n').filter(l => l.startsWith('- ')).join('\n');
+  assert.doesNotMatch(bullets, /hard thing|Directness has been landing badly/i);
 });
 
 test('composer: a stale mood plus a DEFAULT climate is still "" (both halves empty)', () => {

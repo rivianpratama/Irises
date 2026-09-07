@@ -319,13 +319,19 @@ test('the clamp sentence is always last whenever anything rendered', () => {
   }
 });
 
+// The band lines are IMPERATIVES now (Fable's sentences, policy-strings.md): they say what to do
+// with this turn instead of describing how the relationship feels. Pinned by their own words here,
+// because a band that silently rendered a neighbouring band's sentence would still read as prose.
 test('the composer subset renders ease + playfulness and NEVER candor', () => {
   const moved = at({ ease: 70, candor: 84, playfulness: 60 });
   const composer = climateLinesForComposer(moved).join('\n');
-  assert.match(composer, /polite runway|drop straight in mid-thought/);
-  assert.match(composer, /teasing|in-jokes/);
-  // The Composer relays a decided answer; a candor register there could only sharpen it.
-  assert.doesNotMatch(composer, /straight answer|unwelcome read|cushion/i);
+  assert.match(composer, /No runway at all with this person\. Open on the thing itself\./);
+  assert.match(composer, /A tangent or a callback is expected of you here\./);
+  // The Composer relays a decided answer; a candor register there could only sharpen it. Swept over
+  // the BULLETS alone: the clamp sentence legitimately ends on "whether you say the hard thing",
+  // which is the §6.4 line and not a candor directive.
+  const bullets = climateLinesForComposer(moved).filter(l => l.startsWith('- ')).join('\n');
+  assert.doesNotMatch(bullets, /hard thing|Directness has been landing badly/i);
 
   // A climate whose ONLY movement is candor is invisible to the Composer, clamp and all.
   assert.deepEqual(climateLinesForComposer(at({ candor: 84 })), []);

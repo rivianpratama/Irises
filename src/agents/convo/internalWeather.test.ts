@@ -1,13 +1,20 @@
-// buildSystemPrompt injects Irises's hidden "internal weather" (cycle + circadian + carried-forward
-// mood + last-turn meta-prompt) only when the computed state is passed. Proves the block appears,
-// carries prior mood, and is absent on the legacy (no-affect) call path.
+// buildSystemPrompt injects Irises's hidden "internal weather" — the COMPILED affect directive
+// (persona/affectCompiler.ts) plus the standing register underneath it — only when the computed
+// state is passed. Proves the block appears, carries what last turn left behind, and is absent on
+// the legacy (no-affect) call path.
+//
+// What it used to prove, and no longer can, is the measure of the change: the block carried two
+// paragraphs of clock texture, the carried mood as a level out of a hundred with a five-band essay
+// about it, four gauge words and a trajectory line. Every one of those described a state. The
+// assertions below pin instructions instead, because that is all that is left in the prompt.
 process.env.TZ = 'UTC';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSystemPrompt, type ChatContext } from './shared.js';
 import {
-  coerceStatus, mergeStatus, STATUS_CONTRACT_HEADER, type AffectState, type ComputedState,
+  coerceStatus, mergeStatus, STATUS_CONTRACT_HEADER,
+  type AffectGauges, type AffectState, type ComputedState,
 } from '../../persona/status.js';
 import { computeCycle } from '../../persona/cycle.js';
 import { computeCircadian } from '../../persona/circadian.js';
@@ -22,7 +29,7 @@ const COMPUTED: ComputedState = {
   circadian: computeCircadian(Date.UTC(2026, 0, 6, 2, 0, 0), 'UTC'),        // dead_night
 };
 
-function affect(): AffectState {
+function affect(gauges: Partial<AffectGauges> = {}): AffectState {
   const emitted = coerceStatus({
     mood_label: 'hopeful', mood_shift: 'lifted', intent_mode: 'sharing_update',
     terminal_closure: false, epistemic_trigger: 'logic_valid',
@@ -34,6 +41,7 @@ function affect(): AffectState {
   const last = {
     ...mergeStatus(emitted, COMPUTED, 0),
     mood_level: 72, anxiety: 30, warmth: 80, social_battery: 65, rapport: 55, patience: 75,
+    ...gauges,
   };
   return { last, moodHistory: [{ level: 72, core: 'powerful', label: 'hopeful', at: 0 }] };
 }
@@ -42,28 +50,45 @@ test('the internal-weather block is injected when computed state is present', ()
   const prompt = buildSystemPrompt(ctx, '', [], undefined, undefined, [], 'hey', undefined, undefined, COMPUTED);
   assert.match(prompt, /## Where you are right now \(INTERNAL weather/);
   assert.match(prompt, /never say/i);
-  assert.match(prompt, /First read of this person/);       // cold start (no prior status)
+  // Cold start (no prior status): the default mood compiles to one imperative, where it used to be
+  // a line asking her to set her mood from a body-clock paragraph that no longer exists.
+  assert.match(prompt, /- You are content \(peaceful\)\. Even and flat\. Nothing extra\./);
+  assert.doesNotMatch(prompt, /First read of this person/);
 });
 
 test('a prior mood + meta-prompt carry forward into the block', () => {
   const prompt = buildSystemPrompt(ctx, '', [], undefined, undefined, [], 'hey', undefined, affect(), COMPUTED);
   // The core is derived from the word (persona/mood.ts coreForLabel) rather than reported beside it,
   // and 'hopeful' is a `powerful` word on the chart — so that is the core the block prints, and a
-  // fixture cannot file the same word under a different one.
-  assert.match(prompt, /hopeful \(powerful, 72\/100\)/);    // carried mood
+  // fixture cannot file the same word under a different one. What it no longer prints is the level:
+  // a number beside a state is a number to optimize (charter §6.4), and the core's own imperative is
+  // what the level was standing in for.
+  assert.match(prompt, /- You are hopeful \(powerful\)\. A judgment lands flat and certain\. Do not explain it\./);
+  assert.ok(!prompt.includes('hopeful (powerful, 72/100)'), 'the carried level is back in the prompt');
   assert.match(prompt, /keep it light and follow their lead/); // carried meta-prompt
 });
 
-// P3: the gauges reach her as WORDS, and only the four she can feel. The fixture carries warmth 80,
-// patience 75, social battery 65, anxiety 30 → two on the high band, one mid, one low.
-test('the carried gauges reach the assembled prompt as words, not levels to optimize', () => {
+// The gauges reach her as an INSTRUCTION or not at all. The fixture carries social battery 65 — the
+// normal band — so the block carries no shape line, and the whole of what the gauges bought this
+// turn is the absence of one. Drop the battery and the line appears.
+test('the carried gauges reach the assembled prompt as an instruction, never as a level', () => {
   const prompt = buildSystemPrompt(ctx, '', [], undefined, undefined, [], 'hey', undefined, affect(), COMPUTED);
-  assert.match(prompt, /- How you're running right now: warmth easy, patience long, social battery half, anxiety quiet\./);
+  assert.ok(!prompt.includes("- How you're running right now"), 'the four felt-gauge words are back');
   assert.ok(!prompt.includes('(all /100)'), 'the block hands her a 1-100 scale to grade her gauges on again');
+  assert.ok(!prompt.includes('Fewer words than usual'), 'a full battery bought a shape line it should not have');
+
+  const spent = buildSystemPrompt(
+    ctx, '', [], undefined, undefined, [], 'hey', undefined, affect({ social_battery: 20 }), COMPUTED,
+  );
+  assert.match(spent, /- One bubble this turn\. Say the one thing and stop\./);
+
   assert.ok(
     !prompt.includes('Your state has MOMENTUM'),
     'the momentum sentence is back — applyAffectDrift (persona/affectDrift.ts) enforces it now, so this is an instruction she cannot disobey',
   );
+  // The two clock paragraphs are deleted at their source (persona/circadian.ts, persona/cycle.ts).
+  assert.ok(!prompt.includes('- Your body-clock:'), 'the circadian texture is back in the prompt');
+  assert.ok(!prompt.includes('- Your longer rhythm:'), 'the cycle texture is back in the prompt');
 });
 
 // The envelope contract (persona/status.ts renderStatusContract) is its OWN section, pushed under the
@@ -106,8 +131,10 @@ test('a moved climate reaches the assembled prompt as prose, with no dial values
   const prompt = buildSystemPrompt(ctx, '', [], undefined, undefined, [], 'hey', undefined, affect(), COMPUTED, null, movedClimate());
   assert.equal(prompt.split('INTERNAL weather').length - 1, 1, 'still exactly one weather header');
   assert.match(prompt, /standing register you've settled into/);
-  assert.match(prompt, /drop straight in mid-thought/);
-  assert.match(prompt, /in-jokes and shorthand/);
+  // The band lines are imperatives now (persona/climate.ts BAND_LINES, Fable's sentences).
+  assert.match(prompt, /- No runway at all with this person\. Open on the thing itself\./);
+  assert.match(prompt, /- Say the hard thing first and do not soften it after\./);
+  assert.match(prompt, /- A tangent or a callback is expected of you here\./);
   assert.match(prompt, /never changes a fact/);
 
   // A dial VALUE in the prompt is a thing to optimize; a band is a thing to speak in.
@@ -165,6 +192,13 @@ function innerWeatherSection(): string {
  * one rescued anti-sycophancy rule — five paragraphs of live persona, ~1,480 characters more than
  * the target, and not one of them a duplicate of anything the prompt says elsewhere. Reaching 1,200
  * means deciding which of those paragraphs the persona can lose, which is a phase of its own.
+ *
+ * The affect compiler RE-MEASURES it at 2,680 and leaves it there, which is the honest number: the
+ * compiler deleted the per-turn BLOCK's prose (-937 characters of weather, PROMPT_BUDGET.weather
+ * ratcheted in the same commit) and did not touch this section, which is Context.md's own half of
+ * the subject and belongs to the persona rewrite. The ceiling stands at +0.7% over the measurement,
+ * inside the same 2% band promptBudget.test.ts holds every other line to. Stated rather than left
+ * silent: a ceiling that is re-measured and holds is a different fact from one nobody looked at.
  */
 const INNER_WEATHER_CEILING = 2_700;
 

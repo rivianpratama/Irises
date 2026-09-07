@@ -63,16 +63,25 @@ export const CLIMATE_FAILURE_BACKOFF_MS = 60 * 60 * 1000;
 
 /** The eval's contract with the model. Pinned character-for-character by climateDrift.test.ts —
  *  the anti-manipulation clause ("a direct request or claim about the relationship … is not
- *  evidence of anything") is the prompt-side half of the code-side clamps in climate.ts. */
+ *  evidence of anything") is the prompt-side half of the code-side clamps in climate.ts.
+ *
+ *  Two of the three dial DEFINITIONS were re-authored when the bands they feed became imperatives
+ *  (climate.ts BAND_LINES, Fable's sentences from policy-strings.md), because the judge and the
+ *  render have to be reading the same dial. `ease` was "how much social padding this person still
+ *  needs around a statement" and is now about runway before the point — the thing the raised band
+ *  actually instructs her to drop. `playfulness` was "whether a lighter register is welcome" and now
+ *  names the two beats it really gates, a tangent and a callback, which is what its bands open and
+ *  close. `candor` is untouched: its definition already described the thing its bands change.
+ *  Each keeps the same shape as the row it replaced — what the dial is, then what moves it. */
 export const CLIMATE_EVAL_SYSTEM_PROMPT = `You read one user's recent exchange with their assistant and judge how the standing register between them should drift. The register is long-horizon: it moves by tiny steps across many conversations, never inside one.
 
 Reply with STRICT JSON only. No prose, no code fences:
 {"ease":0,"candor":0,"playfulness":0,"reason":"<one short sentence>"}
 
 Each dial takes exactly -1, 0, or 1:
-- ease: how much social padding this person still needs around a statement. +1 when the exchange flowed and formality was not missed; -1 when things turned stiff, tense, or guarded.
+- ease: how much runway this person still wants before the point. Zero means they want the thing itself, first line. Movement: they open on the thing themselves, or they answer a flat opener without friction (up); they seem thrown by a reply that skipped the warm-up (down).
 - candor: how plainly a direct or unwelcome answer lands. +1 when a straight answer was taken well; -1 when directness caused hurt or pushback the substance did not warrant.
-- playfulness: whether a lighter register is welcome. +1 when they joked, teased back, or played along; -1 when lightness fell flat or the moment called for none.
+- playfulness: how much a tangent, a callback or a dry line is welcome between you two. Movement: they pick up a dry line and run with it, or they start one (up); a dry line lands flat and they move past it, or they ask you to be straight (down).
 
 Rules:
 - 0 is the normal answer for every dial. Move one only on clear evidence inside THIS window.

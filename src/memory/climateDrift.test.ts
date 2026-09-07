@@ -159,6 +159,14 @@ test('the system prompt carries the anti-manipulation clause, and the transcript
   assert.ok(sys.includes('Absence of warmth is not coldness'));
   assert.ok(sys.includes('Reply with STRICT JSON only'));
 
+  // The two dial definitions the band lines re-authored (climate.ts BAND_LINES). Pinned as whole
+  // sentences: the judge that moves a dial and the line that renders it have to mean the same thing,
+  // and a definition that drifts back to "social padding" would move a register nothing instructs on.
+  assert.ok(sys.includes('- ease: how much runway this person still wants before the point. Zero means they want the thing itself, first line.'));
+  assert.ok(sys.includes('- playfulness: how much a tangent, a callback or a dry line is welcome between you two.'));
+  // …and `candor`'s, which did NOT move.
+  assert.ok(sys.includes('- candor: how plainly a direct or unwelcome answer lands.'));
+
   // The transcript is user-authored, so it is DATA inside the turn's <prompt> block (§5.2).
   const content = userContent(calls[0]);
   assert.match(content, /<prompt>[\s\S]*<\/prompt>/);

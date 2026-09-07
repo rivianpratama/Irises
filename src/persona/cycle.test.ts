@@ -30,12 +30,14 @@ test('phaseForDay maps the four phases at their boundaries', () => {
   assert.equal(phaseForDay(28), 'luteal');
 });
 
-test('computeCycle returns phase + day + a bounded load + a description', () => {
+// The four paragraphs of phase texture are deleted (see the file header): `load` is the whole of
+// what a phase contributes now, and it contributes it to the gauge targets rather than to the prose.
+test('computeCycle returns phase + day + a bounded load, and no texture', () => {
   const menstrual = computeCycle(ANCHOR, ANCHOR);
   assert.equal(menstrual.phase, 'menstrual');
   assert.equal(menstrual.day, 1);
   assert.ok(menstrual.load >= 1 && menstrual.load <= 100);
-  assert.ok(menstrual.description.length > 0);
+  assert.deepEqual(Object.keys(menstrual).sort(), ['day', 'load', 'phase']);
 
   const ovulation = computeCycle(ANCHOR + 13 * DAY, ANCHOR);
   assert.equal(ovulation.phase, 'ovulation');
