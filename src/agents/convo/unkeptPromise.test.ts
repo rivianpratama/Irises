@@ -57,11 +57,19 @@ test('a reply that promises nothing is not a promise at all', () => {
 });
 
 // The lane-prose audit: the holding lines the prose TEACHES her to write, checked against the
-// lexicon that has to catch them when nothing is behind them. The first two are the ones the JSON
-// anchor and the delegate tool doc both name as the sentence that runs nothing, and the third is the
-// delegate doc's own holding example.
+// lexicon that has to catch them when nothing is behind them. ALL FOUR examples the delegate tool
+// doc (convo/tools.ts) spells out are here — a loop over a subset is how the first pass of this
+// audit shipped `looking up that one now` and `reading that page now` as lines the guard let
+// through — plus the JSON anchor's own "let me check" form, which convo/shared.ts names as the
+// sentence that runs nothing. Add the example to this loop whenever a doc adds a holding line.
 test('the holding lines the prose teaches are all promises the guard fires on', () => {
-  for (const line of ['let me check your inbox for that', 'lemme check your inbox for that', 'digging through that thread now']) {
+  for (const line of [
+    'looking up that one now',          // delegate doc, example 1
+    'lemme check your inbox for that',  // delegate doc, example 2
+    'digging through that thread now',  // delegate doc, example 3
+    'reading that page now',            // delegate doc, example 4
+    'let me check your inbox for that', // the JSON anchor's form of example 2
+  ]) {
     assert.equal(detectUnkeptPromise([line], null, 0).unkept, true, line);
   }
 });

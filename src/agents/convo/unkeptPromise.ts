@@ -24,12 +24,27 @@
  * short — every entry is a phrase whose plain reading is "work is happening right now", which is
  * exactly the claim a turn with no tool call and no active run cannot back.
  *
- * THREE ROWS ADDED IN THE LANE-PROSE COMMIT, from auditing this array against the holding lines the
- * prose actually teaches. `let me check` / `lemme check` are the gap worth naming: the JSON anchor
+ * FIVE ROWS ADDED FOR THE LANE PROSE, from auditing this array against the holding lines the prose
+ * actually teaches. `let me check` / `lemme check` are the gap worth naming: the JSON anchor
  * (convo/shared.ts) and the delegate tool doc (convo/tools.ts) BOTH use "let me check" as their
  * example of the sentence that runs nothing, and the phrase the persona names as the canonical broken
  * promise was not a phrase the guard fired on. `digging through` is the delegate doc's own holding
  * example ("digging through that thread now"), which `digging into` did not reach.
+ *
+ * `looking up that` and `reading that page` close the other two, and the first pass of this audit
+ * missed them. The delegate doc teaches FOUR holding lines; only two of them were phrases the guard
+ * fired on — "looking up that one now" and "reading that page now" both came back `promised:false`
+ * (verified), because `looking that up` does not reach the other word order and nothing reached the
+ * page one at all. So half the holding lines the same prompt teaches were lines this guard would have
+ * let through with nothing behind them, which is the exact failure it exists for.
+ *
+ * Those two rows have a gerund-subject reading that promises nothing — "looking up that address is
+ * free on the county site", "reading that page yourself is faster" — so each can cost a corrective
+ * re-ask on an honest reply. Accepted, and not a new risk: `looking that up` has fired on "looking
+ * that up yourself is free on the county site" since the row was first written (verified), so the
+ * array already took that trade for the taught phrases. Severity is what tips it, not frequency — a
+ * missing row ships a fabricated in-flight claim, the one failure the persona calls unrecoverable,
+ * while a false row costs one model call on a sentence she rarely writes.
  *
  * What the audit did NOT add, and why, because the plan asked the question: bare `checking` and bare
  * `looking`. Her register is flatter now, so a one-word holding line ("checking.") is a shape she
@@ -47,6 +62,8 @@ export const PROMISE_PHRASES = [
   'checking on that',
   'digging into',
   'digging through',
+  'looking up that',
+  'reading that page',
   'let me check',
   'lemme check',
   'still on it',

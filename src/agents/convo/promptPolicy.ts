@@ -222,11 +222,10 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
  * own reason: the name nudge (+7) needs an unknown name, the intro weave (+19) needs a first-ever
  * text, and the timing line it shortened by 13 is a branch no fixture renders (see
  * `PROMPT_BUDGET.conversation_timing`). The rest lands where this fixture cannot see it at all: the
- * Composer relay and both
- * Fallfirm voices have no budget table, and the two lanes' Context.md files are not in Convo's
- * prompt at all. Those three files are where the other half of the personality rebuild finished —
- * every personality sentence out, the shared block already supplying it — and the honest statement
- * is that this number is not the measurement of that work.
+ * Composer relay and both Fallfirm voices have no budget table, and the two lanes' Context.md files
+ * are not in Convo's prompt at all. Those three files are where the other half of the personality
+ * rebuild finished — every personality sentence out, the shared block already supplying it — and
+ * the honest statement is that this number is not the measurement of that work.
  */
 export const MIN_TRANSCRIPT_SHARE = 0.0088;
 

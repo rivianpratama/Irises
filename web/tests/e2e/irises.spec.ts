@@ -42,7 +42,7 @@ test("streams an assistant reply after the user sends a message", async ({ page 
   await mockBrain(page);
   await page.goto("/");
 
-  await expect(page.getByPlaceholder("What's been on your mind lately?")).toBeVisible();
+  await expect(page.getByPlaceholder("Message")).toBeVisible();
 
   await page.getByLabel("Message Irises").fill("hello brain");
   await page.getByLabel("Message Irises").press("Enter");
