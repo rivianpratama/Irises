@@ -48,7 +48,8 @@ export type MomentTag = typeof MOMENT_TAGS[number];
 export interface MomentEntry {
   id: string;
   /** Her words for what happened, one line, `MOMENT_TEXT_MAX` chars at most. On a fold this is
-   *  REPLACED by the newer pattern text — the count is the history, the text is the current read. */
+   *  REPLACED by the newer pattern text — the count is the history, the text is the current read —
+   *  except where only containment matched the pair, where the longer text wins (`foldHarvest`). */
   text: string;
   tag: MomentTag;
   /** When the episode happened (epoch ms). Reset to `now` by a fold, because a pattern's date is
@@ -96,9 +97,12 @@ export const MOMENT_SAMPLE_OLD = 2;
  * threads.ts reads its pair: either measure clearing it is a match, because jaccard misses the
  * short-inside-long shape and containment over-matches a two-word text.
  *
- * Deliberately loose. Over-merging costs a count on the wrong row; under-merging costs the whole
- * point of the feature, because three separate volcano checks are three boring moments and "third
- * volcano check this month" is a read.
+ * Deliberately loose, and the looseness is paid for in `foldHarvest` rather than in a second
+ * constant: a merge normally REPLACES the text, so a four-word proposal contained in the file's
+ * richest moment would reduce it to a fragment with no archive behind it. So a fold that only
+ * containment decided keeps the LONGER of the two texts, and only jaccard or the writer's own
+ * `merges` claim can shorten a moment. Under-merging is still the expensive failure — three
+ * separate volcano checks are three boring moments and "third volcano check this month" is a read.
  */
 export const MOMENT_MERGE_SIM = 0.5;
 
@@ -302,28 +306,36 @@ function isMomentTag(v: string): v is MomentTag {
 }
 
 /** The similarity verdict, threads.ts's shape with this store's single floor: a score for RANKING,
- *  or null for no match. */
-function foldScore(a: Set<string>, b: Set<string>): number | null {
+ *  or null for no match — plus WHICH measure cleared the floor. `jaccardCleared` means the two texts
+ *  really are the same shape and the newer wording may replace the older; a containment-only match
+ *  is the loose leg (short inside long), and `foldHarvest` refuses to let it shorten a moment. */
+function foldScore(a: Set<string>, b: Set<string>): { score: number; jaccardCleared: boolean } | null {
   const { jaccard, containment } = simScore(a, b);
-  if (jaccard >= MOMENT_MERGE_SIM || containment >= MOMENT_MERGE_SIM) return jaccard * 1000 + containment;
+  const jaccardCleared = jaccard >= MOMENT_MERGE_SIM;
+  if (jaccardCleared || containment >= MOMENT_MERGE_SIM) {
+    return { score: jaccard * 1000 + containment, jaccardCleared };
+  }
   return null;
 }
 
 /** The best existing home for this text, or null. Ranked by score, ties broken by the OLDER entry
  *  and then by position, so the choice never depends on object identity or map order. */
-function bestMatch(entries: readonly MomentEntry[], text: string): number | null {
+function bestMatch(
+  entries: readonly MomentEntry[],
+  text: string,
+): { idx: number; jaccardCleared: boolean } | null {
   const probe = tokenSet(text);
-  let bestIdx: number | null = null;
+  let best: { idx: number; jaccardCleared: boolean } | null = null;
   let bestScore = -1;
   for (let i = 0; i < entries.length; i++) {
-    const score = foldScore(probe, tokenSet(entries[i].text));
-    if (score === null) continue;
-    if (bestIdx === null || score > bestScore || (score === bestScore && entries[i].at < entries[bestIdx].at)) {
-      bestIdx = i;
-      bestScore = score;
+    const match = foldScore(probe, tokenSet(entries[i].text));
+    if (match === null) continue;
+    if (best === null || match.score > bestScore || (match.score === bestScore && entries[i].at < entries[best.idx].at)) {
+      best = { idx: i, jaccardCleared: match.jaccardCleared };
+      bestScore = match.score;
     }
   }
-  return bestIdx;
+  return best;
 }
 
 /**
@@ -335,6 +347,15 @@ function bestMatch(entries: readonly MomentEntry[], text: string): number | null
  * history, takes `count + 1`, takes the NEW text (the newer wording is the pattern; the old one was
  * a single episode) and takes `at = now` (a pattern's date is the last time it happened). Its
  * `lastOfferedAt` is untouched — folding is not using.
+ *
+ * ONE exception to the new text, and it is the only place this engine departs from the plan's line:
+ * when nothing but CONTAINMENT decided the match — the loose leg, which fires on a short text buried
+ * in a long one — the LONGER of the two texts survives. A replacement there is not a rewording, it
+ * is a truncation: "asked how i knew" is contained in "spent twenty minutes at midnight making me
+ * identify a girl in an ad then asked how i knew", and the file's richest moment must not be reduced
+ * to its last clause by one thin night with nothing to archive it. A writer-marked merge, or one
+ * jaccard agreed with, still takes the new text — those are the cases where the newer wording is
+ * genuinely the newer read.
  *
  * Merge targets are resolved against the WORKING list, so two near-identical proposals in one night
  * collapse into one row with a count of two rather than two rows the next night has to merge. That
@@ -368,11 +389,20 @@ export function foldHarvest(
       const idx = working.findIndex(e => e.id === id);
       if (idx >= 0 && (targetIdx === null || working[idx].at < working[targetIdx].at)) targetIdx = idx;
     }
-    if (targetIdx === null) targetIdx = bestMatch(working, text);
+    // A writer-marked merge is trusted to reword; a containment-only match is not (see above).
+    let keepLongerText = false;
+    if (targetIdx === null) {
+      const match = bestMatch(working, text);
+      if (match !== null) {
+        targetIdx = match.idx;
+        keepLongerText = !match.jaccardCleared;
+      }
+    }
 
     if (targetIdx !== null) {
       const t = working[targetIdx];
-      working[targetIdx] = { ...t, text, count: t.count + 1, at: now };
+      const surviving = keepLongerText && t.text.length > text.length ? t.text : text;
+      working[targetIdx] = { ...t, text: surviving, count: t.count + 1, at: now };
       report.merged++;
       continue;
     }
@@ -408,22 +438,27 @@ function defaultNewId(): string {
  * becomes, and the removed rows go nowhere at all. The header says why at length — the short of it
  * is that a roast diary must not be recoverable, and an archive is a recovery path.
  *
- * Two clauses, both `MOMENT_DECAY_MS`, and which one applies is decided by `offered`:
- *   • never offered — kept while `at` is inside the window. It was written down and never used, so
- *     the only thing that can speak for it is how recently it happened, and a fold refreshing `at`
- *     is exactly the pattern recurring.
- *   • offered at least once — kept while `lastOfferedAt` is inside the window. She used it, and a
- *     thing she has not reached for in two months has stopped being worth reaching for.
- * The `offered` split is load-bearing, not a stylistic branch: `lastOfferedAt` is `0` for "never",
- * and `now - 0` is past every window, so reading the stamp unconditionally would delete every
- * moment ever written on its first prune. The known edge of the second clause: a moment that
- * recurred today but was last used sixty days ago still goes, and the next pass re-mints it at
- * count one if it is genuinely still happening. That is the plan's rule as written, and the cost is
- * a count, not a memory.
+ * Two clauses, both `MOMENT_DECAY_MS`, and which one applies is decided by whether there is a usable
+ * offer STAMP:
+ *   • no stamp — kept while `at` is inside the window. It was written down and never used (or the
+ *     stamp is gone), so the only thing that can speak for it is how recently it happened, and a
+ *     fold refreshing `at` is exactly the pattern recurring.
+ *   • stamped — kept while `lastOfferedAt` is inside the window. She used it, and a thing she has
+ *     not reached for in two months has stopped being worth reaching for.
+ * Branching on the STAMP rather than on the `offered` counter is load-bearing, not a stylistic
+ * choice. `lastOfferedAt` is `0` for "never", and `now - 0` is past every window, so a stamp read
+ * unconditionally deletes the row — and the two fields can disagree, because the store degrades each
+ * annotation attribute INDEPENDENTLY (db/repositories/moments.ts `parseSegment`): one hand-mangled
+ * `last_offered=` leaves `offered: 3, lastOfferedAt: 0`, and a counter-shaped guard would then read
+ * that row's absent stamp and delete it. In the one tier here with no archive, a mistyped attribute
+ * must not cost the moment, so a missing stamp means never-offered and the row falls back to its
+ * date. The known edge of the second clause: a moment that recurred today but was last used sixty
+ * days ago still goes, and the next pass re-mints it at count one if it is genuinely still
+ * happening. That is the plan's rule as written, and the cost is a count, not a memory.
  */
 export function pruneMoments(entries: readonly MomentEntry[], now: number): MomentEntry[] {
   return entries.filter(e => {
-    if (e.offered === 0) return now - e.at <= MOMENT_DECAY_MS;
+    if (e.offered === 0 || e.lastOfferedAt <= 0) return now - e.at <= MOMENT_DECAY_MS;
     return now - e.lastOfferedAt <= MOMENT_DECAY_MS;
   });
 }

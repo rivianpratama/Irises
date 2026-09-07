@@ -6,7 +6,9 @@
 //   • DISJOINT REPORT. Every proposal handed to `foldHarvest` lands in exactly one bucket, so the
 //     `moments:harvest` receipt can never say two things at once about one proposal.
 //   • MERGE UP, INTO THE OLDER ID. A repeat is a count on the row that has been carrying the
-//     pattern, with the newer text and a refreshed date — never a second row.
+//     pattern, with the newer text and a refreshed date — never a second row. The one exception is
+//     pinned too: a fold that only containment matched keeps the LONGER text, so a fragment cannot
+//     truncate a moment nothing archives.
 //   • PRUNE DELETES. Decayed rows leave the returned array and go nowhere else. There is no archive
 //     in this file and no test here that looks for one.
 //   • REPLAYABLE. Same entries, same `now`, same seed → the same offer, forever. A sampler that
@@ -286,6 +288,36 @@ test('similarity folds a near-repeat and leaves an unrelated episode alone', () 
   assert.match(entries[1].text, /barista/);
 });
 
+test('a containment-only fold keeps the longer text; jaccard and the writer may still reword', () => {
+  const rich = 'spent twenty minutes at midnight making me identify a girl in an ad then asked how i knew';
+  const existing = moment({ id: 'rich', daysAgo: 10, text: rich });
+
+  // Short inside long — the loose leg of the match. The fragment folds; the prose survives, because
+  // a merge with nothing archived behind it must not be able to truncate the best line in the file.
+  const one = fold([existing], [{ text: 'asked how i knew', tag: 'habit' }]);
+  assert.equal(one.report.merged, 1);
+  assert.equal(one.entries[0].text, rich, 'the richest moment is not reduced to its last clause');
+  assert.equal(one.entries[0].count, 2);
+
+  // Long around short — the same rule, running the other way: the richer wording comes in.
+  const two = fold([moment({ id: 'thin', daysAgo: 10, text: 'asked how i knew' })], [{ text: rich, tag: 'habit' }]);
+  assert.equal(two.report.merged, 1);
+  assert.equal(two.entries[0].text, rich);
+
+  // The writer saw both texts, so its own merge claim IS trusted to shorten one.
+  const three = fold([existing], [{ text: 'asked how i knew', tag: 'habit', merges: ['rich'] }]);
+  assert.equal(three.entries[0].text, 'asked how i knew');
+  assert.equal(three.entries[0].count, 2);
+
+  // And so is a jaccard match, where the two texts really are the same shape said twice.
+  const four = fold(
+    [moment({ id: 'v', daysAgo: 10, text: 'checked the volcano webcam twice before the deploy' })],
+    [{ text: 'checked the volcano webcam before deploy', tag: 'habit' }],
+  );
+  assert.equal(four.report.merged, 1);
+  assert.equal(four.entries[0].text, 'checked the volcano webcam before deploy');
+});
+
 test('two near-identical proposals in one night collapse into one row with a count of two', () => {
   const { entries, report } = fold([], [
     { text: 'went deep on train timetables for a week', tag: 'obsession' },
@@ -404,6 +436,19 @@ test('an offered moment decays on its offer stamp, not on its date', () => {
     moment({ id: 'boundary', daysAgo: 90, offered: 1, lastOfferedAt: T0 - MOMENT_DECAY_MS }),
   ];
   assert.deepEqual(pruneMoments(entries, T0).map(e => e.id), ['still-used', 'boundary']);
+});
+
+test('an offer count with no stamp is read as never offered, not as an ancient one', () => {
+  // Exactly the row a hand-mangled `last_offered=` produces: the store degrades each annotation
+  // attribute independently, so `offered` survives while the stamp is gone. Branching on the counter
+  // would then read `now - 0`, put the row past every window, and delete it — in the one tier here
+  // with no archive to get it back from.
+  const entries = [
+    moment({ id: 'stampless', daysAgo: 1, offered: 3, lastOfferedAt: 0 }),
+    moment({ id: 'stampless-and-old', daysAgo: 61, offered: 3, lastOfferedAt: 0 }),
+    moment({ id: 'negative-stamp', daysAgo: 1, offered: 3, lastOfferedAt: -1 }),
+  ];
+  assert.deepEqual(pruneMoments(entries, T0).map(e => e.id), ['stampless', 'negative-stamp']);
 });
 
 test('prune is pure, and returns a plain array with nothing archived anywhere', () => {

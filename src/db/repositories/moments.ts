@@ -185,6 +185,10 @@ export async function readMoments(handle: string): Promise<MomentsFile> {
  * caller owns the list — folding, pruning and billing all happen in persona/moments.ts and arrive
  * here as one finished array, which is what keeps this file a store rather than a second engine.
  *
+ * `preserved` is REQUIRED and has no default, deliberately: every rewrite is whole-file, so a
+ * caller that forgot it would delete a human's hand edits silently and with no type error. Pass the
+ * array `readMoments` handed back — `[]` only when the caller genuinely means "there were none".
+ *
  * `opts.ifForgetEpoch` is the epoch the CALLER read before it started working: when it no longer
  * matches, a /forget landed mid-pass and this write would put back moments the user asked to be
  * forgotten, so the save is refused. Returns whether the file was written — a fenced-out or failed
@@ -195,7 +199,7 @@ export async function writeMoments(
   handle: string,
   entries: readonly MomentEntry[],
   lastHarvestAt: number,
-  preserved: readonly string[] = [],
+  preserved: readonly string[],
   opts?: { ifForgetEpoch?: number },
 ): Promise<boolean> {
   return withHandleLock(handle, async () => {

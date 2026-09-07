@@ -9,6 +9,10 @@
 //   • FAILURE IS EMPTY, NOT FATAL. An unreadable file degrades to an empty read (this tier is
 //     re-derivable and renders on the reply path), and a fenced or failed write returns false so
 //     the pass never stamps a harvest clock for a harvest that is not on disk.
+//   • COUNTERS DEGRADE ONE AT A TIME. Only id, tag and at can fail an entry; each counter falls back
+//     to its default on its own, which means `offered` and `last_offered` can disagree — pinned here
+//     and survived by `pruneMoments`, because losing a moment to a typo is unrecoverable in a tier
+//     that archives nothing.
 //   • NO ARCHIVE. There is no second file in this store, and no test here looks for one.
 process.env.TZ = 'UTC';
 
@@ -19,7 +23,7 @@ import assert from 'node:assert/strict';
 import { readMoments, writeMoments, clearMoments, momentsHeader } from './moments.js';
 import { getForgetEpoch, bumpForgetEpoch } from './memory.js';
 import { memoriesDir } from '../stateDir.js';
-import type { MomentEntry } from '../../persona/moments.js';
+import { pruneMoments, type MomentEntry } from '../../persona/moments.js';
 
 const T0 = Date.UTC(2026, 3, 1);
 const DAY = 24 * 60 * 60 * 1000;
@@ -66,12 +70,12 @@ test('write then read round-trips every field, the harvest clock included', asyn
 
 test('the header carries last_harvest_at, and never is a real value', async () => {
   const h = freshHandle();
-  assert.equal(await writeMoments(h, [entry()], 0), true);
+  assert.equal(await writeMoments(h, [entry()], 0, []), true);
   const raw = fs.readFileSync(filePath(h), 'utf8');
   assert.ok(raw.startsWith('<!-- irises:moments format=1 last_harvest_at=never '), raw.slice(0, 120));
   assert.equal((await readMoments(h)).lastHarvestAt, 0, 'never reads back as an open window');
 
-  assert.equal(await writeMoments(h, [entry()], T0 - 5 * DAY), true);
+  assert.equal(await writeMoments(h, [entry()], T0 - 5 * DAY, []), true);
   assert.match(fs.readFileSync(filePath(h), 'utf8'), /last_harvest_at=2026-03-27T00:00:00\.000Z/);
   assert.equal((await readMoments(h)).lastHarvestAt, T0 - 5 * DAY);
 
@@ -83,7 +87,7 @@ test('the header carries last_harvest_at, and never is a real value', async () =
 
 test('an empty entry list still writes a header, and reads back as empty', async () => {
   const h = freshHandle();
-  assert.equal(await writeMoments(h, [], T0), true);
+  assert.equal(await writeMoments(h, [], T0, []), true);
   assert.equal(fs.readFileSync(filePath(h), 'utf8'), `${momentsHeader(T0)}\n`);
   const back = await readMoments(h);
   assert.deepEqual(back.entries, []);
@@ -96,7 +100,7 @@ test('ids and text survive whatever they carry — the annotation is encoded, th
     entry({ id: 'has a space and %25 and §', text: 'text with a § and a --> in it' }),
     entry({ id: 'b', text: 'punctuation: 100% of the time, at 3am' }),
   ];
-  assert.equal(await writeMoments(h, entries, T0), true);
+  assert.equal(await writeMoments(h, entries, T0, []), true);
   const back = await readMoments(h);
   assert.deepEqual(back.entries, entries);
   assert.deepEqual(back.preserved, [], 'nothing was mistaken for a hand edit');
@@ -104,7 +108,7 @@ test('ids and text survive whatever they carry — the annotation is encoded, th
 
 test('a moment with no offer history writes last_offered=never and reads back as zero', async () => {
   const h = freshHandle();
-  assert.equal(await writeMoments(h, [entry({ offered: 0, lastOfferedAt: 0 })], T0), true);
+  assert.equal(await writeMoments(h, [entry({ offered: 0, lastOfferedAt: 0 })], T0, []), true);
   assert.match(fs.readFileSync(filePath(h), 'utf8'), /offered=0 last_offered=never/);
   const back = await readMoments(h);
   assert.equal(back.entries[0].offered, 0);
@@ -114,7 +118,7 @@ test('a moment with no offer history writes last_offered=never and reads back as
 test('parse drops an entry ONLY for a missing id, an unknown tag or an unparseable date', async () => {
   const h = freshHandle();
   const good = entry({ id: 'good', text: 'the one that survives' });
-  await writeMoments(h, [good], T0);
+  await writeMoments(h, [good], T0, []);
   const raw = fs.readFileSync(filePath(h), 'utf8');
 
   for (const [name, broken] of [
@@ -135,7 +139,7 @@ test('parse drops an entry ONLY for a missing id, an unknown tag or an unparseab
 
 test('a mangled counter degrades to its default rather than dropping her writing', async () => {
   const h = freshHandle();
-  await writeMoments(h, [entry({ id: 'x', count: 5, offered: 3, lastOfferedAt: T0 - DAY })], T0);
+  await writeMoments(h, [entry({ id: 'x', count: 5, offered: 3, lastOfferedAt: T0 - DAY })], T0, []);
   const raw = fs.readFileSync(filePath(h), 'utf8');
   fs.writeFileSync(
     filePath(h),
@@ -147,6 +151,19 @@ test('a mangled counter degrades to its default rather than dropping her writing
   assert.equal(back.entries[0].count, 1);
   assert.equal(back.entries[0].offered, 0);
   assert.equal(back.entries[0].lastOfferedAt, 0);
+});
+
+test('a mangled offer stamp ALONE keeps its counter, and the moment still survives a prune', async () => {
+  const h = freshHandle();
+  await writeMoments(h, [entry({ id: 'x', count: 2, offered: 3, lastOfferedAt: T0 - 2 * DAY })], T0, []);
+  const raw = fs.readFileSync(filePath(h), 'utf8');
+  // One attribute, hand-edited — not the three at once. `offered` comes back intact and the stamp
+  // does not, which is the pair the engine has to survive: reading the absent stamp would put this
+  // one-day-old moment past every decay window, and nothing in this tier archives it.
+  fs.writeFileSync(filePath(h), raw.replace(/last_offered=[^ ]+/, 'last_offered=tuesday'), 'utf8');
+  const back = await readMoments(h);
+  assert.deepEqual(back.entries.map(e => [e.id, e.count, e.offered, e.lastOfferedAt]), [['x', 2, 3, 0]]);
+  assert.deepEqual(pruneMoments(back.entries, T0).map(e => e.id), ['x']);
 });
 
 test('a headerless hand-written file is all preserved, and gains a header on the next write', async () => {
@@ -168,7 +185,7 @@ test('a headerless hand-written file is all preserved, and gains a header on the
 
 test('a hand edit is preserved verbatim at the TOP of every rewrite, however often it is rewritten', async () => {
   const h = freshHandle();
-  await writeMoments(h, [entry({ id: 'a' })], T0);
+  await writeMoments(h, [entry({ id: 'a' })], T0, []);
   fs.appendFileSync(filePath(h), '\n§\na human scribbled this without an annotation');
 
   let file = await readMoments(h);
@@ -186,7 +203,7 @@ test('a hand edit is preserved verbatim at the TOP of every rewrite, however oft
 
 test('the preserved-segment warning fires once per handle, not once per read', async () => {
   const h = freshHandle();
-  await writeMoments(h, [entry({ id: 'a' })], T0);
+  await writeMoments(h, [entry({ id: 'a' })], T0, []);
   fs.appendFileSync(filePath(h), '\n§\nanother hand edit');
   const original = console.warn;
   const warnings: string[] = [];
@@ -224,7 +241,7 @@ test('a write that cannot land returns false rather than reporting a phantom har
   const original = console.error;
   console.error = () => {};
   try {
-    assert.equal(await writeMoments(h, [entry()], T0), false);
+    assert.equal(await writeMoments(h, [entry()], T0, []), false);
   } finally {
     console.error = original;
   }
@@ -232,7 +249,7 @@ test('a write that cannot land returns false rather than reporting a phantom har
 
 test('the forget fence refuses a write whose epoch went stale mid-pass, and writes nothing', async () => {
   const h = freshHandle();
-  await writeMoments(h, [entry({ id: 'before', text: 'written before the forget' })], T0);
+  await writeMoments(h, [entry({ id: 'before', text: 'written before the forget' })], T0, []);
   const epoch = getForgetEpoch(h);
 
   // The pass read the epoch, thought for a while, and a /forget landed in the meantime.
@@ -252,12 +269,12 @@ test('the forget fence refuses a write whose epoch went stale mid-pass, and writ
   assert.equal(await writeMoments(h, [entry({ id: 'after' })], T0 + DAY, [], { ifForgetEpoch: getForgetEpoch(h) }), true);
   assert.deepEqual((await readMoments(h)).entries.map(e => e.id), ['after']);
   // No fence given at all is the unfenced write path, and it still works.
-  assert.equal(await writeMoments(h, [entry({ id: 'unfenced' })], T0 + DAY), true);
+  assert.equal(await writeMoments(h, [entry({ id: 'unfenced' })], T0 + DAY, []), true);
 });
 
 test('clearMoments wipes entries and hand edits, and stamps the window at the wipe', async () => {
   const h = freshHandle();
-  await writeMoments(h, [entry({ id: 'a' }), entry({ id: 'b' })], T0);
+  await writeMoments(h, [entry({ id: 'a' }), entry({ id: 'b' })], T0, []);
   fs.appendFileSync(filePath(h), '\n§\na hand edit that also goes');
 
   await clearMoments(h, T0 + DAY);
