@@ -79,8 +79,16 @@ const RUNGS = (Object.keys(RUNG_ORDER) as ThreadRung[]).sort((a, b) => RUNG_ORDE
 test('the persona teaches exactly the rungs the engine can deliver, in the same order', () => {
   const persona = convoPersonaWithCraft();
   const at = persona.indexOf('**The ladder — enter one rung lower than you could.**');
-  assert.ok(at > 0, 'found the ladder paragraph in "Connect the dots"');
-  const ladder = persona.slice(at, persona.indexOf('\n', at));
+  assert.ok(at > 0, 'found the ladder paragraph in the threading craft page');
+  // To the end of the PARAGRAPH, not the end of the first line. The prose commit rewrote
+  // craft/threading.md hard-wrapped at a hundred columns, so the lead-in now sits on a line of its
+  // own and the three rungs are spread over the four lines under it. A line-shaped slice read only
+  // the bold sentence and reported a ladder with no rungs in it at all — a false failure about
+  // wrapping, on a test that is supposed to be about the rungs. Markdown makes a blank line the
+  // paragraph break, so that is the boundary; the rungs still have to arrive in one paragraph.
+  const end = persona.indexOf('\n\n', at);
+  assert.ok(end > at, 'the ladder paragraph is terminated, so the slice is the paragraph and not the rest of the page');
+  const ladder = persona.slice(at, end);
 
   assert.ok(ladder.includes('Three rungs'), `the ladder still claims a different height: ${ladder.slice(0, 120)}`);
   const positions = RUNGS.map(rung => ({ rung, at: ladder.indexOf(rung) }));

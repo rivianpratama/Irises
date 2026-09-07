@@ -80,8 +80,8 @@ export type BudgetKey = SectionId | 'memory_stack';
  * pins that corpus's sha256 — which is why this line is a budget and not a ratchet.
  */
 export const PROMPT_BUDGET: Record<BudgetKey, number> = {
-  persona: 108_000,            // 107,920 — +7,174 for the shared persona block, which now leads the persona head (persona/policy.ts renderPersonaBlock, 7,172 characters, plus the `\n\n` join). It is not new prose in the accounting sense so much as RELOCATED authority: the personality it states used to be four descriptions, one per prompt surface, and the three non-Convo copies were the thin ones that drifted. This line pays for Convo's copy of the one shared string; the other three surfaces have no budget table, and the whole point is that they now carry the same bytes. It sits inside the cached prefix (convoPersonaChars), so on the Anthropic lane it is written once per deployment rather than per turn. Was 100_850 for 100,746 — UNMOVED by the idle gate, which bought a ninth craft page rather than a line of persona prose. One thing this line's history describes is no longer a live test: the pre-P4a relocation golden is retired — on the plan's schedule, early, and not because anything here broke it — and personaModules.test.ts pins the sha256 and length of the whole corpus (Context.md + every page) instead. Everything below is therefore a record of what each commit moved, not a test that still re-checks it: the CORPUS PIN is the one thing standing over these bytes now, and it moves whenever any of them do. +856 for the reply-language law, the one place the persona had to change because the mechanism did: §Language's two bullets became three (which memory sets the language, that an explicit ask in the conversation beats it, and that it is saved the same turn through set_preference key reply_language — never a directive), and the preferences section names the one exception to its own write route. The 2026-09-04 failure was exactly this prose being the only mechanism, so the prose now points at the slot instead of asking for a tool call. Both additions, and the two bullets they replaced, are persona prose — inside the bytes personaModules.test.ts now pins as a whole. Was 99_990 for 99,890 — +279 for the one paragraph run control owes the persona: the delegate section is where it says what can be DONE to a look that is already going, and it now names the second thing (steer_research adds to the run; cancel_research is still the one that drops it). Persona prose as well, and so inside the pinned corpus. Was 99,700 for 99,611 — P4b's second half shrank "When to delegate (and how)" from 14,348 to 8,888 by deleting the ten runs of prose that the delegate_to_ops tool doc (tools.ts) already ships on every turn: the kind lanes, the meta_prompt skeleton, media_scope, the holding-text examples, "Answer YOURSELF". Every deleted byte was enumerated at the time and re-checked against the pre-P4a relocation sha256; that golden is retired, and the corpus pin covers what is left. Was 105,200 for 105,071 after P4b split "Connect the dots": the thread-tagging craft (9,120 chars across nineteen paragraphs) went to craft/threading.md behind the thread section, and a 366-char pointer stayed behind because the BANTER half of that section is deliberately still always-on. Was 114,000 for 113,858 after P4a moved seven sections (24,065 chars) out to convo/craft/. Was 138,020 for 137,923 after P3 part 3 took the inner-weather section's momentum sentence (−179): applyAffectDrift enforces it now. Was 138,200 for 138,102 after P1 deleted the envelope's field list + the copied wheel (was 141,600 for 141,474)
-  craft_modules: 30_700,       // 30,371 — the debt the last line paid off. craft/hooks.md gates on the idle turn (personaModules.ts `idle_turn`) and no fixture used to be idle, so the ninth page had never been in a measured sum; the thread-offer fixture is now an idle turn and carries it, which is +711 on the widest set there is (threading + send-order + reminders + onboarding + email-flag + hooks). That fixture had no CHOICE about being idle: a thread OFFER is only ever made on a hook turn (persona/hooks.ts — `offerAllowed` is true in that mode and no other), so an offer on a task turn is a shape the assembler can no longer build, and the widest craft set had been measured on one. Was 30_000 for 29,660 — the THREAD-OFFER fixture, and this line went UP while `persona` went down, which is the whole trade: threading + send-order + reminders + onboarding + email-flag is the widest craft a turn can carry (8,901 of it the threading page, 2,674 the reminders page). The media turn measures 23,422, the mature turn 20,757, the cold turn 16,187, the group burst 7,472 — and a turn with no thread, no file and a filled-in profile carries none of it. Those four each rose 322 when the automations paragraph moved off the threading page onto the reminders page (it reads on a reminder-edit turn, not a thread turn), which the MAXIMUM cannot see because the widest fixture loads both pages. Was 23,400 for the media fixture's 23,100. NOT a prose ratchet like the lines below it — it is a SUM over whichever pages the turn's gates fired, so the number moves when a fixture's facts change, and the pages' own bytes are pinned by the corpus sha256 in personaModules.test.ts
+  persona: 84_100,             // 83,994 — **−23,926** in the prose commit, and this is the other half of the shared block's arrival two lines below: the character the block states was still standing in Context.md as its own prose, and it comes out here. Context.md is the FRONT-LINE FUNCTION file now — "Who Irises is", "Adaptive style" and "How you address them" deleted outright, the Lowndes playbook replaced by twelve first-principle moves, "run the stack" rebuilt on the task/idle split, "How you write" cut to the floor state, the inner-weather section re-authored around a block that instructs instead of describing. Read the two commits as one accounting: the block cost this line 7,174 and the deletion gave back 23,926, so the personality now reaches four surfaces for 16,752 characters LESS than Convo alone used to spend on its own copy. The ~100 characters of slack this line has always carried is deliberate and is still here (106): a sentence added to Context.md is meant to fail here and be ratcheted on purpose, not absorbed. Was 108_000 for 107,920 — +7,174 for the shared persona block, which now leads the persona head (persona/policy.ts renderPersonaBlock, 7,172 characters, plus the `\n\n` join). It is not new prose in the accounting sense so much as RELOCATED authority: the personality it states used to be four descriptions, one per prompt surface, and the three non-Convo copies were the thin ones that drifted. This line pays for Convo's copy of the one shared string; the other three surfaces have no budget table, and the whole point is that they now carry the same bytes. It sits inside the cached prefix (convoPersonaChars), so on the Anthropic lane it is written once per deployment rather than per turn. Was 100_850 for 100,746 — UNMOVED by the idle gate, which bought a ninth craft page rather than a line of persona prose. One thing this line's history describes is no longer a live test: the pre-P4a relocation golden is retired — on the plan's schedule, early, and not because anything here broke it — and personaModules.test.ts pins the sha256 and length of the whole corpus (Context.md + every page) instead. Everything below is therefore a record of what each commit moved, not a test that still re-checks it: the CORPUS PIN is the one thing standing over these bytes now, and it moves whenever any of them do. +856 for the reply-language law, the one place the persona had to change because the mechanism did: §Language's two bullets became three (which memory sets the language, that an explicit ask in the conversation beats it, and that it is saved the same turn through set_preference key reply_language — never a directive), and the preferences section names the one exception to its own write route. The 2026-09-04 failure was exactly this prose being the only mechanism, so the prose now points at the slot instead of asking for a tool call. Both additions, and the two bullets they replaced, are persona prose — inside the bytes personaModules.test.ts now pins as a whole. Was 99_990 for 99,890 — +279 for the one paragraph run control owes the persona: the delegate section is where it says what can be DONE to a look that is already going, and it now names the second thing (steer_research adds to the run; cancel_research is still the one that drops it). Persona prose as well, and so inside the pinned corpus. Was 99,700 for 99,611 — P4b's second half shrank "When to delegate (and how)" from 14,348 to 8,888 by deleting the ten runs of prose that the delegate_to_ops tool doc (tools.ts) already ships on every turn: the kind lanes, the meta_prompt skeleton, media_scope, the holding-text examples, "Answer YOURSELF". Every deleted byte was enumerated at the time and re-checked against the pre-P4a relocation sha256; that golden is retired, and the corpus pin covers what is left. Was 105,200 for 105,071 after P4b split "Connect the dots": the thread-tagging craft (9,120 chars across nineteen paragraphs) went to craft/threading.md behind the thread section, and a 366-char pointer stayed behind because the BANTER half of that section is deliberately still always-on. Was 114,000 for 113,858 after P4a moved seven sections (24,065 chars) out to convo/craft/. Was 138,020 for 137,923 after P3 part 3 took the inner-weather section's momentum sentence (−179): applyAffectDrift enforces it now. Was 138,200 for 138,102 after P1 deleted the envelope's field list + the copied wheel (was 141,600 for 141,474)
+  craft_modules: 29_800,       // 29,699 — **−672** on the same widest set, which is a smaller number than the pages moved and worth reading as three things at once: craft/onboarding.md −3,151 and craft/threading.md −1,373 (both rewritten in the new register rather than trimmed, and both lighter for it), against craft/hooks.md +3,852 — the ninth page stops being T3's placeholder (709 characters saying the real one is coming) and becomes the real one, which is 4,561. So the widest craft a turn can carry barely moved while three of the six pages in it changed completely. Was 30_700 for 30,371 — the debt the last line paid off. craft/hooks.md gates on the idle turn (personaModules.ts `idle_turn`) and no fixture used to be idle, so the ninth page had never been in a measured sum; the thread-offer fixture is now an idle turn and carries it, which is +711 on the widest set there is (threading + send-order + reminders + onboarding + email-flag + hooks). That fixture had no CHOICE about being idle: a thread OFFER is only ever made on a hook turn (persona/hooks.ts — `offerAllowed` is true in that mode and no other), so an offer on a task turn is a shape the assembler can no longer build, and the widest craft set had been measured on one. Was 30_000 for 29,660 — the THREAD-OFFER fixture, and this line went UP while `persona` went down, which is the whole trade: threading + send-order + reminders + onboarding + email-flag is the widest craft a turn can carry (8,901 of it the threading page, 2,674 the reminders page). The media turn measures 23,422, the mature turn 20,757, the cold turn 16,187, the group burst 7,472 — and a turn with no thread, no file and a filled-in profile carries none of it. Those four each rose 322 when the automations paragraph moved off the threading page onto the reminders page (it reads on a reminder-edit turn, not a thread turn), which the MAXIMUM cannot see because the widest fixture loads both pages. Was 23,400 for the media fixture's 23,100. NOT a prose ratchet like the lines below it — it is a SUM over whichever pages the turn's gates fired, so the number moves when a fixture's facts change, and the pages' own bytes are pinned by the corpus sha256 in personaModules.test.ts
   tool_docs: 18_350,           // 18,319 — the group fixture (14 tools; the 1:1 lane carries 12). +688 for the reply-language slot: set_preference gains the `reply_language` clause and its key list the slot's name, and update_directives now REFUSES a language ask (it names set_preference instead of the old "add always reply in Spanish") and gains the change-your-mind line that stops two rules standing that disagree — the tool-side half of the 2026-09-04 failure, where the only mechanism was a call the model never made. Was 17_650 for 17,631. +1,185 for steer_research, the sibling of cancel_research that adds to a run instead of dropping it (tools.ts): its doc is what stops the model spending a live run on a "also check X" — a fresh delegate_to_ops or a cancel. Was 16,450 for 16,446 (13 tools; the 1:1 lane 11). +201 for delegate_to_ops' `effect` arg (the approval gate's read/act tag, tools.ts) — the ceiling was already 16,450 and stands, so this line is now measured to four characters. Was 16,245; was 16,500 for 16,288, before remember_user's `handle` doc stopped asking "whose info this is" and named the messaging handle instead
   capability: 240,             // 237 — all six capability classes minus inbox, the longest line (was 248)
   model_map: 800,              // 387 on a bare checkout — HOST-DEPENDENT, see above
@@ -198,8 +198,19 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
  * a THREE-CHARACTER message occupies is not a reading about anything. Wave 3 is what will move this
  * line: the thesis renders on every turn once the store exists, and the mature fixture will carry
  * one then.
+ *
+ * The prose commit takes it to **0.0088** (1,207 characters against 136,632, down from 163,751), the
+ * largest single RISE this floor has recorded and the first one that came from deleting persona prose
+ * since P1. Twenty-four thousand characters left the corpus and none of them came back as anything:
+ * Context.md's character sections are gone because the shared block says all of it once, for four
+ * surfaces, and the two craft pages that were rewritten came out lighter than they went in. So the
+ * exchange rate here is the good one for once — fifteen four-decimal points for a rewrite — and the
+ * honest way to read the pair of commits is together: the block spent 7,174 characters on this
+ * surface and the prose commit gave back 23,926, which is the whole trade the personality rebuild was
+ * for. The persona is still what stands between this number and anything better, but it is now 84k
+ * rather than 108k of what the model reads.
  */
-export const MIN_TRANSCRIPT_SHARE = 0.0073;
+export const MIN_TRANSCRIPT_SHARE = 0.0088;
 
 /**
  * Phrases that must exist in the persona, verbatim — the rules whose deletion would be silent.
@@ -216,33 +227,64 @@ export const MIN_TRANSCRIPT_SHARE = 0.0073;
  * anchor means the rule itself is gone, or has been paraphrased into something that no longer says
  * the same thing. If you meant to change it, change it here in the same commit.
  *
- * Scanned against the whole CORPUS — Context.md plus every craft page (personaModules.ts
- * convoPersonaWithCraft) — rather than the core file alone: P4a moved seven sections out into pages,
- * and a rule that lands in one of them is still a rule she reads. Every anchor below happens to live
- * in the core today, and this is what would say so if one moved.
+ * Scanned against the whole CORPUS — the shared persona block, Context.md and every craft page
+ * (personaModules.ts convoPersonaWithCraft) — rather than the core file alone: P4a moved seven
+ * sections out into pages, and a rule that lands in one of them is still a rule she reads. Two rows
+ * now prove that widening was worth having: `response_overrules` moved to craft/hooks.md in the prose
+ * commit, and the eight manifesto rows below live in the shared block rather than in any lane's file.
+ *
+ * What the corpus does NOT include is the two static bookends after `</prompt>` — the drift anchor
+ * and the JSON contract are rendered by the assembler, not concatenated here. So a law the drift
+ * anchor restates at the recency edge is anchored on the copy that lives in the corpus, which is the
+ * one an editor can delete by accident. `flat_task_answer` is the case: the anchor's task bullet reads
+ * "This is a task turn: answer it flat, with the real numbers, and nothing else." and this row points
+ * at the sentence in the shared block that bullet is a retelling of.
  */
 export const RULE_ANCHORS: Array<{ id: string; personaAnchor: string }> = [
-  // Guess before you ask — the default for every open turn (Context.md ~581).
+  // Guess before you ask — the default for every open turn (Context.md, "Connect the dots").
   { id: 'predict_dont_interview', personaAnchor: "Predict, don't interview — a guess from your model of them is how knowing them shows." },
-  // …and when something genuinely must be resolved, it still lands as a statement (~589).
+  // …and when something genuinely must be resolved, it still lands as a statement.
   { id: 'probe_as_statement', personaAnchor: "The probe wears a statement's clothes." },
-  // The three-check gate every remembered thing passes before it reaches a bubble (~572).
+  // The three-check gate every remembered thing passes before it reaches a bubble.
   { id: 'three_check_gate', personaAnchor: 'The gate — run three checks before any memory enters a bubble' },
-  // The play frame: a tease carries the real layer AND the play layer (~652).
+  // The play frame: a tease carries the real layer AND the play layer.
   { id: 'banter_play_frame', personaAnchor: 'Banter — the play frame.' },
-  // The four safe bends, which is what keeps teasing off their wound (~654).
+  // The four safe bends, which is what keeps teasing off their wound.
   { id: 'four_safe_bends', personaAnchor: 'Four bends that stay safe' },
-  // Their read of the joke outranks hers, immediately (~662).
+  // Their read of the joke outranks hers, immediately. The clause left Context.md in the prose commit
+  // and now lives ONCE, in craft/hooks.md, where the beat it governs is taught — which is why this
+  // list is scanned over the corpus and not over the core file.
   { id: 'response_overrules', personaAnchor: 'Their response overrules your framing, instantly.' },
-  // Rich memory plus "hey" still equals "hey" (~667).
-  { id: 'greeting_gets_greeting', personaAnchor: 'A greeting gets a greeting.' },
-  // The threading default, stated as a default rather than a fallback (~648).
+  // Rich memory plus "hey" is still one line back — a greeting, or the turn's one hook. Re-pinned in
+  // the prose commit: the old anchor ("A greeting gets a greeting.") stated the law as a ban on
+  // saying anything, and the hook engine makes it a choice between two shapes.
+  { id: 'greeting_gets_greeting', personaAnchor: 'A greeting gets a greeting, or a hook — never an inventory.' },
+  // The threading default, stated as a default rather than a fallback.
   { id: 'when_unsure_dont', personaAnchor: "When unsure, don't" },
-  // Anti-sycophancy, and the persona's ONLY statement of it. It used to be the tail of the
+  // Anti-sycophancy, and Context.md's ONLY statement of it. It used to be the tail of the
   // `epistemic_trigger` bullet in the envelope's field list, so P1's deletion of that list would have
-  // taken a behaviour rule with it; it was kept as its own sentence (~174) and anchored here so the
-  // next rewrite of that paragraph cannot lose it quietly.
+  // taken a behaviour rule with it; it was kept as its own sentence in the inner-weather section and
+  // anchored here so the next rewrite of that paragraph cannot lose it quietly.
   { id: 'concede_to_information', personaAnchor: 'you concede to information, never to insistence' },
+  // ── the manifesto, from the shared persona block (persona/policy.ts PERSONA_POLICY) ───────────
+  // Eight laws that arrived with the character rather than with a lane, so all four prompt surfaces
+  // state them in the same bytes. They are anchored HERE because Convo's corpus is the one surface
+  // with a phrase test at all — losing them from the block loses them everywhere at once.
+  //
+  // The task law: a turn that asks for something real gets the answer and nothing stapled to it.
+  { id: 'flat_task_answer', personaAnchor: 'You answer it flat, with the real numbers,' },
+  // The three moves that resolve a tension in their favour and signal fear.
+  { id: 'never_defend', personaAnchor: 'You do not defend: when they poke at you, you flip it or you let it stand' },
+  { id: 'never_wink', personaAnchor: 'You do not wink: announcing that a line was a joke ends the joke' },
+  { id: 'never_suck_up', personaAnchor: 'You do not suck up: no pet names you were not asked for' },
+  // Register is copied, content never is — the leaf reply this whole branch is named after.
+  { id: 'mirror_register_not_content', personaAnchor: 'Mirroring: match their register and never their content.' },
+  // Tricks get refused, tasks never do.
+  { id: 'toy_and_tool', personaAnchor: 'You refuse to be a toy and you never refuse to be a tool.' },
+  // What each of the three hook kinds DOES, which is what makes one of them the right one.
+  { id: 'hook_budget', personaAnchor: 'A judgment closes. A tangent opens.' },
+  // The kill switch, stated in prose as well as enforced in code (persona/hooks.ts selectHook).
+  { id: 'kill_switch', personaAnchor: 'you say one plain thing or nothing at all' },
 ];
 
 
@@ -372,8 +414,11 @@ export const CLAUSE_INVENTORY: readonly ClauseCount[] = [
     where: 'Context.md only',
   },
   {
+    // Re-pinned in the prose commit. The clause used to end at "A greeting gets a greeting." — a law
+    // with one legal reply — and the hook engine gives an idle turn a second one, so the sentence now
+    // names both shapes and rules out the third. Same single home, new words.
     id: 'greeting_clause',
-    phrase: 'A greeting gets a greeting.',
+    phrase: 'A greeting gets a greeting, or a hook — never an inventory.',
     count: 1,
     anchorCopies: 0,
     where: 'the "what you never do with what you know" list — P1 deleted the behaviour anchor\'s copy',
@@ -386,8 +431,11 @@ export const CLAUSE_INVENTORY: readonly ClauseCount[] = [
     where: 'the WRONG half of the greeting demo pair',
   },
   {
+    // Re-pinned with the clause above: the demo's RIGHT half now shows a greeting plus one HOOK
+    // ("four days. the reno still standing?") rather than a light callback, because that is the beat
+    // the engine actually clears on an idle turn.
     id: 'greeting_example_right',
-    phrase: 'RIGHT, a greeting, one light callback max:',
+    phrase: 'RIGHT, a greeting, one hook max:',
     count: 1,
     anchorCopies: 0,
     where: 'the RIGHT half of the greeting demo pair',

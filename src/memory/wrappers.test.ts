@@ -431,28 +431,51 @@ test('the discovery scaffold is the slot list and its two notes — never a craf
   }
 });
 
+/**
+ * The onboarding page as ONE FLOW — every run of whitespace collapsed to a single space.
+ *
+ * The prose commit rewrote the page hard-wrapped at a hundred columns, so a pinned phrase can now
+ * straddle a line break: "A life fact is worth" ends one line and "exactly as much to you" opens the
+ * next, and the page still says the sentence. Markdown treats a single newline inside a paragraph as
+ * a space, and so does the model reading it, so a raw-substring pin fails on the wrapping rather than
+ * on the prose — which is the opposite of what these pins are for. Flowing the file first asks the
+ * question the pins mean to ask: is the sentence still there.
+ */
+function onboardingFlowed(): string {
+  const md = readFileSync(new URL('../agents/convo/craft/onboarding.md', import.meta.url), 'utf8');
+  return md.replace(/\s+/g, ' ');
+}
+
 test('the coaching that left the scaffold is intact in the onboarding craft module', () => {
   // Moved, not deleted (P4 loads craft modules): the block was 5,530 characters on a thin profile,
   // three fifths of it a standing essay on how to learn a person that had nothing to do with the
   // turn in hand. It reads the same; it just stopped riding on every single turn.
-  const md = readFileSync(new URL('../agents/convo/craft/onboarding.md', import.meta.url), 'utf8');
+  //
+  // Three of these were RE-PINNED in the prose commit, and each one is the same edit the character
+  // rewrite made everywhere else. Mood-matching became register-matching ("Never their content and
+  // never the mood of it") because matching what they FEEL is the content mirror this branch is named
+  // after. The parrot — handing their own last words back with a question mark — is deleted outright
+  // and the line that replaced it says why: it is zero information with the turn attached. And
+  // noticing is attention rather than charm, because charm was the frame the whole rewrite dropped.
+  // The other eleven phrases are the coaching itself, unchanged.
+  const flowed = onboardingFlowed();
   for (const phrase of [
     'Reading them between the lines',
-    'MATCH their mood before you steer',
+    'MATCH their register before anything else',
     'NOTICE what leaks',
     'WIDEN past the work',
     'PULL the thread THEY offered',
-    'hand back their own last words',
+    'Never their own words handed back with a question mark',
     'DEDUCE quietly',
     'CALL BACK later',
     'BANK every solid fact',
     'remember_user with fact=',
-    'Noticing is charm; showing your work is surveillance',
+    'Noticing is attention; showing your work is surveillance',
     'quotes the office at least once a week',
     "'them' is the whole person, not just their work",
     'A life fact is worth exactly',
   ]) {
-    assert.ok(md.includes(phrase), phrase);
+    assert.ok(flowed.includes(phrase), phrase);
   }
 });
 
@@ -752,11 +775,13 @@ test('the flexible MUST-NOT bans WORK facts while allowing personal-color framin
 test('the BANK/NOTICE examples carry personal color (projects, arcs, hard rules)', () => {
   // They moved with the coaching into the onboarding craft module; the colour is the point of the
   // examples, so it is pinned where they now live rather than dropped with the block that held them.
-  const md = readFileSync(new URL('../agents/convo/craft/onboarding.md', import.meta.url), 'utf8');
-  assert.ok(md.includes("calls it 'the shack'"));
-  assert.ok(md.includes('training for a marathon'));
-  assert.ok(md.includes('no meetings sunday mornings'));
-  assert.ok(md.includes('the project they keep mentioning'));
+  // Read as one flow, for the reason onboardingFlowed() gives: the prose commit's wrapping puts a
+  // line break inside "calls it 'the shack'", and the example is still exactly as personal.
+  const flowed = onboardingFlowed();
+  assert.ok(flowed.includes("calls it 'the shack'"));
+  assert.ok(flowed.includes('training for a marathon'));
+  assert.ok(flowed.includes('no meetings sunday mornings'));
+  assert.ok(flowed.includes('the project they keep mentioning'));
 });
 
 // ── The identity card (the one always-on block at the top of the stack) ───────

@@ -64,14 +64,31 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * as a tidy-up — moves these two numbers and nothing else in the suite. The prose commit re-measures
  * them, says what changed, and writes the new pair in here.
  *
- * Re-measured once since: +7,174 characters when the shared persona block took its place at the head
- * of the corpus (persona/policy.ts renderPersonaBlock — 7,172 bytes, plus the `\n\n` join). Not a
- * page and not an edit to one: the block is the personality all four prompt surfaces now render
+ * Re-measured twice since. First: +7,174 characters when the shared persona block took its place at
+ * the head of the corpus (persona/policy.ts renderPersonaBlock — 7,172 bytes, plus the `\n\n` join).
+ * Not a page and not an edit to one: the block is the personality all four prompt surfaces now render
  * byte-identically, and this is the surface where it lands inside the cached persona head. Every
- * other byte of the corpus is untouched, which is why exactly one addend moved.
+ * other byte of the corpus was untouched, which is why exactly one addend moved.
+ *
+ * Then **−24,598** in the prose commit, which is the largest single move this pin will ever record
+ * and the other half of the block's arrival: the character the block now states was still standing in
+ * Context.md as its own prose, in four voices, and it comes out here. Four addends moved and every
+ * other byte held.
+ *   · Context.md −23,926 (100,746 → 76,820). It is the FRONT-LINE FUNCTION file now: "Who Irises is",
+ *     "Adaptive style" and "How you address them" are deleted outright (the block carries all three),
+ *     the Lowndes playbook is replaced by twelve first-principle moves, "run the stack" is rebuilt on
+ *     the task/idle split, "How you write" keeps only the floor state, and the inner-weather section
+ *     is re-authored around a block that instructs instead of describing.
+ *   · craft/onboarding.md −3,151 and craft/threading.md −1,373: both rewritten in the new register
+ *     rather than trimmed, and both lighter for it — the threading page's ladder, materials and modes
+ *     are intact, and the first-contact page trades charm framing for one flat read.
+ *   · craft/hooks.md +3,852 (709 → 4,561): the ninth page stops being T3's placeholder and becomes
+ *     the real one — the three kinds, what each is built from, the predict-then-collect move, the
+ *     quiet reply, and the clause `RULE_ANCHORS.response_overrules` now anchors on, which moved here
+ *     from Context.md because this is where the beat it governs is taught.
  */
-const CORPUS_CHARS = 146_548;
-const CORPUS_SHA256 = 'ac0b21f759438df0c405b494d7bc409ee6ff70ff1cd4974ac53810f23a5e5a09';
+const CORPUS_CHARS = 121_950;
+const CORPUS_SHA256 = '0e792b2dac9f39efcf2e338b6923a7567b3f3614bbe55ca24c78ea712dd390ad';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
