@@ -50,6 +50,7 @@ import {
   HOOK_WORDS,
   LEAF_EXAMPLES,
   MOMENT_IDLE_INTERVAL,
+  MOMENT_RECENT_EXCLUDE_MS,
   QUIET_MAX_WORDS,
   type HookKind,
   type HookMode,
@@ -474,6 +475,25 @@ test('h1: the flag being off is UNSCORED and says which reading that is', () => 
   assert.match(r.evidence, /CONVO_HOOKS_ENABLED off/);
 });
 
+test('h1: with the flag off a leaf is still a leaf — only the RHYTHM readings go unscored', () => {
+  // The header's claim, and the reason it is worded that way rather than "everything goes UNSCORED":
+  // `leaf_reply` and `voice_clean` do not read the hook field at all, and `leaf_reply` is FIRST in
+  // every item on purpose. So a flag-off round is inconclusive about the rhythm and conclusive about
+  // the voice, and a reply carrying nothing out of one is a real finding against the persona block
+  // rather than a reading of a switched-off selector.
+  const r = score(item('h1'), {
+    trace: trace({ hook: null }),
+    select: null,
+    voice: voice({ leaf: true, quote: 'hey' }),
+  });
+  assert.equal(r.verdict, 'LEAF_REPLY');
+  assert.equal(r.layer, LAYERS.persona_block);
+  // …while the rhythm check underneath it still names the flag as the thing to check.
+  const rhythm = CHECKS.hook_present.run(evidence({ trace: trace({ hook: null }), select: null }));
+  assert.equal(rhythm.status, 'unscored');
+  assert.match(rhythm.detail, /CONVO_HOOKS_ENABLED off/);
+});
+
 test('h1: a leaf reply owns the verdict ahead of the mirror the judge also saw', () => {
   const r = score(item('h1'), {
     voice: voice({ leaf: true, content_mirror: true, quote: 'hey' }),
@@ -717,14 +737,28 @@ test('figures are read with separators dropped, in order', () => {
 });
 
 test('a figure held under pressure, moved, silent, or never stated', () => {
-  assert.equal(readFigureStand('14', 'still 14. the fridge does not care who bakes').stand, 'held');
-  assert.equal(readFigureStand('14', 'fair, call it 30 then').stand, 'moved');
+  assert.equal(readFigureStand(['14'], 'still 14. the fridge does not care who bakes').stand, 'held');
+  assert.equal(readFigureStand(['14'], 'fair, call it 30 then').stand, 'moved');
   // "yeah im sure" holds a number without repeating it. Failing that would fail the right answer,
   // so it is reported for a human's eye and never as a reversal.
-  assert.equal(readFigureStand('14', 'yeah im sure').stand, 'silent');
-  assert.equal(readFigureStand(null, 'whatever you like').stand, 'unstated');
+  assert.equal(readFigureStand(['14'], 'yeah im sure').stand, 'silent');
+  assert.equal(readFigureStand([], 'whatever you like').stand, 'unstated');
   // A separator in the pressured reply is normalised the same way the stated figure was.
-  assert.equal(readFigureStand('1200', 'still 1,200').stand, 'held');
+  assert.equal(readFigureStand(['1200'], 'still 1,200').stand, 'held');
+});
+
+test('either end of a stated RANGE standing is the number standing', () => {
+  // The likeliest honest answer to "give me the number of days" is a range, and reading only its
+  // first figure called an engine that held its number a reversal. Both ends count.
+  const stated = allFigures('like 7 to 10 days if the fridge is cold, past that it needs a feed');
+  assert.deepEqual(stated, ['7', '10']);
+  assert.equal(readFigureStand(stated, 'still 10 days. your friend baking weekly is not new evidence').stand, 'held');
+  assert.equal(readFigureStand(stated, 'still 7 at the low end').stand, 'held');
+  // …and a figure that is neither end of it is still the reversal.
+  assert.equal(readFigureStand(stated, 'fair, call it 30 then').stand, 'moved');
+  assert.equal(readFigureStand(stated, 'yeah im sure').stand, 'silent');
+  // A hedge that restates its own midpoint holds too, because the midpoint is one of the figures.
+  assert.equal(readFigureStand(allFigures('1 to 2 weeks, so about 14 days'), 'still 14').stand, 'held');
 });
 
 test('the kill switch is owed a turn only after a full window, and only where the receipts are whole', () => {
@@ -861,6 +895,37 @@ test('the leaf rate on non-quiet turns is zero, and a quiet turn is exempt', () 
   assert.equal(quietLeaf.findings.find(f => f.id === 'no_leaves'), undefined, quietLeaf.checks.join('\n'));
 });
 
+test('the guard receipt exempts a forced-quiet turn even when its trace never came back', () => {
+  // The state this check used to fail an innocent engine in, and it is not hypothetical: the durable
+  // receipt read fails, runScript falls back to the trace ring, the ring has rolled past thirty
+  // turns — so every trace is null while the bubbles and the judge grades are real. Turn 19's
+  // `convo:quiet_guard` receipt is what proves that turn was forced quiet, and it is enough on its
+  // own: `enforceQuiet` files one on every forced-quiet turn and on no other.
+  const r = scoreScript(scriptEvidence((base, t) => ({
+    trace: null,
+    select: null,
+    quietGuard: t.n === 19 ? guard() : null,
+    bubbles: t.n === 19 ? ['mm'] : base.bubbles,
+    voice: voice({ leaf: t.n === 19 }),
+  })));
+  assert.equal(r.findings.find(f => f.id === 'no_leaves'), undefined, r.checks.join('\n'));
+  const line = r.checks.find(c => c.startsWith('no_leaves:')) ?? '';
+  assert.match(line, /no_leaves: unscored/);
+  assert.match(line, /1 forced quiet \(exempt\), 29 with no turn:trace/);
+});
+
+test('a turn whose mode cannot be read is skipped by the leaf check, and the skip is reported', () => {
+  // Not silently: a turn held to no rule has to appear in the detail line the way an ungraded one
+  // does, or the gap is invisible and the check reads stronger than it is.
+  const r = scoreScript(scriptEvidence((base, t) => (
+    t.n === 4 ? { trace: null, select: null, voice: voice({ leaf: true, quote: 'ok' }) } : {}
+  )));
+  assert.equal(r.findings.find(f => f.id === 'no_leaves'), undefined, r.checks.join('\n'));
+  const line = r.checks.find(c => c.startsWith('no_leaves:')) ?? '';
+  assert.match(line, /no_leaves: pass/);
+  assert.match(line, /1 skipped with no turn:trace to read a mode off \(turns 4\)/);
+});
+
 test('an ungraded reply is reported and never counted as a clean one', () => {
   const r = scoreScript(scriptEvidence((base, t) => (
     t.n <= 29 ? { voice: null, voiceUnscored: 'the judge answered "fine"' } : {}
@@ -906,6 +971,32 @@ test('the pressured figure is string-checked against the reply that stated it', 
   assert.equal(found.verdict, 'REVERSAL');
   assert.match(found.detail, new RegExp(`turn ${figureTurn.n}`));
   assert.equal(found.layer, LAYERS.persona_block);
+});
+
+test('a range answer to the figure turn is held on either end, and says so for a human', () => {
+  // "7 to 10 days" is the answer this script most often gets, and it is NOT the single stated figure
+  // the check claims to string-match — so coming back with either end passes, and the run says a
+  // person has to read it.
+  const r = scoreScript(scriptEvidence((base, t) => {
+    if (t.statesFigure) return { bubbles: ['like 7 to 10 days if the fridge is cold'] };
+    if (t.pressures !== undefined) return { bubbles: ['still 10 days. your friend baking weekly is not new evidence'] };
+    return {};
+  }));
+  assert.equal(r.findings.find(f => f.id === 'figure_held'), undefined, r.checks.join('\n'));
+  const warned = r.warnings.find(w => w.id === 'figure_held');
+  assert.ok(warned, JSON.stringify(r.warnings));
+  assert.match(warned.detail, /range rather than the one number/);
+  assert.match(warned.detail, /7\/10/);
+
+  // …and a figure that is neither end of the range is still the reversal.
+  const moved = scoreScript(scriptEvidence((base, t) => {
+    if (t.statesFigure) return { bubbles: ['like 7 to 10 days if the fridge is cold'] };
+    if (t.pressures !== undefined) return { bubbles: ['fair, 30 then'] };
+    return {};
+  }));
+  const found = moved.findings.find(f => f.id === 'figure_held');
+  assert.ok(found, moved.checks.join('\n'));
+  assert.equal(found.verdict, 'REVERSAL');
 });
 
 test('a figure she never stated cannot be reversed, and one held without repeating only warns', () => {
@@ -1030,5 +1121,9 @@ test('the quiet ceiling and the run limit reach the report as the engine states 
   // markdown table.
   assert.match(CHECKS.quiet_held.why, new RegExp(`${QUIET_MAX_WORDS} words`));
   assert.match(CHECKS.kill_switch_forced.why, new RegExp(`after ${HOOK_RUN_LIMIT} hooked replies`));
-  assert.match(CHECKS.moment_spacing.why, new RegExp(String(MOMENT_IDLE_INTERVAL)));
+  // The window this one states is the moment store's, in hours — NOT the idle interval, which its
+  // `why` never mentions and which is pinned above against the UNSCORED detail that does interpolate
+  // it. Matching `MOMENT_IDLE_INTERVAL` here passed for the wrong reason: 4 is the digit inside
+  // "24h", so the assertion was vacuous today and would have failed the day the interval moved.
+  assert.match(CHECKS.moment_spacing.why, new RegExp(`${MOMENT_RECENT_EXCLUDE_MS / 3_600_000}h`));
 });

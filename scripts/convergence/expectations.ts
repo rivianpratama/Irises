@@ -16,16 +16,18 @@
 // number. That split is the whole design: a type-only re-export costs nothing at runtime, and a
 // value re-export is a deliberate statement that some battery does arithmetic with it.
 //
-// Everything below is imported by a battery or by focusBattery.test.ts. A surface nobody reads from
-// is how a re-export outlives the thing it was for, so when a name here stops being used, delete it
-// — the import it stands in for is one line away in `src/`.
+// Everything below is imported by a battery or by one of the two battery test files
+// (focusBattery.test.ts, hookBattery.test.ts). A surface nobody reads from is how a re-export
+// outlives the thing it was for, so when a name here stops being used, delete it — the import it
+// stands in for is one line away in `src/`.
 //
 // This file holds no logic and no thresholds of its own. The one thing it adds is the PROSE / DATA
 // split over `PROMPT_BUDGET` (below), which is not a new number — it is a reading of promptPolicy's
 // own comment about which of its ceilings a LIVE turn may legitimately exceed.
 //
 // Not a `*.test.ts`, and imported by files that are not either: `npm test` only ever reaches this
-// module through `focusBattery.test.ts`, which exercises the pure scorers and touches no service.
+// module through `focusBattery.test.ts` and `hookBattery.test.ts`, which exercise the pure scorers
+// and touch no service.
 
 // ── the bubble law (pipeline/bubbleJson.ts, pipeline/bubbles.ts) ─────────────────────────────────
 // `BubbleReport` is what the send boundary files on every delivered reply; the two constants are
