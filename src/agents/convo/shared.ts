@@ -794,8 +794,8 @@ export function buildSystemPromptSections(
   // answer for a caller that never did those reads.
   craftFacts?: CraftTurnFacts,
   // What the per-turn persona engines decided for THIS turn (see PersonaTurn above). Absent — every
-  // non-Convo caller, and Convo itself until the pre-read lands — reads as a task turn with nothing
-  // earned, which is the same prompt this function built before the struct existed.
+  // non-Convo caller — reads as a task turn with nothing earned, which is the same prompt this
+  // function built before the struct existed.
   personaTurn?: PersonaTurn,
 ): PromptSectionsResult {
   // The persona head: the always-on core with the craft pages loading per-turn inside the block
@@ -1064,9 +1064,9 @@ export function buildSystemPromptSections(
   //
   //   • the MODE, off the hook directive the selector produced for this turn — the SAME gated
   //     directive the hooks section above was rendered from, so the two can never disagree. Absent
-  //     (a non-Convo caller, the flag off, the pre-read not yet wired) falls back to 'task' — the
-  //     flat-answer law is the safe default, because a turn wrongly told it may carry a hook is a
-  //     leaf and a turn wrongly told to answer flat is merely plain;
+  //     (a non-Convo caller, or the flag off) falls back to 'task' — the flat-answer law is the safe
+  //     default, because a turn wrongly told it may carry a hook is a leaf and a turn wrongly told
+  //     to answer flat is merely plain;
   //   • the WINDOW, the character length of the history rows this same call was handed. Characters,
   //     not rows: what buries the persona head is bytes between it and the reply (policy.ts
   //     DRIFT_LONG_WINDOW_CHARS).
@@ -1471,13 +1471,22 @@ export async function enforceQuiet(
       });
       const retryReply = parseReply(retry.text);
       const retryBubbles = replyBubbles(retryReply);
-      // STRICT: the retry has to be quiet. Zero bubbles passes deliberately — a tapback with no
-      // words is the ideal quiet reply, and the tapback path sends none.
-      if (!quietViolation(coerceStatus(retryReply.statusRaw)?.hook_kind, retryBubbles)) {
+      // STRICT: the retry has to be quiet, and it has to have SAID something. A retry with no
+      // bubbles is legal ONLY next to a tool call — a tapback with no words is the ideal quiet
+      // reply, and the tapback path sends the reaction instead of a bubble (the same invariant the
+      // silent-turn block downstream is written to: empty bubbles are allowed only alongside a
+      // send_reaction, and that turn carries the call). An empty envelope with NO call is not a
+      // quiet reply at all; accepted here it would reach that block, spend the silent retry, and
+      // land on the Fallfirm floor — a machine line traded for a reply that was one bubble too
+      // long, which is precisely the small-failure-into-large-failure swap this guard exists to
+      // refuse. The promise guard next door keeps the same check for the same reason.
+      if ((retryBubbles.length > 0 || retry.toolCalls.length > 0)
+          && !quietViolation(coerceStatus(retryReply.statusRaw)?.hook_kind, retryBubbles)) {
         out = retry;
         resolved = 'quiet';
       } else {
-        console.warn(`[convo] the quiet re-ask came back loud again — keeping the original reply (chat ${chatId})`);
+        const how = retryBubbles.length || retry.toolCalls.length ? 'came back loud again' : 'came back empty';
+        console.warn(`[convo] the quiet re-ask ${how} — keeping the original reply (chat ${chatId})`);
       }
     } catch (err) {
       // The one recovery is spent and the loud reply ships. Same category as the promise guard's own

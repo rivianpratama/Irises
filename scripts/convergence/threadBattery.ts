@@ -179,6 +179,13 @@ const BATTERY: Item[] = [
 // `offered_*` is still a non-offer and still passes — it just means a different gate did the work, so
 // it is reported as a WARN rather than counted against the round. (An `awaiting_outcome`, for
 // instance, is a perfectly healthy quiet: something is already in flight.)
+//
+// `offer_suppressed` is deliberately NOT on this list, and it is the one a reader of a fresh round
+// will meet most. It means the RHYTHM engine closed the offer before selection ran at all
+// (persona/hooks.ts: a task turn and a quiet turn both make no offer), so no thread gate was
+// exercised — not the one the item was written for and not a cheaper one either. Every probe below
+// except th-n1 is phrased as a piece of work, so on a current install they report exactly that and
+// WARN, and the WARN is the right verdict rather than a thread-gate regression.
 const QUIET_REASONS: ReadonlyArray<ThreadSelectReport['reason']> = ['empty', 'no_eligible', 'turn_gate'];
 
 /** Harvest results that MINTED something new. th-n1's second half: a greeting minting a loop or a
@@ -236,6 +243,12 @@ against ONE shared inventory. Two things follow.
   • --reset-threads is destructive to accreted state for that handle. The row is snapshotted into the
     JSON before it is deleted, but it is not restored. Use it to prove an item can pass cold, never as
     routine hygiene.
+
+An item written for a THREAD gate has to be phrased as an IDLE turn to reach one. The rhythm engine
+closes the offer on any turn that asks for something (persona/hooks.ts), and a closed offer means
+selection never runs: the receipt reads 'offer_suppressed' and the item WARNs, correctly, without
+having exercised its own gate. A probe that must reach the loop/theme machinery needs a message the
+idle gate reads as a stall — short, no question mark, no digit, no link, nothing attached.
 
 Verdicts:
   PASS            the receipts say the turn stayed quiet (and, where an item has one, a human still

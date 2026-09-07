@@ -101,10 +101,11 @@ interface TurnSpec {
    *  this shape would really load. */
   craft?: CraftTurnFacts;
   /** What the per-turn persona engines decided for this turn (convo/shared.ts PersonaTurn): the hook
-   *  directive, the sampled moments, the thesis. Absent on every fixture today, which reads as a task
-   *  turn with nothing earned — the mode the drift anchor falls back to. It is a named field rather
-   *  than a trailing `undefined` because the sections it feeds are measured ones: the fixture that
-   *  first carries a directive is the fixture that first measures them. */
+   *  directive, the sampled moments, the thesis. Two fixtures carry one — the cold 'hey' turn, which
+   *  is where the `hooks` section and the hook craft page are measured, and the thread-offer turn,
+   *  which measures those plus `thesis` (an offer is only ever made in hook mode, so the two travel
+   *  together). Absent elsewhere, which reads as a task turn with nothing earned — the mode the drift
+   *  anchor falls back to, and the shape the no-regression pin is written against. */
   personaTurn?: PersonaTurn;
 }
 

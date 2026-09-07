@@ -3,10 +3,12 @@
 // the prompt and where, what the two flags cost when they are off, the one corrective re-ask a
 // broken quiet turn gets, and the ledger row the turn leaves behind.
 //
-// Three seams, three shapes of test. The assembler is pure, so those cases are argument tuples. The
+// Four seams, four shapes of test. The assembler is pure, so those cases are argument tuples. The
 // quiet guard calls the model, so those go through the injected `turn.call` seam the promise guard's
 // suite uses. The ledger is a store write, so those run end to end against the ephemeral backend —
 // including in a GROUP, which is the one place this engine deliberately does not fence itself off.
+// And the pre-read that decides everything the first three are handed lives in convo/client.ts, so
+// the last block drives `chat` itself through its own injected lane (the forgetEngine precedent).
 
 process.env.TZ = 'UTC';
 process.env.DATA_BACKEND = 'memory';
@@ -18,10 +20,13 @@ import {
   buildSystemPromptSections, enforceQuiet, processConvoResult, QUIET_CORRECTION,
   type ChatContext, type ConvoTurnContext, type PersonaTurn,
 } from './shared.js';
+import { chat } from './client.js';
+import { clearIdleClassifyCache } from './idleClassify.js';
+import { craftModuleText } from './personaModules.js';
 import { DYN_SECTION_IDS, type SectionId } from './promptSections.js';
 import { REACTION_TOOL, DELEGATE_TO_OPS_TOOL } from './tools.js';
 import {
-  HOOK_WORDS, QUIET_LAW, renderHooksSection,
+  HOOK_HEADING, HOOK_WORDS, QUIET_LAW, renderHooksSection,
   type HookDirective, type HookSelectReport, type HookState,
 } from '../../persona/hooks.js';
 import { getHookState } from '../../db/repositories/hookState.js';
@@ -30,7 +35,7 @@ import { resetStorageForTests } from '../../db/sqlite.js';
 import { emptyMedia } from '../../webhook/types.js';
 import { __resetOpsCoordination } from '../../state/opsCoordination.js';
 import { getTraces, clearTraces } from '../../diagnostics/trace.js';
-import type { LlmRequest, LlmResult } from '../../llm/types.js';
+import type { LlmRequest, LlmResult, LlmToolCall } from '../../llm/types.js';
 import type { StoredMessage, UserProfile } from '../../db/types.js';
 
 // A frozen clock, the same pin promptBudget.test.ts installs and for the same reason: the assembler
@@ -47,10 +52,25 @@ class FrozenDate extends RealDate {
 }
 globalThis.Date = FrozenDate as unknown as DateConstructor;
 
+// NO LANE, deliberately. Every model call in this file is either injected at the seam or must FAIL,
+// and the idle classifier is the one that would otherwise reach a network from a unit test: a short
+// message the English fast path cannot read goes to layer 3, and layer 3 is a real `callLLM`
+// (convo/idleClassify.ts). Blank keys read as unconfigured everywhere (llm/laneKeys.ts), so the call
+// throws instantly and the gate reads `unclear` → a task turn, which is the failing-toward-task
+// behaviour the whole design rests on. The runner gives each test file its own process, so this is
+// file-local.
+process.env.ANTHROPIC_API_KEY = '';
+process.env.ANTHROPIC_AUTH_TOKEN = '';
+process.env.OPENROUTER_API_KEY = '';
+process.env.OPENAI_API_KEY = '';
+
 beforeEach(() => {
   resetStorageForTests();
   __resetOpsCoordination();
   clearTraces();
+  // Process-local and keyed on the text alone, so one case's verdict would otherwise be the next
+  // case's cache hit — and `cached: true` is a thing these tests assert about.
+  clearIdleClassifyCache();
   delete process.env.CONVO_HOOKS_ENABLED;
   delete process.env.MEMORY_THESIS_ENABLED;
   delete process.env.CONVO_UNKEPT_PROMISE_GUARD;
@@ -179,7 +199,11 @@ test('each flag OFF is byte-identical to an install that never had the feature',
 
 const SENDER = '+15550001111';
 
-function envelope(bubbles: string[], hookKind?: string): LlmResult {
+/** One reply as the lane really hands it back under `toolsViaJson`: the calls appear BOTH inside the
+ *  envelope text (where the model wrote them) and on `LlmResult.toolCalls` (where callLLM parses them
+ *  back to), because every guard in shared.ts reads the parsed field. A tapback is therefore an
+ *  envelope with no bubbles AND a send_reaction call — not an empty envelope. */
+function envelope(bubbles: string[], hookKind?: string, toolCalls: LlmToolCall[] = []): LlmResult {
   const status: Record<string, unknown> = {
     mood_label: 'content', mood_shift: 'steady', intent_mode: 'sharing_update',
     terminal_closure: false, epistemic_trigger: 'none', meta_prompt: 'let it be quiet',
@@ -188,13 +212,16 @@ function envelope(bubbles: string[], hookKind?: string): LlmResult {
   return {
     text: JSON.stringify({
       confidence_level: 85,
-      tool_calls: null,
+      tool_calls: toolCalls.length ? toolCalls.map(t => ({ name: t.name, args: t.input })) : null,
       bubbles: bubbles.map(text => ({ text, re: null })),
       status,
     }),
-    toolCalls: [], stopReason: 'end_turn', provider: 'anthropic', model: 'test',
+    toolCalls, stopReason: 'end_turn', provider: 'anthropic', model: 'test',
   };
 }
+
+/** The reaction call a tapback turn carries. */
+const TAPBACK: LlmToolCall[] = [{ name: 'send_reaction', input: { type: 'like' } }];
 
 function turnCtx(call: (req: LlmRequest) => Promise<LlmResult>): ConvoTurnContext {
   return {
@@ -265,12 +292,23 @@ test('a retry that is still loud keeps the ORIGINAL — never a dropped turn, ne
   assert.equal(quietReceipt()?.resolved, 'kept_original');
 });
 
-test('a tapback retry — no bubbles at all — is a legal quiet reply and is accepted', async () => {
+test('a tapback retry — a reaction and no words — is a legal quiet reply and is accepted', async () => {
   const original = envelope(LOUD);
-  const tapback = envelope([]);
+  const tapback = envelope([], undefined, TAPBACK);
   const out = await enforceQuiet({ ...guardArgs(original), turn: turnCtx(async () => tapback) }, LOUD, undefined);
   assert.equal(out.res, tapback);
   assert.equal(quietReceipt()?.resolved, 'quiet');
+});
+
+test('an EMPTY retry with no tool call keeps the ORIGINAL — a bubble-less reply needs a tapback behind it', async () => {
+  // The small-into-large swap this guard exists to refuse. An accepted empty envelope reaches the
+  // silent-turn block downstream, spends the silent retry, and lands on the Fallfirm floor: a machine
+  // line traded for a reply that was one bubble too long.
+  const original = envelope(LOUD);
+  const nothing = envelope([]);
+  const out = await enforceQuiet({ ...guardArgs(original), turn: turnCtx(async () => nothing) }, LOUD, undefined);
+  assert.equal(out.res, original, 'empty bubbles are legal only next to a send_reaction');
+  assert.equal(quietReceipt()?.resolved, 'kept_original');
 });
 
 test('a thrown re-ask ships the original and is reported as a spent recovery', async () => {
@@ -417,4 +455,126 @@ test('with the flag off nothing is written and no receipt is filed', async () =>
   } finally {
     delete process.env.CONVO_HOOKS_ENABLED;
   }
+});
+
+// ── the client seam: the pre-read on a REAL turn ─────────────────────────────
+// Everything above drives the assembler and processConvoResult directly, which cannot see the block
+// that decides what to hand them. These cases go through the front door (convo/client.ts `chat`)
+// with the model faked at the lane seam and nothing else stubbed — the forgetEngine/routingGate
+// pattern — so the idle facts, the flag gate, the thread veto, the craft fact and the three
+// turn-focus fields are all the turn's own.
+
+/** A capturing fake lane: every request the client made, and one fixed reply for each. */
+function fakeLane(res: LlmResult): { seen: LlmRequest[]; call: (req: LlmRequest) => Promise<LlmResult> } {
+  const seen: LlmRequest[] = [];
+  return { seen, call: async (req: LlmRequest) => { seen.push(req); return res; } };
+}
+
+const clientCtx = (over: Partial<ChatContext> = {}): ChatContext => ({
+  isGroupChat: false, participantNames: [], chatName: null, senderHandle: SENDER, ...over,
+});
+
+const receipt = (label: string) =>
+  getTraces().find(e => e.type === 'event' && e.label === label)?.detail as Record<string, unknown> | undefined;
+
+test('an IDLE message through the front door renders the hooks block, the Turn line, and leaves a ledger row', async () => {
+  const chatId = randomUUID();
+  const { seen, call } = fakeLane(envelope(['hey you']));
+  await chat(chatId, 'hey', emptyMedia(), clientCtx(), call);
+
+  assert.equal(seen.length, 1, 'one front-line call');
+  const system = seen[0].system ?? '';
+  assert.ok(system.includes(HOOK_HEADING), 'the hooks section reached the prompt');
+  // All three turn-focus fields at once, as one rendered line: the reading, the raw TYPED length, and
+  // the stored streak plus this turn (the ledger row is written after the reply, so what is in hand
+  // at prompt time is how many idle turns came BEFORE this one — zero, here).
+  assert.ok(system.includes('Turn: idle · their message: 3 characters · 1st idle in a row'),
+    `no Turn line in: ${system.slice(system.indexOf('Turn: '), system.indexOf('Turn: ') + 80)}`);
+
+  const select = receipt('hooks:select');
+  assert.equal(select?.reason, 'hook');
+  assert.equal(select?.idleLayer, 'fast_path', 'a known English stall costs no call at all');
+  assert.equal(receipt('idle:classify'), undefined, '…so layer 3 was never reached');
+
+  // The SAME reading also gates the hook craft page (convo/personaModules.ts `idle_turn`), which is
+  // the other thing the pre-read hands the assembler. Read as the page off disk rather than as a
+  // literal, so the assertion survives the prose commit that replaces today's placeholder.
+  assert.ok(system.includes(craftModuleText('hooks')), 'the craft page loaded off the same reading');
+
+  // A row exists: the defaults a missing row degrades to are an empty window and a zero streak.
+  const state = await getHookState(chatId);
+  assert.deepEqual(state.lastKinds, ['none'], 'she carried no hook, which is still a ledger entry');
+  assert.equal(state.idleStreak, 1);
+});
+
+test('a TASK message closes the thread offer, renders no hooks block, and still counts a stray hook', async () => {
+  const chatId = randomUUID();
+  const { seen, call } = fakeLane(envelope(['six to eight weeks, same as last time'], 'judgment'));
+  await chat(chatId, 'deploy the cedars order', emptyMedia(), clientCtx(), call);
+
+  const system = seen[0].system ?? '';
+  assert.ok(!system.includes(HOOK_HEADING), 'work gets the answer, flat');
+  assert.ok(system.includes('Turn: task'));
+
+  // Layer 3 was reached and, with no lane configured, failed toward task — the whole point of the
+  // asymmetry (persona/idle.ts). The receipt is what says the fallback ran at all.
+  const classified = receipt('idle:classify');
+  assert.equal(classified?.verdict, 'unclear');
+  assert.equal(classified?.cached, false);
+  assert.equal(receipt('hooks:select')?.reason, 'not_idle');
+
+  // The rhythm engine's one veto over the thread engine: selection never ran, so nothing was billed.
+  const threads = receipt('threads:select');
+  assert.equal(threads?.reason, 'offer_suppressed');
+
+  // …and the envelope field she should not have sent on a work turn is counted, not re-asked.
+  assert.deepEqual(receipt('hook:off_turn'), { emitted: 'judgment', idle: false });
+  assert.deepEqual((await getHookState(chatId)).lastKinds, ['judgment']);
+});
+
+test('with the hook flag OFF the whole pre-read is inert — no section, no line, no call, no receipt', async () => {
+  process.env.CONVO_HOOKS_ENABLED = 'off';
+  const chatId = randomUUID();
+  try {
+    // 'hey' is the message that DID render a hooks block one case up, so both absences below are
+    // absences the flag caused rather than absences of an idle turn.
+    const { seen, call } = fakeLane(envelope(['hey you']));
+    await chat(chatId, 'hey', emptyMedia(), clientCtx(), call);
+    const system = seen[0].system ?? '';
+    assert.ok(!system.includes(HOOK_HEADING));
+    assert.ok(!system.includes('Turn: idle') && !system.includes('Turn: task'),
+      'absent is a third state: no claim about the turn is made at all');
+    assert.equal(receipt('hooks:select'), undefined);
+    assert.deepEqual(await getHookState(chatId), { lastKinds: [], idleStreak: 0, idleSinceMoment: 0, updatedAt: 0 });
+
+    // …and a work message, which is the shape that reaches layer 3 and closes the thread offer when
+    // the engine is live: no lane is spent on it, and the thread engine offers exactly as it did
+    // before any of this existed.
+    const work = fakeLane(envelope(['six to eight weeks, same as last time']));
+    await chat(randomUUID(), 'deploy the cedars order', emptyMedia(), clientCtx(), work.call);
+    assert.equal(receipt('idle:classify'), undefined, 'no gate runs, so no classify call is made');
+    assert.notEqual(receipt('threads:select')?.reason, 'offer_suppressed');
+  } finally {
+    delete process.env.CONVO_HOOKS_ENABLED;
+  }
+});
+
+test('the gate reads what they TYPED, not the annotated message the machinery built', async () => {
+  // The one deliberate deviation from the brief, pinned. The tapped-reply tag is app metadata folded
+  // into `textToSend` so it persists in history, and it is long enough on its own to blow the
+  // forty-character veto — which would make an idle turn impossible to have by tapping reply on
+  // anything. The quoted text below also carries a question mark, so a gate reading the annotated
+  // string would veto this turn twice over. (The attachment note, the other annotation, needs no
+  // pin: a file that really arrived is already a structural veto in its own right.)
+  const chatId = randomUUID();
+  const { seen, call } = fakeLane(envelope(['sleep on it']));
+  await chat(chatId, 'hmm', emptyMedia(), clientCtx({
+    repliedToText: 'six to eight weeks from the north supplier, unless you want the southern yard too?',
+  }), call);
+
+  const last = seen[0].messages[seen[0].messages.length - 1];
+  assert.ok(String(last.content).startsWith('[replying to your earlier text:'),
+    'the annotation really did ride along on the message');
+  assert.ok((seen[0].system ?? '').includes(HOOK_HEADING), 'and the turn is still idle');
+  assert.equal(receipt('hooks:select')?.idleLayer, 'fast_path', 'decided on the typed word alone');
 });

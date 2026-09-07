@@ -327,6 +327,32 @@ test('the hook block renders char-for-char', () => {
   ].join('\n'));
 });
 
+// The other two variants of the hook block, char-for-char, so all nine pasted constants are pinned
+// to a literal somewhere in this file rather than to themselves. `includes(CONSTANT)` is a tautology
+// over the constant's own value: it proves the renderer used the constant and says nothing at all
+// about whether the constant still matches the staging prose. threads.test.ts pins every rendered
+// block this way and this file is written to that precedent.
+test('the every-kind-spoken-for block, with the sleep line, renders char-for-char', () => {
+  assert.equal(renderHooksSection({ ...HOOK_DIRECTIVE, forbidden: [...HOOK_WORDS], sleepQuiet: true }), [
+    '## This turn may carry one hook (INTERNAL)',
+    'They sent you nothing. This is the one turn that earns a hook, and it earns exactly one.',
+    'No kind is open this turn. Short and flat, and let the beat pass.',
+    'It is late where they are. The right reply is that they should sleep — one short bubble, or a tapback — and the hook keeps.',
+    'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
+  ].join('\n'));
+});
+
+test('the moments block renders char-for-char', () => {
+  assert.equal(renderHooksSection({ ...HOOK_DIRECTIVE, moments: true }, ['the volcano week']), [
+    '## This turn may carry one hook (INTERNAL)',
+    'They sent you nothing. This is the one turn that earns a hook, and it earns exactly one.',
+    'Open to you this turn: a judgment, a callback or a tangent. One of them, never two, never a kind not named here.',
+    'Kept about them, in case a callback fits. Retell one in fresh words, never read it out, never its date, never more than one.',
+    'the volcano week',
+    'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
+  ].join('\n'));
+});
+
 test('only the ALLOWED kinds are named — what is off the table is never spoken', () => {
   const one = renderHooksSection({ ...HOOK_DIRECTIVE, forbidden: ['judgment', 'tangent'] });
   assert.match(one, /^Open to you this turn: a callback\. /m);
