@@ -150,6 +150,10 @@ Re-pin `wrappers.test.ts` / `mediumTerm.test.ts` phrases that quote any of these
 - Fact block, shorthand block, outcome asks, `THREAD_CLAMP`: unchanged.
 Re-pin `threads.test.ts` L1131-1170 (two literals), regenerate `GOLDEN_BLOCK_C`, ratchet `PROMPT_BUDGET.thread`.
 
-## `src/persona/status.ts`, `src/persona/climate.ts`, `src/memory/climateDrift.ts`
+## `src/persona/status.ts` — `renderStatusForComposer` fidelity clause (T7 applies; the rest of this file's strings landed in T2)
 
-All strings for these live in `policy-strings.md` (AFFECT DIRECTIVE LINES, CLIMATE_EVAL_SYSTEM_PROMPT) and land in T2, not T8.
+The clause the Composer block appends still opens with the old vocabulary. OLD: `. It colours word choice and how much you hedge; it never adds, drops, softens, or sharpens a fact you relay.` NEW: `. It sets how sharp and how short you are; it never adds, drops, softens, or sharpens a fact you relay.` (The half `never adds, drops, softens, or sharpens a fact` stays byte-identical — `status.test.ts` L784-811 pins it.)
+
+## `src/persona/climate.ts`, `src/memory/climateDrift.ts`
+
+All strings for these live in `policy-strings.md` (AFFECT DIRECTIVE LINES, CLIMATE_EVAL_SYSTEM_PROMPT) and landed in T2.
