@@ -808,8 +808,8 @@ function transcriptShare(prompt: MeasuredPrompt, messages: readonly TranscriptMe
  *  section: `conversation_timing` takes no zone from the assembler at all and falls back to
  *  `DEFAULT_TZ` — the HOST's own zone, resolved once at import (pipeline/zonedTime.ts) and therefore
  *  already fixed before this file's own `process.env.TZ` line runs. So a run started outside UTC
- *  renders a different wall clock inside that section: the mature fixture measures 136,993 characters
- *  under TZ=UTC against 136,944 on a UTC+7 host and 136,943 on a US Central one — 49 characters of
+ *  renders a different wall clock inside that section: the mature fixture measures 136,568 characters
+ *  under TZ=UTC against 136,519 on a UTC+7 host and 136,518 on a US Central one — 49 characters of
  *  prose that reads "late night" in one zone and something else in another — and every ceiling below
  *  is then a number taken on a prompt this process cannot build. The clock section is the readable
  *  witness for the same fallback: hand it no stored `agent_tz` and it prints DEFAULT_TZ's wall clock,

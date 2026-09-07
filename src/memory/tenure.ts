@@ -66,7 +66,7 @@ export function renderTenureBlock(profile: UserProfile | null, nowMs: number): s
   const clause = tenureClause(profile, nowMs);
   if (!clause) return '';
   const sentence = `${clause.charAt(0).toUpperCase()}${clause.slice(1)}.`;
-  return `## How long you've known them\n${sentence}\nThis is soft context for warmth only — a long-time contact is a regular, a brand-new one gets a lighter touch. Don't recite these dates back to them.`;
+  return `## How long you've known them\n${sentence}\nThis is context, not a script — a long-time contact is a regular, a brand-new one is a stranger. Don't recite these dates back to them.`;
 }
 
 /** The same clock as ONE line, for the identity card: the caveat that used to take two lines of its
@@ -74,5 +74,5 @@ export function renderTenureBlock(profile: UserProfile | null, nowMs: number): s
 export function renderTenureLine(profile: UserProfile | null, nowMs: number): string {
   const clause = tenureClause(profile, nowMs);
   if (!clause) return '';
-  return `How long you've known them: ${clause} — soft context for warmth, never recited back to them.`;
+  return `How long you've known them: ${clause} — context only, never recited back to them.`;
 }

@@ -100,9 +100,22 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  *     second statement goes, the paragraph keeps its lead-in and its close.
  *   · +2 — §Language's lead-in said "Two rules on top of it" over three bullets. A miscount that
  *     predates this branch and sat inside a KEEP range.
+ *
+ * Then **−363** in the second supervisor-corrections commit, which carries one rule the whole-branch
+ * review settled — a task turn answers and stops — plus the register remnants found beside it. Three
+ * files moved and every other byte held:
+ *   · Context.md −326 (77,258 → 76,932): the trailing offer goes in four places (the bubble-count
+ *     paragraph, the tip demo's RIGHT half, the breakdown bullet and first principle 3), and the
+ *     machinery law loses its first sentence, which the shared persona block already states. The tip's
+ *     RIGHT example is ONE bubble now rather than two, which is the rule shown as well as said.
+ *   · craft/reminders.md −39 (2,674 → 2,635): the confirmation she writes after setting one is a
+ *     flat confirming text, and an antisocial hour is stated plainly, once, and set anyway.
+ *   · craft/send-order.md +2 (3,776 → 3,778): the one page on this branch that GREW, and it grew
+ *     for a reason worth the line — the thumbs-up emoji spelled out as "a thumbs-up tapback" is +17,
+ *     against −14 for a close that is flat rather than warm and −1 for the RIGHT label above it.
  */
-const CORPUS_CHARS = 122_388;
-const CORPUS_SHA256 = 'ac92be429090ed956e6da8a4baeb61cd780cbb7cd7cc1ee516a4e9b9c7df6602';
+const CORPUS_CHARS = 122_025;
+const CORPUS_SHA256 = 'be19f187a7dfdc1deaa69ab92cae4d513d97a2325e48f7373cd5bf92969f2ecf';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 

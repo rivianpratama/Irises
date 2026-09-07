@@ -293,7 +293,7 @@ const BAND_LINES: Record<DialKey, Record<Exclude<Band, 'none'>, string>> = {
   candor: {
     raised: 'A straight answer lands well with them. Say the hard thing first.',
     high: 'Say the hard thing first and do not soften it after.',
-    below: 'Directness has been landing badly. Hold the judgment kind of hook this turn.',
+    below: 'Directness has been landing badly. No judgment this turn.',
   },
   playfulness: {
     raised: 'In-jokes and shorthand carry between you now. A tangent is welcome.',

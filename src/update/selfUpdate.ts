@@ -77,7 +77,7 @@ export async function requestSelfUpdate(chatId: string, handle?: string, seams: 
   armStatusWatcher(chatId, handle, spawnedAt);
   return {
     kind: 'confirmed',
-    summary: "you're checking for a new version and will pull + restart yourself if there is one — say you're on it, brief and warm, and that you'll be back in a moment if you do restart",
+    summary: "you're checking for a new version and will pull + restart yourself if there is one — say you're on it, one flat line, and that you'll be back in a moment if you do restart",
   };
 }
 
@@ -136,7 +136,7 @@ function failureSummary(phase?: string): string {
 export function statusToOutcome(status: UpdateStatus): Outcome {
   if (status.ok && status.phase === 'restart') {
     // Pulled + built, but couldn't restart itself (no owned pidfile, or a hands-on run mode).
-    return { kind: 'confirmed', summary: 'you grabbed the new version but it needs a restart on the machine to actually run — say so warmly, brief, that you\'ve got the update ready and just need a restart to finish', nextStep: 'a restart on the machine (stop + start) and you\'ll be on the new build' };
+    return { kind: 'confirmed', summary: 'you grabbed the new version but it needs a restart on the machine to actually run — say so flat and brief: the update is ready and needs a restart to finish', nextStep: 'a restart on the machine (stop + start) and you\'ll be on the new build' };
   }
   return status.ok
     ? { kind: 'nothing_found', summary: 'there was no new version to pull — say you checked and you\'re already on the latest' }

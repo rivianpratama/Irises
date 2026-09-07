@@ -140,12 +140,12 @@ async function composeFollowUp(
     // The run itself failed (timeout / rate limit / crash) — the ASK was fine. Tell them honestly
     // that YOU hit a snag and will get back to it, and DON'T ask them to restate the question (that
     // wrongly implies they were unclear). No fact content to relay.
-    instruction = `you hit a snag on your end pulling this up (a timeout / hiccup, not their fault) — tell them warmly and briefly that you couldn't finish it this moment and they should give you a nudge in a bit and you'll get it. do NOT ask them to rephrase or re-pick; the ask was clear. what they wanted: "${task.request}"`;
+    instruction = `you hit a snag on your end pulling this up (a timeout / hiccup, not their fault) — tell them in one flat line that you couldn't finish it this moment and that a nudge in a bit gets it done. do NOT ask them to rephrase or re-pick; the ask was clear. what they wanted: "${task.request}"`;
   } else {
     // Selection framing, not inventory framing: the composer gets THE QUESTION next to the result,
     // answers that, and holds the rest as one offer. "exactly as written" scopes fidelity to the
     // facts it relays — without the question here, a rich Ops pull reads as "relay all of this".
-    instruction = `here's what you came back with. what they asked: "${task.request}". answer THAT and lead with it — a couple of bubbles, not a report. anything in here that's true but beside their question, hold it and close with one short passing mention instead (like "got the full picture here too" — a statement of what's in reach, never a "want me to?" question). whatever you do relay — every number, date, name, ~ and maybe — stays exactly as written:\n\n${result.summary}`;
+    instruction = `here's what you came back with. what they asked: "${task.request}". answer THAT and lead with it — a couple of bubbles, not a report. anything in here that's true but beside their question, hold it and stop on the answer — no mention of what else you hold, and never a "want me to?" question. whatever you do relay — every number, date, name, ~ and maybe — stays exactly as written:\n\n${result.summary}`;
 
     // The read behind this look was shaky: Convo scored its comprehension of the ask below the
     // clean-delegation band when it launched. The answer is still real — but it answers Convo's
@@ -224,7 +224,7 @@ async function composeFollowUp(
       outcome = { kind: 'nothing_found', summary: `you need one specific thing from them to finish: ${fields}`, nextStep: 'ask for exactly that, naturally, as your own question', originalRequest: task.request };
     } else if (moment === 'miss') {
       outcome = (attempt >= 2 || extras.giveUp)
-        ? { kind: 'nothing_found', summary: "couldn't track that one down after a couple looks", nextStep: 'mention you can come at it another way', originalRequest: task.request }
+        ? { kind: 'nothing_found', summary: "couldn't track that one down after a couple looks", nextStep: 'stop there, one line, no offer', originalRequest: task.request }
         : { kind: 'nothing_found', summary: 'you need them to narrow down which one they mean', nextStep: 'ask a short steering question (which one exactly)', originalRequest: task.request };
     } else if (moment === 'transient') {
       outcome = { kind: 'failed', summary: 'you hit a snag pulling this up on your end (not their fault)', nextStep: "tell them to nudge you in a bit and you'll grab it" };
