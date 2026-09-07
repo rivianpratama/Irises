@@ -3,8 +3,8 @@ import { getPreference } from '../../../db/repositories/memory.js';
 import { getAffectState } from '../../../db/repositories/affectState.js';
 import { getRelationshipClimate } from '../../../db/repositories/relationshipClimate.js';
 import { getThreadInventory } from '../../../db/repositories/threadInventory.js';
-import { getThesis, listThesisRevisions, type ThesisDoc, type ThesisRevision } from '../../../db/repositories/thesis.js';
-import { readMoments } from '../../../db/repositories/moments.js';
+import { readThesisHead, listThesisRevisions, type ThesisRead, type ThesisRevision } from '../../../db/repositories/thesis.js';
+import { readMoments, type MomentsFile } from '../../../db/repositories/moments.js';
 import { getHookState } from '../../../db/repositories/hookState.js';
 import { listPendingApprovals, type OpsTaskRow } from '../../../db/repositories/opsTasks.js';
 import { listFullTurnHistory } from '../../../db/repositories/diagnosticTurnHistory.js';
@@ -34,11 +34,20 @@ import { cached } from '../cache.js';
 // endpoint can hand the whole receipt to the client without a leak guard of its own — and the thread
 // summary below keeps that property for the one store that does hold model-authored prose, by
 // counting statuses and passing labels rather than notes. The moment rows keep it too, for the store
-// where it matters most (see `MomentRow`). The THESIS text is the one deliberate exception, and the
-// reason is in `ThesisSummary`: a read the operator cannot read is a read nobody can check.
+// where it matters most (see `MomentRow`). The THESIS text is the one deliberate exception among the
+// stored documents, and the reason is in `ThesisSummary`: a read the operator cannot read is a read
+// nobody can check. (`mood.metaPrompt` below is model-authored prose too, and has been on this
+// payload since the affect panel landed — it is a self-note about ONE turn rather than a document,
+// and the mood block is where the operator reads it.)
+//
+// Both file-backed stores can also fail to READ, and both say so on this payload — `thesis.degraded`
+// and `momentsFile` — because this is the surface that exists to diagnose them: an unreadable file
+// is not an empty one, and it is also what makes a background pass skip without stamping its clock
+// forever. `api/memory.ts` ships `mediumPreserved` for the same reason on the same grammar.
 //
 // Every shaper is pure with its clock injected; affect.test.ts covers them. The route is the usual
-// auth + cache wrapper around seven reads.
+// auth + cache wrapper around eight reads of seven stores (the thesis takes two: the head and its
+// revision list).
 
 /** How many receipts the panel shows. Twenty is what the persisted history keeps per key anyway. */
 export const TRACE_ROWS = 20;
@@ -226,6 +235,12 @@ export interface ThesisRevisionRow {
  * `updatedAt` is the head's own `updated=` stamp and `version` its own version; neither is derived
  * from the revision list, so a missing revision file cannot make this panel disagree with the
  * document it is describing.
+ *
+ * `degraded` is why the route reads `readThesisHead` rather than `getThesis`. The reply path's read
+ * folds "no file yet" and "the file will not parse" into one null on purpose; this panel is the one
+ * reader that is an OPERATOR, and the two nulls are opposite instructions — the first says wait a
+ * week, the second says go and look at the file, because every writer refuses an unreadable head and
+ * the weekly pass will keep refusing until somebody does.
  */
 export interface ThesisSummary {
   /** The document verbatim (the read plus its `## evidence` tail), or `''` for a person she has no
@@ -233,21 +248,24 @@ export interface ThesisSummary {
   text: string;
   version: number;
   updatedAt: number;
+  /** THESIS.md exists and did not parse. Everything above is a fallback, not the document. */
+  degraded: boolean;
   revisions: ThesisRevisionRow[];
 }
 
 /** How many revisions the panel lists. The same ten the Memory view lists for the long tier. */
 export const THESIS_REVISION_ROWS = 10;
 
-/** The head document and its revision list, shaped for reading. Pure. */
+/** The head read and its revision list, shaped for reading. Pure. */
 export function thesisSummary(
-  doc: ThesisDoc | null,
+  read: ThesisRead,
   revisions: readonly ThesisRevision[],
 ): ThesisSummary {
   return {
-    text: doc?.docMd ?? '',
-    version: doc?.version ?? 0,
-    updatedAt: doc?.updatedAt ?? 0,
+    text: read.doc?.docMd ?? '',
+    version: read.doc?.version ?? 0,
+    updatedAt: read.doc?.updatedAt ?? 0,
+    degraded: read.degraded,
     revisions: revisions.map(r => ({
       version: r.version,
       writtenBy: r.writtenBy,
@@ -295,6 +313,29 @@ export function momentRows(entries: readonly MomentEntry[], nowMs: number): Mome
     }))
     .sort((a, b) => b.at - a.at)
     .map(({ at: _at, ...row }) => row);
+}
+
+/**
+ * The state of the FILE the rows came out of, which the rows themselves cannot say.
+ *
+ * Two facts, and both of them are invisible everywhere else in the product. `degraded` means
+ * MOMENTS.md is there and did not parse: the rows above are then a fallback rather than the file, the
+ * nightly pass is skipping without stamping its clock (`MomentsFile.degraded` documents why it must),
+ * and an empty table would otherwise read as "nothing kept about them yet" — confident, and exactly
+ * inverted. `preserved` counts the segments with no valid annotation, a hand edit or a mangled
+ * comment: they survive every rewrite and are never rendered into a prompt, so a corrupted moment is
+ * otherwise invisible. That is `api/memory.ts`'s `mediumPreserved` argument, one store over, on the
+ * same grammar and the same hand-edit rule — and it stops at a COUNT here, because the segment text
+ * is the one thing this panel has decided not to re-publish.
+ */
+export interface MomentsFileState {
+  degraded: boolean;
+  preserved: number;
+}
+
+/** Whether the moments file read, and how many segments of it did not. Pure. */
+export function momentsFileState(file: MomentsFile): MomentsFileState {
+  return { degraded: file.degraded, preserved: file.preserved.length };
 }
 
 // ── the hook rhythm ──────────────────────────────────────────────────────────
@@ -555,13 +596,15 @@ export function registerAffectRoutes(router: Router): void {
         // about one room); the thesis and the moments file are keyed by HANDLE like climate. No read
         // here is gated on its feature flag: a flag removes the machinery that WRITES, and what is
         // already on disk is exactly what an operator turning a flag off wants to look at.
-        const [state, climate, inventory, turns, thesisDoc, thesisRevs, momentsFile, hookState] =
+        const [state, climate, inventory, turns, thesisRead, thesisRevs, momentsFile, hookState] =
           await Promise.all([
             chatId ? getAffectState(chatId) : Promise.resolve({ moodHistory: [] } as AffectState),
             getRelationshipClimate(handle),
             getThreadInventory(handle),
             turnsFor(key),
-            getThesis(handle),
+            // `readThesisHead`, not `getThesis`: an operator is the one reader that has to tell an
+            // absent read apart from an unreadable one (see `ThesisSummary.degraded`).
+            readThesisHead(handle),
             listThesisRevisions(handle, THESIS_REVISION_ROWS),
             readMoments(handle),
             chatId ? getHookState(chatId) : Promise.resolve(defaultHookState()),
@@ -588,9 +631,12 @@ export function registerAffectRoutes(router: Router): void {
           climate: { lastEvalAt: climate.lastEvalAt, evalCount: climate.evalCount },
           // The three earned-material stores, in the order a reply builds on them: the read, the
           // moments a callback is sampled from, and the rhythm that decides whether either is
-          // reached for at all.
-          thesis: thesisSummary(thesisDoc, thesisRevs),
+          // reached for at all. Both file-backed stores carry their read state beside their content
+          // (`ThesisSummary.degraded`, `MomentsFileState`) — an empty panel over an unreadable file
+          // would be the one wrong answer this page must not give.
+          thesis: thesisSummary(thesisRead, thesisRevs),
           moments: momentRows(momentsFile.entries, now),
+          momentsFile: momentsFileState(momentsFile),
           rhythm: rhythmSummary(hookState),
           threads: threadSummary(inventory),
           // The actions waiting on this person's yes. A synchronous read of the durable half of the

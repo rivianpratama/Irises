@@ -1,6 +1,6 @@
 // Run with: npm test   (TZ=UTC, DATA_BACKEND=memory)
 //
-// The Inner-state panel's four SHAPERS, and nothing else. The route around them is a read of four
+// The Inner-state panel's nine SHAPERS, and nothing else. The route around them is a read of seven
 // repositories behind the dashboard's own auth + cache, and the client half is a browser string the
 // existing views.test.ts already scans — what is worth pinning here is the arithmetic that turns
 // stored rows into what an operator reads:
@@ -14,9 +14,12 @@
 //   • her one read on this person, whose TEXT is shown here on purpose and whose superseded
 //     revisions are not — the asymmetry is the panel's whole design, so it gets a pin either way;
 //   • the moments, as tags and clocks with the kept line left on disk;
+//   • the state of the two files those last two come out of, because "there is nothing here" and
+//     "the file will not parse" are opposite instructions to the one person who can act on either;
 //   • the rhythm ledger, as the four fields an operator is shown rather than whatever the store
 //     happens to hold;
-//   • the last N `turn:trace` receipts, flattened out of the persisted turn payloads.
+//   • the last N `turn:trace` receipts, flattened out of the persisted turn payloads;
+//   • the approvals parked on this person's yes, which nothing here can settle.
 //
 // Every one of them is pure and takes its clock injected.
 
@@ -25,13 +28,14 @@ import assert from 'node:assert/strict';
 
 import {
   affectTrail, climateDialRows, threadSummary, traceRows, pendingApprovalRows,
-  thesisSummary, momentRows, rhythmSummary,
+  thesisSummary, momentRows, momentsFileState, rhythmSummary,
 } from './affect.js';
 import { MOOD_HISTORY_CAP, type AffectState, type AffectStatus } from '../../../persona/status.js';
 import { CLIMATE_WINDOW_CAP, type RelationshipClimate } from '../../../persona/climate.js';
 import { defaultThreadInventory, type ThreadInventory } from '../../../persona/threads.js';
 import { defaultHookState, type HookState } from '../../../persona/hooks.js';
 import type { MomentEntry } from '../../../persona/moments.js';
+import type { MomentsFile } from '../../../db/repositories/moments.js';
 import { TURN_TRACE_LABEL } from '../../traceLabels.js';
 import type { Turn } from '../../turns.js';
 import type { TraceEvent } from '../../trace.js';
@@ -184,9 +188,12 @@ test('the thesis summary carries the head text and its revisions as provenance o
     { version: 7, docMd: 'CURRENT READ', writtenBy: 'weekly', createdAt: NOW - 2 * DAY },
     { version: 6, docMd: 'SUPERSEDED READ', writtenBy: 'evidence', createdAt: NOW - 3 * DAY },
   ];
-  const s = thesisSummary(doc, revisions);
+  const s = thesisSummary({ doc, degraded: false }, revisions);
   assert.equal(s.text, doc.docMd, 'the operator surface for the read shows the read');
-  assert.deepEqual({ version: s.version, updatedAt: s.updatedAt }, { version: 7, updatedAt: NOW - 2 * DAY });
+  assert.deepEqual(
+    { version: s.version, updatedAt: s.updatedAt, degraded: s.degraded },
+    { version: 7, updatedAt: NOW - 2 * DAY, degraded: false },
+  );
   assert.deepEqual(s.revisions, [
     { version: 7, writtenBy: 'weekly', createdAt: NOW - 2 * DAY },
     { version: 6, writtenBy: 'evidence', createdAt: NOW - 3 * DAY },
@@ -200,13 +207,31 @@ test('the thesis summary carries the head text and its revisions as provenance o
 });
 
 test('a person she has no read on yet summarizes to an empty read, not to nothing', () => {
-  assert.deepEqual(thesisSummary(null, []), { text: '', version: 0, updatedAt: 0, revisions: [] });
+  assert.deepEqual(thesisSummary({ doc: null, degraded: false }, []),
+    { text: '', version: 0, updatedAt: 0, degraded: false, revisions: [] });
   // A wipe leaves the revisions behind and the document empty — the panel has to say both.
   const wiped = thesisSummary(
-    { docMd: '', version: 3, writtenBy: 'forget', updatedAt: NOW, lastRewriteAt: NOW },
+    { doc: { docMd: '', version: 3, writtenBy: 'forget', updatedAt: NOW, lastRewriteAt: NOW }, degraded: false },
     [{ version: 3, docMd: '', writtenBy: 'forget', createdAt: NOW }],
   );
   assert.deepEqual({ text: wiped.text, version: wiped.version, revs: wiped.revisions.length }, { text: '', version: 3, revs: 1 });
+});
+
+test('an unreadable THESIS.md does not summarize to "no read on them yet"', () => {
+  // The route reads `readThesisHead` for exactly this row. `getThesis`'s null folds two opposite
+  // facts together — a person she met this week, and a file that will not parse — and this panel is
+  // the one reader that is an operator: the second one means every writer is refusing the document
+  // until somebody opens it, so a page confidently reporting an empty store would be the worst
+  // available answer.
+  const s = thesisSummary({ doc: null, degraded: true }, []);
+  assert.deepEqual(s, { text: '', version: 0, updatedAt: 0, degraded: true, revisions: [] });
+  // And the revisions still list, because they are separate files: the last good read is right
+  // there even when the head is not.
+  const withRevs = thesisSummary({ doc: null, degraded: true }, [
+    { version: 5, docMd: 'THE LAST GOOD READ', writtenBy: 'weekly', createdAt: NOW - DAY },
+  ]);
+  assert.deepEqual(withRevs.revisions, [{ version: 5, writtenBy: 'weekly', createdAt: NOW - DAY }]);
+  assert.ok(!JSON.stringify(withRevs).includes('THE LAST GOOD READ'), 'still provenance only');
 });
 
 // ── the moments ──────────────────────────────────────────────────────────────
@@ -233,13 +258,37 @@ test('the moment rows are tags and clocks, newest episode first, with no kept li
   for (const prose of ['OLDEST PROSE', 'NEWEST PROSE', 'MIDDLE PROSE']) {
     assert.ok(!json.includes(prose), `a moment row carried her line: ${prose}`);
   }
-  assert.ok(!json.includes('"id"'), 'nor the id it is offered under');
+  // The two keys the shaper deliberately strips: the id it is offered under, and the sort clock it
+  // carries only to sort by. Excess-property checking does not apply to a non-literal return, so
+  // dropping the trailing `.map` that removes `at` compiles clean and would ship it.
+  for (const k of ['"id"', '"at"']) {
+    assert.ok(!json.includes(k), `a moment row carried ${k}`);
+  }
 });
 
 test('an empty moments file rows to nothing, and a clock ahead of now never reads negative', () => {
   assert.deepEqual(momentRows([], NOW), []);
   // A hand-edited or clock-skewed `at` in the future: zero days, never a negative age.
   assert.equal(momentRows([moment({ at: NOW + 5 * DAY })], NOW)[0].ageDays, 0);
+});
+
+function momentsFile(over: Partial<MomentsFile> = {}): MomentsFile {
+  return { entries: [], lastHarvestAt: NOW - DAY, preserved: [], degraded: false, ...over };
+}
+
+test('the moments file state tells an empty file apart from one that will not parse', () => {
+  // Both of the store's degraded-read flags, on the surface that exists to diagnose the store. An
+  // absent MOMENTS.md and an unreadable one both hand the route zero entries, and they are opposite
+  // facts: the second one means the nightly pass is skipping without stamping its clock every night
+  // until a person opens the file (`MomentsFile.degraded`).
+  assert.deepEqual(momentsFileState(momentsFile()), { degraded: false, preserved: 0 });
+  assert.deepEqual(momentsFileState(momentsFile({ degraded: true })), { degraded: true, preserved: 0 });
+  // Segments with no readable annotation: counted, never re-published. A mangled entry survives
+  // every rewrite and is never rendered into a prompt, so it is invisible everywhere else — the
+  // argument api/memory.ts's `mediumPreserved` makes one store over.
+  const mangled = momentsFileState(momentsFile({ preserved: ['§ HER LINE, ANNOTATION MANGLED', '§ A HAND EDIT'] }));
+  assert.deepEqual(mangled, { degraded: false, preserved: 2 });
+  assert.ok(!JSON.stringify(mangled).includes('HER LINE'), 'a count, not the segment — this panel does not re-publish the prose');
 });
 
 // ── the hook rhythm ──────────────────────────────────────────────────────────
@@ -291,10 +340,12 @@ function traceEvent(at: number, over: Record<string, unknown> = {}): TraceEvent 
         targets: null,
       },
       hits: ['dana'],
-      outcome: {
-        wasEnvelope: true, retried: false, silent: false, routingGate: 'skipped_memory_hit',
-        hook: { idle: true, mode: 'hook', emitted: 'judgment', violation: false },
-      },
+      // No `gates.hooks` and no `outcome.hook`: the rhythm engine never ran on this turn, which is
+      // the pair turnTrace.ts documents as one fact from two sides. The three hook readings get
+      // their own test below, where both halves of the receipt move together — a fixture carrying
+      // one without the other would be a receipt no turn can file, and this is the fixture the next
+      // row-shape test will copy.
+      outcome: { wasEnvelope: true, retried: false, silent: false, routingGate: 'skipped_memory_hit' },
       bubbles: { count: 2, overLaw: 0, maxWords: 11, hardCapped: false },
       ...over,
     },
@@ -323,7 +374,8 @@ test('the trace rows are the newest receipts, flattened, newest first', () => {
     { systemChars: 102_700, messagesChars: 800, share: 0.0077, rows: 12, breakpoints: 2 },
   );
   assert.deepEqual(r.sections, [{ name: 'persona', chars: 90_000 }, { name: 'turn_focus', chars: 400 }]);
-  assert.deepEqual({ threads: r.threads, hook_kind: r.hook_kind }, { threads: 'offered_theme', hook_kind: 'judgment' });
+  assert.deepEqual({ threads: r.threads, hook_kind: r.hook_kind }, { threads: 'offered_theme', hook_kind: null },
+    'a receipt whose selector never ran reads null in the hook column, not a beat and not `none`');
   assert.deepEqual(r.memory, [{ block: 'notes', verdict: 'digest', reason: 'partly_kept', dropped: 3 }]);
   assert.equal(r.routingGate, 'skipped_memory_hit');
   assert.deepEqual(r.drift, { changed: ['warmth'], capped: ['anxiety'], atBound: [], applied: { warmth: 3 }, brokeDowngraded: false });
@@ -350,11 +402,22 @@ test('the trace row tells a flat reply apart from a turn the rhythm engine never
   // negative control — CONVO_HOOKS_ENABLED off, or a caller that is not Convo — and the two must not
   // print the same thing, or the flag-off spot-check in the plan's Verification section proves
   // nothing.
-  const flat = traceEvent(NOW, {
-    outcome: { wasEnvelope: true, silent: false, hook: { idle: false, mode: 'task', emitted: 'none', violation: false } },
+  //
+  // Both halves of the receipt move together here, because turnTrace.ts writes them as one fact from
+  // two sides: `gates.hooks` is the selector's report and is null when it never ran, `outcome.hook`
+  // is what its turn came to and is ABSENT on the same turns. A row with one and not the other is a
+  // receipt no turn can file, so the fixtures never build one.
+  const ran = (emitted: string, mode: string) => ({
+    gates: { hooks: { reason: 'hook', idleLayer: 'fast_path', forbidden: [], lastKinds: ['none', 'tangent'] } },
+    outcome: {
+      wasEnvelope: true, silent: false,
+      hook: { idle: mode !== 'task', mode, emitted, violation: false },
+    },
   });
+  assert.equal(traceRows([turn('hooked', NOW, [traceEvent(NOW, ran('judgment', 'hook'))])], 20)[0].hook_kind, 'judgment');
+  const flat = traceEvent(NOW, ran('none', 'task'));
   assert.equal(traceRows([turn('flat', NOW, [flat])], 20)[0].hook_kind, 'none');
-  const neverRan = traceEvent(NOW, { outcome: { wasEnvelope: true, silent: false } });
+  const neverRan = traceEvent(NOW, { gates: {}, outcome: { wasEnvelope: true, silent: false } });
   assert.equal(traceRows([turn('off', NOW, [neverRan])], 20)[0].hook_kind, null);
   // A receipt from before the field existed reads the same as the flag being off.
   const noOutcome = traceEvent(NOW, { outcome: undefined });

@@ -106,6 +106,12 @@ test('a nightly note does NOT move the rewrite clock — and a wipe DOES', async
   const m = fs.readFileSync(filePath(h), 'utf8').match(/updated=(\S+) rewritten=(\S+)/)!;
   assert.equal(Date.parse(m[2]), clock);
   assert.ok(Date.parse(m[1]) >= clock);
+  // And the two clocks come off the parse under the names the readers use: `updatedAt` is `updated=`,
+  // `lastRewriteAt` is `rewritten=`. Both stamps sit on one line, so the only thing standing between
+  // an operator page reading "the read is four days old" and it reading "a note landed last night"
+  // is which capture this mapping picks.
+  assert.equal(noted?.updatedAt, Date.parse(m[1]), 'updatedAt is the write stamp');
+  assert.equal(noted?.lastRewriteAt, Date.parse(m[2]), 'lastRewriteAt is the rewrite stamp');
 
   // A WIPE stamps the clock, so the next window starts at the wipe — the same decision
   // clearMoments records for its harvest stamp, and for the same reason: this stamp is also the
@@ -146,6 +152,10 @@ test('a header written before the rewrite stamp existed still parses, and heals 
   assert.equal(doc?.version, 4, 'a field that was ADDED must not fail-loud a write over a real read');
   assert.equal(doc?.docMd, READ);
   assert.equal(doc?.lastRewriteAt, 0, 'and it reads as never-rewritten: one extra rewrite, never a year of skipped ones');
+  // The discriminating fixture for the OTHER stamp, and the reason it lives here: this header has an
+  // `updated=` and no `rewritten=` at all, so a parse that filed the rewrite stamp under `updatedAt`
+  // would read 0 here — the one confusion the two fields exist to prevent, caught on real bytes.
+  assert.equal(doc?.updatedAt, Date.parse('2026-09-01T00:00:00.000Z'), 'updatedAt is `updated=`, never the rewrite clock');
   assert.equal(await saveThesis(h, 'a fresh read of them', 4, 'weekly'), 5);
   assert.ok((await getThesis(h))!.lastRewriteAt > 0);
 });

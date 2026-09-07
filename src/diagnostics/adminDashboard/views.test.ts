@@ -64,6 +64,13 @@ test('the Inner state view defines and calls the thesis, moments and rhythm pane
     order.slice().sort((a, b) => a - b), order,
     'the three panels render after Relationship climate and before Threads',
   );
+  // The two file-backed panels branch on their store's degraded read BEFORE they claim the store is
+  // empty (api/affect.ts `ThesisSummary.degraded`, `MomentsFileState`). An unreadable file hands the
+  // route the same zero rows an absent one does, and rendering "nothing kept about them yet" over it
+  // would be the one confidently inverted answer this page can give.
+  assert.ok(js.includes('t.degraded'), 'the thesis panel does not read its degraded flag');
+  assert.ok(js.includes('f.degraded'), 'the moments panel does not read its degraded flag');
+  assert.ok(js.includes('d.momentsFile'), 'the moments panel does not read the file state at all');
 });
 
 test('login page stays standalone and self-closing', () => {

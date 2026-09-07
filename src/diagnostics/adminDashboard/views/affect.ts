@@ -111,7 +111,12 @@ export const AFFECT_JS = `
   }
 
   function thesisPanel(d){
-    var t = d.thesis||{text:'',version:0,updatedAt:0,revisions:[]};
+    var t = d.thesis||{text:'',version:0,updatedAt:0,degraded:false,revisions:[]};
+    // A file that will not parse is checked FIRST, because it looks exactly like an absent one from
+    // here and means the opposite: every writer refuses an unreadable head, so the weekly rewrite is
+    // stuck until a person opens the file.
+    if (t.degraded) return '<div class="empty" style="color:var(--warn)">THESIS.md is there and will not parse \\u2014 '
+      + 'nothing below is the document, and every writer refuses it until the file is fixed by hand</div>';
     // No document at all is the normal state of somebody she met this week. An EMPTY document at
     // version three is a different fact — a /forget wipe, or a rewrite that has not landed since —
     // and the revision list beside it says which.
@@ -131,18 +136,29 @@ export const AFFECT_JS = `
 
   function momentsPanel(d){
     var rows = d.moments||[];
+    var f = d.momentsFile||{degraded:false,preserved:0};
     // The pointer, not the prose: the server hands over tags and clocks on purpose (api/affect.ts
     // MomentRow), so the one line an operator needs is where the text actually is.
     var hint = '<div class="kv"><span class="gauges">tags and clocks only \\u2014 the line she kept is in '
       + 'memories/&lt;handle&gt;/MOMENTS.md and is not re-published here</span></div>';
-    if (!rows.length) return '<div class="empty">nothing kept about them yet</div>' + hint;
+    // Segments with no valid annotation — a hand edit, or a mangled comment. They survive every
+    // rewrite and are never rendered into a prompt, so this line is the only place they show up.
+    var mangled = f.preserved
+      ? '<div class="kv"><span style="color:var(--warn)">'+f.preserved+' segment(s) in the file carry no readable annotation \\u2014 '
+        + 'kept verbatim, never rendered</span></div>'
+      : '';
+    // Unreadable is not empty, and the nightly pass is skipping without stamping its clock while it
+    // stays that way.
+    if (f.degraded) return '<div class="empty" style="color:var(--warn)">MOMENTS.md is there and will not parse \\u2014 '
+      + 'no row below is the file, and the nightly pass is skipping every night until it is fixed by hand</div>' + hint;
+    if (!rows.length) return '<div class="empty">nothing kept about them yet</div>' + mangled + hint;
     return '<div class="tablewrap"><table class="t"><thead><tr>'
       + '<th>tag</th><th>age</th><th>folded</th><th>offered</th><th>last offered</th>'
       + '</tr></thead><tbody>' + rows.map(function(m){
         return '<tr><td><span class="chip" style="color:var(--acc);border-color:var(--acc)">'+M.esc(m.tag)+'</span></td>'
           + '<td>'+m.ageDays+'d</td><td>'+m.count+'</td><td>'+m.offers+'</td>'
           + '<td>'+(m.lastOfferedAt ? M.esc(M.ago(m.lastOfferedAt))+' ago' : '<span class="gauges">never</span>')+'</td></tr>';
-      }).join('') + '</tbody></table></div>' + hint;
+      }).join('') + '</tbody></table></div>' + mangled + hint;
   }
 
   // One beat, as a chip. Muted for 'none' — a reply that carried nothing is a beat the ledger
