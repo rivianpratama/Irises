@@ -150,13 +150,19 @@ test("a figure the user themselves said is an echo, not a fabrication — the pe
   assert.equal(salvageHoldingText('pulling the comps on 412 Maple now'), null);
 });
 
-test("the persona's 3-bubble holding example (ack opener + holding + sign-off beat) survives whole", () => {
+// Not a quote of the persona's own holding example anymore: that one is emoji-free and every
+// bubble holds ("on it" / "digging up stability shoes near that price" / "back in a bit with short
+// list", the worked exchange under Context.md's "CURIOSITY FIRST" section). This fixture keeps the
+// harder shape on purpose — an ACK opener that promises no look, plus a trailing emoji the persona
+// now forbids outright, a slip off the wire the salvager has to carry through rather than reject:
+// salvage reads promises, not style.
+test('a 3-bubble holding draft (ack opener + holding + sign-off beat) survives whole', () => {
   const draft = ["okay that's a real question", 'digging through the thread now', 'back in a bit 🙂'].join('\n---\n');
   assert.equal(salvageHoldingText(draft), draft);
 });
 
 test('reassurance idioms from the persona ("scanning", "hang tight", "almost there", "on it") are holding-like', () => {
-  for (const line of ['scanning your inbox now', 'still on it, hang tight', 'almost there', 'on it, boss']) {
+  for (const line of ['scanning your inbox now', 'still on it, hang tight', 'almost there', 'on it']) {
     assert.equal(salvageHoldingText(line), line, `expected to survive: ${line}`);
   }
 });

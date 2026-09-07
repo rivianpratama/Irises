@@ -43,7 +43,7 @@ function affect(): AffectState {
  *  block has to sit AHEAD of. */
 const HISTORY: StoredMessage[] = [
   { role: 'user', content: 'morning', handle: '+15550001111', at: Date.UTC(2026, 0, 5, 9, 0) },
-  { role: 'assistant', content: 'morning boss', at: Date.UTC(2026, 0, 5, 9, 1) },
+  { role: 'assistant', content: 'morning', at: Date.UTC(2026, 0, 5, 9, 1) },
 ];
 
 const LOOP: ThreadCandidate = {

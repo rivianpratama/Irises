@@ -375,10 +375,18 @@ export interface ClauseCount {
  * contract, so it is the first thing she reads and the last. That is the two-copy strategy used
  * deliberately rather than drifted into — the envelope is the one law whose failure costs the whole
  * turn rather than a beat of it, and it is Convo's own function contract, not a character rule. No
- * row below counts it either: the two copies are written for their own place (a blockquote naming
- * the four fields and their order, an anchor that then teaches each field), so they share no exact
- * substring, and the pair is held in step by the goldens (promptSections.test.ts) plus the corpus pin
- * (personaModules.test.ts) rather than by a count here.
+ * row below counts it either — by choice, not because it is uncountable. The two copies are written
+ * for their own place (a blockquote naming the four fields and their order, an anchor that then
+ * teaches each field), but unlike the mode bullets above they are NOT disjoint: one 97-character run
+ * stands in both, ` ONE JSON object and nothing else: ` through the JSON example's opening
+ * `{"confidence_level":85,"tool_calls":null,"bubbles":[{"text":"`, and the 32-character clause inside
+ * it is the quotable half. So a row pinned on that span would be an ordinary 2 / anchorCopies 1 row —
+ * a rule plus its anchor, the shape the paragraph above describes — since Context.md line 3 sits in
+ * the body and `json_anchor` sits inside the `bookends` slice, which opens at the behaviour anchor.
+ * The span is left unpinned because the pair is already held in step end-to-end by the goldens
+ * (promptSections.test.ts's GOLDEN_JSON_ANCHOR) plus the corpus pin (personaModules.test.ts), which
+ * check the whole of both copies rather than one clause inside them. Add a row here only if a later
+ * pass wants a THIRD copy to fail this count too.
  *
  * Read `anchorCopies` and `where` before changing a `count`. `predict_named` in particular is 2/0
  * for a reason that is NOT duplication: both copies are in Context.md because the second one is a

@@ -2,7 +2,7 @@
 // CONFIRMATION itself — Convo is single-shot and never sees a tool result (a scheduled time, an
 // invalid cron, a no-match cancel), or the composer model call failed — the code used
 // to ship a hardcoded string. Instead it now hands the OUTCOME to Fallfirm, which re-voices it in
-// Irises's tone, reading the recent thread so it lands as the next natural text. Same shape as the
+// Irises's tone, reading the recent thread so the outcome lands flat as the next text. Same shape as the
 // Composer relay (static persona + <prompt> dynamic block + JSON anchor + a short voice-only history
 // window), and the SAME never-go-silent floor sits under it: if Fallfirm's own call fails, we drop to
 // fallfirmFloor() — the only hardcoded user-facing copy left.
