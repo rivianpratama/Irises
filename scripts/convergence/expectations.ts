@@ -104,7 +104,7 @@ export const DATA_BUDGET_KEYS: readonly BudgetKey[] = [
   // Host-dependent by promptPolicy's own note: its text is built from the resolved model map, so a
   // bare checkout and a configured install legitimately differ.
   'model_map',
-  // The tool set differs by deployment (the group lane carries 13 tools, the 1:1 lane 11), so this
+  // The tool set differs by deployment (the group lane carries 14 tools, the 1:1 lane 12), so this
   // is a property of the install rather than of the prose.
   'tool_docs',
 ];

@@ -186,12 +186,12 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
  * of work.
  *
  * DOWN first. The shared persona block spent 7,174 characters on this surface and the drift anchor
- * 211 more, which took the floor to 0.0073 — the largest single FALL here. What that bought is the
+ * 27 more, which took the floor to 0.0073 — the largest single FALL here. What that bought is the
  * thing no size on this surface can show: the same 7,172 bytes are what the Composer relay and both
  * Fallfirm voices read too, where the personality used to be four thinner and quietly divergent
  * descriptions. Three surfaces gained a whole person; this one paid for it. Beside that, the
  * envelope's tenth field (`hook_kind` — 167 characters of contract, 47 of anchor) and the affect
- * compiler (−937 of weather against +90 of contract) are fifth-decimal moves, and the compiler is
+ * compiler (−937 of weather and −77 of contract) are fifth-decimal moves, and the compiler is
  * the honest illustration of the exchange rate: a thousand characters of prose deleted bought one
  * four-decimal point, because what it bought was a block that INSTRUCTS instead of describing, not
  * size. The hook wiring bought nothing here at all and that is its own result — the fixture this
