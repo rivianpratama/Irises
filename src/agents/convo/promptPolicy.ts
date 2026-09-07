@@ -199,16 +199,20 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
  * line: the thesis renders on every turn once the store exists, and the mature fixture will carry
  * one then.
  *
- * The prose commit takes it to **0.0088** (1,207 characters against 136,632, down from 163,751), the
+ * The prose commit takes it to **0.0088** (1,207 characters against 136,674, down from 163,751), the
  * largest single RISE this floor has recorded and the first one that came from deleting persona prose
  * since P1. Twenty-four thousand characters left the corpus and none of them came back as anything:
  * Context.md's character sections are gone because the shared block says all of it once, for four
- * surfaces, and the two craft pages that were rewritten came out lighter than they went in. So the
- * exchange rate here is the good one for once — fifteen four-decimal points for a rewrite — and the
- * honest way to read the pair of commits is together: the block spent 7,174 characters on this
- * surface and the prose commit gave back 23,926, which is the whole trade the personality rebuild was
- * for. The persona is still what stands between this number and anything better, but it is now 84k
- * rather than 108k of what the model reads.
+ * surfaces, and the two craft pages that were rewritten came out lighter than they went in. The fall
+ * closes to the character, and is written out here rather than attributed loosely to "the corpus",
+ * because the corpus deletion is not the whole of it: 163,751 − 136,674 = 27,077 = 23,926 of persona
+ * plus the 3,151 that craft/onboarding.md lost, which is the one rewritten page a mature TASK turn
+ * loads (craft/threading.md needs a thread on the turn and craft/hooks.md needs an idle one, so both
+ * are measured on the fixtures that have those). So the exchange rate here is the good one for once
+ * — fifteen four-decimal points for a rewrite — and the honest way to read the pair of commits is
+ * together: the block spent 7,174 characters on this surface and the prose commit gave back 23,926,
+ * which is the whole trade the personality rebuild was for. The persona is still what stands between
+ * this number and anything better, but it is now 84k rather than 108k of what the model reads.
  */
 export const MIN_TRANSCRIPT_SHARE = 0.0088;
 
