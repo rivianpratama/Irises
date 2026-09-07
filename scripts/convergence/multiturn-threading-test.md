@@ -307,7 +307,8 @@ PASS:
   proven.
 - The loop's final `status` in the row is `resolved` — the outcome moved it `open → asked`, then the
   `resolved:` note closed it. Order matters and this is the check.
-- The reply is warm and follows THEIR answer. She does not produce her next stored question.
+- The reply follows THEIR answer, flat, with no praise and no re-ask. She does not produce her next
+  stored question.
 
 **T13** — *plan beat: (gated — the second evidence day for the sensitive theme)*
 
@@ -394,9 +395,9 @@ PASS, once the flag and the seed are in place:
   found nothing due".
 - It is **L2** — the loop minted during T4's venting. That is the whole proof: captured in a hard
   moment, carried quietly, handed back as care days later.
-- First bubble places the thing in **their** words and is not question-shaped. The question is the
-  LAST bubble, one, light, easy to wave off, and it ends the message. This is the only proactive
-  kind that ends on a question.
+- First bubble places the thing in **their** words and is not question-shaped. The ask comes once,
+  flat, as the last bubble, and it ends the message. This is the only proactive kind that ends on a
+  question.
 - She guesses no outcome. She does not know how it went; that is why she is asking.
 - The row is billed BEFORE delivery: `last_ping_at`, the loop's `offeredAt`, and
   `pending: { phase: "awaiting", material: "loop" }`.

@@ -1,7 +1,7 @@
 {
   "name": "irises",
   "version": "1.0.0",
-  "description": "Irises — a private, general, casual do-anything assistant. A multi-agent brain that is the user-facing interface for the OpenClaw/Hermes engines, reachable over a web/CLI debug chat and the engine bridge.",
+  "description": "Irises — a private, deadpan do-anything companion with one read on you. A multi-agent brain that is the user-facing interface for the OpenClaw/Hermes engines, reachable over a web/CLI debug chat and the engine bridge.",
   "main": "dist/index.js",
   "license": "MIT",
   "engines": {

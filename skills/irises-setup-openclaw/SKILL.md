@@ -13,7 +13,7 @@ metadata:
 
 # Irises Setup (OpenClaw engine)
 
-Irises is a user-facing texting assistant — a fast conversational front line with a warm persona —
+Irises is a user-facing texting assistant — a fast conversational front line —
 that delegates ALL deep work (research, files, memory) to the OpenClaw gateway it is pointed at.
 OpenClaw stays completely unmodified; Irises talks to it only over the Gateway WebSocket `agent`
 RPC using the existing gateway token.

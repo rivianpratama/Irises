@@ -1,6 +1,6 @@
 # Irises
 
-Irises is a private, bring-your-own-key humane chat and liaison. Irises responds only
+Irises is a private, bring-your-own-key plain chat and liaison. Irises responds only
 after the user sends a message and can return one to four validated chat
 bubbles per turn.
 
@@ -67,9 +67,14 @@ synthesized into Irises's voice without changing their factual status.
 
 Irises publishes baseline templates at `/PERSONA.md`, `/ARCHETYPE.md`, and
 `/JOURNAL.md`. After each completed turn, a separate reflection request may
-update only Irises's allowed adaptive behavior lines, revisable user hypotheses,
-and a rolling journal organized by 1-hour, 3-hour, 12-hour, 24-hour, and 7-day
-windows with high, medium, and low importance.
+update only Irises's allowed adaptive behavior lines (tone, directness, hooks,
+verbosity, language, interaction), revisable user hypotheses, and a rolling
+journal organized by 1-hour, 3-hour, 12-hour, 24-hour, and 7-day windows with
+high, medium, and low importance.
+
+No reflection path is wired in this repo today: the three templates are
+published as static baselines and nothing under `src/` reads or rewrites them at
+runtime. The live personality is rendered from `src/persona/policy.ts`.
 
 Live documents are visible and downloadable from the Documents panel. On a
 single-user Node.js deployment they are stored under the ignored `.irises/`

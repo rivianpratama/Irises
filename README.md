@@ -4,7 +4,7 @@
 
 # Irises
 
-**A warm companion you text like a person. The heavy work goes to the engine you already run.**
+**A companion you text like a person, with one read on you and no small talk. The heavy work goes to the engine you already run.**
 
 <br/>
 
@@ -43,13 +43,13 @@ The engine stays completely unmodified. One command wires it up. That's the whol
 - **She asks before the engine does something she can't take back.** A delegation that would *act* in the world — send, delete, book, post — is parked with a plain question instead of kicked off. Only a clear yes in that chat starts it, "forget it" drops it, and the engine gets one line saying it may act, for that one action. `OPS_APPROVAL_GATE=off` restores the old fire-and-forget.
 - **One voice, many channels.** A web debug chat, a terminal REPL (`npm run chat`), and — in bridge mode — every channel your engine already speaks: Telegram, WhatsApp, Signal, Discord, Slack, LINE, and so on.
 - **It texts like a person.** Messages get batched into bursts, each chat has a send lock, and replies are paced like real typing. No firehose of ten bubbles in one second.
-- **It remembers you, in layers.** Short, medium and long memory tiers are kept locally, and the durable facts get forwarded to the engine's own memory too, so both halves remember the same person. Saved notes are quietly groomed — restate a fact three times and it folds back into one note instead of crowding out three others. Optional **semantic recall** (`MEMORY_SEMANTIC_RECALL=on`) adds an embedding leg to the archive search, so "the vacation house by the water" finds what was written down as "my lake cabin"; keyless installs get the same paraphrase tolerance from a tiny query-expansion call instead. The full design (and how it compares to vector/graph/episodic memory) is in [docs/MEMORY_ARCHITECTURES.md](docs/MEMORY_ARCHITECTURES.md).
-- **It notices what recurs.** A threading inventory tracks the themes you keep circling back to — values, tensions, goals, the phrases you two have coined — and the things you left hanging, so a callback is earned instead of guessed. It's harvested from the status envelope she already emits, so it costs zero extra LLM calls. On a longer clock, a **relationship climate** (ease, candor, playfulness) drifts over weeks inside code-owned clamps and colours her voice as numberless prose, never numbers.
+- **It remembers you, in layers.** Short, medium and long memory tiers are kept locally, plus a **thesis** — one read on you, rewritten weekly — and a **moments** file of timestamped episodes in her own voice, sampled a few at a time and never dumped, and the durable facts get forwarded to the engine's own memory too, so both halves remember the same person. Saved notes are quietly groomed — restate a fact three times and it folds back into one note instead of crowding out three others. Optional **semantic recall** (`MEMORY_SEMANTIC_RECALL=on`) adds an embedding leg to the archive search, so "the vacation house by the water" finds what was written down as "my lake cabin"; keyless installs get the same paraphrase tolerance from a tiny query-expansion call instead. The full design (and how it compares to vector/graph/episodic memory) is in [docs/MEMORY_ARCHITECTURES.md](docs/MEMORY_ARCHITECTURES.md).
+- **It notices what recurs.** A threading inventory tracks the themes you keep circling back to — values, tensions, goals, the phrases you two have coined — and the things you left hanging, so a callback is earned instead of guessed. It's harvested from the status envelope she already emits, so it costs zero extra LLM calls. On a longer clock, a **relationship climate** (ease, candor, playfulness) drifts over weeks inside code-owned clamps and is compiled in code into concrete directives (how sharp, how short, which hooks are allowed), never dumped as mood prose.
 - **She makes the first move.** Once, minutes after install, Irises asks the engine what it already knows about its user, seeds her own memory with it (stamped second-hand), and introduces herself — *"Irises, but you can call me Iris"*. She texts first only where the engine confirms you've genuinely talked in that exact chat before; anything less and she folds the introduction into her reply to your first message instead. No cold text ever leaves the box. `FIRST_MOVE_ENABLED=false` makes the install silent.
-- **It reaches out first, but politely.** The engine's cron jobs and mail triage push back through `POST /api/engine/push`, get voiced by the Composer (which opens with *why* the text is arriving), and land on whatever channel the chat came from. Duplicates are collapsed, and a non-urgent push that arrives overnight waits for morning. If you opt in (`THREADING_PINGS_ENABLED`, off by default because it makes a phone buzz unprompted), she may also text once about something you left hanging — hard-bounded to one ping per person per week, only after 48h of silence, never twice about the same thing. This part I'm quite proud of.
-- **A hidden mood.** There is a small affect engine behind the scenes — a per-chat mood based on the Gloria Willcox feeling wheel, a 28-day cycle, a circadian rhythm. Nobody is told about it, and its status output is swallowed before you see it. It only makes the voice feel a bit more alive.
+- **It reaches out first, on a trigger.** The engine's cron jobs and mail triage push back through `POST /api/engine/push`, get voiced by the Composer (which opens with *why* the text is arriving), and land on whatever channel the chat came from. Duplicates are collapsed, and a non-urgent push that arrives overnight waits for morning. If you opt in (`THREADING_PINGS_ENABLED`, off by default because it makes a phone buzz unprompted), she may also text once about something you left hanging — hard-bounded to one ping per person per week, only after 48h of silence, never twice about the same thing. This part I'm quite proud of.
+- **A hidden mood.** There is a small affect engine behind the scenes — a per-chat mood based on the Gloria Willcox feeling wheel, a 28-day cycle, a circadian rhythm. Nobody is told about it, and its status output is swallowed before you see it. It compiles into a handful of directives per turn — a bubble cap, how dry, whether the right reply is that you should sleep — and nothing else.
 - **Provider-neutral LLM layer.** One `callLLM` over Anthropic, OpenRouter, and any OpenAI-compatible API — a primary lane per role, automatic fallback to the next configured lane on transient errors, and tool-calls, structured "bubble" output and prompt caching normalized to one shape.
-- **Nothing is a black box.** `/debug` shows every prompt trace, and `/dashboard` shows every hop, cost, and error — plus an **Inner state** tab that reads back the hidden mood trail, the climate dials, the thread inventory, the actions still waiting on a yes, and what each turn's prompt actually looked like.
+- **Nothing is a black box.** `/debug` shows every prompt trace, and `/dashboard` shows every hop, cost, and error — plus an **Inner state** tab that reads back the hidden mood trail, the climate dials, the thread inventory, the thesis and its revisions, the moments file, the hook rhythm (last three hooks, the kill switch), the actions still waiting on a yes, and what each turn's prompt actually looked like.
 
 ## How it works
 
@@ -86,11 +86,11 @@ flowchart LR
 
 A quick map of the code, if you want to read along:
 
-- **Agents** (`src/agents`) — `convo` (front line), `ops` (the engine seam), `composer` (re-voices results), `fallfirm` (holding beats and failure recovery). Each one carries a persona in its `Context.md`.
+- **Agents** (`src/agents`) — `convo` (front line), `ops` (the engine seam), `composer` (re-voices results), `fallfirm` (holding beats and failure recovery). Each one carries only how it works in its `Context.md`; the personality is one shared block rendered from `src/persona/policy.ts` into all of them.
 - **The engine seam** (`src/agents/ops`) — `OPS_BACKEND` picks `hermes` (OpenAI-compatible API + cron REST) or `openclaw` (gateway WebSocket). Unset means deep work is honestly offline — Convo still chats. See [docs/ENGINES.md](docs/ENGINES.md).
 - **Channels** (`src/channels`) — one `Channel` abstraction with `web` (SSE + CLI) and `bridge` adapters. See [docs/CHANNELS.md](docs/CHANNELS.md).
 - **LLM layer** (`src/llm`) — one `callLLM` entry point, per-role primary provider, automatic fallback lane, token budget guards.
-- **Persona & affect** (`src/persona`) — the hidden per-turn affect engine, the relationship climate, and the conversational-thread selection described above.
+- **Persona & affect** (`src/persona`) — the hidden per-turn affect engine, the relationship climate, and the conversational-thread selection described above: `policy.ts` (the shared personality block and the mode-selected drift anchor), `affectCompiler.ts` (gauges → directives), `hooks.ts` (the idle-turn hook selector and kill switch), `moments.ts`.
 - **State & memory** (`src/state`, `src/memory`) — burst-batching, per-chat send lock, typing pacing, a durable registry of in-flight engine runs (so a restart can find and own up to the one it killed), the short/medium/long memory tiers, plus the thread harvest, the note groomer, and the optional semantic-recall leg.
 - **Data** (`src/db`) — a local store under `IRISES_HOME` (default `~/.irises`): SQLite (builtin `node:sqlite`) for machine data, plus per-user markdown for the curated memory tiers. `DATA_BACKEND=memory` runs the same code but ephemeral, nothing persists.
 - **Diagnostics** (`src/diagnostics`) — `/debug` prompt traces and the `/dashboard` GUI with cost, error, memory and inner-state views.
@@ -288,6 +288,7 @@ Outbound routes by `chatId` prefix — `web:` → web / CLI, `eng:<platform>:<ch
 | `OPS_TASK_TIMEOUT_MS` · `OPS_RETRY_ENABLED` · `OPS_PROGRESS_*` · `OPS_MAX_PROGRESS_PINGS` | Delegation deadline (4 min), the single cheap retry, and the "still on it" ping throttle. |
 | `ROUTING_GATE` | `off` disables the grounding screen that forces data questions through the engine. |
 | `CONVO_ROUTING_GATE_MEMORY_AWARE` | `off` makes that screen text-only again: it stops standing down for a data question she answered off something she already holds, and a delegation stops carrying what she holds to the engine (it rides beside the brief, in the task's own field, never inside it). Default on. |
+| `CONVO_HOOKS_ENABLED` | The idle-turn machinery: the idle gate, the hook selector and kill switch, the per-turn hooks section and its craft page, and the quiet re-ask. `off` removes the machinery, not the character (that is a branch). Default on. |
 | `REFUSAL_FLOOR` | `off` disables the screen that catches a reply falsely claiming it can't reach something the engine can, and delegates instead. |
 | `MEMORY_PROVENANCE_ENABLED` | Stamp every durable fact `stated` \| `seeded` \| `inferred` so a guess is never cited as testimony. **Default off** — the one default-off switch in the focus set, because it changes what a memory file contains (the read side parses stamps either way). |
 | `BATCH_SETTLE_MS` · `TYPING_CPM` · `TYPING_DELAY_MAX_MS` · `TYPING_TRAILING_STOP_MS` | Batching + simulated-typing pacing, and the guarded trailing typing-stop that keeps a stateful indicator (Photon) from burning after a reply. |
@@ -304,6 +305,8 @@ Outbound routes by `chatId` prefix — `web:` → web / CLI, `eng:<platform>:<ch
 | `NOTE_GROOM_ENABLED` · `NOTE_GROOM_THROTTLE_MS` | Fold near-duplicate saved notes into one (throttled, locally re-validated; retired notes stay in the archive). Default on / 6h. |
 | `RELATIONSHIP_CLIMATE_ENABLED` | The weeks-scale standing register (ease / candor / playfulness), one classify eval per 22h inside code-owned clamps. `false` stops both the eval and the read immediately; the stored row survives. Default on. |
 | `CONVO_THREADING_ENABLED` | The theme + open-loop inventory. Zero extra LLM calls; `false` gates both the harvest and the pre-turn read, and the stored inventory survives being turned off. Default on. |
+| `MEMORY_MOMENTS_ENABLED` | The nightly moments pass and the per-turn sampler. Off = no moments written or offered; the file survives. Default on. |
+| `MEMORY_THESIS_ENABLED` | The weekly thesis rewrite and the per-turn thesis section. Off = no read written or rendered; the file survives. Default on. |
 | `THREADING_PINGS_ENABLED` | Lets her *start* a message about a loop left hanging. **Default off** (it buzzes a phone unprompted); hard bounds when on — one ping per person per week, 48h of silence first, never a group, never twice about the same thing. |
 | `FIRST_MOVE_ENABLED` | The one-time install introduction described above. Default on. |
 
@@ -348,8 +351,8 @@ irises/
 │  ├─ agents/              #   convo · ops (engine seam: runs, stop/steer, consent gate) · composer · fallfirm + orchestrator
 │  ├─ channels/            #   Channel abstraction + web (SSE + CLI) · bridge
 │  ├─ llm/                 #   callLLM: provider-neutral LLM layer (Anthropic + OpenRouter + OpenAI-compatible)
-│  ├─ persona/             #   hidden affect engine (mood wheel · circadian · 28-day cycle · status) · climate · threads
-│  ├─ state/ · memory/     #   send lock, batching, pacing · memory tiers · thread harvest · note groomer · semantic recall
+│  ├─ persona/             #   the shared personality (policy) · affect compiler · hook selector · climate · threads · moments
+│  ├─ state/ · memory/     #   send lock, batching, pacing · memory tiers · thread harvest · note groomer · semantic recall · thesis + moments passes
 │  ├─ db/ · pipeline/      #   local data layer (SQLite + memory files · ops-run registry · bridge dedupe) · bubble, cron, time helpers
 │  ├─ update/              #   self-update checker, announcer, pidfile, version stamp
 │  ├─ webhook/             #   engine push door
@@ -387,7 +390,7 @@ The web package also carries its own suites: `npm --prefix web run test` (Vitest
 
 Issues and PRs are very welcome — even a small one. If you found the docs confusing somewhere, that is a bug too; please open an issue and tell me where you got lost.
 
-Before opening a PR, please run the [verification](#verification) commands, and keep the machinery that makes Irises feel like one person intact: the JSON bubble envelope, the delegation seam, and the grounding rules. [docs/PROMPTING_CHARTER.md](docs/PROMPTING_CHARTER.md) explains the principles behind the prompts — bear in mind it's an inherited document that predates the engine split.
+Before opening a PR, please run the [verification](#verification) commands, and keep the machinery that makes Irises feel like one person intact: the JSON bubble envelope, the delegation seam, and the grounding rules, the shared personality block and the idle-turn gate. [docs/PROMPTING_CHARTER.md](docs/PROMPTING_CHARTER.md) explains the principles behind the prompts — its [§3a](docs/PROMPTING_CHARTER.md#3a-the-never-send-a-leaf-laws-with-their-reasons) is the character itself, as laws with their reasons — bear in mind the rest is an inherited document that predates the engine split.
 
 ## License
 

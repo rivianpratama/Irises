@@ -1,6 +1,6 @@
 # Irises + your engine
 
-Irises is the **persona**: a fast, warm texting front line (Convo), a re-voicer that makes deep
+Irises is the **persona**: a fast, deadpan texting front line (Convo), a re-voicer that makes deep
 results land in one voice (Composer), an honest failure voice (Fallfirm), and the glue between
 them. Everything **deep** — research, email, reading files, reminders, long-term memory — runs on
 an **engine you already have**: [hermes-agent](https://github.com/NousResearch/hermes-agent) or
