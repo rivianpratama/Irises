@@ -71,9 +71,12 @@
 // does not make the loss loud, it makes it fatal, and fatal here is a LOOP — the process dies inside
 // the turn, the backoff map dies with it, `rewritten=` never moved, and the next non-group turn with
 // a week's worth of lines in it does the whole thing again. Every writer this store has is a
-// background one, so every writer takes the default; `onFailure: 'throw'` exists for a foreground
-// caller a person is waiting on, and there is no such caller today. Nothing on a REQUEST path should
-// ever ask for it: the request would not survive to see the error either way.
+// background one, so every writer either takes the default or asks for it by name — the weekly
+// rewrite still spells `onFailure: 'drop'` out at its save (memory/thesisRewrite.ts `attemptSave`),
+// which is the same answer stated rather than inherited, and its receipt reads the option back to
+// tell a dropped write from a fenced one. `onFailure: 'throw'` exists for a foreground caller a
+// person is waiting on, and there is no such caller today. Nothing on a REQUEST path should ever ask
+// for it: the request would not survive to see the error either way.
 
 import fs from 'node:fs';
 import path from 'node:path';

@@ -635,18 +635,20 @@ const INTERNAL_WEATHER_HEADER =
  * returns [] and this output is byte-identical to an install without the feature (pinned in
  * status.test.ts).
  *
- * `hookTurn` is this turn's rhythm mode — true only when the hook directive says `hook` — and the
- * ONE thing it changes is which climate band lines are allowed to render (persona/climate.ts
- * HOOK_NAMING): four of the twelve name a tangent, a callback or a judgment, and a task turn or a
- * quiet turn must never be handed one. Optional, defaulting to FALSE, and the default is the safe
- * direction rather than a shrug: a caller with no rhythm engine (a non-Convo lane, the flag off, a
- * test) is on a turn with no hook to spend, and the flat-answer register is what it should read.
+ * `kindOpen` is whether this turn has a hook kind she may actually SPEND — hook mode and at least
+ * one kind still allowed (persona/hooks.ts `hookKindOpen`), not the mode on its own, because a late
+ * idle turn is a hook-mode turn with every kind closed. The ONE thing it changes is which climate
+ * band lines are allowed to render (persona/climate.ts HOOK_NAMING): four of the twelve name a
+ * tangent, a callback or a judgment, and a turn with no beat to spend must never be handed one.
+ * Optional, defaulting to FALSE, and the default is the safe direction rather than a shrug: a caller
+ * with no rhythm engine (a non-Convo lane, the flag off, a test) is on a turn with no hook to spend,
+ * and the flat-answer register is what it should read.
  */
 export function renderStatusForPrompt(
   state: AffectState | undefined,
   computed: ComputedState,
   climate?: RelationshipClimate,
-  hookTurn = false,
+  kindOpen = false,
 ): string {
   const last = state?.last;
   const directive = compileAffect(last, computed, climate);
@@ -655,7 +657,7 @@ export function renderStatusForPrompt(
     ...renderAffectDirective(directive, last, computed, climate),
     // The standing register underneath the moment. Empty at defaults, so nothing changes until a
     // relationship has actually moved.
-    ...climateLines(climate, hookTurn),
+    ...climateLines(climate, kindOpen),
     // The tail stays last (it is the instruction the reply obeys) and is one POINTER: it used to
     // re-list six of the fields in its own words, which was a fourth description of the envelope and
     // the one nobody could edit — the contract block right below it is the list.

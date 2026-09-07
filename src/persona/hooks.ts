@@ -123,6 +123,25 @@ export interface HookDirective {
   offerAllowed: boolean;
 }
 
+/**
+ * Does this turn actually have a beat she may spend?
+ *
+ * `mode === 'hook'` is NOT that question, and the difference is the sleep branch: a late idle turn
+ * is a hook-mode directive with every kind forbidden, so the mode says "hook" while the turn has
+ * nothing open. Anything that changes what the model READS on the strength of a hook has to ask this
+ * question instead of the mode — the climate span in the internal-weather block (persona/climate.ts
+ * HOOK_NAMING, gated at the assembler seam) and the drift anchor's law at the recency edge both do.
+ * Ask the mode and a 2am turn is handed "a tangent or a callback is expected of you here" beside
+ * "No kind is open this turn", which is the disagreement the sleep branch was written to end.
+ *
+ * The renderer itself builds the same reading out of the same two fields (`allowed.length > 0` in
+ * `renderHooksSection`), because it needs the LIST and not just the answer; this is the predicate
+ * for every consumer that only needs the answer.
+ */
+export function hookKindOpen(directive: HookDirective | null | undefined): boolean {
+  return !!directive && directive.mode === 'hook' && directive.forbidden.length < HOOK_WORDS.length;
+}
+
 /** Why this turn got the mode it got. The buckets are DISJOINT and cover every path: a receipt that
  *  could say both `kill_switch` and `affect_floor` would make the battery unable to tell a working
  *  kill switch from a flat mood. `sleep` is its own bucket for the same reason — a 2am turn and a

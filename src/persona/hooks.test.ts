@@ -19,7 +19,7 @@ process.env.TZ = 'UTC';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  selectHook, recordHook, quietViolation, renderHooksSection, defaultHookState,
+  selectHook, recordHook, quietViolation, renderHooksSection, defaultHookState, hookKindOpen,
   HOOK_WORDS, HOOK_RUN_LIMIT, MOMENT_IDLE_INTERVAL, QUIET_MAX_WORDS,
   HOOK_CLAMP, HOOK_HEADING, HOOK_LEAD, HOOK_OPEN_LINE, HOOK_NONE_OPEN, HOOK_SLEEP_LINE,
   MOMENTS_LEAD, QUIET_HEADING, QUIET_LAW,
@@ -232,6 +232,33 @@ test('a late-night idle turn closes every kind and bills nothing, in its own buc
   assert.equal(directive.offerAllowed, false, 'and the thread offer is shut for the same reason');
   assert.equal(report.reason, 'sleep');
   assert.deepEqual(report.forbidden, [...HOOK_WORDS]);
+  // …and this is exactly why `mode === 'hook'` stopped being the question anything else may ask.
+  assert.equal(hookKindOpen(directive), false, 'hook MODE, and no beat in it');
+});
+
+// The predicate every consumer outside the renderer has to use, and the reason it exists: the mode
+// and "is there a beat" came apart the day the clock started closing the kinds, and two of the three
+// copies of this turn read the mode. A closed-kinds hook directive told the climate span it was a
+// hook turn put "A tangent or a callback is expected of you here" in the same prompt as "No kind is
+// open this turn" — the register door the sleep branch was closing, re-opened one function away.
+test('hookKindOpen answers whether a beat is OPEN, never what the mode says', () => {
+  const hook: HookDirective = {
+    idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: true, offerAllowed: true,
+  };
+  assert.equal(hookKindOpen(hook), true, 'all three open');
+  // Any ONE kind left is still a beat she may spend, so the boundary is the whole set and not a
+  // count: a room forbids judgment and a flat mood forbids a tangent, and a callback is still a hook.
+  for (const w of HOOK_WORDS) {
+    assert.equal(hookKindOpen({ ...hook, forbidden: HOOK_WORDS.filter(k => k !== w) }), true, w);
+  }
+  assert.equal(hookKindOpen({ ...hook, forbidden: [...HOOK_WORDS] }), false, 'the sleep shape');
+  // The other two modes never populate `forbidden` — the MODE forbade every kind already — so the
+  // predicate must not read an empty list there as "everything is open".
+  assert.equal(hookKindOpen({ ...hook, mode: 'quiet', forbidden: [] }), false);
+  assert.equal(hookKindOpen({ ...hook, mode: 'task', idle: false, forbidden: [] }), false);
+  // A caller with no rhythm engine at all (the flag off, a non-Convo lane) is on a turn with no beat.
+  assert.equal(hookKindOpen(null), false);
+  assert.equal(hookKindOpen(undefined), false);
 });
 
 // The two forced-quiet buckets outrank the clock, and that ordering is what keeps the receipt

@@ -12,12 +12,17 @@
 
 process.env.TZ = 'UTC';
 process.env.DATA_BACKEND = 'memory';
+// The recall second pass is driven for real in the quiet-guard block below, and query expansion
+// defaults ON in production and dispatches a REAL classify call when nothing is injected. Pinned off
+// for the file, the recallMemory.test.ts way, so nothing here can reach a provider.
+process.env.MEMORY_RECALL_EXPANSION = 'off';
 
 import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import {
   buildSystemPromptSections, enforceQuiet, processConvoResult, QUIET_CORRECTION,
+  quietStoodDownReceipt,
   type ChatContext, type ConvoTurnContext, type PersonaTurn,
 } from './shared.js';
 import { chat } from './client.js';
@@ -30,6 +35,8 @@ import {
   type HookDirective, type HookSelectReport, type HookState,
 } from '../../persona/hooks.js';
 import { getHookState } from '../../db/repositories/hookState.js';
+import { saveRelationshipClimate } from '../../db/repositories/relationshipClimate.js';
+import { defaultClimate } from '../../persona/climate.js';
 import { groupHandle } from '../../memory/identity.js';
 import { resetStorageForTests } from '../../db/sqlite.js';
 import { emptyMedia } from '../../webhook/types.js';
@@ -423,11 +430,29 @@ test('the promise guard goes first, and its firing stands the quiet re-ask down'
   });
 });
 
-// ONE receipt per USER-VISIBLE turn, which is why the recall second pass is fenced out rather than
-// merely unlikely: that pass re-enters processConvoResult with the same text and the same directive,
-// so without the fence the model would be corrected twice about one bubble and the ring would carry
-// two rows for one thing the user saw once — and the row count is what the battery reads.
-test('the recall second pass neither re-asks nor files a second receipt', async () => {
+// The row itself, at its own seam. PURE — it returns the receipt rather than filing it, because the
+// pass that builds it may be a pass that discards its draft, and a receipt about text nobody reads
+// is worse than no receipt at all.
+test('the stood-down row reports a turn that was forced and never re-asked', () => {
+  assert.deepEqual(quietStoodDownReceipt(['on it', 'checking that now'], undefined), {
+    forced: true, emitted: null, bubbles: 2, retried: false, resolved: 'stood_down',
+  });
+  // A kind she emitted is still reported: the guard did not evaluate the turn, and what she wrote
+  // shipped unchecked — which is exactly the case a battery must not read as a clean pass.
+  assert.deepEqual(quietStoodDownReceipt(['fair enough'], 'judgment'), {
+    forced: true, emitted: 'judgment', bubbles: 1, retried: false, resolved: 'stood_down',
+  });
+  // A tapback turn: no bubbles at all, and the row still exists, because "forced quiet" and "a row
+  // in the ring" have to mean the same thing whichever way the turn went.
+  assert.deepEqual(quietStoodDownReceipt([], undefined).bubbles, 0);
+});
+
+// ONE re-ask and ONE row per USER-VISIBLE turn — and the pass that owns both is the one that SHIPS.
+// The recall second pass re-enters processConvoResult with the archive snippets appended, makes its
+// own model call, discards the first pass's draft and returns from there, so fencing the guard off
+// `archivePass` takes it off the only reply the user reads: the ring would carry a clean row about a
+// draft nobody saw, and the battery would score a PASS off text that never went out.
+test('a spent re-ask does not stop the shipping pass being read — it evaluates and cannot call again', async () => {
   const calls: string[] = [];
   const args = {
     ...turnArgs(),
@@ -436,13 +461,49 @@ test('the recall second pass neither re-asks nor files a second receipt', async 
     turn: turnCtx(async req => { calls.push(String(req.trace?.label)); return envelope(['mm']); }),
   };
   await processConvoResult(args);
-  assert.deepEqual(calls, ['convo:quiet_retry'], 'the first pass owns the turn\'s quiet');
+  assert.deepEqual(calls, ['convo:quiet_retry'], 'a first pass with nothing spent yet gets the one call');
   assert.equal(quietGuardReceipts().length, 1);
+  assert.equal(quietReceipt()?.resolved, 'quiet');
 
+  // The same loud draft on a pass that inherits a spent re-ask: read, reported, never re-asked. The
+  // resolution is the guard's own worst case, honestly — that text is what would ship.
   clearTraces();
-  await processConvoResult({ ...args, archivePass: true });
-  assert.deepEqual(calls, ['convo:quiet_retry'], 'and the second pass spends no second call');
-  assert.deepEqual(quietGuardReceipts(), [], 'nor files a second row for one visible turn');
+  calls.length = 0;
+  await processConvoResult({ ...args, archivePass: true, quietSpent: true });
+  assert.deepEqual(calls, [], 'the turn\'s one corrective call is gone');
+  assert.equal(quietGuardReceipts().length, 1, 'still one row for one thing the user sees once');
+  assert.deepEqual(quietReceipt(), {
+    forced: true, emitted: 'tangent', bubbles: 2, retried: false, resolved: 'kept_original',
+  });
+});
+
+// The other half of the same rule: a pass that RECURSES leaves no row behind, so the turn's one row
+// is the shipping pass's. Driven through the real recall path — the first pass calls recall_memory,
+// the second answers from the archive — because that is the only way the recursion happens for real.
+test('a forced-quiet turn that recalls files exactly one row, and it reads the reply that ships', async () => {
+  const calls: string[] = [];
+  let n = 0;
+  const args = {
+    ...turnArgs(),
+    // A CLEAN first draft that asks the archive: the row it would have filed says 'clean', and the
+    // reply the user actually gets is the loud one below. The old fence filed the first and shipped
+    // the second unchecked.
+    res: envelope(['mm'], undefined, [{ name: 'recall_memory', input: { query: 'the cedars' } }]),
+    hooks: hookArgs(QUIET),
+    turn: turnCtx(async req => {
+      calls.push(String(req.trace?.label));
+      n += 1;
+      return n === 1 ? envelope(LOUD, 'tangent') : envelope(['mm']);
+    }),
+  };
+  await processConvoResult(args);
+  assert.deepEqual(calls, ['convo:archive_recall', 'convo:quiet_retry'],
+    'the second pass made the reply, and the guard on it spent the turn\'s one call');
+  const rows = quietGuardReceipts();
+  assert.equal(rows.length, 1, 'one row for one user-visible turn');
+  assert.deepEqual(quietReceipt(), {
+    forced: true, emitted: 'tangent', bubbles: 2, retried: true, resolved: 'quiet',
+  }, 'and it reads the SECOND pass\'s draft — the first pass\'s clean row went with its discarded text');
 });
 
 test('a forced-quiet turn with no promise in it does reach the quiet guard', async () => {
@@ -554,6 +615,16 @@ const receipt = (label: string) =>
 
 test('an IDLE message through the front door renders the hooks block, the Turn line, and leaves a ledger row', async () => {
   const chatId = randomUUID();
+  // A relationship that has actually MOVED, stored before the turn so the real read picks it up
+  // (db/repositories/relationshipClimate.ts, handle-keyed like the memory tiers). Without it this
+  // turn renders no climate span at all, and the span is where the fourth copy of this turn hid: a
+  // late idle turn is a closed-kinds HOOK turn, so a span gated on the MODE hands it "a tangent or a
+  // callback is expected of you here" in the same prompt as "No kind is open this turn". Every dial
+  // is past its silent band, so all four hook-naming band lines are live and only the gate can be
+  // what keeps them out.
+  await saveRelationshipClimate(SENDER, {
+    ...defaultClimate(), dials: { ease: 70, candor: 30, playfulness: 60 }, evalCount: 30,
+  });
   const { seen, call } = fakeLane(envelope(['hey you']));
   await chat(chatId, 'hey', emptyMedia(), clientCtx(), call);
 
@@ -594,6 +665,17 @@ test('an IDLE message through the front door renders the hooks block, the Turn l
   assert.ok(!system.includes('- This is an idle turn: one hook, of a kind the hooks section above still allows, and only one.'),
     '…and not the hook law, which is the copy that used to contradict the section');
   assert.equal(quietReceipt(), undefined, 'the clock prefers a short reply; it does not force one');
+
+  // …and the FOURTH copy, which is why this chat carries a moved climate: the standing register
+  // renders on every Convo turn whatever the mode, and four of its twelve band lines name a hook
+  // kind (persona/climate.ts HOOK_NAMING). Gated on the MODE, this exact turn printed "A tangent or
+  // a callback is expected of you here" and "Hold the judgment kind of hook this turn" beside a
+  // section saying no kind is open. The span is gated on the OPEN KIND now (persona/hooks.ts
+  // `hookKindOpen`), so it renders here with its ease line and neither of those.
+  const weather = system.slice(system.indexOf('standing register'), system.indexOf('Re-report your `status`'));
+  assert.ok(weather.length > 0 && weather.includes('- No runway at all with this person.'),
+    'the climate span really rendered on this turn');
+  assert.doesNotMatch(weather, /judgment|callback|tangent/);
 
   // The SAME reading also gates the hook craft page (convo/personaModules.ts `idle_turn`), which is
   // the other thing the pre-read hands the assembler. Read as the page off disk rather than as a

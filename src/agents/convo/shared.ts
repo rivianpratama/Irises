@@ -74,7 +74,7 @@ import {
 import { renderThreadForPrompt } from '../../persona/threads.js';
 import { renderDriftAnchor } from '../../persona/policy.js';
 import {
-  QUIET_LAW, quietViolation, recordHook, renderHooksSection,
+  hookKindOpen, QUIET_LAW, quietViolation, recordHook, renderHooksSection,
   type HookDirective, type HookSelectReport, type HookState, type HookWord,
 } from '../../persona/hooks.js';
 import { hooksEnabled, momentsEnabled, thesisEnabled } from '../../persona/featureFlags.js';
@@ -917,6 +917,16 @@ export function buildSystemPromptSections(
   // tangent is welcome" is the drift this build is named after arriving through the register door.
   const hookDirective = personaTurn?.hooks && hooksEnabled() ? personaTurn.hooks : null;
 
+  // …and the reading those four band lines are ACTUALLY gated on: not the mode, but whether a kind
+  // is open (persona/hooks.ts `hookKindOpen`). The two came apart the moment a late idle turn became
+  // a closed-kinds HOOK turn — mode `hook`, every kind forbidden — and gating on the mode handed
+  // that turn "A tangent or a callback is expected of you here" in the same prompt as "No kind is
+  // open this turn", which is the register door the sleep branch was closing. The rare non-clock
+  // shape (a room, a flat mood and a repeated kind between them forbidding all three) reads the
+  // same way and gets the same answer. Read ONCE, here, for the same reason the directive is: the
+  // climate span and the anchor's law below must never answer it differently.
+  const kindOpen = hookKindOpen(hookDirective);
+
   // Synchronous, in-memory "research is running right now" awareness (NOT from durable prefs —
   // that path loses the read-after-write race against a fast follow-up). Stops the redundant
   // re-delegation + repeated holding line when the user acks mid-research.
@@ -1004,7 +1014,7 @@ export function buildSystemPromptSections(
   // still wants the envelope filled, the pointer is what has to move, not this condition.
   // (internalWeather.test.ts's "no computed state" case is what pins the off path.)
   if (computed) {
-    push('weather', renderStatusForPrompt(affectState, computed, climate, hookDirective?.mode === 'hook'));
+    push('weather', renderStatusForPrompt(affectState, computed, climate, kindOpen));
     push('status_contract', renderStatusContract());
   }
 
@@ -1088,12 +1098,14 @@ export function buildSystemPromptSections(
   //     directive the hooks section above was rendered from, so the two can never disagree. Absent
   //     (a non-Convo caller, or the flag off) falls back to 'task' — the flat-answer law is the safe
   //     default, because a turn wrongly told it may carry a hook is a leaf and a turn wrongly told
-  //     to answer flat is merely plain. ONE translation happens on the way in: a SLEEP turn is a
-  //     hook turn with every kind closed (persona/hooks.ts), and the law it needs at the recency
-  //     edge is the quiet one — one short thing about going to bed — not "you may carry one hook",
-  //     which is the sentence the section above deliberately does not print either. The mode stays
-  //     `hook` everywhere else, so the quiet GUARD still does not run on it: the anchor states the
-  //     law, and the guard enforces the two turns the ledger and the mood FORCED;
+  //     to answer flat is merely plain. ONE translation happens on the way in, and it is the SAME
+  //     reading the climate span above was gated on (`kindOpen`, persona/hooks.ts `hookKindOpen`):
+  //     a hook-mode turn with every kind CLOSED — the sleep branch, or the rare room-plus-flat-mood
+  //     shape that forbids all three — needs the quiet law here, one short thing and no beat, not
+  //     "you may carry one hook", which is the sentence the section above deliberately does not
+  //     print either. The directive's own mode is untouched by this, so the quiet GUARD still does
+  //     not run on those turns: the anchor states the law, and the guard enforces the two turns the
+  //     ledger and the mood FORCED;
   //   • the WINDOW, the character length of the history rows this same call was handed. Characters,
   //     not rows: what buries the persona head is bytes between it and the reply (policy.ts
   //     DRIFT_LONG_WINDOW_CHARS).
@@ -1107,7 +1119,7 @@ export function buildSystemPromptSections(
   // Behaviour goes here; the format contract stays LAST below (a persona slip is recoverable, a
   // broken envelope is not).
   const windowChars = history?.reduce((n, m) => n + m.content.length, 0) ?? 0;
-  const anchorMode = hookDirective?.idle && hookDirective.sleepQuiet ? 'quiet' : hookDirective?.mode ?? 'task';
+  const anchorMode = !hookDirective || hookDirective.mode === 'task' ? 'task' : kindOpen ? 'hook' : 'quiet';
   const behaviorAnchor = renderDriftAnchor(anchorMode, windowChars);
 
   // The bubble numbers in the law sentence below are interpolated from the constants the code
@@ -1457,28 +1469,37 @@ export const QUIET_CORRECTION = [
  */
 export type QuietGuardResolved = 'clean' | 'quiet' | 'kept_original' | 'stood_down';
 
+/** The `convo:quiet_guard` receipt's detail. Names and numbers only — never her words. Built where
+ *  the reading is made and FILED where the turn ends, so the row describes the reply that shipped;
+ *  see `processConvoResult`'s guard block for why those are two different places.
+ *
+ *  A `type` rather than an `interface` on purpose: `record`'s detail is a `Record<string, unknown>`,
+ *  and only a type alias gets the implicit index signature that makes this assignable to one. */
+export type QuietGuardDetail = {
+  forced: true;
+  emitted: HookWord | null;
+  bubbles: number;
+  retried: boolean;
+  resolved: QuietGuardResolved;
+};
+
 /**
- * File the `convo:quiet_guard` receipt for a forced-quiet turn the guard never evaluated.
+ * The `convo:quiet_guard` detail for a forced-quiet turn the guard never evaluated.
  *
  * Its own function rather than a branch inside `enforceQuiet`, because the stand-down is decided
  * where the OTHER guards' outcomes are known (processConvoResult) and by then calling `enforceQuiet`
  * would be asking it to do the one thing this turn must not do — spend a second corrective re-ask.
  * `retried` is false and `forced` is true, exactly as the other three resolutions report them: the
  * turn really was forced, and really was not re-asked.
+ *
+ * PURE: it returns the row rather than filing it, for the same reason `enforceQuiet` hands its own
+ * row to a sink — a pass that is about to discard its draft must not leave a receipt about it.
  */
-export function recordQuietStoodDown(
-  chatId: string,
-  handle: string | undefined,
-  bubbles: string[],
-  emitted: HookWord | undefined,
-): void {
-  record({
-    type: 'event', label: QUIET_GUARD_LABEL, chatId, handle,
-    detail: {
-      forced: true, emitted: emitted ?? null, bubbles: bubbles.length,
-      retried: false, resolved: 'stood_down' satisfies QuietGuardResolved,
-    },
-  });
+export function quietStoodDownReceipt(bubbles: string[], emitted: HookWord | undefined): QuietGuardDetail {
+  return {
+    forced: true, emitted: emitted ?? null, bubbles: bubbles.length,
+    retried: false, resolved: 'stood_down',
+  };
 }
 
 /**
@@ -1497,21 +1518,33 @@ export function recordQuietStoodDown(
  * The receipt fires on EVERY evaluation, violation or not (`convo:quiet_guard`, `forced: true`).
  * That is what makes the kill switch scorable: a battery has to be able to tell a forced-quiet turn
  * she got right from a forced-quiet turn that never happened, and only the healthy no-op says so.
- * A forced turn this guard never SAW files the same receipt from `recordQuietStoodDown` above, so
+ * A forced turn this guard never SAW gets the same row from `quietStoodDownReceipt` above, so
  * "forced quiet" and "a row in the ring" mean the same thing whichever way the turn went.
+ *
+ * TWO knobs, both for the same caller and the same rule — one re-ask and one row per USER-VISIBLE
+ * turn, where a turn may run this function more than once (the recall second pass re-enters
+ * `processConvoResult` and makes its own model call, and that is the pass whose reply ships):
+ *
+ *   • `opts.retry` false EVALUATES and reports without calling the lane. That is not a stand-down:
+ *     the reading is real and the row describes the shipping text; the turn simply has no recovery
+ *     left to spend, so a violation resolves `kept_original` with `retried: false`.
+ *   • `opts.file` receives the row instead of the ring. The default files it immediately, which is
+ *     what every direct caller wants; `processConvoResult` holds it until the pass that actually
+ *     returns, so a discarded draft leaves no receipt behind it.
  */
 export async function enforceQuiet(
   args: { res: LlmResult; chatId: string; handle: string | undefined; turn?: ConvoTurnContext },
   bubbles: string[],
   emitted: HookWord | undefined,
+  opts: { retry?: boolean; file?: (detail: QuietGuardDetail) => void } = {},
 ): Promise<{ res: LlmResult; fired: boolean }> {
-  const { res, chatId, handle, turn } = args;
+  const { res, chatId, handle } = args;
+  const turn = opts.retry === false ? undefined : args.turn;
   const violated = quietViolation(emitted, bubbles);
+  const sink = opts.file
+    ?? ((detail: QuietGuardDetail) => record({ type: 'event', label: QUIET_GUARD_LABEL, chatId, handle, detail }));
   const file = (retried: boolean, resolved: Exclude<QuietGuardResolved, 'stood_down'>) => {
-    record({
-      type: 'event', label: QUIET_GUARD_LABEL, chatId, handle,
-      detail: { forced: true, emitted: emitted ?? null, bubbles: bubbles.length, retried, resolved },
-    });
+    sink({ forced: true, emitted: emitted ?? null, bubbles: bubbles.length, retried, resolved });
   };
   if (!violated) {
     file(false, 'clean');
@@ -1859,6 +1892,11 @@ export async function processConvoResult(args: {
   archivePass?: boolean;
   // True when THIS pass IS the silent-turn retry — the fence that caps recovery at one extra call.
   silentRetry?: boolean;
+  // True when an EARLIER pass of this same user-visible turn already spent its one corrective
+  // re-ask (either guard's). Set by whichever pass recursed, never by an outside caller. The quiet
+  // guard on this pass then evaluates and reports as usual — it is the shipping reply, so somebody
+  // has to read it — but does not call the lane a second time about one thing the user sees once.
+  quietSpent?: boolean;
   // The clock-computed cycle/circadian for this turn, so the model's emitted `status` can be merged
   // and persisted. The recall second pass forwards it via {...args}; persistence lands on the pass
   // that reaches the final return (the first pass returns early into the recursion).
@@ -1961,32 +1999,52 @@ export async function processConvoResult(args: {
   // being hers. Stood down on the two approval-settled turns for the same reason the promise guard
   // is (and they are task turns anyway — an outstanding ask of hers is a veto in the idle gate).
   //
-  // And ONE PER USER-VISIBLE TURN, which is why `archivePass` is a fence rather than a hint: the
-  // recall second pass re-enters this whole function with the same user text and the same directive
-  // to produce the same reply, so without this the model would be corrected twice about one bubble
-  // and the receipt ring would carry two `convo:quiet_guard` rows for one thing the user saw once —
-  // which is the number the battery scores the kill switch off. The first pass owns the turn's
-  // quiet; the second pass re-voices what it settled.
+  // And ONE PER USER-VISIBLE TURN, which is the harder half, because a turn can run this function
+  // twice: the recall second pass re-enters it with the archive snippets appended, makes its OWN
+  // model call, DISCARDS the first pass's draft and returns from there — so the second pass is the
+  // one whose reply the user reads. Fencing the guard off `archivePass` (which is what this block
+  // did for one commit) therefore removed it from the only pass that ships: the first pass filed a
+  // clean row about a draft nobody saw, the shipping reply was never checked for a hook word or a
+  // second bubble, and the battery read a PASS off a receipt describing different text. Worse than
+  // the duplicate row it was fixing.
+  //
+  // So EVERY pass evaluates, and the two things that must not double are handled where they are:
+  //
+  //   • the RE-ASK — `quietSpent` rides the recursion, and a pass that inherits it evaluates
+  //     without calling the lane (`retry: false`). One corrective call per user-visible turn,
+  //     counting the honesty guard's, which is the rule the stand-down below states for one pass;
+  //   • the ROW — held in `quietReceipt` and filed by the pass that reaches the FINAL return. A
+  //     pass that recurses discards its draft, so it discards the receipt about it too, exactly as
+  //     it already discards its text. Same discipline as `emitted`, the ledger write and the turn
+  //     receipt further down, all of which fire on that same pass and for that same reason.
   //
   // The kind it reads is the DRAFT's own, coerced off the reply this guard is about to correct; the
   // turn's one canonical coercion happens further down, on whatever ends up shipping.
   const forcedQuiet = !!args.hooks && args.hooks.directive.mode === 'quiet' && hooksEnabled();
-  const quietOpen = forcedQuiet && !args.archivePass;
-  const quietStoodDown = quietOpen && (guard.fired || !!settledTask || !!settledReconfirm);
-  const quiet = (quietOpen && !quietStoodDown)
-    ? await enforceQuiet(args, replyBubbles(firstReply), coerceStatus(firstReply.statusRaw)?.hook_kind)
+  const quietStoodDown = forcedQuiet && (guard.fired || !!settledTask || !!settledReconfirm);
+  // Held, not filed — see above. Undefined on every turn the selector did not force quiet, which is
+  // the great majority, and the absence of a row is what "never forced" means to the battery.
+  let quietReceipt: QuietGuardDetail | undefined;
+  const quiet = (forcedQuiet && !quietStoodDown)
+    ? await enforceQuiet(
+      args, replyBubbles(firstReply), coerceStatus(firstReply.statusRaw)?.hook_kind,
+      { retry: !args.quietSpent, file: d => { quietReceipt = d; } },
+    )
     : { res: guard.res, fired: false };
-  // The stand-down still files its receipt, and this is the half that makes the kill switch
-  // scorable at all. `enforceQuiet` files on every evaluation it makes, violation or not, precisely
-  // so a battery can tell a forced-quiet turn she got right from a forced-quiet turn that never
-  // happened — and a turn where the guard never ran is exactly the case that reads as "never
-  // happened" from the ring. Without this row, a run of three hooks followed by an approved "yes"
-  // would look identical to a kill switch that stopped firing.
+  // The stand-down still leaves its receipt, and this is the half that makes the kill switch
+  // scorable at all. The guard reports every evaluation it makes, violation or not, precisely so a
+  // battery can tell a forced-quiet turn she got right from a forced-quiet turn that never happened
+  // — and a turn where the guard never ran is exactly the case that reads as "never happened" from
+  // the ring. Without this row, a run of three hooks followed by an approved "yes" would look
+  // identical to a kill switch that stopped firing.
   if (quietStoodDown) {
-    recordQuietStoodDown(
-      chatId, handle, replyBubbles(firstReply), coerceStatus(firstReply.statusRaw)?.hook_kind,
+    quietReceipt = quietStoodDownReceipt(
+      replyBubbles(firstReply), coerceStatus(firstReply.statusRaw)?.hook_kind,
     );
   }
+  // Whether this user-visible turn's ONE corrective re-ask is gone, for any pass that follows this
+  // one. Both guards count: the rule is one re-ask per turn TOTAL, honesty first.
+  const quietSpent = !!args.quietSpent || guard.fired || quiet.fired;
   const res = quiet.res;
   // Re-parsed only when the re-ask actually replaced the reply — parseReply logs a line for a
   // non-envelope reply, and parsing the same one twice would double it.
@@ -2507,11 +2565,16 @@ export async function processConvoResult(args: {
         });
         // The first pass's draft is DISCARDED — same discipline as the delegation salvage below:
         // it was written BEFORE the snippets existed, so anything it says about their past is a
-        // guess, and the second pass re-answers the same question with the real material.
+        // guess, and the second pass re-answers the same question with the real material. Its
+        // quiet-guard receipt is discarded with it (held, never filed), so the one row this turn
+        // leaves describes the reply that actually goes out.
         return await processConvoResult({
           ...args,
           res: second,
           archivePass: true,
+          // …but what the guards SPENT is not discarded: a corrective re-ask already made about
+          // this user-visible turn is gone whichever draft it was made about.
+          quietSpent,
           turn: { ...turn, tools: strippedTools, messages },
           // The second pass reads one more message than the first (the archive-results turn), and
           // it is the pass whose reply ships — so the receipt measures ITS transcript, not the
@@ -2820,7 +2883,7 @@ export async function processConvoResult(args: {
         // Same input, so the whole turn re-processes: a retry that DOES call a tool gets it
         // dispatched exactly as a first pass would. Nothing was persisted or sent above (a silent
         // turn writes no history), so there are no double effects.
-        return await processConvoResult({ ...args, res: retry, silentRetry: true });
+        return await processConvoResult({ ...args, res: retry, silentRetry: true, quietSpent });
       } catch (err) {
         console.error('[convo] silent-turn retry failed — voicing the floor', err);
         reportError({ source: 'convo', category: 'silent_turn', severity: 'warn', err, chatId, handle });
@@ -2877,6 +2940,15 @@ export async function processConvoResult(args: {
   // that reaches the final return (the recall second pass returns into its own recursion), so
   // everything below runs exactly once per user-visible turn, same as updateDossier.
   const emitted = coerceStatus(reply.statusRaw);
+
+  // The quiet guard's row, held since the top of this function and filed HERE, on the pass that
+  // reaches the final return — the same seam and the same reason as `emitted` above and the ledger
+  // below. A pass that recursed never got this far, so the one row this user-visible turn leaves is
+  // the reading of the reply the user actually reads. Never written on a turn the selector did not
+  // force quiet: no row is how "never forced" reads from the ring.
+  if (quietReceipt) {
+    record({ type: 'event', label: QUIET_GUARD_LABEL, chatId, handle, detail: quietReceipt });
+  }
 
   // ── the rhythm ledger ─────────────────────────────────────────────────────────────────────────
   // What this turn did to the run, written down. AWAITED, unlike the harvests below it: the next

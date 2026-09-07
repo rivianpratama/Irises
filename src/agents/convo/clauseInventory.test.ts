@@ -46,7 +46,7 @@ import { computeCircadian } from '../../persona/circadian.js';
 import { defaultClimate, type RelationshipClimate } from '../../persona/climate.js';
 import type { ThreadCandidate } from '../../persona/threads.js';
 import type { HookDirective } from '../../persona/hooks.js';
-import { renderThesisSection } from '../../memory/thesisEngine.js';
+import { renderThesisSection, THESIS_SECTION_HEADING } from '../../memory/thesisEngine.js';
 import type { LlmToolDef } from '../../llm/types.js';
 import type { StoredMessage, UserProfile } from '../../db/types.js';
 
@@ -252,4 +252,9 @@ test('no section heading appears twice in the assembled prompt', () => {
   const dupes = [...seen].filter(([, n]) => n > 1).map(([h, n]) => `${n}× ${JSON.stringify(h)}`);
   assert.deepEqual(dupes, [], 'two blocks are claiming the same heading');
   assert.ok(headings.length > 40, 'the census really read the loaded prompt');
+  // …and the newest heading in the corpus really reached it. THESIS is built above and handed in,
+  // but nothing until this line asserted that the assembler pushed it: a flipped flag default, a
+  // changed push condition or an empty `splitThesisDoc` would drop the section, the uniqueness check
+  // would quietly stop seeing the one heading it was extended to see, and no test would fail.
+  assert.ok(PROMPT.includes(THESIS_SECTION_HEADING), 'the census really rendered the thesis');
 });

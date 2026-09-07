@@ -312,9 +312,16 @@ const BAND_LINES: Record<DialKey, Record<Exclude<Band, 'none'>, string>> = {
  * about it. Both are the drift this build is named after, arriving through the one door that was
  * still open — the standing register, which renders on every Convo turn whatever the mode.
  *
- * So `climateLines` takes the turn's mode and drops these four unless the turn is in hook mode. The
- * ease lines and the two RAISED/HIGH candor lines are about how she says a thing rather than what
- * extra beat she may carry, so they ride every turn exactly as they did.
+ * So `climateLines` takes one boolean about the turn and drops these four unless it is true. What
+ * that boolean must be is the thing worth stating here: whether a hook KIND IS OPEN, never whether
+ * the mode says `hook`. The two came apart when a late idle turn became a closed-kinds hook turn
+ * (persona/hooks.ts `hookKindOpen`, which is the reading the assembler passes down): mode `hook`,
+ * every kind forbidden, one instruction about going to bed — and a turn like that told "a tangent
+ * or a callback is expected of you here" is the same drift arriving through the same door, now with
+ * the hooks section itself contradicting it in the same prompt.
+ *
+ * The ease lines and the two RAISED/HIGH candor lines are about how she says a thing rather than
+ * what extra beat she may carry, so they ride every turn exactly as they did.
  */
 const HOOK_NAMING: ReadonlySet<string> = new Set([
   'candor.below', 'playfulness.raised', 'playfulness.high', 'playfulness.below',
@@ -331,7 +338,7 @@ const CLIMATE_CLAMP =
 function renderBands(
   c: RelationshipClimate | undefined,
   keys: readonly DialKey[],
-  hookTurn: boolean,
+  kindOpen: boolean,
 ): string[] {
   if (!c) return [];
   const bullets: string[] = [];
@@ -339,7 +346,7 @@ function renderBands(
     const spec = SPEC_BY_KEY[key];
     const band = bandOf(c.dials?.[key] ?? spec.dflt, spec);
     if (band === 'none') continue;
-    if (!hookTurn && HOOK_NAMING.has(`${key}.${band}`)) continue;
+    if (!kindOpen && HOOK_NAMING.has(`${key}.${band}`)) continue;
     bullets.push(`- ${BAND_LINES[key][band]}`);
   }
   if (!bullets.length) return [];
@@ -351,15 +358,16 @@ function renderBands(
  * its silent band — which is the no-regression pin: a default climate adds NOTHING to the prompt,
  * byte for byte, so the feature is genuinely inert until a relationship has actually moved.
  *
- * `hookTurn` is this turn's rhythm mode, threaded down from the hook directive the assembler already
- * holds (persona/hooks.ts): true only in `hook` mode. It gates the four lines that name a beat (see
- * HOOK_NAMING), so a task turn and a quiet turn never read a sentence about a tangent, a callback or
- * a judgment. Every other band line is unaffected, and a climate whose only movement is one of the
- * four renders NOTHING at all on those turns — lead-in and clamp included, since the clamp exists to
- * bound bullets and there are none.
+ * `kindOpen` is whether this turn has a hook kind she may actually spend, threaded down from the
+ * directive the assembler already holds (persona/hooks.ts `hookKindOpen`): hook mode AND at least
+ * one kind not forbidden. It gates the four lines that name a beat (see HOOK_NAMING), so a task
+ * turn, a quiet turn and a closed-kinds hook turn never read a sentence about a tangent, a callback
+ * or a judgment. Every other band line is unaffected, and a climate whose only movement is one of
+ * the four renders NOTHING at all on those turns — lead-in and clamp included, since the clamp
+ * exists to bound bullets and there are none.
  */
-export function climateLines(c: RelationshipClimate | undefined, hookTurn: boolean): string[] {
-  return renderBands(c, DIALS.map(d => d.key), hookTurn);
+export function climateLines(c: RelationshipClimate | undefined, kindOpen: boolean): string[] {
+  return renderBands(c, DIALS.map(d => d.key), kindOpen);
 }
 
 /**
@@ -372,7 +380,7 @@ export function climateLines(c: RelationshipClimate | undefined, hookTurn: boole
  * answer, so there is no extra beat for it to be told to take, welcome or refuse. That leaves the
  * one dial that really is about delivery — how much runway a line gets before its point.
  *
- * `hookTurn` is therefore hard-wired false here rather than taken as a parameter: there is no caller
+ * `kindOpen` is therefore hard-wired false here rather than taken as a parameter: there is no caller
  * who could honestly pass true, and the ease lines it would gate nothing of.
  */
 export function climateLinesForComposer(c: RelationshipClimate | undefined): string[] {

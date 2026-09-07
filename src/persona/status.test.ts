@@ -12,7 +12,7 @@ import { computeCycle } from './cycle.js';
 import { computeCircadian } from './circadian.js';
 import { MOOD_CORES, WILLCOX_WHEEL, EXTENDED_WORDS } from './mood.js';
 import { GAUGE_SPECS } from './affectDrift.js';
-import { HOOK_WORDS } from './hooks.js';
+import { HOOK_WORDS, hookKindOpen, type HookDirective } from './hooks.js';
 import { defaultClimate, type RelationshipClimate } from './climate.js';
 // The compiler behind the weather block. Its thresholds are READ here rather than repeated, so a cut
 // that moves cannot leave a stale number pinned in a second file (affectCompiler.test.ts owns the
@@ -987,12 +987,16 @@ test('a moved climate rides ONE weather block, after the carried lines and befor
   assert.doesNotMatch(out.slice(leadIn, reReport), /\d/);
 });
 
-// The rhythm mode reaches the climate span, and it is the only thing it reaches. Four of the twelve
-// band lines name a hook kind (persona/climate.ts HOOK_NAMING), so a task turn or a quiet turn must
-// not be handed one: "a tangent is welcome" garnishes an answer that is supposed to arrive flat, and
-// "hold the judgment kind of hook this turn" names a beat that was already taken away. The
-// parameter defaults to FALSE for the same reason — a caller with no rhythm engine is on a turn with
-// no hook to spend.
+// The rhythm reading reaches the climate span, and it is the only thing it reaches. Four of the
+// twelve band lines name a hook kind (persona/climate.ts HOOK_NAMING), so a turn with no beat to
+// spend must not be handed one: "a tangent is welcome" garnishes an answer that is supposed to
+// arrive flat, and "hold the judgment kind of hook this turn" names a beat that was already taken
+// away. The parameter defaults to FALSE for the same reason — a caller with no rhythm engine is on a
+// turn with no hook to spend.
+//
+// What it is NOT is the MODE, which is the correction this pin now carries: a late idle turn is a
+// hook-MODE turn with every kind closed (persona/hooks.ts `hookKindOpen`), and the assembler gates
+// on the open kind. The case below is the false one either way; the closed-kinds case is next door.
 test('the turn mode gates the hook-naming climate lines, and nothing else in the block', () => {
   const state = { last: carried(0), moodHistory: [] };
   const task = renderStatusForPrompt(state, COMPUTED, movedClimate(), false);
@@ -1009,6 +1013,38 @@ test('the turn mode gates the hook-naming climate lines, and nothing else in the
   // what keeps every non-climate assertion in this file free of it.
   const bare = renderStatusForPrompt(state, COMPUTED);
   assert.equal(renderStatusForPrompt(state, COMPUTED, undefined, true), bare);
+});
+
+// THE PLAN'S OWN 2AM CASE, at this seam. A late idle turn is a closed-kinds HOOK turn: the mode says
+// `hook`, every kind is forbidden, and the section it renders says "No kind is open this turn" and
+// sends them to bed. Gate this span on the MODE and that same prompt also carries "A tangent or a
+// callback is expected of you here" — the register door the sleep branch was closing, re-opened one
+// function away, and on the one turn the whole build is named after. The reading is composed here
+// out of the real directive rather than a hand-set boolean, so the pin is about what the assembler
+// actually passes down (agents/convo/shared.ts `kindOpen`).
+test('a closed-kinds hook turn reads as NO hook here — the mode is not the question', () => {
+  const state = { last: carried(0), moodHistory: [] };
+  const open: HookDirective = {
+    idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: true, offerAllowed: true,
+  };
+  const asleep: HookDirective = { ...open, forbidden: [...HOOK_WORDS], sleepQuiet: true, moments: false, offerAllowed: false };
+
+  const late = renderStatusForPrompt(state, COMPUTED, movedClimate(), hookKindOpen(asleep));
+  assert.match(late, /standing register/, 'the climate really rendered');
+  assert.doesNotMatch(withoutMoodLine(late), /judgment|callback|tangent/);
+  // …and it is byte-identical to the task turn's block: one filter, one span, no third shape.
+  assert.equal(late, renderStatusForPrompt(state, COMPUTED, movedClimate(), false));
+
+  // The rare non-clock shape reads the same: a room forbids judgment, a flat mood forbids a tangent,
+  // a repeated callback forbids the third, and between them the turn has no beat left to spend.
+  const spent: HookDirective = { ...open, forbidden: [...HOOK_WORDS] };
+  assert.equal(renderStatusForPrompt(state, COMPUTED, movedClimate(), hookKindOpen(spent)), late);
+
+  // And the open turn is still the open turn — this filter must not have swallowed the feature.
+  assert.match(
+    renderStatusForPrompt(state, COMPUTED, movedClimate(), hookKindOpen(open)),
+    /- A tangent or a callback is expected of you here\./,
+  );
 });
 
 // THE no-regression pin: the feature is inert until a relationship has moved.
