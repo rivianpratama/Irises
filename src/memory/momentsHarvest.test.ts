@@ -30,7 +30,7 @@ import {
 import { groupHandle } from './identity.js';
 import { resetStorageForTests } from '../db/sqlite.js';
 import { readMoments, writeMoments } from '../db/repositories/moments.js';
-import { getThesis } from '../db/repositories/thesis.js';
+import { getThesis, readThesisHead } from '../db/repositories/thesis.js';
 import { bumpForgetEpoch } from '../db/repositories/memory.js';
 import { memoriesDir } from '../db/stateDir.js';
 import { MOMENT_TEXT_MAX, MAX_MOMENTS, type MomentEntry } from '../persona/moments.js';
@@ -55,6 +55,7 @@ beforeEach(() => {
   __resetMomentsBackoffForTests();
   clearTraces();
   delete process.env.MEMORY_MOMENTS_ENABLED;
+  delete process.env.MEMORY_THESIS_ENABLED;
 });
 
 function stubLlm(text: string | null, opts: { truncated?: boolean; throws?: boolean; before?: () => void } = {}) {
@@ -416,6 +417,32 @@ test('the evidence note lands in THESIS.md, and a bad one is dropped without tou
   await updateMoments(h, evening(T0 + MOMENTS_COOLDOWN_MS, h), { llm: bad.llm, now: T0 + MOMENTS_COOLDOWN_MS });
   assert.equal(receipt().note, false);
   assert.equal((await getThesis(h))?.docMd.split('- they asked').length, 2, 'still exactly one note');
+});
+
+// MEMORY_THESIS_ENABLED gates the DOCUMENT, not just its two passes. `appendThesisEvidence` is a
+// SAVE — it creates THESIS.md when there is none — so an ungated nightly note would grow a thesis on
+// an install that turned the thesis off: a file nothing renders, nobody asked for, and that holds
+// her read of somebody in plaintext on disk.
+test('with the thesis flag OFF the note lands nowhere and THESIS.md is never created', async () => {
+  process.env.MEMORY_THESIS_ENABLED = 'off';
+  const h = freshHandle();
+  const { llm } = stubLlm(JSON.stringify({
+    moments: [{ text: 'checked the volcano dashboard again, third time this month', tag: 'habit' }],
+    thesisNote: 'they asked about the schedule three times and then set their own',
+  }));
+  await updateMoments(h, evening(T0, h), { llm, now: T0 });
+
+  // Absent, not degraded: the pass never opened the file at all.
+  assert.deepEqual(await readThesisHead(h), { doc: null, degraded: false });
+  assert.equal(fs.existsSync(path.join(memoriesDir(h), 'THESIS.md')), false);
+  assert.equal(fs.existsSync(path.join(memoriesDir(h), 'revisions')), false);
+
+  // The MOMENTS half of the pass is untouched — the two features are separate switches.
+  assert.equal((await readMoments(h)).entries.length, 1);
+  // And the receipt says which of the two it was: a night that WROTE a note it could not land is not
+  // a night that had none, and `noteSaved: false` is the only thing that can tell them apart.
+  assert.equal(receipt().note, true);
+  assert.equal(receipt().noteSaved, false);
 });
 
 test('a TRUNCATED reply writes nothing, stamps nothing, and is told apart from a dead lane', async () => {

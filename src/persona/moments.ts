@@ -32,6 +32,7 @@
 // nondeterminism in the file is replaceable from a test.
 
 import { randomUUID } from 'node:crypto';
+import { neutralizeTagBreakouts } from '../llm/promptTag.js';
 import { simScore, tokenSet } from '../memory/textSim.js';
 
 /** The three kinds of episode worth keeping, and the only tags the store will accept. Closed, and
@@ -289,10 +290,19 @@ function clampMomentText(text: string): string {
  * `hooks` section — a MEASURED prompt section with a ratcheted ceiling. A ceiling that depends on a
  * file's history is not a ceiling; this makes it a property of the code, the way threads.ts clamps
  * at its own render and derive seams rather than only at mint.
+ *
+ * `neutralizeTagBreakouts` is the same argument about a different bound, and it runs BEFORE the
+ * clamp so the clamp measures the bytes that actually ship. These lines are interpolated bare into
+ * the `hooks` section, which sits INSIDE the `<prompt>` block with no data tag of its own — so a
+ * stored `</prompt>` would close the trust boundary and promote everything after it to instruction
+ * position. Nothing the nightly writer proposes can carry one (`validateProposals` rejects the
+ * markup characters), which is exactly why this is here: the two texts that reach this seam without
+ * passing that gate are a hand edit and a row written before a rule existed, and both are the case
+ * the guard is for. Mirrors convo/turnFocus.ts, which defuses the same thing for the same reason.
  */
 export function renderMomentLines(sample: readonly MomentEntry[], now: number): string[] {
   return sample
-    .map(e => ({ e, text: clampMomentText(e.text.replace(/\s+/g, ' ').trim()) }))
+    .map(e => ({ e, text: clampMomentText(neutralizeTagBreakouts(e.text.replace(/\s+/g, ' ').trim())) }))
     .filter(({ text }) => text !== '')
     .map(({ e, text }) => `- (${e.tag}, ${momentAgeWords(e.at, now)}) ${text}`);
 }

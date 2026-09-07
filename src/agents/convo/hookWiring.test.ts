@@ -26,7 +26,7 @@ import { craftModuleText } from './personaModules.js';
 import { DYN_SECTION_IDS, type SectionId } from './promptSections.js';
 import { REACTION_TOOL, DELEGATE_TO_OPS_TOOL } from './tools.js';
 import {
-  HOOK_HEADING, HOOK_WORDS, QUIET_LAW, renderHooksSection,
+  HOOK_HEADING, HOOK_NONE_OPEN, HOOK_SLEEP_LINE, HOOK_WORDS, MOMENTS_LEAD, QUIET_LAW, renderHooksSection,
   type HookDirective, type HookSelectReport, type HookState,
 } from '../../persona/hooks.js';
 import { getHookState } from '../../db/repositories/hookState.js';
@@ -73,6 +73,7 @@ beforeEach(() => {
   clearIdleClassifyCache();
   delete process.env.CONVO_HOOKS_ENABLED;
   delete process.env.MEMORY_THESIS_ENABLED;
+  delete process.env.MEMORY_MOMENTS_ENABLED;
   delete process.env.CONVO_UNKEPT_PROMISE_GUARD;
 });
 
@@ -88,6 +89,13 @@ const HISTORY: StoredMessage[] = [
 const CONTEXT_BLOCK = '## Who you are talking to\nSam, three months in.';
 const EXTRA = '## One more thing\nAn addendum the caller tacked on.';
 const THESIS = '## Your read on them (INTERNAL)\nThey decide fast on money and slowly on people.';
+/** A moment sample as `renderMomentLines` hands it over — two lines, in the store's own shape. Only
+ *  the flag test needs them: what a real sample costs the `hooks` ceiling is measured next door in
+ *  promptBudget.test.ts, and what the sampler does to the ledger is pinned in earnedMaterial.test.ts. */
+const MOMENT_LINES = [
+  '- (habit, last week) checked the volcano dashboard again and decided nothing',
+  '- (embarrassing, a month or two ago) re-did the side gate rather than call the joiner back',
+];
 
 const HOOK: HookDirective = {
   idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: false, offerAllowed: true,
@@ -167,22 +175,32 @@ test('an empty thesis is never pushed, so Wave 3 costs today nothing', () => {
 });
 
 test('each flag OFF is byte-identical to an install that never had the feature', () => {
-  const full: PersonaTurn = { hooks: HOOK, moments: [], thesis: THESIS };
+  // All THREE features loaded at once, which is what makes the all-off assertion below mean
+  // anything: a struct carrying a hook directive, a non-empty moment sample and a thesis. The
+  // directive opens the moment lead (`moments: true`) — without that the sample is dropped by the
+  // renderer's own gate and the moments flag would be tested against bytes that were never going to
+  // render either way.
+  const full: PersonaTurn = {
+    hooks: { ...HOOK, moments: true }, moments: MOMENT_LINES, thesis: THESIS,
+  };
   const bare = buildSystemPromptSections(...build()).system;
 
   process.env.CONVO_HOOKS_ENABLED = 'off';
   process.env.MEMORY_THESIS_ENABLED = 'off';
+  process.env.MEMORY_MOMENTS_ENABLED = 'off';
   try {
-    assert.equal(buildSystemPromptSections(...build(full)).system, bare, 'both off: nothing is added');
+    assert.equal(buildSystemPromptSections(...build(full)).system, bare, 'all off: nothing is added');
   } finally {
     delete process.env.CONVO_HOOKS_ENABLED;
     delete process.env.MEMORY_THESIS_ENABLED;
+    delete process.env.MEMORY_MOMENTS_ENABLED;
   }
   // …and the comparison has teeth: with the flags at their defaults the same struct changes the
-  // prompt in both places.
+  // prompt in all three places.
   const on = buildSystemPromptSections(...build(full)).system;
   assert.notEqual(on, bare);
   assert.ok(on.includes(THESIS));
+  for (const line of MOMENT_LINES) assert.ok(on.includes(line));
 
   // Each flag is read at CALL time and gates only its own section.
   process.env.CONVO_HOOKS_ENABLED = 'off';
@@ -190,8 +208,27 @@ test('each flag OFF is byte-identical to an install that never had the feature',
     const hooksOff = buildSystemPromptSections(...build(full)).system;
     assert.ok(hooksOff.includes(THESIS), 'the thesis is not the hook flag\'s business');
     assert.ok(!hooksOff.includes(QUIET_LAW));
+    for (const line of MOMENT_LINES) {
+      assert.ok(!hooksOff.includes(line), 'the moments ride INSIDE the hooks section, so they go with it');
+    }
   } finally {
     delete process.env.CONVO_HOOKS_ENABLED;
+  }
+
+  // The moments flag is gated at the PUSH SITE like its two siblings, so a caller holding a stale
+  // sample — the flag flipped between the read and the build, or any future caller that fills the
+  // struct without re-reading it — cannot put moment lines into a MEASURED section on an install
+  // that turned them off. The hooks section itself still renders: it is not the moments' business
+  // either.
+  process.env.MEMORY_MOMENTS_ENABLED = 'off';
+  try {
+    const momentsOff = buildSystemPromptSections(...build(full)).system;
+    assert.ok(momentsOff.includes(HOOK_HEADING), 'the hook turn is not the moments flag\'s business');
+    assert.ok(momentsOff.includes(THESIS));
+    assert.ok(!momentsOff.includes(MOMENTS_LEAD), 'no lead, because there is nothing to lead with');
+    for (const line of MOMENT_LINES) assert.ok(!momentsOff.includes(line));
+  } finally {
+    delete process.env.MEMORY_MOMENTS_ENABLED;
   }
 });
 
@@ -239,6 +276,12 @@ function guardArgs(res: LlmResult) {
 function quietReceipt() {
   return getTraces().find(e => e.type === 'event' && e.label === 'convo:quiet_guard')?.detail as
     Record<string, unknown> | undefined;
+}
+
+/** EVERY quiet-guard row this turn filed, not just the first — the one-per-visible-turn rule is a
+ *  claim about the count, and `quietReceipt` above cannot see a second one. */
+function quietGuardReceipts() {
+  return getTraces().filter(e => e.type === 'event' && e.label === 'convo:quiet_guard');
 }
 
 const LOUD = ['three sharp things in a row already', 'and here is a fourth one for good measure'];
@@ -370,7 +413,36 @@ test('the promise guard goes first, and its firing stands the quiet re-ask down'
     }),
   });
   assert.deepEqual(calls, ['convo:unkept_retry'], 'ONE extra call on the turn, and it is the honesty one');
-  assert.equal(quietReceipt(), undefined, 'the quiet guard did not even evaluate');
+  // …and the receipt is filed anyway, saying so. This is the half that keeps the kill switch
+  // scorable: the guard files on every forced turn it EVALUATES precisely so a battery can tell a
+  // quiet turn she got right from a forced turn that never happened, and a turn where the guard
+  // never ran reads as "never happened" from the ring. Without this row, three hooks followed by a
+  // promise-breaking draft would look exactly like a switch that had stopped firing.
+  assert.deepEqual(quietReceipt(), {
+    forced: true, emitted: null, bubbles: 2, retried: false, resolved: 'stood_down',
+  });
+});
+
+// ONE receipt per USER-VISIBLE turn, which is why the recall second pass is fenced out rather than
+// merely unlikely: that pass re-enters processConvoResult with the same text and the same directive,
+// so without the fence the model would be corrected twice about one bubble and the ring would carry
+// two rows for one thing the user saw once — and the row count is what the battery reads.
+test('the recall second pass neither re-asks nor files a second receipt', async () => {
+  const calls: string[] = [];
+  const args = {
+    ...turnArgs(),
+    res: envelope(LOUD, 'tangent'),
+    hooks: hookArgs(QUIET),
+    turn: turnCtx(async req => { calls.push(String(req.trace?.label)); return envelope(['mm']); }),
+  };
+  await processConvoResult(args);
+  assert.deepEqual(calls, ['convo:quiet_retry'], 'the first pass owns the turn\'s quiet');
+  assert.equal(quietGuardReceipts().length, 1);
+
+  clearTraces();
+  await processConvoResult({ ...args, archivePass: true });
+  assert.deepEqual(calls, ['convo:quiet_retry'], 'and the second pass spends no second call');
+  assert.deepEqual(quietGuardReceipts(), [], 'nor files a second row for one visible turn');
 });
 
 test('a forced-quiet turn with no promise in it does reach the quiet guard', async () => {
@@ -495,9 +567,33 @@ test('an IDLE message through the front door renders the hooks block, the Turn l
     `no Turn line in: ${system.slice(system.indexOf('Turn: '), system.indexOf('Turn: ') + 80)}`);
 
   const select = receipt('hooks:select');
-  assert.equal(select?.reason, 'hook');
   assert.equal(select?.idleLayer, 'fast_path', 'a known English stall costs no call at all');
   assert.equal(receipt('idle:classify'), undefined, '…so layer 3 was never reached');
+
+  // THE PLAN'S OWN 2AM CASE, end to end, and the reason it lands here rather than needing a fixture
+  // of its own: this file's frozen clock is 02:00 UTC, which `computeCircadian` reads as
+  // `dead_night` and `compileAffect` turns into `sleepQuiet` — so the front door on this clock
+  // ALWAYS produces the sleep branch, and pinning it to the wide-open one would have been pinning a
+  // turn the clock cannot make. (`convo/earnedMaterial.test.ts` runs the same front door on an
+  // afternoon clock, which is where the all-three-kinds branch is exercised.)
+  //
+  // Three copies of this turn used to disagree: the section offered her a judgment, a callback or a
+  // tangent in one line and told her to send them to bed in the next, while the anchor at the
+  // recency edge said "one hook". Now all three say one thing.
+  assert.equal(select?.reason, 'sleep');
+  assert.deepEqual(select?.forbidden, ['judgment', 'callback', 'tangent']);
+  assert.equal(select?.moments, false, 'and nothing is billed on a turn whose content is "go to sleep"');
+  assert.ok(system.includes(HOOK_NONE_OPEN), 'the section names no kind at all');
+  assert.ok(system.includes(HOOK_SLEEP_LINE));
+  assert.ok(!system.includes('Open to you this turn'));
+  // The anchor's mode moves with it: the law at the recency edge is the quiet one, which is the
+  // third copy. It is still not a FORCED-quiet turn — the guard files nothing (a preference is not a
+  // compulsion), and this reply is two words with no hook in it either way.
+  assert.ok(system.includes('- If it is late where they are, the one right line is that they should sleep.'),
+    'the drift anchor states the quiet law');
+  assert.ok(!system.includes('- This is an idle turn: one hook, of a kind the hooks section above still allows, and only one.'),
+    '…and not the hook law, which is the copy that used to contradict the section');
+  assert.equal(quietReceipt(), undefined, 'the clock prefers a short reply; it does not force one');
 
   // The SAME reading also gates the hook craft page (convo/personaModules.ts `idle_turn`), which is
   // the other thing the pre-read hands the assembler. Read as the page off disk rather than as a

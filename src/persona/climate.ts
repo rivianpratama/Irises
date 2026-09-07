@@ -302,6 +302,24 @@ const BAND_LINES: Record<DialKey, Record<Exclude<Band, 'none'>, string>> = {
   },
 };
 
+/**
+ * The four band lines that NAME one of the three hook kinds, as `dial.band` keys.
+ *
+ * They are the register's half of the rhythm engine, and they only mean anything on a turn that has
+ * a hook to spend. "A tangent is welcome" on a task turn is an invitation to garnish an answer that
+ * is supposed to arrive flat with the real numbers and stop; "Hold the judgment kind of hook this
+ * turn" on a quiet turn names a beat that was already taken away, which is an instruction to think
+ * about it. Both are the drift this build is named after, arriving through the one door that was
+ * still open — the standing register, which renders on every Convo turn whatever the mode.
+ *
+ * So `climateLines` takes the turn's mode and drops these four unless the turn is in hook mode. The
+ * ease lines and the two RAISED/HIGH candor lines are about how she says a thing rather than what
+ * extra beat she may carry, so they ride every turn exactly as they did.
+ */
+const HOOK_NAMING: ReadonlySet<string> = new Set([
+  'candor.below', 'playfulness.raised', 'playfulness.high', 'playfulness.below',
+]);
+
 const CLIMATE_LEAD_IN =
   "Underneath the moment, the standing register you've settled into with this person — built slowly across many conversations, and it does not move inside one:";
 
@@ -310,13 +328,18 @@ const CLIMATE_LEAD_IN =
 const CLIMATE_CLAMP =
   "None of this is how much you care about them or how much they should lean on you — it's only the register you speak in. It never changes a fact, a number, an honest hedge about what you actually know, or whether you say the hard thing.";
 
-function renderBands(c: RelationshipClimate | undefined, keys: readonly DialKey[]): string[] {
+function renderBands(
+  c: RelationshipClimate | undefined,
+  keys: readonly DialKey[],
+  hookTurn: boolean,
+): string[] {
   if (!c) return [];
   const bullets: string[] = [];
   for (const key of keys) {
     const spec = SPEC_BY_KEY[key];
     const band = bandOf(c.dials?.[key] ?? spec.dflt, spec);
     if (band === 'none') continue;
+    if (!hookTurn && HOOK_NAMING.has(`${key}.${band}`)) continue;
     bullets.push(`- ${BAND_LINES[key][band]}`);
   }
   if (!bullets.length) return [];
@@ -327,16 +350,31 @@ function renderBands(c: RelationshipClimate | undefined, keys: readonly DialKey[
  * The climate lines for Convo's internal-weather block. Returns [] whenever every dial sits inside
  * its silent band — which is the no-regression pin: a default climate adds NOTHING to the prompt,
  * byte for byte, so the feature is genuinely inert until a relationship has actually moved.
+ *
+ * `hookTurn` is this turn's rhythm mode, threaded down from the hook directive the assembler already
+ * holds (persona/hooks.ts): true only in `hook` mode. It gates the four lines that name a beat (see
+ * HOOK_NAMING), so a task turn and a quiet turn never read a sentence about a tangent, a callback or
+ * a judgment. Every other band line is unaffected, and a climate whose only movement is one of the
+ * four renders NOTHING at all on those turns — lead-in and clamp included, since the clamp exists to
+ * bound bullets and there are none.
  */
-export function climateLines(c: RelationshipClimate | undefined): string[] {
-  return renderBands(c, DIALS.map(d => d.key));
+export function climateLines(c: RelationshipClimate | undefined, hookTurn: boolean): string[] {
+  return renderBands(c, DIALS.map(d => d.key), hookTurn);
 }
 
 /**
- * The Composer's subset: ease + playfulness only. `candor` is deliberately excluded — the Composer
- * RELAYS a result Convo already decided, so a "lead with the unwelcome read, cushion after" register
- * there could only sharpen a finished answer, which is a fidelity breach, not a register change.
+ * The Composer's subset: EASE, and nothing else.
+ *
+ * `candor` is excluded because the Composer RELAYS a result Convo already decided, so a "lead with
+ * the unwelcome read, cushion after" register there could only sharpen a finished answer, which is a
+ * fidelity breach rather than a register change. `playfulness` is excluded because all three of its
+ * band lines name a hook kind, and the Composer is never on a hook turn: it re-voices a decided
+ * answer, so there is no extra beat for it to be told to take, welcome or refuse. That leaves the
+ * one dial that really is about delivery — how much runway a line gets before its point.
+ *
+ * `hookTurn` is therefore hard-wired false here rather than taken as a parameter: there is no caller
+ * who could honestly pass true, and the ease lines it would gate nothing of.
  */
 export function climateLinesForComposer(c: RelationshipClimate | undefined): string[] {
-  return renderBands(c, ['ease', 'playfulness']);
+  return renderBands(c, ['ease'], false);
 }

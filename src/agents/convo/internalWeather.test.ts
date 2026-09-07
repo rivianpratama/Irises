@@ -134,8 +134,13 @@ test('a moved climate reaches the assembled prompt as prose, with no dial values
   // The band lines are imperatives now (persona/climate.ts BAND_LINES, Fable's sentences).
   assert.match(prompt, /- No runway at all with this person\. Open on the thing itself\./);
   assert.match(prompt, /- Say the hard thing first and do not soften it after\./);
-  assert.match(prompt, /- A tangent or a callback is expected of you here\./);
   assert.match(prompt, /never changes a fact/);
+  // The playfulness line — "A tangent or a callback is expected of you here" — is NOT here, and this
+  // build hands the assembler no hook directive, so it is a task turn. Four of the twelve band lines
+  // name a hook kind (persona/climate.ts HOOK_NAMING) and a turn with no beat to spend must not be
+  // handed one: told a tangent is welcome, a task answer that is supposed to arrive flat acquires a
+  // garnish. persona/status.test.ts pins the hook turn, where all three bullets render.
+  assert.doesNotMatch(prompt.slice(prompt.indexOf('standing register')), /A tangent or a callback/);
 
   // A dial VALUE in the prompt is a thing to optimize; a band is a thing to speak in.
   const from = prompt.indexOf('standing register');

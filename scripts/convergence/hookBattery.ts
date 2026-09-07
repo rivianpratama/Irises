@@ -306,26 +306,52 @@ export function makeVoiceJudge(): VoiceAsk {
  *  directive it produced. */
 export type HooksSelectDetail = HookSelectReport & { mode: HookMode; idle: boolean; moments: boolean };
 
-/** `convo:quiet_guard` (agents/convo/shared.ts `enforceQuiet`): filed on EVERY evaluation of a
- *  forced-quiet turn, violation or not. `resolved` is the whole verdict — `clean` means she got it
- *  right first time, `quiet` means the corrective re-ask fixed it, and `kept_original` means the
- *  loud reply shipped. */
+/** `convo:quiet_guard` (agents/convo/shared.ts): filed on EVERY forced-quiet turn — evaluated or
+ *  not, violation or not. `resolved` is the whole verdict: `clean` means she got it right first
+ *  time, `quiet` means the corrective re-ask fixed it, `kept_original` means the loud reply shipped,
+ *  and `stood_down` means the guard never evaluated the turn at all because the honesty guard had
+ *  already spent this turn's one re-ask (or the approval gate had just settled it). The last one is
+ *  neither a pass nor a failure of the quiet: nothing was checked. */
 export interface QuietGuardDetail {
   forced: boolean;
   emitted: string | null;
   bubbles: number;
   retried: boolean;
-  resolved: 'clean' | 'quiet' | 'kept_original';
+  resolved: 'clean' | 'quiet' | 'kept_original' | 'stood_down';
 }
 
 /** `hook:off_turn` (agents/convo/shared.ts): a hook word that rode a task turn. Counted and
  *  receipted, never re-asked. */
 export interface OffTurnDetail { emitted: HookWord; idle: boolean }
 
-/** `moments:offer` (agents/convo/client.ts): the sampler's bill. `excluded` is the count of held
- *  episodes the 24-hour no-repeat window kept out of the draw, which is the whole evidence the
- *  spacing probe has. */
-export interface MomentOfferDetail { offered: number; rendered: number; held: number; excluded: number }
+/**
+ * `moments:offer` (agents/convo/client.ts): EVERY run of the sampler, the healthy no-op included.
+ * `excluded` is the count of held episodes the 24-hour no-repeat window kept out of the draw, which
+ * is the whole evidence the spacing probe has.
+ *
+ * Two shapes, and `realOffer` below is what tells them apart. A degraded MOMENTS.md files
+ * `{ skipped: 'degraded' }` and no numbers at all; every other run files the four numbers, and
+ * `rendered: 0` among them is a run that put NOTHING in front of her — an empty file, a whole file
+ * held out by the window, or draws that all rendered to nothing. Only a receipt with `rendered > 0`
+ * is an offer: a checker that counted rows would read a sampler finding nothing as a sampler
+ * working, which is the exact confusion the healthy no-op was added to remove.
+ */
+export interface MomentOfferDetail {
+  offered?: number;
+  rendered?: number;
+  held?: number;
+  excluded?: number;
+  skipped?: 'degraded';
+}
+
+/** The four numbers, for a receipt that really made an offer. Null for a no-op run and for the
+ *  degraded skip, so every consumer has to decide which it wanted. */
+export function realOffer(d: MomentOfferDetail | null): Required<Omit<MomentOfferDetail, 'skipped'>> | null {
+  if (!d || d.skipped || typeof d.rendered !== 'number' || d.rendered <= 0) return null;
+  return {
+    offered: d.offered ?? 0, rendered: d.rendered, held: d.held ?? 0, excluded: d.excluded ?? 0,
+  };
+}
 
 /** `idle:classify` (agents/convo/idleClassify.ts): layer 3's reading, one per turn that reached it,
  *  cache hit or lane call. Names and numbers only — the message itself never enters the ring. */
@@ -346,19 +372,22 @@ export interface TurnEvidence {
   select: HooksSelectDetail | null;
   /** Layer 3's own reading for this turn, when it was reached at all. */
   classify: IdleClassifyDetail | null;
-  /** The forced-quiet guard's evaluation for this turn. Absent on every turn that was not forced. */
+  /** The forced-quiet guard's row for this turn. Absent on every turn that was not forced; present
+   *  with `resolved: 'stood_down'` on a forced turn the guard never evaluated. */
   quietGuard: QuietGuardDetail | null;
   /** A hook word that rode a task turn, if one did. */
   offTurn: OffTurnDetail | null;
   /** The threading engine's receipt — read for ONE thing here: whether an offer was consumed on an
    *  idle turn, which is one of the two ways the positive control can be satisfied. */
   threadSelect: ThreadSelectReport | null;
-  /** Whether a moment offer was billed on THIS turn. */
+  /** Whether a REAL moment offer was billed on THIS turn — something rendered, not merely that the
+   *  sampler ran and found nothing (see `realOffer`). */
   momentOfferedHere: boolean;
-  /** EVERY `moments:offer` receipt in the round, oldest first, across every chat. Round-wide on
+  /** Every REAL `moments:offer` in the round, oldest first, across every chat. Round-wide on
    *  purpose: MOMENTS.md is keyed by handle, so the 24-hour window is a property of the round rather
-   *  than of one lane (see the file header). */
-  momentOffers: MomentOfferDetail[];
+   *  than of one lane (see the file header). No-op runs and degraded skips are filtered out — they
+   *  bill nothing, so they can neither satisfy the two-offer gate nor break the spacing arithmetic. */
+  momentOffers: Array<Required<Omit<MomentOfferDetail, 'skipped'>>>;
   /** The bubbles as they were sent, in order — one `messages` row each. */
   bubbles: string[];
   /** The seed turns' receipts, oldest first. Setup, never scored on its own; the kill-switch probe
@@ -578,6 +607,17 @@ export const CHECKS: Record<CheckId, HookCheck> = {
         return unscored(`the turn was closed to hooks before anything could carry one (reason `
           + `'${ev.select?.reason ?? 'not reported'}') — the kill switch or the affect floor got there first`);
       }
+      // A hook-mode turn with EVERY kind closed carried nothing because there was nothing to carry.
+      // The common way here is the clock: a late idle turn is a closed-kinds hook turn (the sleep
+      // branch, reason `sleep`), one short line about going to bed and no beat at all. The rare way
+      // is three overlapping vetoes — a room, a flattened mood and a callback she just used twice.
+      // Either way this is the engine working, and scoring it as the leaf failure would fail every
+      // round anybody runs after midnight in their own timezone.
+      if (ev.select && ev.select.forbidden.length >= HOOK_WORDS.length) {
+        return unscored(`the turn reached hook mode with no kind open (reason '${ev.select.reason}') — the beat `
+          + 'was spent before she could carry one. On `sleep` that is the clock: re-run the round at an '
+          + 'hour that is not the middle of the night where the debug handle\'s timezone puts it');
+      }
       const carried: string[] = [];
       if (h.emitted !== 'none') carried.push(`hook_kind '${h.emitted}'`);
       // "Consumed" is as far as a receipt reaches: `threads:select` says an offer was MADE, and
@@ -726,6 +766,13 @@ export const CHECKS: Record<CheckId, HookCheck> = {
           + 'was no quiet to hold');
       }
       const g = ev.quietGuard;
+      if (g.resolved === 'stood_down') {
+        return unscored('the turn was forced quiet and the guard never evaluated it — the honesty guard had '
+          + 'already spent this turn\'s one corrective re-ask, or the approval gate had just settled the '
+          + 'turn. Whatever she wrote shipped unchecked, which is the design (one re-ask per turn, honesty '
+          + 'first) and not a reading of whether the quiet held. Re-run the probe on a turn with no promise '
+          + 'in the draft');
+      }
       if (g.resolved === 'kept_original') {
         return fail(`the forced-quiet turn came back loud (${g.bubbles} bubble(s), hook ${g.emitted ?? 'none'}) and `
           + `the corrective re-ask ${g.retried ? 'ran and did not fix it' : 'never ran'}, so the ORIGINAL shipped`);
@@ -1102,8 +1149,9 @@ export interface ScriptReply {
   select: HooksSelectDetail | null;
   quietGuard: QuietGuardDetail | null;
   offTurn: OffTurnDetail | null;
-  /** A `moments:offer` receipt was filed on this turn: an episode was put in front of her. The
-   *  third way a turn can carry something, and the probe round's `hook_present` reads all three. */
+  /** A REAL `moments:offer` was billed on this turn: an episode was put in front of her, rather than
+   *  the sampler merely running and finding nothing (`realOffer`). The third way a turn can carry
+   *  something, and the probe round's `hook_present` reads all three. */
   momentOffered: boolean;
   /** The judge's reading, or null when there is none. */
   voice: VoiceVerdict | null;
@@ -1159,10 +1207,15 @@ export const SCRIPT_CHECKS: Record<ScriptCheckId, ScriptCheck> = {
       + 'positive control reads. A run with hook-mode turns and no beats in any of them is the leaf '
       + 'failure spread over thirty turns',
     run(ev) {
-      const hookTurns = scored(ev).filter(r => r.trace!.outcome.hook?.mode === 'hook');
+      // Hook-mode turns that had a kind OPEN. A late idle turn is a closed-kinds hook turn (the
+      // selector's sleep branch), which carries no beat by design — counting those would make a run
+      // started after midnight look like thirty leaves.
+      const hookTurns = scored(ev).filter(r =>
+        r.trace!.outcome.hook?.mode === 'hook' && (r.select?.forbidden.length ?? 0) < HOOK_WORDS.length);
       if (!hookTurns.length) {
-        return unscored('no turn in the run reached hook mode — every idle turn was vetoed, forced quiet or '
-          + 'closed by the affect floor. Read the hooks:select reasons in the table before re-running');
+        return unscored('no turn in the run reached hook mode with a kind open — every idle turn was vetoed, '
+          + 'forced quiet, closed by the affect floor, or late enough that the clock closed the kinds. '
+          + 'Read the hooks:select reasons in the table before re-running');
       }
       // All THREE beats, because the probe round's `hook_present` counts all three and two batteries
       // that disagree about what "carried something" means report the same healthy turn two ways: a
@@ -1876,9 +1929,12 @@ async function runProbes(cfg: {
   const receiptsUsable = receipts.length > 0;
   // Round-wide, and deliberately so: the 24-hour no-repeat window is a property of MOMENTS.md, which
   // is keyed by handle rather than by chat, so every lane's offers bill the same file.
+  // REAL offers only. The sampler files a receipt on every run now, including the healthy no-op and
+  // the degraded skip, and a no-op counted here would both inflate the "two offers" gate below and
+  // fail the spacing arithmetic (a run holding nothing out is not a run that let an id back around).
   const momentOffers = receiptsOfLabel(receipts, MOMENTS_OFFER_LABEL)
-    .map(r => detailAs<MomentOfferDetail>(r))
-    .filter((d): d is MomentOfferDetail => d !== null);
+    .map(r => realOffer(detailAs<MomentOfferDetail>(r)))
+    .filter((d): d is NonNullable<ReturnType<typeof realOffer>> => d !== null);
   console.error(`[hook] ${receipts.length} receipts (${history.receipts.length} durable, ${ring.length} ring), `
     + `${momentOffers.length} moment offer(s)`);
 
@@ -1933,7 +1989,7 @@ async function runProbes(cfg: {
     const quietGuard = one<QuietGuardDetail>(QUIET_GUARD_LABEL);
     const offTurn = one<OffTurnDetail>(HOOK_OFF_TURN_LABEL);
     const threadSelect = one<ThreadSelectReport>(THREADS_SELECT_LABEL);
-    const momentOfferedHere = one<MomentOfferDetail>(MOMENTS_OFFER_LABEL) !== null;
+    const momentOfferedHere = realOffer(one<MomentOfferDetail>(MOMENTS_OFFER_LABEL)) !== null;
 
     const ev: TurnEvidence = {
       trace, select, classify, quietGuard, offTurn, threadSelect,
@@ -2138,7 +2194,7 @@ async function runScript(cfg: {
     select: detailAs<HooksSelectDetail>(selects[i]),
     quietGuard: detailAs<QuietGuardDetail>(guards[i]),
     offTurn: detailAs<OffTurnDetail>(offTurns[i]),
-    momentOffered: detailAs<MomentOfferDetail>(momentOffers[i]) !== null,
+    momentOffered: realOffer(detailAs<MomentOfferDetail>(momentOffers[i])) !== null,
   }));
 
   const graded = await gradeAll(judge, drafts.map(d => ({

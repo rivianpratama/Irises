@@ -285,19 +285,21 @@ test('applyDrift is pure: same inputs, same output, and the input is never mutat
 // THE no-regression pin. Everything downstream (the Convo prompt, the Composer block, the byte
 // comparisons in status.test.ts) rests on this returning an empty array.
 test('a default climate renders NOTHING at all', () => {
-  assert.deepEqual(climateLines(defaultClimate()), []);
-  assert.deepEqual(climateLines(undefined), []);
+  for (const hookTurn of [false, true]) {
+    assert.deepEqual(climateLines(defaultClimate(), hookTurn), []);
+    assert.deepEqual(climateLines(undefined, hookTurn), []);
+    // The silent band is ±3, so a dial that has barely twitched still renders nothing.
+    assert.deepEqual(climateLines(at({ ease: 38, candor: 42, playfulness: 28 }), hookTurn), []);
+    // One point past it does render.
+    assert.ok(climateLines(at({ ease: 39 }), hookTurn).length > 0);
+  }
   assert.deepEqual(climateLinesForComposer(defaultClimate()), []);
   assert.deepEqual(climateLinesForComposer(undefined), []);
-  // The silent band is ±3, so a dial that has barely twitched still renders nothing.
-  assert.deepEqual(climateLines(at({ ease: 38, candor: 42, playfulness: 28 })), []);
-  // One point past it does render.
-  assert.ok(climateLines(at({ ease: 39 })).length > 0);
 });
 
 test('the rendered lines carry a band, never a number', () => {
   const moved = at({ ease: 70, candor: 80, playfulness: 60 });
-  const lines = climateLines(moved);
+  const lines = climateLines(moved, true);
   assert.ok(lines.length >= 5); // lead-in + three bullets + clamp
   for (const line of lines) {
     assert.doesNotMatch(line, /\d/, `a dial value leaked into the prompt: ${line}`);
@@ -307,9 +309,38 @@ test('the rendered lines carry a band, never a number', () => {
   assert.match(lines[0], /does not move inside one/);
 });
 
+// The four band lines that NAME a hook kind (climate.ts HOOK_NAMING) ride ONLY a hook turn. The
+// register is the last door in the prompt through which a task turn could be told a tangent is
+// welcome, or a quiet turn told to hold a judgment it was never offered — the first garnishes an
+// answer that is supposed to arrive flat, the second names a beat that was already taken away, and
+// both are the drift this build exists to close.
+test('a band line that names a hook rides only a hook turn', () => {
+  const moved = at({ ease: 70, candor: 80, playfulness: 60 });
+  const hook = climateLines(moved, true).join('\n');
+  const task = climateLines(moved, false).join('\n');
+
+  assert.match(hook, /A tangent or a callback is expected of you here\./);
+  assert.doesNotMatch(task, /judgment|callback|tangent/,
+    'a task turn is never handed a sentence about a beat it may not carry');
+  // What survives is everything about HOW she says a thing, as opposed to what extra beat she gets.
+  assert.match(task, /No runway at all with this person\. Open on the thing itself\./);
+  assert.match(task, /Say the hard thing first and do not soften it after\./);
+  // The clamp still closes it, and the lead-in still opens it: dropping a bullet is not dropping the
+  // frame around the bullets that are left.
+  assert.match(climateLines(moved, false)[0], /standing register/);
+  assert.match(climateLines(moved, false).at(-1)!, /never changes a fact/);
+
+  // Each of the four, one at a time, and each one is the ONLY thing its climate moved — so a task
+  // turn renders nothing at all, lead-in and clamp included. There are no bullets left to bound.
+  for (const c of [at({ candor: 25 }), at({ playfulness: 60 }), at({ playfulness: 42 }), at({ playfulness: 20 })]) {
+    assert.ok(climateLines(c, true).length > 0, 'the hook turn still gets it');
+    assert.deepEqual(climateLines(c, false), [], 'and the task turn gets no block at all');
+  }
+});
+
 test('the clamp sentence is always last whenever anything rendered', () => {
   for (const c of [at({ ease: 70 }), at({ candor: 25 }), at({ playfulness: 60, ease: 20 })]) {
-    const lines = climateLines(c);
+    const lines = climateLines(c, true);
     assert.ok(lines.length > 0);
     const clamp = lines[lines.length - 1];
     assert.match(clamp, /register/i);
@@ -322,18 +353,24 @@ test('the clamp sentence is always last whenever anything rendered', () => {
 // The band lines are IMPERATIVES now (Fable's sentences, policy-strings.md): they say what to do
 // with this turn instead of describing how the relationship feels. Pinned by their own words here,
 // because a band that silently rendered a neighbouring band's sentence would still read as prose.
-test('the composer subset renders ease + playfulness and NEVER candor', () => {
+test('the composer subset renders EASE and nothing else', () => {
   const moved = at({ ease: 70, candor: 84, playfulness: 60 });
   const composer = climateLinesForComposer(moved).join('\n');
   assert.match(composer, /No runway at all with this person\. Open on the thing itself\./);
-  assert.match(composer, /A tangent or a callback is expected of you here\./);
-  // The Composer relays a decided answer; a candor register there could only sharpen it. Swept over
-  // the BULLETS alone: the clamp sentence legitimately ends on "whether you say the hard thing",
-  // which is the §6.4 line and not a candor directive.
+
+  // TWO exclusions, two reasons. `candor` is out because the Composer relays a decided answer and a
+  // "lead with the unwelcome read" register there could only sharpen a finished one — a fidelity
+  // breach. `playfulness` is out because all three of its band lines name a hook kind, and the
+  // Composer is never on a hook turn: there is no extra beat for it to be told to take or refuse.
+  // Swept over the BULLETS alone for candor: the clamp legitimately ends on "whether you say the
+  // hard thing", which is the §6.4 line and not a candor directive.
   const bullets = climateLinesForComposer(moved).filter(l => l.startsWith('- ')).join('\n');
   assert.doesNotMatch(bullets, /hard thing|Directness has been landing badly/i);
+  assert.doesNotMatch(composer, /judgment|callback|tangent/);
 
-  // A climate whose ONLY movement is candor is invisible to the Composer, clamp and all.
+  // A climate whose ONLY movement is one of the excluded dials is invisible here, clamp and all.
   assert.deepEqual(climateLinesForComposer(at({ candor: 84 })), []);
-  assert.ok(climateLines(at({ candor: 84 })).length > 0, 'but Convo still sees it');
+  assert.deepEqual(climateLinesForComposer(at({ playfulness: 60 })), []);
+  assert.ok(climateLines(at({ candor: 84 }), false).length > 0, 'but Convo still sees candor');
+  assert.ok(climateLines(at({ playfulness: 60 }), true).length > 0, "and Convo's hook turn still sees playfulness");
 });

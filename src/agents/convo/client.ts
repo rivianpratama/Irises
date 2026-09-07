@@ -438,11 +438,26 @@ export async function chat(
   let momentLines: string[] = [];
   let momentOffered = false;
   if (hookDirective?.moments && momentsEnabled() && handle && !isGroupHandle(handle)) {
+    // Read BEFORE the file, and this ordering is the whole fence. The write at the bottom refuses
+    // itself when the epoch has moved since the state it is writing was read, so the epoch it
+    // compares against has to be older than that read — an epoch taken AFTER `readMoments` is a
+    // comparison of a value against itself, which can only ever match, and a `/forget` landing in
+    // the window between the read and the write would have its wipe undone by a bill built from the
+    // pre-forget file. (`hookEpoch` above is the same instant for the same reason; this one is
+    // separate so the two fences stay independent of each other's read order.)
+    const momentEpoch = getForgetEpoch(handle);
     const file = await readMoments(handle);
     // A degraded read is NOT an empty file (db/repositories/moments.ts), and this branch would
     // WRITE: billing what a mangled file happened to parse would rewrite it from that fragment, in
-    // the one tier that archives nothing. So an unreadable file offers nothing and is left alone.
-    if (!file.degraded) {
+    // the one tier that archives nothing. So an unreadable file offers nothing and is left alone —
+    // receipted as its own skip, because a diary that stopped being readable and a diary with
+    // nothing in it are otherwise the same silence.
+    if (file.degraded) {
+      record({
+        type: 'event', label: MOMENTS_OFFER_LABEL, chatId, handle,
+        detail: { skipped: 'degraded' },
+      });
+    } else {
       // The store enforces the 24-hour no-repeat itself, and this is the caller's own copy of the
       // same veto — the extra one `sampleMoments` documents. Same window, computed off the same
       // rows, so the two can never disagree about what "just used" means.
@@ -468,13 +483,19 @@ export async function chat(
         momentOffered = true;
         const ids = new Set(sample.map(e => e.id));
         void writeMoments(handle, billOffers(file.entries, ids, nowMs), file.lastHarvestAt, file.preserved, {
-          ifForgetEpoch: getForgetEpoch(handle),
+          ifForgetEpoch: momentEpoch,
         }).catch(err => console.warn('[convo] moment offer bill failed', err));
-        record({
-          type: 'event', label: MOMENTS_OFFER_LABEL, chatId, handle,
-          detail: { offered: sample.length, rendered: momentLines.length, held: file.entries.length, excluded: excludeIds.size },
-        });
       }
+      // EVERY run of the sampler, including — especially — the one that put nothing in front of her.
+      // Same doctrine as `hooks:select` and `threads:select` above: the healthy no-op IS the receipt.
+      // A sampler that stopped running and a sampler that keeps drawing nothing are otherwise
+      // indistinguishable from the ring, and the two have completely different causes — an empty
+      // file, a whole file held out by the 24-hour window, or five draws that all rendered to
+      // nothing. The four numbers say which, and none of them is her words or a moment's text.
+      record({
+        type: 'event', label: MOMENTS_OFFER_LABEL, chatId, handle,
+        detail: { offered: sample.length, rendered: momentLines.length, held: file.entries.length, excluded: excludeIds.size },
+      });
     }
   }
 

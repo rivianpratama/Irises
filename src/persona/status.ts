@@ -634,11 +634,19 @@ const INTERNAL_WEATHER_HEADER =
  * the instruction the reply obeys). With `climate` undefined or at its defaults, climateLines
  * returns [] and this output is byte-identical to an install without the feature (pinned in
  * status.test.ts).
+ *
+ * `hookTurn` is this turn's rhythm mode — true only when the hook directive says `hook` — and the
+ * ONE thing it changes is which climate band lines are allowed to render (persona/climate.ts
+ * HOOK_NAMING): four of the twelve name a tangent, a callback or a judgment, and a task turn or a
+ * quiet turn must never be handed one. Optional, defaulting to FALSE, and the default is the safe
+ * direction rather than a shrug: a caller with no rhythm engine (a non-Convo lane, the flag off, a
+ * test) is on a turn with no hook to spend, and the flat-answer register is what it should read.
  */
 export function renderStatusForPrompt(
   state: AffectState | undefined,
   computed: ComputedState,
   climate?: RelationshipClimate,
+  hookTurn = false,
 ): string {
   const last = state?.last;
   const directive = compileAffect(last, computed, climate);
@@ -647,7 +655,7 @@ export function renderStatusForPrompt(
     ...renderAffectDirective(directive, last, computed, climate),
     // The standing register underneath the moment. Empty at defaults, so nothing changes until a
     // relationship has actually moved.
-    ...climateLines(climate),
+    ...climateLines(climate, hookTurn),
     // The tail stays last (it is the instruction the reply obeys) and is one POINTER: it used to
     // re-list six of the fields in its own words, which was a fourth description of the envelope and
     // the one nobody could edit — the contract block right below it is the list.
@@ -712,16 +720,17 @@ export function renderStatusContract(): string {
  * Composer gets exactly the two lines that shape a voice — the mood line with its core's imperative,
  * and the brevity line — off the same two helpers Convo's block uses (persona/affectCompiler.ts), so
  * the two surfaces cannot disagree about what a carried row means. What it does NOT get: any gauge
- * number (the line that used to print four of them is deleted), the clock, the self-note, and the
- * `hooks` permission — the rhythm is Convo's alone, since the Composer relays a decided answer and
- * is never on an idle turn.
+ * number (the line that used to print four of them is deleted), the clock, the self-note, the
+ * `hooks` permission, and — since the whole-branch review — any climate line that NAMES a hook kind:
+ * `climateLinesForComposer` is down to `ease` alone for exactly that reason. The rhythm is Convo's
+ * alone, since the Composer relays a decided answer and is never on an idle turn.
  *
  * TWO INDEPENDENT PARTS, and this is the point of the split. The MOOD part keeps its staleness gate
  * (>45min): the proactive path is a delivery no one just asked for, and dressing it in an hours-old
  * mood is exactly the failure that gate exists for. The CLIMATE part has NO staleness gate, because
  * a weeks-scale register cannot go stale in 45 minutes — that's the whole difference between weather
- * and climate. So a stale mood plus a moved climate yields a climate-only block. Only `candor` is
- * withheld here (see climateLinesForComposer).
+ * and climate. So a stale mood plus a moved climate yields a climate-only block — an EASE-only one:
+ * `candor` and `playfulness` are both withheld here (see climateLinesForComposer for each reason).
  *
  * Returns '' only when BOTH parts are empty — no fresh mood AND a climate still at its defaults,
  * which is byte-for-byte the old behaviour for every caller that passes no climate.

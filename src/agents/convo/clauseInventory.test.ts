@@ -24,6 +24,13 @@
 // The flag's OFF path is exactly the concatenation of all of them, so the census builds its turn with
 // CONVO_PERSONA_MODULES off: every page present, once, which is both the honest answer to "how many
 // times is she told this" and the same string these counts were originally measured against.
+//
+// For the same reason the turn below is a HOOK turn carrying a real THESIS, rather than the plain
+// task turn most live turns are. Both choices buy the same thing: the sections that only exist on
+// some turns are exactly where a clause can quietly acquire a second copy and where two blocks can
+// end up claiming one heading, so a census that never rendered them would be a census of a corpus
+// nobody is ever handed. The thesis is the newest heading in the whole prompt, and it was the one
+// heading the uniqueness check could not see.
 process.env.TZ = 'UTC';
 // Set before the prompt is assembled at module scope below — see the header.
 process.env.CONVO_PERSONA_MODULES = 'off';
@@ -39,6 +46,7 @@ import { computeCircadian } from '../../persona/circadian.js';
 import { defaultClimate, type RelationshipClimate } from '../../persona/climate.js';
 import type { ThreadCandidate } from '../../persona/threads.js';
 import type { HookDirective } from '../../persona/hooks.js';
+import { renderThesisSection } from '../../memory/thesisEngine.js';
 import type { LlmToolDef } from '../../llm/types.js';
 import type { StoredMessage, UserProfile } from '../../db/types.js';
 
@@ -136,6 +144,22 @@ const HOOK_DIRECTIVE: HookDirective = {
   idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: false, offerAllowed: true,
 };
 
+/** Her one read on this person, rendered through the real seam (memory/thesisEngine.ts), so the
+ *  census sees THESIS_SECTION_HEADING the way a live turn prints it — heading and read, off the same
+ *  clamp and the same split.
+ *
+ *  A real one for the same reason the turn is a hook turn: the heading census counts `## ` lines
+ *  across the assembled prompt and pins that none appears twice, and a section that never renders is
+ *  a heading the check never sees. `''` here left the newest heading in the corpus — the one added
+ *  last, on the branch that added it — outside the one test written to catch a collision, which is
+ *  precisely backwards. Two sentences, behaviour only, at about the length the writer prompt asks
+ *  for; the words themselves do not matter to any count, but the heading does. */
+const THESIS = renderThesisSection(
+  'They decide fast on things that cost money and slowly on things that cost a conversation, which is '
+  + 'why the supplier disputes sit open for weeks. They would rather re-do a job than ask someone to '
+  + 'fix it, and they read a question about the schedule as a question about their competence.',
+);
+
 const { system: PROMPT } = buildSystemPromptSections(
   { isGroupChat: false, participantNames: [], chatName: null, senderHandle: HANDLE, senderProfile: PROFILE },
   MEMORY_STACK, [], undefined, [TOOL], HISTORY, TURN_TEXT, 'UTC',
@@ -149,7 +173,7 @@ const { system: PROMPT } = buildSystemPromptSections(
   // quietly acquire a second copy. A census taken on a task turn would count a corpus the live idle
   // turn does not have. (The drift anchor's mode moves with it, which is the point: `anchorCopies`
   // in promptPolicy.ts exists to account for a law restated at the recency edge.)
-  { hooks: HOOK_DIRECTIVE, moments: [], thesis: '' },
+  { hooks: HOOK_DIRECTIVE, moments: [], thesis: THESIS },
 );
 
 /** Plain substring occurrences — the same number a reader gets from a plain text search. */

@@ -203,15 +203,70 @@ test('every kind can be spoken for at once, and the turn is still a hook turn', 
 
 // ══ 3. Sleep quiet and moments ═══════════════════════════════════════════════
 
-// A preference, never a force: she is told the quiet reply is the better one and left to decide.
 // Passed through in every mode so a consumer never has to check which branch it came from.
 test('sleepQuiet rides through every mode untouched', () => {
   const late: HookAffectInput = { hooks: 'all', sleepQuiet: true };
   assert.equal(pick(state(), { affect: late }).directive.sleepQuiet, true);
-  assert.equal(pick(state(), { affect: late }).directive.mode, 'hook', 'late is not quiet on its own');
   assert.equal(pick(state(), { affect: late, idle: false }).directive.sleepQuiet, true);
   assert.equal(pick(state({ lastKinds: ['judgment', 'callback', 'tangent'] }), { affect: late }).directive.sleepQuiet, true);
   assert.equal(pick(state(), { affect: { hooks: 'all', sleepQuiet: false } }).directive.sleepQuiet, false);
+});
+
+// THE 2AM TURN, and the three-way contradiction it used to print. `sleepQuiet` was additive: the
+// section offered her a judgment, a callback or a tangent in one line and told her to send them to
+// bed in the next, while the drift anchor at the recency edge said "one hook". Now the clock CLOSES
+// the kinds, so all three copies say the same thing — the beat is spent, the reply is one short
+// thing about sleeping.
+//
+// Still mode `hook`, and the mode is the whole point of the distinction: `quiet` is what the ledger
+// and the mood FORCE, and a forced turn that comes back loud is re-asked once (convo/shared.ts
+// enforceQuiet). The clock forces nothing — the plan says the quiet reply is PREFERRED at this hour
+// — so a late turn she answered in two bubbles is hers to have written and no guard argues with it.
+test('a late-night idle turn closes every kind and bills nothing, in its own bucket', () => {
+  const late: HookAffectInput = { hooks: 'all', sleepQuiet: true };
+  const { directive, report } = pick(state({ idleSinceMoment: MOMENT_IDLE_INTERVAL + 5 }), { affect: late });
+  assert.equal(directive.mode, 'hook', 'late is a hook turn with nothing open — never a FORCED quiet one');
+  assert.deepEqual(directive.forbidden, [...HOOK_WORDS]);
+  assert.equal(directive.sleepQuiet, true);
+  assert.equal(directive.moments, false, 'the sampler bills, and there is no callback to spend it on');
+  assert.equal(directive.offerAllowed, false, 'and the thread offer is shut for the same reason');
+  assert.equal(report.reason, 'sleep');
+  assert.deepEqual(report.forbidden, [...HOOK_WORDS]);
+});
+
+// The two forced-quiet buckets outrank the clock, and that ordering is what keeps the receipt
+// honest: a battery scores the kill switch off `kill_switch`, and a bedtime that could wear that
+// name would make a dead switch indistinguishable from a working one at night.
+test('the kill switch and the affect floor both outrank the sleep branch', () => {
+  const late: HookAffectInput = { hooks: 'all', sleepQuiet: true };
+  const killed = pick(state({ lastKinds: ['judgment', 'callback', 'tangent'] }), { affect: late });
+  assert.equal(killed.directive.mode, 'quiet');
+  assert.equal(killed.report.reason, 'kill_switch');
+  const floored = pick(state(), { affect: { hooks: 'none', sleepQuiet: true } });
+  assert.equal(floored.directive.mode, 'quiet');
+  assert.equal(floored.report.reason, 'affect_floor');
+});
+
+// A late TASK turn is a task turn. Somebody who asks for something at 2am gets the answer, flat,
+// with the real numbers — the clock only ever spends the extra beat, never the work.
+test('the clock never touches a task turn', () => {
+  const { directive, report } = pick(state(), { affect: { hooks: 'all', sleepQuiet: true }, idle: false });
+  assert.equal(directive.mode, 'task');
+  assert.deepEqual(directive.forbidden, [], 'the MODE forbids every kind already');
+  assert.equal(report.reason, 'not_idle');
+});
+
+// The rendered section for that turn, char-for-char, and it is the same five lines the
+// every-kind-spoken-for case renders below — which is the point: the sleep branch invents no prose.
+test('the sleep turn renders the none-open block and the sleep line, and nothing else', () => {
+  const { directive } = pick(state(), { affect: { hooks: 'all', sleepQuiet: true } });
+  assert.equal(renderHooksSection(directive, ['a moment handed in against the gate']), [
+    '## This turn may carry one hook (INTERNAL)',
+    'They sent you nothing. This is the one turn that earns a hook, and it earns exactly one.',
+    'No kind is open this turn. Short and flat, and let the beat pass.',
+    'It is late where they are. The right reply is that they should sleep — one short bubble, or a tapback — and the hook keeps.',
+    'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
+  ].join('\n'));
 });
 
 test('moments wait out the interval', () => {

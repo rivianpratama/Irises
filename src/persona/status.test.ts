@@ -940,8 +940,20 @@ test('renderStatusForComposer carries the mood + the leak-guard + the fidelity c
   // turn and has no beat of its own to carry — so the FIELD appears nowhere, and neither do its
   // three words outside the one compiled mood line, where a core imperative may legitimately use
   // one as English (policy-strings.md CORE_DIRECTIVES).
-  assert.doesNotMatch(out, /hook_kind/);
-  assert.doesNotMatch(withoutMoodLine(out), /judgment|callback|tangent/);
+  //
+  // Swept over the WHOLE block, CLIMATE SPAN INCLUDED, and that is the half this pin was missing.
+  // Convo's own sweep above exempts the climate deliberately — its band lines are compiled
+  // imperatives that legitimately reach for the same three words on a hook turn. The Composer has no
+  // such exemption to make, because it has no hook turn: `climateLinesForComposer` is down to `ease`
+  // alone (persona/climate.ts), so a hook-naming band line reaching this surface is a bug with no
+  // reading under which it is correct. Run against a climate moved on every dial, so the assertion
+  // is about what the filter DOES rather than about a fixture that happened to move nothing.
+  const withClimate = renderStatusForComposer({ last: full, moodHistory: [] }, movedClimate());
+  assert.match(withClimate, /standing register/, 'the climate really rendered');
+  for (const block of [out, tight, withClimate]) {
+    assert.doesNotMatch(block, /hook_kind/);
+    assert.doesNotMatch(withoutMoodLine(block), /judgment|callback|tangent/);
+  }
 });
 
 // ── Relationship climate spliced into the same block ─────────────────────────
@@ -975,6 +987,30 @@ test('a moved climate rides ONE weather block, after the carried lines and befor
   assert.doesNotMatch(out.slice(leadIn, reReport), /\d/);
 });
 
+// The rhythm mode reaches the climate span, and it is the only thing it reaches. Four of the twelve
+// band lines name a hook kind (persona/climate.ts HOOK_NAMING), so a task turn or a quiet turn must
+// not be handed one: "a tangent is welcome" garnishes an answer that is supposed to arrive flat, and
+// "hold the judgment kind of hook this turn" names a beat that was already taken away. The
+// parameter defaults to FALSE for the same reason — a caller with no rhythm engine is on a turn with
+// no hook to spend.
+test('the turn mode gates the hook-naming climate lines, and nothing else in the block', () => {
+  const state = { last: carried(0), moodHistory: [] };
+  const task = renderStatusForPrompt(state, COMPUTED, movedClimate(), false);
+  const hook = renderStatusForPrompt(state, COMPUTED, movedClimate(), true);
+
+  assert.equal(renderStatusForPrompt(state, COMPUTED, movedClimate()), task, 'the default is the task turn');
+  assert.match(hook, /- A tangent or a callback is expected of you here\./);
+  assert.doesNotMatch(withoutMoodLine(task), /judgment|callback|tangent/);
+
+  // The rest of the block is byte-identical: this is a filter on one span, not a second mode.
+  assert.equal(hook.replace('\n- A tangent or a callback is expected of you here.', ''), task);
+
+  // And it is the CLIMATE span it filters. With no climate at all the mode changes nothing, which is
+  // what keeps every non-climate assertion in this file free of it.
+  const bare = renderStatusForPrompt(state, COMPUTED);
+  assert.equal(renderStatusForPrompt(state, COMPUTED, undefined, true), bare);
+});
+
 // THE no-regression pin: the feature is inert until a relationship has moved.
 test('a default climate leaves renderStatusForPrompt byte-identical to no climate at all', () => {
   const full = carried(0);
@@ -993,14 +1029,19 @@ test('composer: a stale mood plus a moved climate yields a climate-ONLY block', 
 
   assert.match(out, /INTERNAL weather/);
   assert.match(out, /standing register/);
-  assert.match(out, /- A tangent or a callback is expected of you here\./);
+  assert.match(out, /- No runway at all with this person\. Open on the thing itself\./);
   // The stale mood is gone — its gate still holds.
   assert.doesNotMatch(out, /hopeful/);
   assert.doesNotMatch(out, /- You are /);
-  // And candor never reaches the Composer, which relays a decided answer. Swept over the BULLETS:
-  // the clamp legitimately ends on "whether you say the hard thing", which is the §6.4 line.
+  // EASE and nothing else. `candor` is withheld because the Composer relays a decided answer and a
+  // sharper register there could only move a finished fact; `playfulness` is withheld because all
+  // three of its band lines name a hook kind and this surface is never on a hook turn. Candor is
+  // swept over the BULLETS alone: the clamp legitimately ends on "whether you say the hard thing",
+  // which is the §6.4 line.
   const bullets = out.split('\n').filter(l => l.startsWith('- ')).join('\n');
   assert.doesNotMatch(bullets, /hard thing|Directness has been landing badly/i);
+  assert.doesNotMatch(out, /judgment|callback|tangent/);
+  assert.equal(bullets.split('\n').length, 1, 'one bullet: the ease line, alone');
 });
 
 test('composer: a stale mood plus a DEFAULT climate is still "" (both halves empty)', () => {

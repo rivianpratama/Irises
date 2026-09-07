@@ -48,6 +48,7 @@ import { defaultClimate, type RelationshipClimate } from '../../persona/climate.
 import {
   renderMomentLines, MOMENT_AGE_WORDS, MOMENT_TEXT_MAX, type MomentEntry,
 } from '../../persona/moments.js';
+import { HOOK_WORDS, type HookDirective } from '../../persona/hooks.js';
 import type { ThreadCandidate } from '../../persona/threads.js';
 import type { ThreadTurn } from '../../memory/threadHarvest.js';
 import type { TurnFocusInput } from './turnFocus.js';
@@ -501,12 +502,33 @@ const HISTORY_80_DENSE = history(80, DENSE_TEXTS);
 // (`FROZEN_MS`), which `computeCircadian` reads as `dead_night`, and `compileAffect` sets the flag
 // straight off that slot (persona/affectCompiler.ts — no flag, no store, no mood in it). A hook
 // directive compiled from this turn's own `COMPUTED` therefore carries the sleep line, and a fixture
-// that turned it off would be measuring a shape the clock cannot produce. It is also the WIDEST the
-// block gets — 462 characters against 338 without it — which is what the `hooks` ceiling is for.
+// that turned it off would be measuring a shape the clock cannot produce.
+//
+// Which is why the sleep turn's WHOLE shape is written out here rather than just its flag. A late
+// idle turn is a closed-kinds hook turn (persona/hooks.ts's sleep branch): every kind forbidden, no
+// moments, no thread offer — one instruction, where the section used to offer her a judgment, a
+// callback or a tangent in one line and tell her to send them to bed in the next. What it renders is
+// the heading, the lead, the none-open line, the sleep line and the clamp; and the drift anchor's
+// mode moves with it, so the cold fixture's `behavior_anchor` is the QUIET law rather than the hook
+// one. Both numbers are measured on that.
 const HOOK_TURN: PersonaTurn = {
-  hooks: { idle: true, mode: 'hook', forbidden: [], sleepQuiet: true, moments: false, offerAllowed: true },
+  hooks: {
+    idle: true, mode: 'hook', forbidden: [...HOOK_WORDS], sleepQuiet: true,
+    moments: false, offerAllowed: false,
+  },
   moments: [],
   thesis: '',
+};
+
+/** The OTHER hook turn, and the one the `hooks` ceiling is actually taken on: an ordinary daytime
+ *  idle turn with every kind open and the spacing interval spent, which is the only shape that can
+ *  carry the moment lead at all (the sleep branch above shuts the sampler, because a moment can only
+ *  ride out as a callback and sampling bills it either way). This fixture's own 02:00 clock cannot
+ *  produce it — but the directive is HANDED to the assembler rather than compiled inside it, and
+ *  production has twenty-four hours in the day, so this is the widest section the engine can build
+ *  and therefore the honest ceiling. Everything else about fixture 5 stays on the shared clock. */
+const DAYTIME_HOOK: HookDirective = {
+  idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: true, offerAllowed: true,
 };
 
 /**
@@ -714,7 +736,7 @@ const FIXTURES: Fixture[] = [
       // than on the cold one because both are things a nine-month relationship has and a first
       // reply does not — and because the directive has to open the moment lead for them to render
       // at all (`moments: true`, which `sampleMoments`' own spacing interval earns).
-      personaTurn: { hooks: { ...HOOK_TURN.hooks!, moments: true }, moments: MOMENT_LINES, thesis: THESIS },
+      personaTurn: { hooks: DAYTIME_HOOK, moments: MOMENT_LINES, thesis: THESIS },
     },
     memoryStack: MATURE_STACK,
     sections: [

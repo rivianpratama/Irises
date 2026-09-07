@@ -16,9 +16,14 @@
 // nothing else. The safe direction is unmistakable — degrading to defaults can only ever open a
 // hook back up, never force a quiet turn onto someone who never earned one.
 //
-// Writes carry the /forget fence (getForgetEpoch, see memory.ts): the ledger write happens after the
-// reply is dispatched, and a /forget that lands inside that window must not have its wipe undone by
-// a save that read the pre-forget state.
+// Writes carry the /forget fence (getForgetEpoch, see memory.ts). The window it closes is the TURN,
+// not the dispatch: the ledger row is read at the top of convo/client.ts, before the prompt is even
+// built, and written inside processConvoResult before the ChatResponse is returned — the channel
+// send happens after that, out in src/index.ts. So between the read and the write sit the model
+// call, the tool loop and up to two corrective re-asks, which is many seconds during which a
+// /forget can land, and a save that read the pre-forget state must not put back what the wipe
+// removed. The write itself is awaited (see convo/shared.ts): the fence is what makes it safe, not
+// the ordering against the send.
 
 import { logDbError } from '../client.js';
 import { stmt } from '../sqlite.js';

@@ -33,7 +33,11 @@
 // evidence while the weekly pass may be rewriting the read. `saveThesis` carries the version the
 // writer read; a stale version returns null and writes NOTHING, and the caller re-reads and retries
 // once (`appendThesisEvidence` and `clearThesis` below do exactly that, so no caller has to
-// remember). The re-read happens under withHandleLock, so in-process racers serialize.
+// remember). The VERSION CHECK — not the caller's re-read — is what happens under withHandleLock:
+// the head is read and compared against `expectedVersion` inside the locked section, so a caller
+// whose read went stale while it was thinking can only ever produce a null, never a clobber. The
+// caller's retry then re-reads OUTSIDE the lock and calls again, which is safe for exactly that
+// reason: whatever it read, the check inside decides.
 //
 // The /forget fence rides the same lock, and it is not the same problem as the version check. A
 // version says "somebody else wrote"; the epoch says "the user asked to be forgotten". Both passes
@@ -44,31 +48,32 @@
 // caller cannot supply the check itself because withHandleLock is not re-entrant. Same shape as
 // `writeMoments`, `saveHookState` and `saveDossier`; `climateDrift.ts`'s caller is the pattern.
 //
-// Failure policy: FAIL LOUD like memoryLong and memoryMedium. This is not the moments store, which
-// degrades an unreadable file to empty because it renders on the reply path and is re-derivable
-// from tonight's transcript: a read costs a week to earn back, and a write that quietly failed
-// would leave the weekly pass re-proposing the same rewrite against a version that never moved.
-// Reads still degrade to null (a missing file is the normal state of a new person), but a WRITE
-// against a head file that exists and cannot be parsed is refused with a throw.
+// Failure policy: REFUSE, don't guess. This is not the moments store, which degrades an unreadable
+// file to empty because it renders on the reply path and is re-derivable from tonight's transcript:
+// a read costs a week to earn back, so a write against a head file that exists and cannot be parsed
+// is refused rather than clobbering it, and the caller is told by a `null` it has to handle. Reads
+// still degrade to null on their own (a missing file is the normal state of a new person); a writer
+// that must tell an absent doc from an unreadable one calls `readThesisHead` for the flag.
 //
 // ONE exception, and it is a crash-radius decision rather than a policy change: a throw out of a
 // locked section is process-FATAL, not pass-fatal. withHandleLock keeps its queue with
 // `void next.finally(...)`, which publishes a SECOND, unowned copy of the rejection beside the one
 // the caller catches, and diagnostics/errorLog.ts exits on `unhandledRejection` — so a caller-side
 // try/catch cannot contain a throw from in there, and the suppression has to happen inside the
-// locked section itself. That is what `opts.onFailure: 'drop'` is for, and EVERY BACKGROUND WRITER
-// passes it — the nightly note, the `/forget` wipe, and (since the T12 review) the weekly rewrite
-// too. Losing one night's note or one week's rewrite is a cost; taking the VM down over a
-// hand-edited file or a full disk is a bug, and the memory note for this deployment records the VPS
-// disk as near-full.
+// locked section itself. That is what `opts.onFailure` is for. Losing one night's note or one
+// week's rewrite is a cost; taking the VM down over a hand-edited file or a full disk is a bug, and
+// the memory note for this deployment records the VPS disk as near-full.
 //
-// The weekly rewrite was the last holdout, on the argument that its loss is the one that actually
-// costs a week. That argument is right about the COST and wrong about the remedy: a throw does not
-// make the loss loud, it makes it fatal, and fatal here is a LOOP — the process dies inside the
-// turn, the backoff map dies with it, `rewritten=` never moved, and the next non-group turn with a
-// week's worth of lines in it does the whole thing again. So the refusal survives only as the
-// DEFAULT (`onFailure: 'throw'`), which is what a foreground caller would get; every writer that
-// nobody is waiting on drops, logs, and returns null.
+// So DROPPING IS THE DEFAULT and the throw is opt-in, which is the way round the crash radius asks
+// for. The weekly rewrite was the last writer to hold out, on the argument that its loss is the one
+// that actually costs a week; that argument is right about the COST and wrong about the remedy, and
+// getting it wrong once was enough to make the safe answer the one nobody has to remember. A throw
+// does not make the loss loud, it makes it fatal, and fatal here is a LOOP — the process dies inside
+// the turn, the backoff map dies with it, `rewritten=` never moved, and the next non-group turn with
+// a week's worth of lines in it does the whole thing again. Every writer this store has is a
+// background one, so every writer takes the default; `onFailure: 'throw'` exists for a foreground
+// caller a person is waiting on, and there is no such caller today. Nothing on a REQUEST path should
+// ever ask for it: the request would not survive to see the error either way.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -125,12 +130,19 @@ export interface ThesisDoc {
  * conflict, and unlike a conflict it must NOT be retried — the document the caller is holding is
  * exactly the thing the user erased. `appendThesisEvidence` short-circuits its own retry on it.
  *
- * `onFailure: 'drop'` turns this store's fail-loud write policy off FOR ONE CALL: the throwing
- * branches log and return null instead. Every background writer passes it — the nightly note, the
- * wipe and the weekly rewrite — and the reason is in the header: a throw out of a locked section
- * takes the process down rather than the pass, a caller-side catch provably cannot contain it, and
- * on a failure that persists (a hand-edited file, a full disk) the exit repeats every turn. A caller
- * that omits it is asking for the throw, which is right for anything a person is waiting on.
+ * `onFailure` picks what a failed write does, and it DEFAULTS TO `'drop'`: the two throwing branches
+ * (an unreadable head doc, a durable write failure) log and return null instead. The reason is in
+ * the header — a throw out of a locked section takes the PROCESS down rather than the pass, a
+ * caller-side catch provably cannot contain it (`withHandleLock` publishes a second, unowned copy of
+ * the rejection and diagnostics/errorLog.ts exits on `unhandledRejection`), and on a failure that
+ * persists the exit repeats every turn. Every writer this store has is a background one, so every
+ * writer takes the default.
+ *
+ * `onFailure: 'throw'` is therefore opt-in, for a foreground caller a person is actually waiting on,
+ * where a lost write has to be an error somebody sees rather than a null somebody ignores. NOTHING
+ * ON A REQUEST PATH SHOULD ASK FOR IT: the exit takes the request with it, so the throw cannot be
+ * reported to the person who was waiting anyway. There is no such caller today, and the option
+ * exists so the fail-loud policy is a choice on record rather than a branch that was deleted.
  *
  * A dropped write shares the `null` return with a version conflict and with the fence, and only the
  * conflict is worth retrying — `memory/thesisRewrite.ts`'s `attemptSave` tells the three apart by
@@ -138,6 +150,7 @@ export interface ThesisDoc {
  */
 export interface ThesisSaveOptions {
   ifForgetEpoch?: number;
+  /** Default `'drop'`. See above: `'throw'` is process-fatal from inside the lock. */
   onFailure?: 'throw' | 'drop';
 }
 
@@ -298,9 +311,11 @@ export async function getThesis(handle: string): Promise<ThesisDoc | null> {
  * Save a new version. `expectedVersion` is what the writer read (0 for "no doc yet"). Returns the
  * new version number, or null on a version conflict (the caller re-reads and retries once) or on the
  * `/forget` fence refusing the write (the caller must NOT retry — see `ThesisSaveOptions`).
- * Throws ThesisWriteError when the write itself fails durably (including a head file that exists
- * but cannot be read or parsed — clobbering it would lose a read that costs a week to earn back),
- * unless the caller asked for `onFailure: 'drop'`.
+ * A write that fails durably — including a head file that exists but cannot be read or parsed,
+ * since clobbering it would lose a read that costs a week to earn back — is DROPPED: it logs and
+ * returns null, which is the same null the conflict and the fence return. A caller that wants the
+ * ThesisWriteError instead passes `onFailure: 'throw'`, which is process-fatal from inside the lock
+ * and is for a foreground caller only (see `ThesisSaveOptions`).
  *
  * `writtenBy` is a short provenance word that lands in the header and in every revision: 'weekly'
  * (`THESIS_REWRITE_WRITER`) for the rewrite pass, 'evidence' for a nightly note, 'forget' for a
@@ -338,7 +353,7 @@ export async function saveThesis(
     }
     const head = await readHead(handle);
     if (head.kind === 'unreadable') {
-      if (opts?.onFailure === 'drop') {
+      if (opts?.onFailure !== 'throw') {
         console.warn(`[memory-thesis] write dropped for ${handle} — head doc unreadable`, head.error);
         return null;
       }
@@ -360,7 +375,7 @@ export async function saveThesis(
       atomicWriteText(thesisPath(handle), file);
       return version;
     } catch (error) {
-      if (opts?.onFailure === 'drop') {
+      if (opts?.onFailure !== 'throw') {
         console.warn(`[memory-thesis] write dropped for ${handle} — durable write failed`, error);
         return null;
       }

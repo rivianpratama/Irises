@@ -11,14 +11,16 @@
 //     loser conflicts and retries rather than clobbering.
 //   • TWO STORES, ONE REVISIONS FOLDER. LONG.vNNNN.md and THESIS.vNNNN.md live side by side and
 //     neither listing sees the other's files.
-//   • A WRITE IS REFUSED, NOT GUESSED. An unreadable head doc throws instead of being overwritten —
+//   • A WRITE IS REFUSED, NOT GUESSED. An unreadable head doc is refused rather than overwritten —
 //     for every writer except the wipe, which is the one write whose whole point is losing content.
 //   • A /forget IS NOT UNDONE. Both passes read, think for fifteen seconds, then write; a wipe that
 //     lands inside that window fences the save out rather than being reverted by it.
 //   • A BACKGROUND WRITER NEVER KILLS THE PROCESS. A throw out of a locked section is process-fatal,
-//     so every writer nobody is waiting on — the nightly note, the wipe and (since the T12 review)
-//     the weekly rewrite — asks for `onFailure: 'drop'`. The throw survives as the DEFAULT, which is
-//     what these tests exercise it as.
+//     so a refused write DROPS by default: it logs and returns null. Every writer this store has is
+//     a background one, so every writer takes that default; `onFailure: 'throw'` is opt-in for a
+//     foreground caller a person is waiting on, and there is none today. These tests cannot exercise
+//     the throw at all — see the long note in the unreadable-head case for why node:test would die
+//     on it, which is exactly the failure mode the default now avoids.
 process.env.TZ = 'UTC';
 
 import fs from 'node:fs';
@@ -229,14 +231,15 @@ test('a durable write failure DROPS a nightly note and a wipe rather than the pr
   await saveThesis(h, READ, 0, 'weekly');
   // A full disk or an EACCES, reproduced the only way a test can without root: put a FILE where the
   // revisions DIRECTORY has to go, so atomicWriteText's mkdir throws on the way to the first of the
-  // two writes. This is the half of the fail-loud policy the head-read test above cannot fire, and
-  // the reason these two writers must not fire it: node:test would fail this test on the unowned
-  // rejection withHandleLock publishes, which is precisely the signal that the VM would have died.
+  // two writes. node:test would fail this test on the unowned rejection withHandleLock publishes if
+  // any of these threw, which is precisely the signal that the VM would have died.
   fs.rmSync(path.join(memoriesDir(h), 'revisions'), { recursive: true, force: true });
   fs.writeFileSync(path.join(memoriesDir(h), 'revisions'), 'not a directory');
   assert.equal(await appendThesisEvidence(h, 'a note on a full disk'), null);
   assert.equal(await clearThesis(h), null);
-  assert.equal((await getThesis(h))?.docMd, READ, 'the document is untouched by either failure');
+  // …and the weekly rewrite's own shape, with no options at all: the default is the drop.
+  assert.equal(await saveThesis(h, 'a rewrite onto a full disk', 1, THESIS_REWRITE_WRITER), null);
+  assert.equal((await getThesis(h))?.docMd, READ, 'the document is untouched by any of the three');
   assert.equal((await getThesis(h))?.version, 1);
 });
 
@@ -264,17 +267,19 @@ test('a present-but-unreadable head doc degrades the READ and no PASS ever clobb
   assert.equal(fs.readFileSync(filePath(h), 'utf8'), hand, 'the bytes stay exactly where they were');
   assert.equal(fs.existsSync(path.join(memoriesDir(h), 'revisions')), false, 'and nothing was versioned');
 
-  // ONLY HALF the write path is exercised here — the HEAD-READ refusal — and the reason the other
-  // half is not is worth writing down rather than leaving as a coverage hole for the next reader to
-  // "fix": `saveThesis` refuses this file with a ThesisWriteError from INSIDE withHandleLock, and
-  // that queue keeps itself with `void next.finally(...)` (db/repositories/memory.ts) — so a
-  // throwing locked section publishes a second, unowned copy of the rejection beside the one the
-  // caller catches, and node:test fails the running test on it whatever listeners the test
-  // installs. It is also exactly why a caller-side try/catch was never an option and the two
-  // background writers pass `onFailure: 'drop'` instead: the DURABLE-WRITE half of the same policy
-  // is now non-fatal for them and IS exercised, two tests below. It is not this store's wart: it is
-  // why memoryLong's and memoryMedium's identical fail-loud branches have no test either. What can
-  // be pinned without firing it is the contract itself.
+  // …and so does a PLAIN save with no options, because dropping is the DEFAULT now. This is the
+  // half that used to be untestable: `saveThesis` refused this file with a ThesisWriteError from
+  // INSIDE withHandleLock, and that queue keeps itself with `void next.finally(...)`
+  // (db/repositories/memory.ts) — so a throwing locked section publishes a second, unowned copy of
+  // the rejection beside the one the caller catches, and node:test fails the running test on it
+  // whatever listeners the test installs. That is not a testing inconvenience, it is the production
+  // failure: the same unowned rejection exits the process through diagnostics/errorLog.ts. A caller
+  // that really wants the throw asks for it (`onFailure: 'throw'`), and nothing does.
+  assert.equal(await saveThesis(h, 'a read that would clobber the hand edit', 0, 'weekly'), null);
+  assert.equal(fs.readFileSync(filePath(h), 'utf8'), hand, 'still the bytes the human typed');
+  assert.equal(fs.existsSync(path.join(memoriesDir(h), 'revisions')), false, 'and still nothing versioned');
+
+  // The error type survives as the opt-in path's contract, pinned without firing it.
   assert.equal(typeof ThesisWriteError, 'function');
   const err = new ThesisWriteError('saveThesis (head read)');
   assert.equal(err.name, 'ThesisWriteError');

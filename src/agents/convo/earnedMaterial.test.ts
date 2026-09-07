@@ -10,6 +10,8 @@
 process.env.TZ = 'UTC';
 process.env.DATA_BACKEND = 'memory';
 
+import fs from 'node:fs';
+import path from 'node:path';
 import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -19,6 +21,8 @@ import { clearIdleClassifyCache } from './idleClassify.js';
 import { HOOK_HEADING, MOMENTS_LEAD, MOMENT_IDLE_INTERVAL, type HookDirective } from '../../persona/hooks.js';
 import { saveHookState, getHookState } from '../../db/repositories/hookState.js';
 import { readMoments, writeMoments } from '../../db/repositories/moments.js';
+import { bumpForgetEpoch, withHandleLock } from '../../db/repositories/memory.js';
+import { memoriesDir } from '../../db/stateDir.js';
 import { getThesis, saveThesis, appendThesisEvidence, THESIS_REWRITE_WRITER } from '../../db/repositories/thesis.js';
 import { THESIS_SECTION_HEADING, splitThesisDoc, renderThesisSection } from '../../memory/thesisEngine.js';
 import { resetStorageForTests } from '../../db/sqlite.js';
@@ -29,9 +33,17 @@ import type { MomentEntry } from '../../persona/moments.js';
 import type { LlmRequest, LlmResult } from '../../llm/types.js';
 import type { StoredMessage, UserProfile } from '../../db/types.js';
 
-// The same frozen clock hookWiring.test.ts installs, for the same reason: the assembler reads the
-// wall clock, and the sampler's seed is `now`.
-const FROZEN_MS = Date.UTC(2026, 0, 6, 2, 0, 0);
+// A frozen clock, for the reason hookWiring.test.ts installs one: the assembler reads the wall clock,
+// and the sampler's seed is `now`.
+//
+// TUESDAY AFTERNOON rather than 2am, and the hour is load-bearing here in a way it is nowhere else
+// in this suite. Two of the files that drive `chat` end to end pin 02:00, which `computeCircadian`
+// reads as `dead_night` and `compileAffect` turns into `sleepQuiet` — and a late idle turn closes
+// every hook kind and shuts the sampler with them (persona/hooks.ts's sleep branch: a moment can
+// only ride out as a callback, and sampling BILLS the moment). A moment-offer test on that clock
+// would be a test of the bedtime branch wearing the sampler's name. Every age band below is computed
+// off differences from this instant (`FROZEN_MS - 10 * DAY`), so moving the hour moves nothing else.
+const FROZEN_MS = Date.UTC(2026, 0, 6, 14, 0, 0);
 const DAY = 24 * 60 * 60 * 1000;
 const RealDate = Date;
 class FrozenDate extends RealDate {
@@ -226,7 +238,11 @@ test('a moment offered in the last day is held back, and the turn renders no lea
   const system = seen[0].system ?? '';
   assert.ok(system.includes(HOOK_HEADING), 'still an idle hook turn');
   assert.ok(!system.includes(MOMENTS_LEAD), 'the same callback twice in a day is a bot with one anecdote');
-  assert.equal(receipt('moments:offer'), undefined, 'nothing was offered, so nothing is billed');
+  // THE HEALTHY NO-OP, receipted. The sampler ran, drew nothing, and says so in numbers: the one
+  // episode on file was held out by the 24-hour window. A sampler that stopped running and a sampler
+  // that keeps finding nothing are otherwise the same silence from the ring, and they are fixed in
+  // different places.
+  assert.deepEqual(receipt('moments:offer'), { offered: 0, rendered: 0, held: 1, excluded: 1 });
   assert.equal((await getHookState(chatId)).idleSinceMoment, MOMENT_IDLE_INTERVAL + 1, 'the counter keeps climbing');
 });
 
@@ -246,12 +262,81 @@ test('a moment that renders to nothing is not an offer, and is billed for nothin
   const system = seen[0].system ?? '';
   assert.ok(system.includes(HOOK_HEADING), 'still an idle hook turn');
   assert.ok(!system.includes(MOMENTS_LEAD), 'no lead, because there was no line to lead with');
-  assert.equal(receipt('moments:offer'), undefined, 'nothing rendered, so nothing was offered');
+  // Drawn but not rendered, and the two numbers say exactly that — which is the reading a bare
+  // "there was no offer" could not give. Nothing is billed either way (below).
+  assert.deepEqual(receipt('moments:offer'), { offered: 1, rendered: 0, held: 1, excluded: 0 });
   const file = await readMoments(SENDER);
   assert.equal(file.entries[0].offered, 0, 'and nothing was billed');
   assert.equal(file.entries[0].lastOfferedAt, 0);
   // The counter keeps climbing, so the next real moment is not four idle turns away.
   assert.equal((await getHookState(chatId)).idleSinceMoment, MOMENT_IDLE_INTERVAL + 1);
+});
+
+test('an unreadable MOMENTS.md offers nothing, writes nothing, and says which silence it is', async () => {
+  const chatId = randomUUID();
+  await primeSpacing(chatId);
+  // A directory where the file should be: present, and unreadable in a way no ENOENT check catches
+  // (db/repositories/moments.test.ts uses the same fixture). A degraded read is NOT an empty file,
+  // and this branch would WRITE — billing what a mangled file happened to parse would rewrite it
+  // from that fragment, in the one tier that archives nothing.
+  fs.mkdirSync(path.join(memoriesDir(SENDER), 'MOMENTS.md'), { recursive: true });
+  const realError = console.error;
+  console.error = () => {};
+  let system: string;
+  try {
+    const lane = fakeLane(envelope(['mm']));
+    await chat(chatId, 'hey', emptyMedia(), clientCtx(), lane.call);
+    system = lane.seen[0].system ?? '';
+  } finally {
+    console.error = realError;
+  }
+  assert.ok(system.includes(HOOK_HEADING), 'still an idle hook turn');
+  assert.ok(!system.includes(MOMENTS_LEAD));
+  // Its OWN skip, not the four numbers: "the file would not read" and "the file had nothing to give"
+  // are the same silence in the prompt and completely different problems on the box.
+  assert.deepEqual(receipt('moments:offer'), { skipped: 'degraded' });
+  assert.ok(fs.statSync(path.join(memoriesDir(SENDER), 'MOMENTS.md')).isDirectory(),
+    'and the unreadable thing is left exactly as it was');
+});
+
+test('a /forget landing between the read and the bill refuses the bill', async () => {
+  const chatId = randomUUID();
+  await primeSpacing(chatId);
+  assert.equal(await writeMoments(SENDER, [moment()], FROZEN_MS - DAY, []), true);
+
+  // The bill is fire-and-forget and takes the handle lock, so holding that lock is what makes this
+  // race a test rather than a coin flip: `chat` reads the epoch and the file, renders the lead,
+  // issues the write — and the write queues behind us. The wipe lands while it waits.
+  //
+  // What the fence compares is the epoch read BEFORE the file, which is the whole reason it is a
+  // fence at all: an epoch read after the file would be compared against itself and could only ever
+  // match, and a wipe landing in that window would be undone by a bill built from the pre-forget
+  // file — in the one tier with no archive to get anything back from.
+  let release = () => {};
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const lock = withHandleLock(SENDER, async () => {
+    await held;
+    bumpForgetEpoch(SENDER);
+  });
+
+  const { seen, call } = fakeLane(envelope(['still no volcano?']));
+  await chat(chatId, 'hey', emptyMedia(), clientCtx(), call);
+  assert.ok((seen[0].system ?? '').includes(MOMENTS_LEAD), 'the offer really was made this turn');
+
+  const realWarn = console.warn;
+  console.warn = () => {};
+  try {
+    release();
+    await lock;
+    // One more trip through the lock: the queued bill runs before anything we enqueue after it.
+    await withHandleLock(SENDER, async () => {});
+  } finally {
+    console.warn = realWarn;
+  }
+
+  const file = await readMoments(SENDER);
+  assert.equal(file.entries[0]?.offered, 0, 'the bill was refused, so nothing was stamped');
+  assert.equal(file.entries[0]?.lastOfferedAt, 0);
 });
 
 test('a TASK turn is offered nothing, whatever the file holds', async () => {

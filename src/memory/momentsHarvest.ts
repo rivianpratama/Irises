@@ -36,7 +36,7 @@ import { wrapPrompt, dataTag } from '../llm/promptTag.js';
 import { getForgetEpoch, getPreference } from '../db/repositories/memory.js';
 import { readMoments, writeMoments } from '../db/repositories/moments.js';
 import { appendThesisEvidence } from '../db/repositories/thesis.js';
-import { momentsEnabled } from '../persona/featureFlags.js';
+import { momentsEnabled, thesisEnabled } from '../persona/featureFlags.js';
 import { isNullLiteral } from '../persona/status.js';
 import {
   foldHarvest, pruneMoments, momentAgeWords,
@@ -521,8 +521,19 @@ export async function updateMoments(
     // The night's one note for the weekly rewrite, appended to THESIS.md's evidence tail (FIFO, seven
     // deep). Same fence, and it never throws — db/repositories/thesis.ts drops on failure for the
     // background writers, because a throw out of a locked section is process-fatal.
+    //
+    // GATED ON THE THESIS FLAG, not on this pass's own. The two features are separate switches on
+    // purpose (README, scripts/flagDocs.test.ts) and `MEMORY_THESIS_ENABLED=off` is supposed to mean
+    // there is no thesis: no weekly pass, no `thesis` section, no document. An append is a SAVE —
+    // `appendThesisEvidence` creates THESIS.md when there is none — so without this gate an install
+    // that turned the thesis off would still grow one on disk every night, a file nothing renders
+    // and nobody asked for, holding her read of somebody in plaintext. The receipt still reports the
+    // note (`note: true`, `noteSaved: false`): a night whose evidence had nowhere to land is a fact
+    // about the flag, not a night that produced nothing.
     const note = validateThesisNote(reply.thesisNote);
-    const noteVersion = note ? await appendThesisEvidence(handle, note, { ifForgetEpoch: epoch0 }) : null;
+    const noteVersion = note && thesisEnabled()
+      ? await appendThesisEvidence(handle, note, { ifForgetEpoch: epoch0 })
+      : null;
 
     receipt({
       skipped: null,
@@ -537,8 +548,9 @@ export async function updateMoments(
       pruned,
       active: kept.length,
       note: note !== null,
-      // False for a note that was written but could not land (an unreadable head doc, the fence, a
-      // version conflict twice) — without this a lost note reads as a night that had none.
+      // False for a note that was written but could not land: an unreadable head doc, the fence, a
+      // version conflict twice, or MEMORY_THESIS_ENABLED off. Without this a lost note reads as a
+      // night that had none.
       noteSaved: note !== null ? noteVersion !== null : null,
       windowUserLines,
       windowChars: transcript.length,

@@ -38,6 +38,7 @@
 // regex is COPIED, five characters of it, and the two copies are pinned by their own tests. If a
 // sixth word is ever added to that list, this is the second place to add it.
 
+import { neutralizeTagBreakouts } from '../llm/promptTag.js';
 import { scopeHistoryToUser } from './transcript.js';
 import type { StoredMessage } from '../db/types.js';
 
@@ -287,13 +288,22 @@ export function buildThesisWindow(
  * free and the output is identical for every read the store validates, so the contract is enforced
  * here rather than documented here.
  *
- * The text is then collapsed to one line and clamped to `THESIS_MAX_CHARS` at a word boundary — a
- * validated read is already inside that bound, and the clamp is here for the other two ways text
- * reaches this seam: a file written before a bound moved, and a human who opened THESIS.md and
- * typed. Nothing else in a prompt is measured against a length the store cannot enforce.
+ * The text is then collapsed to one line, defused, and clamped to `THESIS_MAX_CHARS` at a word
+ * boundary — a validated read is already inside both bounds, and both are here for the other two
+ * ways text reaches this seam: a file written before a bound moved, and a human who opened THESIS.md
+ * and typed. Nothing else in a prompt is measured against a length the store cannot enforce.
+ *
+ * DEFUSED BEFORE CLAMPED, so the clamp measures the bytes that ship. The section is pushed straight
+ * into the `<prompt>` block with no data tag around it (agents/convo/shared.ts), so a `</prompt>` in
+ * the stored read would close the trust boundary and promote the rest of the turn's dynamic content
+ * to instruction position. `validateThesis` refuses the markup characters, which is precisely why
+ * this belongs here rather than there: the two texts that arrive without passing that gate are the
+ * hand edit and the legacy row, and those are the ones this is for. The same guard runs at the
+ * moment seam (persona/moments.ts) and at the turn-focus seam (convo/turnFocus.ts) for the same
+ * reason — and `llm/promptTag.ts` imports nothing, so this file stays as cheap as its header claims.
  */
 export function renderThesisSection(text: string): string {
-  const line = clampWords(oneLine(splitThesisDoc(text ?? '').thesis), THESIS_MAX_CHARS);
+  const line = clampWords(neutralizeTagBreakouts(oneLine(splitThesisDoc(text ?? '').thesis)), THESIS_MAX_CHARS);
   if (!line) return '';
   return `${THESIS_SECTION_HEADING}\n${line}`;
 }

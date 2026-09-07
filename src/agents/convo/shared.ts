@@ -902,6 +902,21 @@ export function buildSystemPromptSections(
   const thesis = (personaTurn?.thesis ?? '').trim();
   if (thesis && thesisEnabled()) push('thesis', thesis);
 
+  // THIS TURN'S RHYTHM CONTRACT (persona/hooks.ts selectHook), read once, here, and consumed by
+  // three things further down: the weather block's climate span, the `hooks` section itself, and the
+  // drift anchor's mode at the recency edge.
+  //
+  // The flag is read HERE, once, for the house reason — a gate at the read site is what makes
+  // `CONVO_HOOKS_ENABLED=off` cost nothing, joins included — and for a sharper one: three reads
+  // could answer differently if the env were flipped between them, and a turn whose recency edge
+  // says "answer it flat" while its section says "carry a hook" is the one contradiction this whole
+  // arrangement exists to prevent.
+  //
+  // It sits UP HERE, ahead of the weather push, only because the climate span needs it: four of the
+  // twelve band lines name a hook kind (persona/climate.ts HOOK_NAMING), and a task turn told "a
+  // tangent is welcome" is the drift this build is named after arriving through the register door.
+  const hookDirective = personaTurn?.hooks && hooksEnabled() ? personaTurn.hooks : null;
+
   // Synchronous, in-memory "research is running right now" awareness (NOT from durable prefs —
   // that path loses the read-after-write race against a fast follow-up). Stops the redundant
   // re-delegation + repeated holding line when the user acks mid-research.
@@ -989,7 +1004,7 @@ export function buildSystemPromptSections(
   // still wants the envelope filled, the pointer is what has to move, not this condition.
   // (internalWeather.test.ts's "no computed state" case is what pins the off path.)
   if (computed) {
-    push('weather', renderStatusForPrompt(affectState, computed, climate));
+    push('weather', renderStatusForPrompt(affectState, computed, climate, hookDirective?.mode === 'hook'));
     push('status_contract', renderStatusContract());
   }
 
@@ -1029,17 +1044,19 @@ export function buildSystemPromptSections(
   // the recency edge, where a hundred and fifty thousand characters of persona have the least pull.
   //
   // Renders '' on a task turn, which is the no-regression pin the whole feature rests on: on the
-  // turns that are real work, this section does not exist.
+  // turns that are real work, this section does not exist. The directive itself was read (and the
+  // hook flag gated) further up, where the weather block's climate span also needs it.
   //
-  // The flag is read HERE, once, and the directive it produces is what BOTH consumers use — this
-  // section and the drift anchor's mode further down. One read rather than two for the house reason
-  // (a gate at the push site is what makes `CONVO_HOOKS_ENABLED=off` cost nothing, joins included)
-  // and for a sharper one: two reads could answer differently if the env were flipped between them,
-  // and a turn whose recency edge says "answer it flat" while its section says "carry a hook" is the
-  // one contradiction this whole arrangement exists to prevent.
-  const hookDirective = personaTurn?.hooks && hooksEnabled() ? personaTurn.hooks : null;
+  // `MEMORY_MOMENTS_ENABLED` is gated HERE, at the push site, exactly like its two sibling flags
+  // (`thesisEnabled` on the thesis section above, `hooksEnabled` on the directive): the moment lines
+  // arrive as a value the caller already computed, so the seam that decides whether the feature
+  // exists has to be the seam that decides whether its bytes reach the prompt. Without this gate a
+  // caller holding a stale sample — the flag flipped off between the read and the build, or any
+  // future caller that fills the struct without re-reading — would render moments into a MEASURED
+  // section on an install that turned them off, and the flag's byte-identity contract would be a
+  // property of one call site rather than of the assembler.
   if (hookDirective) {
-    const hooksBlock = renderHooksSection(hookDirective, personaTurn?.moments);
+    const hooksBlock = renderHooksSection(hookDirective, momentsEnabled() ? personaTurn?.moments : []);
     if (hooksBlock) push('hooks', hooksBlock);
   }
 
@@ -1071,7 +1088,12 @@ export function buildSystemPromptSections(
   //     directive the hooks section above was rendered from, so the two can never disagree. Absent
   //     (a non-Convo caller, or the flag off) falls back to 'task' — the flat-answer law is the safe
   //     default, because a turn wrongly told it may carry a hook is a leaf and a turn wrongly told
-  //     to answer flat is merely plain;
+  //     to answer flat is merely plain. ONE translation happens on the way in: a SLEEP turn is a
+  //     hook turn with every kind closed (persona/hooks.ts), and the law it needs at the recency
+  //     edge is the quiet one — one short thing about going to bed — not "you may carry one hook",
+  //     which is the sentence the section above deliberately does not print either. The mode stays
+  //     `hook` everywhere else, so the quiet GUARD still does not run on it: the anchor states the
+  //     law, and the guard enforces the two turns the ledger and the mood FORCED;
   //   • the WINDOW, the character length of the history rows this same call was handed. Characters,
   //     not rows: what buries the persona head is bytes between it and the reply (policy.ts
   //     DRIFT_LONG_WINDOW_CHARS).
@@ -1085,7 +1107,8 @@ export function buildSystemPromptSections(
   // Behaviour goes here; the format contract stays LAST below (a persona slip is recoverable, a
   // broken envelope is not).
   const windowChars = history?.reduce((n, m) => n + m.content.length, 0) ?? 0;
-  const behaviorAnchor = renderDriftAnchor(hookDirective?.mode ?? 'task', windowChars);
+  const anchorMode = hookDirective?.idle && hookDirective.sleepQuiet ? 'quiet' : hookDirective?.mode ?? 'task';
+  const behaviorAnchor = renderDriftAnchor(anchorMode, windowChars);
 
   // The bubble numbers in the law sentence below are interpolated from the constants the code
   // ENFORCES (pipeline/bubbles.ts, pipeline/bubbleJson.ts), never spelled out: what the model is
@@ -1418,6 +1441,47 @@ export const QUIET_CORRECTION = [
 ].join(' ');
 
 /**
+ * How a forced-quiet turn ended, as the `convo:quiet_guard` receipt reports it. Four disjoint
+ * answers, and the last one is the reason this is a named union rather than four string literals:
+ *
+ *   • `clean`         — the draft was quiet the first time. The healthy no-op, and the row a battery
+ *                       needs in order to tell a working kill switch from a dead one.
+ *   • `quiet`         — the draft broke the quiet and the ONE corrective re-ask fixed it.
+ *   • `kept_original` — the re-ask ran and did not fix it (or the lane died), so the loud reply
+ *                       shipped. The guard's own worst case.
+ *   • `stood_down`    — the turn was forced quiet and the guard did not evaluate it at all, because
+ *                       the honesty guard had already spent this turn's one re-ask or the approval
+ *                       gate had just settled the turn. Whatever the model wrote shipped unchecked,
+ *                       which is a deliberate choice (one re-ask per turn, honesty first) and not a
+ *                       thing that can be read off the absence of a row.
+ */
+export type QuietGuardResolved = 'clean' | 'quiet' | 'kept_original' | 'stood_down';
+
+/**
+ * File the `convo:quiet_guard` receipt for a forced-quiet turn the guard never evaluated.
+ *
+ * Its own function rather than a branch inside `enforceQuiet`, because the stand-down is decided
+ * where the OTHER guards' outcomes are known (processConvoResult) and by then calling `enforceQuiet`
+ * would be asking it to do the one thing this turn must not do — spend a second corrective re-ask.
+ * `retried` is false and `forced` is true, exactly as the other three resolutions report them: the
+ * turn really was forced, and really was not re-asked.
+ */
+export function recordQuietStoodDown(
+  chatId: string,
+  handle: string | undefined,
+  bubbles: string[],
+  emitted: HookWord | undefined,
+): void {
+  record({
+    type: 'event', label: QUIET_GUARD_LABEL, chatId, handle,
+    detail: {
+      forced: true, emitted: emitted ?? null, bubbles: bubbles.length,
+      retried: false, resolved: 'stood_down' satisfies QuietGuardResolved,
+    },
+  });
+}
+
+/**
  * ONE corrective re-ask for a reply that broke a FORCED-QUIET turn — the rhythm backstop, built to
  * the same pattern as the honesty one above and reading the pure `quietViolation` from
  * persona/hooks.ts.
@@ -1433,6 +1497,8 @@ export const QUIET_CORRECTION = [
  * The receipt fires on EVERY evaluation, violation or not (`convo:quiet_guard`, `forced: true`).
  * That is what makes the kill switch scorable: a battery has to be able to tell a forced-quiet turn
  * she got right from a forced-quiet turn that never happened, and only the healthy no-op says so.
+ * A forced turn this guard never SAW files the same receipt from `recordQuietStoodDown` above, so
+ * "forced quiet" and "a row in the ring" mean the same thing whichever way the turn went.
  */
 export async function enforceQuiet(
   args: { res: LlmResult; chatId: string; handle: string | undefined; turn?: ConvoTurnContext },
@@ -1441,7 +1507,7 @@ export async function enforceQuiet(
 ): Promise<{ res: LlmResult; fired: boolean }> {
   const { res, chatId, handle, turn } = args;
   const violated = quietViolation(emitted, bubbles);
-  const file = (retried: boolean, resolved: 'clean' | 'quiet' | 'kept_original') => {
+  const file = (retried: boolean, resolved: Exclude<QuietGuardResolved, 'stood_down'>) => {
     record({
       type: 'event', label: QUIET_GUARD_LABEL, chatId, handle,
       detail: { forced: true, emitted: emitted ?? null, bubbles: bubbles.length, retried, resolved },
@@ -1895,12 +1961,32 @@ export async function processConvoResult(args: {
   // being hers. Stood down on the two approval-settled turns for the same reason the promise guard
   // is (and they are task turns anyway — an outstanding ask of hers is a veto in the idle gate).
   //
+  // And ONE PER USER-VISIBLE TURN, which is why `archivePass` is a fence rather than a hint: the
+  // recall second pass re-enters this whole function with the same user text and the same directive
+  // to produce the same reply, so without this the model would be corrected twice about one bubble
+  // and the receipt ring would carry two `convo:quiet_guard` rows for one thing the user saw once —
+  // which is the number the battery scores the kill switch off. The first pass owns the turn's
+  // quiet; the second pass re-voices what it settled.
+  //
   // The kind it reads is the DRAFT's own, coerced off the reply this guard is about to correct; the
   // turn's one canonical coercion happens further down, on whatever ends up shipping.
   const forcedQuiet = !!args.hooks && args.hooks.directive.mode === 'quiet' && hooksEnabled();
-  const quiet = (forcedQuiet && !guard.fired && !settledTask && !settledReconfirm)
+  const quietOpen = forcedQuiet && !args.archivePass;
+  const quietStoodDown = quietOpen && (guard.fired || !!settledTask || !!settledReconfirm);
+  const quiet = (quietOpen && !quietStoodDown)
     ? await enforceQuiet(args, replyBubbles(firstReply), coerceStatus(firstReply.statusRaw)?.hook_kind)
     : { res: guard.res, fired: false };
+  // The stand-down still files its receipt, and this is the half that makes the kill switch
+  // scorable at all. `enforceQuiet` files on every evaluation it makes, violation or not, precisely
+  // so a battery can tell a forced-quiet turn she got right from a forced-quiet turn that never
+  // happened — and a turn where the guard never ran is exactly the case that reads as "never
+  // happened" from the ring. Without this row, a run of three hooks followed by an approved "yes"
+  // would look identical to a kill switch that stopped firing.
+  if (quietStoodDown) {
+    recordQuietStoodDown(
+      chatId, handle, replyBubbles(firstReply), coerceStatus(firstReply.statusRaw)?.hook_kind,
+    );
+  }
   const res = quiet.res;
   // Re-parsed only when the re-ask actually replaced the reply — parseReply logs a line for a
   // non-envelope reply, and parsing the same one twice would double it.

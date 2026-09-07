@@ -32,6 +32,7 @@ import {
   readFigureStand,
   readVoiceVerdict,
   resolveScript,
+  realOffer,
   scoreItem,
   scoreScript,
   type HookFailure,
@@ -156,9 +157,14 @@ function guard(over: Partial<QuietGuardDetail> = {}): QuietGuardDetail {
   return { forced: true, emitted: null, bubbles: 1, retried: false, resolved: 'clean', ...over };
 }
 
-function offer(over: Partial<MomentOfferDetail> = {}): MomentOfferDetail {
-  return { offered: 3, rendered: 3, held: 20, excluded: 0, ...over };
+/** One REAL offer as `TurnEvidence.momentOffers` carries it — the numbers already known to be
+ *  present, because the round reader filters the no-op runs and the degraded skips out (`realOffer`).
+ *  `receiptDetail` below is the raw receipt shape, which is what the filter is tested against. */
+function offer(over: Partial<MomentOfferDetail> = {}): RealOffer {
+  return { offered: 3, rendered: 3, held: 20, excluded: 0, ...over } as RealOffer;
 }
+
+type RealOffer = NonNullable<ReturnType<typeof realOffer>>;
 
 function evidence(over: Partial<TurnEvidence> = {}): TurnEvidence {
   return {
@@ -447,6 +453,42 @@ test('h1: an idle hook turn that carried nothing is the leaf this build is named
   assert.equal(r.layer, LAYERS.hooks_page);
 });
 
+// The clock's own turn, and the reason it cannot be scored as the leaf: a late idle turn is a
+// closed-kinds hook turn (persona/hooks.ts's sleep branch) — one short line about going to bed, no
+// beat by design. Scored as a failure, every round anybody ran after midnight in the debug handle's
+// own timezone would report the leaf this build is named after.
+test('h1: a hook turn with no kind open carried nothing because there was nothing to carry', () => {
+  const r = score(item('h1'), {
+    trace: trace({ hook: { idle: true, mode: 'hook', emitted: 'none', violation: false } }),
+    select: select({ reason: 'sleep', mode: 'hook', forbidden: [...HOOK_WORDS], moments: false }),
+    threadSelect: threads(),
+    momentOfferedHere: false,
+  });
+  assert.equal(r.verdict, 'UNSCORED');
+  assert.match(r.evidence, /no kind open/);
+  assert.match(r.evidence, /middle of the night/);
+
+  // The rare non-clock way here — a room, a flattened mood and a callback she just used twice — is
+  // the same reading for the same reason: the beat was spent before she could carry one.
+  const spent = CHECKS.hook_present.run(evidence({
+    trace: trace({ hook: { idle: true, mode: 'hook', emitted: 'none', violation: false } }),
+    select: select({ reason: 'hook', mode: 'hook', forbidden: [...HOOK_WORDS] }),
+    threadSelect: threads(),
+    momentOfferedHere: false,
+  }));
+  assert.equal(spent.status, 'unscored');
+
+  // …and ONE kind still open is scored exactly as before: this is a floor on the forbidden list, not
+  // an escape hatch a narrow mood could open.
+  const oneOpen = score(item('h1'), {
+    trace: trace({ hook: { idle: true, mode: 'hook', emitted: 'none', violation: false } }),
+    select: select({ reason: 'hook', mode: 'hook', forbidden: ['judgment', 'tangent'] }),
+    threadSelect: threads(),
+    momentOfferedHere: false,
+  });
+  assert.equal(oneOpen.verdict, 'HOOK_MISSING');
+});
+
 test('h1: a consumed thread or moment offer counts as the beat', () => {
   const withThread = score(item('h1'), {
     trace: trace({ hook: { idle: true, mode: 'hook', emitted: 'none', violation: false } }),
@@ -596,6 +638,23 @@ test('h3: a kept original is the DISTINCT unresolved verdict, not the ignored on
   assert.equal(r.layer, LAYERS.quiet_guard);
 });
 
+// The fourth resolution, and the one that is neither a pass nor a failure: the guard filed a row
+// saying it never looked. The switch itself FIRED — the trace is quiet and the receipt exists, which
+// is what h3's own check reads — so only the quiet-held half goes unscored.
+test('h3: a stood-down guard says the quiet was never checked, and scores neither way', () => {
+  const seeds = HOOK_WORDS.map(w => trace({ hook: { idle: true, mode: 'hook', emitted: w, violation: false } }));
+  const r = score(item('h3'), {
+    seedTraces: seeds,
+    trace: trace({ hook: { idle: true, mode: 'quiet', emitted: 'none', violation: false } }),
+    select: select({ reason: 'kill_switch', mode: 'quiet' }),
+    quietGuard: guard({ resolved: 'stood_down', bubbles: 2 }),
+  });
+  assert.equal(r.verdict, 'UNSCORED');
+  assert.match(r.evidence, /never evaluated it/);
+  // The receipt still proves the switch fired, which is the thing a MISSING row could not say.
+  assert.ok(r.checks.some(c => /kill_switch_forced: pass/.test(c)), r.checks.join(' | '));
+});
+
 test('h3: a re-ask that fixed it passes with a warning rather than failing', () => {
   const seeds = HOOK_WORDS.map(w => trace({ hook: { idle: true, mode: 'hook', emitted: w, violation: false } }));
   const r = score(item('h3'), {
@@ -637,6 +696,23 @@ test('h3: quiet on the trace with no guard receipt means the guard never ran', (
   });
   assert.equal(r.verdict, 'KILL_SWITCH_IGNORED');
   assert.match(r.evidence, /never \nevaluated|never evaluated/);
+});
+
+// The sampler files a receipt on EVERY run now — the healthy no-op and the degraded skip included —
+// so the round reader has to tell an offer from a run that offered nothing. `realOffer` is that
+// filter, and getting it wrong in either direction breaks h4: counted, a no-op would satisfy the
+// two-offer gate with nothing behind it and then fail the spacing arithmetic, because a run that
+// held nothing out is not a run that let an id back around.
+test('realOffer keeps a rendered offer and refuses every kind of no-op', () => {
+  assert.deepEqual(realOffer({ offered: 3, rendered: 2, held: 20, excluded: 4 }),
+    { offered: 3, rendered: 2, held: 20, excluded: 4 });
+  assert.equal(realOffer(null), null);
+  assert.equal(realOffer({ skipped: 'degraded' }), null, 'an unreadable file offered nothing');
+  assert.equal(realOffer({ offered: 0, rendered: 0, held: 0, excluded: 0 }), null, 'an empty file');
+  assert.equal(realOffer({ offered: 0, rendered: 0, held: 12, excluded: 12 }), null,
+    'a whole file held out by the 24-hour window');
+  assert.equal(realOffer({ offered: 2, rendered: 0, held: 4, excluded: 0 }), null,
+    'drawn, but every line rendered to nothing — so nothing was put in front of her');
 });
 
 test('h4: fewer than two offers in the round leaves the window untested', () => {
@@ -893,6 +969,24 @@ test('a hook-mode turn whose only beat was a moment offer carried something', ()
   const line = r.checks.find(c => c.startsWith('hooks_on_idle:')) ?? '';
   assert.match(line, /hooks_on_idle: pass/, r.checks.join('\n'));
   assert.equal(r.warnings.find(w => w.id === 'hooks_on_idle'), undefined, JSON.stringify(r.warnings));
+});
+
+test('a run held at a closed-kinds hour is not thirty leaves', () => {
+  // Every idle turn a closed-kinds hook turn — a whole run started after midnight in the debug
+  // handle's own timezone (persona/hooks.ts's sleep branch). Nothing carried a beat, and nothing was
+  // supposed to: the positive control has no reading here, so it takes none rather than reporting
+  // the failure this build is named after.
+  const r = scoreScript(scriptEvidence((base, t) => (
+    t.kind === 'idle'
+      ? {
+        trace: trace({ hook: { idle: true, mode: 'hook', emitted: 'none', violation: false } }),
+        select: select({ reason: 'sleep', mode: 'hook', forbidden: [...HOOK_WORDS], moments: false }),
+      }
+      : {}
+  )));
+  assert.ok(r.unscoredChecks.some(u => u.id === 'hooks_on_idle'), JSON.stringify(r.unscoredChecks));
+  assert.equal(r.findings.find(f => f.id === 'hooks_on_idle'), undefined, JSON.stringify(r.findings));
+  assert.ok(r.checks.some(c => /hooks_on_idle: unscored/.test(c) && /closed the kinds/.test(c)), r.checks.join('\n'));
 });
 
 test('a run with no hook-mode turn at all cannot answer the positive control', () => {
