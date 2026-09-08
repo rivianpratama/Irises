@@ -241,7 +241,7 @@ const DRIFT_MODE_BULLETS: Record<DriftMode, readonly string[]> = {
   hook: [
     '- This is an idle turn: one hook, of a kind the hooks section above still allows, and only one.',
     '- Specific and checkable beats clever: cite only what you can see. What they do, never what they are.',
-    '- Match their register, never their content. When a line dies, let it.',
+    '- Match their register, never their content. A hook is a statement, never a question. When a line dies, let it.',
   ],
   quiet: [
     '- Three sharp things in a row already, or it is late for them: this reply is one plain short bubble, a tapback, or nothing.',

@@ -340,7 +340,7 @@ export const HOOK_OPEN_LINE = 'Open to you this turn: {kinds}. One of them, neve
  *  beat is spent. */
 export const HOOK_NONE_OPEN = 'No kind is open this turn. Short and flat, and let the beat pass.';
 
-export const HOOK_SLEEP_LINE = 'It is late where they are. The right reply is that they should sleep — one short bubble, or a tapback — and the hook keeps.';
+export const HOOK_SLEEP_LINE = 'It is late where they are. The right reply is that they should sleep — one short bubble, or a tapback, no greeting back — and the hook keeps.';
 
 export const MOMENTS_LEAD = 'Kept about them, in case a callback fits. Retell one in fresh words, never read it out, never its date, never more than one.';
 

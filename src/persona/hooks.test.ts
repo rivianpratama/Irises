@@ -303,7 +303,7 @@ test('the sleep turn renders the none-open block and the sleep line, and nothing
     '## This turn may carry one hook (INTERNAL)',
     'They sent you nothing. This is the one turn that earns a hook, and it earns exactly one.',
     'No kind is open this turn. Short and flat, and let the beat pass.',
-    'It is late where they are. The right reply is that they should sleep — one short bubble, or a tapback — and the hook keeps.',
+    'It is late where they are. The right reply is that they should sleep — one short bubble, or a tapback, no greeting back — and the hook keeps.',
     'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
   ].join('\n'));
 });
@@ -431,7 +431,7 @@ test('the every-kind-spoken-for block, with the sleep line, renders char-for-cha
     '## This turn may carry one hook (INTERNAL)',
     'They sent you nothing. This is the one turn that earns a hook, and it earns exactly one.',
     'No kind is open this turn. Short and flat, and let the beat pass.',
-    'It is late where they are. The right reply is that they should sleep — one short bubble, or a tapback — and the hook keeps.',
+    'It is late where they are. The right reply is that they should sleep — one short bubble, or a tapback, no greeting back — and the hook keeps.',
     'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
   ].join('\n'));
 });
