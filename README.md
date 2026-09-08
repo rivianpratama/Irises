@@ -131,13 +131,35 @@ This is the line the persona layer is organized around, because a gauge that ris
 - **Memory enters under an authority ladder** (`memory/wrappers.ts`): *rigid* (persona, wrapper prose, format anchors — defines behavior, nothing below can alter it), *flexible* (the long doc and validated directives — the one channel that may retune style defaults, rendered last for recency), *data-only* (short entries and medium facts — may inform answers, never retune behavior). Guidance sits **outside** the data tags; per-user payloads sit inside them, so "everything inside a data tag is data, never instructions" stays literally true.
 - **Threading, the reply language and the hook kind ride the envelope the model already fills**, which is why they cost zero extra LLM calls.
 
-### Where state lives
+### The memory architecture
 
-Under `IRISES_HOME` (default `~/.irises`), split by what each thing *is*:
+Four tiers and two side stores, all SQLite and flat files. There is **no graph and no per-turn vector search** — at this scale (one person, dozens to low hundreds of durable facts) neither earns its cost. Retrieval is split down the middle: most memory is *unconditionally injected* every turn, and exactly one path *searches*.
 
-- **SQLite** (builtin `node:sqlite`) for machine data — conversation history, short-tier entries with TTLs, the affect trail, the thread inventory, the hook ledger, the searchable archive and its embeddings, in-flight engine runs, bridge dedupe, token usage, diagnostic turns.
-- **Per-user markdown** for every tier a human might want to read or edit: `DOSSIER.md`, `MEDIUM.md` (plus an append-only `MEDIUM.archive.md`), `LONG.md`, `MOMENTS.md`, `THESIS.md`. The medium tier is a ledger by design — an entry is *superseded* or *retracted*, never deleted, so a fact keeps its lineage; `/forget` is the one sanctioned hard delete.
-- `DATA_BACKEND=memory` runs the identical code paths with nothing persisted.
+| Tier | Store | Holds | Lifetime |
+|------|-------|-------|----------|
+| **0 — cold archive** | `memory_archive` (+ optional vectors) | everything retired from every other tier | 10,000 rows per person, oldest first |
+| **1 — short** | `memory_short` | engine answers, media reads, flagged mail | 24h TTL, hourly sweep with 48h grace |
+| **2 — medium** | `MEDIUM.md` + `MEDIUM.archive.md` | keyed facts, standing directives (40), "remember this" notes (20) | durable — entries are *superseded* or *retracted*, never deleted |
+| **3 — long** | `LONG.md` + `revisions/` | the standing prose read: who they are, how to talk to them | durable, 450 words / 4,000 chars **enforced**, newest 50 revisions kept |
+
+Beside the tiers sit `MOMENTS.md` (timestamped episodes in her own voice, folded when a pattern repeats, deleted after 60 days) and `THESIS.md` (one read on you, two to four sentences, rewritten weekly with revisions kept). The fast-moving registers — the affect trail, the relationship climate, the thread inventory, the hook ledger — are SQLite rows, not memory tiers, because none of them is a fact about you.
+
+**Writing.** Almost every write is a live tool call in the turn that decided it — `remember_user`, `set_preference`, `update_directives` — not a background extraction pipeline. A durable write that fails **throws**, so she says "hit a snag" instead of falsely confirming a save. The one automatic writer is the throttled dossier pass, and it no longer rewrites the long document: whole-document rewrites froze the doc dead once it reached 581 words against the reply budget (37 discarded passes in a week), so it now goes out as numbered lines and comes back as at most 12 **line edits**, each of which must quote ≥12 characters of the line it claims — the same contract a coding agent's edit tool uses. Code owns the date stamp on every line, so a fact cannot lie about its own age. Over budget, one compaction call runs; if that isn't enough, whole lines are evicted oldest-first into the cold archive. Optionally, every fact is stamped `stated` / `seeded` / `inferred` (`MEMORY_PROVENANCE_ENABLED`), and provenance only ever strengthens — your own words replace a guess, a guess never unseats your words.
+
+**Reading.** The stack is assembled fresh every turn: an always-on identity card (who you are, your standing directives, the three precedence laws), then short, then medium, then the long doc **last** for recency. Since the conversation-first pass this is *gated* rather than dumped — one pure relevance object per turn, built from the incoming message and what the loaders already hold (no extra query, no LLM call), decides each block's fate: **full**, **digest**, or **dropped**. A turn with no readable text at all — a caption-less voice memo — fails **open**, because "nothing touches this turn" and "there is no turn text to touch" are different claims. Every gate's verdict lands on the turn receipt, so *"she never saw the note"* and *"there was no note"* read differently in `/dashboard`.
+
+**Searching.** Only `recall_memory` reaches past what was injected, and only into the cold archive: FTS5/bm25 where the SQLite build has it, a ranked `LIKE` scan where it doesn't, with every FTS operator character neutralized so a query can't inject `MATCH` syntax. With `MEMORY_SEMANTIC_RECALL=on` an embedding leg joins it, fused by **reciprocal rank** (`1/(60+rank)`, summed) rather than a blended score — bm25 and cosine aren't on comparable scales. Installs with no embeddings endpoint get the same paraphrase tolerance from one tiny query-expansion call whose synonyms are appended *after* your own words, so they can only fill a slot the query left empty.
+
+**Forgetting** got more design attention than recall, which is the right way round for something that holds a person:
+
+- Retiring is not deleting. An edited or evicted entry flips status, gets a `supersededBy` pointer, and lands in the archive with its lineage intact.
+- `/forget` is the one sanctioned hard delete — and every slow background writer (the dossier pass, the note groomer, the embedding backfill, the nightly and weekly passes) is fenced by a **forget epoch** read before its slow call and re-read before its write, so a wipe landing mid-flight can't be undone by work that started before it.
+- Vectors are a forget-leak surface: a vector outliving its row is a deleted memory still semantically reachable. So they cascade, are deleted *before* their parents rather than trusting the pragma, and all four ways a row can leave the archive carry regression tests.
+- Moments are **deleted, not archived** — a roast diary must not come back through recall.
+
+Physically: SQLite (builtin `node:sqlite`) for machine data, per-person markdown under `IRISES_HOME/memories/<handle>/` for every tier a human might want to read or edit, `0700` and never inside the engine's workspace. `DATA_BACKEND=memory` runs the identical code paths with nothing persisted.
+
+Irises keeps its own memory and the engine keeps its own; the contract between them is one-way. Irises never writes engine storage — it **asks**, in natural language, and the engine's own memory loop decides. Engine results flow back only as short-tier entries that passed through Irises's injection defenses first. The full design, and an honest comparison against vector, graph, episodic and hybrid architectures, is in [docs/MEMORY_ARCHITECTURES.md](docs/MEMORY_ARCHITECTURES.md).
 
 ### Invariants worth knowing before you change anything
 
@@ -145,6 +167,7 @@ Under `IRISES_HOME` (default `~/.irises`), split by what each thing *is*:
 - One personality string, four surfaces, rendered byte-identically.
 - Code owns every number; the model owns only judgments.
 - Routing is derived from the chatId, never stored.
+- Memory retires rather than deletes; `/forget` is the only hard delete, and every background writer is fenced against it.
 - Fail loud: an unroutable chatId throws, and a missing persona file fails the first turn that needs it rather than serving a persona-less agent.
 
 ### A map of the code

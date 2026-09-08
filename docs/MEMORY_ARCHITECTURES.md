@@ -61,7 +61,9 @@ So mark-agent is a **tri-part hybrid**: local vector search (Mem0-family) + LLM 
 
 ## 5. Irises' actual memory system
 
-Irises has **no vector index and no graph** anywhere in `src/` (verified: `grep -ril "embedding|vector|pgvector|cosine|faiss|pinecone|chroma"` across `src/` returns nothing). It is a four-tier system, entirely SQLite + flat files, with retrieval split between "always injected" and "explicitly searched."
+> **Read this section as of its date.** It described the system before the three dated addenda below, and two of its claims have since been overtaken by them: tier 0 gained an **optional** embedding leg (2026-08-28), and the "unconditional injection" reading is now gated (2026-09-03). The addenda are the current word; §5 is kept as written so the diff between the two is legible.
+
+Irises has **no graph** anywhere in `src/`, and — at the time of writing — no vector index either. It is a four-tier system, entirely SQLite + flat files, with retrieval split between "always injected" and "explicitly searched." (Tier 0's optional vector leg arrived later; see the 2026-08-28 addendum. There is still no graph, and no per-turn similarity search on any tier.)
 
 ### Tier 0 — cold archive (searchable, lexical only)
 Everything retired from any other tier lands in the `memory_archive` SQLite table — superseded/retracted medium entries, expired short-term rows, pruned messages, evicted profile facts (`src/db/repositories/memoryArchive.ts:1-16`). Search is **keyword, not semantic**: FTS5 with bm25 ranking when the SQLite build supports it, degrading to a `LIKE` scan ranked in JS by distinct-token hits otherwise (`memoryArchive.ts:112-119`, `267-353`). The query is tokenized and every FTS operator character is neutralized so user input can't inject `MATCH` syntax (`memoryArchive.ts:239-245`). Capped at 10,000 rows/handle with oldest-first eviction (`memoryArchive.ts:70`, `178-189`). This is the backing store for the `recall_memory` tool — the *only* path that reaches further back than what's unconditionally injected each turn (`src/agents/convo/tools.ts:211-226`).
