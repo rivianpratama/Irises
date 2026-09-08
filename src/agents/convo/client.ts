@@ -17,6 +17,7 @@ import { getConversation, addMessage, clearConversation, clearUserProfile } from
 import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
 import { pendingIntroWeave } from '../ops/firstMove.js';
 import { timestampLabel } from '../../pipeline/chatTime.js';
+import { DEFAULT_TZ } from '../../pipeline/zonedTime.js';
 import { getAffectState } from '../../db/repositories/affectState.js';
 import {
   getRelationshipClimate, clearRelationshipClimate, relationshipClimateEnabled,
@@ -251,6 +252,14 @@ export async function chat(
   // has no business in a prompt (memory/thesisEngine.ts).
   const thesisSection = thesisDoc ? renderThesisSection(thesisDoc.docMd) : '';
 
+  // THE zone for this turn, resolved once here and handed to everything that renders a clock: the
+  // circadian baseline, the tapped-reply date label that rides into durable history, the transcript
+  // stamps, this turn's own stamp, and (as the assembler's `agentTz`) every clock inside the prompt.
+  // Every one of those used to resolve its own zone or fall through to DEFAULT_TZ — the host's, UTC
+  // in production — so a single prompt could carry two clocks seven hours apart. One value means
+  // they cannot disagree. No stored preference → DEFAULT_TZ, exactly as before.
+  const userTz = agentTz || DEFAULT_TZ;
+
   // Irises's hidden affect state: her persisted prior-turn mood/gauges/meta-prompt for THIS chat,
   // plus the clock-computed cycle/circadian baseline for right now (anchored to the user's tz).
   // Feeds the "internal weather" prompt block and is re-merged with the model's emitted status
@@ -259,7 +268,7 @@ export async function chat(
   const nowMs = Date.now();
   const computed: ComputedState = {
     cycle: computeCycle(nowMs, cycleAnchorMs()),
-    circadian: computeCircadian(nowMs, agentTz || undefined),
+    circadian: computeCircadian(nowMs, userTz),
   };
 
   // Transcribe audio (in parallel) and fold into the text — the cheap fast path for voice memos, so
@@ -295,7 +304,7 @@ export async function chat(
   // persists in history and reaches the API — not just this turn's system prompt. Thread-aware:
   // one of Irises's bubbles, the user's own thread root, or an honest unresolved marker.
   const repliedTo = chatContext?.repliedTo ?? (chatContext?.repliedToText ? { kind: 'assistant' as const, text: chatContext.repliedToText } : undefined);
-  if (textToSend) textToSend = annotateTappedReply(textToSend, repliedTo);
+  if (textToSend) textToSend = annotateTappedReply(textToSend, repliedTo, userTz);
 
   if (textToSend) await addMessage(chatId, 'user', textToSend, chatContext?.senderHandle);
 
@@ -317,9 +326,9 @@ export async function chat(
   // DB record time is untouched (see addMessage above) so record order = lock order stays single-clock.
   const arrivedAt = chatContext?.arrivals?.[0]?.receivedAt ?? 0;
   const messages: LlmMessage[] = [
-    ...formatHistory(history, chatContext?.isGroupChat ?? false),
+    ...formatHistory(history, chatContext?.isGroupChat ?? false, userTz),
     // Text-only: Convo never ingests media natively — the engine opens files.
-    { role: 'user', timestamp: timestampLabel(arrivedAt > 0 ? arrivedAt : Date.now()) || undefined, content: textToSend || '...' },
+    { role: 'user', timestamp: timestampLabel(arrivedAt > 0 ? arrivedAt : Date.now(), userTz) || undefined, content: textToSend || '...' },
   ];
 
   // Synchronous read of what Ops is working on for this chat RIGHT NOW (in-memory, race-free).
@@ -574,7 +583,7 @@ export async function chat(
   // lines that ride inside that section when the directive allows one, and her one read on this
   // person. Each renders nothing when it is empty.
   const personaTurn = { hooks: hookDirective, moments: momentLines, thesis: thesisSection };
-  const prompt = buildSystemPromptSections(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, agentTz || undefined, affectState, computed, capabilitySummary, climate, thread, introWeave, turnFocus, craftFacts, personaTurn);
+  const prompt = buildSystemPromptSections(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, userTz, affectState, computed, capabilitySummary, climate, thread, introWeave, turnFocus, craftFacts, personaTurn);
   const system = prompt.system;
 
   try {

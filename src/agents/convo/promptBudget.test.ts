@@ -836,11 +836,13 @@ const FIXTURES: Fixture[] = [
 ];
 
 /** The messages array the live turn sends alongside the prompt: the stored window as the model sees
- *  it, plus this turn's own text (convo/client.ts:248-252). */
+ *  it, plus this turn's own text (convo/client.ts:248-252). In 'UTC', the zone the client hands
+ *  formatHistory on a live turn and the same one `argsFor` pins the prompt to — the stamps are the
+ *  bulk of the transcript's characters, so they measure on this file's clock, not the host's. */
 function messagesFor(f: Fixture): TranscriptMessage[] {
   const { history: rows = [], incomingText, chatContext } = f.spec;
   return [
-    ...formatHistory(rows, chatContext?.isGroupChat ?? false),
+    ...formatHistory(rows, chatContext?.isGroupChat ?? false, 'UTC'),
     { content: incomingText || '...' },
   ];
 }
@@ -858,17 +860,22 @@ function transcriptShare(prompt: MeasuredPrompt, messages: readonly TranscriptMe
 
 // ── the assertions ───────────────────────────────────────────────────────────
 
-/** The zone guard, and the reason it is the first test in the file. The header asks every fixture to
- *  run under TZ=UTC and `argsFor` pins each one's `agentTz` to 'UTC', but that only covers the clock
- *  section: `conversation_timing` takes no zone from the assembler at all and falls back to
- *  `DEFAULT_TZ` — the HOST's own zone, resolved once at import (pipeline/zonedTime.ts) and therefore
- *  already fixed before this file's own `process.env.TZ` line runs. So a run started outside UTC
- *  renders a different wall clock inside that section: the mature fixture measures 136,568 characters
- *  under TZ=UTC against 136,519 on a UTC+7 host and 136,518 on a US Central one — 49 characters of
- *  prose that reads "late night" in one zone and something else in another — and every ceiling below
- *  is then a number taken on a prompt this process cannot build. The clock section is the readable
- *  witness for the same fallback: hand it no stored `agent_tz` and it prints DEFAULT_TZ's wall clock,
- *  so the frozen 02:00 instant shows up as "2:00 AM" in UTC and as something else everywhere else. */
+/** The zone guard, and the reason it is the first test in the file. `argsFor` pins every fixture's
+ *  `agentTz` to 'UTC', and that now covers every clock the assembler renders: `conversation_timing`
+ *  takes the assembler's resolved zone like `current_time` always did, so the wall-clock prose is the
+ *  same string on any host. It did not use to be — that section took no zone at all and fell back to
+ *  `DEFAULT_TZ`, the HOST's own zone, resolved once at import (pipeline/zonedTime.ts) and therefore
+ *  already fixed before this file's own `process.env.TZ` line runs, which put a run started outside
+ *  UTC 49 characters away from the ceilings below on the mature fixture alone.
+ *
+ *  What is left is smaller and further down: the memory stack renders through
+ *  `renderUserMemoryWithHot` with no `timeZone` option, so its dated-memory suffixes and date labels
+ *  still resolve `DEFAULT_TZ` themselves and are day-granular — invisible at this frozen 02:00
+ *  instant (the mature fixture measures 136,444 characters under TZ=UTC, on a UTC+7 host, on a UTC+14
+ *  one and on a US Central one alike), and a different frozen instant near a day boundary would move
+ *  it. So the pin stays, and the clock section stays its readable witness: hand it no stored
+ *  `agent_tz` and it prints DEFAULT_TZ's wall clock, so the frozen 02:00 instant shows up as
+ *  "2:00 AM" in UTC and as something else everywhere else. */
 test('the process is in UTC — every ceiling below was measured there', () => {
   const args = argsFor({});
   args[7] = '';  // no stored agent_tz, so the clock falls back to DEFAULT_TZ like the timing block does
