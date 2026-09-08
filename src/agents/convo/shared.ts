@@ -990,12 +990,19 @@ export function buildSystemPromptSections(
   // Current time — so schedule_automation can turn "tomorrow 9am" / "in 30 min"
   // into an absolute fire_at, and pick the right timezone for recurring crons.
   // Anchored to the user's stored agent_tz when known (fallback: DEFAULT_TZ — this host's own zone).
+  //
+  // THEIR clock leads, and the UTC instant follows it as arithmetic input. The line used to open on
+  // the ISO instant with the local time as an aside, and she read the first number she was handed:
+  // live, at 07:57 in the person's zone, the self-note read "they're winding down at 1am" and the
+  // reply was "late. get some sleep" — the circadian slot was right and the clock she cited was the
+  // UTC one. The clock is one of the few facts she is allowed to say out loud, so the sentence names
+  // which of the two numbers that is; the ISO instant stays because fire_at has to be computed off it.
   const tz = agentTz || DEFAULT_TZ;
   const now = new Date();
   const localTime = new Intl.DateTimeFormat('en-US', {
     timeZone: tz, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
   }).format(now);
-  push('current_time', `## Current time\nRight now it's ${now.toISOString()} (UTC), which is ${localTime} in ${tz}.\nThe user's timezone is ${tz}. For a one-time reminder, compute fire_at as an absolute ISO 8601 instant from this. For a recurring one, give a 5-field cron and use ${tz} unless they say otherwise.`);
+  push('current_time', `## Current time\nRight now it's ${localTime} for them, in ${tz}. That is the clock you read and cite. The same instant in UTC is ${now.toISOString()}, for computing reminders only.\nThe user's timezone is ${tz}. For a one-time reminder, compute fire_at as an absolute ISO 8601 instant from this. For a recurring one, give a 5-field cron and use ${tz} unless they say otherwise.`);
 
   // Irises's internal weather — her cycle/circadian baseline + carried-forward mood + last-turn
   // meta-prompt. Sits right after the clock (both are "where am I right now" orientation) and, like
