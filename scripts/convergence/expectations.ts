@@ -122,7 +122,7 @@ export const THREADS_SELECT_LABEL = 'threads:select';
 /**
  * The `PROMPT_BUDGET` keys a LIVE round may score, and the ones it may only report.
  *
- * promptPolicy.ts says it plainly about its own table: the numbers are measured on six fixtures,
+ * promptPolicy.ts says it plainly about its own table: the numbers are measured on seven fixtures,
  * and "a real turn whose dossier is longer than the fixture's is not an error". So a live battery
  * has to split the table in two, exactly the way that comment does:
  *

@@ -2,7 +2,7 @@
 //
 // The ratchet. Convo's system prompt assembles to ~136k characters — ~84k of it the persona — and
 // it had only ever grown, one well-argued block at a time. This file measures the prompt through
-// the real assembler (buildSystemPromptSections, the Task-1 seam) on six representative turns and
+// the real assembler (buildSystemPromptSections, the Task-1 seam) on seven representative turns and
 // holds every part under the ceiling it stands at TODAY (promptPolicy.ts) — so the next block that
 // quietly doubles fails here instead of quietly costing the live thread its share of the context.
 //
@@ -487,9 +487,11 @@ const HISTORY_12 = history(12);
 const HISTORY_80_DENSE = history(80, DENSE_TEXTS);
 
 // ── what the rhythm engine decided ───────────────────────────────────────────
-// Two of the six fixtures are IDLE turns, and they are the two that have to be: the `hooks` section
-// and the `thesis` section are measured budget lines, so a fixture has to render each of them or the
-// ceiling is a number nobody took.
+// Three of the seven fixtures are IDLE turns, and the first two are the two that have to be: the
+// `hooks` section and the `thesis` section are measured budget lines, so a fixture has to render
+// each of them or the ceiling is a number nobody took. (The third, fixture 7, is idle for a reason
+// that has nothing to do with the section it renders and everything to do with the one after
+// it — see its own comment, and `behavior_anchor`.)
 //
 // Which two is not arbitrary. The cold "hey" is the idle turn the manifesto is named after. The
 // THREAD-OFFER fixture is the other one because it now has no choice: an offer is only ever made on
@@ -526,7 +528,11 @@ const HOOK_TURN: PersonaTurn = {
  *  ride out as a callback and sampling bills it either way). This fixture's own 02:00 clock cannot
  *  produce it — but the directive is HANDED to the assembler rather than compiled inside it, and
  *  production has twenty-four hours in the day, so this is the widest section the engine can build
- *  and therefore the honest ceiling. Everything else about fixture 5 stays on the shared clock. */
+ *  and therefore the honest ceiling. Everything else about fixture 5 stays on the shared clock.
+ *
+ *  Fixture 7 carries the same directive, for the same reason read at the other end of the prompt:
+ *  the anchor's hook law is only reached while a kind is still open, and the sleep branch would send
+ *  it to the quiet law instead (shared.ts translates an all-kinds-closed hook turn into 'quiet'). */
 const DAYTIME_HOOK: HookDirective = {
   idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: true, offerAllowed: true,
 };
@@ -554,6 +560,13 @@ const MOMENT_TEXTS: readonly string[] = [
   'asked you for the schedule, argued with the schedule, then set himself a deadline half a day earlier than the one you had given him and treated the difference as his own idea from the very start of it',
 ];
 
+/** The idle line fixture 7 arrives on: a running joke restated, no ask anywhere in it. It has to be
+ *  idle-shaped rather than borrowed from fixture 2, because that fixture's turn is a question with a
+ *  number in the answer — a shape the idle gate never hands a hook directive, and a fixture whose
+ *  prompt says "you may carry one hook" over a turn that asked for the cedar dates would be measuring
+ *  a turn the engines cannot produce. */
+const IDLE_TURN_TEXT = 'anyway the dock is still one weekend away';
+
 /** Forty days back: inside the 35–75 day band `momentAgeWords` renders as the longest phrase. */
 const MOMENT_AT = FROZEN_MS - 40 * 24 * 60 * 60 * 1000;
 
@@ -570,7 +583,7 @@ const MOMENT_LINES: string[] = renderMomentLines(MOMENT_SAMPLE, FROZEN_MS);
 const THESIS = `## Your read on them (INTERNAL — never recite, never name; every judgment is made of it)
 They decide fast on things that cost money and slowly on things that cost a conversation, which is why the supplier disputes sit open for weeks. They would rather re-do a job than ask someone to fix it, and they read a question about the schedule as a question about their competence.`;
 
-// ── the six fixtures ─────────────────────────────────────────────────────────
+// ── the seven fixtures ───────────────────────────────────────────────────────
 
 interface Fixture {
   name: string;
@@ -778,6 +791,48 @@ const FIXTURES: Fixture[] = [
       'turn_focus', 'behavior_anchor', 'json_anchor',
     ],
   },
+  {
+    // 7. THE LONG THREAD, IDLE: fixture 6's window and fixture 6's person, on the turn where they
+    // said something with no ask in it. It exists for ONE number, and for the same reason fixture 6
+    // does — `behavior_anchor` is picked on TWO axes, the window and the mode, and until this row
+    // the fixtures only ever crossed the window band on a TASK turn. The anchor's hook law is the
+    // longest of the three (persona/policy.ts DRIFT_MODE_BULLETS), so hook/long is the widest of the
+    // six variants and this is the turn that renders it — a maximum measured on task/long alone was
+    // a live breach waiting for the first idle beat in a long thread, not a paper debt
+    // (convergence/focusBattery.ts prose_budget scores this key against real traffic, where a hook
+    // turn on a long window is an ordinary evening).
+    //
+    // DAYTIME_HOOK is the directive on purpose — the same one fixture 5 carries. The sleep branch
+    // would send the anchor to its QUIET law (shared.ts translates a hook directive with every kind
+    // closed into 'quiet'), which is the NARROWEST of the six, so a fixture built on this file's own
+    // 02:00 clock would measure the wrong end of the range. No moment sample: the widest `hooks`
+    // section is fixture 5's and this row is not competing for that ceiling — what it is here to
+    // measure sits after `</prompt>`.
+    name: 'idle turn on a long thread',
+    spec: {
+      chatContext: {
+        isGroupChat: false, participantNames: [], chatName: null,
+        senderHandle: HANDLE, senderProfile: MATURE_PROFILE,
+      },
+      contextBlock: contextBlockWith(MATURE_STACK),
+      tools: TOOLS_1TO1,
+      history: HISTORY_80_DENSE,
+      incomingText: IDLE_TURN_TEXT,
+      affect: affect(),
+      computed: COMPUTED,
+      capability: { classes: ['web', 'files', 'code', 'media', 'scheduling'], complete: true },
+      climate: MOVED_CLIMATE,
+      turnFocus: { text: IDLE_TURN_TEXT, hits: [], idle: true, idleStreak: 4, messageChars: 41 },
+      craft: craftFacts(MATURE_DATA, IDLE_TURN_TEXT, 'individual', true),
+      personaTurn: { hooks: DAYTIME_HOOK, moments: [], thesis: '' },
+    },
+    memoryStack: MATURE_STACK,
+    sections: [
+      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'context_block',
+      'current_time', 'weather', 'status_contract', 'conversation_timing', 'reply_order', 'hooks',
+      'turn_focus', 'behavior_anchor', 'json_anchor',
+    ],
+  },
 ];
 
 /** The messages array the live turn sends alongside the prompt: the stored window as the model sees
@@ -868,20 +923,33 @@ test('the memory stack is inside its budget on every fixture that carries one', 
   }
 });
 
-/** The window band fixture 6 exists to reach, asserted rather than assumed: a rewrite of DENSE_TEXTS
- *  that quietly fell under DRIFT_LONG_WINDOW_CHARS would leave `behavior_anchor` measured on the
- *  short variant again, and the ceiling would go stale in exactly the silent way that fixture was
- *  added to stop. */
-test("the long-thread fixture really is past the drift anchor's window band", () => {
-  const f = FIXTURES[5];
-  assert.equal(f.name, 'mature profile on a long thread');
-  const windowChars = (f.spec.history ?? []).reduce((n, m) => n + m.content.length, 0);
-  assert.ok(
-    windowChars >= DRIFT_LONG_WINDOW_CHARS,
-    `the long fixture's transcript is ${windowChars} characters, under the ${DRIFT_LONG_WINDOW_CHARS} band — the anchor renders its short variant and nothing here measures the wide one`,
-  );
-  const anchor = buildSystemPromptSections(...argsFor(f.spec)).sections.find(s => s.name === 'behavior_anchor');
-  assert.equal(anchor?.chars, renderDriftAnchor('task', windowChars).length, 'and the anchor it rendered is the long task variant');
+/** The window band fixtures 6 and 7 exist to reach, asserted rather than assumed: a rewrite of
+ *  DENSE_TEXTS that quietly fell under DRIFT_LONG_WINDOW_CHARS would leave `behavior_anchor`
+ *  measured on the short variants again, and the ceiling would go stale in exactly the silent way
+ *  those fixtures were added to stop.
+ *
+ *  BOTH MODES, because the anchor is picked on two axes and the ratchet only ever sees the maximum.
+ *  Fixture 6 is the long TASK variant and fixture 7 the long HOOK one, which is the wider of the two
+ *  (persona/policy.ts DRIFT_MODE_BULLETS — the hook law is the longest of the three), so it is the
+ *  one the ceiling stands on. Pinning the mode each fixture reaches, and not just the band, is what
+ *  stops a later edit turning fixture 7's directive back into a task or a sleep turn and dropping
+ *  the measurement to a narrower variant with every test here still green. */
+test("the long-thread fixtures really are past the drift anchor's window band", () => {
+  const cases: Array<[number, string, 'task' | 'hook']> = [
+    [5, 'mature profile on a long thread', 'task'],
+    [6, 'idle turn on a long thread', 'hook'],
+  ];
+  for (const [i, name, mode] of cases) {
+    const f = FIXTURES[i];
+    assert.equal(f.name, name);
+    const windowChars = (f.spec.history ?? []).reduce((n, m) => n + m.content.length, 0);
+    assert.ok(
+      windowChars >= DRIFT_LONG_WINDOW_CHARS,
+      `${name}: the transcript is ${windowChars} characters, under the ${DRIFT_LONG_WINDOW_CHARS} band — the anchor renders its short variant and nothing here measures the wide one`,
+    );
+    const anchor = buildSystemPromptSections(...argsFor(f.spec)).sections.find(s => s.name === 'behavior_anchor');
+    assert.equal(anchor?.chars, renderDriftAnchor(mode, windowChars).length, `${name}: the anchor it rendered is the long ${mode} variant`);
+  }
 });
 
 /** The other silent-narrowing guard, the same shape as the one above it: `hooks` is a prose ceiling
@@ -900,7 +968,7 @@ test('the moment sample really is the widest one the renderer can build', () => 
   }
 });
 
-/** The largest each budget line reaches across the six fixtures — the number its ceiling is meant to
+/** The largest each budget line reaches across the seven fixtures — the number its ceiling is meant to
  *  be a rounded-up copy of. `memory_stack` comes off the fixtures' own stacks because it is a part of
  *  `context_block` rather than a section of its own. */
 function measuredMaxima(): Map<BudgetKey, number> {
