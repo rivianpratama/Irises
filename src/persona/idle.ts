@@ -12,8 +12,9 @@
 //
 //   1. STRUCTURAL VETOES — script-independent facts about the message and the turn around it. A
 //      question mark, a digit, a link, length; a file that arrived, a burst, a look already running,
-//      an outstanding question of hers, a reply the consent reader settled. Any one of them and the
-//      turn is work. These are the layer that carries the weight, and none of them reads a word.
+//      an outstanding question of hers, and — only against that question — a reply the consent
+//      reader settled. Any one of them and the turn is work. These are the layer that carries the
+//      weight, and none of them reads a word.
 //   2. THE ENGLISH FAST PATH — LEAF_EXAMPLES below. EXAMPLES, NOT A LAW: a short message every one
 //      of whose tokens is a known English stall is idle, for free, with no call. The list is small
 //      on purpose and extensible without a code change (LEAF_EXAMPLES_EXTRA), because it is a
@@ -80,7 +81,8 @@ export interface IdleFacts {
    *  short message is an ANSWER, and answering is work. */
   pendingQuestion: boolean;
   /** What the consent reader made of this message (ops/consent.ts). A settled yes or no is an answer
-   *  to a parked action; `unclear` settles nothing and vetoes nothing. */
+   *  to a parked action — which is why it only vetoes alongside `pendingQuestion`, there being no
+   *  parked action without one; `unclear` settles nothing and vetoes nothing either way. */
   consent: IdleConsent;
 }
 
@@ -252,8 +254,16 @@ export function idleVetoes(text: string, facts: IdleFacts): string[] {
   // Her question is outstanding, so their next short message is an ANSWER: "yes please" after
   // "want me to send it?" is the most load-bearing task turn there is.
   if (facts.pendingQuestion) out.push('pending_question');
-  // …and the same message read as a settled yes or no by the consent gate is an answer twice over.
-  if (facts.consent === 'yes' || facts.consent === 'no') out.push('consent');
+  // …and the same message read as a settled yes or no by the consent gate is an answer twice over —
+  // but only where there was an answer to give. A consent word answers something only when there is
+  // something to answer: the reader says what "ok" WOULD mean if it settled something, which on its
+  // own is not a fact about the turn. Read unconditionally it made "ok", "yes" and "sure"
+  // permanently un-idle, and those are the commonest stalls there are (live: a bare "ok" after a
+  // line of hers that asked nothing). So the veto is conditional on her question being outstanding:
+  // with one open, `pending_question` fires and consent joins it — "yes please" after "want me to
+  // send it?" is named by both — and with nothing open a bare "ok" is a stall, which is what it
+  // looks like.
+  if ((facts.consent === 'yes' || facts.consent === 'no') && facts.pendingQuestion) out.push('consent');
 
   return out;
 }

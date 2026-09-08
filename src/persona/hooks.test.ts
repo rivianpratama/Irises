@@ -301,7 +301,7 @@ test('the sleep turn renders the none-open block and the sleep line, and nothing
   const { directive } = pick(state(), { affect: { hooks: 'all', sleepQuiet: true } });
   assert.equal(renderHooksSection(directive, ['a moment handed in against the gate']), [
     '## This turn may carry one hook (INTERNAL)',
-    'They sent you nothing. This is the one turn that earns a hook, and it earns exactly one.',
+    'They sent you nothing, so nothing of theirs comes back, not their greeting, not their word. This is the one turn that earns a hook, and it earns exactly one.',
     'No kind is open this turn. Short and flat, and let the beat pass.',
     'It is late where they are. The right reply is that they should sleep — one short bubble, or a tapback, no greeting back — and the hook keeps.',
     'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
@@ -415,8 +415,8 @@ test('a task turn renders not one byte', () => {
 test('the hook block renders char-for-char', () => {
   assert.equal(renderHooksSection(HOOK_DIRECTIVE), [
     '## This turn may carry one hook (INTERNAL)',
-    'They sent you nothing. This is the one turn that earns a hook, and it earns exactly one.',
-    'Open to you this turn: a judgment, a callback or a tangent. One of them, never two, never a kind not named here.',
+    'They sent you nothing, so nothing of theirs comes back, not their greeting, not their word. This is the one turn that earns a hook, and it earns exactly one.',
+    'Open to you this turn: a judgment, a callback or a tangent. One of them, never two, never a kind not named here, and said as a statement, never asked.',
     'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
   ].join('\n'));
 });
@@ -429,7 +429,7 @@ test('the hook block renders char-for-char', () => {
 test('the every-kind-spoken-for block, with the sleep line, renders char-for-char', () => {
   assert.equal(renderHooksSection({ ...HOOK_DIRECTIVE, forbidden: [...HOOK_WORDS], sleepQuiet: true }), [
     '## This turn may carry one hook (INTERNAL)',
-    'They sent you nothing. This is the one turn that earns a hook, and it earns exactly one.',
+    'They sent you nothing, so nothing of theirs comes back, not their greeting, not their word. This is the one turn that earns a hook, and it earns exactly one.',
     'No kind is open this turn. Short and flat, and let the beat pass.',
     'It is late where they are. The right reply is that they should sleep — one short bubble, or a tapback, no greeting back — and the hook keeps.',
     'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
@@ -439,8 +439,8 @@ test('the every-kind-spoken-for block, with the sleep line, renders char-for-cha
 test('the moments block renders char-for-char', () => {
   assert.equal(renderHooksSection({ ...HOOK_DIRECTIVE, moments: true }, ['the volcano week']), [
     '## This turn may carry one hook (INTERNAL)',
-    'They sent you nothing. This is the one turn that earns a hook, and it earns exactly one.',
-    'Open to you this turn: a judgment, a callback or a tangent. One of them, never two, never a kind not named here.',
+    'They sent you nothing, so nothing of theirs comes back, not their greeting, not their word. This is the one turn that earns a hook, and it earns exactly one.',
+    'Open to you this turn: a judgment, a callback or a tangent. One of them, never two, never a kind not named here, and said as a statement, never asked.',
     'Kept about them, in case a callback fits. Retell one in fresh words, never read it out, never its date, never more than one.',
     'the volcano week',
     'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',

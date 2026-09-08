@@ -326,11 +326,11 @@ export function quietViolation(emitted: HookWord | undefined, bubbles: string[])
 export const HOOK_CLAMP = 'Never mention notes, memory, a read you were handed, or that you were told which kind to use.';
 
 export const HOOK_HEADING = '## This turn may carry one hook (INTERNAL)';
-export const HOOK_LEAD = 'They sent you nothing. This is the one turn that earns a hook, and it earns exactly one.';
+export const HOOK_LEAD = 'They sent you nothing, so nothing of theirs comes back, not their greeting, not their word. This is the one turn that earns a hook, and it earns exactly one.';
 
 /** `{kinds}` is filled from the ALLOWED set, never the forbidden one. What is off the table is not
  *  named: naming it is an instruction to think about it. */
-export const HOOK_OPEN_LINE = 'Open to you this turn: {kinds}. One of them, never two, never a kind not named here.';
+export const HOOK_OPEN_LINE = 'Open to you this turn: {kinds}. One of them, never two, never a kind not named here, and said as a statement, never asked.';
 
 /** Two ways here, and the common one is the clock. EVERY late-night idle turn closes all three kinds
  *  (`selectHook`'s sleep branch), and this line plus the sleep line below is the whole section she

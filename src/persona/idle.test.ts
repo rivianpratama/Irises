@@ -71,10 +71,16 @@ test('the vetoes name every structural reason this turn is work', () => {
   assert.deepEqual(idleVetoes('hey', facts({ burstSize: 2 })), ['burst']);
   assert.deepEqual(idleVetoes('hey', facts({ activeOps: true })), ['active_ops']);
   assert.deepEqual(idleVetoes('hey', facts({ pendingQuestion: true })), ['pending_question']);
-  assert.deepEqual(idleVetoes('hey', facts({ consent: 'yes' })), ['consent']);
-  assert.deepEqual(idleVetoes('hey', facts({ consent: 'no' })), ['consent']);
+  // A consent word is an answer only when there is something to answer. With her question open the
+  // reading names the same fact a second time; with nothing open it is not a fact about the turn at
+  // all, and reading it alone made "ok", "yes" and "sure" permanently un-idle.
+  assert.deepEqual(idleVetoes('hey', facts({ pendingQuestion: true, consent: 'yes' })), ['pending_question', 'consent']);
+  assert.deepEqual(idleVetoes('hey', facts({ pendingQuestion: true, consent: 'no' })), ['pending_question', 'consent']);
+  assert.deepEqual(idleVetoes('hey', facts({ consent: 'yes' })), [], 'nothing was outstanding, so nothing was answered');
+  assert.deepEqual(idleVetoes('hey', facts({ consent: 'no' })), []);
   // 'unclear' settles nothing, so it vetoes nothing — the whole point of a three-way reading.
   assert.deepEqual(idleVetoes('hey', facts({ consent: 'unclear' })), []);
+  assert.deepEqual(idleVetoes('hey', facts({ pendingQuestion: true, consent: 'unclear' })), ['pending_question']);
 });
 
 test('a question mark vetoes in every script a text message arrives in', () => {
@@ -134,7 +140,7 @@ test('a veto ends the turn as work, before the fast path and before any call', a
     ['ok example.com/x', CLEAR],                  // a link
     ['ok cool yeah sure nice thanks lol', CLEAR], // seven tokens, every one an example
     ['yes please', facts({ pendingQuestion: true })],
-    ['sure', facts({ consent: 'yes' })],
+    ['sure', facts({ pendingQuestion: true, consent: 'yes' })],
     ['hey', facts({ attachmentNote: true })],
     ['hey', facts({ burstSize: 2 })],
     ['ok', facts({ activeOps: true })],
@@ -144,12 +150,31 @@ test('a veto ends the turn as work, before the fast path and before any call', a
   }
 });
 
-test('"sure" is the most example-shaped token there is, and a settled yes still outranks it', async () => {
+test('"sure" is the most example-shaped token there is, and a settled yes outranks it — with a question open', async () => {
   // The precedence that matters most: the fast path would call this idle in one lookup, and the
   // consent reader has already read it as permission for something irreversible.
   assert.ok(leafTokens().has('sure'), 'the fixture is genuinely on the fast path');
-  assert.deepEqual(await isIdleTurn('sure', facts({ consent: 'yes' }), NEVER), { idle: false, layer: 'veto' });
+  assert.deepEqual(await isIdleTurn('sure', facts({ pendingQuestion: true, consent: 'yes' }), NEVER), { idle: false, layer: 'veto' });
   assert.deepEqual(await isIdleTurn('sure', CLEAR, NEVER), { idle: true, layer: 'fast_path' });
+});
+
+// …and the other half of that precedence, which the veto used to get wrong. The consent reader says
+// what the word would MEAN if it settled something; with nothing parked it settles nothing, and read
+// on its own it made the three commonest stalls there are un-idle forever.
+test('a consent word with nothing outstanding is a stall, and the fast path says so for free', async () => {
+  for (const text of ['ok', 'sure']) {
+    assert.ok(leafTokens().has(text), `${text} is genuinely on the fast path`);
+    for (const consent of ['yes', 'no'] as const) {
+      assert.deepEqual(await isIdleTurn(text, facts({ consent }), NEVER), { idle: true, layer: 'fast_path' },
+        `"${text}" read as ${consent} with nothing to answer`);
+    }
+  }
+  // With her question outstanding the same reading is an answer twice over, and the receipt says so
+  // twice: "yes please" after "want me to send it?" is the most load-bearing task turn there is.
+  assert.deepEqual(idleVetoes('yes please', facts({ pendingQuestion: true, consent: 'yes' })),
+    ['pending_question', 'consent'], 'both reasons, in the fixed order');
+  assert.deepEqual(await isIdleTurn('yes please', facts({ pendingQuestion: true, consent: 'yes' }), NEVER),
+    { idle: false, layer: 'veto' });
 });
 
 // ── layer 2: the English fast path ───────────────────────────────────────────
