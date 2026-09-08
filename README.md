@@ -46,7 +46,7 @@ The engine stays completely unmodified. One command wires it up. That's the whol
 - **It remembers you, in layers.** Short, medium and long memory tiers are kept locally, plus a **thesis** — one read on you, rewritten weekly — and a **moments** file of timestamped episodes in her own voice, sampled a few at a time and never dumped, and the durable facts get forwarded to the engine's own memory too, so both halves remember the same person. Saved notes are quietly groomed — restate a fact three times and it folds back into one note instead of crowding out three others. Optional **semantic recall** (`MEMORY_SEMANTIC_RECALL=on`) adds an embedding leg to the archive search, so "the vacation house by the water" finds what was written down as "my lake cabin"; keyless installs get the same paraphrase tolerance from a tiny query-expansion call instead. The full design (and how it compares to vector/graph/episodic memory) is in [docs/MEMORY_ARCHITECTURES.md](docs/MEMORY_ARCHITECTURES.md).
 - **It notices what recurs.** A threading inventory tracks the themes you keep circling back to — values, tensions, goals, the phrases you two have coined — and the things you left hanging, so a callback is earned instead of guessed. It's harvested from the status envelope she already emits, so it costs zero extra LLM calls. On a longer clock, a **relationship climate** (ease, candor, playfulness) drifts over weeks inside code-owned clamps and is compiled in code into concrete directives (how sharp, how short, which hooks are allowed), never dumped as mood prose.
 - **She makes the first move.** Once, minutes after install, Irises asks the engine what it already knows about its user, seeds her own memory with it (stamped second-hand), and introduces herself — *"Irises, but you can call me Iris"*. She texts first only where the engine confirms you've genuinely talked in that exact chat before; anything less and she folds the introduction into her reply to your first message instead. No cold text ever leaves the box. `FIRST_MOVE_ENABLED=false` makes the install silent.
-- **It reaches out first, on a trigger.** The engine's cron jobs and mail triage push back through `POST /api/engine/push`, get voiced by the Composer (which opens with *why* the text is arriving), and land on whatever channel the chat came from. Duplicates are collapsed, and a non-urgent push that arrives overnight waits for morning. If you opt in (`THREADING_PINGS_ENABLED`, off by default because it makes a phone buzz unprompted), she may also text once about something you left hanging — hard-bounded to one ping per person per week, only after 48h of silence, never twice about the same thing. This part I'm quite proud of.
+- **It reaches out first, on a trigger.** The engine's cron jobs and mail triage push back through `POST /api/engine/push`, get voiced by the Composer (which opens with *why* the text is arriving), and land on whatever channel the chat came from. Duplicates are collapsed, and if you've asked her to keep quiet hours, a non-urgent push that arrives overnight waits for morning — on your clock (`IRISES_TZ`), not the server's; reminders are exempt because you picked the time. If you opt in (`THREADING_PINGS_ENABLED`, off by default because it makes a phone buzz unprompted), she may also text once about something you left hanging — hard-bounded to one ping per person per week, only after 48h of silence, never twice about the same thing. This part I'm quite proud of.
 - **A hidden mood.** There is a small affect engine behind the scenes — a per-chat mood based on the Gloria Willcox feeling wheel, a 28-day cycle, a circadian rhythm. Nobody is told about it, and its status output is swallowed before you see it. It compiles into a handful of directives per turn — a bubble cap, how dry, whether the right reply is that you should sleep — and nothing else.
 - **Provider-neutral LLM layer.** One `callLLM` over Anthropic, OpenRouter, and any OpenAI-compatible API — a primary lane per role, automatic fallback to the next configured lane on transient errors, and tool-calls, structured "bubble" output and prompt caching normalized to one shape.
 - **Nothing is a black box.** `/debug` shows every prompt trace, and `/dashboard` shows every hop, cost, and error — plus an **Inner state** tab that reads back the hidden mood trail, the climate dials, the thread inventory, the thesis and its revisions, the moments file, the hook rhythm (last three hooks, the kill switch), the actions still waiting on a yes, and what each turn's prompt actually looked like.
@@ -197,6 +197,7 @@ npm run chat
 | `npm run build:web` | Static web client → `web/out/` (served by the server at `/` in prod) |
 | `npm start` | Run the built server (`node dist/index.js`) |
 | `npm test` | Unit tests for `src/` and `scripts/` (Node test runner via `tsx --test`, TZ pinned to UTC, ephemeral `DATA_BACKEND=memory`) |
+| `npm run typecheck:scripts` | Type-check `scripts/` (the REPL, the convergence batteries, the update helpers) |
 | `npm run install:web` | Install the web client's dependencies |
 
 > The build **must** copy the persona files — the loader fails fast on the first turn that needs a missing `Context.md` rather than serving a persona-less agent.
@@ -238,12 +239,13 @@ Outbound routes by `chatId` prefix — `web:` → web / CLI, `eng:<platform>:<ch
 
 | Variable | Purpose |
 |----------|---------|
-| `ANTHROPIC_API_KEY` · `OPENROUTER_API_KEY` | The two LLM lanes — auto-reused from the engine when present; set to override |
+| `ANTHROPIC_API_KEY` · `OPENROUTER_API_KEY` · `OPENAI_API_KEY` | The three LLM lanes (`OPENAI_BASE_URL` points the generic one) — auto-reused from the engine when present; set to override |
 | `OPS_BACKEND` | `hermes` or `openclaw` — **auto-detected**; set to force one. Unset + no engine found = deep work offline (Convo still chats) |
 | `HERMES_BASE_URL` · `HERMES_API_KEY` | hermes-agent's OpenAI-compatible API server + cron REST |
 | `OPENCLAW_URL` · `OPENCLAW_TOKEN` | OpenClaw gateway WebSocket |
 | `ENGINE_PUSH_TOKEN` | One secret guarding both engine-facing routes (push + bridge inbound) |
 | `IRISES_HOME` · `DATA_BACKEND` | State dir (default `~/.irises`) · `memory` = ephemeral run |
+| `IRISES_TZ` | Your wall clock (IANA zone) when the box lives somewhere you don't — a VPS in another region, a container on UTC. Default: the host's zone |
 | `WEB_ENABLED` · `DEBUG_TOKEN` | Web debug chat (browser + `npm run chat` CLI) + its access gate |
 
 <details>
@@ -281,6 +283,7 @@ Outbound routes by `chatId` prefix — `web:` → web / CLI, `eng:<platform>:<ch
 |----------|---------|
 | `IRISES_HOME` · `DATA_BACKEND` | Where the local store lives (SQLite + memory markdown); `memory` = ephemeral. |
 | `IRISES_CYCLE_ANCHOR` | "Day 1" of the hidden 28-day affect cycle (ISO date, default `2026-01-01`). Never surfaced to the user; only sets the mood-baseline phase math. |
+| `IRISES_TZ` | IANA zone for the user's wall clock: every clock the Convo model reads (the current time, transcript stamps, "your last one at", the daypart words), the overnight quiet hours (9pm–8am), and any reminder set without naming a zone. Default: the host's own zone, then UTC. A per-user `agent_tz` saved from chat still wins over it. |
 | `DEBUG_TOKEN` | Gates `/debug` **and** the web chat endpoints (unset = localhost-only). |
 | `DASHBOARD_PASSWORD` | Gates `/dashboard`. **Has a built-in default — set your own before exposing the port.** |
 | `PORT` · `NODE_ENV` | Listen port (3000 dev, 8080 in the image) and persona caching mode. |
@@ -381,6 +384,7 @@ Full runbook: **[docs/DEPLOY.md](docs/DEPLOY.md)**
 ```bash
 npm run build                    # tsc + persona/asset copy
 npm test                         # server unit tests
+npm run typecheck:scripts        # scripts/ type safety
 npm run build:web                # static web client
 npm --prefix web run typecheck   # web type safety
 ```
