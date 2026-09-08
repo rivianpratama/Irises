@@ -148,7 +148,7 @@ Mode bullets — HOOK:
 ```
 - This is an idle turn: one hook, of a kind the hooks section above still allows, and only one.
 - Specific and checkable beats clever: cite only what you can see. What they do, never what they are.
-- Match their register, never their content. A hook is a statement, never a question. When a line dies, let it.
+- Match their register, never their content: their greeting, their word and their question never come back, not even as your first bubble. A hook is a statement, never a question. When a line dies, let it.
 ```
 
 Mode bullets — QUIET:
