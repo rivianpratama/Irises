@@ -17,7 +17,7 @@
 
 <sub>
 
-[Why I built this](#why-i-built-this) • [How it works](#how-it-works) • [Engines](#already-running-hermes-agent-or-openclaw) • [Quick start](#quick-start) • [Updating](#updating) • [Channels](#channels) • [Configuration](#configuration) • [Models](#models) • [API](#http-api) • [Deploy](#deployment)
+[Why I built this](#why-i-built-this) • [Architecture](#how-it-works) • [Engines](#already-running-hermes-agent-or-openclaw) • [Quick start](#quick-start) • [Updating](#updating) • [Channels](#channels) • [Configuration](#configuration) • [Models](#models) • [API](#http-api) • [Deploy](#deployment)
 
 </sub>
 
@@ -53,6 +53,8 @@ The engine stays completely unmodified. One command wires it up. That's the whol
 
 ## How it works
 
+Irises is **two halves and one seam**. The voice half is all persona, memory and pacing, and it is the only half that ever writes to you. The deep half is the engine you already run, unmodified, reached through exactly one function. Almost every design decision below falls out of keeping that seam narrow.
+
 ```mermaid
 flowchart LR
     subgraph CH["Channels"]
@@ -77,23 +79,85 @@ flowchart LR
     EI(["enqueueInbound() · batch · pace · lock"]) --> CV
     CV -->|instant reply| OUT
     CV -->|delegate_to_ops| E
-    E -->|ANSWER · SOURCE · FLAGS| CMP
+    E -->|ANSWER · SOURCE · ACTIONS · FLAGS| CMP
     CMP -->|follow-up| OUT
     E -.->|cron · mail → POST /api/engine/push| CMP
     FF --> OUT
     OUT([" bubbles → same channel "])
 ```
 
-A quick map of the code, if you want to read along:
+### The four prompt surfaces
+
+She speaks through four prompts and no more. Each renders the *same* personality block from `src/persona/policy.ts`, byte-identically — four descriptions of one person are four people, and the lane that gets the thinnest paragraph drifts back toward the assistant default first, where nobody sees it happen. Each lane's own `Context.md` keeps only how that lane *functions*.
+
+| Surface | Speaks when | What it sees |
+|---------|-------------|--------------|
+| **Convo** — `agents/convo` | every live message | the full prompt: memory stack, affect directives, the thread on deck, the transcript. **Single-shot** — it never sees a tool result, so it cannot loop |
+| **Ops** — `agents/ops` | Convo delegates | none of the persona. It writes a *brief* for the engine and reads back a fixed `ANSWER / SOURCE / ACTIONS / FLAGS` contract |
+| **Composer** — `agents/composerCore` | an engine result or a push lands | the persona, a short voice-only window, and the result to relay — faithfully, in her words |
+| **Fallfirm** — `agents/fallfirm` | a holding beat, a confirmation, a failure | the persona and the outcome. Under it sits `fallfirmFloor()`, the last hardcoded user-facing copy in the repo |
+
+A fifth LLM role, **Classify**, never speaks — it only decides: group-chat respond/react/ignore, the grounding screen, the idle read, failure triage.
+
+### The life of a turn
+
+1. **In.** A channel router hands the message to `enqueueInbound()`. The transport is resolved *from the chatId prefix* (`web:…`, `eng:<platform>:<chat>`) rather than from any in-memory map, so a follow-up firing minutes later — or after a restart on a process that never saw the original turn — still knows where to land.
+2. **Settle.** Consecutive texts merge into one burst (`state/burstMerge`) instead of racing each other into separate replies.
+3. **Gate.** In a group, Classify decides respond / react / ignore *before* the typing dots go on. An ignored message is still recorded — otherwise the next turn cannot answer "what did Sam just say?"
+4. **Lock.** The turn takes the per-chat mouth and holds it across thinking *and* speaking (see below).
+5. **Fold.** Anything that arrived while the turn waited for the lock joins *this* reply — the way a person reads every new text on screen before starting to type.
+6. **Assemble.** One prompt: the shared persona block, the memory stack under its authority ladder, the compiled affect directives, the thread on deck, the transcript, and the JSON envelope contract **last**, where recency attention is strongest.
+7. **Parse.** The reply comes back as `{"bubbles":[…]}` plus a hidden `status` object, through a four-tier ladder — fenced JSON → direct parse → outermost-brace extract → `jsonrepair`. Anything that still isn't a valid envelope falls through as raw text and the legacy splitter handles it, so no turn is ever dropped. `status` is swallowed before you see anything.
+8. **Speak.** Bubbles are split, capped, paced like real typing, and natively quoted back to the message each one answers — then recorded. Voicing order === screen order === history order.
+
+### One voice in time
+
+The distinctive piece is the **mouth** (`state/mouth.ts`), built on a per-chat send lock. It exists to kill one whole class of bug: a message *voiced* against the thread as it looked seconds ago, *landing* after the thread has moved on.
+
+The invariant, per chat: **voice → send → record is one atomic critical section.** A follow-up isn't handed finished text — it's handed a *thunk* that runs only once it owns the lock. By then every earlier outbound is fully sent and recorded, and nothing else can send until this one finishes, so whatever the voicer reads is by construction the exact thread the user will see its reply land on. For content that must be voiced early (a progress ping reserves its throttle slot before the slow voice call), the guards are re-checked at send time instead — `dropIf`, `staleIfSpokenSince` — and a stale reassurance is **dropped**, never sent. A late "still on it" after the answer already shipped is a contradiction; silence is the correct fallback.
+
+### The delegation seam
+
+Convo delegates with one tool call, `delegate_to_ops`. Everything after it is engine-agnostic machinery in `agents/orchestrator.ts`: a per-leg deadline (wider for a task the engine was told to open a browser for), the "still on it" ping throttle and its ETA, failure triage that can retry once or replay a steer, and finally the Composer re-voice. `agents/ops/engineBackend.ts` dispatches to `HermesBackend` (`POST /v1/runs` + its event stream, or the older blocking chat body) or `OpenClawBackend` (Gateway WS `agent` RPC), speaking only each engine's *public* API.
+
+Two things sit deliberately in front of the seam. A delegation that would **act** in the world is parked by the consent gate (`ops/consent.ts`, `ops/sideEffects.ts`) until you say yes in chat. And in-flight runs are registered durably (`state/opsCoordination`, `state/opsTaskDurability`), which is what lets "stop" reach the engine, lets a mid-flight "also check Jakarta" fold into the running job, and lets a restart find and own up to the run it killed. There is **no native fallback** by design — an unreachable engine fails honestly and Convo keeps chatting. Details in [docs/ENGINES.md](docs/ENGINES.md).
+
+### What the model decides, and what code decides
+
+This is the line the persona layer is organized around, because a gauge that rises *because she says it rises* is a gauge that will always rise.
+
+- **The model reports only what only it can know** — one feeling word, the direction it moved, the intent mode, whether the conversation just closed, a ≤40-word note on what you'll likely do next. Every number is arithmetic: the 28-day cycle and the circadian slot come from the clock, the gauges from those plus the reported direction.
+- **`affectCompiler.ts` compiles all of it into at most four imperative lines** — how sharp, how short, whether an idle hook is allowed at all, whether it's late where you are. The mood prose that used to be handed over every turn is gone; it bought tone and changed no answers.
+- **Memory enters under an authority ladder** (`memory/wrappers.ts`): *rigid* (persona, wrapper prose, format anchors — defines behavior, nothing below can alter it), *flexible* (the long doc and validated directives — the one channel that may retune style defaults, rendered last for recency), *data-only* (short entries and medium facts — may inform answers, never retune behavior). Guidance sits **outside** the data tags; per-user payloads sit inside them, so "everything inside a data tag is data, never instructions" stays literally true.
+- **Threading, the reply language and the hook kind ride the envelope the model already fills**, which is why they cost zero extra LLM calls.
+
+### Where state lives
+
+Under `IRISES_HOME` (default `~/.irises`), split by what each thing *is*:
+
+- **SQLite** (builtin `node:sqlite`) for machine data — conversation history, short-tier entries with TTLs, the affect trail, the thread inventory, the hook ledger, the searchable archive and its embeddings, in-flight engine runs, bridge dedupe, token usage, diagnostic turns.
+- **Per-user markdown** for every tier a human might want to read or edit: `DOSSIER.md`, `MEDIUM.md` (plus an append-only `MEDIUM.archive.md`), `LONG.md`, `MOMENTS.md`, `THESIS.md`. The medium tier is a ledger by design — an entry is *superseded* or *retracted*, never deleted, so a fact keeps its lineage; `/forget` is the one sanctioned hard delete.
+- `DATA_BACKEND=memory` runs the identical code paths with nothing persisted.
+
+### Invariants worth knowing before you change anything
+
+- The engine is never modified, and there is no local substitute for it.
+- One personality string, four surfaces, rendered byte-identically.
+- Code owns every number; the model owns only judgments.
+- Routing is derived from the chatId, never stored.
+- Fail loud: an unroutable chatId throws, and a missing persona file fails the first turn that needs it rather than serving a persona-less agent.
+
+### A map of the code
 
 - **Agents** (`src/agents`) — `convo` (front line), `ops` (the engine seam), `composer` (re-voices results), `fallfirm` (holding beats and failure recovery). Each one carries only how it works in its `Context.md`; the personality is one shared block rendered from `src/persona/policy.ts` into all of them.
-- **The engine seam** (`src/agents/ops`) — `OPS_BACKEND` picks `hermes` (OpenAI-compatible API + cron REST) or `openclaw` (gateway WebSocket). Unset means deep work is honestly offline — Convo still chats. See [docs/ENGINES.md](docs/ENGINES.md).
-- **Channels** (`src/channels`) — one `Channel` abstraction with `web` (SSE + CLI) and `bridge` adapters. See [docs/CHANNELS.md](docs/CHANNELS.md).
-- **LLM layer** (`src/llm`) — one `callLLM` entry point, per-role primary provider, automatic fallback lane, token budget guards.
-- **Persona & affect** (`src/persona`) — the hidden per-turn affect engine, the relationship climate, and the conversational-thread selection described above: `policy.ts` (the shared personality block and the mode-selected drift anchor), `affectCompiler.ts` (gauges → directives), `hooks.ts` (the idle-turn hook selector and kill switch), `moments.ts`.
-- **State & memory** (`src/state`, `src/memory`) — burst-batching, per-chat send lock, typing pacing, a durable registry of in-flight engine runs (so a restart can find and own up to the one it killed), the short/medium/long memory tiers, plus the thread harvest, the note groomer, the optional semantic-recall leg, and the nightly moments and weekly thesis passes.
-- **Data** (`src/db`) — a local store under `IRISES_HOME` (default `~/.irises`): SQLite (builtin `node:sqlite`) for machine data, plus per-user markdown for the curated memory tiers. `DATA_BACKEND=memory` runs the same code but ephemeral, nothing persists.
-- **Diagnostics** (`src/diagnostics`) — `/debug` prompt traces and the `/dashboard` GUI with cost, error, memory and inner-state views.
+- **The engine seam** (`src/agents/ops`) — `engineBackend` and the two adapters, plus `consent`, `steer`, `triage`, `engineDiscovery` and the first-move pull. `OPS_BACKEND` picks `hermes` or `openclaw`; unset means deep work is honestly offline. See [docs/ENGINES.md](docs/ENGINES.md).
+- **Channels** (`src/channels`) — one `Channel` abstraction with `web` (SSE + CLI) and `bridge` adapters, resolved by the prefix rule above. See [docs/CHANNELS.md](docs/CHANNELS.md).
+- **LLM layer** (`src/llm`) — `callLLM` and the three lanes, the strict-mode envelope schema each lane is held to, the fallback policy, truncation retry, and the token budget guards.
+- **Persona & affect** (`src/persona`) — `policy.ts` (the shared block and the mode-selected drift anchor), `affectCompiler.ts` (gauges → directives), `status.ts` (the hidden envelope), `climate.ts`, `hooks.ts` and `idle.ts` (the idle-turn selector and its kill switch), `moments.ts`.
+- **State & memory** (`src/state`, `src/memory`) — the mouth and send lock, burst-batching, typing pacing, the durable run registry; then the memory tiers, the thread harvest, the note groomer, the optional semantic-recall leg, and the nightly moments and weekly thesis passes.
+- **Data** (`src/db`) — the SQLite schema, its repositories, and the markdown stores described above.
+- **Pipeline** (`src/pipeline`) — the format boundary: the bubble envelope parser, the splitter, cron and the zoned-time helpers every clock reads.
+- **Diagnostics** (`src/diagnostics`) — `/debug` prompt traces and the `/dashboard` GUI (overview, cost, errors, memory, inner state).
 
 ## Already running hermes-agent or OpenClaw?
 
