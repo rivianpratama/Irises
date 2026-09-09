@@ -418,6 +418,14 @@ loopback listener; OpenClaw needs nothing extra (outbound rides the existing gat
 - **Reply-to context**: the plugins forward the quoted message's text (`reply_to_text`, when the engine
   event carries it) and a per-message `timestamp` alongside the reply id, so Irises can show what was
   replied to and stamp the real send time even when it can't resolve the id locally.
+  **On Photon/iMessage the engine's own plugin drops the linkage before the bridge ever sees it**:
+  Apple's `replyTargetGuid` dies inside the Photon plugin's Node sidecar (the spectrum-ts provider
+  builds the message without it), so a tapped reply reaches Irises looking like a plain new message.
+  Fixing it needs a patch applied to the Hermes checkout, shipped in
+  [`bridge/hermes/photon-reply-context/`](../bridge/hermes/photon-reply-context/) — run its `apply.sh`
+  on the Hermes host, restart the gateway, and confirm with the sidecar's line
+  `photon-sidecar: inbound reply -> target …` in `~/.hermes/logs/gateway.log`. No Irises code is
+  involved; the other channels were never affected.
 
 ### Install / remove
 

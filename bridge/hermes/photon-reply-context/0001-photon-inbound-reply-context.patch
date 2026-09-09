@@ -1,0 +1,2325 @@
+From 21071c7c384dcee97bf64a5b477296f69fb1ce0e Mon Sep 17 00:00:00 2001
+From: Rivian <rivianp@gmail.com>
+Date: Thu, 10 Sep 2026 02:59:04 +0700
+Subject: [PATCH 1/6] photon: preserve Apple reply linkage in spectrum-ts
+ imessage provider (patch script)
+
+---
+ plugins/platforms/photon/sidecar/package.json |   2 +-
+ .../sidecar/patch-spectrum-reply-target.mjs   | 150 +++++++++
+ .../photon/test_spectrum_reply_patch.py       | 296 ++++++++++++++++++
+ 3 files changed, 447 insertions(+), 1 deletion(-)
+ create mode 100644 plugins/platforms/photon/sidecar/patch-spectrum-reply-target.mjs
+ create mode 100644 tests/plugins/platforms/photon/test_spectrum_reply_patch.py
+
+diff --git a/plugins/platforms/photon/sidecar/package.json b/plugins/platforms/photon/sidecar/package.json
+index b7e0f82..bd11ac6 100644
+--- a/plugins/platforms/photon/sidecar/package.json
++++ b/plugins/platforms/photon/sidecar/package.json
+@@ -7,7 +7,7 @@
+   "main": "index.mjs",
+   "scripts": {
+     "start": "node index.mjs",
+-    "postinstall": "node patch-spectrum-mixed-attachments.mjs"
++    "postinstall": "node patch-spectrum-mixed-attachments.mjs && node patch-spectrum-reply-target.mjs"
+   },
+   "engines": {
+     "node": ">=18.17"
+diff --git a/plugins/platforms/photon/sidecar/patch-spectrum-reply-target.mjs b/plugins/platforms/photon/sidecar/patch-spectrum-reply-target.mjs
+new file mode 100644
+index 0000000..5b07f80
+--- /dev/null
++++ b/plugins/platforms/photon/sidecar/patch-spectrum-reply-target.mjs
+@@ -0,0 +1,150 @@
++#!/usr/bin/env node
++// Patch spectrum-ts' iMessage provider until upstream preserves Apple's reply
++// linkage. `@photon-ai/advanced-imessage` hands the provider a raw record that
++// already carries `replyTargetGuid` (the exact bubble the human tapped),
++// `threadOriginatorGuid` (the thread's root bubble) and
++// `threadOriginatorPart`, but `buildMessageBase` — the single helper every
++// emitted message is spread from — copies only direction, sender, space and
++// timestamp, so the linkage never reaches Hermes.
++//
++// One anchor is enough: `...base` is spread into every message built by
++// `toInboundMessages`, `rebuildFromAppleMessage` and `buildAttachmentMessage`,
++// so rewriting the base covers text, attachment and group paths alike. The
++// added `replyTo` is spread in conditionally, so messages that are not replies
++// keep their exact previous shape.
++//
++// The published output is tab-indented; the anchor below matches that byte for
++// byte and fails loudly if a future spectrum-ts reshapes the helper. It runs
++// from `postinstall` alongside patch-spectrum-mixed-attachments.mjs, which
++// touches disjoint anchors (the two inbound mappers), so the pair composes in
++// either order and each is a no-op on a second run.
++import fs from "node:fs";
++import path from "node:path";
++import { fileURLToPath, pathToFileURL } from "node:url";
++
++const MARKER =
++  "Hermes patch: Preserve Apple reply linkage (replyTargetGuid/threadOriginatorGuid)";
++
++// spectrum-ts >= 12 maps the linkage itself. Either shape — the helper's
++// declaration or a call to it — means upstream got there first, so stand down
++// instead of stacking a second mapping on top. Neither string can match this
++// script's own output (it emits `message.replyTargetGuid ??` / `||` only).
++const UPSTREAM_HINTS = ["replyTargetGuid(", "const replyTargetGuid"];
++
++const ANCHOR = `const buildMessageBase = (message, chatGuidHint, timestamp, phone) => {
++\tconst chat = resolveChatGuid(message, chatGuidHint);
++\treturn {
++\t\tdirection: message.isFromMe ? "outbound" : "inbound",
++\t\tsender: toSenderRef(message.sender),
++\t\tspace: {
++\t\t\tid: chat,
++\t\t\ttype: chatTypeFromGuid(chat),
++\t\t\tphone
++\t\t},
++\t\ttimestamp
++\t};
++};`;
++
++const REPLACEMENT = `const buildMessageBase = (message, chatGuidHint, timestamp, phone) => {
++\tconst chat = resolveChatGuid(message, chatGuidHint);
++\treturn {
++\t\tdirection: message.isFromMe ? "outbound" : "inbound",
++\t\tsender: toSenderRef(message.sender),
++\t\tspace: {
++\t\t\tid: chat,
++\t\t\ttype: chatTypeFromGuid(chat),
++\t\t\tphone
++\t\t},
++\t\ttimestamp,
++\t\t// Hermes patch: Apple reply linkage. replyTargetGuid = the exact tapped bubble; threadOriginatorGuid = thread root.
++\t\t...(message.replyTargetGuid || message.threadOriginatorGuid ? { replyTo: {
++\t\t\tid: message.replyTargetGuid ?? message.threadOriginatorGuid,
++\t\t\tthreadRootId: message.threadOriginatorGuid ?? null,
++\t\t\tpart: message.threadOriginatorPart ?? null
++\t\t} } : {})
++\t};
++};`;
++
++function scriptDir() {
++  return path.dirname(fileURLToPath(import.meta.url));
++}
++
++function replaceOnce(source, from, to, label) {
++  const count = source.split(from).length - 1;
++  if (count !== 1) {
++    throw new Error(`expected exactly one ${label} match, found ${count}`);
++  }
++  return source.replace(from, to);
++}
++
++export function patchSpectrumReplyTarget(root = scriptDir()) {
++  const dist = path.join(
++    root,
++    "node_modules",
++    "@spectrum-ts",
++    "imessage",
++    "dist"
++  );
++  if (!fs.existsSync(dist)) {
++    throw new Error(`@spectrum-ts/imessage dist not found: ${dist}`);
++  }
++  const files = fs.readdirSync(dist)
++    .filter((name) => name.endsWith(".js"))
++    .map((name) => path.join(dist, name));
++
++  for (const file of files) {
++    const raw = fs.readFileSync(file, "utf8");
++    // Normalize to LF for matching so the patch works regardless of the
++    // checkout's line-ending style (Windows git autocrlf produces CRLF,
++    // which would otherwise defeat the \n-based search strings). The
++    // original EOL style is restored on write.
++    const CR = String.fromCharCode(13);
++    const CRLF = CR + "\n";
++    const usedCRLF = raw.includes(CRLF);
++    const original = usedCRLF ? raw.split(CRLF).join("\n") : raw;
++    if (!original.includes("const buildMessageBase = ")) {
++      continue;
++    }
++    // Only this patch's own marker counts as "already patched" — the sibling
++    // mixed-attachment patch leaves its marker in the same file.
++    if (original.includes(MARKER)) {
++      return { patched: false, file, reason: "already patched" };
++    }
++    const upstream = UPSTREAM_HINTS.find((hint) => original.includes(hint));
++    if (upstream) {
++      return { patched: false, file, reason: "upstream maps replyTargetGuid" };
++    }
++    let patched = replaceOnce(
++      original,
++      ANCHOR,
++      REPLACEMENT,
++      "buildMessageBase return object"
++    );
++    patched = `// ${MARKER}\n${patched}`;
++    if (usedCRLF) {
++      patched = patched.split("\n").join(CRLF);
++    }
++    fs.writeFileSync(file, patched, "utf8");
++    return { patched: true, file };
++  }
++  throw new Error("could not find @spectrum-ts/imessage buildMessageBase chunk to patch");
++}
++
++const _invokedDirectly =
++  process.argv[1] &&
++  import.meta.url === pathToFileURL(process.argv[1]).href;
++if (_invokedDirectly) {
++  try {
++    const root = process.argv[2] ? path.resolve(process.argv[2]) : scriptDir();
++    const result = patchSpectrumReplyTarget(root);
++    const action = result.patched
++      ? "patched"
++      : result.reason === "already patched"
++        ? "ok (already patched)"
++        : `skipped (${result.reason})`;
++    console.error(`photon-sidecar: spectrum reply-target patch ${action}: ${result.file}`);
++  } catch (err) {
++    console.error(`photon-sidecar: spectrum reply-target patch failed: ${err?.stack || err}`);
++    process.exit(1);
++  }
++}
+diff --git a/tests/plugins/platforms/photon/test_spectrum_reply_patch.py b/tests/plugins/platforms/photon/test_spectrum_reply_patch.py
+new file mode 100644
+index 0000000..a6599ae
+--- /dev/null
++++ b/tests/plugins/platforms/photon/test_spectrum_reply_patch.py
+@@ -0,0 +1,296 @@
++"""Regression tests for Hermes' Spectrum reply-linkage workaround.
++
++`@spectrum-ts/imessage@8.0.0` builds every emitted message from a single
++`buildMessageBase` helper that drops the Apple reply linkage
++(`replyTargetGuid` / `threadOriginatorGuid` / `threadOriginatorPart`) the
++underlying `@photon-ai/advanced-imessage` record already carries. The install
++-time patch under test re-attaches it as a `replyTo` object.
++
++These tests never spawn the sidecar and never touch the checked-out
++`node_modules` copy: every run gets its own temp root seeded from the real
++dist, and a module-scoped guard asserts the real dist is byte-identical
++afterwards.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import json
++import shutil
++import subprocess
++from pathlib import Path
++
++import pytest
++
++_SIDECAR = Path("plugins/platforms/photon/sidecar")
++_PATCHER = _SIDECAR / "patch-spectrum-reply-target.mjs"
++_MIXED_PATCHER = _SIDECAR / "patch-spectrum-mixed-attachments.mjs"
++_REAL_DIST = _SIDECAR / "node_modules/@spectrum-ts/imessage/dist/index.js"
++_PACKAGE_JSON = _SIDECAR / "package.json"
++
++_MARKER = "Hermes patch: Preserve Apple reply linkage (replyTargetGuid/threadOriginatorGuid)"
++_MIXED_MARKER = "Hermes patch: Preserve mixed text + attachment iMessage payloads"
++_MARKER_LINE = f"// {_MARKER}\n"
++
++_POSTINSTALL = (
++    "node patch-spectrum-mixed-attachments.mjs && node patch-spectrum-reply-target.mjs"
++)
++
++# The published 8.x helper, verbatim (tab-indented, as the tarball ships it).
++_ANCHOR = (
++    "const buildMessageBase = (message, chatGuidHint, timestamp, phone) => {\n"
++    "\tconst chat = resolveChatGuid(message, chatGuidHint);\n"
++    "\treturn {\n"
++    '\t\tdirection: message.isFromMe ? "outbound" : "inbound",\n'
++    "\t\tsender: toSenderRef(message.sender),\n"
++    "\t\tspace: {\n"
++    "\t\t\tid: chat,\n"
++    "\t\t\ttype: chatTypeFromGuid(chat),\n"
++    "\t\t\tphone\n"
++    "\t\t},\n"
++    "\t\ttimestamp\n"
++    "\t};\n"
++    "};"
++)
++
++_REPLACEMENT = (
++    "const buildMessageBase = (message, chatGuidHint, timestamp, phone) => {\n"
++    "\tconst chat = resolveChatGuid(message, chatGuidHint);\n"
++    "\treturn {\n"
++    '\t\tdirection: message.isFromMe ? "outbound" : "inbound",\n'
++    "\t\tsender: toSenderRef(message.sender),\n"
++    "\t\tspace: {\n"
++    "\t\t\tid: chat,\n"
++    "\t\t\ttype: chatTypeFromGuid(chat),\n"
++    "\t\t\tphone\n"
++    "\t\t},\n"
++    "\t\ttimestamp,\n"
++    "\t\t// Hermes patch: Apple reply linkage. replyTargetGuid = the exact tapped"
++    " bubble; threadOriginatorGuid = thread root.\n"
++    "\t\t...(message.replyTargetGuid || message.threadOriginatorGuid ? { replyTo: {\n"
++    "\t\t\tid: message.replyTargetGuid ?? message.threadOriginatorGuid,\n"
++    "\t\t\tthreadRootId: message.threadOriginatorGuid ?? null,\n"
++    "\t\t\tpart: message.threadOriginatorPart ?? null\n"
++    "\t\t} } : {})\n"
++    "\t};\n"
++    "};"
++)
++
++if shutil.which("node") is None or not _REAL_DIST.exists():
++    pytest.skip(
++        "needs node and an installed @spectrum-ts/imessage dist to seed fixtures",
++        allow_module_level=True,
++    )
++
++_REAL_DIST_BYTES = _REAL_DIST.read_bytes()
++_REAL_DIST_SHA = hashlib.sha256(_REAL_DIST_BYTES).hexdigest()
++
++
++@pytest.fixture(autouse=True)
++def _real_dist_untouched():
++    """The checked-out provider copy is a fixture *source*, never a patch target."""
++    yield
++    assert hashlib.sha256(_REAL_DIST.read_bytes()).hexdigest() == _REAL_DIST_SHA, (
++        "the real @spectrum-ts/imessage dist under node_modules was modified"
++    )
++
++
++def _seed(root: Path, source: str | None = None) -> Path:
++    """Lay out `<root>/node_modules/@spectrum-ts/imessage/dist/index.js`."""
++    dist = root / "node_modules" / "@spectrum-ts" / "imessage" / "dist"
++    dist.mkdir(parents=True, exist_ok=True)
++    chunk = dist / "index.js"
++    chunk.write_text(
++        _REAL_DIST_BYTES.decode("utf-8") if source is None else source,
++        encoding="utf-8",
++    )
++    return chunk
++
++
++def _run(script: Path, root: Path) -> subprocess.CompletedProcess[str]:
++    return subprocess.run(
++        ["node", str(script), str(root)],
++        cwd=Path.cwd(),
++        text=True,
++        capture_output=True,
++        check=False,
++    )
++
++
++def test_first_run_rewrites_build_message_base(tmp_path: Path) -> None:
++    """One anchor covers every emitted message: `buildMessageBase`'s return."""
++    chunk = _seed(tmp_path)
++    original = chunk.read_text(encoding="utf-8")
++    assert original.count(_ANCHOR) == 1, "fixture drifted from the published 8.x helper"
++
++    result = _run(_PATCHER, tmp_path)
++    assert result.returncode == 0, result.stderr
++    assert "spectrum reply-target patch patched: " in result.stderr
++
++    patched = chunk.read_text(encoding="utf-8")
++    assert _MARKER in patched
++    assert "replyTo: {" in patched
++    assert patched.count(_REPLACEMENT) == 1
++    assert _ANCHOR not in patched
++    # Nothing outside the one anchor moved.
++    assert patched == _MARKER_LINE + original.replace(_ANCHOR, _REPLACEMENT)
++
++    # The rewritten chunk is still a parseable ES module.
++    probe = tmp_path / "parse-probe.mjs"
++    probe.write_text(patched, encoding="utf-8")
++    check = subprocess.run(
++        ["node", "--check", str(probe)], text=True, capture_output=True, check=False
++    )
++    assert check.returncode == 0, check.stderr
++
++
++def test_patched_helper_emits_apple_reply_linkage(tmp_path: Path) -> None:
++    """Evaluate the rewritten helper: the linkage lands on the message base."""
++    chunk = _seed(tmp_path)
++    assert _run(_PATCHER, tmp_path).returncode == 0
++    patched = chunk.read_text(encoding="utf-8")
++    assert _REPLACEMENT in patched
++
++    harness = tmp_path / "harness.mjs"
++    harness.write_text(
++        "const resolveChatGuid = (message, hint) => hint;\n"
++        "const chatTypeFromGuid = (guid) => (guid.endsWith(';+;g') ? 'group' : 'dm');\n"
++        "const toSenderRef = (sender) => ({ id: sender });\n"
++        f"{_REPLACEMENT}\n"
++        "const cases = [\n"
++        "  { isFromMe: false, sender: 'a', replyTargetGuid: 'G1',"
++        " threadOriginatorGuid: 'G0', threadOriginatorPart: 2 },\n"
++        "  { isFromMe: false, sender: 'a', threadOriginatorGuid: 'G0' },\n"
++        "  { isFromMe: false, sender: 'a', replyTargetGuid: 'G1' },\n"
++        "  { isFromMe: true, sender: 'a' },\n"
++        "];\n"
++        "console.log(JSON.stringify(cases.map((m) =>"
++        " buildMessageBase(m, 'iMessage;-;+1', 7, '+1'))));\n",
++        encoding="utf-8",
++    )
++    out = subprocess.run(
++        ["node", str(harness)], text=True, capture_output=True, check=False
++    )
++    assert out.returncode == 0, out.stderr
++    bases = json.loads(out.stdout)
++
++    # A tapped bubble inside a thread: exact target plus the thread root.
++    assert bases[0]["replyTo"] == {"id": "G1", "threadRootId": "G0", "part": 2}
++    # Thread membership with no explicit target falls back to the root.
++    assert bases[1]["replyTo"] == {"id": "G0", "threadRootId": "G0", "part": None}
++    # A reply with no thread record still carries the tapped bubble.
++    assert bases[2]["replyTo"] == {"id": "G1", "threadRootId": None, "part": None}
++    # A plain message gains no key at all — downstream shape is unchanged.
++    assert "replyTo" not in bases[3]
++    assert bases[3] == {
++        "direction": "outbound",
++        "sender": {"id": "a"},
++        "space": {"id": "iMessage;-;+1", "type": "dm", "phone": "+1"},
++        "timestamp": 7,
++    }
++
++
++def test_second_run_is_a_no_op(tmp_path: Path) -> None:
++    """postinstall runs on every `npm install`; re-patching must not stack."""
++    chunk = _seed(tmp_path)
++    assert _run(_PATCHER, tmp_path).returncode == 0
++    once = chunk.read_bytes()
++
++    again = _run(_PATCHER, tmp_path)
++    assert again.returncode == 0, again.stderr
++    assert "already patched" in again.stderr
++    assert "spectrum reply-target patch ok" in again.stderr
++    assert chunk.read_bytes() == once
++
++
++@pytest.mark.parametrize(
++    "upstream",
++    [
++        pytest.param("const replyTargetGuid = (message) =>", id="declaration"),
++        pytest.param("const target = replyTargetGuid(message);", id="call-site"),
++    ],
++)
++def test_skips_when_upstream_maps_reply_target(tmp_path: Path, upstream: str) -> None:
++    """spectrum-ts >= 12 maps the linkage natively — stand down, don't fight it."""
++    seeded = f"{upstream} message.reply_target_guid ?? null;\n" + _REAL_DIST_BYTES.decode(
++        "utf-8"
++    )
++    chunk = _seed(tmp_path, seeded)
++    before = chunk.read_bytes()
++
++    result = _run(_PATCHER, tmp_path)
++    assert result.returncode == 0, result.stderr
++    assert "spectrum reply-target patch skipped" in result.stderr
++    assert "upstream maps replyTargetGuid" in result.stderr
++    assert chunk.read_bytes() == before
++    assert _MARKER not in chunk.read_text(encoding="utf-8")
++
++
++def test_missing_anchor_fails_loudly(tmp_path: Path) -> None:
++    """A reshaped helper must break the install, not silently ship no linkage."""
++    reshaped = _REAL_DIST_BYTES.decode("utf-8").replace(
++        _ANCHOR, _ANCHOR.replace("\t\tsender: toSenderRef(message.sender),\n", ""), 1
++    )
++    chunk = _seed(tmp_path, reshaped)
++    before = chunk.read_bytes()
++    assert "const buildMessageBase = " in reshaped
++    assert _ANCHOR not in reshaped
++
++    result = _run(_PATCHER, tmp_path)
++    assert result.returncode == 1
++    assert "buildMessageBase" in result.stderr
++    assert "found 0" in result.stderr
++    assert "spectrum reply-target patch failed" in result.stderr
++    assert chunk.read_bytes() == before
++
++
++def test_missing_dist_fails_loudly(tmp_path: Path) -> None:
++    """No provider dist at all is an install problem worth surfacing."""
++    (tmp_path / "node_modules").mkdir()
++    result = _run(_PATCHER, tmp_path)
++    assert result.returncode == 1
++    assert "@spectrum-ts/imessage dist not found" in result.stderr
++
++
++def test_composes_with_the_mixed_attachment_patch_in_either_order(
++    tmp_path: Path,
++) -> None:
++    """The two patches touch disjoint anchors, so order must not matter."""
++    forward_root = tmp_path / "forward"
++    reverse_root = tmp_path / "reverse"
++    forward = _seed(forward_root)
++    reverse = _seed(reverse_root)
++    original = forward.read_text(encoding="utf-8")
++
++    for script in (_MIXED_PATCHER, _PATCHER):
++        assert _run(script, forward_root).returncode == 0
++    for script in (_PATCHER, _MIXED_PATCHER):
++        assert _run(script, reverse_root).returncode == 0
++
++    for chunk in (forward, reverse):
++        text = chunk.read_text(encoding="utf-8")
++        assert _MARKER in text
++        assert _MIXED_MARKER in text
++        assert text.count(_REPLACEMENT) == 1
++
++    # Order-independent to the byte.
++    assert forward.read_bytes() == reverse.read_bytes()
++
++    # Re-running either script on either root changes nothing.
++    for root, chunk in ((forward_root, forward), (reverse_root, reverse)):
++        settled = chunk.read_bytes()
++        for script in (_MIXED_PATCHER, _PATCHER):
++            assert _run(script, root).returncode == 0
++            assert chunk.read_bytes() == settled
++
++    # Disjointness, proved by subtraction: undo this patch's single edit and the
++    # mixed-attachment patch's output comes back byte-for-byte.
++    undone = forward.read_text(encoding="utf-8")
++    assert undone.startswith(_MARKER_LINE)
++    assert undone[len(_MARKER_LINE) :].replace(_REPLACEMENT, _ANCHOR, 1) == original
++
++
++def test_postinstall_chains_both_patches() -> None:
++    """Both patches run on every install, mixed-attachments first."""
++    package = json.loads(_PACKAGE_JSON.read_text(encoding="utf-8"))
++    assert package["scripts"]["postinstall"] == _POSTINSTALL
+-- 
+2.41.0
+
+
+From 99b03f52266e1c97b56abb27081670097ebb8b3e Mon Sep 17 00:00:00 2001
+From: Rivian <rivianp@gmail.com>
+Date: Thu, 10 Sep 2026 02:59:04 +0700
+Subject: [PATCH 2/6] photon: forward Apple reply linkage from the sidecar
+ (replyTo on inbound events)
+
+---
+ plugins/platforms/photon/sidecar/index.mjs    | 170 ++++++++---
+ .../photon/sidecar/reply-context.mjs          | 128 +++++++++
+ .../platforms/photon/test_reply_context.py    | 268 ++++++++++++++++++
+ 3 files changed, 533 insertions(+), 33 deletions(-)
+ create mode 100644 plugins/platforms/photon/sidecar/reply-context.mjs
+ create mode 100644 tests/plugins/platforms/photon/test_reply_context.py
+
+diff --git a/plugins/platforms/photon/sidecar/index.mjs b/plugins/platforms/photon/sidecar/index.mjs
+index 5c8611f..491157f 100644
+--- a/plugins/platforms/photon/sidecar/index.mjs
++++ b/plugins/platforms/photon/sidecar/index.mjs
+@@ -17,6 +17,14 @@
+ // Protocol (all requests require `X-Hermes-Sidecar-Token: ${TOKEN}`):
+ //   - GET  /inbound    -> 200 NDJSON stream; one JSON event per line, blank
+ //                         lines are heartbeats. One consumer at a time.
++//       Each event: {"messageId", "platform", "space", "sender", "content",
++//              "timestamp",
++//              "replyTo": {"id", "threadRootId", "part", "direction",
++//                          "text", "src"} | null}
++//       `replyTo` is present on every event and non-null only when the human
++//       tapped Reply on a bubble: `id` is the replied-to message (the SDK id
++//       once resolved), `direction`/`text` describe that bubble when it could
++//       be resolved, and `src` says how ("12x" | "cache" | "fetch" | "none").
+ //   - POST /healthz     -> {"ok": true}
+ //   - POST /send        -> {"ok": true, "messageId": "..."}
+ //       body: {"spaceId": "...", "text": "...",
+@@ -61,12 +69,19 @@
+ //                          detection so a dead gateway can't orphan us)
+ //   PHOTON_TELEMETRY       enable Spectrum SDK telemetry ("true"/"1"/"on"/"yes";
+ //                          default off — toggle with `hermes photon telemetry`)
++//   PHOTON_REPLY_HYDRATE_MS  budget (ms) for the one `space.getMessage` used to
++//                          resolve a reply target that isn't already cached
++//                          (default 1500; 0 disables the fetch entirely)
+ 
+ import http from "node:http";
+ import crypto from "node:crypto";
++import fs from "node:fs";
++import path from "node:path";
++import { fileURLToPath } from "node:url";
+ import { once } from "node:events";
+ import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
+ import { chooseSendFormat } from "./send-format.mjs";
++import { replyTargetOf, messageText } from "./reply-context.mjs";
+ import {
+   classifyProbeRejection,
+   shouldProbe,
+@@ -93,7 +108,15 @@ const DM_CHAT_GUID_RE = /^any;-;(\+\d{6,})$/;
+ const E164_RE = /^\+\d{6,}$/;
+ const MAX_KNOWN_SPACES = 2048;
+ const MAX_KNOWN_MESSAGES = 1024;
++const MAX_KNOWN_OUTBOUND_MESSAGES = 256;
+ const MAX_REACTION_HANDLES = 512;
++// A reply target that is in neither cache costs one `space.getMessage`. Bound
++// it: inbound delivery must not stall behind a slow unary read, and a missing
++// preview is far better than a late message. 0 disables the fetch.
++const REPLY_HYDRATE_MS = (() => {
++  const n = Number(process.env.PHOTON_REPLY_HYDRATE_MS);
++  return Number.isFinite(n) && n >= 0 ? n : 1500;
++})();
+ const STREAM_DEGRADED_RESTART_MS =
+   Number(process.env.PHOTON_STREAM_DEGRADED_RESTART_MS) || 90 * 1000;
+ const STREAM_INTERRUPTED_DEGRADE_COUNT =
+@@ -297,6 +320,31 @@ try {
+       (e && e.stack ? e.stack : String(e))
+   );
+ }
++
++// The reply-linkage patch is applied at install time (postinstall), not at
++// runtime like the one above — it rewrites a helper we can't safely re-derive
++// here. An install that predates the patch drops Apple's reply linkage
++// silently, which looks like "Hermes ignores my replies" rather than a bug, so
++// say so once at startup. Never fatal: the sidecar works fine without it.
++try {
++  const distPath = path.join(
++    path.dirname(fileURLToPath(import.meta.url)),
++    "node_modules/@spectrum-ts/imessage/dist/index.js"
++  );
++  const dist = fs.readFileSync(distPath, "utf-8");
++  if (
++    !dist.includes("Hermes patch: Preserve Apple reply linkage") &&
++    !dist.includes("replyTargetGuid(")
++  ) {
++    console.error(
++      "photon-sidecar: WARN reply-target patch missing from @spectrum-ts/imessage dist — tapped replies will arrive without context; run: node patch-spectrum-reply-target.mjs"
++    );
++  }
++} catch {
++  // No dist to inspect (not installed yet, or a layout we don't recognize) —
++  // the spectrum-ts import below reports that far more precisely.
++}
++
+ let Spectrum,
+   imessage,
+   attachment,
+@@ -351,6 +399,13 @@ const knownSpaces = new Map();
+ // Inbound Message objects by id, so /react can usually skip a
+ // `space.getMessage` round trip when tapping back on a recent message.
+ const knownMessages = new Map();
++// Outbound Message objects by id, kept SEPARATELY from `knownMessages` (which
++// only ever holds forwarded inbound messages, and whose semantics /react
++// depends on). A human replying to something Hermes said needs that bubble's
++// text, and the stream is the only place we see it — the outbound echo we
++// otherwise drop on the floor. Smaller cap: only recent Hermes bubbles are
++// plausible reply targets.
++const knownOutboundMessages = new Map();
+ // One reaction handle per reacted-to message (key `${spaceId}\0${messageId}`,
+ // value {emoji, handle}) — mirrors iMessage's one-tapback-per-sender
+ // semantics; a new /react on the same target overwrites the slot. The handle
+@@ -480,39 +535,61 @@ async function normalizeBinaryContent(content) {
+   return meta;
+ }
+ 
+-// Best-effort text preview of a reaction's resolved target Message, so the
+-// Python adapter can populate the gateway's `reply_to_text` (context: WHAT was
+-// tapped back). The SDK only emits a reaction once it has resolved the full
+-// target Message (toReactionMessages bails otherwise), so `target.content` is
+-// hydrated here — no extra round trip. Handles plain text and our patched mixed
+-// text+attachment groups (first text child); null for attachment/voice-only
+-// targets. Capped so one long bubble can't balloon the NDJSON line.
+-const REACTION_TARGET_TEXT_CAP = 2000;
+-function reactionTargetText(target) {
+-  const c = target && typeof target === "object" ? target.content : null;
+-  if (!c || typeof c !== "object") return null;
+-  let text = null;
+-  if (c.type === "text") {
+-    text = c.text;
+-  } else if (c.type === "richlink") {
+-    text = c.url;
+-  } else if (c.type === "group") {
+-    for (const item of Array.isArray(c.items) ? c.items : []) {
+-      const ic = item && typeof item === "object" ? item.content : null;
+-      if (ic && ic.type === "text" && ic.text) {
+-        text = ic.text;
+-        break;
+-      }
+-      if (ic && ic.type === "richlink" && ic.url) {
+-        text = ic.url;
+-        break;
++// Resolve the Message a reply points at, so the Python adapter can populate
++// the gateway's `reply_to_text` for replies the same way it already does for
++// tapbacks. Three ladders, cheapest first: the 12.x wrapper already carries the
++// full target; our own caches cover anything recent in this space (inbound or
++// Hermes' own outbound); only then do we spend one bounded `space.getMessage`.
++// Never throws and never blocks past REPLY_HYDRATE_MS — a reply with no preview
++// still beats a reply that arrives late.
++async function hydrateReplyTarget(space, rt) {
++  let target =
++    rt.target ??
++    knownMessages.get(rt.id) ??
++    knownOutboundMessages.get(rt.id) ??
++    null;
++  let src = target ? (rt.target ? "12x" : "cache") : "none";
++
++  if (!target && REPLY_HYDRATE_MS > 0 && typeof space?.getMessage === "function") {
++    let timer = null;
++    try {
++      const fetching = Promise.resolve(space.getMessage(rt.id));
++      // If the timeout wins the race, the fetch's own rejection must not
++      // surface as an unhandled rejection.
++      fetching.catch(() => {});
++      // Deliberately NOT unref'd (unlike the watchdog probe's): this timeout
++      // is what unblocks inbound delivery, so it has to fire even if the fetch
++      // is the only thing left on the loop. `finally` clears it either way, so
++      // it holds the process open for at most REPLY_HYDRATE_MS.
++      const expiry = new Promise((resolve) => {
++        timer = setTimeout(() => resolve(undefined), REPLY_HYDRATE_MS);
++      });
++      const fetched = await Promise.race([fetching, expiry]);
++      if (fetched) {
++        target = fetched;
++        src = "fetch";
+       }
++    } catch (e) {
++      console.error(
++        `photon-sidecar: reply target ${rt.id} could not be fetched: ` +
++          (e && e.message ? e.message : String(e))
++      );
++    } finally {
++      if (timer) clearTimeout(timer);
+     }
+   }
+-  if (typeof text !== "string" || !text) return null;
+-  return text.length > REACTION_TARGET_TEXT_CAP
+-    ? text.slice(0, REACTION_TARGET_TEXT_CAP)
+-    : text;
++
++  return {
++    // Prefer the resolved Message's id: on the patched-8.0.0 path `rt.id` is a
++    // raw Apple GUID off the wire, and the adapter keys on the SDK's
++    // `spc-msg-…` ids.
++    id: target?.id ?? rt.id,
++    threadRootId: rt.threadRootId,
++    part: rt.part,
++    direction: target?.direction ?? null,
++    text: target ? messageText(target) : null,
++    src,
++  };
+ }
+ 
+ async function normalizeContent(content) {
+@@ -557,7 +634,10 @@ async function normalizeContent(content) {
+       targetDirection: target?.direction ?? null,
+       // Text of the reacted-to message, so Python can correlate the tapback to
+       // the gateway's reply_to_text. Null for attachment/voice-only targets.
+-      targetText: reactionTargetText(target),
++      // The SDK only emits a reaction once it has resolved the full target
++      // Message (toReactionMessages bails otherwise), so `target.content` is
++      // already hydrated here — no extra round trip.
++      targetText: messageText(target),
+     };
+   }
+   // A user tapping a poll choice arrives as `poll_option` carrying the chosen
+@@ -590,6 +670,17 @@ async function normalizeEvent(space, message) {
+   try {
+     const msgSpace = message.space || {};
+     const ts = message.timestamp;
++    // A reply carries its content nested under the 12.x wrapper; `rt.content`
++    // is the content to forward in either shape.
++    const rt = replyTargetOf(message);
++    const replyTo = rt ? await hydrateReplyTarget(space, rt) : null;
++    if (replyTo) {
++      console.error(
++        `photon-sidecar: inbound reply -> target ${replyTo.id} ` +
++          `dir=${replyTo.direction ?? "?"} text=${replyTo.text ? "y" : "n"} ` +
++          `src=${replyTo.src} raw=${JSON.stringify(message.replyTo ?? null)}`
++      );
++    }
+     return {
+       messageId: message.id ?? null,
+       platform: message.platform || space.__platform || "iMessage",
+@@ -600,9 +691,11 @@ async function normalizeEvent(space, message) {
+         phone: space.phone ?? msgSpace.phone ?? null,
+       },
+       sender: { id: message.sender ? message.sender.id : null },
+-      content: await normalizeContent(message.content),
++      content: await normalizeContent(rt ? rt.content : message.content),
+       timestamp:
+         ts instanceof Date ? ts.toISOString() : ts ? String(ts) : null,
++      // Always present; null when this message is not a reply.
++      replyTo,
+     };
+   } catch (e) {
+     console.error(
+@@ -650,8 +743,19 @@ function inboundStreamErrorMessage(e) {
+         markStreamHealthy();
+         // Every yield — any direction — proves the inbound stream is live.
+         noteInboundYield();
+-        // Only forward inbound messages (ignore our own outbound echoes).
++        // Only forward inbound messages (ignore our own outbound echoes) —
++        // but remember them first: this echo is the only place we ever see the
++        // Message object for something Hermes said, and the human may reply to
++        // it in a moment.
+         if (message && message.direction && message.direction !== "inbound") {
++          if (typeof message.id === "string" && message.id) {
++            lruSet(
++              knownOutboundMessages,
++              message.id,
++              message,
++              MAX_KNOWN_OUTBOUND_MESSAGES
++            );
++          }
+           continue;
+         }
+         rememberInboundSpace(space, message);
+diff --git a/plugins/platforms/photon/sidecar/reply-context.mjs b/plugins/platforms/photon/sidecar/reply-context.mjs
+new file mode 100644
+index 0000000..b35e3a7
+--- /dev/null
++++ b/plugins/platforms/photon/sidecar/reply-context.mjs
+@@ -0,0 +1,128 @@
++// Inbound reply linkage for the Photon sidecar — normalize the two shapes
++// spectrum-ts can hand us into one reply-target descriptor.
++//
++// A human tapping "Reply" on a bubble produces Apple linkage on the record:
++// `replyTargetGuid` (the exact bubble tapped), `threadOriginatorGuid` (the
++// thread's root bubble) and `threadOriginatorPart`. How that reaches us
++// depends on the SDK:
++//
++//   patched 8.0.0 — Hermes' install-time patch (patch-spectrum-reply-target.mjs)
++//     re-attaches the linkage beside the content:
++//       message.replyTo = { id, threadRootId, part }
++//     and `message.content` is the reply's own content, untouched.
++//   spectrum-ts >= 12 — upstream maps it itself, but by WRAPPING the content:
++//       message.content = { type: "reply", content: <inner>, target: <Message> }
++//     The target is a full Message, so no round trip is needed to preview it.
++//
++// This module is pure (no spectrum-ts import, no I/O) so the tests can execute
++// the real decision logic under node — index.mjs itself can't run without an
++// installed SDK. See tests/plugins/platforms/photon/test_reply_context.py.
++
++// Multipart child ids arrive as `p:<partIndex>/<parentGuid>`; the bare parent
++// guid is what `space.getMessage` and the adapter's caches key on.
++export const PART_PREFIX = /^p:(\d+)\//;
++
++// Cap the target-text preview so one long bubble can't balloon an NDJSON line.
++export const TARGET_TEXT_CAP = 2000;
++
++/**
++ * Split a possibly `p:N/`-prefixed message id into its bare id + part index.
++ *
++ * @param {unknown} raw
++ * @returns {{id: string, partIndex: number|null}|null} null for a
++ *   missing/blank id (a reply target we can't address is no target at all).
++ */
++function splitMessageId(raw) {
++  if (typeof raw !== "string") return null;
++  const trimmed = raw.trim();
++  if (!trimmed) return null;
++  const m = trimmed.match(PART_PREFIX);
++  if (!m) return { id: trimmed, partIndex: null };
++  const id = trimmed.slice(m[0].length).trim();
++  if (!id) return null;
++  return { id, partIndex: Number(m[1]) };
++}
++
++/**
++ * Describe the message a reply points at, across both SDK shapes.
++ *
++ * @param {any} message an SDK Message (or anything — non-objects yield null)
++ * @returns {{id: string, threadRootId: string|null, part: string|null,
++ *            partIndex: number|null, target: any, content: any}|null}
++ *   null when the message carries no usable reply linkage. `content` is
++ *   always the content the sidecar should forward (the inner content on the
++ *   12.x wrapper, the message's own content otherwise).
++ */
++export function replyTargetOf(message) {
++  if (!message || typeof message !== "object") return null;
++
++  const linkage =
++    message.replyTo && typeof message.replyTo === "object"
++      ? message.replyTo
++      : null;
++  const content =
++    message.content && typeof message.content === "object"
++      ? message.content
++      : null;
++  const wrapped = content !== null && content.type === "reply";
++  if (!linkage && !wrapped) return null;
++
++  // 12.x wins for target/content; `message.replyTo` fills in the rest (and
++  // the id, when the wrapper arrived without a hydrated target).
++  const target = wrapped ? content.target ?? null : null;
++  const inner = wrapped ? content.content : message.content;
++  const split =
++    (target && typeof target === "object" ? splitMessageId(target.id) : null) ??
++    (linkage ? splitMessageId(linkage.id) : null);
++  if (!split) return null;
++
++  // A thread's root bubble can carry `threadOriginatorGuid` pointing at
++  // itself. That is a thread marker, not a reply — forwarding it would make
++  // every root bubble look like a reply to itself.
++  const self = splitMessageId(message.id);
++  if (self && self.id === split.id) return null;
++
++  return {
++    id: split.id,
++    threadRootId: linkage ? linkage.threadRootId ?? null : null,
++    part: linkage ? linkage.part ?? null : null,
++    partIndex: split.partIndex,
++    target,
++    content: inner,
++  };
++}
++
++/**
++ * Best-effort text preview of a resolved target Message, so the Python adapter
++ * can populate the gateway's `reply_to_text` (context: WHAT was replied to or
++ * tapped back). Handles plain text, rich links and our patched mixed
++ * text+attachment groups (first text/richlink child); null for
++ * attachment/voice-only targets.
++ *
++ * @param {any} target a hydrated Message (or null)
++ * @returns {string|null} at most TARGET_TEXT_CAP characters
++ */
++export function messageText(target) {
++  const c = target && typeof target === "object" ? target.content : null;
++  if (!c || typeof c !== "object") return null;
++  let text = null;
++  if (c.type === "text") {
++    text = c.text;
++  } else if (c.type === "richlink") {
++    text = c.url;
++  } else if (c.type === "group") {
++    for (const item of Array.isArray(c.items) ? c.items : []) {
++      const ic = item && typeof item === "object" ? item.content : null;
++      if (ic && ic.type === "text" && ic.text) {
++        text = ic.text;
++        break;
++      }
++      if (ic && ic.type === "richlink" && ic.url) {
++        text = ic.url;
++        break;
++      }
++    }
++  }
++  if (typeof text !== "string" || !text) return null;
++  return text.length > TARGET_TEXT_CAP ? text.slice(0, TARGET_TEXT_CAP) : text;
++}
+diff --git a/tests/plugins/platforms/photon/test_reply_context.py b/tests/plugins/platforms/photon/test_reply_context.py
+new file mode 100644
+index 0000000..1a9068a
+--- /dev/null
++++ b/tests/plugins/platforms/photon/test_reply_context.py
+@@ -0,0 +1,268 @@
++"""Behavior tests for the Photon sidecar's inbound reply-linkage normalizer.
++
++A human tapping "Reply" on an iMessage bubble produces Apple reply linkage on
++the inbound record. Two SDK shapes carry it:
++
++* patched `@spectrum-ts/imessage@8.0.0` (Hermes' install-time patch) hangs a
++  `message.replyTo = {id, threadRootId, part}` off every message;
++* spectrum-ts >= 12 instead wraps the content:
++  `message.content = {type: "reply", content: <inner>, target: <Message>}`.
++
++`plugins/platforms/photon/sidecar/reply-context.mjs` collapses both into one
++shape for the sidecar. These tests *execute* that real module under node —
++they do not read its source. `index.mjs` itself cannot run locally (no
++`node_modules`), so it is only syntax-checked and grepped.
++"""
++
++from __future__ import annotations
++
++import json
++import shutil
++import subprocess
++from pathlib import Path
++from typing import Any, Dict
++
++import pytest
++
++if shutil.which("node") is None:
++    pytest.skip("needs node to execute the sidecar module", allow_module_level=True)
++
++_ROOT = Path(__file__).resolve().parents[4]
++_SIDECAR = _ROOT / "plugins" / "platforms" / "photon" / "sidecar"
++_MODULE = _SIDECAR / "reply-context.mjs"
++_INDEX = _SIDECAR / "index.mjs"
++
++
++def _run_harness(body: str, payload: Dict[str, Any]) -> Dict[str, Any]:
++    """Feed `payload` as JSON stdin to a node ESM harness; parse its JSON stdout."""
++    harness = (
++        f"import {{ replyTargetOf, messageText, TARGET_TEXT_CAP }} "
++        f"from {json.dumps(_MODULE.as_uri())};\n"
++        "const chunks = [];\n"
++        "process.stdin.on('data', (c) => chunks.push(c));\n"
++        "process.stdin.on('end', () => {\n"
++        "  const cases = JSON.parse(Buffer.concat(chunks).toString('utf-8'));\n"
++        "  const out = {};\n"
++        f"{body}"
++        "  process.stdout.write(JSON.stringify(out));\n"
++        "});\n"
++    )
++    run = subprocess.run(
++        ["node", "--input-type=module", "-e", harness],
++        input=json.dumps(payload),
++        text=True,
++        capture_output=True,
++        check=False,
++    )
++    assert run.returncode == 0, run.stderr
++    return json.loads(run.stdout)
++
++
++# --------------------------------------------------------------------------
++# replyTargetOf
++
++_INNER = {"type": "text", "text": "hi"}
++
++_REPLY_CASES: Dict[str, Any] = {
++    # Patched 8.0.0 shape: linkage rides beside the untouched content.
++    "patched_shape": {
++        "id": "spc-msg-SELF",
++        "replyTo": {
++            "id": "spc-msg-A",
++            "threadRootId": "spc-msg-R",
++            "part": "0:0:0",
++        },
++        "content": _INNER,
++    },
++    # Multipart child ids arrive prefixed `p:<partIndex>/<parentGuid>`.
++    "patched_part_prefixed_id": {
++        "id": "spc-msg-SELF",
++        "replyTo": {"id": "p:2/spc-msg-A", "threadRootId": None, "part": None},
++        "content": _INNER,
++    },
++    # spectrum-ts >= 12 wraps the content and hydrates the full target.
++    "wrapped_12x_shape": {
++        "id": "spc-msg-SELF",
++        "content": {
++            "type": "reply",
++            "content": _INNER,
++            "target": {
++                "id": "spc-msg-T",
++                "direction": "outbound",
++                "content": {"type": "text", "text": "earlier"},
++            },
++        },
++    },
++    # A blank id is no linkage at all.
++    "blank_id": {"id": "spc-msg-SELF", "replyTo": {"id": "   "}, "content": _INNER},
++    "missing_reply_to": {"id": "spc-msg-SELF", "content": _INNER},
++    "non_object_message": "not-a-message",
++    "null_message": None,
++    # Addendum: a thread's root bubble can carry threadOriginatorGuid pointing
++    # at itself — that is not a reply.
++    "self_reference": {
++        "id": "spc-msg-SELF",
++        "replyTo": {
++            "id": "spc-msg-SELF",
++            "threadRootId": "spc-msg-SELF",
++            "part": None,
++        },
++        "content": _INNER,
++    },
++    "self_reference_wrapped": {
++        "id": "spc-msg-SELF",
++        "content": {
++            "type": "reply",
++            "content": _INNER,
++            "target": {"id": "spc-msg-SELF", "direction": "inbound"},
++        },
++    },
++}
++
++
++@pytest.fixture(scope="module")
++def replies() -> Dict[str, Any]:
++    return _run_harness(
++        "  for (const [name, msg] of Object.entries(cases)) {\n"
++        "    out[name] = replyTargetOf(msg);\n"
++        "  }\n",
++        _REPLY_CASES,
++    )
++
++
++def test_patched_shape_preserves_linkage(replies: Dict[str, Any]) -> None:
++    rt = replies["patched_shape"]
++    assert rt is not None
++    assert rt["id"] == "spc-msg-A"
++    assert rt["threadRootId"] == "spc-msg-R"
++    assert rt["part"] == "0:0:0"
++    assert rt["partIndex"] is None
++    assert rt["target"] is None
++    # Content passes through untouched on the 8.0.0 shape.
++    assert rt["content"] == _INNER
++
++
++def test_part_prefix_is_stripped_into_part_index(replies: Dict[str, Any]) -> None:
++    rt = replies["patched_part_prefixed_id"]
++    assert rt is not None
++    assert rt["id"] == "spc-msg-A"
++    assert rt["partIndex"] == 2
++    assert rt["threadRootId"] is None
++    assert rt["part"] is None
++
++
++def test_wrapped_12x_shape_unwraps_content_and_target(replies: Dict[str, Any]) -> None:
++    rt = replies["wrapped_12x_shape"]
++    assert rt is not None
++    assert rt["id"] == "spc-msg-T"
++    assert rt["target"] is not None
++    assert rt["target"]["direction"] == "outbound"
++    assert rt["target"]["content"] == {"type": "text", "text": "earlier"}
++    # The inner content is what the sidecar should normalize/forward.
++    assert rt["content"] == _INNER
++    assert rt["threadRootId"] is None
++    assert rt["part"] is None
++
++
++@pytest.mark.parametrize(
++    "name",
++    [
++        "blank_id",
++        "missing_reply_to",
++        "non_object_message",
++        "null_message",
++        "self_reference",
++        "self_reference_wrapped",
++    ],
++)
++def test_no_linkage_returns_null(name: str, replies: Dict[str, Any]) -> None:
++    assert replies[name] is None
++
++
++# --------------------------------------------------------------------------
++# messageText — the reaction-target preview logic, shared with replies.
++
++_LONG = "x" * 3000
++
++_TEXT_CASES: Dict[str, Any] = {
++    "text": {"content": {"type": "text", "text": "hello"}},
++    "richlink": {"content": {"type": "richlink", "url": "https://example.com/a"}},
++    "group_attachment_then_text": {
++        "content": {
++            "type": "group",
++            "items": [
++                {"id": "i1", "content": {"type": "attachment", "name": "a.png"}},
++                {"id": "i2", "content": {"type": "text", "text": "caption"}},
++            ],
++        }
++    },
++    "group_attachment_only": {
++        "content": {
++            "type": "group",
++            "items": [
++                {"id": "i1", "content": {"type": "attachment", "name": "a.png"}},
++            ],
++        }
++    },
++    "attachment_only": {"content": {"type": "attachment", "name": "a.png"}},
++    "empty_text": {"content": {"type": "text", "text": ""}},
++    "no_content": {},
++    "null_target": None,
++    "long_text": {"content": {"type": "text", "text": _LONG}},
++}
++
++
++@pytest.fixture(scope="module")
++def texts() -> Dict[str, Any]:
++    out = _run_harness(
++        "  for (const [name, target] of Object.entries(cases)) {\n"
++        "    out[name] = messageText(target);\n"
++        "  }\n"
++        "  out.__cap = TARGET_TEXT_CAP;\n",
++        _TEXT_CASES,
++    )
++    return out
++
++
++@pytest.mark.parametrize(
++    ("name", "expected"),
++    [
++        ("text", "hello"),
++        ("richlink", "https://example.com/a"),
++        ("group_attachment_then_text", "caption"),
++        ("group_attachment_only", None),
++        ("attachment_only", None),
++        ("empty_text", None),
++        ("no_content", None),
++        ("null_target", None),
++    ],
++)
++def test_message_text(name: str, expected: Any, texts: Dict[str, Any]) -> None:
++    assert texts[name] == expected
++
++
++def test_message_text_caps_at_2000(texts: Dict[str, Any]) -> None:
++    assert texts["__cap"] == 2000
++    assert texts["long_text"] == _LONG[:2000]
++    assert len(texts["long_text"]) == 2000
++
++
++# --------------------------------------------------------------------------
++# index.mjs — cannot be executed locally (no node_modules); check + grep only.
++
++
++def test_index_syntax_is_valid() -> None:
++    run = subprocess.run(
++        ["node", "--check", str(_INDEX)], text=True, capture_output=True, check=False
++    )
++    assert run.returncode == 0, run.stderr
++
++
++def test_index_wires_the_reply_path() -> None:
++    src = _INDEX.read_text(encoding="utf-8")
++    assert "replyTargetOf(" in src
++    assert "hydrateReplyTarget(" in src
++    assert "knownOutboundMessages" in src
++    assert "messageText(" in src
++    # The reaction-target preview moved wholesale into reply-context.mjs.
++    assert "reactionTargetText" not in src
+-- 
+2.41.0
+
+
+From 2297d02d46ff799ef9aac2c47cfe8b1a1ebc8d8a Mon Sep 17 00:00:00 2001
+From: Rivian <rivianp@gmail.com>
+Date: Thu, 10 Sep 2026 02:59:04 +0700
+Subject: [PATCH 3/6] photon: reply-target patch also extends the iMessage
+ message schema (core strips unknown extras)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Task 1's rewrite put `replyTo` on the provider's raw record, and it never
+arrived. Spectrum core rebuilds every message through
+`extractExtras(raw, definition)`, which ends in
+`definition.message.schema.parse(extra)`; the iMessage platform's schema is a
+plain `z.object({...})`, so zod dropped the key it had not been told about.
+Three tapped replies in a live run produced no linkage at all.
+
+So the patch gains a second anchor — the provider's `messageSchema`
+declaration, which now names a `replyTo` shape — and idempotency moves from
+one file-level marker to one probe per rewrite. That second part is not
+cosmetic: the production dist already carries Task 1's rewrite and its marker,
+and a marker gate would call that done and leave the schema stripping `replyTo`
+forever. Each rewrite now applies when its anchor is there, stands down when
+its own comment is there, and throws when it finds neither.
+---
+ .../sidecar/patch-spectrum-reply-target.mjs   | 140 ++++++++---
+ .../photon/test_spectrum_reply_patch.py       | 226 ++++++++++++++++--
+ 2 files changed, 322 insertions(+), 44 deletions(-)
+
+diff --git a/plugins/platforms/photon/sidecar/patch-spectrum-reply-target.mjs b/plugins/platforms/photon/sidecar/patch-spectrum-reply-target.mjs
+index 5b07f80..8014cc6 100644
+--- a/plugins/platforms/photon/sidecar/patch-spectrum-reply-target.mjs
++++ b/plugins/platforms/photon/sidecar/patch-spectrum-reply-target.mjs
+@@ -7,21 +7,42 @@
+ // emitted message is spread from — copies only direction, sender, space and
+ // timestamp, so the linkage never reaches Hermes.
+ //
+-// One anchor is enough: `...base` is spread into every message built by
+-// `toInboundMessages`, `rebuildFromAppleMessage` and `buildAttachmentMessage`,
+-// so rewriting the base covers text, attachment and group paths alike. The
+-// added `replyTo` is spread in conditionally, so messages that are not replies
+-// keep their exact previous shape.
++// Two anchors, because the linkage has to survive two hops.
+ //
+-// The published output is tab-indented; the anchor below matches that byte for
+-// byte and fails loudly if a future spectrum-ts reshapes the helper. It runs
+-// from `postinstall` alongside patch-spectrum-mixed-attachments.mjs, which
+-// touches disjoint anchors (the two inbound mappers), so the pair composes in
+-// either order and each is a no-op on a second run.
++// 1. `buildMessageBase` — `...base` is spread into every message built by
++//    `toInboundMessages`, `rebuildFromAppleMessage` and
++//    `buildAttachmentMessage`, so rewriting the base covers text, attachment
++//    and group paths alike. The added `replyTo` is spread in conditionally, so
++//    messages that are not replies keep their exact previous shape.
++// 2. `messageSchema` — carrying `replyTo` on the record is not enough. Spectrum
++//    core rebuilds every message through
++//    `extractExtras(raw, definition)`, which ends in
++//    `definition.message.schema.parse(extra)`. That schema is a plain
++//    `z.object({...})`, and zod strips keys it does not declare, so an
++//    undeclared `replyTo` is dropped between the provider and `app.messages`.
++//    Verified live: three tapped replies reached Hermes with no linkage at all.
++//    Declaring the shape here is what lets it through. (`z` is already imported
++//    at the top of the same chunk.)
++//
++// Idempotency is tracked per anchor, not by a single marker: the production
++// dist was patched by an earlier release that only knew the first rewrite, and
++// a marker gate would read that as "done" and leave the schema stripping
++// `replyTo` forever. Each rewrite applies when its original text is present,
++// stands down when its own output is present, and throws when it can find
++// neither — an anchor that has drifted must break the install, not silently
++// ship a sidecar that drops every reply target.
++//
++// The published output is tab-indented; the anchors below match that byte for
++// byte. This runs from `postinstall` alongside
++// patch-spectrum-mixed-attachments.mjs, which touches disjoint anchors (the two
++// inbound mappers), so the pair composes in either order and each is a no-op on
++// a second run.
+ import fs from "node:fs";
+ import path from "node:path";
+ import { fileURLToPath, pathToFileURL } from "node:url";
+ 
++// A provenance breadcrumb at the top of the file, not a gate: whether a given
++// rewrite still needs doing is decided from that rewrite's own output.
+ const MARKER =
+   "Hermes patch: Preserve Apple reply linkage (replyTargetGuid/threadOriginatorGuid)";
+ 
+@@ -65,16 +86,67 @@ const REPLACEMENT = `const buildMessageBase = (message, chatGuidHint, timestamp,
+ \t};
+ };`;
+ 
++const SCHEMA_ANCHOR = `const messageSchema = z.object({
++\tpartIndex: z.number().int().nonnegative().optional(),
++\tparentId: z.string().optional()
++});`;
++
++const SCHEMA_REPLACEMENT = `const messageSchema = z.object({
++\tpartIndex: z.number().int().nonnegative().optional(),
++\tparentId: z.string().optional(),
++\t// Hermes patch: Apple reply linkage survives extractExtras (see buildMessageBase).
++\treplyTo: z.object({
++\t\tid: z.string(),
++\t\tthreadRootId: z.string().nullable().optional(),
++\t\tpart: z.string().nullable().optional()
++\t}).optional()
++});`;
++
++// `done` answers "did an earlier run already do this?" without depending on
++// the file-level marker. Both are the patch's own comment lines rather than the
++// code they introduce: a comment cannot be arrived at independently, so a
++// `replyTo` that some future spectrum-ts declares elsewhere in the chunk can
++// never be mistaken for this rewrite's output. Anything the hints below do not
++// recognize as upstream then lands in the drift branch and fails loudly, which
++// is the point — a silently skipped rewrite is what shipped a sidecar that
++// dropped every reply target in the first place.
++const REWRITES = [
++  {
++    name: "buildMessageBase",
++    anchor: ANCHOR,
++    replacement: REPLACEMENT,
++    done: "Hermes patch: Apple reply linkage. replyTargetGuid",
++    label: "buildMessageBase return object"
++  },
++  {
++    name: "messageSchema",
++    anchor: SCHEMA_ANCHOR,
++    replacement: SCHEMA_REPLACEMENT,
++    done: "Hermes patch: Apple reply linkage survives extractExtras",
++    label: "messageSchema declaration"
++  }
++];
++
+ function scriptDir() {
+   return path.dirname(fileURLToPath(import.meta.url));
+ }
+ 
+-function replaceOnce(source, from, to, label) {
+-  const count = source.split(from).length - 1;
++// Returns the source with `rewrite` applied, or the source untouched when this
++// rewrite's own output is already there. Anything else — the anchor missing, or
++// present more than once — is drift, and drift is fatal.
++function applyRewrite(source, rewrite) {
++  if (source.includes(rewrite.done)) {
++    return { source, applied: false };
++  }
++  const parts = source.split(rewrite.anchor);
++  const count = parts.length - 1;
+   if (count !== 1) {
+-    throw new Error(`expected exactly one ${label} match, found ${count}`);
++    throw new Error(
++      `expected exactly one ${rewrite.label} match, found ${count} (and no already-patched form)`
++    );
+   }
+-  return source.replace(from, to);
++  // split/join rather than String.replace: `$&` and friends stay literal.
++  return { source: parts.join(rewrite.replacement), applied: true };
+ }
+ 
+ export function patchSpectrumReplyTarget(root = scriptDir()) {
+@@ -105,27 +177,35 @@ export function patchSpectrumReplyTarget(root = scriptDir()) {
+     if (!original.includes("const buildMessageBase = ")) {
+       continue;
+     }
+-    // Only this patch's own marker counts as "already patched" — the sibling
+-    // mixed-attachment patch leaves its marker in the same file.
+-    if (original.includes(MARKER)) {
+-      return { patched: false, file, reason: "already patched" };
+-    }
+     const upstream = UPSTREAM_HINTS.find((hint) => original.includes(hint));
+     if (upstream) {
+       return { patched: false, file, reason: "upstream maps replyTargetGuid" };
+     }
+-    let patched = replaceOnce(
+-      original,
+-      ANCHOR,
+-      REPLACEMENT,
+-      "buildMessageBase return object"
+-    );
+-    patched = `// ${MARKER}\n${patched}`;
++    // Every rewrite is resolved in memory first, so a drifted anchor throws
++    // before anything reaches disk: a half-patched dist is worse than a failed
++    // install.
++    let patched = original;
++    const applied = [];
++    for (const rewrite of REWRITES) {
++      const step = applyRewrite(patched, rewrite);
++      patched = step.source;
++      if (step.applied) {
++        applied.push(rewrite.name);
++      }
++    }
++    if (applied.length === 0) {
++      return { patched: false, file, reason: "already patched" };
++    }
++    // The sibling mixed-attachment patch leaves its own marker in the same
++    // file, so only this one's absence is worth acting on.
++    if (!patched.includes(MARKER)) {
++      patched = `// ${MARKER}\n${patched}`;
++    }
+     if (usedCRLF) {
+       patched = patched.split("\n").join(CRLF);
+     }
+     fs.writeFileSync(file, patched, "utf8");
+-    return { patched: true, file };
++    return { patched: true, file, applied };
+   }
+   throw new Error("could not find @spectrum-ts/imessage buildMessageBase chunk to patch");
+ }
+@@ -142,7 +222,11 @@ if (_invokedDirectly) {
+       : result.reason === "already patched"
+         ? "ok (already patched)"
+         : `skipped (${result.reason})`;
+-    console.error(`photon-sidecar: spectrum reply-target patch ${action}: ${result.file}`);
++    // Name the rewrites that ran: on an upgrade only the outstanding one does.
++    const detail = result.applied?.length ? ` (${result.applied.join(", ")})` : "";
++    console.error(
++      `photon-sidecar: spectrum reply-target patch ${action}: ${result.file}${detail}`
++    );
+   } catch (err) {
+     console.error(`photon-sidecar: spectrum reply-target patch failed: ${err?.stack || err}`);
+     process.exit(1);
+diff --git a/tests/plugins/platforms/photon/test_spectrum_reply_patch.py b/tests/plugins/platforms/photon/test_spectrum_reply_patch.py
+index a6599ae..297df98 100644
+--- a/tests/plugins/platforms/photon/test_spectrum_reply_patch.py
++++ b/tests/plugins/platforms/photon/test_spectrum_reply_patch.py
+@@ -6,6 +6,14 @@
+ underlying `@photon-ai/advanced-imessage` record already carries. The install
+ -time patch under test re-attaches it as a `replyTo` object.
+ 
++Re-attaching it to the raw record is necessary but not sufficient: Spectrum
++core rebuilds every message through `extractExtras(raw, definition)`, which
++runs the platform's `definition.message.schema` — a plain `z.object({...})`,
++so zod strips any key the schema does not declare. The patch therefore has a
++second anchor: the provider's `messageSchema` declaration, which gains a
++`replyTo` shape. The two rewrites are independently idempotent, because the
++production dist already carries the first one from an earlier release.
++
+ These tests never spawn the sidecar and never touch the checked-out
+ `node_modules` copy: every run gets its own temp root seeded from the real
+ dist, and a module-scoped guard asserts the real dist is byte-identical
+@@ -76,6 +84,36 @@ _REPLACEMENT = (
+     "};"
+ )
+ 
++# The published per-message metadata schema, verbatim. `z` is imported at the
++# top of the same chunk (`import z from "zod";`), so the rewrite needs no new
++# import.
++_SCHEMA_ANCHOR = (
++    "const messageSchema = z.object({\n"
++    "\tpartIndex: z.number().int().nonnegative().optional(),\n"
++    "\tparentId: z.string().optional()\n"
++    "});"
++)
++
++_SCHEMA_REPLACEMENT = (
++    "const messageSchema = z.object({\n"
++    "\tpartIndex: z.number().int().nonnegative().optional(),\n"
++    "\tparentId: z.string().optional(),\n"
++    "\t// Hermes patch: Apple reply linkage survives extractExtras"
++    " (see buildMessageBase).\n"
++    "\treplyTo: z.object({\n"
++    "\t\tid: z.string(),\n"
++    "\t\tthreadRootId: z.string().nullable().optional(),\n"
++    "\t\tpart: z.string().nullable().optional()\n"
++    "\t}).optional()\n"
++    "});"
++)
++
++# The distinctive substring of each replacement that the script uses to tell
++# "already applied" from "anchor drifted" — its own comment line in both cases,
++# since no future spectrum-ts can arrive at those independently.
++_BASE_DONE = "Hermes patch: Apple reply linkage. replyTargetGuid"
++_SCHEMA_DONE = "Hermes patch: Apple reply linkage survives extractExtras"
++
+ if shutil.which("node") is None or not _REAL_DIST.exists():
+     pytest.skip(
+         "needs node and an installed @spectrum-ts/imessage dist to seed fixtures",
+@@ -117,32 +155,108 @@ def _run(script: Path, root: Path) -> subprocess.CompletedProcess[str]:
+     )
+ 
+ 
+-def test_first_run_rewrites_build_message_base(tmp_path: Path) -> None:
+-    """One anchor covers every emitted message: `buildMessageBase`'s return."""
++def _task1_output() -> str:
++    """What the *previous* release of this script left on disk.
++
++    The production dist was patched before the schema anchor existed: the
++    `buildMessageBase` rewrite plus the marker, and nothing else.
++    """
++    source = _REAL_DIST_BYTES.decode("utf-8")
++    assert source.count(_ANCHOR) == 1
++    return _MARKER_LINE + source.replace(_ANCHOR, _REPLACEMENT)
++
++
++def _node_check(path: Path) -> subprocess.CompletedProcess[str]:
++    return subprocess.run(
++        ["node", "--check", str(path)], text=True, capture_output=True, check=False
++    )
++
++
++def test_first_run_rewrites_both_anchors(tmp_path: Path) -> None:
++    """Two anchors: the message base carries the linkage, the schema admits it."""
+     chunk = _seed(tmp_path)
+     original = chunk.read_text(encoding="utf-8")
+     assert original.count(_ANCHOR) == 1, "fixture drifted from the published 8.x helper"
++    assert original.count(_SCHEMA_ANCHOR) == 1, "fixture drifted from the 8.x schema"
+ 
+     result = _run(_PATCHER, tmp_path)
+     assert result.returncode == 0, result.stderr
+     assert "spectrum reply-target patch patched: " in result.stderr
++    # The status line names what it actually rewrote.
++    assert "buildMessageBase" in result.stderr
++    assert "messageSchema" in result.stderr
+ 
+     patched = chunk.read_text(encoding="utf-8")
+     assert _MARKER in patched
+-    assert "replyTo: {" in patched
+     assert patched.count(_REPLACEMENT) == 1
++    assert patched.count(_SCHEMA_REPLACEMENT) == 1
+     assert _ANCHOR not in patched
+-    # Nothing outside the one anchor moved.
+-    assert patched == _MARKER_LINE + original.replace(_ANCHOR, _REPLACEMENT)
++    assert _SCHEMA_ANCHOR not in patched
++    # Both rewrites left their mark: the shapes core reads, and the two probes
++    # a later run uses to recognise its own work.
++    assert patched.count("replyTo: {") == 1
++    assert patched.count("replyTo: z.object(") == 1
++    assert patched.count(_BASE_DONE) == 1
++    assert patched.count(_SCHEMA_DONE) == 1
++    # Nothing outside the two anchors moved.
++    assert patched == _MARKER_LINE + original.replace(_ANCHOR, _REPLACEMENT).replace(
++        _SCHEMA_ANCHOR, _SCHEMA_REPLACEMENT
++    )
+ 
+     # The rewritten chunk is still a parseable ES module.
+     probe = tmp_path / "parse-probe.mjs"
+     probe.write_text(patched, encoding="utf-8")
+-    check = subprocess.run(
+-        ["node", "--check", str(probe)], text=True, capture_output=True, check=False
+-    )
++    check = _node_check(probe)
++    assert check.returncode == 0, check.stderr
++
++    # Idempotent as a whole: a second run leaves the file byte-identical.
++    settled = chunk.read_bytes()
++    again = _run(_PATCHER, tmp_path)
++    assert again.returncode == 0, again.stderr
++    assert "already patched" in again.stderr
++    assert chunk.read_bytes() == settled
++
++
++def test_only_the_schema_rewrite_lands_on_a_task1_patched_dist(tmp_path: Path) -> None:
++    """Production is mid-upgrade: base rewrite + marker already on disk.
++
++    A single marker gate would read that as "done" and ship a dist whose
++    schema still strips `replyTo`. Idempotency is per anchor, so the second
++    rewrite lands on its own.
++    """
++    task1 = _task1_output()
++    chunk = _seed(tmp_path, task1)
++    assert task1.count(_BASE_DONE) == 1
++    assert _SCHEMA_DONE not in task1
++    assert task1.count(_MARKER_LINE) == 1
++
++    result = _run(_PATCHER, tmp_path)
++    assert result.returncode == 0, result.stderr
++    assert "spectrum reply-target patch patched: " in result.stderr
++    # Only the outstanding rewrite is reported as applied.
++    assert "messageSchema" in result.stderr
++    assert "buildMessageBase" not in result.stderr
++
++    patched = chunk.read_text(encoding="utf-8")
++    # The schema rewrite is the *only* change: undo it and Task 1's output
++    # comes back byte for byte, marker included and un-duplicated.
++    assert patched.count(_SCHEMA_REPLACEMENT) == 1
++    assert patched.replace(_SCHEMA_REPLACEMENT, _SCHEMA_ANCHOR, 1) == task1
++    assert patched.count(_MARKER_LINE) == 1
++    assert patched.count(_REPLACEMENT) == 1
++
++    probe = tmp_path / "parse-probe.mjs"
++    probe.write_text(patched, encoding="utf-8")
++    check = _node_check(probe)
+     assert check.returncode == 0, check.stderr
+ 
++    # And now the file is settled: a third pass changes nothing.
++    settled = chunk.read_bytes()
++    again = _run(_PATCHER, tmp_path)
++    assert again.returncode == 0, again.stderr
++    assert "already patched" in again.stderr
++    assert chunk.read_bytes() == settled
++
+ 
+ def test_patched_helper_emits_apple_reply_linkage(tmp_path: Path) -> None:
+     """Evaluate the rewritten helper: the linkage lands on the message base."""
+@@ -190,6 +304,45 @@ def test_patched_helper_emits_apple_reply_linkage(tmp_path: Path) -> None:
+     }
+ 
+ 
++def test_patched_message_schema_admits_reply_to(tmp_path: Path) -> None:
++    """The schema is what `extractExtras` runs, so `replyTo` must be declared.
++
++    `zod` is not installed in this checkout, so the schema cannot be built and
++    exercised here; the declaration is checked structurally instead, and parsed
++    (not executed) as an ES module.
++    """
++    chunk = _seed(tmp_path)
++    assert _run(_PATCHER, tmp_path).returncode == 0
++    patched = chunk.read_text(encoding="utf-8")
++
++    start = patched.index("const messageSchema = z.object({")
++    block = patched[start : patched.index("\n});", start) + len("\n});")]
++
++    # The declaration the provider hands to core, verbatim.
++    assert block == _SCHEMA_REPLACEMENT
++    # The two published fields survive untouched (only the trailing comma moved).
++    assert "\tpartIndex: z.number().int().nonnegative().optional(),\n" in block
++    assert "\tparentId: z.string().optional(),\n" in block
++    # A required id, nullable optional companions, and `.optional()` closing the
++    # object — a non-reply message must still parse.
++    assert "replyTo: z.object(" in block
++    assert "\t\tid: z.string(),\n" in block
++    assert "\t\tthreadRootId: z.string().nullable().optional(),\n" in block
++    assert "\t\tpart: z.string().nullable().optional()\n" in block
++    assert block.endswith("\t}).optional()\n});")
++    assert block.count("{") == block.count("}")
++    assert block.count("(") == block.count(")")
++
++    # Parseable on its own, next to the import the chunk already carries.
++    scratch = tmp_path / "message-schema.mjs"
++    scratch.write_text(
++        f'import z from "zod";\n{block}\nexport default messageSchema;\n',
++        encoding="utf-8",
++    )
++    check = _node_check(scratch)
++    assert check.returncode == 0, check.stderr
++
++
+ def test_second_run_is_a_no_op(tmp_path: Path) -> None:
+     """postinstall runs on every `npm install`; re-patching must not stack."""
+     chunk = _seed(tmp_path)
+@@ -202,6 +355,12 @@ def test_second_run_is_a_no_op(tmp_path: Path) -> None:
+     assert "spectrum reply-target patch ok" in again.stderr
+     assert chunk.read_bytes() == once
+ 
++    # Neither rewrite stacked, and the marker stayed single.
++    text = chunk.read_text(encoding="utf-8")
++    assert text.count(_BASE_DONE) == 1
++    assert text.count(_SCHEMA_DONE) == 1
++    assert text.count(_MARKER_LINE) == 1
++
+ 
+ @pytest.mark.parametrize(
+     "upstream",
+@@ -223,24 +382,56 @@ def test_skips_when_upstream_maps_reply_target(tmp_path: Path, upstream: str) ->
+     assert "spectrum reply-target patch skipped" in result.stderr
+     assert "upstream maps replyTargetGuid" in result.stderr
+     assert chunk.read_bytes() == before
+-    assert _MARKER not in chunk.read_text(encoding="utf-8")
++    text = chunk.read_text(encoding="utf-8")
++    assert _MARKER not in text
++    # Neither rewrite ran: upstream owns the linkage, the schema included.
++    assert _BASE_DONE not in text
++    assert _SCHEMA_DONE not in text
+ 
+ 
+-def test_missing_anchor_fails_loudly(tmp_path: Path) -> None:
+-    """A reshaped helper must break the install, not silently ship no linkage."""
++@pytest.mark.parametrize(
++    ("anchor", "dropped", "label"),
++    [
++        pytest.param(
++            _ANCHOR,
++            "\t\tsender: toSenderRef(message.sender),\n",
++            "buildMessageBase",
++            id="build-message-base",
++        ),
++        pytest.param(
++            _SCHEMA_ANCHOR,
++            "\tpartIndex: z.number().int().nonnegative().optional(),\n",
++            "messageSchema",
++            id="message-schema",
++        ),
++    ],
++)
++def test_missing_anchor_fails_loudly(
++    tmp_path: Path, anchor: str, dropped: str, label: str
++) -> None:
++    """A reshaped anchor must break the install, not silently ship no linkage.
++
++    Neither the original nor the patched form is present, so the script cannot
++    tell "already done" from "upstream moved the code" — and guessing would
++    ship a sidecar that quietly drops every reply target.
++    """
+     reshaped = _REAL_DIST_BYTES.decode("utf-8").replace(
+-        _ANCHOR, _ANCHOR.replace("\t\tsender: toSenderRef(message.sender),\n", ""), 1
++        anchor, anchor.replace(dropped, ""), 1
+     )
+     chunk = _seed(tmp_path, reshaped)
+     before = chunk.read_bytes()
+     assert "const buildMessageBase = " in reshaped
+-    assert _ANCHOR not in reshaped
++    assert anchor not in reshaped
++    assert _BASE_DONE not in reshaped
++    assert _SCHEMA_DONE not in reshaped
+ 
+     result = _run(_PATCHER, tmp_path)
+     assert result.returncode == 1
+-    assert "buildMessageBase" in result.stderr
++    assert label in result.stderr
+     assert "found 0" in result.stderr
+     assert "spectrum reply-target patch failed" in result.stderr
++    # Nothing is written when any anchor drifts, not even the rewrites that
++    # did match — a half-patched dist is worse than a failed install.
+     assert chunk.read_bytes() == before
+ 
+ 
+@@ -272,6 +463,7 @@ def test_composes_with_the_mixed_attachment_patch_in_either_order(
+         assert _MARKER in text
+         assert _MIXED_MARKER in text
+         assert text.count(_REPLACEMENT) == 1
++        assert text.count(_SCHEMA_REPLACEMENT) == 1
+ 
+     # Order-independent to the byte.
+     assert forward.read_bytes() == reverse.read_bytes()
+@@ -283,11 +475,13 @@ def test_composes_with_the_mixed_attachment_patch_in_either_order(
+             assert _run(script, root).returncode == 0
+             assert chunk.read_bytes() == settled
+ 
+-    # Disjointness, proved by subtraction: undo this patch's single edit and the
++    # Disjointness, proved by subtraction: undo this patch's two edits and the
+     # mixed-attachment patch's output comes back byte-for-byte.
+     undone = forward.read_text(encoding="utf-8")
+     assert undone.startswith(_MARKER_LINE)
+-    assert undone[len(_MARKER_LINE) :].replace(_REPLACEMENT, _ANCHOR, 1) == original
++    assert undone[len(_MARKER_LINE) :].replace(_REPLACEMENT, _ANCHOR, 1).replace(
++        _SCHEMA_REPLACEMENT, _SCHEMA_ANCHOR, 1
++    ) == original
+ 
+ 
+ def test_postinstall_chains_both_patches() -> None:
+-- 
+2.41.0
+
+
+From 4b75c55faacfc525671cc853c5cb6fd6044f6be4 Mon Sep 17 00:00:00 2001
+From: Rivian <rivianp@gmail.com>
+Date: Thu, 10 Sep 2026 02:59:04 +0700
+Subject: [PATCH 4/6] photon: reply-target patch coerces thread part/root to
+ strings before the schema sees them
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The schema the last commit added types `threadRootId` and `part` as
+`z.string()`, and `buildMessageBase` was handing them over exactly as the
+provider gave them. A non-string from `@photon-ai/advanced-imessage` would not
+have quietly dropped the linkage — `schema.parse` throws inside
+`extractExtras`, taking the whole message with it. Apple sends
+`threadOriginatorPart` as a string like `0:0:0`, but nothing in the provider
+promises that, so the helper no longer depends on it.
+
+`id` keeps the raw guid: it is the one required field, and a non-string there
+should be loud rather than papered over.
+---
+ .../sidecar/patch-spectrum-reply-target.mjs   |  4 +--
+ .../photon/test_spectrum_reply_patch.py       | 27 +++++++++++++++----
+ 2 files changed, 24 insertions(+), 7 deletions(-)
+
+diff --git a/plugins/platforms/photon/sidecar/patch-spectrum-reply-target.mjs b/plugins/platforms/photon/sidecar/patch-spectrum-reply-target.mjs
+index 8014cc6..9a676d2 100644
+--- a/plugins/platforms/photon/sidecar/patch-spectrum-reply-target.mjs
++++ b/plugins/platforms/photon/sidecar/patch-spectrum-reply-target.mjs
+@@ -80,8 +80,8 @@ const REPLACEMENT = `const buildMessageBase = (message, chatGuidHint, timestamp,
+ \t\t// Hermes patch: Apple reply linkage. replyTargetGuid = the exact tapped bubble; threadOriginatorGuid = thread root.
+ \t\t...(message.replyTargetGuid || message.threadOriginatorGuid ? { replyTo: {
+ \t\t\tid: message.replyTargetGuid ?? message.threadOriginatorGuid,
+-\t\t\tthreadRootId: message.threadOriginatorGuid ?? null,
+-\t\t\tpart: message.threadOriginatorPart ?? null
++\t\t\tthreadRootId: message.threadOriginatorGuid != null ? String(message.threadOriginatorGuid) : null,
++\t\t\tpart: message.threadOriginatorPart != null ? String(message.threadOriginatorPart) : null
+ \t\t} } : {})
+ \t};
+ };`;
+diff --git a/tests/plugins/platforms/photon/test_spectrum_reply_patch.py b/tests/plugins/platforms/photon/test_spectrum_reply_patch.py
+index 297df98..c129fa1 100644
+--- a/tests/plugins/platforms/photon/test_spectrum_reply_patch.py
++++ b/tests/plugins/platforms/photon/test_spectrum_reply_patch.py
+@@ -77,8 +77,10 @@ _REPLACEMENT = (
+     " bubble; threadOriginatorGuid = thread root.\n"
+     "\t\t...(message.replyTargetGuid || message.threadOriginatorGuid ? { replyTo: {\n"
+     "\t\t\tid: message.replyTargetGuid ?? message.threadOriginatorGuid,\n"
+-    "\t\t\tthreadRootId: message.threadOriginatorGuid ?? null,\n"
+-    "\t\t\tpart: message.threadOriginatorPart ?? null\n"
++    "\t\t\tthreadRootId: message.threadOriginatorGuid != null"
++    " ? String(message.threadOriginatorGuid) : null,\n"
++    "\t\t\tpart: message.threadOriginatorPart != null"
++    " ? String(message.threadOriginatorPart) : null\n"
+     "\t\t} } : {})\n"
+     "\t};\n"
+     "};"
+@@ -259,7 +261,14 @@ def test_only_the_schema_rewrite_lands_on_a_task1_patched_dist(tmp_path: Path) -
+ 
+ 
+ def test_patched_helper_emits_apple_reply_linkage(tmp_path: Path) -> None:
+-    """Evaluate the rewritten helper: the linkage lands on the message base."""
++    """Evaluate the rewritten helper: the linkage lands on the message base.
++
++    `threadRootId` and `part` are coerced on the way out. The schema the other
++    end of `extractExtras` runs types both as `z.string()`, and a `parse` that
++    throws does not merely drop the linkage — it fails the whole message. Apple
++    hands `threadOriginatorPart` over as a string like `0:0:0`, but nothing in
++    the provider guarantees it, so the helper does not rely on it.
++    """
+     chunk = _seed(tmp_path)
+     assert _run(_PATCHER, tmp_path).returncode == 0
+     patched = chunk.read_text(encoding="utf-8")
+@@ -277,6 +286,8 @@ def test_patched_helper_emits_apple_reply_linkage(tmp_path: Path) -> None:
+         "  { isFromMe: false, sender: 'a', threadOriginatorGuid: 'G0' },\n"
+         "  { isFromMe: false, sender: 'a', replyTargetGuid: 'G1' },\n"
+         "  { isFromMe: true, sender: 'a' },\n"
++        "  { isFromMe: false, sender: 'a', replyTargetGuid: 'G1',"
++        " threadOriginatorGuid: 8, threadOriginatorPart: '0:0:0' },\n"
+         "];\n"
+         "console.log(JSON.stringify(cases.map((m) =>"
+         " buildMessageBase(m, 'iMessage;-;+1', 7, '+1'))));\n",
+@@ -288,8 +299,9 @@ def test_patched_helper_emits_apple_reply_linkage(tmp_path: Path) -> None:
+     assert out.returncode == 0, out.stderr
+     bases = json.loads(out.stdout)
+ 
+-    # A tapped bubble inside a thread: exact target plus the thread root.
+-    assert bases[0]["replyTo"] == {"id": "G1", "threadRootId": "G0", "part": 2}
++    # A tapped bubble inside a thread: exact target plus the thread root. The
++    # numeric part arrives as the string the schema demands, not as `2`.
++    assert bases[0]["replyTo"] == {"id": "G1", "threadRootId": "G0", "part": "2"}
+     # Thread membership with no explicit target falls back to the root.
+     assert bases[1]["replyTo"] == {"id": "G0", "threadRootId": "G0", "part": None}
+     # A reply with no thread record still carries the tapped bubble.
+@@ -302,6 +314,11 @@ def test_patched_helper_emits_apple_reply_linkage(tmp_path: Path) -> None:
+         "space": {"id": "iMessage;-;+1", "type": "dm", "phone": "+1"},
+         "timestamp": 7,
+     }
++    # A numeric thread root is coerced too, and Apple's real `0:0:0` part is
++    # already a string and passes through untouched. `id` is deliberately left
++    # as the raw guid: it is the one field the schema requires, so a non-string
++    # there should be loud rather than papered over.
++    assert bases[4]["replyTo"] == {"id": "G1", "threadRootId": "8", "part": "0:0:0"}
+ 
+ 
+ def test_patched_message_schema_admits_reply_to(tmp_path: Path) -> None:
+-- 
+2.41.0
+
+
+From a43be2b075c321e6e9fdc80cab17d83612f3521c Mon Sep 17 00:00:00 2001
+From: Rivian <rivianp@gmail.com>
+Date: Thu, 10 Sep 2026 02:59:04 +0700
+Subject: [PATCH 5/6] photon: set reply_to_* on inbound MessageEvents from the
+ sidecar replyTo
+
+---
+ plugins/platforms/photon/adapter.py           |  23 +-
+ .../plugins/platforms/photon/test_inbound.py  | 203 ++++++++++++++++++
+ 2 files changed, 225 insertions(+), 1 deletion(-)
+
+diff --git a/plugins/platforms/photon/adapter.py b/plugins/platforms/photon/adapter.py
+index b0bc3e3..fdd8c9e 100644
+--- a/plugins/platforms/photon/adapter.py
++++ b/plugins/platforms/photon/adapter.py
+@@ -1216,7 +1216,13 @@ class PhotonAdapter(BasePlatformAdapter):
+                           "targetMessageId": "..." | null,
+                           "targetDirection": "inbound"|"outbound" | null,
+                           "targetText": "..." | null},
+-              "timestamp": "2026-05-14T19:06:32.000Z"
++              "timestamp": "2026-05-14T19:06:32.000Z",
++              "replyTo": {"id": "...",
++                          "threadRootId": "..." | null,
++                          "part": "..." | null,
++                          "direction": "inbound"|"outbound" | null,
++                          "text": "..." | null,
++                          "src": "..."} | null
+ 
+         Attachment and voice content carry the bytes inline as base64 ``data``
+         (with ``encoding == "base64"``) when the sidecar could read them
+@@ -1470,11 +1476,26 @@ class PhotonAdapter(BasePlatformAdapter):
+             user_id=sender_id,
+             user_name=sender_id or None,
+         )
++        # Apple reply linkage, normalized by the sidecar: the human tapped
++        # "Reply" on an earlier bubble. The gateway quotes it back to the agent
++        # (and marks it as ours when the target is one of our own sends).
++        reply = event.get("replyTo") or {}
++        if not isinstance(reply, dict):
++            reply = {}
++        reply_id = str(reply.get("id") or "").strip() or None  # never "" — an empty id would mint a bogus reply target downstream
++        reply_is_own = bool(reply_id) and (
++            reply.get("direction") == "outbound" or reply_id in self._sent_message_ids
++        )
++        reply_text = (str(reply.get("text")).strip() or None) if (reply_id and reply.get("text")) else None
++
+         message_event = MessageEvent(
+             text=text,
+             message_type=mtype,
+             source=source,
+             message_id=event.get("messageId"),
++            reply_to_message_id=reply_id,
++            reply_to_text=reply_text,
++            reply_to_is_own_message=reply_is_own,
+             raw_message=event,
+             timestamp=timestamp,
+             media_urls=media_urls,
+diff --git a/tests/plugins/platforms/photon/test_inbound.py b/tests/plugins/platforms/photon/test_inbound.py
+index 44da57b..e646263 100644
+--- a/tests/plugins/platforms/photon/test_inbound.py
++++ b/tests/plugins/platforms/photon/test_inbound.py
+@@ -221,3 +221,206 @@ async def test_disconnect_cancels_pending_fffc_tasks(
+     await adapter.disconnect()
+ 
+     assert len(adapter._pending_fffc) == 0
++
++
++# ---------------------------------------------------------------------------
++# replyTo -> reply_to_* on the regular message path
++#
++# The sidecar hangs a ``replyTo`` object off every inbound event when the human
++# tapped "Reply" on a bubble. The adapter turns it into the MessageEvent's
++# reply_to_message_id / reply_to_text / reply_to_is_own_message so the gateway
++# can inject the quoted context.
++# ---------------------------------------------------------------------------
++
++
++def _reply_dm_event(
++    reply_to: Any, text: str = "and this", msg_id: str = "spc-msg-reply"
++) -> Dict[str, Any]:
++    """A text DM carrying the sidecar's ``replyTo`` linkage verbatim."""
++    event = _dm_event(text, msg_id=msg_id)
++    event["replyTo"] = reply_to
++    return event
++
++
++@pytest.mark.asyncio
++async def test_reply_to_outbound_target_is_own_message(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """A reply to one of OUR bubbles sets all three reply_to_* fields."""
++    adapter = _make_adapter(monkeypatch)
++    captured = _capture(adapter, monkeypatch)
++
++    await adapter._dispatch_inbound(
++        _reply_dm_event(
++            {
++                "id": "spc-msg-T",
++                "threadRootId": None,
++                "part": None,
++                "direction": "outbound",
++                "text": "earlier bubble",
++                "src": "replyTo",
++            }
++        )
++    )
++
++    assert len(captured) == 1
++    ev = captured[0]
++    assert ev.text == "and this"
++    assert ev.reply_to_message_id == "spc-msg-T"
++    assert ev.reply_to_text == "earlier bubble"
++    assert ev.reply_to_is_own_message is True
++
++
++@pytest.mark.asyncio
++async def test_reply_to_inbound_target_is_not_own_message(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """A reply to the human's own earlier bubble keeps the text, not ownership."""
++    adapter = _make_adapter(monkeypatch)
++    captured = _capture(adapter, monkeypatch)
++
++    await adapter._dispatch_inbound(
++        _reply_dm_event(
++            {
++                "id": "spc-msg-T",
++                "threadRootId": None,
++                "part": None,
++                "direction": "inbound",
++                "text": "earlier bubble",
++                "src": "replyTo",
++            }
++        )
++    )
++
++    assert len(captured) == 1
++    ev = captured[0]
++    assert ev.reply_to_message_id == "spc-msg-T"
++    assert ev.reply_to_text == "earlier bubble"
++    assert ev.reply_to_is_own_message is False
++
++
++@pytest.mark.asyncio
++async def test_reply_to_unknown_direction_falls_back_to_sent_ids(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """No direction from the SDK \u2014 a recorded sent id still proves ownership."""
++    adapter = _make_adapter(monkeypatch)
++    captured = _capture(adapter, monkeypatch)
++    adapter._record_sent_message("spc-msg-T")
++
++    await adapter._dispatch_inbound(
++        _reply_dm_event(
++            {
++                "id": "spc-msg-T",
++                "threadRootId": None,
++                "part": None,
++                "direction": None,
++                "text": "earlier bubble",
++                "src": "content.target",
++            }
++        )
++    )
++
++    assert len(captured) == 1
++    ev = captured[0]
++    assert ev.reply_to_message_id == "spc-msg-T"
++    assert ev.reply_to_text == "earlier bubble"
++    assert ev.reply_to_is_own_message is True
++
++
++@pytest.mark.asyncio
++async def test_plain_message_has_no_reply_context(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """Regression: an event without ``replyTo`` leaves the fields unset."""
++    adapter = _make_adapter(monkeypatch)
++    captured = _capture(adapter, monkeypatch)
++
++    await adapter._dispatch_inbound(_dm_event("hello world"))
++
++    assert len(captured) == 1
++    ev = captured[0]
++    assert ev.reply_to_message_id is None
++    assert ev.reply_to_text is None
++    assert ev.reply_to_is_own_message is False
++
++
++@pytest.mark.parametrize(
++    "reply_to",
++    [
++        pytest.param({"id": "", "text": "x"}, id="blank_id"),
++        pytest.param(None, id="null"),
++        pytest.param("garbage", id="not_an_object"),
++    ],
++)
++@pytest.mark.asyncio
++async def test_unusable_reply_to_leaves_fields_unset(
++    reply_to: Any, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    """A blank id, a null, or a non-object never mints a bogus reply target."""
++    adapter = _make_adapter(monkeypatch)
++    captured = _capture(adapter, monkeypatch)
++
++    await adapter._dispatch_inbound(_reply_dm_event(reply_to))
++
++    assert len(captured) == 1
++    ev = captured[0]
++    assert ev.reply_to_message_id is None
++    assert ev.reply_to_text is None
++    assert ev.reply_to_is_own_message is False
++
++
++@pytest.mark.asyncio
++async def test_reply_to_on_group_content_event(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """A multi-part (text + attachment) message carries reply context too."""
++    adapter = _make_adapter(monkeypatch)
++    captured = _capture(adapter, monkeypatch)
++
++    raw = base64.b64decode(_PNG_1X1_B64)
++    event = {
++        "messageId": "spc-msg-group",
++        "space": {"id": "+15551234567", "type": "dm", "phone": "+15551234567"},
++        "sender": {"id": "+15551234567"},
++        "content": {
++            "type": "group",
++            "items": [
++                {"id": "i1", "content": {"type": "text", "text": "look at this"}},
++                {
++                    "id": "i2",
++                    "content": {
++                        "type": "attachment",
++                        "name": "shot.png",
++                        "mimeType": "image/png",
++                        "size": len(raw),
++                        "data": _PNG_1X1_B64,
++                        "encoding": "base64",
++                    },
++                },
++            ],
++        },
++        "timestamp": "2026-05-14T19:06:32.000Z",
++        "replyTo": {
++            "id": "spc-msg-T",
++            "threadRootId": "spc-msg-T",
++            "part": "0",
++            "direction": "outbound",
++            "text": "earlier bubble",
++            "src": "replyTo",
++        },
++    }
++
++    await adapter._dispatch_inbound(event)
++
++    assert len(captured) == 1
++    ev = captured[0]
++    try:
++        assert ev.text == "look at this"
++        assert len(ev.media_urls) == 1
++        assert ev.reply_to_message_id == "spc-msg-T"
++        assert ev.reply_to_text == "earlier bubble"
++        assert ev.reply_to_is_own_message is True
++    finally:
++        for path in ev.media_urls:
++            Path(path).unlink(missing_ok=True)
+-- 
+2.41.0
+
+
+From 6df20d5e30a166f5dbc715061534e5cf831c6ea6 Mon Sep 17 00:00:00 2001
+From: Rivian <rivianp@gmail.com>
+Date: Thu, 10 Sep 2026 02:59:04 +0700
+Subject: [PATCH 6/6] photon: reply-target patch tests derive a pristine
+ fixture from an already-patched dist
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The suite seeded every temp root from the installed dist and assumed it was
+untouched. That holds in a checkout, not on a Hermes box: there the sidecar is
+installed, `postinstall` has run, and the dist already carries the rewrites
+under test, so seven tests failed as "fixture drifted from the published 8.x
+helper" — the fixture, not the code.
+
+So the fixture is now derived. `_pristine` backs this patch's own work out of
+whatever it reads: each rewrite replaced by its anchor, the marker line dropped
+(only ours — the mixed-attachment patch's marker belongs in the fixture), and a
+pristine file passed through untouched. It recognises the pre-coercion
+`buildMessageBase` form as well as the current one, since a box patched before
+that change is exactly the case this exists for. `_require_pristine` then
+refuses to hand the tests a half-inverted fixture, naming what it could not
+undo instead of failing later as drift.
+
+`PHOTON_REPLY_PATCH_FIXTURE` points the seed at another dist, so the
+already-patched path can be run on demand rather than only on a real box.
+---
+ .../photon/test_spectrum_reply_patch.py       | 135 ++++++++++++++----
+ 1 file changed, 111 insertions(+), 24 deletions(-)
+
+diff --git a/tests/plugins/platforms/photon/test_spectrum_reply_patch.py b/tests/plugins/platforms/photon/test_spectrum_reply_patch.py
+index c129fa1..58516a8 100644
+--- a/tests/plugins/platforms/photon/test_spectrum_reply_patch.py
++++ b/tests/plugins/platforms/photon/test_spectrum_reply_patch.py
+@@ -14,16 +14,25 @@ second anchor: the provider's `messageSchema` declaration, which gains a
+ `replyTo` shape. The two rewrites are independently idempotent, because the
+ production dist already carries the first one from an earlier release.
+ 
+-These tests never spawn the sidecar and never touch the checked-out
+-`node_modules` copy: every run gets its own temp root seeded from the real
+-dist, and a module-scoped guard asserts the real dist is byte-identical
+-afterwards.
++These tests never spawn the sidecar and never touch the installed
++`node_modules` copy: every run gets its own temp root seeded from that dist,
++and a module-scoped guard asserts the source dist is byte-identical afterwards.
++
++The seed is a *pristine* dist, derived rather than assumed. In this checkout
++the installed copy has never been patched, but on a real Hermes box the sidecar
++is installed, `postinstall` has already run, and the dist on disk carries the
++very rewrites under test — which would otherwise fail every fixture as
++"drifted". So `_pristine` inverts whatever this patch left behind before
++anything is seeded, and fails loudly if it cannot get back to the published
++8.x shapes. Point `PHOTON_REPLY_PATCH_FIXTURE` at another dist to exercise that
++path deliberately.
+ """
+ 
+ from __future__ import annotations
+ 
+ import hashlib
+ import json
++import os
+ import shutil
+ import subprocess
+ from pathlib import Path
+@@ -116,23 +125,109 @@ _SCHEMA_REPLACEMENT = (
+ _BASE_DONE = "Hermes patch: Apple reply linkage. replyTargetGuid"
+ _SCHEMA_DONE = "Hermes patch: Apple reply linkage survives extractExtras"
+ 
+-if shutil.which("node") is None or not _REAL_DIST.exists():
++# The `buildMessageBase` rewrite as shipped today, and as shipped before the
++# string coercion landed. An installed box can be carrying either, so the
++# inverter has to recognise both to get back to the published helper.
++_LEGACY_REPLACEMENT = _REPLACEMENT.replace(
++    "threadRootId: message.threadOriginatorGuid != null"
++    " ? String(message.threadOriginatorGuid) : null,",
++    "threadRootId: message.threadOriginatorGuid ?? null,",
++).replace(
++    "part: message.threadOriginatorPart != null"
++    " ? String(message.threadOriginatorPart) : null",
++    "part: message.threadOriginatorPart ?? null",
++)
++assert _LEGACY_REPLACEMENT != _REPLACEMENT, "coercion shape moved; update the inverter"
++
++# Each anchor, against every form this patch is known to have emitted for it.
++_REWRITE_FORMS = (
++    ("buildMessageBase", _ANCHOR, (_REPLACEMENT, _LEGACY_REPLACEMENT)),
++    ("messageSchema", _SCHEMA_ANCHOR, (_SCHEMA_REPLACEMENT,)),
++)
++
++# Where the fixture is seeded from. Defaults to the installed dist; the override
++# exists so the "seeded from an already-patched dist" path can be exercised on
++# purpose, since in this checkout the installed copy happens to be pristine.
++_FIXTURE_ENV = "PHOTON_REPLY_PATCH_FIXTURE"
++_override = os.environ.get(_FIXTURE_ENV)
++_DIST_SOURCE = Path(_override) if _override else _REAL_DIST
++
++if shutil.which("node") is None or not _DIST_SOURCE.exists():
+     pytest.skip(
+         "needs node and an installed @spectrum-ts/imessage dist to seed fixtures",
+         allow_module_level=True,
+     )
+ 
+-_REAL_DIST_BYTES = _REAL_DIST.read_bytes()
+-_REAL_DIST_SHA = hashlib.sha256(_REAL_DIST_BYTES).hexdigest()
++
++def _pristine(source: str) -> str:
++    """The published 8.x dist, with this patch's own work backed out.
++
++    On a developer checkout that is the file as read. On an installed box
++    `postinstall` has already run, so the rewrites under test are sitting in the
++    dist; seeding from that would fail every anchor assertion. Inverting is safe
++    because each rewrite is a single exact substitution with a known inverse.
++    """
++    if not (_MARKER in source or _BASE_DONE in source or _SCHEMA_DONE in source):
++        return source
++    for _name, anchor, emitted in _REWRITE_FORMS:
++        for form in emitted:
++            if form in source:
++                source = source.replace(form, anchor, 1)
++                break
++    # Only this patch's marker line goes; the sibling mixed-attachment patch
++    # leaves its own at the top of the same file and belongs in the fixture.
++    source = source.replace(_MARKER_LINE, "", 1)
++    return source
++
++
++def _require_pristine(source: str) -> str:
++    """Fail loudly rather than hand a half-inverted fixture to the tests."""
++    leftovers = [
++        name
++        for name, probe in (
++            ("marker", _MARKER),
++            ("buildMessageBase", _BASE_DONE),
++            ("messageSchema", _SCHEMA_DONE),
++        )
++        if probe in source
++    ]
++    missing = [
++        f"{name} x{source.count(anchor)}"
++        for name, anchor, _emitted in _REWRITE_FORMS
++        if source.count(anchor) != 1
++    ]
++    if leftovers or missing:
++        raise RuntimeError(
++            f"cannot derive a pristine @spectrum-ts/imessage dist from {_DIST_SOURCE}: "
++            f"still patched {leftovers or '[]'}, anchors not found exactly once "
++            f"{missing or '[]'}. Either the published 8.x shapes moved, or this dist "
++            f"carries a patch form the inverter does not know. Set {_FIXTURE_ENV} to a "
++            f"pristine dist, or update the anchors."
++        )
++    return source
++
++
++_SOURCE_BYTES = _DIST_SOURCE.read_bytes()
++_PRISTINE = _require_pristine(_pristine(_SOURCE_BYTES.decode("utf-8")))
++
++# Every file these tests read as a fixture source, guarded by content hash. The
++# installed dist is included even when an override supersedes it: "never write
++# to node_modules" is the rule regardless of what was read.
++_GUARDED = {
++    path: hashlib.sha256(path.read_bytes()).hexdigest()
++    for path in {_DIST_SOURCE, _REAL_DIST}
++    if path.exists()
++}
+ 
+ 
+ @pytest.fixture(autouse=True)
+ def _real_dist_untouched():
+-    """The checked-out provider copy is a fixture *source*, never a patch target."""
++    """The installed provider copy is a fixture *source*, never a patch target."""
+     yield
+-    assert hashlib.sha256(_REAL_DIST.read_bytes()).hexdigest() == _REAL_DIST_SHA, (
+-        "the real @spectrum-ts/imessage dist under node_modules was modified"
+-    )
++    for path, digest in _GUARDED.items():
++        assert hashlib.sha256(path.read_bytes()).hexdigest() == digest, (
++            f"the @spectrum-ts/imessage dist at {path} was modified"
++        )
+ 
+ 
+ def _seed(root: Path, source: str | None = None) -> Path:
+@@ -140,10 +235,7 @@ def _seed(root: Path, source: str | None = None) -> Path:
+     dist = root / "node_modules" / "@spectrum-ts" / "imessage" / "dist"
+     dist.mkdir(parents=True, exist_ok=True)
+     chunk = dist / "index.js"
+-    chunk.write_text(
+-        _REAL_DIST_BYTES.decode("utf-8") if source is None else source,
+-        encoding="utf-8",
+-    )
++    chunk.write_text(_PRISTINE if source is None else source, encoding="utf-8")
+     return chunk
+ 
+ 
+@@ -163,9 +255,8 @@ def _task1_output() -> str:
+     The production dist was patched before the schema anchor existed: the
+     `buildMessageBase` rewrite plus the marker, and nothing else.
+     """
+-    source = _REAL_DIST_BYTES.decode("utf-8")
+-    assert source.count(_ANCHOR) == 1
+-    return _MARKER_LINE + source.replace(_ANCHOR, _REPLACEMENT)
++    assert _PRISTINE.count(_ANCHOR) == 1
++    return _MARKER_LINE + _PRISTINE.replace(_ANCHOR, _REPLACEMENT)
+ 
+ 
+ def _node_check(path: Path) -> subprocess.CompletedProcess[str]:
+@@ -388,9 +479,7 @@ def test_second_run_is_a_no_op(tmp_path: Path) -> None:
+ )
+ def test_skips_when_upstream_maps_reply_target(tmp_path: Path, upstream: str) -> None:
+     """spectrum-ts >= 12 maps the linkage natively — stand down, don't fight it."""
+-    seeded = f"{upstream} message.reply_target_guid ?? null;\n" + _REAL_DIST_BYTES.decode(
+-        "utf-8"
+-    )
++    seeded = f"{upstream} message.reply_target_guid ?? null;\n" + _PRISTINE
+     chunk = _seed(tmp_path, seeded)
+     before = chunk.read_bytes()
+ 
+@@ -432,9 +521,7 @@ def test_missing_anchor_fails_loudly(
+     tell "already done" from "upstream moved the code" — and guessing would
+     ship a sidecar that quietly drops every reply target.
+     """
+-    reshaped = _REAL_DIST_BYTES.decode("utf-8").replace(
+-        anchor, anchor.replace(dropped, ""), 1
+-    )
++    reshaped = _PRISTINE.replace(anchor, anchor.replace(dropped, ""), 1)
+     chunk = _seed(tmp_path, reshaped)
+     before = chunk.read_bytes()
+     assert "const buildMessageBase = " in reshaped
+-- 
+2.41.0
+
