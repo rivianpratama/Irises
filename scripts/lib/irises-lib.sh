@@ -684,7 +684,10 @@ _gateway_service_up() {
   unit="hermes-gateway"
   label="ai.hermes.gateway"
   if command -v systemctl >/dev/null 2>&1; then
-    state="$(systemctl --user is-active "$unit" 2>/dev/null || true)"
+    # Through _systemctl_user, like the bounce below: a bare `systemctl --user` in a session with no
+    # bus address fails on CONNECT, so a perfectly live gateway reads as down and the caller reports
+    # an unverified bounce.
+    state="$(_systemctl_user is-active "$unit" 2>/dev/null || true)"
     if [ "$state" = "active" ]; then return 0; fi
   fi
   if command -v launchctl >/dev/null 2>&1; then
@@ -1016,7 +1019,7 @@ _service_node_options() { # ROOT
 
 # Prints ONLY the unit/plist path on stdout — callers capture it. Everything else goes through log/warn.
 service_install() { # ROOT NODE_BIN
-  local root="${1:-}" node="${2:-}" kind home logs unit plist path opts uid launcher xml
+  local root="${1:-}" node="${2:-}" kind home logs unit plist path opts uid launcher xml xmlwin
   if [ -z "$root" ] || [ -z "$node" ]; then err "service_install needs ROOT and an absolute NODE_BIN"; return 1; fi
   # A unit, a plist and a Task Scheduler action all inherit essentially no PATH, so a relative
   # `node` resolves to nothing at boot. (On Git Bash an absolute path starts with `/` too —
@@ -1142,9 +1145,17 @@ service_install() { # ROOT NODE_BIN
       # cmd.exe still allocates a console: a brief console flash at logon is the known cosmetic cost.
       # Element order matters — schtasks validates Settings against the schema sequence, so this is
       # the order Task Scheduler's own export uses, not the order the settings are described above.
+      #
+      # ENCODING. hermes writes its own task XML as UTF-16 (hermes_cli/gateway_windows.py,
+      # _write_scheduled_task_xml: encoding="utf-16"), and it is not being fussy — some Windows
+      # builds reject a task definition that is not Unicode with the unhelpful "The task XML is
+      # malformed". bash cannot emit UTF-16, so the file is written UTF-8 here and converted in
+      # place below by the PowerShell this arm already depends on. The declaration says UTF-16 from
+      # the start: the file the parser eventually reads IS UTF-16, and a declaration that disagrees
+      # with the byte stream is its own malformed-XML error.
       xml="$(service_task_xml_path)"
       {
-        printf '<?xml version="1.0" encoding="UTF-8"?>\n'
+        printf '<?xml version="1.0" encoding="UTF-16"?>\n'
         printf '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">\n'
         printf '  <RegistrationInfo>\n'
         printf '    <Description>Irises - private companion server</Description>\n'
@@ -1176,7 +1187,17 @@ service_install() { # ROOT NODE_BIN
         printf '  </Actions>\n'
         printf '</Task>\n'
       } > "$xml" || { err "could not write $xml — is $home writable?"; return 1; }
-      log "wrote $xml"
+      # UTF-16 LE with a BOM, which is what [Text.Encoding]::Unicode writes and what Task Scheduler
+      # wants. Read and written in one expression so the file is never truncated to nothing.
+      xmlwin="$(win_path "$xml")"
+      powershell.exe -NoProfile -NonInteractive -Command \
+        "[IO.File]::WriteAllText('$xmlwin', [IO.File]::ReadAllText('$xmlwin'), [Text.Encoding]::Unicode)" \
+        >/dev/null 2>&1 || {
+          err "could not convert $xml to UTF-16 — Task Scheduler refuses a non-Unicode definition"
+          err "install without a service instead:  --no-service"
+          return 1
+        }
+      log "wrote $xml (UTF-16)"
       # The doubled slashes are for MSYS2, which would otherwise rewrite a lone //TN into a path
       # before schtasks.exe ever saw it. //F replaces an existing task, so a re-install is a
       # re-install rather than "the task already exists".
@@ -1378,11 +1399,13 @@ server_pid() {
   return 0
 }
 
-server_stop() { # [SECS]
-  local secs="${1:-15}" pid i=0
-  pid="$(server_pid)"
-  if [ -z "$pid" ]; then return 0; fi
-  say "stopping the running server (pid $pid)"
+# Stop ONE pid, platform-aware, and wait to see it go. THE place a signal is sent: the pidfile path
+# (server_stop) and the installer's adopt-by-command-line path both come through here, so neither has
+# to know that Git Bash cannot signal a Windows pid at all. Always returns 0 — a pid that will not
+# die is a warning the caller keeps going past, not an abort.
+server_stop_pid() { # PID [SECS]
+  local pid="${1:-}" secs="${2:-15}" i=0
+  case "$pid" in ''|*[!0-9]*) return 0 ;; esac
   if _is_windows; then
     # There is no SIGTERM to send on Windows and therefore no graceful phase to wait through:
     # taskkill //F terminates outright, and //T takes the tree with it (node spawns the web build
@@ -1408,6 +1431,14 @@ server_stop() { # [SECS]
     sleep 1
   fi
   return 0
+}
+
+server_stop() { # [SECS]
+  local secs="${1:-15}" pid
+  pid="$(server_pid)"
+  if [ -z "$pid" ]; then return 0; fi
+  say "stopping the running server (pid $pid)"
+  server_stop_pid "$pid" "$secs"
 }
 
 # The --no-service fallback. `setsid` gives the server its own session; macOS has no setsid, so the

@@ -799,6 +799,26 @@ test('is_our_server and server_pid only ever claim a live Irises process', () =>
   assert.match(junk.out, /JUNK=no/);
 });
 
+test('server_stop_pid ends the one pid it was handed and waits to see it go', () => {
+  // The pidfile path and the installer's adopt-by-command-line path both signal through here, so
+  // this is where "did it actually die?" is answered. A real child, killed for real: `sleep 30`
+  // would outlive the whole suite if the graceful phase were the only thing that ever ran.
+  const r = runLib([
+    'sleep 30 &',
+    'p=$!',
+    'rc=0; server_stop_pid "$p" 5 || rc=$?',
+    'printf "RC=%s\\n" "$rc"',
+    'if _pid_alive "$p"; then printf "STILL-ALIVE\\n"; else printf "GONE\\n"; fi',
+  ].join('\n'));
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(r.out, /RC=0/, 'a stop is never an abort — the caller has a summary to print');
+  assert.match(r.out, /GONE/, `sleep 30 survived server_stop_pid:\n${r.out}\n${r.err}`);
+  const nothing = runLib('rc=0; server_stop_pid "" 5 || rc=$?; printf "RC=%s\\n" "$rc"');
+  assert.match(nothing.out, /RC=0/, 'no pid is nothing to do, not a failure');
+  const nonsense = runLib('rc=0; server_stop_pid not-a-pid 5 || rc=$?; printf "RC=%s\\n" "$rc"');
+  assert.match(nonsense.out, /RC=0/, 'and a junk pid is never passed to kill');
+});
+
 test('wait_health_sha waits for the sha the new build stamped, ignoring update.remoteSha', () => {
   const oldSha = 'a'.repeat(40);
   const newSha = 'b'.repeat(40);
@@ -1002,11 +1022,22 @@ const SCHTASKS_STUB = [
   'exit "${SCHTASKS_RC:-0}"',
 ].join('\n');
 
-/** Git Bash as the lib sees it: an MSYS uname, cygpath, and a Task Scheduler that says yes. */
+/**
+ * PowerShell as every Windows arm reaches for it: log the argv, succeed, print nothing. It does NOT
+ * perform the UTF-16 conversion service_install asks it for, which is deliberate — the XML assertions
+ * below read the UTF-8 file bash wrote and the stub left untouched.
+ */
+const POWERSHELL_STUB = [
+  'printf "powershell argv:%s\\n" "$*" >> "$STUB_LOG"',
+  'exit "${POWERSHELL_RC:-0}"',
+].join('\n');
+
+/** Git Bash as the lib sees it: an MSYS uname, cygpath, PowerShell, and a Task Scheduler that says yes. */
 const WIN_STUBS: Record<string, string> = {
   uname: 'echo MSYS_NT-10.0-22631',
   cygpath: CYGPATH_STUB,
   schtasks: SCHTASKS_STUB,
+  'powershell.exe': POWERSHELL_STUB,
 };
 
 test('irises_platform tells Git Bash, WSL2, macOS and Linux apart', () => {
@@ -1093,6 +1124,34 @@ test('service_install writes a CRLF launcher .cmd, registers the task from XML, 
   assert.ok(
     xml.includes(`<Command>${String.raw`C:\fake`}`) && xml.includes(String.raw`irises-start.cmd</Command>`),
     `the action is the launcher, in Windows spelling:\n${xml}`,
+  );
+
+  // ENCODING. Some Windows builds refuse a task definition that is not Unicode ("The task XML is
+  // malformed"), which is why hermes writes its own as UTF-16. bash cannot emit UTF-16, so the file
+  // is written UTF-8 and handed to PowerShell to rewrite in place — and the declaration has to
+  // agree with the bytes the parser eventually sees, not with the ones bash wrote.
+  assert.ok(xml.includes('encoding="UTF-16"'), `the declaration has to match the converted file:\n${xml}`);
+  const convert = r.log.find(l => l.includes('WriteAllText'));
+  assert.ok(convert, `the XML must be converted to UTF-16 before schtasks reads it:\n${r.log.join('\n')}`);
+  assert.ok(convert!.includes(String.raw`irises-task.xml`), `it converts the task XML, not something else:\n${convert}`);
+  assert.ok(convert!.includes('[Text.Encoding]::Unicode'), `UTF-16 LE with a BOM:\n${convert}`);
+  assert.ok(convert!.includes(String.raw`C:\fake`), `the path crosses out of bash: win_path first:\n${convert}`);
+  assert.ok(
+    r.log.findIndex(l => l.includes('WriteAllText')) < r.log.findIndex(l => l.startsWith('schtasks argv://Create')),
+    `converting after //Create would register the UTF-8 file:\n${r.log.join('\n')}`,
+  );
+
+  const unconverted = runLib([
+    `rc=0; service_install ${JSON.stringify(root)} "/c/Program Files/nodejs/node.exe" || rc=$?`,
+    'printf "RC=%s\\n" "$rc"',
+  ].join('\n'), {
+    stubs: WIN_STUBS,
+    env: { IRISES_ROOT: root, IRISES_HOME: state, POWERSHELL_RC: '1' },
+  });
+  assert.match(unconverted.out, /RC=1/, 'a task XML we could not convert is a failed install, not a broken task');
+  assert.ok(
+    !unconverted.log.some(l => l.startsWith('schtasks argv://Create')),
+    `and schtasks is never handed the file we know it may refuse:\n${unconverted.log.join('\n')}`,
   );
 
   const failed = runLib([
