@@ -238,16 +238,18 @@ falls back to a detached `nohup` launch; stop that one with
 **Uninstall.** `bash scripts/engine-setup.sh --uninstall` stops and unregisters the service, removes
 the bridge plugin and the engine-side keys the installer added (read from
 `$IRISES_HOME/install-manifest.json`, after backing the engine's env file up — with no manifest it
-falls back to the Irises-marked `IRISES_*` keys and leaves `API_SERVER_*` alone), bounces the gateway
+falls back to the `IRISES_*` keys whose values name this clone and leaves `API_SERVER_*` alone), bounces the gateway
 **only when it actually removed something** (a re-run on an already-clean box cycles nothing), and
 keeps your data; `--purge-data` also deletes `$IRISES_HOME` after you type `delete` to
 confirm (`--yes` skips the question), which is not reversible. Of the keys that were already in that
 file, only the ones the install actually **changed** are put back from the backup (recorded as
 `keysRetargeted`: `IRISES_URL`, which has to name this install, and `API_SERVER_ENABLED` when it was
-not already on) — the engine's `API_SERVER_KEY` and `IRISES_PUSH_TOKEN` are adopted rather than
-replaced, so those, and anything you edited after the install, are left exactly as you have them
-rather than reverted to what the file said on install day — and the manifest is removed with them, so a later manifest-less run touches no engine key
-unless a service, a plugin or an Irises-marked block still says an install is there. The clone is never deleted; the script
+not already on) — those go back to what the file said on install day even if you repointed them
+afterwards, while everything else is left exactly as you have it now, the engine's `API_SERVER_KEY`
+and `IRISES_PUSH_TOKEN` included, because those are adopted rather than
+replaced — and the manifest is removed with them, so a later manifest-less run removes an `IRISES_*`
+key only when its value names this clone (its port, its push token) and leaves another install's keys
+alone by name. The clone is never deleted; the script
 prints the command. If the Photon reply-context patch series is applied to the hermes checkout, the
 uninstall prints the revert instructions rather than touching it.
 

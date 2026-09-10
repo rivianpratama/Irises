@@ -4,7 +4,7 @@
 #   npm run e2e:lifecycle          # or: bash scripts/e2e/lifecycle-sandbox.sh
 #   KEEP=1 npm run e2e:lifecycle   # leave the sandbox behind for inspection
 #
-# NOT part of `npm test`: it starts real servers, binds real ports and takes ~3 minutes (two stages
+# NOT part of `npm test`: it starts real servers, binds real ports and takes 3-4 minutes (two stages
 # deliberately sit out a wait budget in full). It is the battery that would have caught every bug the unit
 # tests cannot see — the ones that only exist when the lifecycle stages run in sequence against each
 # other: a rollback that leaves the box with no server, a repair that never repairs, a plugin
@@ -49,6 +49,12 @@
 #   6   held port   — a foreign listener on our port (`npm run dev`, in real life) is refused in
 #                    PREFLIGHT: exit 1, nothing merged, nothing built, no receipt, and the other
 #                    process still holding the port it started with
+#   7   full wiring — an install onto an engine that ALREADY carries every key Irises writes: it adds
+#                    none, so its keysAdded is empty — and the uninstall still has to put the one key
+#                    it RETARGETED back, which is the check the restore loop used to sit behind. The
+#                    seed also holds a present-but-EMPTY IRISES_BRIDGE_TOKEN, which is not a secret to
+#                    adopt: the install writes its own value there and records the move, and the cmp
+#                    at the end proves the empty line came back
 #
 # NOTHING OF YOURS IS TOUCHED. Every stage runs under a throwaway HOME, IRISES_HOME and HERMES_HOME,
 # on two ephemeral ports, against a bare origin made from this clone's own objects. The scratch PATH
@@ -356,7 +362,7 @@ EOF
 chmod 600 "$CLONE/.env"
 
 # ── 1. install ────────────────────────────────────────────────────────────────
-step "1/11  install"
+step "1/12  install"
 set +e
 INSTALL_OUT="$(cd "$CLONE" && bash scripts/engine-setup.sh --engine hermes --yes --no-service 2>&1)"
 INSTALL_RC=$?
@@ -418,7 +424,7 @@ check "and so did its port" present "$CLONE/.env" "^PORT=$SRV_PORT\$"
 # any time". The manifest has to carry its own memory forward, and the two uninstall stages below now
 # run after TWO installs, so their removal assertions are the proof. The same re-run is also where a
 # restore point can drift: install 2's own backup already holds install 1's IRISES_URL.
-step "1b/11  re-install — idempotent, and the manifest keeps its memory"
+step "1b/12  re-install — idempotent, and the manifest keeps its memory"
 : > "$STUB_LOG"
 set +e
 REINSTALL_OUT="$(cd "$CLONE" && bash scripts/engine-setup.sh --engine hermes --yes --no-service 2>&1)"
@@ -464,7 +470,7 @@ check "the pre-existing engine key still holds its own value" present "$HERMES/.
 check "the plugin is still in place" test -f "$HERMES/plugins/irises-bridge/plugin.yaml"
 
 # ── 2. update ─────────────────────────────────────────────────────────────────
-step "2/11  update — a real commit published upstream"
+step "2/12  update — a real commit published upstream"
 NEXT_SHA="$(publish "e2e: a harmless upstream change" "// e2e: a harmless upstream change")" \
   || fatal "could not publish the update commit to the fake origin"
 
@@ -499,7 +505,7 @@ check "no update-status.json was left behind" test ! -f "$STATE/update-status.js
 # ── 2b. repair ────────────────────────────────────────────────────────────────
 # HEAD is current and origin has nothing new, but dist/ was stamped from a sha nobody has: a previous
 # build (or its box) died half-way. Reporting "up to date" would strand that.
-step "2b/11  repair — HEAD is current, dist/ was stamped from a sha that does not exist"
+step "2b/12  repair — HEAD is current, dist/ was stamped from a sha that does not exist"
 node -e '
 const fs = require("fs"), f = process.argv[1];
 const o = JSON.parse(fs.readFileSync(f, "utf8"));
@@ -520,7 +526,7 @@ expect_sha "the repaired build is the one answering" "$NEXT_SHA"
 check "a repair leaves the engine's plugin alone" absent "$STUB_LOG" "plugins enable irises-bridge"
 
 # ── 3a. a build that does not compile ─────────────────────────────────────────
-step "3a/11  rollback (exit 3) — a commit that does NOT compile"
+step "3a/12  rollback (exit 3) — a commit that does NOT compile"
 BADBUILD_SHA="$(publish "e2e: does not compile" 'const irisesE2E: number = "not a number";')" \
   || fatal "could not publish the uncompilable commit to the fake origin"
 # Start from no receipt at all, so "no receipt was left" below is an assertion about THIS stage. The
@@ -551,7 +557,7 @@ REVERT_BUILD_SHA="$(unpublish "$BADBUILD_SHA")" \
   || fatal "could not revert the uncompilable commit upstream"
 
 # ── 3. a build that compiles and dies at boot ────────────────────────────────
-step "3/11  rollback (exit 4) — a commit that COMPILES and crashes on boot"
+step "3/12  rollback (exit 4) — a commit that COMPILES and crashes on boot"
 # A top-level throw compiles cleanly and dies while the module is being loaded, before the listener
 # ever runs: exactly the failure that used to leave the box with no server at all.
 CRASH_SHA="$(publish "e2e: compiles fine, dies at boot" 'throw new Error("e2e boot crash");')" \
@@ -583,7 +589,7 @@ check "the engine still has its plugin" test -f "$HERMES/plugins/irises-bridge/p
 check "the plugin was NOT refreshed for code that was undone" absent "$STUB_LOG" "plugins enable irises-bridge"
 
 # ── 3b. forward again ─────────────────────────────────────────────────────────
-step "3b/11  recovery — the box moves forward again after a rollback"
+step "3b/12  recovery — the box moves forward again after a rollback"
 RECOVER_SHA="$(unpublish "$CRASH_SHA")" \
   || fatal "could not revert the boot-crash commit upstream"
 : > "$STUB_LOG"
@@ -602,7 +608,7 @@ check "and the gateway is bounced" grep -qE "hermes gateway re?start" "$STUB_LOG
 # Irises IS updated and live; it is the ENGINE that cannot be verified. That is exit 5, not a
 # rollback: undoing a perfectly good update because someone else's service is down would be worse
 # than saying so. This stage sits out the library's 90s budget once, on purpose.
-step "3c/11  exit 5 — Irises updates, the engine's gateway cannot be verified"
+step "3c/12  exit 5 — Irises updates, the engine's gateway cannot be verified"
 GW_SHA="$(publish "e2e: another harmless upstream change" "// e2e: another harmless upstream change")" \
   || fatal "could not publish the last update commit to the fake origin"
 engine_stub_stop
@@ -623,7 +629,7 @@ check "and the service-manager probe was blind, as the sandbox intends" present 
 engine_stub_start
 
 # ── 4. uninstall ──────────────────────────────────────────────────────────────
-step "4/11  uninstall — data kept"
+step "4/12  uninstall — data kept"
 : > "$STUB_LOG"
 printf 'sandbox\n' > "$STATE/memories-canary.txt"
 # THE OPERATOR EDITS THE ENGINE'S .env AFTER THE INSTALL, which is the normal case and not a corner:
@@ -695,7 +701,7 @@ check "the clone is in fact still there" test -d "$CLONE/.git"
 # ── 5. the same uninstall again ───────────────────────────────────────────────
 # The second one in a row used to take a fresh backup of an already-clean .env and bounce the engine
 # for it, because "the manifest lists keys" was being read as "something changed".
-step "5/11  uninstall again — nothing changed, so nothing is done"
+step "5/12  uninstall again — nothing changed, so nothing is done"
 BAKS_BEFORE="$(backups)"
 : > "$STUB_LOG"
 set +e
@@ -730,7 +736,7 @@ check "while the data directory it described is not" test -d "$STATE"
 # the restart, roll a GOOD update back, and sign off with "Irises is DOWN" while the dev server went
 # on answering. The refusal belongs in preflight, and this stage is what pins it there: exit 1 with
 # the tree, the build and the other process all exactly as they were.
-step "6/11  foreign listener — the port is held by something the updater cannot cycle"
+step "6/12  foreign listener — the port is held by something the updater cannot cycle"
 foreign_listener_start || fatal "could not put a foreign listener on :$SRV_PORT"
 HELD_SHA_BEFORE="$(git -C "$CLONE" rev-parse HEAD)"
 HELD_DIST_BEFORE="$(dist_sha)"
@@ -761,6 +767,68 @@ else
   bad "the listener on :$SRV_PORT is gone — the updater must not touch a process it did not start"
 fi
 foreign_listener_stop
+
+# ── 7. an engine that is already fully wired ──────────────────────────────────
+# Every key Irises writes is ALREADY in the engine's .env — another Irises put them there, or this
+# one was removed by hand and its keys stayed. keysAdded is then empty, and the uninstall's restore
+# loop used to live behind exactly that check: it put nothing back, and IRISES_URL went on naming a
+# clone that no longer existed while the summary said ok.
+#
+# IRISES_BRIDGE_TOKEN is seeded PRESENT AND EMPTY, which is the second thing this stage pins. An
+# empty line is not a secret to adopt — `IRISES_BRIDGE_TOKEN=` authenticates nothing — so the install
+# has to write its own value there and record the move, rather than wire both halves to nothing and
+# call it adoption. The cmp at the end is what proves the empty line came back.
+step "7/12  full pre-existing wiring — the retarget alone is restored"
+printf 'ANTHROPIC_API_KEY=engine-owned-key\nAPI_SERVER_ENABLED=true\nAPI_SERVER_KEY=pre-existing-engine-key\nIRISES_PUSH_TOKEN=other-irises-token\nIRISES_URL=http://127.0.0.1:1\nIRISES_BRIDGE_TOKEN=\nIRISES_FRONT=telegram:*\n' > "$HERMES/.env"
+FULL_SEED="$SANDBOX/engine-env.seed-full"
+cp "$HERMES/.env" "$FULL_SEED"
+FULL_HEAD="$(git -C "$CLONE" rev-parse HEAD)"
+FULL_MAN="$STATE/install-manifest.json"
+: > "$STUB_LOG"
+set +e
+FULL_OUT="$(cd "$CLONE" && bash scripts/engine-setup.sh --engine hermes --yes --no-service 2>&1)"
+FULL_RC=$?
+set -e
+printf '%s\n' "$FULL_OUT" | sed 's/^/    | /'
+check_rc "an install onto a fully wired engine succeeded" 0 "$FULL_RC"
+expect_sha "/health serves the sha that was built" "$FULL_HEAD"
+check "the manifest claims no key of its own — every one was already there" \
+  present "$FULL_MAN" '"keysAdded": ""'
+check "IRISES_URL is on the retarget list all the same" \
+  present "$FULL_MAN" '"keysRetargeted": "[^"]*IRISES_URL'
+check "while the push token it only adopted is not" \
+  absent "$FULL_MAN" '"keysRetargeted": "[^"]*IRISES_PUSH_TOKEN'
+check "the clone adopted the other Irises's push token" \
+  present "$CLONE/.env" '^ENGINE_PUSH_TOKEN=other-irises-token$'
+check "the engine's own IRISES_FRONT scope was kept" present "$HERMES/.env" '^IRISES_FRONT=telegram:\*$'
+check_out "the install said the engine's bridge token was empty" \
+  "IRISES_BRIDGE_TOKEN was empty" "$FULL_OUT"
+check "and put this install's value there instead of an empty secret" \
+  present "$HERMES/.env" '^IRISES_BRIDGE_TOKEN=other-irises-token$'
+check "recorded as a retarget, so the empty line can come back" \
+  present "$FULL_MAN" '"keysRetargeted": "[^"]*IRISES_BRIDGE_TOKEN'
+
+: > "$STUB_LOG"
+set +e
+FULL_UN_OUT="$(cd "$CLONE" && bash scripts/engine-setup.sh --uninstall --yes 2>&1)"
+FULL_UN_RC=$?
+set -e
+printf '%s\n' "$FULL_UN_OUT" | sed 's/^/    | /'
+check_rc "the uninstall succeeded" 0 "$FULL_UN_RC"
+check_out "and reports ok" "RESULT: ok" "$FULL_UN_OUT"
+check_out "it says it had no key of its own to remove" "added no key of its own" "$FULL_UN_OUT"
+check "IRISES_URL is back to the value the engine had" \
+  present "$HERMES/.env" '^IRISES_URL=http://127.0.0.1:1$'
+check_out "and the uninstall said so, by name" "restored IRISES_URL to its pre-install value" "$FULL_UN_OUT"
+check "the empty bridge-token line is back" present "$HERMES/.env" '^IRISES_BRIDGE_TOKEN=$'
+# The whole stage in one line: an install that added nothing, an uninstall that removed nothing, and
+# a file that is nevertheless the same bytes it was — every retarget put back, nothing else moved.
+check "the engine .env is byte-identical to the fully wired file before this stage" \
+  cmp -s "$FULL_SEED" "$HERMES/.env"
+if ! cmp -s "$FULL_SEED" "$HERMES/.env"; then diff -u "$FULL_SEED" "$HERMES/.env" | sed 's/^/    | /' || true; fi
+check "the gateway was bounced — the engine has to forget the plugin and the URL" \
+  grep -qE "hermes gateway re?start" "$STUB_LOG"
+check "the manifest is gone" test ! -f "$FULL_MAN"
 
 engine_stub_stop
 
