@@ -252,21 +252,43 @@ env_backup() { # FILE TAG
 }
 
 # Remove every assignment of the named keys, plus any Irises marker comment that those removals
-# leave with nothing under it. Prints how many assignments went. Other keys, other comments, and
-# the operator's own values are untouched.
+# leave with nothing under it AND the one empty line env_append_block put above that marker. Prints
+# how many assignments went. Other keys, other comments, other blank lines, and the operator's own
+# values are untouched — an uninstall that leaves a stray blank line behind every time it runs does
+# not return the file to the shape it found.
+#
+# Two lines are therefore HELD rather than written as they are read: an empty line, and a marker
+# comment. They are flushed in file order the moment anything else has to be written, and dropped
+# together when the keys under the marker go.
 env_remove_irises_block() { # FILE KEY…
   local f="${1:-}"
   if [ ! -f "${f:-}" ]; then printf '0'; return 0; fi
   shift || true
   if [ "$#" -eq 0 ]; then printf '0'; return 0; fi
-  local tmp="$f.irises-tmp.$$" line probe head k marker="" drop removed=0
+  local tmp="$f.irises-tmp.$$" line probe head k marker="" blank=0 drop removed=0
   ( umask 077; : > "$tmp" ) || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     probe="${line#"${line%%[![:space:]]*}"}"
+    if [ -z "$line" ]; then
+      # A held marker with an empty line under it is not the shape env_append_block writes, so it
+      # keeps nothing of ours below it: flush it, and hold this line instead. A blank already held
+      # is written out — only ONE empty line above a marker was ever ours.
+      if [ -n "$marker" ]; then
+        if [ "$blank" = "1" ]; then printf '\n' >> "$tmp" || { _irises_tmp_fail "$tmp"; return 1; }; fi
+        printf '%s\n' "$marker" >> "$tmp" || { _irises_tmp_fail "$tmp"; return 1; }
+        marker=""
+        blank=0
+      fi
+      if [ "$blank" = "1" ]; then printf '\n' >> "$tmp" || { _irises_tmp_fail "$tmp"; return 1; }; fi
+      blank=1
+      continue
+    fi
     case "$probe" in
       '#'*'added by Irises'*)
         if [ -n "$marker" ]; then
+          if [ "$blank" = "1" ]; then printf '\n' >> "$tmp" || { _irises_tmp_fail "$tmp"; return 1; }; fi
           printf '%s\n' "$marker" >> "$tmp" || { _irises_tmp_fail "$tmp"; return 1; }
+          blank=0
         fi
         marker="$line"
         continue
@@ -290,8 +312,15 @@ env_remove_irises_block() { # FILE KEY…
     fi
     if [ "$drop" = "1" ]; then
       removed=$((removed + 1))
-      marker=""
+      # The marker above this key goes with it, and so does the empty line above the marker — that
+      # pair is what env_append_block wrote. A held blank with no marker over it is the operator's
+      # own spacing above a key we happen to be removing, so it stays.
+      if [ -n "$marker" ]; then marker=""; blank=0; fi
       continue
+    fi
+    if [ "$blank" = "1" ]; then
+      printf '\n' >> "$tmp" || { _irises_tmp_fail "$tmp"; return 1; }
+      blank=0
     fi
     if [ -n "$marker" ]; then
       printf '%s\n' "$marker" >> "$tmp" || { _irises_tmp_fail "$tmp"; return 1; }
@@ -299,7 +328,11 @@ env_remove_irises_block() { # FILE KEY…
     fi
     printf '%s\n' "$line" >> "$tmp" || { _irises_tmp_fail "$tmp"; return 1; }
   done < "$f"
-  # A marker still buffered here sat at EOF above keys we removed — it goes with them.
+  # A held blank line at EOF is the file's own trailing spacing and is kept; a marker still held
+  # sat at EOF above keys we removed — it goes with them.
+  if [ "$blank" = "1" ] && [ -z "$marker" ]; then
+    printf '\n' >> "$tmp" || { _irises_tmp_fail "$tmp"; return 1; }
+  fi
   cat "$tmp" > "$f" || { err "could not write $f — is it writable?"; rm -f "$tmp" 2>/dev/null || true; return 1; }
   rm -f "$tmp" 2>/dev/null || true
   printf '%s' "$removed"

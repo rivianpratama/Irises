@@ -283,6 +283,26 @@ test('env_remove_irises_block drops our keys plus the orphaned marker, and count
   assert.ok(!body.includes('bridge mode'), body);
 });
 
+test('env_remove_irises_block takes the empty line env_append_block added with the block', () => {
+  // The exact shape env_append_block leaves behind: one empty line, the marker, the keys. An
+  // uninstall that removed the marker and the keys but kept the empty line grew the engine's .env
+  // by one blank line per install/uninstall cycle, and the file never came back byte-identical.
+  const dir = mkdtempSync(join(tmpdir(), 'irises-env-'));
+  const f = join(dir, '.env');
+  writeFileSync(f, 'A=1\n\n# — added by Irises setup (2026-09-01) — x —\nK=v\n');
+  const r = runLib(`printf 'REMOVED=%s\\n' "$(env_remove_irises_block ${JSON.stringify(f)} K)"`);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /REMOVED=1/);
+  assert.equal(readFileSync(f, 'utf8'), 'A=1\n', 'the file is back to exactly what it was');
+
+  // …and a blank line that is NOT ours — no marker under it — is the operator's own spacing.
+  const g = join(dir, 'spaced.env');
+  writeFileSync(g, 'A=1\n\nK=v\nB=2\n');
+  const r2 = runLib(`printf 'REMOVED=%s\\n' "$(env_remove_irises_block ${JSON.stringify(g)} K)"`);
+  assert.equal(r2.code, 0, r2.err);
+  assert.equal(readFileSync(g, 'utf8'), 'A=1\n\nB=2\n', 'a blank line of the operator\'s stays put');
+});
+
 test('env_backup copies to a 0600 sibling and prints ONLY its path on stdout', () => {
   const f = join(mkdtempSync(join(tmpdir(), 'irises-env-')), '.env');
   writeFileSync(f, 'SECRET=shhh\n', { mode: 0o644 });

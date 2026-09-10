@@ -20,9 +20,12 @@
 #
 # WHAT IT ASSERTS, in order:
 #   1   install    — detached start, /health serving the sha that was built, plugin copied to the
-#                    stub engine, engine .env carrying our keys, manifest written, engine CLI called
-#   1b  install×2   — a re-run adopts the running server, appends no key twice, and the manifest
-#                    still names OUR keys as ours instead of forgetting them to "pre-existing"
+#                    stub engine, engine .env carrying our keys, manifest written, engine CLI called.
+#                    The engine's .env is PRE-SEEDED with keys of its own, so this is also where the
+#                    push token has to be adopted rather than replaced and IRISES_URL taken over out loud
+#   1b  install×2   — a re-run adopts the running server, appends no key twice, the manifest still
+#                    names OUR keys as ours instead of forgetting them to "pre-existing", and the
+#                    restore point stays the FIRST install's backup
 #   2   update      — a commit published to the fake origin is applied, the LIVE sha flips to it, the
 #                    receipt is written, the plugin is refreshed, the engine CLI is called
 #   2b  repair      — dist/version.json stamped from a sha nobody has: HEAD is current, so this is
@@ -35,9 +38,12 @@
 #   3c  exit 5      — Irises is updated and live, but the engine's gateway cannot be verified back
 #                    up: the update is not undone, and the run says so with its own exit code
 #   4   uninstall   — the server stops, the plugin dir is gone, our keys are stripped from the engine
-#                    .env while a pre-existing key survives, and $IRISES_HOME is KEPT. It runs after
-#                    TWO installs, so this is also where 1b's manifest memory is proved or isn't
-#   5   uninstall×2 — a second one in a row changes nothing: no fresh backup, no gateway bounce
+#                    .env, every pre-existing key comes back to its pre-install value, the stale
+#                    manifest goes, and $IRISES_HOME is KEPT. The engine's .env is compared with cmp
+#                    against the file from before stage 1: byte-identical, or this stage fails. It
+#                    runs after TWO installs, so this is also where 1b's manifest memory is proved
+#   5   uninstall×2 — a second one in a row changes nothing: no fresh backup, no gateway bounce, and
+#                    — with the manifest now gone — no key deleted just because it is named IRISES_*
 #   6   held port   — a foreign listener on our port (`npm run dev`, in real life) is refused in
 #                    PREFLIGHT: exit 1, nothing merged, nothing built, no receipt, and the other
 #                    process still holding the port it started with
@@ -173,10 +179,11 @@ step "sandbox at $SANDBOX (Irises :$SRV_PORT, stub engine :$ENGINE_PORT)"
 
 # ── the scratch PATH ──────────────────────────────────────────────────────────
 # nohup and setsid are what server_start_detached needs (setsid is absent on macOS and skipped by
-# this loop). ls is here because the checks below shell out to it.
+# this loop). ls, cmp and diff are here because the checks below shell out to them — cmp is how the
+# uninstall stage proves the engine's .env came back byte-for-byte, and diff prints it when it did not.
 for tool in bash sh cat cp rm mv ls mkdir chmod find grep sed head tail cut tr sleep date printf ps \
             uname id dirname basename du curl node git awk sort stat env mktemp kill touch ln wc od \
-            xargs nohup setsid; do
+            cmp diff xargs nohup setsid; do
   real="$(command -v "$tool" 2>/dev/null || true)"
   if [ -n "$real" ] && [ ! -e "$BIN/$tool" ]; then ln -s "$real" "$BIN/$tool"; fi
 done
@@ -232,8 +239,21 @@ EOF
   chmod +x "$BIN/$stub"
 done
 
-# The engine's .env, with one key that was there BEFORE Irises — the uninstall must not remove it.
-printf 'ANTHROPIC_API_KEY=engine-owned-key\nAPI_SERVER_KEY=pre-existing-engine-key\n' > "$HERMES/.env"
+# The engine's .env as a developer's own hermes already has it: four keys that were there BEFORE
+# Irises, two of which the installer wants for itself.
+#
+#   IRISES_PUSH_TOKEN  one secret shared with the clone (ENGINE_PUSH_TOKEN there), so it is ADOPTED,
+#                      never replaced. A throwaway install that wrote its own token over this one
+#                      left the developer's REAL Irises 403ing on every engine push — and the
+#                      uninstall, correctly leaving a pre-existing key alone, kept the wrong value.
+#   IRISES_URL         has to name THIS install, so it is taken over — loudly — and put back from
+#                      the pre-install backup by --uninstall.
+#
+# $ENGINE_SEED is the byte-for-byte comparison the last uninstall stage makes: this exact file is
+# what the engine's .env has to come back to.
+printf 'ANTHROPIC_API_KEY=engine-owned-key\nAPI_SERVER_KEY=pre-existing-engine-key\nIRISES_PUSH_TOKEN=pre-existing-push-token\nIRISES_URL=http://127.0.0.1:1\n' > "$HERMES/.env"
+ENGINE_SEED="$SANDBOX/engine-env.seed"
+cp "$HERMES/.env" "$ENGINE_SEED"
 
 export PATH="$BIN"
 export HOME="$HOME_DIR"
@@ -346,8 +366,22 @@ check "no __pycache__ came with it" test ! -d "$HERMES/plugins/irises-bridge/__p
 check "the plugin was enabled through the engine CLI" present "$STUB_LOG" "hermes plugins enable irises-bridge"
 check "the gateway was bounced" grep -qE "hermes gateway re?start" "$STUB_LOG"
 check "the engine .env was backed up" test -n "$(backups)"
-check "IRISES_PUSH_TOKEN was added to the engine" present "$HERMES/.env" '^IRISES_PUSH_TOKEN='
 check "IRISES_FRONT was added to the engine" present "$HERMES/.env" '^IRISES_FRONT='
+check "IRISES_BRIDGE_TOKEN was added to the engine" present "$HERMES/.env" '^IRISES_BRIDGE_TOKEN='
+# The push token, adopted rather than replaced — in BOTH files, because a match is the whole point.
+check "the clone adopted the engine's existing push token" \
+  present "$CLONE/.env" '^ENGINE_PUSH_TOKEN=pre-existing-push-token$'
+check "and the engine's own IRISES_PUSH_TOKEN still holds it" \
+  present "$HERMES/.env" '^IRISES_PUSH_TOKEN=pre-existing-push-token$'
+# IRISES_URL is the opposite rule: it has to name this install, so it is taken over out loud.
+check_out "the install said IRISES_URL was taken over" "takes over" "$INSTALL_OUT"
+check_out "and named the value it replaced" "pointed at http://127.0.0.1:1" "$INSTALL_OUT"
+check "the engine now points IRISES_URL at this install" \
+  present "$HERMES/.env" "^IRISES_URL=http://127.0.0.1:$SRV_PORT\$"
+check "the manifest records IRISES_PUSH_TOKEN as pre-existing" \
+  present "$STATE/install-manifest.json" '"keysPreExisting": "[^"]*IRISES_PUSH_TOKEN'
+check "and IRISES_URL as pre-existing too" \
+  present "$STATE/install-manifest.json" '"keysPreExisting": "[^"]*IRISES_URL'
 if [ "$(key_count "$HERMES/.env" API_SERVER_KEY)" = "1" ]; then
   ok "the pre-existing engine key was NOT duplicated"
 else
@@ -368,10 +402,11 @@ check "and so did its port" present "$CLONE/.env" "^PORT=$SRV_PORT\$"
 # ── 1b. the same install again ────────────────────────────────────────────────
 # A second install finds every key the first one added ALREADY in the engine's .env. Classified by
 # presence alone that made keysAdded empty, the manifest recorded the whole set as pre-existing, and
-# stage 4's uninstall then left IRISES_PUSH_TOKEN, IRISES_URL, IRISES_BRIDGE_TOKEN, IRISES_FRONT and
-# API_SERVER_ENABLED behind in the engine's .env — while the script's own header promises removal and
-# invites you to "re-run it any time". The manifest has to carry its own memory forward, and the two
-# uninstall stages below now run after TWO installs, so their removal assertions are the proof.
+# stage 4's uninstall then left IRISES_BRIDGE_TOKEN, IRISES_FRONT and API_SERVER_ENABLED behind in
+# the engine's .env — while the script's own header promises removal and invites you to "re-run it
+# any time". The manifest has to carry its own memory forward, and the two uninstall stages below now
+# run after TWO installs, so their removal assertions are the proof. The same re-run is also where a
+# restore point can drift: install 2's own backup already holds install 1's IRISES_URL.
 step "1b/11  re-install — idempotent, and the manifest keeps its memory"
 : > "$STUB_LOG"
 set +e
@@ -385,11 +420,18 @@ check_out "it adopted the server that was already on the port" "this run will ad
 check_out "and it read the previous manifest" "recorded these engine keys as ours" "$REINSTALL_OUT"
 expect_sha "the same build is still what answers" "$BASE_SHA"
 MAN="$STATE/install-manifest.json"
-check "the manifest still remembers IRISES_PUSH_TOKEN as ours" \
-  present "$MAN" '"keysAdded": "[^"]*IRISES_PUSH_TOKEN'
+check "the manifest still remembers IRISES_BRIDGE_TOKEN as ours" \
+  present "$MAN" '"keysAdded": "[^"]*IRISES_BRIDGE_TOKEN'
 check "and IRISES_FRONT as ours too" present "$MAN" '"keysAdded": "[^"]*IRISES_FRONT'
 check "while the engine's own API_SERVER_KEY is still not claimed" \
   present "$MAN" '"keysPreExisting": "[^"]*API_SERVER_KEY'
+check "nor is the push token that was there before us" \
+  present "$MAN" '"keysPreExisting": "[^"]*IRISES_PUSH_TOKEN'
+# The backup the uninstall restores from has to stay the FIRST install's: this run's own snapshot
+# already carries the IRISES_URL install 1 wrote, and restoring from that would put back a value of
+# ours and call it the operator's.
+check_out "the re-install kept the first install's backup as the restore point" \
+  "restore from the first install's backup" "$REINSTALL_OUT"
 if [ "$(key_count "$HERMES/.env" API_SERVER_KEY)" = "1" ]; then
   ok "API_SERVER_KEY is still counted once in the engine .env"
 else
@@ -581,11 +623,26 @@ fi
 check "the plugin dir is gone" test ! -d "$HERMES/plugins/irises-bridge"
 check "the plugin was disabled through the engine CLI" present "$STUB_LOG" "hermes plugins disable irises-bridge"
 check "the gateway was bounced so the engine forgets it" grep -qE "hermes gateway re?start" "$STUB_LOG"
-check "IRISES_PUSH_TOKEN was stripped from the engine" absent "$HERMES/.env" '^IRISES_PUSH_TOKEN='
+check "IRISES_BRIDGE_TOKEN was stripped from the engine" absent "$HERMES/.env" '^IRISES_BRIDGE_TOKEN='
 check "IRISES_FRONT was stripped too" absent "$HERMES/.env" '^IRISES_FRONT='
+check "and API_SERVER_ENABLED, which this install added" absent "$HERMES/.env" '^API_SERVER_ENABLED='
 check "no orphaned Irises marker comment was left" absent "$HERMES/.env" 'added by Irises setup'
 check "the engine's OWN key survived" present "$HERMES/.env" '^ANTHROPIC_API_KEY=engine-owned-key'
 check "the pre-existing API_SERVER_KEY survived" present "$HERMES/.env" 'pre-existing-engine-key'
+# The two keys the install had designs on. The token was adopted, so it is untouched throughout;
+# IRISES_URL was taken over, so it comes BACK — from the first install's pre-install backup.
+check "the pre-existing push token was never replaced" \
+  present "$HERMES/.env" '^IRISES_PUSH_TOKEN=pre-existing-push-token$'
+check "IRISES_URL is back to the value the engine had" \
+  present "$HERMES/.env" '^IRISES_URL=http://127.0.0.1:1$'
+check_out "and the uninstall said so, by name" "restored IRISES_URL to its pre-install value" "$UNINSTALL_OUT"
+check "the stale manifest is gone" test ! -f "$STATE/install-manifest.json"
+check_out "and the summary says so" "manifest: removed" "$UNINSTALL_OUT"
+# The strongest assertion in the battery: not "our keys went" but "the file came back". Two installs
+# and an uninstall, and the engine's .env is the same bytes it was before any of it — same keys, same
+# values, same order, no stray blank line where a block used to be.
+check "the engine .env is byte-identical to the file before stage 1" cmp -s "$ENGINE_SEED" "$HERMES/.env"
+if ! cmp -s "$ENGINE_SEED" "$HERMES/.env"; then diff -u "$ENGINE_SEED" "$HERMES/.env" | sed 's/^/    | /' || true; fi
 check "the pidfile is gone" test ! -f "$STATE/irises.pid"
 check "the data directory is KEPT" test -d "$STATE"
 check "and so is what was in it" test -f "$STATE/memories-canary.txt"
@@ -614,6 +671,14 @@ fi
 check "the engine's gateway was NOT bounced for nothing" absent "$STUB_LOG" "gateway"
 check_out "and the summary says so" "not bounced (nothing changed)" "$AGAIN_OUT"
 check "the data directory is still KEPT" test -f "$STATE/memories-canary.txt"
+# The first uninstall took the manifest with it, so this run has none — and matching keys by NAME on
+# a box with no other sign of an install would delete the engine's OWN IRISES_PUSH_TOKEN and
+# IRISES_URL, which is the defect this battery pre-seeds for, arriving from the other side.
+check_out "a manifest-less run says it found no proof anything is ours" "provably ours" "$AGAIN_OUT"
+check "the engine .env is STILL byte-identical after a second uninstall" cmp -s "$ENGINE_SEED" "$HERMES/.env"
+if ! cmp -s "$ENGINE_SEED" "$HERMES/.env"; then diff -u "$ENGINE_SEED" "$HERMES/.env" | sed 's/^/    | /' || true; fi
+check "and the manifest is still gone" test ! -f "$STATE/install-manifest.json"
+check "while the data directory it described is not" test -d "$STATE"
 
 # ── 6. someone else has the port ──────────────────────────────────────────────
 # The uninstall left the port free and no server of ours anywhere, so this is the one place in the

@@ -351,7 +351,7 @@ On a box with none of the three (a bare container, a shell with no user session 
 bash scripts/engine-setup.sh --uninstall
 ```
 
-It stops and unregisters the service, removes the engine bridge plugin and the engine-side keys the installer added (from the manifest it wrote at install, after backing the engine's env file up), bounces the engine gateway **if it actually removed something** — so a second run on an already-clean box does not cycle your engine for nothing — and **keeps your data**. Add `--purge-data` to delete `$IRISES_HOME` (memory, dossier, SQLite) as well; that one asks you to type the word `delete` first (unless you also pass `--yes`) and is not reversible. The clone itself is never deleted; the script prints the `rm -rf` for you.
+It stops and unregisters the service, removes the engine bridge plugin and the engine-side keys the installer added (from the manifest it wrote at install, after backing the engine's env file up), puts any key that was already in that file back to its pre-install value — the install adopts the engine's `API_SERVER_KEY` and `IRISES_PUSH_TOKEN` rather than replacing them, and `IRISES_URL` is the one it has to point at itself — bounces the engine gateway **if it actually removed something** — so a second run on an already-clean box does not cycle your engine for nothing — and **keeps your data**. Add `--purge-data` to delete `$IRISES_HOME` (memory, dossier, SQLite) as well; that one asks you to type the word `delete` first (unless you also pass `--yes`) and is not reversible. The clone itself is never deleted; the script prints the `rm -rf` for you.
 
 Docker/VM installs update by rebuilding the image instead — see [docs/DEPLOY.md](docs/DEPLOY.md) § 5.
 
