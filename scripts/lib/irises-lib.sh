@@ -832,3 +832,465 @@ web_build() { # [ROOT] — always returns 0
   warn "retry when the box has room:  npm --prefix web ci && npm run build:web   (or set IRISES_SKIP_WEB_BUILD=1)"
   return 0
 }
+
+# ═══ F. the Irises server: service, process, health, manifest, lock, summary ══
+#
+# Irises installs as a USER-LEVEL service by default — systemd --user on Linux (with linger, or it
+# dies at logout), a LaunchAgent on macOS — because a `nohup` server does not survive a reboot and
+# nothing else on the box knows how to bring it back. `--no-service` falls back to the detached
+# launch, and then $IRISES_HOME/irises.pid (written by the server itself, src/update/pidfile.ts) is
+# the only handle anyone has.
+
+service_name()  { printf 'irises'; }
+service_label() { printf 'ai.irises.server'; }
+service_unit_path()  { printf '%s/.config/systemd/user/%s.service' "$HOME" "$(service_name)"; }
+service_plist_path() { printf '%s/Library/LaunchAgents/%s.plist' "$HOME" "$(service_label)"; }
+
+_irises_xdg() { printf '%s' "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"; }
+
+# systemd needs systemctl AND a user bus to talk to (a fresh SSH session with linger off has
+# neither, and `systemctl --user` there fails with "Failed to connect to bus"). launchd needs
+# launchctl and Darwin. Anything else → none, and the caller uses the detached fallback.
+service_kind() {
+  local os xdg
+  os="$(uname -s 2>/dev/null || printf unknown)"
+  case "$os" in
+    Darwin)
+      if command -v launchctl >/dev/null 2>&1; then printf 'launchd'; return 0; fi
+      ;;
+    Linux)
+      if command -v systemctl >/dev/null 2>&1; then
+        xdg="$(_irises_xdg)"
+        if [ -S "$xdg/bus" ] || [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+          printf 'systemd'
+          return 0
+        fi
+      fi
+      ;;
+  esac
+  printf 'none'
+}
+
+_systemctl_user() { # ARGS…
+  local rc=0
+  XDG_RUNTIME_DIR="$(_irises_xdg)" systemctl --user "$@" || rc=$?
+  return "$rc"
+}
+
+# A service PATH built like the engine's own: the node we resolved first, then the user-local dirs,
+# then the base system dirs. A unit inherits almost nothing, so this list is the whole world it sees.
+_service_path() { # NODE_BIN
+  local node="${1:-}" p d
+  p="$(dirname "$node")"
+  for d in "$HOME/.local/bin" "${HERMES_HOME:-$HOME/.hermes}/node/bin" /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin; do
+    case ":$p:" in *":$d:"*) ;; *) p="$p:$d" ;; esac
+  done
+  printf '%s' "$p"
+}
+
+# NODE_OPTIONS from the clone's config, applied where it actually works. deploy/app.env's
+# `NODE_OPTIONS=--max-old-space-size=512` is loaded by dotenv AFTER V8 has already sized its heap,
+# so on a 1 GB box that documented cap has never once taken effect. In the unit it does.
+_service_node_options() { # ROOT
+  local root="${1:-}" v
+  v="$(env_get "$root/.env" NODE_OPTIONS)"
+  if [ -z "$v" ]; then v="$(env_get "$root/deploy/app.env" NODE_OPTIONS)"; fi
+  printf '%s' "$v"
+}
+
+# Prints ONLY the unit/plist path on stdout — callers capture it. Everything else goes through log/warn.
+service_install() { # ROOT NODE_BIN
+  local root="${1:-}" node="${2:-}" kind home logs unit plist path opts uid
+  if [ -z "$root" ] || [ -z "$node" ]; then err "service_install needs ROOT and an absolute NODE_BIN"; return 1; fi
+  kind="$(service_kind)"
+  home="$(irises_home)"
+  logs="$home/logs"
+  mkdir -p "$logs"
+  path="$(_service_path "$node")"
+  opts="$(_service_node_options "$root")"
+  case "$kind" in
+    systemd)
+      unit="$(service_unit_path)"
+      mkdir -p "$(dirname "$unit")"
+      {
+        printf '[Unit]\n'
+        printf 'Description=Irises — private companion server\n'
+        printf 'After=network-online.target\n'
+        printf 'Wants=network-online.target\n'
+        printf 'StartLimitIntervalSec=0\n'
+        printf '\n[Service]\n'
+        printf 'Type=simple\n'
+        printf 'ExecStart=%s %s/dist/index.js\n' "$node" "$root"
+        printf 'WorkingDirectory=%s\n' "$root"
+        printf 'Environment="PATH=%s"\n' "$path"
+        printf 'Environment="IRISES_HOME=%s"\n' "$home"
+        if [ -n "$opts" ]; then printf 'Environment="NODE_OPTIONS=%s"\n' "$opts"; fi
+        printf 'Restart=on-failure\n'
+        printf 'RestartSec=5\n'
+        printf 'KillSignal=SIGTERM\n'
+        printf 'TimeoutStopSec=30\n'
+        # append: needs systemd 240+ (Ubuntu 20.04+). On anything older systemd refuses to load the
+        # unit; swap both lines for `journal` and read it with: journalctl --user -u irises -f
+        printf 'StandardOutput=append:%s/server.log\n' "$logs"
+        printf 'StandardError=append:%s/server.log\n' "$logs"
+        printf '\n[Install]\n'
+        printf 'WantedBy=default.target\n'
+      } > "$unit"
+      log "wrote $unit"
+      _systemctl_user daemon-reload || { err "systemctl --user daemon-reload failed"; return 1; }
+      _systemctl_user enable "$(service_name)" >/dev/null 2>&1 || warn "could not enable the unit (it will still start now)"
+      # Without linger a user unit is killed at logout and never comes back after a reboot.
+      if command -v loginctl >/dev/null 2>&1; then
+        if ! loginctl enable-linger "$(id -un)" >/dev/null 2>&1; then
+          warn "could not enable linger — Irises will stop when you log out."
+          warn "ask an admin for:  sudo loginctl enable-linger $(id -un)"
+        fi
+      else
+        warn "no loginctl here — if Irises stops at logout, that is why"
+      fi
+      printf '%s' "$unit"
+      return 0
+      ;;
+    launchd)
+      plist="$(service_plist_path)"
+      uid="$(id -u)"
+      mkdir -p "$(dirname "$plist")"
+      {
+        printf '<?xml version="1.0" encoding="UTF-8"?>\n'
+        printf '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        printf '<plist version="1.0">\n<dict>\n'
+        printf '    <key>Label</key>\n    <string>%s</string>\n' "$(service_label)"
+        printf '    <key>ProgramArguments</key>\n    <array>\n'
+        printf '        <string>%s</string>\n' "$node"
+        printf '        <string>%s/dist/index.js</string>\n' "$root"
+        printf '    </array>\n'
+        printf '    <key>WorkingDirectory</key>\n    <string>%s</string>\n' "$root"
+        printf '    <key>EnvironmentVariables</key>\n    <dict>\n'
+        printf '        <key>PATH</key>\n        <string>%s</string>\n' "$path"
+        printf '        <key>IRISES_HOME</key>\n        <string>%s</string>\n' "$home"
+        if [ -n "$opts" ]; then printf '        <key>NODE_OPTIONS</key>\n        <string>%s</string>\n' "$opts"; fi
+        printf '    </dict>\n'
+        printf '    <key>RunAtLoad</key>\n    <true/>\n'
+        # KeepAlive as a dict, NOT `true`: a bare true relaunches the server the moment we stop it
+        # on purpose, so `service_stop` could never actually stop anything.
+        printf '    <key>KeepAlive</key>\n    <dict>\n        <key>SuccessfulExit</key>\n        <false/>\n    </dict>\n'
+        printf '    <key>ThrottleInterval</key>\n    <integer>10</integer>\n'
+        printf '    <key>ExitTimeOut</key>\n    <integer>30</integer>\n'
+        printf '    <key>StandardOutPath</key>\n    <string>%s/server.log</string>\n' "$logs"
+        printf '    <key>StandardErrorPath</key>\n    <string>%s/server.log</string>\n' "$logs"
+        printf '</dict>\n</plist>\n'
+      } > "$plist"
+      log "wrote $plist"
+      # Bootstrapping a label that is already loaded fails with EIO; boot it out first so a re-run
+      # is a genuine reinstall rather than a no-op.
+      launchctl bootout "gui/$uid/$(service_label)" >/dev/null 2>&1 || true
+      if ! launchctl bootstrap "gui/$uid" "$plist" >/dev/null 2>&1; then
+        err "launchctl bootstrap gui/$uid failed — load it yourself: launchctl bootstrap gui/$uid $plist"
+        return 1
+      fi
+      printf '%s' "$plist"
+      return 0
+      ;;
+  esac
+  warn "no user service manager here (no systemd --user, no launchd) — using the detached fallback"
+  return 1
+}
+
+service_start() {
+  local kind uid
+  kind="$(service_kind)"
+  case "$kind" in
+    systemd) _systemctl_user start "$(service_name)" || return 1; return 0 ;;
+    launchd) uid="$(id -u)"
+             launchctl kickstart "gui/$uid/$(service_label)" >/dev/null 2>&1 || return 1
+             return 0 ;;
+  esac
+  return 1
+}
+
+service_stop() {
+  local kind uid
+  kind="$(service_kind)"
+  case "$kind" in
+    systemd) _systemctl_user stop "$(service_name)" || return 1; return 0 ;;
+    launchd) uid="$(id -u)"
+             launchctl kill SIGTERM "gui/$uid/$(service_label)" >/dev/null 2>&1 || true
+             return 0 ;;
+  esac
+  return 1
+}
+
+service_restart() {
+  local kind uid
+  kind="$(service_kind)"
+  case "$kind" in
+    systemd) _systemctl_user restart "$(service_name)" || return 1; return 0 ;;
+    launchd) uid="$(id -u)"
+             launchctl kickstart -k "gui/$uid/$(service_label)" >/dev/null 2>&1 || return 1
+             return 0 ;;
+  esac
+  return 1
+}
+
+service_status() { # 0 = installed and running
+  local kind uid
+  kind="$(service_kind)"
+  case "$kind" in
+    systemd)
+      if [ ! -f "$(service_unit_path)" ]; then return 1; fi
+      if [ "$(_systemctl_user is-active "$(service_name)" 2>/dev/null || true)" = "active" ]; then return 0; fi
+      return 1
+      ;;
+    launchd)
+      if [ ! -f "$(service_plist_path)" ]; then return 1; fi
+      uid="$(id -u)"
+      if launchctl print "gui/$uid/$(service_label)" 2>/dev/null | grep -q 'state = running'; then return 0; fi
+      return 1
+      ;;
+  esac
+  return 1
+}
+
+service_uninstall() {
+  local kind unit plist uid
+  kind="$(service_kind)"
+  case "$kind" in
+    systemd)
+      unit="$(service_unit_path)"
+      _systemctl_user stop "$(service_name)" >/dev/null 2>&1 || true
+      _systemctl_user disable "$(service_name)" >/dev/null 2>&1 || true
+      if [ -f "$unit" ]; then rm -f "$unit"; say "removed $unit"; fi
+      _systemctl_user daemon-reload >/dev/null 2>&1 || true
+      return 0
+      ;;
+    launchd)
+      plist="$(service_plist_path)"
+      uid="$(id -u)"
+      launchctl bootout "gui/$uid/$(service_label)" >/dev/null 2>&1 || true
+      if [ -f "$plist" ]; then rm -f "$plist"; say "removed $plist"; fi
+      return 0
+      ;;
+  esac
+  # Nothing installed here, but a unit/plist can outlive the tool that detected it.
+  for unit in "$(service_unit_path)" "$(service_plist_path)"; do
+    if [ -f "$unit" ]; then rm -f "$unit"; say "removed $unit"; fi
+  done
+  return 0
+}
+
+# Only ever signal a pid we can identify as OUR server: a stale pidfile (an OOM-killed server never
+# ran its exit handler) can hold a pid the OS has since handed to something else.
+is_our_server() { # PID
+  local pid="${1:-}" cmd=""
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  if [ -r "/proc/$pid/cmdline" ]; then
+    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  else
+    cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  fi
+  case "$cmd" in *dist/index.js*) return 0 ;; esac
+  return 1
+}
+
+# The ONE pidfile: $IRISES_HOME/irises.pid, written by the server itself at boot. (The old setup
+# script kept a second one in the clone root, which is how a "running" server and a "stale" pidfile
+# could both be true at once.)
+server_pid() {
+  local home pid
+  home="$(irises_home)"
+  if [ -f "$home/irises.pid" ]; then
+    pid="$(cat "$home/irises.pid" 2>/dev/null || true)"
+    pid="${pid%%[![:digit:]]*}"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && is_our_server "$pid"; then
+      printf '%s' "$pid"
+      return 0
+    fi
+  fi
+  return 0
+}
+
+server_stop() { # [SECS]
+  local secs="${1:-15}" pid i=0
+  pid="$(server_pid)"
+  if [ -z "$pid" ]; then return 0; fi
+  say "stopping the running server (pid $pid)"
+  kill "$pid" 2>/dev/null || true
+  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt "$secs" ]; do
+    sleep 1
+    i=$((i + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    warn "pid $pid ignored SIGTERM for ${secs}s — sending SIGKILL"
+    kill -9 "$pid" 2>/dev/null || true
+    sleep 1
+  fi
+  return 0
+}
+
+# The --no-service fallback. `setsid` gives the server its own session; macOS has no setsid, so the
+# child inherits INT/HUP as ignored instead — otherwise Ctrl+C in the launching terminal kills the
+# server it just started (reproduced).
+server_start_detached() { # ROOT [LOG]
+  local root="${1:-}" log="${2:-}" home
+  home="$(irises_home)"
+  mkdir -p "$home/logs"
+  if [ -z "$log" ]; then log="$home/logs/server.log"; fi
+  say "starting Irises detached — it outlives this shell (log: $log)"
+  (
+    cd "$root" || exit 1
+    if command -v setsid >/dev/null 2>&1; then
+      setsid nohup node "$root/dist/index.js" </dev/null >>"$log" 2>&1 &
+    else
+      trap '' INT HUP
+      nohup node "$root/dist/index.js" </dev/null >>"$log" 2>&1 &
+    fi
+  )
+  return 0
+}
+
+wait_health() { # URL SECS   (URL is the base, e.g. http://127.0.0.1:3000)
+  local url="${1:-}" secs="${2:-30}" i=0
+  while [ "$i" -lt "$secs" ]; do
+    if curl -fsS -m 5 "$url/health" >/dev/null 2>&1; then return 0; fi
+    sleep 1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# Wait until /health reports the sha we expect, and print it. This is the difference between "a
+# server answers" and "the NEW build is live": the old updater only ever checked the former, so a
+# restart that silently relaunched the old build looked like a success.
+wait_health_sha() { # URL SHA SECS
+  local url="${1:-}" want="${2:-}" secs="${3:-45}" i=0 body got
+  while [ "$i" -lt "$secs" ]; do
+    body="$(curl -fsS -m 5 "$url/health" 2>/dev/null || true)"
+    if [ -n "$body" ]; then
+      # version.sha is the first lowercase-hex "sha" in the body; update.remoteSha cannot match
+      # this pattern (the quote before `Sha` is preceded by `remote`).
+      got="$(printf '%s' "$body" | grep -o '"sha":"[0-9a-f]\{7,40\}"' | head -1 | cut -d'"' -f4 || true)"
+      if [ -n "$got" ]; then
+        if [ -z "$want" ]; then printf '%s' "$got"; return 0; fi
+        case "$got" in "$want"*) printf '%s' "$got"; return 0 ;; esac
+        case "$want" in "$got"*) printf '%s' "$got"; return 0 ;; esac
+      fi
+    fi
+    sleep 1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# The sha dist/ was stamped from (scripts/stamp-version.js). Empty when this clone was never built.
+built_sha() { # [ROOT]
+  local root="${1:-}" f
+  if [ -z "$root" ]; then root="$(irises_root)"; fi
+  f="$root/dist/version.json"
+  if [ ! -f "$f" ]; then return 0; fi
+  printf '%s' "$(grep -o '"sha"[[:space:]]*:[[:space:]]*"[0-9a-f]\{7,40\}"' "$f" | head -1 | cut -d'"' -f4 || true)"
+}
+
+# ── install manifest ──────────────────────────────────────────────────────────
+# What the installer touched, so --uninstall can put it back WITHOUT node (the uninstall path must
+# work on a box whose node has since gone). We are the only writer, so one key per line is a sound
+# contract; a human who reformats it into one line still gets read, via node, below.
+manifest_path() { printf '%s/install-manifest.json' "$(irises_home)"; }
+
+manifest_write() { # PATH KEY=VALUE…
+  local p="${1:-}" pair key val
+  if [ -z "$p" ]; then return 1; fi
+  shift || true
+  mkdir -p "$(dirname "$p")"
+  {
+    printf '{\n'
+    printf '  "schema": "1",\n'
+    printf '  "writtenAt": "%s"' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    for pair in "$@"; do
+      key="${pair%%=*}"
+      val="${pair#*=}"
+      val="${val//\\/\\\\}"
+      val="${val//\"/\\\"}"
+      printf ',\n  "%s": "%s"' "$key" "$val"
+    done
+    printf '\n}\n'
+  } > "$p"
+  chmod 600 "$p" 2>/dev/null || true
+  say "wrote $p"
+  return 0
+}
+
+manifest_read() { # PATH KEY
+  local p="${1:-}" key="${2:-}" line v
+  if [ -z "$key" ] || [ ! -f "${p:-}" ]; then return 0; fi
+  # Anchored at the start of the line, because that is the contract manifest_write writes: one key
+  # per line. An unanchored match would also hit a REFORMATTED single-line manifest, where the
+  # parameter-expansion parse below then returns the rest of the file — so the anchor is what sends
+  # that case down to the JSON parser instead.
+  line="$(grep -m1 "^[[:space:]]*\"$key\"[[:space:]]*:" "$p" 2>/dev/null || true)"
+  if [ -n "$line" ]; then
+    v="${line#*:}"
+    v="${v#"${v%%[![:space:]]*}"}"
+    v="${v%,}"
+    case "$v" in '"'*) v="${v#\"}"; v="${v%\"}" ;; esac
+    v="${v//\\\"/\"}"
+    printf '%s' "$v"
+    return 0
+  fi
+  # A reformatted (single-line) manifest: fall back to a real JSON parser when one exists.
+  if command -v node >/dev/null 2>&1; then
+    node -e 'try{const o=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const v=o[process.argv[2]];if(v!==undefined)process.stdout.write(String(v))}catch(e){}' "$p" "$key" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# ── single-lifecycle lock ─────────────────────────────────────────────────────
+# mkdir is atomic, so it is the lock. One lock covers install, update and uninstall: two of them
+# racing on git/npm/dist is the same corruption whichever pair it is.
+lock_acquire() { # [NAME]
+  local name="${1:-lifecycle}" home dir other
+  home="$(irises_home)"
+  mkdir -p "$home" 2>/dev/null || true
+  dir="$home/$name.lock"
+  if mkdir "$dir" 2>/dev/null; then
+    printf '%s\n' "$$" > "$dir/pid"
+    IRISES_LOCK_DIR="$dir"
+    return 0
+  fi
+  other="$(cat "$dir/pid" 2>/dev/null || true)"
+  if [ -n "$other" ] && kill -0 "$other" 2>/dev/null; then
+    err "another Irises lifecycle run holds the lock (pid $other) — not starting a second one"
+    return 1
+  fi
+  rm -rf "$dir" 2>/dev/null || true
+  if mkdir "$dir" 2>/dev/null; then
+    printf '%s\n' "$$" > "$dir/pid"
+    IRISES_LOCK_DIR="$dir"
+    warn "reclaimed a lock left behind by a dead run (pid ${other:-unknown})"
+    return 0
+  fi
+  err "could not take the lifecycle lock at $dir"
+  return 1
+}
+
+# Release ONLY our own lock — never one a concurrent run holds.
+lock_release() {
+  local dir="${IRISES_LOCK_DIR:-}"
+  if [ -z "$dir" ]; then return 0; fi
+  if [ "$(cat "$dir/pid" 2>/dev/null || true)" = "$$" ]; then rm -rf "$dir" 2>/dev/null || true; fi
+  IRISES_LOCK_DIR=""
+  return 0
+}
+
+# ── the final block ───────────────────────────────────────────────────────────
+# Every lifecycle script ends here, and its LAST line of stdout is always `RESULT: <token>`:
+#   ok | noop | adopted | health-failed | rolled-back | gateway-failed | partial | up-to-date | update-available
+summary() { # TOKEN LINE…
+  local token="${1:-ok}" l
+  shift || true
+  printf '\n'
+  printf '  ── Irises: %s ──\n' "${IRISES_LOG_TAG:-irises}"
+  for l in "$@"; do printf '  %s\n' "$l"; done
+  printf '\n'
+  printf 'RESULT: %s\n' "$token"
+  return 0
+}

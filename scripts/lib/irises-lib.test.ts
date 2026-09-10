@@ -10,7 +10,7 @@
 // systemctl/launchctl genuinely absent. Tests that need them ask for them by name.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
@@ -86,6 +86,47 @@ export function runLib(body: string, opts: RunOpts = {}): LibRun {
     log: existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : [],
     dir,
   };
+}
+
+/**
+ * A health endpoint in its OWN process, answering every path with the Irises /health shape.
+ *
+ * It cannot live in this process: runLib is spawnSync, which stops this event loop dead, so an
+ * in-process http server never accepts the lib's curl — it just times out after -m 5. The child
+ * re-reads `shaFile` on every request, which is how a test flips which build is "live".
+ */
+export function startHealthServer(shaFile: string): { base: string; stop: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), 'irises-health-'));
+  const portFile = join(dir, 'port');
+  const src = join(dir, 'health-server.mjs');
+  writeFileSync(src, [
+    "import http from 'node:http';",
+    "import { readFileSync, writeFileSync } from 'node:fs';",
+    'const [shaPath, portPath] = process.argv.slice(2);',
+    'const srv = http.createServer((_q, s) => {',
+    "  let sha = '';",
+    "  try { sha = readFileSync(shaPath, 'utf8').trim(); } catch { sha = ''; }",
+    "  s.setHeader('content-type', 'application/json');",
+    "  s.end(JSON.stringify({",
+    "    status: 'ok',",
+    '    version: { sha, shortSha: sha.slice(0, 7) },',
+    "    update: { remoteSha: 'c'.repeat(40) },",
+    '  }));',
+    '});',
+    "srv.listen(0, '127.0.0.1', () => writeFileSync(portPath, String(srv.address().port)));",
+    '',
+  ].join('\n'));
+  const child = spawn(process.execPath, [src, shaFile, portFile], { stdio: 'ignore' });
+  let port = '';
+  for (let i = 0; i < 200 && port === ''; i += 1) {
+    if (existsSync(portFile)) port = readFileSync(portFile, 'utf8').trim();
+    if (port === '') spawnSync('/bin/sleep', ['0.05']);
+  }
+  if (port === '') {
+    child.kill('SIGKILL');
+    throw new Error('the health server child never reported a port');
+  }
+  return { base: `http://127.0.0.1:${port}`, stop: () => { child.kill('SIGKILL'); } };
 }
 
 /** A scratch clone root with a .env (and optionally deploy/app.env) for the path/engine resolvers. */
@@ -617,4 +658,223 @@ test('web_build skips a fresh install, builds an install that already serves web
   const skipped = runLib(`web_build ${JSON.stringify(mk(true))}`, { stubs: { npm: npmStub }, env: { IRISES_SKIP_WEB_BUILD: '1' } });
   assert.deepEqual(skipped.log, []);
   assert.match(skipped.out, /IRISES_SKIP_WEB_BUILD=1/);
+});
+
+// ── section F: service, process, health, manifest, lock, summary ────────────────────────────────
+
+test('service_kind is none with no systemctl and no launchctl on PATH', () => {
+  const r = runLib('service_kind');
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.out, 'none', 'the scratch PATH has neither — the detached fallback must be chosen');
+});
+
+test('service_kind needs systemctl AND a reachable user bus', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'irises-svc-'));
+  const bus = join(dir, 'run');
+  mkdirSync(bus, { recursive: true });
+  writeFileSync(join(bus, 'bus'), '');
+  const noBus = runLib('service_kind', {
+    stubs: { systemctl: 'exit 0', uname: 'echo Linux' },
+    env: { XDG_RUNTIME_DIR: join(dir, 'absent') },
+  });
+  assert.equal(noBus.out, 'none', 'systemctl present but no user bus is the fresh-SSH case');
+  const withBus = runLib('service_kind', {
+    stubs: { systemctl: 'exit 0', uname: 'echo Linux' },
+    env: { XDG_RUNTIME_DIR: bus, DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(bus, 'bus')}` },
+  });
+  assert.equal(withBus.out, 'systemd');
+  const mac = runLib('service_kind', { stubs: { launchctl: 'exit 0', uname: 'echo Darwin' } });
+  assert.equal(mac.out, 'launchd');
+});
+
+test('service_install renders the systemd unit with an absolute node, PATH, logs and reload, and prints only its path', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'irises-svc-'));
+  const home = join(dir, 'home');
+  const root = join(dir, 'clone');
+  const state = join(dir, 'state');
+  mkdirSync(join(root, 'dist'), { recursive: true });
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(root, '.env'), 'PORT=3000\nNODE_OPTIONS=--max-old-space-size=512   # heap cap\n');
+  const r = runLib(`service_install ${JSON.stringify(root)} /usr/local/bin/node`, {
+    stubs: { systemctl: 'printf "systemctl argv:%s\\n" "$*" >> "$STUB_LOG"; exit 0', uname: 'echo Linux', loginctl: 'printf "loginctl argv:%s\\n" "$*" >> "$STUB_LOG"; exit 0' },
+    env: { HOME: home, IRISES_HOME: state, IRISES_ROOT: root, XDG_RUNTIME_DIR: dir, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/dev/null' },
+  });
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  const unitPath = join(home, '.config', 'systemd', 'user', 'irises.service');
+  assert.equal(r.out.trim(), unitPath, 'callers capture this — the "wrote" line must be on stderr');
+  const unit = readFileSync(unitPath, 'utf8');
+  assert.match(unit, /^ExecStart=\/usr\/local\/bin\/node .*\/clone\/dist\/index\.js$/m, 'a bare `node` never resolves in a unit');
+  assert.match(unit, new RegExp(`^WorkingDirectory=${root}$`, 'm'));
+  assert.match(unit, new RegExp(`^Environment="IRISES_HOME=${state}"$`, 'm'));
+  assert.match(unit, /^Environment="NODE_OPTIONS=--max-old-space-size=512"$/m, 'app.env sets it too late for V8 — the unit is the only place it works');
+  assert.match(unit, /^Environment="PATH=[^"]*\/usr\/bin[^"]*"$/m);
+  assert.match(unit, /^Restart=on-failure$/m);
+  assert.match(unit, /^RestartSec=5$/m);
+  assert.match(unit, /^KillSignal=SIGTERM$/m);
+  assert.match(unit, /^TimeoutStopSec=30$/m);
+  assert.match(unit, new RegExp(`^StandardOutput=append:${state}/logs/server\\.log$`, 'm'));
+  assert.match(unit, new RegExp(`^StandardError=append:${state}/logs/server\\.log$`, 'm'));
+  assert.match(unit, /^WantedBy=default\.target$/m);
+  assert.ok(r.log.some(l => l === 'systemctl argv:--user daemon-reload'), r.log.join('\n'));
+  assert.ok(r.log.some(l => l === 'systemctl argv:--user enable irises'), r.log.join('\n'));
+  assert.ok(r.log.some(l => l.startsWith('loginctl argv:enable-linger')), 'without linger the unit dies at logout');
+});
+
+test('service_install renders the LaunchAgent plist that stays stopped after a clean stop', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'irises-svc-'));
+  const home = join(dir, 'home');
+  const root = join(dir, 'clone');
+  const state = join(dir, 'state');
+  mkdirSync(join(root, 'dist'), { recursive: true });
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(root, '.env'), 'PORT=3000\n');
+  const r = runLib(`service_install ${JSON.stringify(root)} /opt/homebrew/bin/node`, {
+    stubs: { launchctl: 'printf "launchctl argv:%s\\n" "$*" >> "$STUB_LOG"; exit 0', uname: 'echo Darwin' },
+    env: { HOME: home, IRISES_HOME: state, IRISES_ROOT: root },
+  });
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  const plistPath = join(home, 'Library', 'LaunchAgents', 'ai.irises.server.plist');
+  assert.equal(r.out.trim(), plistPath);
+  const plist = readFileSync(plistPath, 'utf8');
+  assert.match(plist, /<key>Label<\/key>\s*<string>ai\.irises\.server<\/string>/);
+  assert.match(plist, /<string>\/opt\/homebrew\/bin\/node<\/string>/);
+  assert.match(plist, new RegExp(`<string>${root}/dist/index.js</string>`));
+  assert.match(plist, /<key>KeepAlive<\/key>\s*<dict>\s*<key>SuccessfulExit<\/key>\s*<false\/>\s*<\/dict>/,
+    'a plain KeepAlive=true would relaunch the server we just asked to stop');
+  assert.match(plist, /<key>RunAtLoad<\/key>\s*<true\/>/);
+  assert.match(plist, /<key>ThrottleInterval<\/key>\s*<integer>10<\/integer>/);
+  assert.match(plist, new RegExp(`<key>StandardOutPath</key>\\s*<string>${state}/logs/server.log</string>`));
+  assert.ok(r.log.some(l => /^launchctl argv:bootstrap gui\/\d+ .*ai\.irises\.server\.plist$/.test(l)), r.log.join('\n'));
+});
+
+test('service_restart and service_uninstall use the right verbs per platform', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'irises-svc-'));
+  const home = join(dir, 'home');
+  mkdirSync(join(home, '.config', 'systemd', 'user'), { recursive: true });
+  writeFileSync(join(home, '.config', 'systemd', 'user', 'irises.service'), '[Service]\n');
+  const linux = runLib('service_restart; service_uninstall', {
+    stubs: { systemctl: 'printf "systemctl argv:%s\\n" "$*" >> "$STUB_LOG"; exit 0', uname: 'echo Linux' },
+    env: { HOME: home, XDG_RUNTIME_DIR: dir, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/dev/null' },
+  });
+  assert.equal(linux.code, 0, linux.err);
+  assert.ok(linux.log.includes('systemctl argv:--user restart irises'), linux.log.join('\n'));
+  assert.ok(linux.log.includes('systemctl argv:--user disable irises'), linux.log.join('\n'));
+  assert.ok(!existsSync(join(home, '.config', 'systemd', 'user', 'irises.service')), 'the unit file goes with it');
+
+  const home2 = join(dir, 'home2');
+  mkdirSync(join(home2, 'Library', 'LaunchAgents'), { recursive: true });
+  writeFileSync(join(home2, 'Library', 'LaunchAgents', 'ai.irises.server.plist'), '<plist/>\n');
+  const mac = runLib('service_restart; service_uninstall', {
+    stubs: { launchctl: 'printf "launchctl argv:%s\\n" "$*" >> "$STUB_LOG"; exit 0', uname: 'echo Darwin' },
+    env: { HOME: home2 },
+  });
+  assert.equal(mac.code, 0, mac.err);
+  assert.ok(mac.log.some(l => /^launchctl argv:kickstart -k gui\/\d+\/ai\.irises\.server$/.test(l)), mac.log.join('\n'));
+  assert.ok(mac.log.some(l => /^launchctl argv:bootout gui\/\d+\/ai\.irises\.server$/.test(l)), mac.log.join('\n'));
+  assert.ok(!existsSync(join(home2, 'Library', 'LaunchAgents', 'ai.irises.server.plist')));
+});
+
+test('is_our_server and server_pid only ever claim a live Irises process', () => {
+  const state = mkdtempSync(join(tmpdir(), 'irises-pid-'));
+  const stale = runLib([
+    `printf '999999\\n' > "$(irises_home)/irises.pid"`,
+    'printf "PID=[%s]\\n" "$(server_pid)"',
+  ].join('\n'), { env: { IRISES_HOME: state } });
+  assert.equal(stale.code, 0, stale.err);
+  assert.match(stale.out, /PID=\[\]/, 'a dead pid is not a server');
+
+  const mine = runLib([
+    'printf "SELF=%s\\n" "$(is_our_server $$ && echo yes || echo no)"',
+  ].join('\n'), { env: { IRISES_HOME: state } });
+  assert.match(mine.out, /SELF=no/, 'this bash is not dist/index.js');
+  const junk = runLib('printf "JUNK=%s\\n" "$(is_our_server not-a-pid && echo yes || echo no)"', { env: { IRISES_HOME: state } });
+  assert.match(junk.out, /JUNK=no/);
+});
+
+test('wait_health_sha waits for the sha the new build stamped, ignoring update.remoteSha', () => {
+  const oldSha = 'a'.repeat(40);
+  const newSha = 'b'.repeat(40);
+  const shaFile = join(mkdtempSync(join(tmpdir(), 'irises-sha-')), 'live-sha');
+  writeFileSync(shaFile, oldSha);
+  const { base, stop } = startHealthServer(shaFile);
+  try {
+    const ok = runLib(`wait_health ${base} 5 && printf "\\nHEALTH=ok\\n"`);
+    assert.equal(ok.code, 0, ok.err);
+    assert.match(ok.out, /HEALTH=ok/);
+
+    const wrong = runLib(`rc=0; wait_health_sha ${base} ${newSha} 3 || rc=$?; printf "\\nRC=%s\\n" "$rc"`);
+    assert.match(wrong.out, /RC=1/, 'the old build answering must NOT be read as the new build');
+
+    writeFileSync(shaFile, newSha);
+    const right = runLib(`wait_health_sha ${base} ${newSha} 5; printf "\\nRC=0\\n"`);
+    assert.equal(right.code, 0, right.err);
+    assert.match(right.out, new RegExp(newSha));
+    const short = runLib(`wait_health_sha ${base} ${newSha.slice(0, 7)} 5; printf "\\nRC=0\\n"`);
+    assert.equal(short.code, 0, 'a short sha from dist/version.json must match the full one');
+  } finally {
+    stop();
+  }
+});
+
+test('wait_health fails within its budget when nothing is listening', () => {
+  const started = Date.now();
+  const r = runLib('rc=0; wait_health http://127.0.0.1:1 3 || rc=$?; printf "RC=%s\\n" "$rc"');
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /RC=1/);
+  assert.ok(Date.now() - started < 20000);
+});
+
+test('manifest_write and manifest_read round-trip without node, and survive a reformat', () => {
+  const state = mkdtempSync(join(tmpdir(), 'irises-man-'));
+  const p = join(state, 'install-manifest.json');
+  const r = runLib([
+    `manifest_write ${JSON.stringify(p)} engine=hermes root=/home/ubuntu/irises port=3000 serviceKind=systemd 'keysAdded=API_SERVER_ENABLED IRISES_PUSH_TOKEN' keysPreExisting=API_SERVER_KEY`,
+    `printf 'ENGINE=%s\\n' "$(manifest_read ${JSON.stringify(p)} engine)"`,
+    `printf 'ADDED=[%s]\\n' "$(manifest_read ${JSON.stringify(p)} keysAdded)"`,
+    `printf 'PRE=%s\\n' "$(manifest_read ${JSON.stringify(p)} keysPreExisting)"`,
+    `printf 'MISSING=[%s]\\n' "$(manifest_read ${JSON.stringify(p)} nope)"`,
+  ].join('\n'), { env: { IRISES_HOME: state } });
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /ENGINE=hermes/);
+  assert.match(r.out, /ADDED=\[API_SERVER_ENABLED IRISES_PUSH_TOKEN\]/);
+  assert.match(r.out, /PRE=API_SERVER_KEY/);
+  assert.match(r.out, /MISSING=\[\]/);
+  const parsed = JSON.parse(readFileSync(p, 'utf8')) as Record<string, string>;
+  assert.equal(parsed.engine, 'hermes', 'it must be valid JSON for anyone who looks at it');
+  assert.equal(parsed.serviceKind, 'systemd');
+  writeFileSync(p, JSON.stringify(parsed));    // one line: the grep reader misses, node must catch it
+  const reformatted = runLib(`printf 'ENGINE=%s\\n' "$(manifest_read ${JSON.stringify(p)} engine)"`, { env: { IRISES_HOME: state } });
+  assert.match(reformatted.out, /ENGINE=hermes/);
+});
+
+test('lock_acquire keeps a second run out and reclaims a lock whose holder is gone', () => {
+  const state = mkdtempSync(join(tmpdir(), 'irises-lock-'));
+  const held = runLib([
+    'lock_acquire',
+    'rc=0; ( lock_acquire ) || rc=$?; printf "SECOND=%s\\n" "$rc"',
+    'lock_release',
+    'lock_acquire && printf "AFTER_RELEASE=ok\\n"',
+    'lock_release',
+  ].join('\n'), { env: { IRISES_HOME: state } });
+  assert.equal(held.code, 0, held.err);
+  assert.match(held.out, /SECOND=1/);
+  assert.match(held.out, /AFTER_RELEASE=ok/);
+  const stale = runLib([
+    'mkdir -p "$(irises_home)/lifecycle.lock"',
+    'printf "999999\\n" > "$(irises_home)/lifecycle.lock/pid"',
+    'lock_acquire && printf "RECLAIMED=ok\\n"',
+    'lock_release',
+  ].join('\n'), { env: { IRISES_HOME: state } });
+  assert.equal(stale.code, 0, stale.err);
+  assert.match(stale.out, /RECLAIMED=ok/);
+});
+
+test('summary prints its lines and ends with exactly one RESULT line on stdout', () => {
+  const r = runLib('summary rolled-back "old -> new reverted" "server untouched"');
+  assert.equal(r.code, 0, r.err);
+  const lines = r.out.split('\n').filter(Boolean);
+  assert.equal(lines[lines.length - 1], 'RESULT: rolled-back');
+  assert.equal(lines.filter(l => l.startsWith('RESULT:')).length, 1);
+  assert.match(r.out, /old -> new reverted/);
+  assert.match(r.out, /server untouched/);
 });
