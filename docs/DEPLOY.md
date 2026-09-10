@@ -168,15 +168,18 @@ tree, `node_modules` and `dist` may be inconsistent — read the messages above 
 | Code | Meaning |
 |---|---|
 | `0` | already up to date, or updated and healthy |
-| `1` | preflight refused: dirty tree, detached HEAD, missing tool, Node below 22.13, no `.git`, another run holds the lock, or the pull could not fast-forward |
+| `1` | preflight refused: dirty tree, detached HEAD, missing tool, Node below 22.13, no `.git`, another run holds the lock, another process (not the managed Irises) holds the port, or the pull could not fast-forward |
 | `2` | bad arguments |
 | `3` | the new build failed to compile — **rolled back**, the old build is running |
 | `4` | the new build compiled but failed to boot — **rolled back**, the old build is running |
 | `5` | Irises is on the new build, but the engine gateway would not restart — fix the gateway by hand |
 | `10` | `--check` only: an update is available |
 
-Flags: `--check`, `--yes`, `--no-restart` (pull and build only), `--no-gateway-restart` (leave the
-gateway alone; the refreshed plugin loads on its next restart).
+Flags: `--check`, `--yes`, `--no-restart` (pull and build only — the bridge plugin is still refreshed
+and the engine gateway still bounced, ~12s, and Irises keeps serving the old build against the new
+plugin until you restart it yourself, so pass `--no-gateway-restart` too if you want nothing but this
+clone's disk touched), `--no-gateway-restart` (leave the gateway alone; the refreshed plugin loads on
+its next restart).
 
 `scripts/engine-setup.sh` uses the same contract on its own side: `0` ok, `1` a step failed, `2` bad
 arguments, `4` Irises never reported the expected build on `/health`, `5` the gateway could not be

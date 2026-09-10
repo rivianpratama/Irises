@@ -137,6 +137,15 @@ short_sha() { # [SHA]
   printf '%s' "${s:0:7}"
 }
 
+# Is KEY one of the names a previous install recorded as ours? Whole-word match against the space
+# separated keysAdded list, so IRISES_URL never matches IRISES_URL_EXTRA.
+key_was_ours() { # KEY LIST
+  local k="${1:-}" list=" ${2:-} "
+  if [ -z "$k" ]; then return 1; fi
+  case "$list" in *" $k "*) return 0 ;; esac
+  return 1
+}
+
 # Three keys in THIS clone's .env are deliberately clobbered on every install — OPS_BACKEND, and the
 # engine credentials (HERMES_API_KEY / OPENCLAW_TOKEN), because a credential the engine has since
 # rotated is worse than useless: Irises 401s on every deep-work call and blames the engine, and
@@ -160,7 +169,7 @@ announce_overwrite() { # KEY NEWVALUE [show]
 # ══ install ══════════════════════════════════════════════════════════════════
 do_install() {
   local engine port kind node_bin unit="" plugin_dir="" adopted=0
-  local keys_added="" keys_pre="" backup="" token engine_env=""
+  local keys_added="" keys_pre="" prev_added="" backup="" token engine_env=""
   local sha="" live_sha="" gateway_ok=1 result="ok" rc=0
 
   # ── 1. prerequisites. PATH first: a non-login shell (and every agent-spawned run) can be missing
@@ -369,6 +378,15 @@ do_install() {
     fi
     backup="$(env_backup "$engine_env" pre-install)"
     token="$(env_get "$ENV_FILE" ENGINE_PUSH_TOKEN)"
+    # What the LAST install recorded as ours. "Already in the file" is not the same question as "not
+    # ours": on every re-run every key we added the first time is already there, and classifying by
+    # presence alone made the second install record the whole set as pre-existing — so the manifest
+    # forgot them, and a later --uninstall left API_SERVER_*, IRISES_PUSH_TOKEN, IRISES_URL,
+    # IRISES_BRIDGE_TOKEN and IRISES_FRONT behind in the engine's .env while claiming a clean removal.
+    prev_added="$(manifest_read "$(manifest_path)" keysAdded 2>/dev/null || true)"
+    if [ -n "$prev_added" ]; then
+      say "a previous install recorded these engine keys as ours: $prev_added"
+    fi
     # One positional argument per pair, accumulated in an array. The old form built a
     # newline-separated string and word-split it at the call — which meant a value containing
     # whitespace (an IRISES_URL behind a proxy path, a key someone pasted with a trailing space)
@@ -383,7 +401,11 @@ do_install() {
     do
       key="${kv%%=*}"; val="${kv#*=}"
       if [ "$(env_count "$engine_env" "$key")" != "0" ]; then
-        keys_pre="$keys_pre $key"
+        if key_was_ours "$key" "$prev_added"; then
+          keys_added="$keys_added $key"
+        else
+          keys_pre="$keys_pre $key"
+        fi
         # A duplicated key is collapsed onto its live value here — production carried two
         # API_SERVER_KEY blocks with different values, and only the last one was in effect.
         if [ "$key" = "API_SERVER_KEY" ]; then
@@ -409,7 +431,11 @@ do_install() {
         keys_added="$keys_added IRISES_BRIDGE_TOKEN"
         env_append_block "$engine_env" "bridge mode" "IRISES_BRIDGE_TOKEN=$token"
       else
-        keys_pre="$keys_pre IRISES_BRIDGE_TOKEN"
+        if key_was_ours IRISES_BRIDGE_TOKEN "$prev_added"; then
+          keys_added="$keys_added IRISES_BRIDGE_TOKEN"
+        else
+          keys_pre="$keys_pre IRISES_BRIDGE_TOKEN"
+        fi
         # A drifted bridge token 403s every fronted message while the engine stays silent about it.
         env_set "$engine_env" IRISES_BRIDGE_TOKEN "$token"
       fi
@@ -418,6 +444,11 @@ do_install() {
         env_append_block "$engine_env" "front scope (edit to narrow, e.g. telegram:*)" "IRISES_FRONT=*:*"
         warn "IRISES_FRONT=*:*  — Irises now answers EVERY chat on EVERY platform this engine fronts."
         warn "Narrow it in $engine_env (patterns are fnmatch globs over <platform>:<chat_id>)."
+      elif key_was_ours IRISES_FRONT "$prev_added"; then
+        # Ours from the last install, and left exactly as it stands — a scope narrowed by hand after
+        # that install is the operator's, even though the line itself came from us.
+        keys_added="$keys_added IRISES_FRONT"
+        say "keeping the IRISES_FRONT this install already set ($(env_get "$engine_env" IRISES_FRONT))"
       else
         keys_pre="$keys_pre IRISES_FRONT"
         say "keeping your IRISES_FRONT ($(env_get "$engine_env" IRISES_FRONT))"
@@ -450,9 +481,11 @@ do_install() {
     warn "  IRISES_FRONT=whatsapp:*,telegram:123    # empty = front NOTHING"
   fi
 
-  # ── 9. the manifest: what to undo, and what was never ours. A warn, not a die: the engine is
-  #      already wired and Irises is already answering, so aborting here would leave a working
-  #      install reported as a failure. --uninstall has a fallback for a missing manifest.
+  # ── 9. the manifest: what to undo, and what was never ours. It OVERWRITES the previous one, which
+  #      is why keysAdded is carried forward above rather than recomputed from the engine .env alone.
+  #      A warn, not a die: the engine is already wired and Irises is already answering, so aborting
+  #      here would leave a working install reported as a failure. --uninstall has a fallback for a
+  #      missing manifest.
   manifest_write "$(manifest_path)" \
     "root=$ROOT" \
     "irisesHome=$(irises_home)" \

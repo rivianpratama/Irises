@@ -9,6 +9,11 @@
 #   bash scripts/update.sh --no-restart         # apply to disk, leave the running server alone
 #   bash scripts/update.sh --no-gateway-restart # skip the engine gateway bounce
 #
+# --no-restart skips the IRISES restart and nothing else: the bridge plugin is still refreshed and
+# the engine's gateway is still bounced (~12s of engine downtime), and Irises goes on serving the
+# OLD build — against the NEW plugin — until you restart it yourself. Pass --no-gateway-restart as
+# well if you want nothing but this clone's disk touched.
+#
 # IRISES_SKIP_WEB_BUILD=1 skips the web client rebuild outright (a small box, or no web UI in use).
 # The web build is optional and never blocks an update either way — see web_build() in the library.
 #
@@ -54,7 +59,7 @@ while [ $# -gt 0 ]; do
     --yes|-y)              ASSUME_YES=1; shift ;;
     --no-restart)          DO_RESTART=0; shift ;;
     --no-gateway-restart)  DO_GATEWAY=0; shift ;;
-    -h|--help)             sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)             sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --restart)
       err "--restart is gone: an update restarts Irises and verifies the new build every time."
       err "If you want the old behaviour — apply to disk and leave the process alone — use --no-restart."
