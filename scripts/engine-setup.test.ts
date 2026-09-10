@@ -55,3 +55,41 @@ test('the exit-code table is documented in the header', () => {
   assert.match(r.out, /4[^\n]*health/i);
   assert.match(r.out, /5[^\n]*gateway/i);
 });
+
+test('--uninstall on a box with nothing installed says so and still exits 0', () => {
+  // No manifest, no service, no plugin: an uninstall that finds nothing to do is a SUCCESS. The
+  // opposite (exit 1) would make the documented "run it again if unsure" advice a lie.
+  const r = spawnSync('/bin/bash', [SCRIPT, '--uninstall', '--yes'], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      NO_COLOR: '1',
+      IRISES_HOME: join(process.cwd(), 'node_modules', '.cache', 'irises-uninstall-probe'),
+      HERMES_HOME: '/nonexistent-hermes',
+      OPS_BACKEND: 'off',
+    },
+  });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stdout ?? '', /RESULT: ok/);
+  assert.match(r.stdout ?? '', /nothing/i);
+});
+
+test('--uninstall never deletes data without --purge-data, and prints the exact rm', () => {
+  const r = spawnSync('/bin/bash', [SCRIPT, '--uninstall', '--yes'], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      NO_COLOR: '1',
+      IRISES_HOME: join(process.cwd(), 'node_modules', '.cache', 'irises-uninstall-probe'),
+      HERMES_HOME: '/nonexistent-hermes',
+      OPS_BACKEND: 'off',
+    },
+  });
+  assert.match(r.stdout ?? '', /rm -rf/, 'the command to remove the data is printed, never run');
+  assert.match(r.stdout ?? '', /--purge-data/);
+});
+
+test('--uninstall documents that the clone is never deleted', () => {
+  const r = run(['--help']);
+  assert.match(r.out, /clone/i);
+});

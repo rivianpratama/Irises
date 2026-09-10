@@ -441,7 +441,190 @@ $key=$val"
   exit "$rc"
 }
 
+# ══ uninstall ════════════════════════════════════════════════════════════════
+# No node gate here on purpose: this path needs bash, git and curl only, so it still works on a box
+# whose node has since been upgraded away or removed.
+do_uninstall() {
+  local man engine engine_env plugin_dir kind home port f
+  local failed=0 gateway_ok=1 result="ok" rc=0 did_something=0
+  local keys_added keys_pre backup removed=0 svc_found=0 plugin_found=0
+
+  augment_path
+  require_tools curl || failed=1
+
+  man="$(manifest_path)"
+  home="$(irises_home)"
+  if [ -f "$man" ]; then
+    say "reading the install manifest: $man"
+    engine="$(manifest_read "$man" engine)"
+    engine_env="$(manifest_read "$man" engineEnvFile)"
+    plugin_dir="$(manifest_read "$man" pluginDir)"
+    keys_added="$(manifest_read "$man" keysAdded)"
+    keys_pre="$(manifest_read "$man" keysPreExisting)"
+    port="$(manifest_read "$man" port)"
+  else
+    warn "no install manifest at $man — falling back to detection"
+    warn "(a pre-rewrite install left no manifest; keys are then matched by their Irises marker)"
+    engine="$(engine_kind "$ENGINE_FLAG")"
+    keys_added=""
+    keys_pre=""
+    port="$(irises_port)"
+    case "$engine" in
+      hermes)   engine_env="$(hermes_home)/.env";   plugin_dir="$(hermes_home)/plugins/irises-bridge" ;;
+      openclaw) engine_env="";                      plugin_dir="$(openclaw_home)/extensions/irises-bridge" ;;
+      *)        engine_env="";                      plugin_dir="" ;;
+    esac
+    # Without a manifest we only ever remove the keys that are unambiguously ours. API_SERVER_* is
+    # deliberately NOT in this list: the engine may well have had its API server on before Irises
+    # existed, and turning it off would break everything else that talks to it.
+    keys_added="IRISES_PUSH_TOKEN IRISES_BRIDGE_TOKEN IRISES_URL IRISES_FRONT"
+    warn "API_SERVER_ENABLED / API_SERVER_KEY will be LEFT ALONE (no manifest = no proof they were ours)"
+  fi
+  if [ -z "$engine" ]; then engine="off"; fi
+  if [ -z "$port" ]; then port="$(irises_port)"; fi
+
+  if [ "$ASSUME_YES" != "1" ]; then
+    say "about to remove: the Irises service, the bridge plugin, and the keys Irises added to the engine"
+    say "your data ($home) is KEPT unless --purge-data is passed"
+    if ! ask_yn "go ahead?" n; then
+      say "aborted — nothing changed"
+      summary noop "nothing was removed"
+      exit 0
+    fi
+  fi
+
+  lock_acquire || exit 1
+
+  # ── 1. stop and remove the service (or the detached server). service_installed knows all three
+  #      backends — a bare unit/plist check reports "not installed" on Windows, where the install is
+  #      a Task Scheduler entry and no file of ours at all.
+  kind="$(service_kind)"
+  if service_installed; then
+    did_something=1
+    svc_found=1
+    say "stopping and removing the $kind service"
+    service_stop || true
+    service_uninstall || { err "could not fully remove the service"; failed=1; }
+  else
+    say "no service installed (no unit, no plist, no scheduled task)"
+  fi
+  local pid
+  pid="$(server_pid)"
+  if [ -n "$pid" ]; then
+    did_something=1
+    server_stop 20
+  fi
+  # The old setup script left a second pidfile in the clone root; clear both so nothing later
+  # mistakes a dead pid for a live server.
+  for f in "$home/irises.pid" "$ROOT/irises.pid"; do
+    if [ -f "$f" ]; then rm -f "$f"; say "removed $f"; fi
+  done
+
+  # ── 2. the bridge plugin.
+  if [ -n "$plugin_dir" ] && [ -d "$plugin_dir" ]; then
+    did_something=1
+    plugin_found=1
+    plugin_remove "$engine" || failed=1
+  else
+    if [ "$engine" != "off" ]; then say "no bridge plugin installed at ${plugin_dir:-<unknown>}"; fi
+  fi
+
+  # ── 3. the engine's keys. Back the file up first, respect the manifest's pre_existing list, and
+  #      collapse any duplicate we leave behind onto its live value.
+  if [ -n "${engine_env:-}" ] && [ -f "$engine_env" ] && [ -n "$keys_added" ]; then
+    did_something=1
+    backup="$(env_backup "$engine_env" pre-uninstall)"
+    # shellcheck disable=SC2086  # keys_added is a space-separated key list by construction
+    removed="$(env_remove_irises_block "$engine_env" $keys_added)"
+    say "removed $removed Irises key(s) from $engine_env (backup: ${backup:-none})"
+    local k n
+    for k in $keys_pre; do
+      n="$(env_count "$engine_env" "$k")"
+      if [ "$n" -gt 1 ]; then
+        say "collapsing $n copies of $k onto its live value (dotenv reads the last one)"
+        env_set "$engine_env" "$k" "$(env_get "$engine_env" "$k")"
+      fi
+    done
+    if [ -n "$keys_pre" ]; then
+      say "left alone (they were there before Irises): $keys_pre"
+    fi
+  elif [ -n "${engine_env:-}" ]; then
+    say "nothing of ours to remove from ${engine_env}"
+  fi
+
+  # ── 4. the gateway, so the engine actually forgets the plugin (it loads plugins only at start).
+  if [ "$engine" != "off" ] && [ "$did_something" = "1" ]; then
+    if ! gateway_restart "$engine" 90; then
+      gateway_ok=0
+      result="gateway-failed"
+      rc=5
+    fi
+  fi
+
+  # ── 5. the data. KEPT by default: irises.db and memories/ are the only irreplaceable things here.
+  local size="unknown"
+  if [ -d "$home" ]; then size="$(du -sh "$home" 2>/dev/null | cut -f1 || printf unknown)"; fi
+  if [ "$PURGE_DATA" = "1" ]; then
+    local answer=""
+    if [ "$ASSUME_YES" = "1" ]; then
+      warn "--purge-data with --yes: deleting $home ($size) without asking"
+      answer="delete"
+    else
+      warn "this deletes $home ($size) — irises.db and every memory file, with no backup."
+      printf '\033[31m[%s]\033[0m type the word delete to confirm: ' "$IRISES_LOG_TAG"
+      read -r answer || answer=""
+    fi
+    if [ "$answer" = "delete" ]; then
+      rm -rf "$home"
+      say "removed $home"
+    else
+      warn "not deleted (you did not type 'delete') — $home is still there"
+      failed=1
+    fi
+  else
+    if [ -d "$home" ]; then
+      say "your data is KEPT: $home ($size)"
+      say "remove it yourself when you are sure:  rm -rf $home"
+      say "(or re-run with --purge-data)"
+    fi
+  fi
+
+  # ── 6. the clone, and the engine patch series. Neither is ours to delete.
+  say "this clone is NOT deleted. When you are done with it:  rm -rf $ROOT"
+  if [ "$engine" = "hermes" ]; then
+    local checkout patch
+    checkout="$(hermes_home)/hermes-agent"
+    patch="$ROOT/bridge/hermes/photon-reply-context/0001-photon-inbound-reply-context.patch"
+    if [ -d "$checkout/.git" ] && [ -f "$patch" ]; then
+      # Two honest signals: the branch the bundle's apply.sh leaves behind, or the patch applying
+      # cleanly IN REVERSE (which is only possible when it is currently applied).
+      if git -C "$checkout" rev-parse --verify --quiet irises/photon-reply-context >/dev/null 2>&1 \
+         || git -C "$checkout" apply --reverse --check "$patch" >/dev/null 2>&1; then
+        warn "the Photon reply-context patch series is applied to $checkout."
+        warn "It is an engine-side change Irises asked for, and this uninstall does NOT revert it."
+        warn "To revert it yourself:"
+        warn "  git -C $checkout apply --reverse $patch"
+        warn "  (then bounce the gateway; see bridge/hermes/photon-reply-context/README.md)"
+      fi
+    fi
+  fi
+
+  if [ "$failed" = "1" ] && [ "$result" = "ok" ]; then result="partial"; rc=1; fi
+  if [ "$did_something" = "0" ] && [ "$failed" = "0" ]; then
+    say "nothing to uninstall — no service, no plugin, no engine keys of ours"
+  fi
+
+  summary "$result" \
+    "service:  $(if service_installed; then printf 'STILL INSTALLED — remove it by hand'; elif [ "$svc_found" = "1" ]; then printf 'removed'; else printf 'none was installed'; fi)" \
+    "plugin:   $(if [ -n "$plugin_dir" ] && [ -d "$plugin_dir" ]; then printf 'STILL PRESENT at %s' "$plugin_dir"; elif [ "$plugin_found" = "1" ]; then printf 'removed'; else printf 'none was installed'; fi)" \
+    "engine:   $engine — $removed key(s) removed${backup:+, backup at $backup}" \
+    "gateway:  $(if [ "$engine" = "off" ]; then printf 'n/a'; elif [ "$did_something" = "0" ]; then printf 'not bounced (nothing changed)'; elif [ "$gateway_ok" = "1" ]; then printf 'bounced and verified'; else printf 'NOT verified — bounce it yourself'; fi)" \
+    "data:     $(if [ -d "$home" ]; then printf '%s KEPT (%s)' "$home" "$size"; else printf 'deleted'; fi)" \
+    "clone:    $ROOT kept — rm -rf it yourself"
+  exit "$rc"
+}
+
 case "$MODE" in
   install)   do_install ;;
-  uninstall) die 1 "--uninstall lands in the next commit" ;;
+  uninstall) do_uninstall ;;
 esac
