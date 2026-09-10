@@ -1,281 +1,299 @@
 #!/usr/bin/env bash
-# Irises updater — pull the latest code onto a git-clone install, rebuild, and (optionally) restart.
+# Irises updater — pull the latest code onto a git-clone install, rebuild, restart, and prove the
+# new build is the one answering.
 #
-#   bash scripts/update.sh                 # pull + rebuild, then tell you to restart
-#   bash scripts/update.sh --check         # report only (exit 0 up to date, 10 update available)
-#   bash scripts/update.sh --yes           # skip the confirmation prompt
-#   bash scripts/update.sh --restart       # also stop + relaunch the running server (uses the pidfile)
-#   bash scripts/update.sh --no-restart    # never touch the running server (default is: instruct)
+#   bash scripts/update.sh                      # apply (asks first), restart, verify
+#   bash scripts/update.sh --yes                # no questions
+#   bash scripts/update.sh --check              # report only (0 up to date, 10 update available)
+#   bash scripts/update.sh --no-restart         # apply to disk, leave the running server alone
+#   bash scripts/update.sh --no-gateway-restart # skip the engine gateway bounce
 #
-# IRISES_SKIP_WEB_BUILD=1 skips the optional web-client rebuild (a small box, or no web UI in use).
-# That step never blocks an update either way: if it fails, you get a warning and the server half
-# still lands — receipt written, restart offered.
+# IRISES_SKIP_WEB_BUILD=1 skips the web client rebuild outright (a small box, or no web UI in use).
+# The web build is optional and never blocks an update either way — see web_build() in the library.
 #
 # Docker installs update by rebuilding the image, not with this script — see docs/DEPLOY.md § 5.
 #
-# Safe by design: fast-forward only (never auto-merges divergent local commits), refuses a dirty
-# tree, leaves $IRISES_HOME (your data) untouched, takes a single-updater lock (so two runs can't race
-# on git/build), and by default only PRINTS how to restart rather than killing a process it doesn't
-# own. After the restart, Irises mentions the upgrade in chat itself.
+# SAFE BY DESIGN
+#   • fast-forward only — a diverged local branch is never force-merged
+#   • refuses to APPLY onto a tree with uncommitted changes to tracked files (--check still reports)
+#   • takes the single lifecycle lock, so an update and an install cannot race on git/npm/dist
+#   • ROLLS BACK: if the build fails, or the restarted server does not report the new build, the
+#     tree, node_modules and dist all go back to where they were, and the old build is put back up
+#   • leaves $IRISES_HOME (your data) untouched, always
+# After the restart, Irises mentions the upgrade in chat itself — from the receipt this writes.
+#
+# EXIT CODES
+#   0   applied and verified, already up to date, or nothing upstream to apply
+#   1   preflight refused (not a git clone, dirty tree, detached HEAD, another run holds the lock,
+#       origin unreachable, or the pull could not fast-forward)
+#   2   wrong usage (unknown flag)
+#   3   the build failed — the clone is back where it was; the running server was never touched
+#   4   the built code did not answer /health — rolled back to the old build and restarted
+#   5   Irises IS updated and live, but its engine's gateway could not be verified back up
+#   10  --check only: an update is available
+# Every run that gets past the flags ends with `RESULT: <token>` as its last line of stdout:
+#   ok | noop | up-to-date | update-available | rolled-back | gateway-failed — or `partial` for a
+#   run that could not finish and had nothing to undo; the lines above it say what state you are in.
 set -euo pipefail
 
-CHECK=0; ASSUME_YES=0; DO_RESTART=-1   # -1 = ask/instruct, 0 = never, 1 = yes
+source "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/lib/irises-lib.sh"
+IRISES_LOG_TAG="irises-update"
+
+CHECK=0
+ASSUME_YES=0
+DO_RESTART=1
+DO_GATEWAY=1
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --check)      CHECK=1; shift ;;
-    --yes|-y)     ASSUME_YES=1; shift ;;
-    --restart)    DO_RESTART=1; shift ;;
-    --no-restart) DO_RESTART=0; shift ;;
-    -h|--help)    sed -n '2,19p' "$0"; exit 0 ;;
-    *) echo "unknown arg: $1 (try --help)"; exit 2 ;;
+    --check)               CHECK=1; shift ;;
+    --yes|-y)              ASSUME_YES=1; shift ;;
+    --no-restart)          DO_RESTART=0; shift ;;
+    --no-gateway-restart)  DO_GATEWAY=0; shift ;;
+    -h|--help)             sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --restart)
+      err "--restart is gone: an update restarts Irises and verifies the new build every time."
+      err "If you want the old behaviour — apply to disk and leave the process alone — use --no-restart."
+      exit 2 ;;
+    *) err "unknown arg: $1 (try --help)"; exit 2 ;;
   esac
 done
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Armed HERE, past every usage exit and before the first byte of real work: the guard releases the
+# lock and leaves ONE machine-readable line on stdout (`RESULT: partial`) for the paths that never
+# reach `summary` — a `set -e` abort on some statement nobody guarded, and a Ctrl+C. It never
+# changes the exit code, and it is harmless on a `--check` run, which takes no lock.
+trap 'lifecycle_exit_guard $?' EXIT
+
+ROOT="$(irises_root)"
 ENV_FILE="$ROOT/.env"
 cd "$ROOT"
-say()  { printf '\033[36m[irises-update]\033[0m %s\n' "$*"; }
-warn() { printf '\033[33m[irises-update]\033[0m %s\n' "$*"; }
-err()  { printf '\033[31m[irises-update]\033[0m %s\n' "$*" >&2; }
-
-# Read KEY= from an env file. Matches dotenv: trims surrounding whitespace and strips one layer of
-# matching quotes, so IRISES_HOME="~/foo" resolves the same here as it does in the server.
-get_env() {
-  local v; v="$(grep -E "^[[:space:]]*${1}=" "${2}" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-  v="${v#"${v%%[![:space:]]*}"}"   # ltrim
-  v="${v%"${v##*[![:space:]]}"}"   # rtrim
-  case "$v" in
-    '"'*'"') v="${v#\"}"; v="${v%\"}" ;;
-    "'"*"'") v="${v#\'}"; v="${v%\'}" ;;
-  esac
-  printf '%s' "$v"
-}
-
-# $IRISES_HOME as the server resolves it (loadEnv.ts + stateDir.ts): .env > shell env > deploy/app.env
-# > ~/.irises, with a leading ~ expanded. The app.env tier matters — it's the committed config file, so
-# an operator can legitimately set IRISES_HOME there; miss it and we'd write the receipt/pidfile to a
-# directory the server never reads.
-irises_home() {
-  local h; h="$(get_env IRISES_HOME "$ENV_FILE")"
-  [ -z "$h" ] && h="${IRISES_HOME:-}"
-  [ -z "$h" ] && h="$(get_env IRISES_HOME "$ROOT/deploy/app.env")"
-  [ -z "$h" ] && h="$HOME/.irises"
-  case "$h" in
-    "~")   h="$HOME" ;;
-    "~/"*) h="$HOME/${h#\~/}" ;;
-  esac
-  printf '%s' "$h"
-}
-
-# Server port: .env > deploy/app.env > 3000.
-server_port() {
-  local p; p="$(get_env PORT "$ENV_FILE")"
-  [ -z "$p" ] && p="$(get_env PORT "$ROOT/deploy/app.env")"
-  [ -z "$p" ] && p="3000"
-  printf '%s' "$p"
-}
-
-# The git sha the current dist/ build was stamped from (empty if this clone was never built).
-built_sha() { node -e "try{process.stdout.write(String(require('$ROOT/dist/version.json').sha||''))}catch(e){}" 2>/dev/null || true; }
-
-# ── state signal + single-updater lock ────────────────────────────────────────
-# update-status.json is watched by a chat-triggered self-update (src/update/selfUpdate.ts) so it can
-# voice the outcome back into chat: `true noop` = already current, `true restart` = applied but needs a
-# restart, `false <phase>` = a genuine failure. The apply-and-restart SUCCESS path writes nothing here —
-# the boot-time receipt voices it once the new build is up.
+PORT="$(irises_port)"
+BASE="http://127.0.0.1:$PORT"
 STATE_DIR="$(irises_home)"
-LOCK_DIR="$STATE_DIR/update.lock"
-PHASE="preflight"; IS_CHECK=0; USER_ABORTED=0; WROTE_STATUS=0; LOCKED_OUT=0
-write_status() { # $1=ok(true|false) $2=phase
-  local now; now="$(node -p 'Date.now()' 2>/dev/null || echo 0)"
-  mkdir -p "$STATE_DIR" 2>/dev/null || true
-  printf '{"ok":%s,"phase":"%s","at":%s}\n' "$1" "$2" "$now" > "$STATE_DIR/update-status.json" 2>/dev/null || true
-  WROTE_STATUS=1
-}
-on_exit() {
-  local rc="$1"
-  # Release ONLY our own lock (never one a concurrent updater holds).
-  if [ -f "$LOCK_DIR/pid" ] && [ "$(cat "$LOCK_DIR/pid" 2>/dev/null || echo)" = "$$" ]; then rm -rf "$LOCK_DIR" 2>/dev/null || true; fi
-  if [ "$rc" -ne 0 ] && [ "$WROTE_STATUS" = "0" ] && [ "$IS_CHECK" = "0" ] && [ "$USER_ABORTED" = "0" ] && [ "$LOCKED_OUT" = "0" ]; then
-    write_status false "$PHASE"   # a genuine apply error → let the chat watcher voice the failure
-  fi
-}
-trap 'on_exit "$?"' EXIT
-
-# mkdir is atomic, so it doubles as the lock. A lock left by a dead updater (holder pid gone) is reclaimed.
-acquire_lock() {
-  mkdir -p "$STATE_DIR" 2>/dev/null || true
-  if mkdir "$LOCK_DIR" 2>/dev/null; then echo "$$" > "$LOCK_DIR/pid"; return 0; fi
-  local other; other="$(cat "$LOCK_DIR/pid" 2>/dev/null || echo '')"
-  if [ -n "$other" ] && kill -0 "$other" 2>/dev/null; then
-    LOCKED_OUT=1
-    err "another update is already running (pid $other) — not starting a second one."
-    exit 1
-  fi
-  rm -rf "$LOCK_DIR" 2>/dev/null || true            # stale lock (holder gone) → reclaim
-  mkdir "$LOCK_DIR" 2>/dev/null && echo "$$" > "$LOCK_DIR/pid"
-}
-
-# ── restart + receipt helpers (defined up here so the self-heal path can reuse them) ──
-PORT="$(server_port)"
-PIDFILE="$STATE_DIR/irises.pid"
-server_up() { curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; }
-
-# Confirm a pid is actually OUR node server before signalling it — a stale pidfile (server SIGKILLed /
-# OOM-killed, so its exit handler never ran) can hold a pid the OS later reused for something else.
-is_our_server() { ps -p "$1" -o command= 2>/dev/null | grep -q "dist/index.js"; }
-
-restart_now() {
-  local pid=""
-  [ -f "$PIDFILE" ] && pid="$(cat "$PIDFILE" 2>/dev/null || true)"
-  if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
-    warn "no live pidfile at $PIDFILE — can't safely restart a process I didn't start."
-    warn "restart it yourself: stop your 'npm start' (or 'npm run dev') and start it again."
-    write_status true restart   # applied to disk; the chat watcher voices "grabbed it, needs a restart"
-    return 0
-  fi
-  if ! is_our_server "$pid"; then
-    warn "pid $pid (from $PIDFILE) isn't the Irises server — refusing to signal a process I can't identify."
-    warn "restart it yourself: stop your 'npm start' (or 'npm run dev') and start it again."
-    write_status true restart
-    return 0
-  fi
-  say "stopping the running server (pid $pid)"
-  kill "$pid" 2>/dev/null || true
-  local i=0; while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 10 ]; do sleep 1; i=$((i+1)); done
-  mkdir -p "$STATE_DIR/logs"
-  say "relaunching (node dist/index.js -> $STATE_DIR/logs/server.log)"
-  ( cd "$ROOT" && nohup node dist/index.js >> "$STATE_DIR/logs/server.log" 2>&1 & echo $! > "$PIDFILE" )
-  i=0; while ! server_up && [ "$i" -lt 20 ]; do sleep 1; i=$((i+1)); done
-  # Success: the new build is live and voices the receipt on boot (no status needed). Failure: the old
-  # server is already down and can't voice — surface it in the log for a hands-on look.
-  if server_up; then say "restarted — health OK on :$PORT"; else warn "server did not answer /health on :$PORT — check $STATE_DIR/logs/server.log"; fi
-}
-
-# The web client rebuild — the ONE optional step, and the only one allowed to fail.
-#
-# It is a separate npm project with its own (heavy) toolchain, and on a small box `next build` dies
-# of memory rather than of anything wrong with this update: on the 408 MB VPS it took a bus error
-# mid-build, and under `set -e` that aborted the whole updater — server updated on disk, never
-# restarted, no receipt, nothing voiced in chat. The server half is what people run Irises for, so a
-# failure here warns and the update carries on to the receipt + restart. Always returns 0.
-#
-# IRISES_SKIP_WEB_BUILD=1 skips it outright, for a box that cannot afford the build at all.
-build_web() {
-  if [ "${IRISES_SKIP_WEB_BUILD:-}" = "1" ]; then
-    say "IRISES_SKIP_WEB_BUILD=1 — skipping the web client rebuild"
-    return 0
-  fi
-  # Rebuild only if this install actually serves it.
-  if [ ! -d "$ROOT/web/node_modules" ] && [ ! -d "$ROOT/web/out" ]; then
-    say "web client not installed here — skipping (enable it later: npm run install:web && npm run build:web)"
-    return 0
-  fi
-  PHASE="web"
-  say "rebuilding the web client (npm run install:web && npm run build:web)"
-  # One `if`, so neither command's failure trips set -e: the whole point is that this step cannot
-  # take the update down with it.
-  if npm run install:web && npm run build:web; then
-    return 0
-  fi
-  warn "web client build failed — server updated; web UI not rebuilt"
-  warn "rebuild it when the box has room:  npm run install:web && npm run build:web   (or skip it: IRISES_SKIP_WEB_BUILD=1)"
-  return 0
-}
-
-write_receipt() { # $1=OLD $2=NEW  (OLD==NEW for a rebuild-only heal → empty changelog)
-  PHASE="receipt"; mkdir -p "$STATE_DIR"
-  if git --no-pager log --oneline "$1..$2" | node "$ROOT/scripts/write-update-receipt.js" "$1" "$2" "$BRANCH" > "$STATE_DIR/update-receipt.json"; then
-    say "wrote update receipt to $STATE_DIR/update-receipt.json"
-  else
-    warn "could not write the update receipt (the upgrade still applied; Irises just won't announce it)"
-  fi
-}
-
-# Restart-or-instruct, shared by the normal apply and the self-heal rebuild.
-finish() {
-  echo
-  if [ "$OLD" = "$NEW" ]; then say "rebuilt at ${NEW:0:7} (repaired an unfinished build)."
-  else say "updated: ${OLD:0:7} -> ${NEW:0:7} (${COUNT:-?} commit(s))."; fi
-  if [ "$DO_RESTART" = "0" ]; then
-    say "(--no-restart) restart Irises yourself to run the new build."
-    write_status true restart
-  elif [ "$DO_RESTART" = "1" ]; then
-    restart_now
-  elif server_up; then
-    # A server is running the OLD build. Default is to instruct (don't kill a process we don't own),
-    # but offer the pidfile restart interactively when we can actually do it.
-    if [ -f "$PIDFILE" ] && [ "$ASSUME_YES" != "1" ]; then
-      printf '\033[36m[irises-update]\033[0m a server is running the old build — restart it now? [y/N] '
-      read -r yn || yn=''   # EOF (piped stdin) must not abort under set -e
-      if [ "$yn" = "y" ] || [ "$yn" = "Y" ]; then restart_now; else say "restart it when ready to run the new build (stop + start your npm start)."; write_status true restart; fi
-    else
-      say "a server is running the old build — restart it to finish (stop + start your 'npm start', or re-run with --restart)."
-      write_status true restart
-    fi
-  else
-    say "start the server to run the new build:  npm start   (or: npm run dev)"
-    write_status true restart
-  fi
-  [ "$(get_env UPDATE_ANNOUNCE_ENABLED "$ENV_FILE")" = "false" ] || say "once restarted, Irises will mention the upgrade in chat itself."
-  say "done."
-}
 
 # ── preflight ────────────────────────────────────────────────────────────────
+# Tools first: `git rev-parse` on a box without git would otherwise report "not a git clone", which
+# sends the reader looking for the wrong problem.
+augment_path
+require_tools git curl npm || exit 1
+require_node_version 22.13 || exit 1
 git rev-parse --git-dir >/dev/null 2>&1 || {
   err "this is not a git clone — nothing to pull."
   err "Docker installs update by rebuilding the image (docs/DEPLOY.md § 5)."
   exit 1
 }
-command -v node >/dev/null || { err "node is required (22.13+)"; exit 1; }
-NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
-NODE_MINOR="$(node -p 'process.versions.node.split(".")[1]')"
-if [ "$NODE_MAJOR" -lt 22 ] || { [ "$NODE_MAJOR" -eq 22 ] && [ "$NODE_MINOR" -lt 13 ]; }; then
-  err "Node 22.13+ required (found $(node -v))"; exit 1
-fi
 
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-[ "$BRANCH" != "HEAD" ] || { err "detached HEAD — check out a branch first (e.g. git checkout main)"; exit 1; }
+[ "$BRANCH" != "HEAD" ] || die 1 "detached HEAD — check out a branch first (e.g. git checkout main)"
 
-# Dirty tree = uncommitted changes to TRACKED files. Untracked files are fine (.env, dist/, web/out
-# are gitignored anyway); it's local edits to committed code that a fast-forward can't reconcile.
+# A dirty tree is uncommitted changes to TRACKED files. Untracked ones are fine (.env, dist/,
+# web/out are gitignored anyway); it is local edits to committed code that a fast-forward cannot
+# reconcile. `--check` only reads and reports, so it warns instead of refusing — being told what is
+# waiting upstream is useful even mid-edit, and it is the apply that has to be strict.
+# If web/package-lock.json is the only entry, it is almost certainly the old updater's
+# `npm run install:web`; the library's web build uses ci, which does not rewrite it.
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-  err "working tree has uncommitted changes to tracked files — a clean pull needs them stashed:"
-  git status --short --untracked-files=no >&2
-  err "stash them (git stash) or commit them, then re-run."
-  exit 1
+  if [ "$CHECK" = "1" ]; then
+    warn "the working tree has uncommitted changes to tracked files — an APPLY would refuse it:"
+    git status --short --untracked-files=no >&2
+  else
+    err "the working tree has uncommitted changes to tracked files — a clean pull needs them gone:"
+    git status --short --untracked-files=no >&2
+    if [ "$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')" = "1" ] \
+       && git status --porcelain --untracked-files=no | grep -q 'web/package-lock.json'; then
+      err "that one file is the old updater's footprint. Clear it and re-run:"
+      err "  git checkout -- web/package-lock.json"
+    else
+      err "stash them (git stash) or commit them, then re-run."
+    fi
+    exit 1
+  fi
 fi
 
-# Take the lock before any git/build mutation. --check is read-only (fetch + report), so it skips it.
-[ "$CHECK" = "1" ] || acquire_lock
+# --check is read-only (fetch + report), so it takes no lock.
+if [ "$CHECK" != "1" ]; then
+  lock_acquire || exit 1
+fi
 
-say "fetching origin/$BRANCH …"
-git fetch --quiet origin "$BRANCH"
-OLD="$(git rev-parse HEAD)"
-NEW="$(git rev-parse "origin/$BRANCH")"
+# One round trip that updates every remote-tracking ref, rather than `fetch origin "$BRANCH"`: a
+# branch that exists only here (a worktree, a local experiment) makes the narrow form fail with
+# "couldn't find remote ref", which is indistinguishable from a network that is down.
+say "fetching from origin …"
+git fetch --quiet origin || die 1 "could not fetch from origin — check the network, then re-run"
 
-if [ "$OLD" = "$NEW" ]; then
-  BUILT="$(built_sha)"
-  if [ -n "$BUILT" ] && [ "$BUILT" != "$NEW" ] && [ "$CHECK" != "1" ]; then
-    # HEAD is current but dist/ was stamped from a different commit — a previous update advanced HEAD
-    # and then its build failed. A plain "up to date" would strand that half-applied state; rebuild and
-    # go through the normal restart/announce path so the healed build actually gets loaded.
-    warn "code is at ${NEW:0:7} but the built version is ${BUILT:0:7} — a previous build didn't finish. rebuilding."
-    PHASE="build"; npm ci --include=dev; npm run build
-    build_web
-    write_receipt "$NEW" "$NEW"   # empty changelog; lets the boot announce fire once the restart lands
-    COUNT=0
-    finish
+if ! git rev-parse --verify --quiet "refs/remotes/origin/$BRANCH" >/dev/null; then
+  say "branch $BRANCH does not exist on origin — there is nothing upstream to pull"
+  if [ "$CHECK" = "1" ]; then
+    summary up-to-date "branch $BRANCH has no counterpart on origin — no upstream commits to apply"
     exit 0
   fi
-  say "already up to date ($(git rev-parse --short HEAD), branch $BRANCH)."
-  write_status true noop
+  summary noop "branch $BRANCH has no counterpart on origin — no upstream commits to apply"
   exit 0
 fi
-# Local ahead of origin (your own unpushed commits) → not an update to apply.
-if git merge-base --is-ancestor "origin/$BRANCH" HEAD; then
-  say "local $BRANCH is ahead of origin — nothing upstream to pull."
-  write_status true noop
+
+OLD="$(git rev-parse HEAD)"
+NEW="$(git rev-parse "refs/remotes/origin/$BRANCH")"
+# Both are full 40-char shas: scripts/stamp-version.js writes `git rev-parse HEAD` verbatim, so a
+# plain string comparison below is sound. (/health may shorten it — wait_health_sha does the prefix
+# matching for that case.)
+BUILT="$(built_sha "$ROOT")"
+
+write_receipt() { # OLD NEW  (equal shas → an empty changelog, which still fires the boot announce)
+  # KEEP the argument list identical to the pre-rewrite call: scripts/write-update-receipt.js reads
+  # OLD, NEW and BRANCH off argv and the commit lines off stdin, and src/update/receipt.ts consumes
+  # what it writes at boot. This is the whole channel through which Irises learns she was upgraded.
+  RECEIPT_OK=0
+  mkdir -p "$STATE_DIR"
+  if git --no-pager log --oneline "$1..$2" \
+     | node "$ROOT/scripts/write-update-receipt.js" "$1" "$2" "$BRANCH" > "$STATE_DIR/update-receipt.json"; then
+    say "wrote the update receipt to $STATE_DIR/update-receipt.json"
+    RECEIPT_OK=1
+    return 0
+  fi
+  warn "could not write the update receipt (the upgrade still applied; Irises just won't announce it)"
+  return 0
+}
+RECEIPT_OK=0
+
+# Take the receipt back. Called on every path that undoes a build: nothing should announce an
+# upgrade that is being reversed.
+withdraw_receipt() {
+  if [ -n "$STATE_DIR" ] && [ -f "$STATE_DIR/update-receipt.json" ]; then
+    rm -f "$STATE_DIR/update-receipt.json"
+    say "withdrew the update receipt — there is no upgrade to announce"
+  fi
+  return 0
+}
+
+# Restart Irises through whatever owns it, and prove the sha we expect is what answers. Verifying
+# only that "something answers /health" is satisfied by the OLD process still holding the port —
+# which is exactly how a restart that never took could look like a success.
+restart_and_verify() { # EXPECTED_SHA SECS
+  local want="${1:-}" secs="${2:-45}" kind live
+  # service_installed(), not a look at the unit and the plist: on Windows the install is a Task
+  # Scheduler entry and there is no file to find.
+  if service_installed; then
+    kind="$(service_kind)"
+    say "restarting Irises through its $kind service"
+    if ! service_restart; then
+      err "the $kind service would not restart"
+      return 1
+    fi
+  else
+    say "no service installed — cycling the detached server"
+    server_stop 20
+    if ! server_start_detached "$ROOT"; then
+      err "could not start the server detached"
+      return 1
+    fi
+  fi
+  if ! live="$(wait_health_sha "$BASE" "$want" "$secs")"; then
+    err "no /health answer reporting ${want:0:7} on :$PORT within ${secs}s"
+    err "read the log:  tail -n 40 $STATE_DIR/logs/server.log"
+    return 1
+  fi
+  say "restarted — build ${live:0:7} is live on :$PORT"
+  return 0
+}
+
+# Put everything back: the tree, the dependencies, and the build. The old updater had no rollback at
+# all, so a failed `npm ci` after the merge left HEAD new, node_modules wiped and dist old — a state
+# nobody could get out of without knowing the sha to reset to.
+rollback_to() { # SHA
+  local sha="${1:-}"
+  warn "rolling back to ${sha:0:7}"
+  if ! git reset --hard "$sha" >/dev/null 2>&1; then
+    err "git reset --hard ${sha:0:7} FAILED — this clone needs hands:"
+    err "  cd $ROOT && git reset --hard ${sha} && npm ci --include=dev && npm run build"
+    return 1
+  fi
+  if ! npm ci --include=dev; then
+    err "npm ci during the rollback FAILED — node_modules is incomplete:"
+    err "  cd $ROOT && npm ci --include=dev && npm run build"
+    return 1
+  fi
+  if ! npm run build; then
+    err "npm run build during the rollback FAILED — dist/ is stale:"
+    err "  cd $ROOT && npm run build"
+    return 1
+  fi
+  say "rolled back to ${sha:0:7}"
+  return 0
+}
+
+# What the web step actually did on THIS run, for the summary. web_build() never fails an update, so
+# "web/out exists" on its own says nothing about whether it was rebuilt just now — the marker taken
+# before the call is what separates the two.
+WEB_MARKER=""
+web_state() { # -> a line that is true whatever web_build() decided to do
+  if [ "${IRISES_SKIP_WEB_BUILD:-}" = "1" ]; then
+    printf 'skipped (IRISES_SKIP_WEB_BUILD=1)'
+  elif [ ! -d "$ROOT/web" ]; then
+    printf 'n/a (no web client in this clone)'
+  elif [ ! -d "$ROOT/web/out" ]; then
+    printf 'not built here (the terminal chat needs none; opt in with IRISES_WEB=1)'
+  elif [ -n "$WEB_MARKER" ] && [ "$ROOT/web/out" -nt "$WEB_MARKER" ]; then
+    printf 'rebuilt'
+  else
+    printf 'web/out is from an earlier build — see the web lines above'
+  fi
+}
+
+# ── compare ──────────────────────────────────────────────────────────────────
+if [ "$OLD" = "$NEW" ]; then
+  if [ -n "$BUILT" ] && [ "$BUILT" != "$NEW" ] && [ "$CHECK" != "1" ]; then
+    # HEAD is current but dist/ was stamped from another commit: a previous update advanced HEAD and
+    # then its build (or its box) died. Reporting "up to date" would strand that half-applied state.
+    warn "code is at ${NEW:0:7} but the built version is ${BUILT:0:7} — a previous build didn't finish"
+    say "repairing the build"
+    if ! ( npm ci --include=dev && npm run build ); then
+      err "the repair build failed at ${NEW:0:7}"
+      err "  cd $ROOT && npm ci --include=dev && npm run build"
+      # Nothing to roll back to: HEAD was already at ${NEW:0:7} before this run, and origin is there
+      # too. So this is not `rolled-back` — the clone is exactly as broken as we found it.
+      summary partial \
+        "the repair build failed at ${NEW:0:7}" \
+        "nothing was rolled back — HEAD was already at ${NEW:0:7} when this run started" \
+        "run the two commands above by hand once you know why the build failed"
+      exit 3
+    fi
+    WEB_MARKER="$(mktemp 2>/dev/null || printf '')"
+    web_build "$ROOT"
+    # Read the marker BEFORE removing it: `-nt` is also true when the file it compares against is
+    # gone, so a deleted marker would report every run as a rebuild.
+    WEB_STATE="$(web_state)"
+    [ -z "$WEB_MARKER" ] || rm -f "$WEB_MARKER"
+    write_receipt "$NEW" "$NEW"
+    REPAIR_RESTART="skipped (--no-restart) — the repaired build is on disk; restart Irises yourself"
+    if [ "$DO_RESTART" = "1" ]; then
+      if ! restart_and_verify "$NEW" 45; then
+        withdraw_receipt
+        summary partial \
+          "the repaired build ${NEW:0:7} did not answer /health" \
+          "the tree and dist are at ${NEW:0:7} — there is no older build to go back to" \
+          "read $STATE_DIR/logs/server.log, then: cd $ROOT && npm start"
+        exit 4
+      fi
+      REPAIR_RESTART="restarted, build ${NEW:0:7} verified live"
+    fi
+    summary ok \
+      "repaired an unfinished build at ${NEW:0:7} (the code was already there)" \
+      "web UI:   $WEB_STATE" \
+      "Irises:   $REPAIR_RESTART" \
+      "plugin + gateway: not touched — a repair only rebuilds this clone" \
+      "data:     $STATE_DIR — untouched, as always"
+    exit 0
+  fi
+  say "already up to date ($(git rev-parse --short HEAD), branch $BRANCH)"
+  summary up-to-date "HEAD and origin/$BRANCH are both $(git rev-parse --short HEAD)"
+  exit 0
+fi
+
+# Local ahead of origin (your own unpushed commits) → nothing upstream to apply.
+if git merge-base --is-ancestor "$NEW" HEAD; then
+  say "local $BRANCH is ahead of origin — nothing upstream to pull"
+  summary noop "local $BRANCH is ahead of origin/$BRANCH"
   exit 0
 fi
 
@@ -284,53 +302,135 @@ say "update available: ${OLD:0:7} -> ${NEW:0:7} ($COUNT commit(s) on $BRANCH)"
 git --no-pager log --oneline "$OLD..$NEW" | sed 's/^/    /'
 
 if [ "$CHECK" = "1" ]; then
-  IS_CHECK=1
   say "(--check) not applying. Run 'bash scripts/update.sh' to apply."
+  summary update-available "${OLD:0:7} -> ${NEW:0:7} ($COUNT commit(s) on $BRANCH)"
   exit 10
 fi
 
 if [ "$ASSUME_YES" != "1" ]; then
-  printf '\033[36m[irises-update]\033[0m apply this update now? [y/N] '
-  read -r yn || yn=''   # EOF (piped stdin) must not abort under set -e
-  [ "$yn" = "y" ] || [ "$yn" = "Y" ] || { USER_ABORTED=1; say "aborted — nothing changed."; exit 0; }
+  printf '\033[36m[%s]\033[0m apply this update now? [y/N] ' "$IRISES_LOG_TAG"
+  read -r yn || yn=''    # EOF (piped stdin) must not abort under set -e
+  case "$yn" in
+    y|Y|yes|YES) ;;
+    *) say "aborted — nothing changed"; summary noop "aborted at the confirmation prompt"; exit 0 ;;
+  esac
 fi
 
-# ── apply ────────────────────────────────────────────────────────────────────
-PHASE="pull"
-say "fast-forwarding to origin/$BRANCH"
-git merge --ff-only "origin/$BRANCH" || {
+# ── apply, with a rollback around the parts that can fail ────────────────────
+# The exact sha we compared and listed above, not the ref: what gets applied is what was announced.
+say "fast-forwarding to origin/$BRANCH (${NEW:0:7})"
+git merge --ff-only "$NEW" || {
   err "fast-forward failed — your local $BRANCH has diverged from origin."
   err "reconcile it yourself (git log, git rebase/merge) — this updater never force-merges."
   exit 1
 }
 
-PHASE="build"
-# --include=dev FORCES devDependencies even when NODE_ENV=production (the documented prod env in
-# deploy/app.env): tsc/cpx/tsx live in devDependencies, so a bare `npm ci` under that env strips the
-# build toolchain and `npm run build` then fails with "tsc: not found" — after HEAD already advanced.
 say "installing dependencies + building (npm ci --include=dev && npm run build)"
-npm ci --include=dev
-npm run build
+if ! ( npm ci --include=dev && npm run build ); then
+  err "the build failed at ${NEW:0:7}"
+  rollback_to "$OLD" || {
+    summary partial \
+      "the build failed at ${NEW:0:7} AND the rollback itself failed — see the commands above" \
+      "the running server was never touched; it is still serving whatever it had"
+    exit 3
+  }
+  summary rolled-back \
+    "build failed at ${NEW:0:7}; the clone is back at ${OLD:0:7}" \
+    "the running server was never touched — it is still serving ${OLD:0:7}"
+  exit 3
+fi
+NEW_BUILT="$(built_sha "$ROOT")"
+if [ -z "$NEW_BUILT" ]; then
+  # dist/version.json carries no sha (scripts/stamp-version.js could not reach git). The server
+  # falls back to `git rev-parse HEAD` for /health in exactly that case, so the sha to expect is
+  # still the one we merged — never an empty expectation, which would accept ANY answer.
+  warn "the build left no sha in dist/version.json — verifying against ${NEW:0:7} instead"
+  NEW_BUILT="$NEW"
+fi
+say "built ${NEW_BUILT:0:7}"
 
-# Web client: a separate npm project, and the one step allowed to fail (see build_web).
-build_web
+WEB_MARKER="$(mktemp 2>/dev/null || printf '')"
+web_build "$ROOT"
+WEB_STATE="$(web_state)"
+[ -z "$WEB_MARKER" ] || rm -f "$WEB_MARKER"
 
-# Bridge plugin is COPIED out of the repo at setup, so a repo update leaves a stale copy on the engine.
-# Refresh it only when bridge/ actually changed between old and new.
-PHASE="bridge"
-if git diff --name-only "$OLD" "$NEW" -- bridge/ | grep -q .; then
-  say "bridge/ changed in this update — refreshing the engine plugin"
-  HERMES_PLUGINS="${HERMES_HOME:-$HOME/.hermes}/plugins"
-  if [ -d "$HERMES_PLUGINS/irises-bridge" ]; then
-    rm -rf "$HERMES_PLUGINS/irises-bridge"   # rm first: cp -R onto an existing dir merges + leaves stale files
-    cp -R "$ROOT/bridge/hermes/irises-bridge" "$HERMES_PLUGINS/"
-    warn "refreshed the hermes plugin — restart the gateway to load it:  hermes gateway restart"
-  fi
-  if command -v openclaw >/dev/null 2>&1 && openclaw plugins list 2>/dev/null | grep -q irises-bridge; then
-    openclaw plugins install "$ROOT/bridge/openclaw/irises-bridge" || warn "openclaw plugin refresh failed — re-run: openclaw plugins install $ROOT/bridge/openclaw/irises-bridge"
-    warn "refreshed the OpenClaw plugin — restart the OpenClaw gateway to load it"
+# The bridge plugin is a COPY, so a repo update always leaves a stale one on the engine. Refresh it
+# every time now: the gateway gets bounced at the end regardless, and "only when bridge/ changed"
+# quietly skipped a refresh whenever a previous update's copy had failed.
+ENGINE="$(engine_kind)"
+PLUGIN_STATE="n/a (standalone install — no engine)"
+if [ "$ENGINE" != "off" ]; then
+  if plugin_refresh "$ENGINE" "$ROOT"; then
+    PLUGIN_STATE="refreshed"
+  else
+    PLUGIN_STATE="NOT refreshed — see the warning above"
   fi
 fi
 
 write_receipt "$OLD" "$NEW"
-finish
+
+RESTART_STATE="skipped (--no-restart) — the new build is on disk, not running"
+if [ "$DO_RESTART" = "1" ]; then
+  if restart_and_verify "$NEW_BUILT" 45; then
+    RESTART_STATE="restarted, build ${NEW_BUILT:0:7} verified live"
+  else
+    # The new build compiles but will not serve. Take the receipt back, restore the old build, and
+    # put it back up.
+    withdraw_receipt
+    err "the new build did not come up — rolling back"
+    if rollback_to "$OLD"; then
+      if restart_and_verify "$OLD" 45; then
+        summary rolled-back \
+          "${NEW:0:7} would not serve; rolled back to ${OLD:0:7}" \
+          "Irises is back up on the OLD build — nothing was announced in chat" \
+          "the failure is in $STATE_DIR/logs/server.log"
+        exit 4
+      fi
+      summary rolled-back \
+        "${NEW:0:7} would not serve; the clone is back at ${OLD:0:7}, but it did not come back up" \
+        "Irises is DOWN — read $STATE_DIR/logs/server.log, then: cd $ROOT && npm start"
+      exit 4
+    fi
+    summary partial \
+      "${NEW:0:7} would not serve, and the rollback itself failed — see the commands above" \
+      "Irises is DOWN — put the clone back by hand first, then: cd $ROOT && npm start"
+    exit 4
+  fi
+else
+  say "(--no-restart) the new build is on disk; restart Irises yourself to run it"
+fi
+
+GATEWAY_STATE="skipped (--no-gateway-restart)"
+RC=0
+RESULT=ok
+if [ "$ENGINE" = "off" ]; then
+  GATEWAY_STATE="n/a (standalone install)"
+elif [ "$DO_GATEWAY" = "1" ]; then
+  if gateway_restart "$ENGINE" 90; then
+    GATEWAY_STATE="bounced and verified"
+  else
+    GATEWAY_STATE="NOT verified — bounce it yourself once you know why"
+    RESULT=gateway-failed
+    RC=5
+  fi
+fi
+
+ANNOUNCE="Irises will mention the upgrade in chat itself, once it is up"
+if [ "$RECEIPT_OK" != "1" ]; then
+  ANNOUNCE="no receipt was written, so nothing will be announced in chat — the upgrade still applied"
+elif [ "$DO_RESTART" != "1" ]; then
+  ANNOUNCE="she will mention the upgrade the next time she starts — the receipt is waiting"
+fi
+if [ "$(env_get "$ENV_FILE" UPDATE_ANNOUNCE_ENABLED)" = "false" ]; then
+  ANNOUNCE="chat announcements are off (UPDATE_ANNOUNCE_ENABLED=false)"
+fi
+
+summary "$RESULT" \
+  "updated:  ${OLD:0:7} -> ${NEW:0:7} ($COUNT commit(s) on $BRANCH)" \
+  "web UI:   $WEB_STATE" \
+  "plugin:   $PLUGIN_STATE" \
+  "Irises:   $RESTART_STATE" \
+  "gateway:  $GATEWAY_STATE" \
+  "data:     $STATE_DIR — untouched, as always" \
+  "$ANNOUNCE"
+exit "$RC"
