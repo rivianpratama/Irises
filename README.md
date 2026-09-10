@@ -386,6 +386,17 @@ Outbound routes by `chatId` prefix — `web:` → web / CLI, `eng:<platform>:<ch
 | `LLM_DAILY_TOKEN_CAP` · `OPS_TASK_TOKEN_BUDGET` · `LLM_MAX_INPUT_TOKENS_EST` | Cost circuit breakers (tripping fails loud, never re-billed on the other lane). |
 | `DIAGNOSTICS_ENABLED` · `DIAGNOSTICS_*` | `/debug` trace buffer sizing and retention. |
 
+**Updates** — see [docs/DEPLOY.md](docs/DEPLOY.md#updating-a-git-clone-install)
+
+| Variable | Purpose |
+|----------|---------|
+| `UPDATE_CHECK_ENABLED` | The periodic `git ls-remote` poll that notices a newer build on this clone's branch. It reads refs only — never pulls, never restarts. `false` disarms it: no `update` field on `/health`, no amber dashboard card, no chat mention, and Irises then says plainly that she can't tell whether one is waiting. Default on. Disarms itself anyway with no `.git` (a Docker image) or an unknown build sha. |
+| `UPDATE_CHECK_INTERVAL_MS` | How often to poll. Default 6h (`21600000`), floored at 15min; a non-numeric value falls back to the default. First check is 60s after boot. |
+| `UPDATE_CHECK_BRANCH` | Which remote ref to compare against. Default: this clone's own current branch. |
+| `UPDATE_ANNOUNCE_ENABLED` | Whether a waiting upgrade is mentioned **in chat** — once per chat per build, woven into a reply at a natural opening (30+ min of quiet, or their first message ever), otherwise pushed to recently-active chats — plus the short "back on the new build" after the script restarts her. `false` keeps detection, `/health` and the dashboard card, and sends nothing. Default on. |
+| `UPDATE_ANNOUNCE_ACTIVE_WINDOW_MS` | The "recently active" audience window for that mention. Default 48h (`172800000`), capped at 20 chats. |
+| `IRISES_SKIP_WEB_BUILD` · `IRISES_WEB` | Read by the scripts, not the server: `IRISES_SKIP_WEB_BUILD=1` skips the optional web-client rebuild during install and update; `IRISES_WEB=1` asks for it on a box that has never built it. |
+
 **Memory features** — see [docs/MEMORY_ARCHITECTURES.md](docs/MEMORY_ARCHITECTURES.md)
 
 | Variable | Purpose |
