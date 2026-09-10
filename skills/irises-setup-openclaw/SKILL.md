@@ -74,24 +74,37 @@ What the script does, so you can answer questions about it:
   Task Scheduler task named `Irises` on Windows, with a detached `nohup` fallback where none of those
   exists — so she survives a reboot without root,
 - waits for her to answer `/health`, then sets up **bridge mode by default**: installs the plugin
-  with `openclaw plugins install` and writes `IRISES_FRONT=*:*`, so Irises fronts every chat on every
-  channel out of the box (see the consequences below). `--no-bridge` skips the plugin and the
-  fronting,
-- **restarts the gateway last** so the plugin is live, and prints a summary with an honest exit code.
+  with `openclaw plugins install` and then **prints three variables for the person to set on the
+  OpenClaw gateway process themselves** — it edits no OpenClaw config, so until they set them nothing
+  is fronted (see the consequences below). `--no-bridge` skips the plugin and the printout,
+- **restarts the gateway last** so the plugin is loaded, and prints a summary with an honest exit code.
 
 ## 3. Set these two expectations before they run it
 
-- **The gateway will restart at the end.** Anything in flight there ends. It is the step that turns
-  the bridge on: until it happens, OpenClaw still answers its own channels.
-- **`IRISES_FRONT=*:*` means Irises answers everything.** A person texting any channel this OpenClaw
-  owns (WhatsApp, Discord, …) reaches Irises, who answers in her own voice and uses OpenClaw as her
-  engine. OpenClaw is unchanged and still reachable directly, still transparently answers anything
-  `IRISES_FRONT` does not cover — and answers everything whenever Irises is down (fail-open, so a
-  broken front never drops messages). Narrow it to fnmatch patterns over `<channel>:<conversation>`,
-  or blank it to make the plugin inert instantly. Tell them their operator and control chats are
-  inside `*:*` too.
+- **The gateway will restart at the end.** Anything in flight there ends. It is what loads the
+  plugin; it is not what turns fronting on. Until the variables below are set on the gateway,
+  OpenClaw goes on answering its own channels exactly as before.
+- **Fronting is theirs to switch on, with three variables on the gateway process.** The installer
+  prints them and stops there — they belong in the environment of the **OpenClaw gateway process**
+  (its own service/launcher env), not in the Irises clone, and the gateway has to come back up with
+  them set:
+  - `IRISES_BRIDGE_TOKEN` — the shared secret the plugin authenticates with. The script does not
+    print the value (its output gets pasted into chats and issues); its value is
+    `ENGINE_PUSH_TOKEN` in the Irises `.env`, mode 600, which they copy across themselves.
+  - `IRISES_URL` — where the plugin POSTs inbound messages, `http://127.0.0.1:3000` on a default
+    install.
+  - `IRISES_FRONT` — comma-separated fnmatch patterns over `<channel>:<conversation>` choosing which
+    chats Irises answers. **Empty or unset fronts nothing**: the plugin sits inert. `*:*` fronts
+    **everything** — a person texting any channel this OpenClaw owns (WhatsApp, Discord, …) reaches
+    Irises, who answers in her own voice and uses OpenClaw as her engine. Tell them their operator
+    and control chats are inside `*:*` too, and that blanking it makes the plugin inert again
+    instantly.
 
-Also worth saying once: **shortly after that restart, Irises usually texts first** — a one-time
+  Whatever they set, OpenClaw is unchanged and still reachable directly, still transparently answers
+  anything `IRISES_FRONT` does not cover — and answers everything whenever Irises is down (fail-open,
+  so a broken front never drops messages).
+
+Also worth saying once: **shortly after fronting is live, Irises usually texts first** — a one-time
 introduction, sent only on a chat this agent has genuinely exchanged messages in before (the "first
 move", see Notes). A text from her out of the blue is the feature working, not a glitch.
 

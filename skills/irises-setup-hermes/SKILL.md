@@ -19,10 +19,10 @@ Irises is, check that the box can run it, hand over the exact commands, set the 
 and verify the result once they say they are done.
 
 Why it works this way: the installer's last step restarts the hermes gateway, because the API server
-and the bridge plugin are only read when the gateway comes up. From a gateway-hosted chat, hermes
-blocks the script outright (its terminal tool reads the contents of any `.sh` you reference, and this
-one cycles the supervisor). From a CLI session it would be worse — it would kill the supervisor
-running your own turn, mid-reply. So the command belongs in a human's shell, not in yours.
+and the bridge plugin are only read when the gateway comes up. Run from a gateway-hosted session,
+that final bounce kills the supervisor running your own turn, mid-reply — your answer never lands,
+and the person is left guessing whether the install finished. So the command belongs in a human's
+shell, not in yours.
 
 ## What Irises is (say this in your own words)
 

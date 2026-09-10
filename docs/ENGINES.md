@@ -50,9 +50,28 @@ OpenClaw is untouched: it still speaks the gateway `agent` RPC.
 
 ## Quick start (engine users)
 
-**Hermes users** — in your hermes chat, or by hand:
+**The install is a terminal command**, run on the machine the engine runs on:
 
 ```bash
+git clone https://github.com/rivianpratama/irises && cd irises
+bash ./scripts/engine-setup.sh --engine hermes     # or: --engine openclaw
+```
+
+On Windows those two commands run in **Git Bash** (it ships with the Git for Windows the clone needs
+anyway) or inside a **WSL2** shell. The Windows paths are stub-tested only and have not yet been run
+on a real Windows box — Linux and macOS are the verified platforms.
+
+There is no chat route in, and that is the design: the script's last step bounces the engine gateway,
+so an agent running it from a gateway-hosted session would kill the supervisor carrying its own turn,
+mid-reply (see *Install / uninstall* below).
+
+**Want to be walked through it?** The two setup skills are **guides, not installers**. Your agent
+explains what Irises is, runs the read-only prerequisite checks, hands you the exact commands to run
+in your own terminal, and verifies the result once you report back — it clones, builds, starts and
+restarts nothing. Install the guide for your engine:
+
+```bash
+# hermes
 hermes skills install https://raw.githubusercontent.com/rivianpratama/irises/main/skills/irises-setup-hermes/SKILL.md
 # then, in any hermes chat:   /irises-setup-hermes
 ```
@@ -60,48 +79,47 @@ hermes skills install https://raw.githubusercontent.com/rivianpratama/irises/mai
 (The one-liner fetches over plain HTTPS with no credentials, so the repo has to be public — or
 otherwise reachable to you anonymously — for it to resolve.)
 
-**OpenClaw users:**
-
 ```bash
+# OpenClaw
 openclaw skills install git:rivianpratama/irises
 # then ask your OpenClaw to run the irises-setup-openclaw skill
 ```
 
-**Anyone, manually:**
-
-```bash
-git clone https://github.com/rivianpratama/irises && cd irises
-bash ./scripts/engine-setup.sh --engine hermes     # or: --engine openclaw
-```
-
-The script is idempotent, prints every change before making it, and never edits engine code. For
-hermes it appends two lines to `~/.hermes/.env` (`API_SERVER_ENABLED`, `API_SERVER_KEY`) — the
-documented way to enable its API server; for OpenClaw it only *reads* the existing gateway token.
-
-On Windows those two commands run in **Git Bash** (it ships with the Git for Windows the clone needs
-anyway) or inside a **WSL2** shell. The Windows paths are stub-tested only and have not yet been run
-on a real Windows box — Linux and macOS are the verified platforms.
+The script is idempotent, prints every change before making it, and never edits engine code. On
+hermes it writes up to six keys into `~/.hermes/.env` — `API_SERVER_ENABLED` and `API_SERVER_KEY`
+(the documented way to enable its API server), `IRISES_PUSH_TOKEN` and `IRISES_URL`, plus
+`IRISES_BRIDGE_TOKEN` and `IRISES_FRONT` in bridge mode — creating the file (mode 600) if hermes has
+never written one itself, backing it up first, and recording in
+`~/.irises/install-manifest.json` exactly which keys were new so `--uninstall` can put the file back
+without guessing. Keys that were already there are left on their own values (a duplicated
+`API_SERVER_KEY` is collapsed onto the live one). On OpenClaw it edits no engine config at all: it
+*reads* the existing gateway token, and prints the variables you set on the gateway yourself.
 
 Flags: `--yes` runs non-interactively (assume every default, never prompt — which is also what a run
 with no terminal on stdin does by itself), `--bridge` / `--no-bridge` choose bridge mode outright,
 `--no-service` skips the user-level service, `--port N` picks the port. **Bridge mode is ON by
-default, including on a run with no terminal**, and the installer writes `IRISES_FRONT=*:*` — Irises
-fronts every chat on every platform out of the box, so narrow that list afterwards rather than
-assuming an opt-in. The engine gateway is restarted at the end of every install, with or without
-bridge mode. `--uninstall` takes the whole install back out again (the user service, the plugin, the
-engine-side keys the installer added), restarts the gateway on its way out, and keeps your data
-unless you add `--purge-data`.
+default, including on a run with no terminal**, and what that means differs by engine: on **hermes**
+the installer writes `IRISES_FRONT=*:*` itself, so Irises fronts every chat on every platform out of
+the box and you narrow that list afterwards rather than assuming an opt-in; on **OpenClaw** it
+installs the plugin and then *prints* `IRISES_BRIDGE_TOKEN`, `IRISES_URL` and `IRISES_FRONT` for you
+to set on the gateway process, and nothing is fronted until you do. The engine gateway is restarted
+at the end of every install, with or without bridge mode. `--uninstall` takes the whole install back
+out again (the user service, the plugin, the engine-side keys the installer added), bounces the
+gateway on its way out when it removed something, and keeps your data unless you add `--purge-data`.
 
 What it leaves behind: `PORT=3000` pinned in the Irises `.env` — the committed `deploy/app.env`
 baseline of `8080` is the Docker image's port behind Caddy, so pinning 3000 keeps the server, the
 printed URL, `npm run chat` and the bridge plugin's `IRISES_URL` default all pointing at one place.
 It builds both halves (the server, and the web client where that one is in use), registers Irises as
 a **user-level service** — `systemd --user` on Linux, a LaunchAgent on macOS, a Task Scheduler task
-named `Irises` on Windows, and a detached `nohup` launch where none of those exists — health-checks
-it until the new build answers, and — on hermes — runs a real engine round-trip
-(`GET /v1/capabilities` on the API server with the key). Then it **leaves Irises running**, prints the
-web chat URL (`http://127.0.0.1:3000`), `npm run chat`, and the service controls, and bounces the
-gateway last so the API server, the plugin and `IRISES_FRONT` are all live. Run the script again on a
+named `Irises` on Windows, and a detached `nohup` launch where none of those exists — and
+health-checks it until the **new build's own sha** answers on `/health` (not merely "something
+answers", which the old process still holding the port satisfies). Then it **leaves Irises running**
+and prints the service controls, `npm run chat`, and — only when `web/out` exists in the clone — the
+web chat URL (`http://127.0.0.1:3000`); with no web build it points you at `npm run chat` instead and
+says `IRISES_WEB=1` builds the browser page. It bounces the gateway last so the API server, the
+plugin and the fronting are all live; the only probe it makes against the engine is the
+unauthenticated `GET /v1/health` that confirms the gateway came back up. Run the script again on a
 box where a healthy Irises already serves that port and it adopts it instead of starting a second one.
 
 ## Zero-config discovery (what happens at boot)
@@ -353,10 +371,12 @@ IRISES_FRONT=telegram:*,whatsapp:+1555*,discord:12345
 
 Comma-separated glob patterns matched (case-insensitively) against `<platform>:<chat_id>`
 (hermes) / `<channel>:<conversation>` (OpenClaw). **Unset or empty = front nothing** — the plugin
-is inert and the engine behaves exactly as before. The installer does **not** leave it empty: it
-writes `IRISES_FRONT=*:*`, so a default install fronts everything and you narrow from there. Never
-pattern your operator/control chats unless you mean it: a fronted chat talks to Irises, not to the
-engine.
+is inert and the engine behaves exactly as before. On **hermes** the installer does not leave it
+empty: it writes `IRISES_FRONT=*:*` into `~/.hermes/.env`, so a default install fronts everything and
+you narrow from there. On **OpenClaw** it writes nothing — it prints this variable (with
+`IRISES_BRIDGE_TOKEN` and `IRISES_URL`) for you to set on the gateway process, so an OpenClaw install
+fronts nothing until you do. Never pattern your operator/control chats unless you mean it: a fronted
+chat talks to Irises, not to the engine.
 
 ### Failure policy
 
@@ -374,7 +394,7 @@ can still be lost (it is logged at ERROR), and everything after it goes to herme
 
 | Key | Default | Meaning |
 |---|---|---|
-| `IRISES_FRONT` | `*:*` (what the installer writes — *unset or empty = front nothing*, if you set it by hand) | comma-separated glob patterns choosing fronted chats |
+| `IRISES_FRONT` | `*:*` on a hermes install (the installer writes it); on OpenClaw it is *printed for you to set* — and *unset or empty = front nothing*, wherever you set it by hand | comma-separated glob patterns choosing fronted chats |
 | `IRISES_BRIDGE_TOKEN` | — | shared secret; must equal Irises's `ENGINE_PUSH_TOKEN`. Required: unset, the hermes listener still binds but refuses every send with a 403 naming the missing variable (a misconfiguration you can read, instead of anonymous sends on loopback) |
 | `IRISES_URL` | `http://127.0.0.1:3000` | where the plugin POSTs inbound messages |
 | `IRISES_BRIDGE_FAIL` | `open` | `open` = engine answers on bridge failure; `closed` = silence |
@@ -442,11 +462,21 @@ loopback listener; OpenClaw needs nothing extra (outbound rides the existing gat
 ### Install / uninstall
 
 `bash ./scripts/engine-setup.sh --engine hermes|openclaw` sets bridge mode up as part of the install:
-it copies the plugin (via `~/.hermes/plugins/` or `openclaw plugins install`), wires the token,
-writes `IRISES_FRONT=*:*`, prints every change before making it, records every engine-side key it
-added in `~/.irises/install-manifest.json`, and restarts the engine gateway at the end so all of it
-takes effect. `--no-bridge` installs Irises without the plugin or the fronting; the gateway is still
-restarted so the engine picks up its API-server setting.
+it copies the plugin (via `~/.hermes/plugins/` or `openclaw plugins install`), prints every change
+before making it, and restarts the engine gateway at the end so all of it takes effect. The
+engine-side wiring then splits by engine:
+
+- **hermes** — the installer writes the token and `IRISES_FRONT=*:*` into `~/.hermes/.env` itself
+  (after a backup), and records every key it added in `~/.irises/install-manifest.json` so the
+  uninstall can undo exactly those. Fronting is live as soon as the gateway comes back.
+- **OpenClaw** — the installer changes no OpenClaw config. It prints the three variables the
+  **gateway process** needs in its own environment — `IRISES_BRIDGE_TOKEN` (its value is
+  `ENGINE_PUSH_TOKEN` in the Irises `.env`, mode 600; the script deliberately does not print the
+  secret, because its output gets pasted into chats and issues), `IRISES_URL`, and `IRISES_FRONT` —
+  and stops there. Until you set them and the gateway comes up with them, nothing is fronted.
+
+`--no-bridge` installs Irises without the plugin or the fronting; the gateway is still restarted so
+the engine picks up its API-server setting.
 
 Taking it out again, in order of how much you want gone:
 
@@ -456,7 +486,8 @@ Taking it out again, in order of how much you want gone:
   `openclaw plugins disable irises-bridge`, then bring the gateway back the way you normally would.
 - **Remove Irises entirely:** `bash ./scripts/engine-setup.sh --uninstall` — stops and unregisters
   the user-level service, removes the plugin, removes the engine-side keys the installer added (from
-  the manifest, after a backup of the engine's env file), restarts the gateway, and keeps your data
+  the manifest, after a backup of the engine's env file), bounces the gateway **only when it actually
+  removed something** (so a second run on an already-clean box cycles nothing), and keeps your data
   under `$IRISES_HOME`. Add `--purge-data` to delete that too.
 
 All of these are run from a terminal on the engine's own machine (Git Bash or WSL2 on Windows). The

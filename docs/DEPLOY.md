@@ -144,13 +144,14 @@ bash scripts/update.sh        # add --check to preview, --yes to skip the prompt
 The script fast-forward `git pull`s the current branch, runs `npm ci && npm run build` (and the web
 client build when `web/out` exists — or `IRISES_WEB=1` asks for it — and the box has ~1.5 GB of
 memory free; `IRISES_SKIP_WEB_BUILD=1` skips it outright, and a web build that fails warns instead of
-failing the update), refreshes the engine bridge plugin, writes `$IRISES_HOME/update-receipt.json` —
-then **restarts Irises** (the user-level service, or the pidfile at `$IRISES_HOME/irises.pid`) **and
-restarts the engine gateway**, in that order. The plugin is refreshed on every run, after the restart
-is verified, so a run that rolls back leaves the engine on the plugin that matches the code it went
-back to. Nothing is left for the operator to restart. There is no chat trigger for any of this and
-none can be added: the script cycles the gateway, so an agent running it from a gateway-hosted chat
-would kill its own supervisor mid-turn.
+failing the update), writes `$IRISES_HOME/update-receipt.json` — then, in this order, **restarts
+Irises** (the user-level service, or the pidfile at `$IRISES_HOME/irises.pid`) **and verifies the new
+build is what answers `/health`**, **refreshes the engine bridge plugin**, and **bounces the engine
+gateway**. The plugin is refreshed on every run, and always after the restart is verified: a rollback
+undoes this clone, not the engine's copy, so a refresh any earlier would leave the engine loading the
+new plugin against the old code. Nothing is left for the operator to restart. There is no chat trigger
+for any of this and none can be added: the script cycles the gateway, so an agent running it from a
+gateway-hosted chat would kill its own supervisor mid-turn.
 
 **Rollback.** If the new commit fails to compile, or compiles and then fails to answer `/health` with
 the new build inside the boot window, the script returns the worktree to the commit that was running,
@@ -179,13 +180,17 @@ gateway alone; the refreshed plugin loads on its next restart).
 
 `scripts/engine-setup.sh` uses the same contract on its own side: `0` ok, `1` a step failed, `2` bad
 arguments, `4` Irises never reported the expected build on `/health`, `5` the gateway could not be
-verified back up — ending in `RESULT: ok|adopted|health-failed|gateway-failed` for an install and
-`RESULT: ok|partial|gateway-failed|noop` for an `--uninstall`.
+verified back up — ending in `RESULT: ok|adopted|partial|health-failed|gateway-failed` for an install
+and `RESULT: ok|partial|gateway-failed|noop` for an `--uninstall`. On both sides `partial` is the exit
+guard's line: the run stopped before its summary (an unguarded error, or a Ctrl+C), so read the
+messages above it rather than the token.
 
 **After the gateway restart** hermes posts its own note into the user's home channel — *"♻️ Gateway
 online — Hermes is back and ready."* That is hermes's message, not Irises's; she neither sends it nor
 can suppress it. Silence it per platform with `<platform>.gateway_restart_notification: false` in
 hermes's own config. Irises never edits hermes's config, so that is always the operator's own change.
+The canonical account of it is [§ Gateway restart
+notifications](ENGINES.md#gateway-restart-notifications).
 
 The running server also checks the remote itself and reports what it finds:
 
@@ -209,11 +214,13 @@ makes Irises say she cannot tell whether an update is waiting.
 ```bash
 systemctl --user status irises                     # Linux (systemd --user)
 launchctl print gui/$(id -u)/ai.irises.server      # macOS (LaunchAgent)
-schtasks /Query /TN Irises                         # Windows (Task Scheduler, from Git Bash)
+schtasks /Query /TN Irises                         # Windows (Task Scheduler, cmd or PowerShell)
 tail -f "${IRISES_HOME:-$HOME/.irises}/logs/server.log"
 ```
 
-`schtasks /Run /TN Irises` and `schtasks /End /TN Irises` start and stop the Windows one; the task is
+`schtasks /Run /TN Irises` and `schtasks /End /TN Irises` start and stop the Windows one. From Git
+Bash, double the slashes — `schtasks //Query //TN Irises` — because MSYS rewrites a lone `/Query`
+into a Windows path before `schtasks.exe` ever sees it. The task is
 registered from an XML definition (restart-on-failure, no execution time limit) and its action is the
 launcher `%USERPROFILE%\.irises\irises-start.cmd`, which is what appends to
 `%USERPROFILE%\.irises\logs\server.log`. Under WSL2 the systemd path is used instead, and reboot
@@ -222,13 +229,15 @@ are stub-tested only — no one has yet run them on a real Windows box**; Linux 
 verified platforms.
 
 Where none of the three exists (a bare container, a shell with no user session bus) the installer
-falls back to a detached `nohup` launch; stop that one with `kill $(cat "$IRISES_HOME/irises.pid")`.
+falls back to a detached `nohup` launch; stop that one with
+`kill $(cat "${IRISES_HOME:-$HOME/.irises}/irises.pid")`.
 
 **Uninstall.** `bash scripts/engine-setup.sh --uninstall` stops and unregisters the service, removes
 the bridge plugin and the engine-side keys the installer added (read from
 `$IRISES_HOME/install-manifest.json`, after backing the engine's env file up — with no manifest it
-falls back to the Irises-marked `IRISES_*` keys and leaves `API_SERVER_*` alone), restarts the
-gateway, and keeps your data; `--purge-data` also deletes `$IRISES_HOME` after you type `delete` to
+falls back to the Irises-marked `IRISES_*` keys and leaves `API_SERVER_*` alone), bounces the gateway
+**only when it actually removed something** (a re-run on an already-clean box cycles nothing), and
+keeps your data; `--purge-data` also deletes `$IRISES_HOME` after you type `delete` to
 confirm (`--yes` skips the question), which is not reversible. The clone is never deleted; the script
 prints the command. If the Photon reply-context patch series is applied to the hermes checkout, the
 uninstall prints the revert instructions rather than touching it.
