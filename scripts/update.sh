@@ -25,8 +25,8 @@
 #
 # EXIT CODES
 #   0   applied and verified, already up to date, or nothing upstream to apply
-#   1   preflight refused (not a git clone, dirty tree, detached HEAD, another run holds the lock,
-#       origin unreachable, or the pull could not fast-forward)
+#   1   preflight refused (not a git clone, dirty tree, a foreign process on our port, detached
+#       HEAD, another run holds the lock, origin unreachable, or the pull could not fast-forward)
 #   2   wrong usage (unknown flag)
 #   3   the build failed — the clone is back where it was; the running server was never touched
 #   4   the built code did not answer /health — rolled back to the old build and restarted
@@ -34,8 +34,10 @@
 #   10  --check only: an update is available
 # Every run that gets past the flags ends with `RESULT: <token>` as its last line of stdout:
 #   ok | noop | up-to-date | update-available | rolled-back | gateway-failed — or `partial` for a
-#   run that stopped before finishing: either nothing had been changed yet, or an undo failed and
-#   the tree/node_modules/dist may be inconsistent; read the messages above.
+#   run that stopped before finishing, which is one of: nothing had been changed yet; an undo failed
+#   and the tree/node_modules/dist may be inconsistent; or the run stopped abnormally (an unguarded
+#   error, or a Ctrl+C) and the exit guard printed the line, in which case the tree may be
+#   fast-forwarded with nothing undone. Read the messages above either way.
 set -euo pipefail
 
 source "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/lib/irises-lib.sh"
@@ -52,7 +54,7 @@ while [ $# -gt 0 ]; do
     --yes|-y)              ASSUME_YES=1; shift ;;
     --no-restart)          DO_RESTART=0; shift ;;
     --no-gateway-restart)  DO_GATEWAY=0; shift ;;
-    -h|--help)             sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)             sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --restart)
       err "--restart is gone: an update restarts Irises and verifies the new build every time."
       err "If you want the old behaviour — apply to disk and leave the process alone — use --no-restart."
@@ -111,6 +113,24 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     fi
     exit 1
   fi
+fi
+
+# Who holds the port, BEFORE anything changes. If :$PORT answers but there is no live pid of ours
+# and no service to cycle, then the restart at the end of this run cannot succeed — something else
+# (almost always `npm run dev` in another terminal) owns that bind. This check used to live inside
+# restart_and_verify, which is far too late to be useful: by then a perfectly good update had been
+# merged, built and receipted, and refusing there rolled all of it back and finished by telling the
+# reader Irises was down — while the dev server went on answering. Refuse here instead, where
+# nothing has moved yet and the fix is one sentence. `--check` writes nothing, and `--no-restart`
+# never touches the process, so neither cares who has the port.
+if [ "$CHECK" != "1" ] && [ "$DO_RESTART" = "1" ] \
+   && tcp_open 127.0.0.1 "$PORT" && [ -z "$(server_pid)" ] && ! service_installed; then
+  err "a process that is not the managed Irises is listening on :$PORT:"
+  err "  there is no live pid in $STATE_DIR/irises.pid, and no Irises service is installed"
+  err "the usual cause is a dev server (npm run dev) in another terminal."
+  err "stop it and re-run. Nothing has been changed — this refusal is before the pull."
+  err "(or apply to disk only, and restart Irises yourself: bash scripts/update.sh --no-restart)"
+  exit 1
 fi
 
 # --check is read-only (fetch + report), so it takes no lock.
@@ -198,15 +218,17 @@ restart_and_verify() { # EXPECTED_SHA SECS
     fi
   else
     # No pidfile'd server of ours, but the port is taken: something else is holding it — almost
-    # always `npm run dev` in another terminal. Starting a second server would lose the bind, log a
-    # port-in-use crash, and then fail verification with the dev server still answering — so refuse
-    # here, where the reason can still be named.
+    # always `npm run dev` in another terminal. Preflight refuses that case before anything is
+    # applied, so reaching it HERE means the port was taken while this run was building; this is the
+    # safety net, kept because starting a second server on a taken port would lose the bind and then
+    # fail verification against whatever is still answering. It says what is true — someone else has
+    # the port — and never that Irises is down, because something on :$PORT plainly is not.
     pid="$(server_pid)"
     if [ -z "$pid" ] && tcp_open 127.0.0.1 "$PORT"; then
-      err "something is already listening on :$PORT and it is not a server this updater can cycle:"
+      err "something took :$PORT during this run, and it is not a server this updater can cycle:"
       err "  there is no live pid in $STATE_DIR/irises.pid"
-      err "it is probably a dev server (npm run dev). Stop it, then re-run — starting a second"
-      err "server on that port would only crash and leave the old code answering."
+      err "whatever holds it is answering there — a dev server (npm run dev), most likely."
+      err "stop it and re-run; a second server on that port could not bind at all."
       return 1
     fi
     if [ -z "$pid" ]; then
@@ -370,7 +392,8 @@ if ! ( npm ci --include=dev && npm run build ); then
   }
   summary rolled-back \
     "build failed at ${NEW:0:7}; the clone is back at ${OLD:0:7}" \
-    "the running server was never touched — it is still serving ${OLD:0:7}"
+    "the running server was never touched — it is still serving ${OLD:0:7}" \
+    "plugin:   untouched (still the previous copy)"
   exit 3
 fi
 NEW_BUILT="$(built_sha "$ROOT")"

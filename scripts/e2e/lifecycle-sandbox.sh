@@ -35,6 +35,9 @@
 #   4   uninstall   — the server stops, the plugin dir is gone, our keys are stripped from the engine
 #                    .env while a pre-existing key survives, and $IRISES_HOME is KEPT
 #   5   uninstall×2 — a second one in a row changes nothing: no fresh backup, no gateway bounce
+#   6   held port   — a foreign listener on our port (`npm run dev`, in real life) is refused in
+#                    PREFLIGHT: exit 1, nothing merged, nothing built, no receipt, and the other
+#                    process still holding the port it started with
 #
 # NOTHING OF YOURS IS TOUCHED. Every stage runs under a throwaway HOME, IRISES_HOME and HERMES_HOME,
 # on two ephemeral ports, against a bare origin made from this clone's own objects. The scratch PATH
@@ -72,8 +75,9 @@ present() { grep -q "$2" "$1" >/dev/null 2>&1; }          # FILE NEEDLE
 absent()  { ! grep -q "$2" "$1" >/dev/null 2>&1; }        # FILE NEEDLE
 say_sha() { printf '%s' "${1:0:7}"; }
 
-# pgrep is deliberately NOT on the scratch PATH (see the header), so the sweep at exit keeps its own
-# absolute handle on the one taken before the swap. It only ever matches paths inside the sandbox.
+# pgrep IS on the scratch PATH, as a failing stub — that is how the sandbox stays blind to this
+# box's own processes (see the header). So the sweep at exit keeps its own absolute handle on the
+# real one, taken here before the PATH swap. It only ever matches paths inside the sandbox.
 REAL_PGREP="$(command -v pgrep 2>/dev/null || true)"
 
 cleanup() {
@@ -87,6 +91,7 @@ cleanup() {
       kill "$p" 2>/dev/null || true
     done
   fi
+  foreign_listener_stop
   engine_stub_stop
   if [ "${KEEP:-0}" != "1" ]; then rm -rf "$SANDBOX"; else printf '\nsandbox kept at %s\n' "$SANDBOX"; fi
 }
@@ -135,6 +140,30 @@ engine_stub_stop() {
     HERMES_SRV=""
   fi
 }
+
+# A listener that is NOT ours, holding OUR port, with no pidfile behind it: stage 6's stand-in for
+# the `npm run dev` a developer left running in another terminal. It accepts a connection and closes
+# it — the bind is the whole point, not the protocol.
+FOREIGN_SRV=""
+foreign_listener_up() { (exec 3<>"/dev/tcp/127.0.0.1/$SRV_PORT") 2>/dev/null; }
+foreign_listener_start() {
+  local i=0
+  node -e "require('net').createServer(s => s.end()).listen($SRV_PORT, '127.0.0.1');" &
+  FOREIGN_SRV=$!
+  while [ "$i" -lt 15 ]; do
+    if foreign_listener_up; then return 0; fi
+    sleep 1
+    i=$((i + 1))
+  done
+  return 1
+}
+foreign_listener_stop() {
+  if [ -n "${FOREIGN_SRV:-}" ]; then
+    kill "$FOREIGN_SRV" 2>/dev/null || true
+    wait "$FOREIGN_SRV" 2>/dev/null || true
+    FOREIGN_SRV=""
+  fi
+}
 trap cleanup EXIT
 
 step "sandbox at $SANDBOX (Irises :$SRV_PORT, stub engine :$ENGINE_PORT)"
@@ -150,7 +179,9 @@ for tool in bash sh cat cp rm mv ls mkdir chmod find grep sed head tail cut tr s
 done
 
 # npm: offline, and a real compile. `ci` hard-links this repo's node_modules (cp -al where the
-# filesystem allows it, cp -R otherwise); `build` runs the actual toolchain out of it.
+# filesystem allows it, cp -R otherwise); `build` runs the actual toolchain out of it. The
+# destination is cleared before EITHER copy: a `cp -al` that failed part-way still leaves a
+# directory behind, and `cp -R src dst` into an existing dst nests it as dst/node_modules.
 cat > "$BIN/npm" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -161,7 +192,7 @@ case "\$*" in
   ci*|*" ci"*)
     rm -rf "$CLONE/node_modules"
     cp -al "$REPO/node_modules" "$CLONE/node_modules" 2>/dev/null \
-      || cp -R "$REPO/node_modules" "$CLONE/node_modules"
+      || { rm -rf "$CLONE/node_modules"; cp -R "$REPO/node_modules" "$CLONE/node_modules"; }
     exit 0 ;;
   *"run build"*)
     cd "$CLONE"
@@ -220,11 +251,15 @@ health_sha() { # the sha /health reports, or empty
 expect_sha() { # DESCRIPTION WANT
   local desc="${1:-}" want="${2:-}" got
   got="$(health_sha)"
-  if [ -n "$got" ] && [ "$got" = "$want" ]; then
-    ok "$desc ($(say_sha "$want"))"
-  else
-    bad "$desc — /health serves '${got:-nothing}', expected $(say_sha "$want")"
+  # Prefix comparison, both ways, exactly as the library's wait_health_sha does it: /health is free
+  # to report a short sha, and the shas this harness holds are full ones. An exact `=` here would
+  # turn a correct server into a red line the moment either side shortened.
+  if [ -n "$got" ] && [ -n "$want" ]; then
+    case "$got" in "$want"*) ok "$desc ($(say_sha "$want"))"; return 0 ;; esac
+    case "$want" in "$got"*) ok "$desc ($(say_sha "$want"))"; return 0 ;; esac
   fi
+  bad "$desc — /health serves '${got:-nothing}', expected $(say_sha "$want")"
+  return 0
 }
 dist_sha() { # the sha dist/ was stamped from, or empty
   local v
@@ -294,7 +329,7 @@ EOF
 chmod 600 "$CLONE/.env"
 
 # ── 1. install ────────────────────────────────────────────────────────────────
-step "1/9  install"
+step "1/10  install"
 set +e
 INSTALL_OUT="$(cd "$CLONE" && bash scripts/engine-setup.sh --engine hermes --yes --no-service 2>&1)"
 INSTALL_RC=$?
@@ -320,9 +355,15 @@ check "the manifest names the plugin dir" present "$STATE/install-manifest.json"
 check "the server wrote exactly one pidfile" test -f "$STATE/irises.pid"
 check "and none in the clone root" test ! -f "$CLONE/irises.pid"
 check "no service was installed (detached fallback)" test ! -f "$HOME_DIR/Library/LaunchAgents/ai.irises.server.plist"
+# The install writes to this clone's .env, and the sandbox's whole isolation rests on two lines of
+# it: our high port, and the stub engine's URL. An install that rewrote HERMES_BASE_URL to a
+# default would point every later stage at whatever engine this box is really running.
+check "the sandbox's engine URL survived the install" \
+  present "$CLONE/.env" "HERMES_BASE_URL=http://127.0.0.1:$ENGINE_PORT"
+check "and so did its port" present "$CLONE/.env" "^PORT=$SRV_PORT\$"
 
 # ── 2. update ─────────────────────────────────────────────────────────────────
-step "2/9  update — a real commit published upstream"
+step "2/10  update — a real commit published upstream"
 NEXT_SHA="$(publish "e2e: a harmless upstream change" "// e2e: a harmless upstream change")" \
   || fatal "could not publish the update commit to the fake origin"
 
@@ -357,7 +398,7 @@ check "no update-status.json was left behind" test ! -f "$STATE/update-status.js
 # ── 2b. repair ────────────────────────────────────────────────────────────────
 # HEAD is current and origin has nothing new, but dist/ was stamped from a sha nobody has: a previous
 # build (or its box) died half-way. Reporting "up to date" would strand that.
-step "2b/9  repair — HEAD is current, dist/ was stamped from a sha that does not exist"
+step "2b/10  repair — HEAD is current, dist/ was stamped from a sha that does not exist"
 node -e '
 const fs = require("fs"), f = process.argv[1];
 const o = JSON.parse(fs.readFileSync(f, "utf8"));
@@ -378,9 +419,13 @@ expect_sha "the repaired build is the one answering" "$NEXT_SHA"
 check "a repair leaves the engine's plugin alone" absent "$STUB_LOG" "plugins enable irises-bridge"
 
 # ── 3a. a build that does not compile ─────────────────────────────────────────
-step "3a/9  rollback (exit 3) — a commit that does NOT compile"
+step "3a/10  rollback (exit 3) — a commit that does NOT compile"
 BADBUILD_SHA="$(publish "e2e: does not compile" 'const irisesE2E: number = "not a number";')" \
   || fatal "could not publish the uncompilable commit to the fake origin"
+# Start from no receipt at all, so "no receipt was left" below is an assertion about THIS stage. The
+# repair in 2b writes one and the boot announce usually archives it, but "usually" is the word doing
+# the work there — a run where it lingered would have made this stage pass on 2b's tidiness.
+rm -f "$STATE/update-receipt.json"
 PID_BEFORE="$(srv_pid)"
 : > "$STUB_LOG"
 set +e
@@ -405,7 +450,7 @@ REVERT_BUILD_SHA="$(unpublish "$BADBUILD_SHA")" \
   || fatal "could not revert the uncompilable commit upstream"
 
 # ── 3. a build that compiles and dies at boot ────────────────────────────────
-step "3/9  rollback (exit 4) — a commit that COMPILES and crashes on boot"
+step "3/10  rollback (exit 4) — a commit that COMPILES and crashes on boot"
 # A top-level throw compiles cleanly and dies while the module is being loaded, before the listener
 # ever runs: exactly the failure that used to leave the box with no server at all.
 CRASH_SHA="$(publish "e2e: compiles fine, dies at boot" 'throw new Error("e2e boot crash");')" \
@@ -425,6 +470,10 @@ check "the tree went back to the sha this clone was on" test "$(git -C "$CLONE" 
 check "dist/ was re-stamped from the sha it went back to" test "$(dist_sha)" = "$NEXT_SHA"
 check "the bad sha is not what dist was stamped from" absent "$CLONE/dist/version.json" "$CRASH_SHA"
 expect_sha "the OLD build is serving again — the box is not left down" "$NEXT_SHA"
+# "started", not "restarted": the crashed build took the process with it, so the rollback had
+# nothing to cycle and had to bring one up from nothing. The needle keeps the tag's `] ` in front
+# precisely because "restarted — build" contains "started — build".
+check_out "the rollback restart says started (nothing was running)" "] started — build" "$ROLL_OUT"
 check "the receipt for the failed build was withdrawn" test ! -f "$STATE/update-receipt.json"
 check "node_modules survived the rollback" test -d "$CLONE/node_modules/typescript"
 # The refresh runs only AFTER a verified restart. Before that fix a rollback left the engine loading
@@ -433,7 +482,7 @@ check "the engine still has its plugin" test -f "$HERMES/plugins/irises-bridge/p
 check "the plugin was NOT refreshed for code that was undone" absent "$STUB_LOG" "plugins enable irises-bridge"
 
 # ── 3b. forward again ─────────────────────────────────────────────────────────
-step "3b/9  recovery — the box moves forward again after a rollback"
+step "3b/10  recovery — the box moves forward again after a rollback"
 RECOVER_SHA="$(unpublish "$CRASH_SHA")" \
   || fatal "could not revert the boot-crash commit upstream"
 : > "$STUB_LOG"
@@ -452,7 +501,7 @@ check "and the gateway is bounced" grep -qE "hermes gateway re?start" "$STUB_LOG
 # Irises IS updated and live; it is the ENGINE that cannot be verified. That is exit 5, not a
 # rollback: undoing a perfectly good update because someone else's service is down would be worse
 # than saying so. This stage sits out the library's 90s budget once, on purpose.
-step "3c/9  exit 5 — Irises updates, the engine's gateway cannot be verified"
+step "3c/10  exit 5 — Irises updates, the engine's gateway cannot be verified"
 GW_SHA="$(publish "e2e: another harmless upstream change" "// e2e: another harmless upstream change")" \
   || fatal "could not publish the last update commit to the fake origin"
 engine_stub_stop
@@ -473,7 +522,7 @@ check "and the service-manager probe was blind, as the sandbox intends" present 
 engine_stub_start
 
 # ── 4. uninstall ──────────────────────────────────────────────────────────────
-step "4/9  uninstall — data kept"
+step "4/10  uninstall — data kept"
 : > "$STUB_LOG"
 printf 'sandbox\n' > "$STATE/memories-canary.txt"
 set +e
@@ -506,7 +555,7 @@ check "the clone is in fact still there" test -d "$CLONE/.git"
 # ── 5. the same uninstall again ───────────────────────────────────────────────
 # The second one in a row used to take a fresh backup of an already-clean .env and bounce the engine
 # for it, because "the manifest lists keys" was being read as "something changed".
-step "5/9  uninstall again — nothing changed, so nothing is done"
+step "5/10  uninstall again — nothing changed, so nothing is done"
 BAKS_BEFORE="$(backups)"
 : > "$STUB_LOG"
 set +e
@@ -524,6 +573,45 @@ fi
 check "the engine's gateway was NOT bounced for nothing" absent "$STUB_LOG" "gateway"
 check_out "and the summary says so" "not bounced (nothing changed)" "$AGAIN_OUT"
 check "the data directory is still KEPT" test -f "$STATE/memories-canary.txt"
+
+# ── 6. someone else has the port ──────────────────────────────────────────────
+# The uninstall left the port free and no server of ours anywhere, so this is the one place in the
+# battery where a foreign listener can take :$SRV_PORT cleanly. In real life it is `npm run dev` in
+# another terminal, and the updater used to fast-forward, build, write the receipt, refuse inside
+# the restart, roll a GOOD update back, and sign off with "Irises is DOWN" while the dev server went
+# on answering. The refusal belongs in preflight, and this stage is what pins it there: exit 1 with
+# the tree, the build and the other process all exactly as they were.
+step "6/10  foreign listener — the port is held by something the updater cannot cycle"
+foreign_listener_start || fatal "could not put a foreign listener on :$SRV_PORT"
+HELD_SHA_BEFORE="$(git -C "$CLONE" rev-parse HEAD)"
+HELD_DIST_BEFORE="$(dist_sha)"
+HELD_SHA="$(publish "e2e: a commit that must not be applied" "// e2e: must not be applied")" \
+  || fatal "could not publish the must-not-apply commit to the fake origin"
+# Clear the slate the same way stage 3a does: stage 3c's successful update wrote a receipt, and
+# whether the boot announce had already archived it is not this stage's business.
+rm -f "$STATE/update-receipt.json"
+: > "$STUB_LOG"
+set +e
+HELD_OUT="$(cd "$CLONE" && bash scripts/update.sh --yes 2>&1)"
+HELD_RC=$?
+set -e
+printf '%s\n' "$HELD_OUT" | sed 's/^/    | /'
+check_rc "a port held by someone else refuses the update" 1 "$HELD_RC"
+check_out "the refusal names the port" ":$SRV_PORT" "$HELD_OUT"
+check_out "and says to stop it" "stop it" "$HELD_OUT"
+check_no_out "nothing was rolled back, because nothing was applied" "RESULT: rolled-back" "$HELD_OUT"
+check_out "the run reports partial — it stopped before changing anything" "RESULT: partial" "$HELD_OUT"
+check "the tree never moved" test "$(git -C "$CLONE" rev-parse HEAD)" = "$HELD_SHA_BEFORE"
+check "the waiting commit is still only upstream" test "$(git -C "$CLONE" rev-parse HEAD)" != "$HELD_SHA"
+check "dist/ was never re-stamped" test "$(dist_sha)" = "$HELD_DIST_BEFORE"
+check "no receipt was written for an update that never happened" test ! -f "$STATE/update-receipt.json"
+check "and the engine was told nothing" absent "$STUB_LOG" "plugins enable irises-bridge"
+if foreign_listener_up; then
+  ok "the other process still has the port — the updater never went near it"
+else
+  bad "the listener on :$SRV_PORT is gone — the updater must not touch a process it did not start"
+fi
+foreign_listener_stop
 
 engine_stub_stop
 
