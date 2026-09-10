@@ -67,6 +67,9 @@ test('claimPendingUpdateNote returns the woven note once, then null', () => {
   const note = claimPendingUpdateNote('web:q');
   assert.ok(note);
   assert.match(note!, /bash scripts\/update\.sh/);
+  // The script restarts her, so the note must not hand them a second step that no longer exists.
+  assert.match(note!, /restarts you itself/);
+  assert.doesNotMatch(note!, /then restarting you/);
   assert.equal(claimPendingUpdateNote('web:q'), null); // claimed
 });
 
@@ -146,6 +149,11 @@ test('builders: availability carries the exact command as relayed text; the chan
   assert.match(text, /bash scripts\/update\.sh/);
   assert.match(text, /abc1234/);
   assert.match(_internal.availabilityFraming(), /once/);
+  // The command is the whole payload, so it must be the ONLY thing stated exactly — and what the
+  // line promises has to be what the script does. It restarts her and the gateway, so the retired
+  // "then restart the server" tail would leave them waiting for a step that no longer exists.
+  assert.match(text, /it pulls, rebuilds and restarts me/);
+  assert.doesNotMatch(text, /then restart the server/);
 
   assert.equal(_internal.upgradedText('bbbbbbb'), 'now on build bbbbbbb');
   const framing = _internal.upgradedFraming({ oldSha: 'a'.repeat(40), newSha: 'b'.repeat(40), appliedAt: 'x', changes: ['secret1 fix', 'secret2 feat'] });

@@ -43,9 +43,11 @@ function defaultRoutable(chatId: string): boolean {
   return !!kind && !!getChannel(kind);
 }
 
-/** The apply command, relayed word-for-word (the consent-URL precedent): it must land exactly. */
+/** The apply command, relayed word-for-word (the consent-URL precedent): it must land exactly. What
+ *  it PROMISES matters as much — the script restarts her and the engine gateway itself, so this line
+ *  must not send them off to restart a server afterwards and leave them waiting for something to do. */
 function availabilityText(shortSha: string): string {
-  return `to apply: run \`${APPLY_COMMAND}\` from the Irises folder, then restart the server (new build ${shortSha})`;
+  return `to apply: run \`${APPLY_COMMAND}\` from the Irises folder — it pulls, rebuilds and restarts me (new build ${shortSha})`;
 }
 
 function availabilityFraming(): string {
@@ -168,5 +170,5 @@ export function claimPendingUpdateNote(chatId: string): string | null {
   if (!defaultRoutable(chatId)) return null;
   if (!claimAnnouncement(status.remoteSha, chatId)) return null;
   const short = status.remoteSha.slice(0, 7);
-  return `## Passing note — you have an upgrade waiting\nA new version of you (build ${short}) is ready for the server you run on. Somewhere natural in THIS reply, mention it once — your own words, one short bubble at most: you've got an upgrade ready, and they can apply it by running \`${APPLY_COMMAND}\` in your install folder and then restarting you (relay that command exactly, in backticks). Never frame it as a system announcement or read it like a changelog. If this exact moment is the wrong time — they're mid-crisis or asking something urgent — skip it; this note won't come back.`;
+  return `## Passing note — you have an upgrade waiting\nA new version of you (build ${short}) is ready for the server you run on. Somewhere natural in THIS reply, mention it once — your own words, one short bubble at most: you've got an upgrade ready, and they can apply it by running \`${APPLY_COMMAND}\` in your install folder (relay that command exactly, in backticks) — the script pulls, rebuilds and restarts you itself, so there is nothing left for them to restart. Never frame it as a system announcement or read it like a changelog. If this exact moment is the wrong time — they're mid-crisis or asking something urgent — skip it; this note won't come back.`;
 }

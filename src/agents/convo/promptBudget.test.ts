@@ -396,7 +396,7 @@ const ACTIVE_OPS: ActiveOps[] = [
 /** The caller addendum the live turn actually passes: the one-off version note
  *  (update/announce.ts claimPendingUpdateNote — private to that module, so the text is mirrored
  *  here with a stand-in build sha of the same length). */
-const UPDATE_NOTE = `## Passing note — you have an upgrade waiting\nA new version of you (build 4f2a91c) is ready for the server you run on. Somewhere natural in THIS reply, mention it once — your own words, one short bubble at most: you've got an upgrade ready, and they can apply it by running \`bash scripts/update.sh\` in your install folder and then restarting you (relay that command exactly, in backticks). Never frame it as a system announcement or read it like a changelog. If this exact moment is the wrong time — they're mid-crisis or asking something urgent — skip it; this note won't come back.`;
+const UPDATE_NOTE = `## Passing note — you have an upgrade waiting\nA new version of you (build 4f2a91c) is ready for the server you run on. Somewhere natural in THIS reply, mention it once — your own words, one short bubble at most: you've got an upgrade ready, and they can apply it by running \`bash scripts/update.sh\` in your install folder (relay that command exactly, in backticks) — the script pulls, rebuilds and restarts you itself, so there is nothing left for them to restart. Never frame it as a system announcement or read it like a changelog. If this exact moment is the wrong time — they're mid-crisis or asking something urgent — skip it; this note won't come back.`;
 
 /** The media note convo/client.ts folds into the turn text when a file arrives (describeAttachments,
  *  private to that module — mirrored here for the photo case). */
