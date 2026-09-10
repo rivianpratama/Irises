@@ -1,10 +1,14 @@
-// Run with: npm test   (scripts/**/*.test.ts is in the test glob). Nothing here installs anything:
-// these are the ARGUMENT and EXIT-CODE contracts, the parts an operator or a script depends on and
-// that a rewrite silently changes. The lifecycle itself is covered end to end by
+// Run with: npm test   (scripts/**/*.test.ts is in the test glob). NOTHING HERE INSTALLS ANYTHING —
+// but two tests do run `--uninstall --yes` for real, so they run it inside a throwaway HOME /
+// IRISES_ROOT / IRISES_HOME / HERMES_HOME (see `sandbox()`), never against this machine. Everything
+// else is the ARGUMENT and EXIT-CODE contract: the parts an operator or a wrapping script depends on
+// and that a rewrite silently changes. The install path, and the lifecycle end to end, is covered by
 // scripts/e2e/lifecycle-sandbox.sh (npm run e2e:lifecycle).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const SCRIPT = join(process.cwd(), 'scripts', 'engine-setup.sh');
@@ -12,6 +16,47 @@ const SCRIPT = join(process.cwd(), 'scripts', 'engine-setup.sh');
 function run(args: string[]): { out: string; err: string; code: number } {
   const r = spawnSync('/bin/bash', [SCRIPT, ...args], { encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' } });
   return { out: r.stdout ?? '', err: r.stderr ?? '', code: r.status ?? -1 };
+}
+
+/**
+ * A throwaway everything for the tests that really execute the uninstaller.
+ *
+ * IRISES_HOME alone is NOT a sandbox, and that was the bug in these two tests. `service_installed`
+ * reads $HOME/.config/systemd/user/irises.service and $HOME/Library/LaunchAgents/
+ * ai.irises.server.plist regardless of IRISES_HOME, and `engine_kind` reads the CLONE's .env
+ * OPS_BACKEND before it ever looks at the shell — so on a box with Irises actually installed,
+ * `npm test` stopped and deleted the service and bounced the engine's gateway.
+ *
+ * All four roots therefore move into one mkdtemp dir, and the fixture clone's .env pins
+ * OPS_BACKEND=off so no engine is detected, nothing is written to any engine, and no gateway is
+ * bounced. IRISES_ROOT is what the library's irises_root() honours, and the script's ROOT (its cwd,
+ * $ROOT/irises.pid, the clone .env it reads) comes from it.
+ */
+function sandbox(): { env: Record<string, string>; root: string; state: string } {
+  const tmp = mkdtempSync(join(tmpdir(), 'irises-uninstall-'));
+  const home = join(tmp, 'home');
+  const state = join(tmp, 'state');
+  const root = join(tmp, 'root');
+  for (const d of [home, state, root]) mkdirSync(d, { recursive: true });
+  writeFileSync(join(root, '.env'), 'OPS_BACKEND=off\nPORT=3999\n');
+  return {
+    root,
+    state,
+    env: {
+      HOME: home,
+      IRISES_HOME: state,
+      IRISES_ROOT: root,
+      HERMES_HOME: join(tmp, 'hermes'),
+    },
+  };
+}
+
+function runUninstall(args: string[], box = sandbox()) {
+  const r = spawnSync('/bin/bash', [SCRIPT, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, NO_COLOR: '1', ...box.env },
+  });
+  return { out: r.stdout ?? '', err: r.stderr ?? '', code: r.status ?? -1, box };
 }
 
 test('--help documents every flag it accepts, and exits 0', () => {
@@ -59,34 +104,27 @@ test('the exit-code table is documented in the header', () => {
 test('--uninstall on a box with nothing installed says so and still exits 0', () => {
   // No manifest, no service, no plugin: an uninstall that finds nothing to do is a SUCCESS. The
   // opposite (exit 1) would make the documented "run it again if unsure" advice a lie.
-  const r = spawnSync('/bin/bash', [SCRIPT, '--uninstall', '--yes'], {
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      NO_COLOR: '1',
-      IRISES_HOME: join(process.cwd(), 'node_modules', '.cache', 'irises-uninstall-probe'),
-      HERMES_HOME: '/nonexistent-hermes',
-      OPS_BACKEND: 'off',
-    },
-  });
-  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
-  assert.match(r.stdout ?? '', /RESULT: ok/);
-  assert.match(r.stdout ?? '', /nothing/i);
+  const r = runUninstall(['--uninstall', '--yes']);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(r.out, /RESULT: ok/);
+  assert.match(r.out, /nothing/i);
+  // The sandbox is not decoration: every path it reports has to be one we made up for it. If this
+  // run ever talks about the real $HOME again, it is signalling the real service and the real engine.
+  assert.ok(r.out.includes(r.box.state), `the run must work inside the sandbox:\n${r.out}`);
+  assert.ok(r.out.includes(r.box.root), `and report the fixture clone, not this checkout:\n${r.out}`);
+  assert.ok(!r.out.includes(process.cwd()), `this checkout is never touched:\n${r.out}`);
 });
 
 test('--uninstall never deletes data without --purge-data, and prints the exact rm', () => {
-  const r = spawnSync('/bin/bash', [SCRIPT, '--uninstall', '--yes'], {
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      NO_COLOR: '1',
-      IRISES_HOME: join(process.cwd(), 'node_modules', '.cache', 'irises-uninstall-probe'),
-      HERMES_HOME: '/nonexistent-hermes',
-      OPS_BACKEND: 'off',
-    },
-  });
-  assert.match(r.stdout ?? '', /rm -rf/, 'the command to remove the data is printed, never run');
-  assert.match(r.stdout ?? '', /--purge-data/);
+  const r = runUninstall(['--uninstall', '--yes']);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(r.out, /rm -rf/, 'the command to remove the data is printed, never run');
+  assert.ok(
+    r.out.includes(`rm -rf ${r.box.state}`),
+    `the rm names the sandbox's data dir, so it is the sandbox that was inspected:\n${r.out}`,
+  );
+  assert.match(r.out, /--purge-data/);
+  assert.ok(existsSync(r.box.state), 'and the data dir it printed is still there');
 });
 
 test('--uninstall documents that the clone is never deleted', () => {

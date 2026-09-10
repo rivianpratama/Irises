@@ -26,7 +26,8 @@
 #   2  wrong usage (unknown flag, unknown engine, bad port)
 #   4  Irises did not report the expected build on /health within the budget
 #   5  Irises is fine, but its engine's gateway could not be verified back up
-# The last line of stdout is always `RESULT: <token>` for scripts that wrap this one.
+# The last line of stdout is `RESULT: <token>` for every run that gets past argument parsing
+# (`--help` and usage errors print none) — that is the line for scripts that wrap this one.
 #
 # Idempotent: re-run it any time. It adopts a server it finds already running, never overwrites a
 # value you set yourself, and touches no engine source code.
@@ -59,7 +60,8 @@ usage: bash ./scripts/engine-setup.sh [options]          # install
   -h, --help                 this text
 
 exit codes: 0 ok · 1 a step failed · 2 usage · 4 health not verified · 5 gateway not verified
-the last line of stdout is always: RESULT: <token>
+every run that gets past argument parsing ends its stdout with: RESULT: <token>
+(this help text and a usage error print none)
 EOF
 }
 
@@ -126,6 +128,35 @@ trap 'lifecycle_exit_guard $?' EXIT
 
 rand_token() { node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"; }
 
+# A sha for a human: the first seven, or the word `unknown`. dist/version.json legitimately carries
+# no sha on a tarball install, and `built:  — NOT confirmed live` reads like a truncation bug in the
+# script rather than the one fact it is trying to report.
+short_sha() { # [SHA]
+  local s="${1:-}"
+  if [ -z "$s" ]; then printf 'unknown'; return 0; fi
+  printf '%s' "${s:0:7}"
+}
+
+# Three keys in THIS clone's .env are deliberately clobbered on every install — OPS_BACKEND, and the
+# engine credentials (HERMES_API_KEY / OPENCLAW_TOKEN), because a credential the engine has since
+# rotated is worse than useless: Irises 401s on every deep-work call and blames the engine, and
+# nothing in either log says the clone is holding a dead key. The clobber is intended. The SILENCE
+# was the bug — an operator who set one of these by hand saw no sign it had been replaced.
+#
+# A credential is reported by NAME ONLY: this script's output gets pasted into chats and issues.
+# `show` is for the values that are not secrets (OPS_BACKEND is hermes|openclaw|off, and the script
+# prints the engine it chose anyway), where seeing both sides is the whole point of the line.
+announce_overwrite() { # KEY NEWVALUE [show]
+  local key="${1:-}" new="${2:-}" show="${3:-}" cur
+  cur="$(env_get "$ENV_FILE" "$key")"
+  if [ -z "$cur" ] || [ "$cur" = "$new" ]; then return 0; fi
+  if [ "$show" = "show" ]; then
+    say "updating $key in .env: $cur → $new"
+  else
+    say "updating $key in .env to the engine's live value (the old one is replaced, not kept)"
+  fi
+}
+
 # ══ install ══════════════════════════════════════════════════════════════════
 do_install() {
   local engine port kind node_bin unit="" plugin_dir="" adopted=0
@@ -174,7 +205,7 @@ do_install() {
   if tcp_open 127.0.0.1 "$port"; then
     live_sha="$(wait_health_sha "http://127.0.0.1:$port" "" 2 || true)"
     if [ -n "$live_sha" ]; then
-      say "an Irises is already on :$port (build ${live_sha:0:7}) — this run will adopt it"
+      say "an Irises is already on :$port (build $(short_sha "$live_sha")) — this run will adopt it"
       adopted=1
     else
       err "something else already holds :$port and it is not Irises."
@@ -200,8 +231,10 @@ do_install() {
     local ekey
     ekey="$(env_get "$engine_env" API_SERVER_KEY)"
     if [ -z "$ekey" ]; then ekey="$(rand_token)"; fi
+    announce_overwrite OPS_BACKEND hermes show
     env_set "$ENV_FILE" OPS_BACKEND hermes
     env_set_default "$ENV_FILE" HERMES_BASE_URL "http://127.0.0.1:8642"
+    announce_overwrite HERMES_API_KEY "$ekey"
     env_set "$ENV_FILE" HERMES_API_KEY "$ekey"
     env_set_default "$ENV_FILE" ENGINE_PUSH_TOKEN "$(rand_token)"
     local k v
@@ -215,11 +248,14 @@ do_install() {
     if [ -z "$otoken" ] || [ "$otoken" = "undefined" ]; then
       die 1 "could not read gateway.auth.token from OpenClaw — is its gateway configured?"
     fi
+    announce_overwrite OPS_BACKEND openclaw show
     env_set "$ENV_FILE" OPS_BACKEND openclaw
     env_set_default "$ENV_FILE" OPENCLAW_URL "ws://127.0.0.1:18789"
+    announce_overwrite OPENCLAW_TOKEN "$otoken"
     env_set "$ENV_FILE" OPENCLAW_TOKEN "$otoken"
     env_set_default "$ENV_FILE" ENGINE_PUSH_TOKEN "$(rand_token)"
   else
+    announce_overwrite OPS_BACKEND off show
     env_set "$ENV_FILE" OPS_BACKEND off
   fi
 
@@ -233,14 +269,18 @@ do_install() {
   # ── 5. build. --include=dev FORCES devDependencies even under NODE_ENV=production (the documented
   #      prod env in deploy/app.env): tsc, cpx and tsx live there, so a bare `npm ci` strips the
   #      build toolchain and `npm run build` then dies with "tsc: not found".
+  #
+  #      Both are guarded, and not for form's sake: bare, they exit this script with the TOOL's code,
+  #      and tsc's 2 is `--port` usage while its 4 is "health not verified" — a build failure that
+  #      reports itself as one of the two documented outcomes it is not.
   say "installing dependencies + building (npm ci --include=dev && npm run build)"
-  npm ci --include=dev
-  npm run build
+  npm ci --include=dev || die 1 "npm ci failed — see above"
+  npm run build || die 1 "the build failed — see above"
   sha="$(built_sha "$ROOT")"
   if [ -z "$sha" ]; then
     warn "dist/version.json carries no sha — health will be verified by liveness only"
   else
-    say "built ${sha:0:7}"
+    say "built $(short_sha "$sha")"
   fi
 
   # OpenClaw's gateway client goes in AFTER npm ci, or ci prunes anything not in the lockfile.
@@ -278,11 +318,13 @@ do_install() {
       if ask_yn "stop it by process match (pgrep -f dist/index.js under $ROOT) and take over?" y; then
         # Unix-only by the pgrep gate above: is_our_server confirms each candidate is OUR server
         # before anything is signalled.
+        # server_stop_pid, not a bare kill: it WAITS for the pid to go and escalates to SIGKILL if it
+        # does not. A bare kill plus a flat `sleep 3` was a guess, and a server that ignored SIGTERM
+        # for four seconds took the port with it into the service install.
         local p
         for p in $(pgrep -f "$ROOT/dist/index.js" 2>/dev/null || true); do
-          if is_our_server "$p"; then say "stopping pid $p"; kill "$p" 2>/dev/null || true; fi
+          if is_our_server "$p"; then say "stopping pid $p"; server_stop_pid "$p" 10; fi
         done
-        sleep 3
       else
         die 1 "leaving it alone — stop it yourself, then re-run"
       fi
@@ -290,7 +332,8 @@ do_install() {
   fi
   case "$kind" in
     none)
-      server_start_detached "$ROOT"
+      server_start_detached "$ROOT" \
+        || die 1 "could not start Irises detached — see $(irises_home)/logs/server.log"
       ;;
     *)
       unit="$(service_install "$ROOT" "$node_bin")" || die 1 "could not install the $kind service"
@@ -302,17 +345,17 @@ do_install() {
   # ── 7. verify the build we just made is the build that answers. "Something answers /health" was
   #      the old check, and it is satisfied by the OLD process still holding the port.
   if ! live_sha="$(wait_health_sha "http://127.0.0.1:$port" "$sha" 60)"; then
-    err "Irises did not report build ${sha:0:7} on http://127.0.0.1:$port/health within 60s"
+    err "Irises did not report build $(short_sha "$sha") on http://127.0.0.1:$port/health within 60s"
     err "read the log:  tail -n 40 $(irises_home)/logs/server.log"
     err "'EADDRINUSE' there means something else holds :$port; a missing voice-model key shows there too"
     summary health-failed \
       "engine:   $engine" \
-      "built:    ${sha:0:7} — NOT confirmed live" \
+      "built:    $(short_sha "$sha") — NOT confirmed live" \
       "service:  $kind${unit:+ ($unit)}" \
       "log:      $(irises_home)/logs/server.log"
     exit 4
   fi
-  say "health OK on :$port — build ${live_sha:0:7} is live"
+  say "health OK on :$port — build $(short_sha "$live_sha") is live"
 
   # ── 8. engine-side writes. Now, not earlier: the engine only ever points at a server we have
   #      SEEN answer. Back the file up first, and record exactly which keys were ours so
@@ -326,7 +369,12 @@ do_install() {
     fi
     backup="$(env_backup "$engine_env" pre-install)"
     token="$(env_get "$ENV_FILE" ENGINE_PUSH_TOKEN)"
-    local pairs="" key val kv
+    # One positional argument per pair, accumulated in an array. The old form built a
+    # newline-separated string and word-split it at the call — which meant a value containing
+    # whitespace (an IRISES_URL behind a proxy path, a key someone pasted with a trailing space)
+    # split into bogus half-lines in the engine's .env. bash 3.2 has no `+=`, hence the index.
+    local pairs_n=0 key val kv
+    local pairs_arr=()
     for kv in \
       "API_SERVER_ENABLED=true" \
       "API_SERVER_KEY=$(env_get "$ENV_FILE" HERMES_API_KEY)" \
@@ -349,13 +397,12 @@ do_install() {
         fi
       else
         keys_added="$keys_added $key"
-        pairs="$pairs
-$key=$val"
+        pairs_arr[$pairs_n]="$key=$val"
+        pairs_n=$((pairs_n + 1))
       fi
     done
-    if [ -n "$pairs" ]; then
-      # shellcheck disable=SC2086  # $pairs is newline-separated KEY=VALUE, no spaces in values
-      env_append_block "$engine_env" "Irises server" $pairs
+    if [ "$pairs_n" -gt 0 ]; then
+      env_append_block "$engine_env" "Irises server" "${pairs_arr[@]}"
     fi
     if [ "$BRIDGE" = "1" ]; then
       if [ "$(env_count "$engine_env" IRISES_BRIDGE_TOKEN)" = "0" ]; then
@@ -394,13 +441,18 @@ $key=$val"
     else
       warn "the plugin did not install — fronting will not work yet"
     fi
+    # The token is NOT printed. This script's output gets pasted into chats, issues and pastebins,
+    # and IRISES_BRIDGE_TOKEN is the whole authentication between the gateway and Irises — so the
+    # operator is told the key name and where to read the value from a 0600 file they already own.
     warn "give the OpenClaw GATEWAY process these three variables (its own env, not this clone's):"
-    warn "  IRISES_BRIDGE_TOKEN=$(env_get "$ENV_FILE" ENGINE_PUSH_TOKEN)"
+    warn "  IRISES_BRIDGE_TOKEN   — the value is ENGINE_PUSH_TOKEN in $ENV_FILE (0600); copy it across"
     warn "  IRISES_URL=http://127.0.0.1:$port"
     warn "  IRISES_FRONT=whatsapp:*,telegram:123    # empty = front NOTHING"
   fi
 
-  # ── 9. the manifest: what to undo, and what was never ours.
+  # ── 9. the manifest: what to undo, and what was never ours. A warn, not a die: the engine is
+  #      already wired and Irises is already answering, so aborting here would leave a working
+  #      install reported as a failure. --uninstall has a fallback for a missing manifest.
   manifest_write "$(manifest_path)" \
     "root=$ROOT" \
     "irisesHome=$(irises_home)" \
@@ -414,7 +466,8 @@ $key=$val"
     "nodeBin=$node_bin" \
     "keysAdded=${keys_added# }" \
     "keysPreExisting=${keys_pre# }" \
-    "bridge=$BRIDGE"
+    "bridge=$BRIDGE" \
+    || warn "could not write the install manifest — --uninstall will have to fall back to the marker comments"
 
   # ── 10. the gateway. ALWAYS, when an engine is configured: the plugin, IRISES_FRONT and
   #       API_SERVER_* are only read when the gateway starts, so an install that skips this is an
@@ -431,7 +484,7 @@ $key=$val"
 
   summary "$result" \
     "engine:    $engine${plugin_dir:+ (bridge plugin at $plugin_dir)}" \
-    "build:     ${live_sha:0:7} — confirmed live on http://127.0.0.1:$port/health" \
+    "build:     $(short_sha "$live_sha") — confirmed live on http://127.0.0.1:$port/health" \
     "service:   $kind${unit:+ ($unit)}" \
     "data:      $(irises_home)  (irises.db + memories/ — never touched by an update)" \
     "logs:      $(irises_home)/logs/server.log" \
@@ -464,9 +517,10 @@ do_uninstall() {
     port="$(manifest_read "$man" port)"
   else
     warn "no install manifest at $man — falling back to detection"
-    warn "(a pre-rewrite install left no manifest; keys are then matched by their Irises marker)"
+    warn "(a pre-rewrite install left none. Keys are then matched by NAME — IRISES_PUSH_TOKEN,"
+    warn "IRISES_BRIDGE_TOKEN, IRISES_URL, IRISES_FRONT — and orphaned Irises marker comments are"
+    warn "removed with them, whoever wrote them.)"
     engine="$(engine_kind "$ENGINE_FLAG")"
-    keys_added=""
     keys_pre=""
     port="$(irises_port)"
     case "$engine" in
@@ -520,24 +574,43 @@ do_uninstall() {
     if [ -f "$f" ]; then rm -f "$f"; say "removed $f"; fi
   done
 
-  # ── 2. the bridge plugin.
-  if [ -n "$plugin_dir" ] && [ -d "$plugin_dir" ]; then
-    did_something=1
-    plugin_found=1
+  # ── 2. the bridge plugin. Run on the strength of the plugin_dir we KNOW about, not on the dir
+  #      still being there: plugin_remove also DISABLES the plugin in the engine's own config, and
+  #      that is the half that matters. Someone who deleted the directory by hand and then ran
+  #      --uninstall was left with a gateway still configured to load a plugin that is gone.
+  #      did_something, though, still tracks the DIRECTORY: a disable we cannot observe the result of
+  #      is not evidence of a change, and treating it as one would make every repeat --uninstall
+  #      bounce the gateway again (see the engine keys below for the same rule).
+  if [ -n "$plugin_dir" ]; then
+    if [ -d "$plugin_dir" ]; then
+      did_something=1
+      plugin_found=1
+    else
+      say "$plugin_dir is already gone — still disabling the plugin in the engine's config"
+    fi
     plugin_remove "$engine" || failed=1
   else
-    if [ "$engine" != "off" ]; then say "no bridge plugin installed at ${plugin_dir:-<unknown>}"; fi
+    if [ "$engine" != "off" ]; then say "no bridge plugin to remove (nothing names one)"; fi
   fi
 
-  # ── 3. the engine's keys. Back the file up first, respect the manifest's pre_existing list, and
-  #      collapse any duplicate we leave behind onto its live value.
+  # ── 3. the engine's keys. LOOK BEFORE TOUCHING: the second --uninstall in a row used to take a
+  #      fresh backup of an already-clean .env and bounce the gateway for it, because did_something
+  #      was set on the strength of the manifest listing keys rather than the file still holding any.
+  #      So count first, and let `removed` be the only thing that says a change happened.
+  local k n present=0
   if [ -n "${engine_env:-}" ] && [ -f "$engine_env" ] && [ -n "$keys_added" ]; then
-    did_something=1
+    # shellcheck disable=SC2086  # keys_added is a space-separated key list by construction
+    for k in $keys_added; do
+      if [ "$(env_count "$engine_env" "$k")" != "0" ]; then present=1; fi
+    done
+  fi
+  if [ "$present" = "1" ]; then
     backup="$(env_backup "$engine_env" pre-uninstall)"
     # shellcheck disable=SC2086  # keys_added is a space-separated key list by construction
     removed="$(env_remove_irises_block "$engine_env" $keys_added)"
+    case "$removed" in ''|*[!0-9]*) removed=0 ;; esac
     say "removed $removed Irises key(s) from $engine_env (backup: ${backup:-none})"
-    local k n
+    if [ "$removed" -gt 0 ]; then did_something=1; fi
     for k in $keys_pre; do
       n="$(env_count "$engine_env" "$k")"
       if [ "$n" -gt 1 ]; then
@@ -578,8 +651,11 @@ do_uninstall() {
       rm -rf "$home"
       say "removed $home"
     else
-      warn "not deleted (you did not type 'delete') — $home is still there"
-      failed=1
+      # Not a failure: --purge-data is a request to be ASKED, and declining is the answer. The
+      # uninstall itself succeeded; exiting 1 here made "your data was kept" read as "something
+      # broke", which is the one message an operator must not get wrong about their own database.
+      say "your data was KEPT: $home ($size) — you did not type 'delete'"
+      say "remove it yourself when you are sure:  rm -rf $home"
     fi
   else
     if [ -d "$home" ]; then

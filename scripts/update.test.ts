@@ -1,5 +1,7 @@
 // Run with: npm test   (scripts/**/*.test.ts is in the test glob). No update is ever applied here:
-// these are the ARGUMENT, EXIT-CODE and RESULT-LINE contracts. The optional web step used to be
+// these are the ARGUMENT, EXIT-CODE and RESULT-LINE contracts. One test does reach the network
+// (`--check` is a real `git fetch origin`); it SKIPS itself rather than fail when the remote is
+// unreachable, so the suite still passes offline. The optional web step used to be
 // lifted out of this file by string-slicing between `build_web() {` and the next `\n}\n`; it now
 // lives in the shared library and is tested directly in scripts/lib/irises-lib.test.ts, so the
 // slicing (and the way an unrelated edit could break it) is gone.
@@ -84,8 +86,19 @@ test('the apply path is guarded by a rollback that restores BOTH the tree and th
   assert.match(rollback, /npm run build/, 'and the old dist');
 });
 
-test('--check on this clone reports one of the two check results and exits 0 or 10', () => {
+test('--check on this clone reports one of the two check results and exits 0 or 10', (t) => {
+  // The ONE test in the suite that touches the network: --check is `git fetch origin` plus a
+  // comparison, and there is no honest way to check the real remote without reaching it. It is kept
+  // because the 0/10 split is the whole contract anything polling for an update depends on.
+  //
+  // On a box with no route to origin the script exits 1 from its own guarded fetch, which says
+  // nothing about the contract — so that case is SKIPPED, not failed. `npm test` has to pass on a
+  // plane. Only a run that actually reached the remote is asserted.
   const r = run(['--check']);
+  if (r.code === 1 && /fetch|Could not resolve|unable to access|Network/i.test(r.err)) {
+    t.skip('offline: --check needs the remote');
+    return;
+  }
   assert.ok(r.code === 0 || r.code === 10, `expected 0 or 10, got ${r.code}\n${r.out}\n${r.err}`);
   if (r.code === 0) assert.match(r.out, /RESULT: up-to-date/);
   else assert.match(r.out, /RESULT: update-available/);
