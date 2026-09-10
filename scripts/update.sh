@@ -115,24 +115,6 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   fi
 fi
 
-# Who holds the port, BEFORE anything changes. If :$PORT answers but there is no live pid of ours
-# and no service to cycle, then the restart at the end of this run cannot succeed — something else
-# (almost always `npm run dev` in another terminal) owns that bind. This check used to live inside
-# restart_and_verify, which is far too late to be useful: by then a perfectly good update had been
-# merged, built and receipted, and refusing there rolled all of it back and finished by telling the
-# reader Irises was down — while the dev server went on answering. Refuse here instead, where
-# nothing has moved yet and the fix is one sentence. `--check` writes nothing, and `--no-restart`
-# never touches the process, so neither cares who has the port.
-if [ "$CHECK" != "1" ] && [ "$DO_RESTART" = "1" ] \
-   && tcp_open 127.0.0.1 "$PORT" && [ -z "$(server_pid)" ] && ! service_installed; then
-  err "a process that is not the managed Irises is listening on :$PORT:"
-  err "  there is no live pid in $STATE_DIR/irises.pid, and no Irises service is installed"
-  err "the usual cause is a dev server (npm run dev) in another terminal."
-  err "stop it and re-run. Nothing has been changed — this refusal is before the pull."
-  err "(or apply to disk only, and restart Irises yourself: bash scripts/update.sh --no-restart)"
-  exit 1
-fi
-
 # --check is read-only (fetch + report), so it takes no lock.
 if [ "$CHECK" != "1" ]; then
   lock_acquire || exit 1
@@ -369,6 +351,28 @@ if [ "$ASSUME_YES" != "1" ]; then
     y|Y|yes|YES) ;;
     *) say "aborted — nothing changed"; summary noop "aborted at the confirmation prompt"; exit 0 ;;
   esac
+fi
+
+# Who holds the port — the last thing checked before the first thing changes. If :$PORT answers but
+# there is no live pid of ours and no service to cycle, then the restart at the end of this run
+# cannot succeed: something else (almost always `npm run dev` in another terminal) owns that bind.
+# The check used to live inside restart_and_verify, which is far too late to be useful — by then a
+# perfectly good update had been merged, built and receipted, and refusing there rolled all of it
+# back and signed off telling the reader Irises was down, while the dev server went on answering.
+# It then lived in preflight, ABOVE the fetch and the compare, which is too early: a box that had
+# nothing to apply exited 1 over a port nobody was going to touch instead of reporting
+# `RESULT: up-to-date`. Here is the one spot that is both: every read-only outcome (up-to-date,
+# noop, update-available, the confirmation abort) has already reported and exited, and the
+# fast-forward below is still one line away, so a refusal here changes nothing. `--check` exits
+# above this line, and `--no-restart` never touches the process, so neither cares who has the port.
+if [ "$DO_RESTART" = "1" ] \
+   && tcp_open 127.0.0.1 "$PORT" && [ -z "$(server_pid)" ] && ! service_installed; then
+  err "a process that is not the managed Irises is listening on :$PORT:"
+  err "  there is no live pid in $STATE_DIR/irises.pid, and no Irises service is installed"
+  err "the usual cause is a dev server (npm run dev) in another terminal."
+  err "stop it and re-run. Nothing has been changed — this refusal is before the pull."
+  err "(or apply to disk only, and restart Irises yourself: bash scripts/update.sh --no-restart)"
+  exit 1
 fi
 
 # ── apply, with a rollback around the parts that can fail ────────────────────
