@@ -5989,6 +5989,19 @@ EOF
 )"
 ```
 
+## Amendment 2026-09-10 — Windows (decided during execution)
+
+**Requirement (owner):** Irises must install on every platform hermes/OpenClaw run on, Windows included, with **no dependency beyond what installing hermes/OpenClaw already needs**, kept simple. No Windows box is available for live verification.
+
+**Decision:** the bash scripts stay. On Windows they run in **Git Bash** (ships with Git for Windows, which the clone already requires) or inside **WSL2** (where a WSL-hosted hermes lives). No PowerShell-native entry point. Windows-specific code is unit-tested with stubs and documented as "not yet verified on Windows".
+
+**Changes to the plan:**
+- New **Task 3b** (brief: `.superpowers/sdd/task-3b-brief.md`; lands between Task 3 and Task 5): `irises_platform` (`linux|macos|wsl|windows`), `win_path` (`cygpath -w`), `service_kind` → `schtasks` on Windows, a Task Scheduler backend (task `Irises`, `ONLOGON`, launcher `$IRISES_HOME/irises-start.cmd` redirecting to `logs/server.log` — the same mechanism hermes uses for its own gateway), `service_installed` (unit OR plist OR scheduled task), Windows-safe `is_our_server`/`server_pid`/`server_stop`/`server_start_detached`/`tcp_open` via `tasklist`/`taskkill`/PowerShell, `augment_path` probing `/c/Program Files/nodejs`, and `.gitattributes` pinning LF on shell files.
+- **Tasks 5, 6, 7:** use `service_installed` wherever the plan text tests the unit/plist files, and treat `schtasks` exactly like `systemd`/`launchd` in every `case "$kind"` (any kind other than `none` is a managed service). The gateway bounce on Windows is the engine CLI (both CLIs drive Task Scheduler themselves); the systemctl/launchctl fallbacks simply find nothing.
+- **Tasks 104, 105, 106 (docs/skills):** add "on Windows, run these in Git Bash or WSL2" to every command block; add the Windows service controls (`schtasks /Query /TN Irises`, `/Run`, `/End`) beside the systemd/launchd ones; note WSL2 needs systemd enabled in `/etc/wsl.conf` for reboot survival, else the detached fallback is used; mark Windows as "not yet verified live".
+- **Task 8 (e2e):** unchanged — the sandbox runs where it runs; Windows is stub-tested in `irises-lib.test.ts`.
+- **Verification:** add "the Windows branches of the lib have stub tests; a live Windows run is owed".
+
 ## Verification (end-to-end)
 
 1. `npm test` green; `npm run build`; `npm run typecheck:scripts`; `npm --prefix web run typecheck`.
