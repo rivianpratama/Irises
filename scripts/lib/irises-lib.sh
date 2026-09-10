@@ -307,6 +307,43 @@ env_remove_irises_block() { # FILE KEY…
 
 # ═══ D. environment preflight ═════════════════════════════════════════════════
 
+# Which OS this is, in the four flavours that change what the lifecycle scripts may call:
+#
+#   linux    Ubuntu and friends: systemd --user, /proc, pgrep, timeout(1).
+#   macos    bash 3.2, launchd, NO timeout(1) and NO setsid.
+#   wsl      a real Linux kernel inside Windows — identical to `linux` for everything we do; named
+#            separately only so a message can say where the operator actually is.
+#   windows  Git Bash (MSYS2 bash + coreutils + curl + cygpath), which Git for Windows ships and the
+#            clone therefore already needs. No PowerShell entry point, no new runtime: the same
+#            scripts, with Task Scheduler instead of systemd and tasklist/taskkill instead of kill.
+#
+# Nothing beyond this file needs to know the mechanism; callers ask service_kind and service_installed.
+irises_platform() {
+  local os
+  os="$(uname -s 2>/dev/null || printf unknown)"
+  case "$os" in
+    Darwin) printf 'macos'; return 0 ;;
+    MSYS_NT*|MINGW*|CYGWIN*) printf 'windows'; return 0 ;;
+    Linux)
+      if grep -qi microsoft /proc/version 2>/dev/null; then printf 'wsl'; else printf 'linux'; fi
+      return 0
+      ;;
+  esac
+  printf 'linux'
+}
+
+# A POSIX path in the form Windows itself understands. Every path that crosses out of bash — into a
+# launcher .cmd, into a schtasks argument, into a PowerShell string — goes through here first;
+# cmd.exe and Task Scheduler have never heard of /c/Users. Without cygpath (WSL2, a stripped MSYS)
+# the path is already the right kind and passes through untouched.
+win_path() { # PATH
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w "${1:-}"
+    return 0
+  fi
+  printf '%s' "${1:-}"
+}
+
 # Newest vX.Y.Z directory under $1 whose major is >= 22, printed as <dir>/vX.Y.Z/bin.
 # Zero-padded string comparison, not `-gt`: bash's test evaluates `022` as octal.
 _irises_newest_node_dir() { # DIR
@@ -329,7 +366,8 @@ _irises_newest_node_dir() { # DIR
 # APPEND (never prepend) the dirs a node/npm/git might live in, plus the base system dirs. Appending
 # is deliberate: a node the operator put on PATH keeps winning. This exists because a non-login shell
 # on the production VPS has no node at all — it lives at ~/.local/bin/node -> ~/.hermes/node/bin/node
-# — and an agent-spawned install inherits exactly that PATH.
+# — and an agent-spawned install inherits exactly that PATH. The last two entries are the Git Bash
+# spellings of the same problem: the Node installer's own directory, and where `npm -g` puts binaries.
 augment_path() {
   local d extra="" newest fnm
   for d in \
@@ -338,7 +376,9 @@ augment_path() {
     "$HOME/.volta/bin" \
     "$HOME/.bun/bin" \
     "/opt/homebrew/bin" \
-    "/usr/local/bin"
+    "/usr/local/bin" \
+    "/c/Program Files/nodejs" \
+    "${APPDATA:+$APPDATA/npm}"
   do
     if [ -d "$d" ]; then
       case ":$PATH:$extra:" in *":$d:"*) ;; *) extra="$extra:$d" ;; esac
@@ -488,11 +528,22 @@ mem_available_mb() {
   return 0
 }
 
-# Is anything listening on HOST:PORT? bash's /dev/tcp first (no external tool), then nc, then lsof.
+# Is anything listening on HOST:PORT? bash's /dev/tcp first (no external tool), then — on Git Bash —
+# PowerShell, then nc, then lsof.
 tcp_open() { # HOST PORT
   local h="${1:-127.0.0.1}" p="${2:-}"
   if [ -z "$p" ]; then return 1; fi
   if (exec 3<>"/dev/tcp/$h/$p") 2>/dev/null; then return 0; fi
+  if [ "$(irises_platform)" = "windows" ]; then
+    # Git Bash has /dev/tcp, but neither nc nor lsof, so there is nothing under it. TcpClient is in
+    # every .NET on the box. The escaped $c is a PowerShell variable, not a bash one.
+    if powershell.exe -NoProfile -NonInteractive -Command \
+      "\$c=New-Object Net.Sockets.TcpClient; try { \$c.Connect('$h',$p); exit 0 } catch { exit 1 }" \
+      >/dev/null 2>&1; then
+      return 0
+    fi
+    return 1
+  fi
   if command -v nc >/dev/null 2>&1; then
     if nc -z -w 2 "$h" "$p" >/dev/null 2>&1; then return 0; fi
     return 1
@@ -621,6 +672,9 @@ _gateway_http_ok() { # ENGINE
 }
 
 # hermes only: is the gateway's SERVICE up? Used when HTTP was not answering before the bounce.
+# On Windows both engines' gateways are Task Scheduler tasks that only their own CLI knows how to
+# drive, so the CLI IS the bounce path there: these service-manager fallbacks find no systemctl and
+# no launchctl, return 1, and the CLI branch above has already done the work.
 _gateway_service_up() {
   local unit label uid state
   unit="hermes-gateway"
@@ -872,19 +926,28 @@ service_label() { printf 'ai.irises.server'; }
 service_unit_path()  { printf '%s/.config/systemd/user/%s.service' "$HOME" "$(service_name)"; }
 service_plist_path() { printf '%s/Library/LaunchAgents/%s.plist' "$HOME" "$(service_label)"; }
 
+# Windows: the Task Scheduler task name, and the launcher it runs. schtasks cannot redirect output
+# and cannot set environment variables, so the task's whole action is "run this one .cmd", and the
+# .cmd does the env, the cd and the >> redirect. Same mechanism hermes uses for its own gateway.
+service_task_name()     { printf 'Irises'; }
+service_launcher_path() { printf '%s/irises-start.cmd' "$(irises_home)"; }
+
 _irises_xdg() { printf '%s' "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"; }
 
 # systemd needs systemctl AND a user bus to talk to (a fresh SSH session with linger off has
 # neither, and `systemctl --user` there fails with "Failed to connect to bus"). launchd needs
-# launchctl and Darwin. Anything else → none, and the caller uses the detached fallback.
+# launchctl and Darwin. Windows needs schtasks, which Git Bash exposes as `schtasks`. WSL2 is Linux
+# and takes the systemd branch. Anything else → none, and the caller uses the detached fallback.
 service_kind() {
-  local os xdg
-  os="$(uname -s 2>/dev/null || printf unknown)"
-  case "$os" in
-    Darwin)
+  local xdg
+  case "$(irises_platform)" in
+    macos)
       if command -v launchctl >/dev/null 2>&1; then printf 'launchd'; return 0; fi
       ;;
-    Linux)
+    windows)
+      if command -v schtasks >/dev/null 2>&1; then printf 'schtasks'; return 0; fi
+      ;;
+    linux|wsl)
       if command -v systemctl >/dev/null 2>&1; then
         xdg="$(_irises_xdg)"
         if [ -S "$xdg/bus" ] || [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
@@ -895,6 +958,17 @@ service_kind() {
       ;;
   esac
   printf 'none'
+}
+
+# Is Irises installed as a service AT ALL, whichever backend this box gave us? The installer and the
+# updater ask this instead of testing the unit and the plist themselves — a two-file check silently
+# reports "not installed" on Windows, where the install is a Task Scheduler entry and no file.
+service_installed() {
+  if [ -f "$(service_unit_path)" ] || [ -f "$(service_plist_path)" ]; then return 0; fi
+  if command -v schtasks >/dev/null 2>&1 && schtasks //Query //TN "$(service_task_name)" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
 }
 
 _systemctl_user() { # ARGS…
@@ -926,7 +1000,7 @@ _service_node_options() { # ROOT
 
 # Prints ONLY the unit/plist path on stdout — callers capture it. Everything else goes through log/warn.
 service_install() { # ROOT NODE_BIN
-  local root="${1:-}" node="${2:-}" kind home logs unit plist path opts uid
+  local root="${1:-}" node="${2:-}" kind home logs unit plist path opts uid launcher
   if [ -z "$root" ] || [ -z "$node" ]; then err "service_install needs ROOT and an absolute NODE_BIN"; return 1; fi
   # A unit, a plist and a Task Scheduler action all inherit essentially no PATH, so a relative
   # `node` resolves to nothing at boot. (On Git Bash an absolute path starts with `/` too —
@@ -1024,8 +1098,40 @@ service_install() { # ROOT NODE_BIN
       printf '%s' "$plist"
       return 0
       ;;
+    schtasks)
+      launcher="$(service_launcher_path)"
+      # CRLF throughout. cmd.exe reads a lone LF as part of the token on some builds, which turns
+      # `set "IRISES_HOME=…"` into a variable whose value ends in a stray character — and every
+      # launcher Windows writes for itself is CRLF, so this is also the shape an operator expects.
+      {
+        printf '@echo off\r\n'
+        # ASCII only in this file: cmd.exe reads it under whatever the machine's OEM codepage is.
+        printf 'rem Irises - private companion server. Written by service_install; edits are lost on update.\r\n'
+        printf 'set "IRISES_HOME=%s"\r\n' "$(win_path "$home")"
+        if [ -n "$opts" ]; then printf 'set "NODE_OPTIONS=%s"\r\n' "$opts"; fi
+        printf 'set "PATH=%s;%%PATH%%"\r\n' "$(win_path "$(dirname "$node")")"
+        printf 'cd /d "%s"\r\n' "$(win_path "$root")"
+        printf '"%s" "%s" >> "%s" 2>&1\r\n' \
+          "$(win_path "$node")" "$(win_path "$root/dist/index.js")" "$(win_path "$logs/server.log")"
+      } > "$launcher" || { err "could not write $launcher — is $home writable?"; return 1; }
+      log "wrote $launcher"
+      # Two quoting layers that must not be crossed: schtasks parses //TR itself, so the launcher
+      # path arrives QUOTED INSIDE that one argument, and cmd.exe parses the .cmd we just wrote.
+      # The doubled slashes are for MSYS2, which would otherwise rewrite a lone /TN into a path
+      # before schtasks.exe ever saw it. ONLOGON + LIMITED = starts at this user's next logon, no
+      # elevation prompt; //F replaces an existing task so a re-install is a re-install.
+      if ! schtasks //Create //TN "$(service_task_name)" //TR "\"$(win_path "$launcher")\"" \
+        //SC ONLOGON //RL LIMITED //F >/dev/null 2>&1; then
+        err "schtasks //Create failed for the task $(service_task_name) — a locked-down box refuses it"
+        err "install without a service instead:  --no-service  (then start it yourself after each logon)"
+        return 1
+      fi
+      log "registered the Task Scheduler task $(service_task_name) (at logon, as you, unelevated)"
+      printf '%s' "$launcher"
+      return 0
+      ;;
   esac
-  warn "no user service manager here (no systemd --user, no launchd) — using the detached fallback"
+  warn "no user service manager here (no systemd --user, no launchd, no schtasks) — using the detached fallback"
   return 1
 }
 
@@ -1037,6 +1143,7 @@ service_start() {
     launchd) uid="$(id -u)"
              launchctl kickstart "gui/$uid/$(service_label)" >/dev/null 2>&1 || return 1
              return 0 ;;
+    schtasks) schtasks //Run //TN "$(service_task_name)" >/dev/null 2>&1 || return 1; return 0 ;;
   esac
   return 1
 }
@@ -1049,6 +1156,13 @@ service_stop() {
     launchd) uid="$(id -u)"
              launchctl kill SIGTERM "gui/$uid/$(service_label)" >/dev/null 2>&1 || true
              return 0 ;;
+    schtasks)
+      # //End is best-effort: some Windows builds report success without reaping the child, others
+      # fail outright when the task is not currently "running". server_stop does the real work.
+      schtasks //End //TN "$(service_task_name)" >/dev/null 2>&1 || true
+      server_stop 15
+      return 0
+      ;;
   esac
   return 1
 }
@@ -1061,6 +1175,14 @@ service_restart() {
     launchd) uid="$(id -u)"
              launchctl kickstart -k "gui/$uid/$(service_label)" >/dev/null 2>&1 || return 1
              return 0 ;;
+    schtasks)
+      # Task Scheduler has no restart verb, and //Run on a task it still believes is running is a
+      # no-op — hence stop, a beat for the port to come free, start.
+      service_stop || true
+      sleep 2
+      service_start || return 1
+      return 0
+      ;;
   esac
   return 1
 }
@@ -1080,12 +1202,19 @@ service_status() { # 0 = installed and running
       if launchctl print "gui/$uid/$(service_label)" 2>/dev/null | grep -q 'state = running'; then return 0; fi
       return 1
       ;;
+    schtasks)
+      # A registered task says nothing about whether the server is up: an ONLOGON task sits "Ready"
+      # between logons, and one whose launcher died is still "Ready". The pidfile is the liveness.
+      if ! schtasks //Query //TN "$(service_task_name)" //FO LIST >/dev/null 2>&1; then return 1; fi
+      if [ -n "$(server_pid)" ]; then return 0; fi
+      return 1
+      ;;
   esac
   return 1
 }
 
 service_uninstall() {
-  local kind unit plist uid
+  local kind unit plist uid launcher
   kind="$(service_kind)"
   case "$kind" in
     systemd)
@@ -1103,25 +1232,61 @@ service_uninstall() {
       if [ -f "$plist" ]; then rm -f "$plist"; say "removed $plist"; fi
       return 0
       ;;
+    schtasks)
+      launcher="$(service_launcher_path)"
+      schtasks //End //TN "$(service_task_name)" >/dev/null 2>&1 || true
+      if ! schtasks //Delete //TN "$(service_task_name)" //F >/dev/null 2>&1; then
+        warn "could not delete the task $(service_task_name) — remove it by hand in Task Scheduler"
+      fi
+      if [ -f "$launcher" ]; then
+        if rm -f "$launcher" 2>/dev/null; then say "removed $launcher"; else warn "could not remove $launcher"; fi
+      fi
+      return 0
+      ;;
   esac
-  # Nothing installed here, but a unit/plist can outlive the tool that detected it.
-  for unit in "$(service_unit_path)" "$(service_plist_path)"; do
-    if [ -f "$unit" ]; then rm -f "$unit"; say "removed $unit"; fi
+  # Nothing installed here, but a unit/plist/launcher can outlive the tool that detected it.
+  for unit in "$(service_unit_path)" "$(service_plist_path)" "$(service_launcher_path)"; do
+    if [ -f "$unit" ]; then rm -f "$unit" 2>/dev/null || true; say "removed $unit"; fi
   done
   return 0
 }
 
 # Only ever signal a pid we can identify as OUR server: a stale pidfile (an OOM-killed server never
 # ran its exit handler) can hold a pid the OS has since handed to something else.
+#
+# Three ways to read another process's command line, one per platform. Git Bash's `ps` is the MSYS
+# one: it has no -o and lists only MSYS processes, so node.exe — started by Windows, not by bash —
+# does not even appear in it. Win32_Process is where Windows keeps the command line.
 is_our_server() { # PID
   local pid="${1:-}" cmd=""
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  if [ "$(irises_platform)" = "windows" ]; then
+    cmd="$(powershell.exe -NoProfile -NonInteractive -Command \
+      "(Get-CimInstance Win32_Process -Filter \"ProcessId=$pid\").CommandLine" 2>/dev/null || true)"
+    # `?` matches either slash: Windows spells the same path C:\irises\dist\index.js.
+    case "$cmd" in *dist?index.js*) return 0 ;; esac
+    return 1
+  fi
   if [ -r "/proc/$pid/cmdline" ]; then
     cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
   else
     cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
   fi
   case "$cmd" in *dist/index.js*) return 0 ;; esac
+  return 1
+}
+
+# Is this pid alive? `kill -0` everywhere but Git Bash, where $IRISES_HOME/irises.pid holds a WINDOWS
+# pid (node's own process.pid) that the MSYS signal layer has no translation for — kill -0 on it
+# either fails on a live server or, worse, hits an unrelated MSYS process with the same number.
+_pid_alive() { # PID
+  local pid="${1:-}"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  if [ "$(irises_platform)" = "windows" ]; then
+    if tasklist //FI "PID eq $pid" //FO CSV //NH 2>/dev/null | grep -q "\"$pid\""; then return 0; fi
+    return 1
+  fi
+  if kill -0 "$pid" 2>/dev/null; then return 0; fi
   return 1
 }
 
@@ -1134,7 +1299,7 @@ server_pid() {
   if [ -f "$home/irises.pid" ]; then
     pid="$(cat "$home/irises.pid" 2>/dev/null || true)"
     pid="${pid%%[![:digit:]]*}"
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && is_our_server "$pid"; then
+    if [ -n "$pid" ] && _pid_alive "$pid" && is_our_server "$pid"; then
       printf '%s' "$pid"
       return 0
     fi
@@ -1147,12 +1312,26 @@ server_stop() { # [SECS]
   pid="$(server_pid)"
   if [ -z "$pid" ]; then return 0; fi
   say "stopping the running server (pid $pid)"
+  if [ "$(irises_platform)" = "windows" ]; then
+    # There is no SIGTERM to send on Windows and therefore no graceful phase to wait through:
+    # taskkill //F terminates outright, and //T takes the tree with it (node spawns the web build
+    # and, on an engine box, the bridge). The poll below is only to confirm it actually went.
+    taskkill //PID "$pid" //T //F >/dev/null 2>&1 || true
+    while _pid_alive "$pid" && [ "$i" -lt "$secs" ]; do
+      sleep 1
+      i=$((i + 1))
+    done
+    if _pid_alive "$pid"; then
+      warn "pid $pid survived taskkill //F for ${secs}s — end it in Task Manager before you continue"
+    fi
+    return 0
+  fi
   kill "$pid" 2>/dev/null || true
-  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt "$secs" ]; do
+  while _pid_alive "$pid" && [ "$i" -lt "$secs" ]; do
     sleep 1
     i=$((i + 1))
   done
-  if kill -0 "$pid" 2>/dev/null; then
+  if _pid_alive "$pid"; then
     warn "pid $pid ignored SIGTERM for ${secs}s — sending SIGKILL"
     kill -9 "$pid" 2>/dev/null || true
     sleep 1
@@ -1162,13 +1341,29 @@ server_stop() { # [SECS]
 
 # The --no-service fallback. `setsid` gives the server its own session; macOS has no setsid, so the
 # child inherits INT/HUP as ignored instead — otherwise Ctrl+C in the launching terminal kills the
-# server it just started (reproduced).
+# server it just started (reproduced). Git Bash has neither: an MSYS background job dies with its
+# console, so Windows detaches through Start-Process instead.
 server_start_detached() { # ROOT [LOG]
-  local root="${1:-}" log="${2:-}" home
+  local root="${1:-}" log="${2:-}" home nodebin
   home="$(irises_home)"
   mkdir -p "$home/logs" || { err "could not create $home/logs — is $home writable?"; return 1; }
   if [ -z "$log" ]; then log="$home/logs/server.log"; fi
   say "starting Irises detached — it outlives this shell (log: $log)"
+  if [ "$(irises_platform)" = "windows" ]; then
+    nodebin="$(command -v node 2>/dev/null || true)"
+    if [ -z "$nodebin" ]; then err "no node on PATH — cannot start the server"; return 1; fi
+    # Start-Process inherits this shell's environment, which is the only channel it has for
+    # IRISES_HOME (there is no -Environment parameter on Windows PowerShell 5.1). And it refuses one
+    # file for both streams, so stderr gets its own .err sibling.
+    export IRISES_HOME="$home"
+    if ! powershell.exe -NoProfile -NonInteractive -Command \
+      "Start-Process -WindowStyle Hidden -FilePath '$(win_path "$nodebin")' -ArgumentList '\"$(win_path "$root/dist/index.js")\"' -WorkingDirectory '$(win_path "$root")' -RedirectStandardOutput '$(win_path "$log")' -RedirectStandardError '$(win_path "$log").err'" \
+      >/dev/null 2>&1; then
+      err "Start-Process could not launch the server — run it yourself: node $root/dist/index.js"
+      return 1
+    fi
+    return 0
+  fi
   (
     cd "$root" || exit 1
     if command -v setsid >/dev/null 2>&1; then

@@ -1,2 +1,7 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Shell scripts and the library must stay LF: Git for Windows defaults to autocrlf=true, and bash
+# refuses a script whose lines end in \r. The later pattern wins, so these override `* text=auto`.
+*.sh text eol=lf
+scripts/lib/* text eol=lf

@@ -980,3 +980,266 @@ test('wait_health_sha reads a /health body that has whitespace around its colons
   assert.equal(r.code, 0, `${r.out}\n${r.err}`);
   assert.match(r.out, new RegExp(`GOT=\\[${sha}\\]`), r.out);
 });
+
+// ── Windows: Git Bash / WSL2 ────────────────────────────────────────────────────────────────────
+//
+// There is no Windows box behind any of these: every one is stubs. `uname` prints what MSYS2
+// prints, and `cygpath`/`schtasks`/`powershell.exe`/`tasklist`/`taskkill` log their argv and answer
+// with canned output. That pins the SHAPE of every Windows call — the flags, the doubled slashes,
+// the CRLF launcher, which helper is reached for on which platform — and nothing at all about how
+// Windows then behaves. The Windows paths stay unverified on Windows until someone installs there.
+
+/** `cygpath -w`: prefix C:\fake and flip the slashes. Enough to prove win_path is in the chain. */
+const CYGPATH_STUB = [
+  'printf "cygpath argv:%s\\n" "$*" >> "$STUB_LOG"',
+  'in_path=""',
+  'for a in "$@"; do case "$a" in -*) ;; *) in_path="$a" ;; esac; done',
+  `printf 'C:\\\\fake%s\\n' "$(printf '%s' "$in_path" | tr '/' '\\\\')"`,
+].join('\n');
+
+const SCHTASKS_STUB = [
+  'printf "schtasks argv:%s\\n" "$*" >> "$STUB_LOG"',
+  'exit "${SCHTASKS_RC:-0}"',
+].join('\n');
+
+/** Git Bash as the lib sees it: an MSYS uname, cygpath, and a Task Scheduler that says yes. */
+const WIN_STUBS: Record<string, string> = {
+  uname: 'echo MSYS_NT-10.0-22631',
+  cygpath: CYGPATH_STUB,
+  schtasks: SCHTASKS_STUB,
+};
+
+test('irises_platform tells Git Bash, WSL2, macOS and Linux apart', () => {
+  for (const os of ['MSYS_NT-10.0-22631', 'MINGW64_NT-10.0-22631', 'CYGWIN_NT-10.0']) {
+    const w = runLib('irises_platform', { stubs: { uname: `echo ${os}` } });
+    assert.equal(w.out, 'windows', `${os} is Git Bash / Cygwin: ${w.err}`);
+  }
+  assert.equal(runLib('irises_platform', { stubs: { uname: 'echo Darwin' } }).out, 'macos');
+  const linux = runLib('irises_platform', { stubs: { uname: 'echo Linux' } });
+  assert.match(linux.out, /^(linux|wsl)$/, 'WSL2 is a Linux kernel that names microsoft in /proc/version');
+  const host = runLib('irises_platform');
+  assert.match(host.out, /^(linux|macos|wsl|windows)$/, `unstubbed, it must still answer: ${host.err}`);
+  const junk = runLib('irises_platform', { stubs: { uname: 'exit 1' } });
+  assert.equal(junk.out, 'linux', 'an unknown uname is treated as the POSIX default, not as an error');
+});
+
+test('win_path converts through cygpath and passes the path through unchanged without one', () => {
+  const converted = runLib('win_path /c/irises/dist', { stubs: WIN_STUBS });
+  assert.equal(converted.code, 0, converted.err);
+  assert.equal(converted.out.trim(), String.raw`C:\fake\c\irises\dist`);
+  const bare = runLib('win_path /c/irises/dist', { stubs: { uname: 'echo MSYS_NT-10.0-22631' } });
+  assert.equal(bare.out, '/c/irises/dist', 'no cygpath (WSL2, a stripped MSYS) must not mangle the path');
+});
+
+test('service_kind is schtasks on Git Bash, and none when Task Scheduler is unreachable', () => {
+  const yes = runLib('service_kind', { stubs: WIN_STUBS });
+  assert.equal(yes.out, 'schtasks', yes.err);
+  const no = runLib('service_kind', { stubs: { uname: 'echo MSYS_NT-10.0-22631' } });
+  assert.equal(no.out, 'none', 'a locked-down box with no schtasks takes the detached fallback');
+  assert.equal(runLib('service_task_name', { stubs: WIN_STUBS }).out, 'Irises');
+});
+
+test('service_install writes a CRLF launcher .cmd, registers the ONLOGON task, prints only the launcher', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'irises-win-'));
+  const root = join(dir, 'clone');
+  const state = join(dir, 'state');
+  mkdirSync(join(root, 'dist'), { recursive: true });
+  writeFileSync(join(root, '.env'), 'PORT=3000\nNODE_OPTIONS=--max-old-space-size=512   # heap cap\n');
+  const r = runLib(`service_install ${JSON.stringify(root)} "/c/Program Files/nodejs/node.exe"`, {
+    stubs: WIN_STUBS,
+    env: { IRISES_ROOT: root, IRISES_HOME: state },
+  });
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  const launcher = join(state, 'irises-start.cmd');
+  assert.equal(r.out.trim(), launcher, 'callers capture this — every other line belongs on stderr');
+
+  const cmd = readFileSync(launcher, 'utf8');
+  assert.ok(
+    cmd.split('\n').filter(Boolean).every(l => l.endsWith('\r')),
+    `cmd.exe wants CRLF; a lone LF has mangled multi-line set blocks:\n${JSON.stringify(cmd)}`,
+  );
+  assert.match(cmd, /^@echo off\r$/m);
+  assert.ok(cmd.includes(String.raw`set "IRISES_HOME=C:\fake`), cmd);
+  assert.ok(cmd.includes('set "NODE_OPTIONS=--max-old-space-size=512"'), cmd);
+  assert.ok(cmd.includes(String.raw`set "PATH=C:\fake\c\Program Files\nodejs;%PATH%"`), cmd);
+  assert.ok(cmd.includes(String.raw`cd /d "C:\fake`), cmd);
+  assert.ok(cmd.includes(String.raw`node.exe"`), cmd);
+  assert.ok(cmd.includes(String.raw`dist\index.js`), cmd);
+  assert.ok(cmd.includes(String.raw`logs\server.log`), 'schtasks cannot redirect — the launcher must');
+  assert.ok(cmd.includes('2>&1'), cmd);
+  assert.ok(existsSync(join(state, 'logs')), 'and the log dir exists before the task ever fires');
+
+  const create = r.log.find(l => l.startsWith('schtasks argv://Create'));
+  assert.ok(create, r.log.join('\n'));
+  assert.ok(create!.includes('//TN Irises'), create);
+  assert.ok(create!.includes(String.raw`//TR "C:\fake`), 'schtasks parses /TR itself: the path arrives quoted inside it');
+  assert.ok(create!.includes('//SC ONLOGON'), create);
+  assert.ok(create!.includes('//RL LIMITED'), 'LIMITED = the current user, with no elevation prompt');
+  assert.ok(create!.includes(' //F'), 'a re-install must replace the task, not fail on it');
+
+  const failed = runLib([
+    `rc=0; service_install ${JSON.stringify(root)} "/c/Program Files/nodejs/node.exe" || rc=$?`,
+    'printf "RC=%s\\n" "$rc"',
+  ].join('\n'), {
+    stubs: WIN_STUBS,
+    env: { IRISES_ROOT: root, IRISES_HOME: state, SCHTASKS_RC: '1' },
+  });
+  assert.match(failed.out, /RC=1/, 'a refused //Create is a failed install, not a silent one');
+  assert.match(failed.err, /schtasks/);
+});
+
+test('service_restart, service_uninstall and service_installed drive Task Scheduler', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'irises-win-'));
+  const state = join(dir, 'state');
+  mkdirSync(state, { recursive: true });
+
+  const restart = runLib('service_restart', { stubs: WIN_STUBS, env: { IRISES_HOME: state } });
+  assert.equal(restart.code, 0, `${restart.out}\n${restart.err}`);
+  const ended = restart.log.findIndex(l => l.includes('//End //TN Irises'));
+  const ran = restart.log.findIndex(l => l.includes('//Run //TN Irises'));
+  assert.ok(ended >= 0, restart.log.join('\n'));
+  assert.ok(ran > ended, `//End has to land before //Run:\n${restart.log.join('\n')}`);
+
+  const launcher = join(state, 'irises-start.cmd');
+  writeFileSync(launcher, '@echo off\r\n');
+  const un = runLib('service_uninstall', { stubs: WIN_STUBS, env: { IRISES_HOME: state } });
+  assert.equal(un.code, 0, un.err);
+  assert.ok(un.log.some(l => l.includes('//Delete //TN Irises //F')), un.log.join('\n'));
+  assert.ok(!existsSync(launcher), 'the launcher goes with the task');
+
+  const probe = 'service_installed && printf "INSTALLED\\n" || printf "ABSENT\\n"';
+  const present = runLib(probe, { stubs: WIN_STUBS, env: { IRISES_HOME: state } });
+  assert.match(present.out, /INSTALLED/, 'a //Query that exits 0 is an installed task');
+  const gone = runLib(probe, {
+    stubs: { ...WIN_STUBS, schtasks: 'exit 1' },
+    env: { IRISES_HOME: state },
+  });
+  assert.match(gone.out, /ABSENT/);
+
+  // The point of service_installed: Tasks 5–7 ask it instead of testing the two files themselves.
+  const home = join(dir, 'unit-home');
+  mkdirSync(join(home, '.config', 'systemd', 'user'), { recursive: true });
+  writeFileSync(join(home, '.config', 'systemd', 'user', 'irises.service'), '[Service]\n');
+  const withUnit = runLib(probe, { stubs: { uname: 'echo Linux' }, env: { HOME: home } });
+  assert.match(withUnit.out, /INSTALLED/, 'the systemd unit existing is still an install');
+  const withNothing = runLib(probe, { stubs: { uname: 'echo Linux' } });
+  assert.match(withNothing.out, /ABSENT/);
+});
+
+test('is_our_server asks PowerShell for the command line on Windows, and server_pid trusts tasklist', () => {
+  const state = mkdtempSync(join(tmpdir(), 'irises-winpid-'));
+  writeFileSync(join(state, 'irises.pid'), '4242\n');
+  const psOurs = String.raw`
+printf 'powershell argv:%s\n' "$*" >> "$STUB_LOG"
+printf 'C:\\Program Files\\nodejs\\node.exe C:\\irises\\dist\\index.js\n'
+`;
+  const tasklistLive = String.raw`
+printf 'tasklist argv:%s\n' "$*" >> "$STUB_LOG"
+printf '"node.exe","4242","Console","1","120,000 K"\n'
+`;
+  const ours = runLib([
+    'printf "OURS=%s\\n" "$(is_our_server 4242 && echo yes || echo no)"',
+    'printf "PID=[%s]\\n" "$(server_pid)"',
+  ].join('\n'), {
+    stubs: { uname: 'echo MSYS_NT-10.0-22631', 'powershell.exe': psOurs, tasklist: tasklistLive },
+    env: { IRISES_HOME: state },
+  });
+  assert.equal(ours.code, 0, `${ours.out}\n${ours.err}`);
+  assert.match(ours.out, /OURS=yes/, 'a backslash in the command line must match dist/index.js too');
+  assert.match(ours.out, /PID=\[4242\]/);
+  assert.ok(
+    ours.log.some(l => l.includes('Win32_Process') && l.includes('ProcessId=4242')),
+    `Git Bash has no /proc and no ps -o command=:\n${ours.log.join('\n')}`,
+  );
+  assert.ok(
+    ours.log.some(l => l.startsWith('tasklist argv:') && l.includes('PID eq 4242')),
+    `the pidfile holds a WINDOWS pid, which kill -0 knows nothing about:\n${ours.log.join('\n')}`,
+  );
+
+  const notOurs = runLib('printf "OURS=%s\\n" "$(is_our_server 4242 && echo yes || echo no)"', {
+    stubs: { uname: 'echo MSYS_NT-10.0-22631', 'powershell.exe': "printf 'notepad.exe\\n'" },
+  });
+  assert.match(notOurs.out, /OURS=no/, 'a recycled pid must never be signalled');
+
+  const dead = runLib('printf "PID=[%s]\\n" "$(server_pid)"', {
+    stubs: { uname: 'echo MSYS_NT-10.0-22631', tasklist: 'exit 0', 'powershell.exe': psOurs },
+    env: { IRISES_HOME: state },
+  });
+  assert.match(dead.out, /PID=\[\]/, 'no tasklist row means the pidfile is stale');
+});
+
+test('server_stop terminates the tree with taskkill on Windows and polls tasklist for the result', () => {
+  const state = mkdtempSync(join(tmpdir(), 'irises-winstop-'));
+  writeFileSync(join(state, 'irises.pid'), '4242\n');
+  const r = runLib('server_stop 5; printf "SURVIVED\\n"', {
+    stubs: {
+      uname: 'echo MSYS_NT-10.0-22631',
+      'powershell.exe': String.raw`printf 'C:\\node.exe C:\\irises\\dist\\index.js\n'`,
+      // The row disappears once taskkill has run — that is what makes the poll observable.
+      tasklist: String.raw`
+printf 'tasklist argv:%s\n' "$*" >> "$STUB_LOG"
+if [ -f "$STUB_LOG.dead" ]; then exit 0; fi
+printf '"node.exe","4242","Console","1","120,000 K"\n'
+`,
+      taskkill: String.raw`printf 'taskkill argv:%s\n' "$*" >> "$STUB_LOG"; : > "$STUB_LOG.dead"`,
+    },
+    env: { IRISES_HOME: state },
+  });
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.ok(r.log.includes('taskkill argv://PID 4242 //T //F'), r.log.join('\n'));
+  assert.ok(
+    r.log.filter(l => l.startsWith('tasklist argv:')).length >= 2,
+    `liveness is polled after the kill, not assumed:\n${r.log.join('\n')}`,
+  );
+  assert.match(r.out, /SURVIVED/);
+  assert.ok(!r.err.includes('SIGTERM'), 'there is no SIGTERM to send on Windows, so none is claimed');
+});
+
+test('server_start_detached hands Windows to Start-Process with both streams redirected', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'irises-winstart-'));
+  const root = join(dir, 'clone');
+  const state = join(dir, 'state');
+  mkdirSync(join(root, 'dist'), { recursive: true });
+  const r = runLib(`server_start_detached ${JSON.stringify(root)}`, {
+    stubs: {
+      ...WIN_STUBS,
+      'powershell.exe': String.raw`printf 'powershell argv:%s\n' "$*" >> "$STUB_LOG"; exit 0`,
+    },
+    env: { IRISES_HOME: state },
+  });
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  const call = r.log.find(l => l.includes('Start-Process'));
+  assert.ok(call, `there is no setsid and no working nohup in Git Bash:\n${r.log.join('\n')}`);
+  assert.ok(call!.includes('-WindowStyle Hidden'), call);
+  assert.ok(call!.includes(String.raw`dist\index.js`), call);
+  assert.ok(call!.includes(String.raw`logs\server.log'`), call);
+  assert.ok(call!.includes(String.raw`logs\server.log.err'`), 'PowerShell refuses one file for both streams');
+  assert.ok(existsSync(join(state, 'logs')), 'the log dir is created before the process needs it');
+});
+
+test('tcp_open falls back to a PowerShell TcpClient on Windows', () => {
+  const open = runLib('rc=0; tcp_open 127.0.0.1 1 || rc=$?; printf "RC=%s\\n" "$rc"', {
+    stubs: {
+      uname: 'echo MSYS_NT-10.0-22631',
+      'powershell.exe': String.raw`printf 'powershell argv:%s\n' "$*" >> "$STUB_LOG"; exit 0`,
+    },
+  });
+  assert.equal(open.code, 0, open.err);
+  assert.match(open.out, /RC=0/);
+  assert.ok(open.log.some(l => l.includes('TcpClient')), open.log.join('\n'));
+  const shut = runLib('rc=0; tcp_open 127.0.0.1 1 || rc=$?; printf "RC=%s\\n" "$rc"', {
+    stubs: { uname: 'echo MSYS_NT-10.0-22631', 'powershell.exe': 'exit 1' },
+  });
+  assert.match(shut.out, /RC=1/);
+});
+
+test('augment_path picks up the Git Bash node locations when they exist', () => {
+  const appdata = mkdtempSync(join(tmpdir(), 'irises-appdata-'));
+  mkdirSync(join(appdata, 'npm'), { recursive: true });
+  const r = runLib('augment_path; printf "PATH=%s\\n" "$PATH"', { env: { APPDATA: appdata } });
+  assert.equal(r.code, 0, r.err);
+  assert.ok(r.out.includes(join(appdata, 'npm')), `%APPDATA%\\npm is where npm -g puts binaries:\n${r.out}`);
+  const without = runLib('augment_path; printf "PATH=%s\\n" "$PATH"');
+  assert.ok(!without.out.includes(':/npm'), 'an unset APPDATA must not add /npm');
+  assert.ok(!without.out.includes('Program Files/nodejs'), 'nor a nodejs dir this box does not have');
+});
