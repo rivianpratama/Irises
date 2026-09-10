@@ -13,8 +13,9 @@ import { PROMPT_TAG } from '../../llm/promptTag.js';
  * The sections assembled INSIDE `<prompt>…</prompt>`, in the exact order the assembler pushes them.
  * The order is load-bearing twice over: charter §11.3's placement rule (static first, volatile
  * per-turn data last) IS this order, and the size arithmetic below counts the `\n\n` joins between
- * whichever of them actually rendered. Every entry is conditional except `model_map` and
- * `current_time`, so a real build carries a subsequence of this list, never all of it.
+ * whichever of them actually rendered. Every entry is conditional except `model_map`,
+ * `update_status` and `current_time`, so a real build carries a subsequence of this list, never all
+ * of it.
  *
  * `turn_focus` is last on purpose and must STAY last: it restates the message the whole prompt is
  * there to answer, and the recency edge is what makes it a counterweight rather than one more voice
@@ -25,6 +26,7 @@ export const DYN_SECTION_IDS = [
   'craft_modules',        // renderCraftModules — the persona pages this turn structurally needs
   'capability',           // renderCapabilityLine — what the deep look can do this deployment
   'model_map',            // renderModelMapAwareness — unconditional
+  'update_status',        // renderUpdateStatus — unconditional
   'name_nudge',           // "Getting their name" — no name on file yet
   'intro_weave',          // the one-shot install introduction (agents/ops/firstMove.ts)
   'context_block',        // buildContextBlock — the dossier plus the wrapped memory tiers
@@ -118,9 +120,11 @@ export function sectionsTotalChars(sections: readonly PromptSection[]): number {
  * when the chat's tool list or a gate does, which is what makes them worth a cache breakpoint of
  * their own on the Anthropic lane.
  *
- * The two stable-slot lines behind them, `capability` and `model_map`, are deliberately NOT in here:
- * six hundred characters between them is not worth a breakpoint, and `model_map` is read from the
- * live model map, so it can legitimately change mid-chat the moment engine discovery answers.
+ * The three stable-slot lines behind them — `capability`, `model_map` and `update_status` — are
+ * deliberately NOT in here: under a thousand characters between them is not worth a breakpoint, and
+ * the last two are read from live state (the resolved model map; the running build plus the update
+ * checker's own answer), so both can legitimately change mid-chat the moment discovery or a check
+ * answers.
  */
 const STABLE_SLOT_IDS: ReadonlySet<string> = new Set<DynSectionId>(['tool_docs', 'craft_modules']);
 

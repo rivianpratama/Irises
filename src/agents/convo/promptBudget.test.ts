@@ -616,8 +616,8 @@ const FIXTURES: Fixture[] = [
     },
     memoryStack: COLD_STACK,
     sections: [
-      'persona', 'tool_docs', 'craft_modules', 'model_map', 'name_nudge', 'intro_weave',
-      'context_block', 'current_time', 'conversation_timing', 'hooks', 'turn_focus',
+      'persona', 'tool_docs', 'craft_modules', 'model_map', 'update_status', 'name_nudge',
+      'intro_weave', 'context_block', 'current_time', 'conversation_timing', 'hooks', 'turn_focus',
       'behavior_anchor', 'json_anchor',
     ],
   },
@@ -644,9 +644,9 @@ const FIXTURES: Fixture[] = [
     },
     memoryStack: MATURE_STACK,
     sections: [
-      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'context_block',
-      'current_time', 'weather', 'status_contract', 'conversation_timing', 'reply_order',
-      'turn_focus', 'behavior_anchor', 'json_anchor',
+      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'update_status',
+      'context_block', 'current_time', 'weather', 'status_contract', 'conversation_timing',
+      'reply_order', 'turn_focus', 'behavior_anchor', 'json_anchor',
     ],
   },
   {
@@ -674,9 +674,9 @@ const FIXTURES: Fixture[] = [
     },
     memoryStack: MEDIA_STACK,
     sections: [
-      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'context_block',
-      'active_ops', 'current_time', 'weather', 'status_contract', 'conversation_timing',
-      'reply_order', 'turn_focus', 'behavior_anchor', 'json_anchor',
+      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'update_status',
+      'context_block', 'active_ops', 'current_time', 'weather', 'status_contract',
+      'conversation_timing', 'reply_order', 'turn_focus', 'behavior_anchor', 'json_anchor',
     ],
   },
   {
@@ -711,9 +711,9 @@ const FIXTURES: Fixture[] = [
     },
     memoryStack: GROUP_STACK,
     sections: [
-      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'context_block', 'group',
-      'tapped_reply', 'burst', 'current_time', 'weather', 'status_contract', 'conversation_timing',
-      'turn_focus', 'behavior_anchor', 'json_anchor',
+      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'update_status',
+      'context_block', 'group', 'tapped_reply', 'burst', 'current_time', 'weather',
+      'status_contract', 'conversation_timing', 'turn_focus', 'behavior_anchor', 'json_anchor',
     ],
   },
   {
@@ -755,9 +755,10 @@ const FIXTURES: Fixture[] = [
     },
     memoryStack: MATURE_STACK,
     sections: [
-      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'context_block', 'thesis',
-      'current_time', 'weather', 'status_contract', 'thread', 'conversation_timing', 'reply_order',
-      'extra', 'hooks', 'turn_focus', 'behavior_anchor', 'json_anchor',
+      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'update_status',
+      'context_block', 'thesis', 'current_time', 'weather', 'status_contract', 'thread',
+      'conversation_timing', 'reply_order', 'extra', 'hooks', 'turn_focus', 'behavior_anchor',
+      'json_anchor',
     ],
   },
   {
@@ -788,9 +789,9 @@ const FIXTURES: Fixture[] = [
     },
     memoryStack: MATURE_STACK,
     sections: [
-      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'context_block',
-      'current_time', 'weather', 'status_contract', 'conversation_timing', 'reply_order',
-      'turn_focus', 'behavior_anchor', 'json_anchor',
+      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'update_status',
+      'context_block', 'current_time', 'weather', 'status_contract', 'conversation_timing',
+      'reply_order', 'turn_focus', 'behavior_anchor', 'json_anchor',
     ],
   },
   {
@@ -831,9 +832,9 @@ const FIXTURES: Fixture[] = [
     },
     memoryStack: MATURE_STACK,
     sections: [
-      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'context_block',
-      'current_time', 'weather', 'status_contract', 'conversation_timing', 'reply_order', 'hooks',
-      'turn_focus', 'behavior_anchor', 'json_anchor',
+      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'update_status',
+      'context_block', 'current_time', 'weather', 'status_contract', 'conversation_timing',
+      'reply_order', 'hooks', 'turn_focus', 'behavior_anchor', 'json_anchor',
     ],
   },
 ];
@@ -992,6 +993,10 @@ function measuredMaxima(): Map<BudgetKey, number> {
   return max;
 }
 
+/** Budget lines whose bytes come from the host rather than from this tree, so their ceilings are
+ *  deliberately loose (promptPolicy.ts states the same exemption beside each). */
+const HOST_DEPENDENT: ReadonlySet<BudgetKey> = new Set<BudgetKey>(['model_map', 'update_status']);
+
 /** How much a ceiling may sit above its measurement: enough to round to a tidy number, not enough to
  *  hide a new block. Stated as a fraction so the big prose lines are held tightest in absolute terms,
  *  which is where an unnoticed arrival would cost the most. */
@@ -1004,9 +1009,10 @@ test('no ceiling carries more than 2% of headroom over what the fixtures measure
   // now has to pull its own number down in the same commit, which is the "tightening is a one-line
   // diff" the module was built for.
   //
-  // `model_map` is exempt, for the reason promptPolicy.ts gives beside it: its text is built from the
-  // host's resolved model map, so a bare checkout and a configured install measure different sizes and
-  // a tight ceiling would fail on somebody else's machine. Every other line is deterministic here —
+  // `model_map` and `update_status` are exempt, for the reason promptPolicy.ts gives beside them:
+  // their text is built from the host — the resolved model map in one, the running build's sha and
+  // branch in the other — so a bare checkout and a configured install measure different sizes and a
+  // tight ceiling would fail on somebody else's machine. Every other line is deterministic here —
   // fixture data, repo prose, or the frozen clock.
   const measured = measuredMaxima();
   const rows: string[] = [];
@@ -1015,7 +1021,7 @@ test('no ceiling carries more than 2% of headroom over what the fixtures measure
     const ceiling = PROMPT_BUDGET[key];
     const headroom = (ceiling - chars) / chars;
     rows.push(`  ${key}: measured ${chars}, ceiling ${ceiling} (+${(headroom * 100).toFixed(1)}%)`);
-    if (key === 'model_map') continue;
+    if (HOST_DEPENDENT.has(key)) continue;
     if (headroom > MAX_HEADROOM) loose.push(key);
   }
   assert.deepEqual(

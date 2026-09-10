@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { getModelMap, type ModelMap } from '../../llm/modelMap.js';
+import { getUpdateStatus, updateChecksLive, type UpdateStatus } from '../../update/checker.js';
+import type { VersionInfo } from '../../update/version.js';
 import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
 import { browserLegBudgetFor } from '../ops/client.js';
 import type { CapabilitySummary, CapabilityClass, EngineBackend } from '../ops/engineBackend.js';
@@ -690,6 +692,59 @@ function renderModelMapAwareness(map: ModelMap): string {
 Read these off plainly in your own words if asked — you no longer deflect model questions. Two model names, one flat sentence, then stop.`;
 }
 
+/** `lastCheckAt` as a person would say it. Coarse on purpose: the prompt is rebuilt every turn, so a
+ *  minute-precise phrase would be a different string on every single turn and buy nothing. */
+function lastCheckedPhrase(lastCheckAt: number | null, now: number): string {
+  if (lastCheckAt === null) return 'not checked yet since boot';
+  const ago = Math.max(0, now - lastCheckAt);
+  if (ago < 2 * 60_000) return 'just now';
+  if (ago < 3_600_000) return `${Math.floor(ago / 60_000)} minutes ago`;
+  if (ago < 86_400_000) {
+    const hours = Math.floor(ago / 3_600_000);
+    return `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
+  }
+  const days = Math.floor(ago / 86_400_000);
+  return `${days} ${days === 1 ? 'day' : 'days'} ago`;
+}
+
+/**
+ * The per-turn "which build am I, and who updates me" note — four facts, flat: the build she is
+ * running, whether a newer one is waiting, that she cannot apply it herself, and the ONE command her
+ * person runs in a terminal.
+ *
+ * It exists because the chat apply path is gone. She used to hold a tool for this, so a model handed
+ * no fact will either claim it updated itself or claim it can never be updated — both untrue, and
+ * both unfalsifiable from inside the conversation. The command is relayed exactly, in backticks, like
+ * every other command in her mouth (the consent-URL precedent); everything else here is framing and
+ * she says it in her own words.
+ *
+ * Unconditional, and read from LIVE state rather than repo prose — so, like `model_map`, it is
+ * deliberately outside the cached prefix (promptSections.ts STABLE_SLOT_IDS) and outside the budget's
+ * 2% band (promptPolicy.ts). Exported rather than private because it has its own unit test, the same
+ * arrangement as renderCapabilityLine / capabilityLine.test.ts.
+ */
+export function renderUpdateStatus(version: VersionInfo, status: UpdateStatus, now = Date.now()): string {
+  const buildLine = version.shortSha
+    ? version.branch
+      ? `- You are running build ${version.shortSha} on branch ${version.branch}.`
+      : `- You are running build ${version.shortSha}.`
+    : "- You can't tell which build you are running (this install carries no version stamp).";
+  // The gate comes FIRST: with no checker armed, `updateAvailable` is a stale in-memory guess and
+  // either answer built from it would be a claim she cannot stand behind.
+  const waitingLine = !updateChecksLive()
+    ? "- You can't tell whether a newer build is waiting (version checks are off for this install)."
+    : status.updateAvailable && status.remoteSha
+      ? `- A newer build (${status.remoteSha.slice(0, 7)}) is waiting on the server.`
+      : `- No newer build is waiting, as of ${lastCheckedPhrase(status.lastCheckAt, now)}.`;
+  return [
+    '## Your build and how you get updated (facts; say them plainly if asked)',
+    buildLine,
+    waitingLine,
+    '- You cannot update yourself. Your person does it in a terminal on the server, one command from the Irises folder: `bash scripts/update.sh`. It pulls, rebuilds, restarts you, and restarts the engine gateway. There is no chat command for it — if they ask you to update, say that plainly and hand them the command exactly as written, once.',
+    '- If they ask what version you are or whether an update is waiting, answer from the lines above in your own words, one flat sentence, then stop.',
+  ].join('\n');
+}
+
 /** The assembled prompt plus a measurement of it, part by part. Names and NUMBERS only beyond
  *  `system` itself — the sizes ride into the per-turn trace, which persists, so no prompt text
  *  leaves here except the prompt the caller asked for. */
@@ -885,6 +940,14 @@ export function buildSystemPromptSections(
   // answer "what model are you?" honestly (the persona's warm wall now permits it). Stable-slot,
   // right after the capability line. Read from the live model map, never hardcoded.
   push('model_map', renderModelMapAwareness(getModelMap()));
+
+  // Build self-awareness: which build she is, whether a newer one is waiting, and the ONE terminal
+  // command her person runs — there is no chat command for it since the self-update tool came out,
+  // and a model with no fact here fills the gap in. Same slot and same reason as the model map above:
+  // unconditional, read live, never hardcoded. ONE snapshot, so the sha she names and the verdict she
+  // reports cannot come from two different reads.
+  const updateSnapshot = getUpdateStatus();
+  push('update_status', renderUpdateStatus(updateSnapshot.current, updateSnapshot));
 
   // Who they are + how to address them (a saved preference / their name / nothing) now lives in the
   // shared user-context block below via buildContextBlock. Here we only add the onboarding nudge

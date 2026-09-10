@@ -42,6 +42,7 @@ let liveStatus: Omit<UpdateStatus, 'current'> = {
 };
 let consecutiveFailures = 0;
 let armed = false;
+let checksLive = false;
 let onDetected: ((sha: string) => void) | null = null;
 
 /** In-memory snapshot for /health, the dashboard, and the weave gate. Cheap; no disk read. */
@@ -153,6 +154,7 @@ export function startUpdateChecker(deps: { onUpdateDetected: (remoteSha: string)
     return;
   }
   armed = true;
+  checksLive = true;
   onDetected = deps.onUpdateDetected;
   // Number('6h') / Number('21_600_000') → NaN, and Math.max(MIN, NaN) → NaN → setInterval(NaN) fires
   // every ~1ms. Only accept a finite positive number; anything else falls back to the default.
@@ -169,7 +171,28 @@ export function _resetCheckerForTests(): void {
   liveStatus = { remoteSha: null, updateAvailable: false, lastCheckAt: null, lastCheckOk: false };
   consecutiveFailures = 0;
   armed = false;
+  checksLive = false;
   onDetected = null;
+}
+
+/**
+ * Whether THIS process is actually watching the remote — i.e. whether `startUpdateChecker` armed
+ * rather than opting out (UPDATE_CHECK_ENABLED=false, no `.git` at the repo root, or an unknown
+ * running sha).
+ *
+ * Read by the prompt's `update_status` section (convo/shared.ts renderUpdateStatus) so Irises says
+ * "you can't tell" instead of "nothing is waiting" on an install that never checks — a silence is not
+ * an all-clear. ONE flag, set at the arm site, rather than a second copy of the three gates above:
+ * the prompt and the checker cannot then disagree, and the read costs no syscall on a per-turn path.
+ * False until boot arms it, which is also what every unit test sees unless it says otherwise.
+ */
+export function updateChecksLive(): boolean {
+  return checksLive;
+}
+
+/** Test seam: pretend the checker did (or did not) arm, for the prompt section that reads it. */
+export function _setChecksLiveForTests(live: boolean): void {
+  checksLive = live;
 }
 
 /** Test seam: drive the in-memory status the weave/health/dashboard read from. */
