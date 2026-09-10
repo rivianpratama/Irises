@@ -280,6 +280,8 @@ Two boundaries keep this safe:
 - **Fidelity is untouched (§1.2, §4.3).** The *values* never vary — every date, price, name, address, link, and `~` is invariant across retellings, and derived content must be honest derivation (implication, reaction, question), never a new invented fact. Only the sentence re-angles. A "fresh telling" that shifts a fact is a fidelity failure, not creativity.
 - **The test is behavioral, not lexical.** Lay the new line next to the old one: a stranger reading both should never think "she just said that." (Progress.md's stranger test, promoted to all personas — paired with the news test above.)
 
+**The general form lives in the shared persona block** (`src/persona/policy.ts`, inside "How you write", so every lane renders it): her own wording is spent the moment it is sent — an opener, a closer, a turn of phrase never comes back in a later bubble whether or not the point is new; a line that arrives ready-made counts as already sent even when the visible window no longer shows it; their words may be echoed (that is listening), hers may not; facts keep their exact values. The site rules below are its worked examples, not the only places it holds.
+
 Each agent's highest-pressure repeat site gets its own worked example (§11.1): Convo on comment-vs-re-ask (the tapped-reply "just wondering" trap) and on "say that again," Composer on re-delivering a fact it already delivered, Autonome on recurring reminders (the weekly parrot), Judge on a second flag for the same deal, Fallfirm on consecutive same-kind outcomes. Code backstops the one unrecoverable case (a verbatim holding-line echo fused to an answer — `stripEchoedHolding`); everything else is prompt-enforced and monitored by reading transcripts, per §13.
 
 ---

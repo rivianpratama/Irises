@@ -65,7 +65,7 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * them, says what changed, and writes the new pair in here.
  *
  * Re-measured twice since. First: +7,174 characters when the shared persona block took its place at
- * the head of the corpus (persona/policy.ts renderPersonaBlock — 7,172 bytes, plus the `\n\n` join).
+ * the head of the corpus (persona/policy.ts renderPersonaBlock — 7,885 bytes, plus the `\n\n` join).
  * Not a page and not an edit to one: the block is the personality all four prompt surfaces now render
  * byte-identically, and this is the surface where it lands inside the cached persona head. Every
  * other byte of the corpus was untouched, which is why exactly one addend moved.
@@ -158,9 +158,18 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  *   · Context.md +13: −42 in the per-turn-block paragraph (the clock's line described as a size
  *     rather than a script) and +55 in the time-of-day bullet, which now says the hour changes the
  *     volume and the ordinary idle-turn rules pick the content.
+ *
+ * Then **+642** in the own-wording commit, ONE file:
+ *   · PERSONA_BLOCK +642 (policy.ts): a new paragraph inside "How you write". Her own wording is
+ *     spent the moment she sends it — an opener, a closer, a turn of phrase does not come back in a
+ *     later bubble whether or not the point is new; a line that arrives ready-made counts as already
+ *     sent even when the thread no longer shows it; their words may be echoed, hers may not; facts
+ *     keep their exact values. It is the general rule the corpus until now stated only at its sites
+ *     (the settled-ground re-ask, holding lines, hook callbacks, teases), and it lives in the block
+ *     because the block is the one string every lane renders. Context.md and every page: untouched.
  */
-const CORPUS_CHARS = 122_156;
-const CORPUS_SHA256 = '911f261bc09eb6e5f79628f7fde0f334ad11d84c44fe3b9d111f80bc07cf807e';
+const CORPUS_CHARS = 122_798;
+const CORPUS_SHA256 = '4b7f396d9ebbf7fb7be49407cc6b06b2cc136f58c41ef47a783be9484d869ca9';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
