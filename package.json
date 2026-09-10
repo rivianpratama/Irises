@@ -32,6 +32,7 @@
     "chat": "tsx scripts/irises-chat.ts",
     "install:web": "npm --prefix web install",
     "test": "cross-env TZ=UTC DATA_BACKEND=memory tsx --test \"src/**/*.test.ts\" \"scripts/**/*.test.ts\"",
+    "e2e:lifecycle": "bash scripts/e2e/lifecycle-sandbox.sh",
     "typecheck:scripts": "tsc -p tsconfig.scripts.json"
   },
   "dependencies": {

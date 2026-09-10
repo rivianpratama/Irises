@@ -10,6 +10,9 @@ npm-debug.log*
 # pre-rewrite install out of git.
 irises.pid
 
+# The lifecycle e2e sandbox (npm run e2e:lifecycle) — throwaway clones, homes and logs.
+scripts/e2e/.sandbox/
+
 # Local state dir (if IRISES_HOME points into the repo)
 .irises/
 
