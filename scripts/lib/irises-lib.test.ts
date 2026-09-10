@@ -1039,7 +1039,7 @@ test('service_kind is schtasks on Git Bash, and none when Task Scheduler is unre
   assert.equal(runLib('service_task_name', { stubs: WIN_STUBS }).out, 'Irises');
 });
 
-test('service_install writes a CRLF launcher .cmd, registers the ONLOGON task, prints only the launcher', () => {
+test('service_install writes a CRLF launcher .cmd, registers the task from XML, prints only the launcher', () => {
   const dir = mkdtempSync(join(tmpdir(), 'irises-win-'));
   const root = join(dir, 'clone');
   const state = join(dir, 'state');
@@ -1071,11 +1071,29 @@ test('service_install writes a CRLF launcher .cmd, registers the ONLOGON task, p
 
   const create = r.log.find(l => l.startsWith('schtasks argv://Create'));
   assert.ok(create, r.log.join('\n'));
-  assert.ok(create!.includes('//TN Irises'), create);
-  assert.ok(create!.includes(String.raw`//TR "C:\fake`), 'schtasks parses /TR itself: the path arrives quoted inside it');
-  assert.ok(create!.includes('//SC ONLOGON'), create);
-  assert.ok(create!.includes('//RL LIMITED'), 'LIMITED = the current user, with no elevation prompt');
+  assert.ok(
+    create!.includes('//Create //TN Irises //XML'),
+    'the flag form cannot express restart-on-failure, so the task is registered from XML',
+  );
+  assert.ok(create!.includes(String.raw`//XML C:\fake`), 'the XML path crosses out of bash: win_path first');
   assert.ok(create!.includes(' //F'), 'a re-install must replace the task, not fail on it');
+
+  // The three settings the //SC ONLOGON flag form could not carry, plus the two it could.
+  const xmlPath = join(state, 'irises-task.xml');
+  assert.ok(existsSync(xmlPath), `service_install must write the task definition:\n${r.err}`);
+  const xml = readFileSync(xmlPath, 'utf8');
+  assert.ok(xml.includes('<RestartOnFailure>'), xml);
+  assert.ok(xml.includes('<Count>3</Count>'), 'three restarts, a minute apart — systemd/launchd parity');
+  assert.ok(
+    xml.includes('<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>'),
+    'without PT0S the default three-day limit kills a healthy server',
+  );
+  assert.ok(xml.includes('<LogonTrigger>'), "still starts at this user's logon");
+  assert.ok(xml.includes('<RunLevel>LeastPrivilege</RunLevel>'), 'what //RL LIMITED used to say');
+  assert.ok(
+    xml.includes(`<Command>${String.raw`C:\fake`}`) && xml.includes(String.raw`irises-start.cmd</Command>`),
+    `the action is the launcher, in Windows spelling:\n${xml}`,
+  );
 
   const failed = runLib([
     `rc=0; service_install ${JSON.stringify(root)} "/c/Program Files/nodejs/node.exe" || rc=$?`,
@@ -1101,11 +1119,14 @@ test('service_restart, service_uninstall and service_installed drive Task Schedu
   assert.ok(ran > ended, `//End has to land before //Run:\n${restart.log.join('\n')}`);
 
   const launcher = join(state, 'irises-start.cmd');
+  const taskXml = join(state, 'irises-task.xml');
   writeFileSync(launcher, '@echo off\r\n');
+  writeFileSync(taskXml, '<Task/>\n');
   const un = runLib('service_uninstall', { stubs: WIN_STUBS, env: { IRISES_HOME: state } });
   assert.equal(un.code, 0, un.err);
   assert.ok(un.log.some(l => l.includes('//Delete //TN Irises //F')), un.log.join('\n'));
   assert.ok(!existsSync(launcher), 'the launcher goes with the task');
+  assert.ok(!existsSync(taskXml), 'and so does the XML the task was registered from');
 
   const probe = 'service_installed && printf "INSTALLED\\n" || printf "ABSENT\\n"';
   const present = runLib(probe, { stubs: WIN_STUBS, env: { IRISES_HOME: state } });

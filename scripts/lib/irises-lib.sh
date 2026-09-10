@@ -245,7 +245,7 @@ env_backup() { # FILE TAG
   local f="${1:-}" tag="${2:-backup}" b
   if [ ! -f "${f:-}" ]; then return 0; fi
   b="$f.bak-irises-$(date +%Y%m%d-%H%M%S)"
-  cp "$f" "$b" || return 1
+  cp "$f" "$b" || { err "could not back up $f to $b"; return 1; }
   chmod 600 "$b" 2>/dev/null || true
   log "backed up $f -> $b ($tag)"
   printf '%s' "$b"
@@ -331,6 +331,10 @@ irises_platform() {
   esac
   printf 'linux'
 }
+
+# Five call sites only ever ask "is this Git Bash?", and each one guards a whole Windows-shaped
+# branch. One predicate instead of the same string comparison spelled out five times.
+_is_windows() { [ "$(irises_platform)" = "windows" ]; }
 
 # A POSIX path in the form Windows itself understands. Every path that crosses out of bash — into a
 # launcher .cmd, into a schtasks argument, into a PowerShell string — goes through here first;
@@ -534,7 +538,7 @@ tcp_open() { # HOST PORT
   local h="${1:-127.0.0.1}" p="${2:-}"
   if [ -z "$p" ]; then return 1; fi
   if (exec 3<>"/dev/tcp/$h/$p") 2>/dev/null; then return 0; fi
-  if [ "$(irises_platform)" = "windows" ]; then
+  if _is_windows; then
     # Git Bash has /dev/tcp, but neither nc nor lsof, so there is nothing under it. TcpClient is in
     # every .NET on the box. The escaped $c is a PowerShell variable, not a bash one.
     if powershell.exe -NoProfile -NonInteractive -Command \
@@ -926,11 +930,23 @@ service_label() { printf 'ai.irises.server'; }
 service_unit_path()  { printf '%s/.config/systemd/user/%s.service' "$HOME" "$(service_name)"; }
 service_plist_path() { printf '%s/Library/LaunchAgents/%s.plist' "$HOME" "$(service_label)"; }
 
-# Windows: the Task Scheduler task name, and the launcher it runs. schtasks cannot redirect output
-# and cannot set environment variables, so the task's whole action is "run this one .cmd", and the
-# .cmd does the env, the cd and the >> redirect. Same mechanism hermes uses for its own gateway.
+# Windows: the Task Scheduler task name, the launcher it runs, and the XML the task is registered
+# from. schtasks cannot redirect output and cannot set environment variables, so the task's whole
+# action is "run this one .cmd", and the .cmd does the env, the cd and the >> redirect. Same
+# mechanism hermes uses for its own gateway, XML definition included.
 service_task_name()     { printf 'Irises'; }
 service_launcher_path() { printf '%s/irises-start.cmd' "$(irises_home)"; }
+service_task_xml_path() { printf '%s/irises-task.xml' "$(irises_home)"; }
+
+# The three characters that cannot appear raw in XML character data. A Windows path can legally hold
+# an `&` (C:\Users\R&D\…), which would otherwise make the task definition unparseable.
+_xml_escape() { # TEXT
+  local s="${1:-}"
+  s="${s//&/&amp;}"
+  s="${s//</&lt;}"
+  s="${s//>/&gt;}"
+  printf '%s' "$s"
+}
 
 _irises_xdg() { printf '%s' "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"; }
 
@@ -1000,7 +1016,7 @@ _service_node_options() { # ROOT
 
 # Prints ONLY the unit/plist path on stdout — callers capture it. Everything else goes through log/warn.
 service_install() { # ROOT NODE_BIN
-  local root="${1:-}" node="${2:-}" kind home logs unit plist path opts uid launcher
+  local root="${1:-}" node="${2:-}" kind home logs unit plist path opts uid launcher xml
   if [ -z "$root" ] || [ -z "$node" ]; then err "service_install needs ROOT and an absolute NODE_BIN"; return 1; fi
   # A unit, a plist and a Task Scheduler action all inherit essentially no PATH, so a relative
   # `node` resolves to nothing at boot. (On Git Bash an absolute path starts with `/` too —
@@ -1115,18 +1131,61 @@ service_install() { # ROOT NODE_BIN
           "$(win_path "$node")" "$(win_path "$root/dist/index.js")" "$(win_path "$logs/server.log")"
       } > "$launcher" || { err "could not write $launcher — is $home writable?"; return 1; }
       log "wrote $launcher"
-      # Two quoting layers that must not be crossed: schtasks parses //TR itself, so the launcher
-      # path arrives QUOTED INSIDE that one argument, and cmd.exe parses the .cmd we just wrote.
-      # The doubled slashes are for MSYS2, which would otherwise rewrite a lone /TN into a path
-      # before schtasks.exe ever saw it. ONLOGON + LIMITED = starts at this user's next logon, no
-      # elevation prompt; //F replaces an existing task so a re-install is a re-install.
-      if ! schtasks //Create //TN "$(service_task_name)" //TR "\"$(win_path "$launcher")\"" \
-        //SC ONLOGON //RL LIMITED //F >/dev/null 2>&1; then
+      # WHY AN XML DEFINITION AND NOT `//SC ONLOGON //RL LIMITED`. The flag form cannot express
+      # restart-on-failure, so a crashed Irises on Windows stayed down until the next logon, while
+      # systemd (Restart=on-failure) and launchd (KeepAlive) bring it straight back. XML is the only
+      # way in through schtasks, and it also carries the other two settings the flags cannot reach:
+      #   ExecutionTimeLimit PT0S — Task Scheduler's DEFAULT is three days, after which it would
+      #                             kill a perfectly healthy long-running server;
+      #   Hidden true             — keeps the task out of the default Task Scheduler listing.
+      # Same shape hermes registers its own gateway with. The action is still the launcher .cmd, so
+      # cmd.exe still allocates a console: a brief console flash at logon is the known cosmetic cost.
+      # Element order matters — schtasks validates Settings against the schema sequence, so this is
+      # the order Task Scheduler's own export uses, not the order the settings are described above.
+      xml="$(service_task_xml_path)"
+      {
+        printf '<?xml version="1.0" encoding="UTF-8"?>\n'
+        printf '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">\n'
+        printf '  <RegistrationInfo>\n'
+        printf '    <Description>Irises - private companion server</Description>\n'
+        printf '  </RegistrationInfo>\n'
+        printf '  <Triggers>\n'
+        printf '    <LogonTrigger>\n      <Enabled>true</Enabled>\n    </LogonTrigger>\n'
+        printf '  </Triggers>\n'
+        printf '  <Principals>\n'
+        printf '    <Principal id="Author">\n'
+        # InteractiveToken + LeastPrivilege = runs as the user who installed it, at their logon,
+        # with no elevation prompt. The flag form spelled this //RL LIMITED.
+        printf '      <LogonType>InteractiveToken</LogonType>\n'
+        printf '      <RunLevel>LeastPrivilege</RunLevel>\n'
+        printf '    </Principal>\n'
+        printf '  </Principals>\n'
+        printf '  <Settings>\n'
+        printf '    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n'
+        printf '    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n'
+        printf '    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n'
+        printf '    <AllowHardTerminate>true</AllowHardTerminate>\n'
+        printf '    <StartWhenAvailable>true</StartWhenAvailable>\n'
+        printf '    <Enabled>true</Enabled>\n'
+        printf '    <Hidden>true</Hidden>\n'
+        printf '    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\n'
+        printf '    <RestartOnFailure>\n      <Interval>PT1M</Interval>\n      <Count>3</Count>\n    </RestartOnFailure>\n'
+        printf '  </Settings>\n'
+        printf '  <Actions Context="Author">\n'
+        printf '    <Exec>\n      <Command>%s</Command>\n    </Exec>\n' "$(_xml_escape "$(win_path "$launcher")")"
+        printf '  </Actions>\n'
+        printf '</Task>\n'
+      } > "$xml" || { err "could not write $xml — is $home writable?"; return 1; }
+      log "wrote $xml"
+      # The doubled slashes are for MSYS2, which would otherwise rewrite a lone //TN into a path
+      # before schtasks.exe ever saw it. //F replaces an existing task, so a re-install is a
+      # re-install rather than "the task already exists".
+      if ! schtasks //Create //TN "$(service_task_name)" //XML "$(win_path "$xml")" //F >/dev/null 2>&1; then
         err "schtasks //Create failed for the task $(service_task_name) — a locked-down box refuses it"
         err "install without a service instead:  --no-service  (then start it yourself after each logon)"
         return 1
       fi
-      log "registered the Task Scheduler task $(service_task_name) (at logon, as you, unelevated)"
+      log "registered the Task Scheduler task $(service_task_name) (at logon, as you, unelevated, restarts on failure)"
       printf '%s' "$launcher"
       return 0
       ;;
@@ -1213,15 +1272,20 @@ service_status() { # 0 = installed and running
   return 1
 }
 
+# Every removal here is reported by its OUTCOME, never by having been attempted: an `rm` that lost
+# to a permission or a read-only mount used to print "removed …" anyway, which is the one thing an
+# uninstall must not do — the operator walks away believing the file is gone.
 service_uninstall() {
-  local kind unit plist uid launcher
+  local kind unit plist uid f
   kind="$(service_kind)"
   case "$kind" in
     systemd)
       unit="$(service_unit_path)"
       _systemctl_user stop "$(service_name)" >/dev/null 2>&1 || true
       _systemctl_user disable "$(service_name)" >/dev/null 2>&1 || true
-      if [ -f "$unit" ]; then rm -f "$unit"; say "removed $unit"; fi
+      if [ -f "$unit" ]; then
+        if rm -f "$unit" 2>/dev/null; then say "removed $unit"; else warn "could not remove $unit"; fi
+      fi
       _systemctl_user daemon-reload >/dev/null 2>&1 || true
       return 0
       ;;
@@ -1229,24 +1293,31 @@ service_uninstall() {
       plist="$(service_plist_path)"
       uid="$(id -u)"
       launchctl bootout "gui/$uid/$(service_label)" >/dev/null 2>&1 || true
-      if [ -f "$plist" ]; then rm -f "$plist"; say "removed $plist"; fi
+      if [ -f "$plist" ]; then
+        if rm -f "$plist" 2>/dev/null; then say "removed $plist"; else warn "could not remove $plist"; fi
+      fi
       return 0
       ;;
     schtasks)
-      launcher="$(service_launcher_path)"
       schtasks //End //TN "$(service_task_name)" >/dev/null 2>&1 || true
       if ! schtasks //Delete //TN "$(service_task_name)" //F >/dev/null 2>&1; then
         warn "could not delete the task $(service_task_name) — remove it by hand in Task Scheduler"
       fi
-      if [ -f "$launcher" ]; then
-        if rm -f "$launcher" 2>/dev/null; then say "removed $launcher"; else warn "could not remove $launcher"; fi
-      fi
+      # Both files the install wrote: the launcher .cmd and the XML the task was registered from.
+      for f in "$(service_launcher_path)" "$(service_task_xml_path)"; do
+        if [ -f "$f" ]; then
+          if rm -f "$f" 2>/dev/null; then say "removed $f"; else warn "could not remove $f"; fi
+        fi
+      done
       return 0
       ;;
   esac
-  # Nothing installed here, but a unit/plist/launcher can outlive the tool that detected it.
-  for unit in "$(service_unit_path)" "$(service_plist_path)" "$(service_launcher_path)"; do
-    if [ -f "$unit" ]; then rm -f "$unit" 2>/dev/null || true; say "removed $unit"; fi
+  # Nothing installed here, but a unit/plist/launcher/XML can outlive the tool that detected it.
+  for f in "$(service_unit_path)" "$(service_plist_path)" "$(service_launcher_path)" \
+           "$(service_task_xml_path)"; do
+    if [ -f "$f" ]; then
+      if rm -f "$f" 2>/dev/null; then say "removed $f"; else warn "could not remove $f"; fi
+    fi
   done
   return 0
 }
@@ -1260,7 +1331,7 @@ service_uninstall() {
 is_our_server() { # PID
   local pid="${1:-}" cmd=""
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  if [ "$(irises_platform)" = "windows" ]; then
+  if _is_windows; then
     cmd="$(powershell.exe -NoProfile -NonInteractive -Command \
       "(Get-CimInstance Win32_Process -Filter \"ProcessId=$pid\").CommandLine" 2>/dev/null || true)"
     # `?` matches either slash: Windows spells the same path C:\irises\dist\index.js.
@@ -1282,7 +1353,7 @@ is_our_server() { # PID
 _pid_alive() { # PID
   local pid="${1:-}"
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  if [ "$(irises_platform)" = "windows" ]; then
+  if _is_windows; then
     if tasklist //FI "PID eq $pid" //FO CSV //NH 2>/dev/null | grep -q "\"$pid\""; then return 0; fi
     return 1
   fi
@@ -1312,7 +1383,7 @@ server_stop() { # [SECS]
   pid="$(server_pid)"
   if [ -z "$pid" ]; then return 0; fi
   say "stopping the running server (pid $pid)"
-  if [ "$(irises_platform)" = "windows" ]; then
+  if _is_windows; then
     # There is no SIGTERM to send on Windows and therefore no graceful phase to wait through:
     # taskkill //F terminates outright, and //T takes the tree with it (node spawns the web build
     # and, on an engine box, the bridge). The poll below is only to confirm it actually went.
@@ -1349,12 +1420,18 @@ server_start_detached() { # ROOT [LOG]
   mkdir -p "$home/logs" || { err "could not create $home/logs — is $home writable?"; return 1; }
   if [ -z "$log" ]; then log="$home/logs/server.log"; fi
   say "starting Irises detached — it outlives this shell (log: $log)"
-  if [ "$(irises_platform)" = "windows" ]; then
+  if _is_windows; then
     nodebin="$(command -v node 2>/dev/null || true)"
     if [ -z "$nodebin" ]; then err "no node on PATH — cannot start the server"; return 1; fi
     # Start-Process inherits this shell's environment, which is the only channel it has for
     # IRISES_HOME (there is no -Environment parameter on Windows PowerShell 5.1). And it refuses one
     # file for both streams, so stderr gets its own .err sibling.
+    #
+    # -RedirectStandardOutput TRUNCATES the file it is given; it has no append mode. Every other
+    # path in this library appends (`>>` on Linux/macOS, `>> "…\server.log" 2>&1` in the launcher
+    # .cmd), so this is the one place where restarting the server discards the previous run's log.
+    # It is only reached by `--no-service`, where nothing restarts the server but a person — and
+    # the service install, which is the default, never comes through here.
     export IRISES_HOME="$home"
     if ! powershell.exe -NoProfile -NonInteractive -Command \
       "Start-Process -WindowStyle Hidden -FilePath '$(win_path "$nodebin")' -ArgumentList '\"$(win_path "$root/dist/index.js")\"' -WorkingDirectory '$(win_path "$root")' -RedirectStandardOutput '$(win_path "$log")' -RedirectStandardError '$(win_path "$log").err'" \
