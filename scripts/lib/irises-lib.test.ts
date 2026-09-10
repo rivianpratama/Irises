@@ -12,7 +12,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync,
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -101,7 +102,7 @@ export function startHealthServer(shaFile: string): { base: string; stop: () => 
   const src = join(dir, 'health-server.mjs');
   writeFileSync(src, [
     "import http from 'node:http';",
-    "import { readFileSync, writeFileSync } from 'node:fs';",
+    "import { readFileSync, renameSync, writeFileSync } from 'node:fs';",
     'const [shaPath, portPath] = process.argv.slice(2);',
     'const srv = http.createServer((_q, s) => {',
     "  let sha = '';",
@@ -113,7 +114,12 @@ export function startHealthServer(shaFile: string): { base: string; stop: () => 
     "    update: { remoteSha: 'c'.repeat(40) },",
     '  }));',
     '});',
-    "srv.listen(0, '127.0.0.1', () => writeFileSync(portPath, String(srv.address().port)));",
+    // Written to a sibling and renamed into place: the poll below only checks that the file
+    // EXISTS, so a plain write can be observed empty and the harness then reads '' as the port.
+    "srv.listen(0, '127.0.0.1', () => {",
+    "  writeFileSync(portPath + '.tmp', String(srv.address().port));",
+    "  renameSync(portPath + '.tmp', portPath);",
+    '});',
     '',
   ].join('\n'));
   const child = spawn(process.execPath, [src, shaFile, portFile], { stdio: 'ignore' });
@@ -879,4 +885,98 @@ test('summary prints its lines and ends with exactly one RESULT line on stdout',
   assert.equal(lines.filter(l => l.startsWith('RESULT:')).length, 1);
   assert.match(r.out, /old -> new reverted/);
   assert.match(r.out, /server untouched/);
+});
+
+// ── guarded mutations and the RESULT safety net ─────────────────────────────────────────────────
+//
+// Both of these exist because of the same failure mode: the callers run `set -euo pipefail`, so a
+// single unguarded statement that fails on a read-only mount or a full disk takes the WHOLE script
+// down where it stands — past the function's own warn/return, past the summary, so stdout carries
+// no `RESULT:` line at all and a caller parsing it cannot tell "failed" from "still running".
+
+const IS_ROOT = typeof process.getuid === 'function' && process.getuid() === 0;
+
+test('plugin_refresh reports a read-only plugins dir instead of silently claiming success', {
+  // chmod does not bind root, so the copy would just succeed and there would be nothing to observe.
+  skip: IS_ROOT ? 'running as root: a 0555 directory is still writable' : false,
+}, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'irises-ro-'));
+  const root = join(dir, 'clone');
+  mkdirSync(join(root, 'bridge', 'hermes', 'irises-bridge'), { recursive: true });
+  writeFileSync(join(root, 'bridge', 'hermes', 'irises-bridge', 'plugin.yaml'), 'name: irises-bridge\n');
+  const hhome = join(dir, 'hermes');
+  const plugins = join(hhome, 'plugins');
+  mkdirSync(plugins, { recursive: true });
+  chmodSync(plugins, 0o555);
+  try {
+    const r = runLib([
+      // The form the lifecycle scripts actually use. Note that it also SUPPRESSES set -e inside the
+      // function body (bash propagates that into a function called in a `||` list), which is exactly
+      // why an unguarded `cp -R` was invisible: it failed, the function carried on and returned 0.
+      `rc=0; plugin_refresh hermes ${JSON.stringify(root)} || rc=$?`,
+      'printf "RC=%s\\n" "$rc"',
+      'printf "SURVIVED\\n"',
+    ].join('\n'), { env: { HERMES_HOME: hhome }, stubs: { hermes: RECORDING_STUB } });
+    assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+    assert.match(r.out, /RC=1/, 'a copy that could not happen must be reported, not returned as success');
+    assert.match(r.out, /SURVIVED/, 'and the calling script must still reach its next line');
+    assert.ok(!r.out.includes('refreshed'), `it must not claim a refresh that never happened:\n${r.out}`);
+    assert.match(r.err, new RegExp(plugins.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      'the error names the directory the operator has to fix');
+  } finally {
+    chmodSync(plugins, 0o755);
+  }
+});
+
+test('lifecycle_exit_guard prints RESULT: partial when a script dies before its summary', () => {
+  const aborted = runLib([
+    "trap 'lifecycle_exit_guard $?' EXIT",
+    'false',
+  ].join('\n'));
+  assert.notEqual(aborted.code, 0, 'the abort keeps its exit code — the guard only reports');
+  const results = aborted.out.split('\n').filter(l => l.startsWith('RESULT:'));
+  assert.deepEqual(results, ['RESULT: partial'], aborted.out);
+  assert.match(aborted.err, /aborted with exit 1 before the summary/);
+});
+
+test('lifecycle_exit_guard stays silent once summary has printed a RESULT', () => {
+  const clean = runLib([
+    "trap 'lifecycle_exit_guard $?' EXIT",
+    'summary ok "all done"',
+  ].join('\n'));
+  assert.equal(clean.code, 0, clean.err);
+  const results = clean.out.split('\n').filter(l => l.startsWith('RESULT:'));
+  assert.deepEqual(results, ['RESULT: ok'], 'exactly one RESULT line, and never a second one');
+  assert.ok(!clean.out.includes('partial'), clean.out);
+});
+
+test('service_install refuses a relative NODE_BIN, which its own error already promised', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'irises-svc-'));
+  const root = join(dir, 'clone');
+  mkdirSync(join(root, 'dist'), { recursive: true });
+  writeFileSync(join(root, '.env'), 'PORT=3000\n');
+  const r = runLib([
+    `rc=0; service_install ${JSON.stringify(root)} node || rc=$?`,
+    'printf "RC=%s\\n" "$rc"',
+  ].join('\n'), {
+    stubs: { systemctl: 'exit 0', uname: 'echo Linux' },
+    env: { IRISES_ROOT: root, XDG_RUNTIME_DIR: dir, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/dev/null' },
+  });
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /RC=1/, 'a bare `node` in a unit or plist never resolves — it must be caught here');
+  assert.match(r.err, /absolute/i);
+  assert.ok(!existsSync(join(r.dir, 'home', '.config', 'systemd', 'user', 'irises.service')),
+    'and nothing is written on the way out');
+});
+
+test('wait_health_sha reads a /health body that has whitespace around its colons', () => {
+  const sha = 'd'.repeat(40);
+  const body = `{ "status" : "ok" , "version" : { "sha" : "${sha}" } , "update" : { "remoteSha" : "${'c'.repeat(40)}" } }`;
+  const r = runLib(`printf 'GOT=[%s]\\n' "$(wait_health_sha http://127.0.0.1:1 ${sha} 3)"`, {
+    // A pretty-printer (or a reverse proxy that reformats JSON) is all it takes; the strict
+    // '"sha":"…"' pattern then matched nothing and the updater timed out on a healthy server.
+    stubs: { curl: `printf '%s' ${JSON.stringify(body)}` },
+  });
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(r.out, new RegExp(`GOT=\\[${sha}\\]`), r.out);
 });

@@ -3,9 +3,9 @@
 # scripts/update.sh) get their logging, env-file editing, PATH repair, engine wiring, service
 # management and health verification. SOURCE it; never execute it.
 #
-#   source "$(dirname "$0")/lib/irises-lib.sh"
+#   source "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/lib/irises-lib.sh"
 #
-# Three rules this file lives by, each paid for by a real incident:
+# Four rules this file lives by, each paid for by a real incident:
 #
 #  1. NO TOP-LEVEL SIDE EFFECTS. Sourcing runs no command, writes nothing, prints nothing, and
 #     exports nothing. Every value is computed inside a function, on every call — a module-level
@@ -13,7 +13,12 @@
 #  2. `set -euo pipefail` SAFE. Callers run under it. So: no bare `[ x ] && cmd` as a statement
 #     (the list returns 1 and takes the caller down), no unguarded `for` loop as a function's last
 #     command, every read of a maybe-unset variable written `${VAR:-}`.
-#  3. NO FORK PER LINE in the env parser. deploy/app.env is ~900 lines and gets parsed repeatedly;
+#  3. EVERY MUTATION IS GUARDED. Same reason, other direction: an unguarded `mkdir`/`cp`/`>` that
+#     fails on a read-only mount or a full disk kills the caller WHERE IT STANDS — past this
+#     function's own warn/return, past the script's summary, so stdout never carries the
+#     `RESULT: <token>` line the caller parses. Every write below is therefore
+#     `cmd || { err "…"; return 1; }`, and `lifecycle_exit_guard` catches whatever still gets past.
+#  4. NO FORK PER LINE in the env parser. deploy/app.env is ~900 lines and gets parsed repeatedly;
 #     a `$(...)` per line cost whole seconds. The parsers below are pure parameter expansion.
 #
 # Functions whose OUTPUT IS CAPTURED by callers (env_backup, service_install, wait_health_sha,
@@ -113,6 +118,14 @@ irises_port() {
 #     `OPS_BACKEND=hermes   # hermes | openclaw` resolves to `hermes` and not to a paragraph;
 #   • one layer of matching quotes is stripped, and a `#` inside quotes is data.
 
+# A failed append to the scratch copy (full disk, read-only mount) reported once, in one place, and
+# the half-written scratch file taken away with it. Callers add their own `return 1`.
+_irises_tmp_fail() { # TMP
+  err "could not write ${1:-} — a full disk or a read-only mount, and the original is untouched"
+  rm -f "${1:-}" 2>/dev/null || true
+  return 1
+}
+
 env_get() { # FILE KEY -> value (empty when the file or key is absent)
   local f="${1:-}" key="${2:-}" line head v=""
   if [ -z "$key" ] || [ ! -f "${f:-}" ]; then return 0; fi
@@ -175,16 +188,18 @@ env_set() { # FILE KEY VALUE
     esac
     if [ -n "$head" ] && [ "$head" = "$key" ]; then
       if [ "$wrote" = "0" ]; then
-        printf '%s=%s\n' "$key" "$val" >> "$tmp"
+        printf '%s=%s\n' "$key" "$val" >> "$tmp" || { _irises_tmp_fail "$tmp"; return 1; }
         wrote=1
       fi
       continue
     fi
-    printf '%s\n' "$line" >> "$tmp"
+    printf '%s\n' "$line" >> "$tmp" || { _irises_tmp_fail "$tmp"; return 1; }
   done < "$f"
-  if [ "$wrote" = "0" ]; then printf '%s=%s\n' "$key" "$val" >> "$tmp"; fi
-  cat "$tmp" > "$f" || { rm -f "$tmp"; return 1; }
-  rm -f "$tmp"
+  if [ "$wrote" = "0" ]; then
+    printf '%s=%s\n' "$key" "$val" >> "$tmp" || { _irises_tmp_fail "$tmp"; return 1; }
+  fi
+  cat "$tmp" > "$f" || { err "could not write $f — is it writable?"; rm -f "$tmp" 2>/dev/null || true; return 1; }
+  rm -f "$tmp" 2>/dev/null || true
   return 0
 }
 
@@ -212,13 +227,15 @@ env_append_block() { # FILE TAG KEY=VALUE…
   # a live run turned a model id and a base URL into one corrupt line that way.
   if [ -s "$f" ]; then
     last="$(LC_ALL=C tail -c1 "$f" 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n' || true)"
-    if [ "$last" != "0a" ]; then printf '\n' >> "$f"; fi
+    if [ "$last" != "0a" ]; then
+      printf '\n' >> "$f" || { err "could not append to $f — is it writable?"; return 1; }
+    fi
   fi
   {
     printf '\n'
     printf '# — added by Irises setup (%s) — %s —\n' "$(date +%F)" "$tag"
     for pair in "$@"; do printf '%s\n' "$pair"; done
-  } >> "$f"
+  } >> "$f" || { err "could not append the $tag block to $f — is it writable?"; return 1; }
   return 0
 }
 
@@ -248,7 +265,9 @@ env_remove_irises_block() { # FILE KEY…
     probe="${line#"${line%%[![:space:]]*}"}"
     case "$probe" in
       '#'*'added by Irises'*)
-        if [ -n "$marker" ]; then printf '%s\n' "$marker" >> "$tmp"; fi
+        if [ -n "$marker" ]; then
+          printf '%s\n' "$marker" >> "$tmp" || { _irises_tmp_fail "$tmp"; return 1; }
+        fi
         marker="$line"
         continue
         ;;
@@ -274,12 +293,15 @@ env_remove_irises_block() { # FILE KEY…
       marker=""
       continue
     fi
-    if [ -n "$marker" ]; then printf '%s\n' "$marker" >> "$tmp"; marker=""; fi
-    printf '%s\n' "$line" >> "$tmp"
+    if [ -n "$marker" ]; then
+      printf '%s\n' "$marker" >> "$tmp" || { _irises_tmp_fail "$tmp"; return 1; }
+      marker=""
+    fi
+    printf '%s\n' "$line" >> "$tmp" || { _irises_tmp_fail "$tmp"; return 1; }
   done < "$f"
   # A marker still buffered here sat at EOF above keys we removed — it goes with them.
-  cat "$tmp" > "$f" || { rm -f "$tmp"; return 1; }
-  rm -f "$tmp"
+  cat "$tmp" > "$f" || { err "could not write $f — is it writable?"; rm -f "$tmp" 2>/dev/null || true; return 1; }
+  rm -f "$tmp" 2>/dev/null || true
   printf '%s' "$removed"
 }
 
@@ -646,9 +668,10 @@ _gateway_bounce_hermes_service() { # VERB
   soft="re"; soft="${soft}load"
   if command -v systemctl >/dev/null 2>&1; then
     # ExecReload = kill -USR1 = hermes's own drain-aware in-band bounce (and the soft verb is not on
-    # the upstream block list, so it survives a paste into a chat).
-    if systemctl --user "$soft" "$unit" >/dev/null 2>&1; then return 0; fi
-    if systemctl --user "$verb" "$unit" >/dev/null 2>&1; then return 0; fi
+    # the upstream block list, so it survives a paste into a chat). Through _systemctl_user, because
+    # a bare `systemctl --user` in a session with no bus address fails on connect, not on the verb.
+    if _systemctl_user "$soft" "$unit" >/dev/null 2>&1; then return 0; fi
+    if _systemctl_user "$verb" "$unit" >/dev/null 2>&1; then return 0; fi
   fi
   if command -v launchctl >/dev/null 2>&1; then
     uid="$(id -u)"
@@ -719,9 +742,12 @@ plugin_refresh() { # ENGINE [ROOT]
         warn "no bridge/hermes/irises-bridge in $root — skipping the plugin refresh"
         return 1
       fi
-      mkdir -p "$pdir"
-      rm -rf "$pdir/irises-bridge"
-      cp -R "$root/bridge/hermes/irises-bridge" "$pdir/irises-bridge"
+      mkdir -p "$pdir" || { err "could not create $pdir — is $(hermes_home) writable?"; return 1; }
+      rm -rf "$pdir/irises-bridge" || { err "could not clear $pdir/irises-bridge — is $pdir writable?"; return 1; }
+      cp -R "$root/bridge/hermes/irises-bridge" "$pdir/irises-bridge" || {
+        err "could not copy the bridge plugin into $pdir — is it writable, and is there room on the disk?"
+        return 1
+      }
       find "$pdir/irises-bridge" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
       say "refreshed $pdir/irises-bridge (from this clone, minus __pycache__)"
       if [ -n "$(hermes_cli)" ]; then
@@ -741,10 +767,10 @@ plugin_refresh() { # ENGINE [ROOT]
         warn "no bridge/openclaw/irises-bridge in $root — skipping the plugin refresh"
         return 1
       fi
-      mkdir -p "$ext"
+      mkdir -p "$ext" || { err "could not create $ext — is $(openclaw_home) writable?"; return 1; }
       # `openclaw plugins install` COPIES and REFUSES an existing target ("plugin already exists …
       # delete it first"), so clearing the way is the only way a refresh can succeed.
-      rm -rf "$ext/irises-bridge"
+      rm -rf "$ext/irises-bridge" || { err "could not clear $ext/irises-bridge — is $ext writable?"; return 1; }
       if command -v openclaw >/dev/null 2>&1; then
         if openclaw plugins install "$root/bridge/openclaw/irises-bridge" >/dev/null 2>&1; then
           say "installed irises-bridge into $ext/irises-bridge"
@@ -902,16 +928,23 @@ _service_node_options() { # ROOT
 service_install() { # ROOT NODE_BIN
   local root="${1:-}" node="${2:-}" kind home logs unit plist path opts uid
   if [ -z "$root" ] || [ -z "$node" ]; then err "service_install needs ROOT and an absolute NODE_BIN"; return 1; fi
+  # A unit, a plist and a Task Scheduler action all inherit essentially no PATH, so a relative
+  # `node` resolves to nothing at boot. (On Git Bash an absolute path starts with `/` too —
+  # /c/Program Files/nodejs/node — and win_path converts it for the launcher.)
+  case "$node" in
+    /*) ;;
+    *) err "service_install needs an ABSOLUTE NODE_BIN — got '$node', which a service cannot resolve"; return 1 ;;
+  esac
   kind="$(service_kind)"
   home="$(irises_home)"
   logs="$home/logs"
-  mkdir -p "$logs"
+  mkdir -p "$logs" || { err "could not create $logs — is $home writable?"; return 1; }
   path="$(_service_path "$node")"
   opts="$(_service_node_options "$root")"
   case "$kind" in
     systemd)
       unit="$(service_unit_path)"
-      mkdir -p "$(dirname "$unit")"
+      mkdir -p "$(dirname "$unit")" || { err "could not create $(dirname "$unit") — is \$HOME writable?"; return 1; }
       {
         printf '[Unit]\n'
         printf 'Description=Irises — private companion server\n'
@@ -935,7 +968,7 @@ service_install() { # ROOT NODE_BIN
         printf 'StandardError=append:%s/server.log\n' "$logs"
         printf '\n[Install]\n'
         printf 'WantedBy=default.target\n'
-      } > "$unit"
+      } > "$unit" || { err "could not write $unit — is it writable, and is there room on the disk?"; return 1; }
       log "wrote $unit"
       _systemctl_user daemon-reload || { err "systemctl --user daemon-reload failed"; return 1; }
       _systemctl_user enable "$(service_name)" >/dev/null 2>&1 || warn "could not enable the unit (it will still start now)"
@@ -954,7 +987,7 @@ service_install() { # ROOT NODE_BIN
     launchd)
       plist="$(service_plist_path)"
       uid="$(id -u)"
-      mkdir -p "$(dirname "$plist")"
+      mkdir -p "$(dirname "$plist")" || { err "could not create $(dirname "$plist") — is \$HOME writable?"; return 1; }
       {
         printf '<?xml version="1.0" encoding="UTF-8"?>\n'
         printf '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
@@ -979,7 +1012,7 @@ service_install() { # ROOT NODE_BIN
         printf '    <key>StandardOutPath</key>\n    <string>%s/server.log</string>\n' "$logs"
         printf '    <key>StandardErrorPath</key>\n    <string>%s/server.log</string>\n' "$logs"
         printf '</dict>\n</plist>\n'
-      } > "$plist"
+      } > "$plist" || { err "could not write $plist — is it writable, and is there room on the disk?"; return 1; }
       log "wrote $plist"
       # Bootstrapping a label that is already loaded fails with EIO; boot it out first so a re-run
       # is a genuine reinstall rather than a no-op.
@@ -1133,7 +1166,7 @@ server_stop() { # [SECS]
 server_start_detached() { # ROOT [LOG]
   local root="${1:-}" log="${2:-}" home
   home="$(irises_home)"
-  mkdir -p "$home/logs"
+  mkdir -p "$home/logs" || { err "could not create $home/logs — is $home writable?"; return 1; }
   if [ -z "$log" ]; then log="$home/logs/server.log"; fi
   say "starting Irises detached — it outlives this shell (log: $log)"
   (
@@ -1167,8 +1200,10 @@ wait_health_sha() { # URL SHA SECS
     body="$(curl -fsS -m 5 "$url/health" 2>/dev/null || true)"
     if [ -n "$body" ]; then
       # version.sha is the first lowercase-hex "sha" in the body; update.remoteSha cannot match
-      # this pattern (the quote before `Sha` is preceded by `remote`).
-      got="$(printf '%s' "$body" | grep -o '"sha":"[0-9a-f]\{7,40\}"' | head -1 | cut -d'"' -f4 || true)"
+      # this pattern (the quote before `Sha` is preceded by `remote`, and the case differs).
+      # The whitespace classes match built_sha's: a pretty-printed or proxy-reformatted body
+      # (`"sha" : "…"`) is still the same server, and tr flattens it before cut takes field 4.
+      got="$(printf '%s' "$body" | grep -o '"sha"[[:space:]]*:[[:space:]]*"[0-9a-f]\{7,40\}"' | head -1 | tr -d '[:space:]' | cut -d'"' -f4 || true)"
       if [ -n "$got" ]; then
         if [ -z "$want" ]; then printf '%s' "$got"; return 0; fi
         case "$got" in "$want"*) printf '%s' "$got"; return 0 ;; esac
@@ -1200,7 +1235,7 @@ manifest_write() { # PATH KEY=VALUE…
   local p="${1:-}" pair key val
   if [ -z "$p" ]; then return 1; fi
   shift || true
-  mkdir -p "$(dirname "$p")"
+  mkdir -p "$(dirname "$p")" || { err "could not create $(dirname "$p") for the install manifest"; return 1; }
   {
     printf '{\n'
     printf '  "schema": "1",\n'
@@ -1213,7 +1248,7 @@ manifest_write() { # PATH KEY=VALUE…
       printf ',\n  "%s": "%s"' "$key" "$val"
     done
     printf '\n}\n'
-  } > "$p"
+  } > "$p" || { err "could not write the install manifest $p — --uninstall will have to guess instead"; return 1; }
   chmod 600 "$p" 2>/dev/null || true
   say "wrote $p"
   return 0
@@ -1252,7 +1287,7 @@ lock_acquire() { # [NAME]
   mkdir -p "$home" 2>/dev/null || true
   dir="$home/$name.lock"
   if mkdir "$dir" 2>/dev/null; then
-    printf '%s\n' "$$" > "$dir/pid"
+    printf '%s\n' "$$" > "$dir/pid" || warn "took the lock but could not record our pid in $dir/pid"
     IRISES_LOCK_DIR="$dir"
     return 0
   fi
@@ -1263,7 +1298,7 @@ lock_acquire() { # [NAME]
   fi
   rm -rf "$dir" 2>/dev/null || true
   if mkdir "$dir" 2>/dev/null; then
-    printf '%s\n' "$$" > "$dir/pid"
+    printf '%s\n' "$$" > "$dir/pid" || warn "took the lock but could not record our pid in $dir/pid"
     IRISES_LOCK_DIR="$dir"
     warn "reclaimed a lock left behind by a dead run (pid ${other:-unknown})"
     return 0
@@ -1292,5 +1327,23 @@ summary() { # TOKEN LINE…
   for l in "$@"; do printf '  %s\n' "$l"; done
   printf '\n'
   printf 'RESULT: %s\n' "$token"
+  IRISES_SUMMARY_DONE=1
+  return 0
+}
+
+# The safety net under the RESULT contract. Every lifecycle script installs it as
+#   trap 'lifecycle_exit_guard $?' EXIT
+# so the two paths that never reach `summary` — a `set -e` abort on some statement nobody guarded,
+# and a Ctrl+C — still leave the lock released and ONE machine-readable line on stdout. Without it a
+# caller that greps stdout for `RESULT:` gets nothing back and cannot tell a failed run from a run
+# that is somehow still going. It never changes the exit code: the abort keeps its own.
+lifecycle_exit_guard() { # RC
+  local rc="${1:-0}"
+  lock_release
+  case "$rc" in ''|*[!0-9]*) rc=1 ;; esac
+  if [ "$rc" != "0" ] && [ "${IRISES_SUMMARY_DONE:-}" != "1" ]; then
+    err "aborted with exit $rc before the summary — see the messages above"
+    printf 'RESULT: partial\n'
+  fi
   return 0
 }
