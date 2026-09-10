@@ -54,13 +54,15 @@ function unsteerableEngine(): EngineBackend {
 // ── the tool the model sees ──────────────────────────────────────────────────
 
 test('steer_research is offered on the live tool list, right beside cancel_research', () => {
-  const names = convoToolList({ engineName: 'hermes', isGroupChat: false, selfUpdate: false })
+  const names = convoToolList({ engineName: 'hermes', isGroupChat: false })
     .map(t => t.name);
   assert.ok(names.includes('steer_research'), 'the assembled list carries it');
   assert.equal(names[names.indexOf('cancel_research') + 1], 'steer_research', 'the two sit together');
   // The group and openclaw lanes are the same list plus/minus their own tools — a steer is neither.
-  assert.ok(convoToolList({ engineName: 'openclaw', isGroupChat: true, selfUpdate: true })
+  assert.ok(convoToolList({ engineName: 'openclaw', isGroupChat: true })
     .map(t => t.name).includes('steer_research'));
+  // And nothing on the list can apply an update: that path is the terminal's alone now.
+  assert.ok(!names.includes('update_self'), 'there is no chat tool for updating herself');
 });
 
 test('the tool asks for the addition in their words, and only guidance is required', () => {

@@ -31,7 +31,6 @@ import { getModelMap } from './llm/modelMap.js';
 import { getUpdateStatus, startUpdateChecker } from './update/checker.js';
 import { createUpdateAnnouncer } from './update/announce.js';
 import { writePidFileAtBoot } from './update/pidfile.js';
-import { initSelfUpdate } from './update/selfUpdate.js';
 import { markOpsStart, setOpsTaskSink } from './state/opsCoordination.js';
 import { createOpsTaskRecovery, opsDurableTasksEnabled } from './state/opsTaskDurability.js';
 import { estimateOpsEta } from './agents/etaEstimate.js';
@@ -1088,12 +1087,11 @@ app.listen(PORT, () => {
   // THREADING_PINGS_ENABLED says otherwise — the one memory surface that texts a phone unprompted.
   initThreadPings({ deliver: proactive.deliver });
 
-  // Update mechanism: a pidfile so `scripts/update.sh --restart` can cycle this process, a periodic
-  // check of the git remote for a newer build, and — woven through Convo, or pushed through the
-  // proactive pipeline above — a proactive
-  // "upgrade available" note plus a "got my upgrades" confirmation after the operator applies it.
+  // Update mechanism: a pidfile so scripts/update.sh can cycle this process, a periodic check of the
+  // git remote for a newer build, and — woven through Convo, or pushed through the proactive pipeline
+  // above — a proactive "upgrade available" note plus a "back on the new build" confirmation after
+  // the operator applies it. APPLYING is terminal-only (scripts/update.sh); nothing here can do it.
   writePidFileAtBoot();
-  initSelfUpdate({ sendFollowUp });   // wires "update yourself" from chat → detached updater + status voice
   const updateAnnouncer = createUpdateAnnouncer({ deliver: proactive.deliver });
   startUpdateChecker({ onUpdateDetected: sha => void updateAnnouncer.onUpdateDetected(sha) });
   void updateAnnouncer.announceUpgradeAppliedIfReceipt();

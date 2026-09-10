@@ -1,7 +1,6 @@
 import { callLLM } from '../../llm/callLLM.js';
 import { transcribeAudio } from '../../llm/transcribe.js';
 import { convoToolList } from './tools.js';
-import { selfUpdateEnabled } from '../../update/selfUpdate.js';
 import { rememberMedia } from './mediaRecall.js';
 import { getPreference, ensureChatId, clearDossier, getForgetEpoch } from '../../db/repositories/memory.js';
 import { memoryHandle, isGroupHandle } from '../../memory/identity.js';
@@ -317,7 +316,6 @@ export async function chat(
   const tools: LlmToolDef[] = convoToolList({
     engineName,
     isGroupChat: chatContext?.isGroupChat ?? false,
-    selfUpdate: selfUpdateEnabled(),
   });
 
   // Label the current turn with when it actually ARRIVED, not lock-acquisition time — a message that
