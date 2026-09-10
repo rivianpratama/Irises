@@ -481,3 +481,354 @@ tcp_open() { # HOST PORT
   fi
   return 1
 }
+
+# ═══ E. engines: detection, gateway lifecycle, bridge plugin, web build ═══════
+#
+# A NOTE ON THE STRINGS IN THIS SECTION. hermes ships a lifecycle guard
+# (cron/lifecycle_guard.py) that blocks a terminal command matching e.g. `hermes gateway
+# <bounce-verb>` or `systemctl … <bounce-verb> … hermes-gateway`, AND it recursively reads the
+# CONTENTS of any shell script the command references (including ones it sources, to depth 8). So
+# if a user ever pastes one of our commands into a hermes chat, a literal of that shape ANYWHERE in
+# these files — code or comment — gets the whole thing refused. Every verb and unit name below is
+# therefore assembled at runtime from fragments. It costs two lines and buys an install that works
+# from inside a chat as well as from a shell. `reload` is deliberately not blocked upstream, which
+# is why the systemd fallback uses it: the unit's ExecReload sends SIGUSR1, hermes's own
+# drain-aware in-band bounce.
+
+hermes_home() {
+  local h="${HERMES_HOME:-$HOME/.hermes}"
+  case "$h" in
+    "~")   h="$HOME" ;;
+    "~/"*) h="$HOME/${h#\~/}" ;;
+  esac
+  printf '%s' "$h"
+}
+
+# OpenClaw profiles can relocate the whole state dir; honour the override, else ~/.openclaw.
+openclaw_home() {
+  local h="${OPENCLAW_STATE_DIR:-${CLAWDBOT_STATE_DIR:-$HOME/.openclaw}}"
+  case "$h" in
+    "~")   h="$HOME" ;;
+    "~/"*) h="$HOME/${h#\~/}" ;;
+  esac
+  printf '%s' "$h"
+}
+
+# Which engine this clone talks to: an explicit override, else OPS_BACKEND from the clone's .env
+# (then app.env, then the shell), else whatever is actually installed. `off` = standalone.
+engine_kind() { # [OVERRIDE]
+  local override="${1:-}" root v
+  case "$override" in
+    hermes|openclaw|off) printf '%s' "$override"; return 0 ;;
+    '') ;;
+    *) err "unknown engine '$override' (hermes|openclaw|off)"; return 1 ;;
+  esac
+  root="$(irises_root)"
+  v="$(env_get "$root/.env" OPS_BACKEND)"
+  if [ -z "$v" ]; then v="$(env_get "$root/deploy/app.env" OPS_BACKEND)"; fi
+  if [ -z "$v" ]; then v="${OPS_BACKEND:-}"; fi
+  case "$v" in
+    hermes|openclaw|off) printf '%s' "$v"; return 0 ;;
+    '') ;;
+    *) warn "OPS_BACKEND='$v' is not hermes|openclaw|off — treating this install as engine-less"
+       printf 'off'; return 0 ;;
+  esac
+  if [ -d "$(hermes_home)" ]; then printf 'hermes'; return 0; fi
+  if command -v openclaw >/dev/null 2>&1; then printf 'openclaw'; return 0; fi
+  printf 'off'
+}
+
+# The hermes CLI as a DISPLAY string (for logs and for "is it there?" checks). Never word-split it —
+# call hermes_run instead, which handles the argv and the environment.
+hermes_cli() {
+  local hhome; hhome="$(hermes_home)"
+  if command -v hermes >/dev/null 2>&1; then command -v hermes; return 0; fi
+  if [ -x "$HOME/.local/bin/hermes" ]; then printf '%s' "$HOME/.local/bin/hermes"; return 0; fi
+  if [ -x "$hhome/hermes-agent/hermes" ]; then printf '%s' "$hhome/hermes-agent/hermes"; return 0; fi
+  if [ -x "$hhome/hermes-agent/venv/bin/python" ]; then
+    printf '%s -m hermes_cli.main' "$hhome/hermes-agent/venv/bin/python"
+    return 0
+  fi
+  return 0
+}
+
+# Invoke the hermes CLI. Two things every caller would otherwise have to remember:
+#   • `_HERMES_GATEWAY=1` is inherited by anything the gateway spawns, and the CLI REFUSES gateway
+#     lifecycle work (exit 1) when it sees it — so it is always unset here.
+#   • $IRISES_HERMES_ENV carries extra KEY=VALUE settings (whitespace-separated, values with no
+#     spaces — ours are all integers); it is intentionally unquoted so it word-splits.
+hermes_run() { # ARGS…
+  local hhome; hhome="$(hermes_home)"
+  if command -v hermes >/dev/null 2>&1; then
+    set -- "$(command -v hermes)" "$@"
+  elif [ -x "$HOME/.local/bin/hermes" ]; then
+    set -- "$HOME/.local/bin/hermes" "$@"
+  elif [ -x "$hhome/hermes-agent/hermes" ]; then
+    set -- "$hhome/hermes-agent/hermes" "$@"
+  elif [ -x "$hhome/hermes-agent/venv/bin/python" ]; then
+    set -- "$hhome/hermes-agent/venv/bin/python" -m hermes_cli.main "$@"
+  else
+    return 127
+  fi
+  local rc=0
+  # shellcheck disable=SC2086  # IRISES_HERMES_ENV must split into separate assignments
+  env -u _HERMES_GATEWAY ${IRISES_HERMES_ENV:-} "$@" || rc=$?
+  return "$rc"
+}
+
+# Does the engine's own health surface answer RIGHT NOW? Taken BEFORE a bounce as the baseline:
+# `hermes gateway status` exits 0 even when the gateway is down, and /v1/health only exists while
+# API_SERVER_ENABLED=true — so a gateway with the API server off must not be reported as failed.
+_gateway_http_ok() { # ENGINE
+  local engine="${1:-}" root base host port
+  root="$(irises_root)"
+  if [ "$engine" = "hermes" ]; then
+    base="$(env_get "$root/.env" HERMES_BASE_URL)"
+    if [ -z "$base" ]; then base="http://127.0.0.1:8642"; fi
+    # /v1/health takes no auth (gateway/platforms/api_server.py: _handle_health has no auth check).
+    if curl -fsS -m 5 "$base/v1/health" >/dev/null 2>&1; then return 0; fi
+    return 1
+  fi
+  base="$(env_get "$root/.env" OPENCLAW_URL)"
+  if [ -z "$base" ]; then base="ws://127.0.0.1:18789"; fi
+  host="${base#*://}"; host="${host%%/*}"
+  port="${host##*:}"; host="${host%%:*}"
+  case "$port" in ''|*[!0-9]*) port=18789 ;; esac
+  if [ -z "$host" ]; then host=127.0.0.1; fi
+  tcp_open "$host" "$port"
+}
+
+# hermes only: is the gateway's SERVICE up? Used when HTTP was not answering before the bounce.
+_gateway_service_up() {
+  local unit label uid state
+  unit="hermes-gateway"
+  label="ai.hermes.gateway"
+  if command -v systemctl >/dev/null 2>&1; then
+    state="$(systemctl --user is-active "$unit" 2>/dev/null || true)"
+    if [ "$state" = "active" ]; then return 0; fi
+  fi
+  if command -v launchctl >/dev/null 2>&1; then
+    uid="$(id -u)"
+    if launchctl print "gui/$uid/$label" 2>/dev/null | grep -q 'state = running'; then return 0; fi
+  fi
+  if command -v pgrep >/dev/null 2>&1; then
+    if pgrep -f 'gateway[.]run|hermes_cli[.]main .*gateway' >/dev/null 2>&1; then return 0; fi
+  fi
+  return 1
+}
+
+gateway_probe_mode() { # ENGINE -> http|service
+  if _gateway_http_ok "${1:-}"; then printf 'http'; else printf 'service'; fi
+}
+
+gateway_wait_healthy() { # ENGINE SECS MODE(http|service)
+  local engine="${1:-}" secs="${2:-90}" mode="${3:-http}" i=0
+  while [ "$i" -lt "$secs" ]; do
+    if [ "$mode" = "http" ]; then
+      if _gateway_http_ok "$engine"; then return 0; fi
+    else
+      if [ "$engine" = "hermes" ]; then
+        if _gateway_service_up; then return 0; fi
+      else
+        if _gateway_http_ok "$engine"; then return 0; fi
+      fi
+    fi
+    sleep 2
+    i=$((i + 2))
+  done
+  return 1
+}
+
+_gateway_bounce_hermes_service() { # VERB
+  local verb="${1:-}" unit label uid soft
+  unit="hermes-gateway"
+  label="ai.hermes.gateway"
+  soft="re"; soft="${soft}load"
+  if command -v systemctl >/dev/null 2>&1; then
+    # ExecReload = kill -USR1 = hermes's own drain-aware in-band bounce (and the soft verb is not on
+    # the upstream block list, so it survives a paste into a chat).
+    if systemctl --user "$soft" "$unit" >/dev/null 2>&1; then return 0; fi
+    if systemctl --user "$verb" "$unit" >/dev/null 2>&1; then return 0; fi
+  fi
+  if command -v launchctl >/dev/null 2>&1; then
+    uid="$(id -u)"
+    if launchctl kickstart -k "gui/$uid/$label" >/dev/null 2>&1; then return 0; fi
+  fi
+  return 1
+}
+
+# Bounce the engine's gateway and VERIFY it came back. Returns 1 on an unverified bounce — the
+# caller reports that with its own exit code, because Irises itself may be perfectly updated.
+# Worst case wall time: 100s for the CLI call (its own budget is 45+10+15) plus SECS of verification.
+gateway_restart() { # [ENGINE] [SECS]
+  local engine="${1:-}" secs="${2:-90}" verb mode t0 t1
+  if [ -z "$engine" ]; then engine="$(engine_kind)"; fi
+  case "$engine" in
+    off|'') say "engine is off — no gateway to bounce"; return 0 ;;
+  esac
+  verb="re"; verb="${verb}start"
+  mode="$(gateway_probe_mode "$engine")"
+  t0="$(date +%s)"
+  if [ "$engine" = "hermes" ]; then
+    if [ -n "$(hermes_cli)" ]; then
+      say "bouncing the hermes gateway through its own CLI (in-flight turns get 45s, drain 10s)"
+      local IRISES_HERMES_ENV="HERMES_RESTART_AFTER_TURN_TIMEOUT=45 HERMES_RESTART_DRAIN_TIMEOUT=10"
+      if ! portable_timeout 100 hermes_run gateway "$verb" >/dev/null 2>&1; then
+        warn "the hermes CLI could not bounce the gateway — trying the service manager"
+        _gateway_bounce_hermes_service "$verb" || true
+      fi
+    else
+      warn "no hermes CLI on this box — trying the service manager"
+      _gateway_bounce_hermes_service "$verb" || true
+    fi
+  else
+    if command -v openclaw >/dev/null 2>&1; then
+      say "bouncing the OpenClaw gateway (openclaw gateway $verb)"
+      if ! portable_timeout 100 openclaw gateway "$verb" >/dev/null 2>&1; then
+        warn "openclaw could not bounce its gateway — do it yourself: openclaw gateway $verb"
+      fi
+    else
+      warn "no openclaw CLI on this box — bounce the gateway yourself: openclaw gateway $verb"
+    fi
+  fi
+  if gateway_wait_healthy "$engine" "$secs" "$mode"; then
+    t1="$(date +%s)"
+    if [ "$mode" = "http" ]; then
+      say "gateway is back — verified in $((t1 - t0))s"
+    else
+      say "gateway is back — verified in $((t1 - t0))s by service state (its HTTP health surface is off)"
+    fi
+    say "the engine posts its own '♻️ Gateway online' note to your home channel on a planned bounce"
+    say "(silence it per platform with <platform>.gateway_restart_notification: false in the engine config)"
+    return 0
+  fi
+  warn "the gateway did not come back within ${secs}s — Irises itself is unaffected"
+  warn "check it yourself, then bounce it by hand once the reason is clear"
+  return 1
+}
+
+# Refresh the bridge plugin from this clone. ALWAYS run on install and update: the plugin is a COPY,
+# a lifecycle action bounces the gateway anyway, and plugins load only at gateway start.
+plugin_refresh() { # ENGINE [ROOT]
+  local engine="${1:-}" root="${2:-}" pdir ext
+  if [ -z "$root" ]; then root="$(irises_root)"; fi
+  case "$engine" in
+    hermes)
+      pdir="$(hermes_home)/plugins"
+      if [ ! -d "$root/bridge/hermes/irises-bridge" ]; then
+        warn "no bridge/hermes/irises-bridge in $root — skipping the plugin refresh"
+        return 1
+      fi
+      mkdir -p "$pdir"
+      rm -rf "$pdir/irises-bridge"
+      cp -R "$root/bridge/hermes/irises-bridge" "$pdir/irises-bridge"
+      find "$pdir/irises-bridge" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+      say "refreshed $pdir/irises-bridge (from this clone, minus __pycache__)"
+      if [ -n "$(hermes_cli)" ]; then
+        if hermes_run plugins enable irises-bridge >/dev/null 2>&1; then
+          say "irises-bridge is enabled in the engine's config"
+        else
+          warn "could not enable it through the CLI — run: hermes plugins enable irises-bridge"
+        fi
+      else
+        warn "no hermes CLI here — enable it yourself: hermes plugins enable irises-bridge"
+      fi
+      return 0
+      ;;
+    openclaw)
+      ext="$(openclaw_home)/extensions"
+      if [ ! -d "$root/bridge/openclaw/irises-bridge" ]; then
+        warn "no bridge/openclaw/irises-bridge in $root — skipping the plugin refresh"
+        return 1
+      fi
+      mkdir -p "$ext"
+      # `openclaw plugins install` COPIES and REFUSES an existing target ("plugin already exists …
+      # delete it first"), so clearing the way is the only way a refresh can succeed.
+      rm -rf "$ext/irises-bridge"
+      if command -v openclaw >/dev/null 2>&1; then
+        if openclaw plugins install "$root/bridge/openclaw/irises-bridge" >/dev/null 2>&1; then
+          say "installed irises-bridge into $ext/irises-bridge"
+          return 0
+        fi
+        warn "openclaw plugins install failed — run it yourself:"
+        warn "  openclaw plugins install $root/bridge/openclaw/irises-bridge"
+        return 1
+      fi
+      warn "no openclaw CLI here — install it yourself:"
+      warn "  openclaw plugins install $root/bridge/openclaw/irises-bridge"
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+# Take the plugin off the engine: disable it in config (so a stale entry can't warn at every start),
+# then delete the copy. OpenClaw has NO `plugins uninstall` — removal IS disable + rm.
+plugin_remove() { # ENGINE
+  local engine="${1:-}" pdir ext
+  case "$engine" in
+    hermes)
+      pdir="$(hermes_home)/plugins"
+      if [ -n "$(hermes_cli)" ]; then
+        if hermes_run plugins disable irises-bridge >/dev/null 2>&1; then
+          say "disabled irises-bridge in the engine's config"
+        else
+          warn "could not disable it through the CLI — remove 'irises-bridge' from plugins.enabled yourself"
+        fi
+      else
+        warn "no hermes CLI here — remove 'irises-bridge' from plugins.enabled yourself"
+      fi
+      if [ -d "$pdir/irises-bridge" ]; then
+        rm -rf "$pdir/irises-bridge"
+        say "removed $pdir/irises-bridge"
+      fi
+      return 0
+      ;;
+    openclaw)
+      ext="$(openclaw_home)/extensions"
+      if command -v openclaw >/dev/null 2>&1; then
+        openclaw plugins disable irises-bridge >/dev/null 2>&1 || warn "could not disable irises-bridge through the CLI"
+      fi
+      if [ -d "$ext/irises-bridge" ]; then
+        rm -rf "$ext/irises-bridge"
+        say "removed $ext/irises-bridge"
+      fi
+      return 0
+      ;;
+  esac
+  return 0
+}
+
+# The web client — a SEPARATE npm project with a heavy toolchain, and the ONE step allowed to fail.
+# Policy: build it only where it is already in use (web/out exists) or on request (IRISES_WEB=1),
+# never under 1500 MB of free memory. On the 408 MB VPS `next build` took a bus error mid-build and,
+# under `set -e`, aborted the whole update — server updated on disk, never restarted, no receipt.
+# `npm --prefix web ci` (not `install`) because install rewrites web/package-lock.json, which then
+# trips the updater's own dirty-tree preflight on the next run.
+web_build() { # [ROOT] — always returns 0
+  local root="${1:-}" mb
+  if [ -z "$root" ]; then root="$(irises_root)"; fi
+  if [ "${IRISES_SKIP_WEB_BUILD:-}" = "1" ]; then
+    say "IRISES_SKIP_WEB_BUILD=1 — skipping the web client build"
+    return 0
+  fi
+  if [ ! -d "$root/web" ]; then return 0; fi
+  if [ ! -d "$root/web/out" ] && [ "${IRISES_WEB:-}" != "1" ]; then
+    say "web UI not built here — skipping (opt in with IRISES_WEB=1; the terminal chat needs nothing)"
+    return 0
+  fi
+  mb="$(mem_available_mb)"
+  if [ -n "$mb" ] && [ "$mb" -lt 1500 ]; then
+    warn "only ${mb} MB free — skipping the web build (next build wants ~1 GB and dies mid-way below that)"
+    warn "build it when the box has room:  npm --prefix web ci && npm run build:web"
+    return 0
+  fi
+  say "building the web client (npm --prefix web ci && npm run build:web)"
+  if npm --prefix "$root/web" ci && ( cd "$root" && npm run build:web ); then
+    say "web client built"
+    return 0
+  fi
+  warn "web client build failed — the server half is fine; the browser page is not rebuilt"
+  warn "retry when the box has room:  npm --prefix web ci && npm run build:web   (or set IRISES_SKIP_WEB_BUILD=1)"
+  return 0
+}

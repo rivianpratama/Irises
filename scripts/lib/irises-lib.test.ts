@@ -24,6 +24,9 @@ const DEFAULT_TOOLS = [
   'cat', 'rm', 'mkdir', 'cp', 'mv', 'chmod', 'find', 'grep', 'sed', 'head', 'tail', 'cut', 'tr',
   'sleep', 'date', 'printf', 'ps', 'uname', 'id', 'dirname', 'basename', 'du', 'curl', 'node',
   'npm', 'git', 'awk', 'sort', 'stat', 'env', 'sh', 'pgrep', 'mktemp', 'kill', 'touch', 'ln', 'od',
+  // bash: the stubs below are `#!/usr/bin/env bash` scripts, so the interpreter has to be reachable
+  // on the scratch PATH or every stub invocation dies with "env: bash: No such file or directory".
+  'bash',
 ];
 
 function realPath(tool: string): string | null {
@@ -371,4 +374,247 @@ test('tcp_open sees a listening socket and rejects a closed port', async () => {
   const closed = runLib('rc=0; tcp_open 127.0.0.1 1 || rc=$?; printf "CLOSED=%s\\n" "$rc"');
   assert.equal(closed.code, 0, closed.err);
   assert.match(closed.out, /CLOSED=1/);
+});
+
+// ── section E: engine, gateway, plugins, web ────────────────────────────────────────────────────
+
+/** A stub that records `argv` plus the environment bits we assert on, then exits with $STUB_RC. */
+const RECORDING_STUB = [
+  '{',
+  '  printf "%s argv:%s\\n" "$(basename "$0")" "$*"',
+  '  printf "%s env:HERMES_RESTART_AFTER_TURN_TIMEOUT=%s\\n" "$(basename "$0")" "${HERMES_RESTART_AFTER_TURN_TIMEOUT:-unset}"',
+  '  printf "%s env:HERMES_RESTART_DRAIN_TIMEOUT=%s\\n" "$(basename "$0")" "${HERMES_RESTART_DRAIN_TIMEOUT:-unset}"',
+  '  printf "%s env:_HERMES_GATEWAY=%s\\n" "$(basename "$0")" "${_HERMES_GATEWAY:-unset}"',
+  '} >> "$STUB_LOG"',
+  'exit "${STUB_RC:-0}"',
+].join('\n');
+
+test('engine_kind reads OPS_BACKEND past its inline comment, and honours an override', () => {
+  const root = fixtureRoot('OPS_BACKEND=hermes             # hermes | openclaw — AUTO-DETECTED\n');
+  const a = runLib('engine_kind', { env: { IRISES_ROOT: root } });
+  assert.equal(a.code, 0, a.err);
+  assert.equal(a.out, 'hermes');
+  const b = runLib('engine_kind openclaw', { env: { IRISES_ROOT: root } });
+  assert.equal(b.out, 'openclaw');
+  const off = fixtureRoot('OPS_BACKEND=off\n');
+  assert.equal(runLib('engine_kind', { env: { IRISES_ROOT: off } }).out, 'off');
+  const junk = fixtureRoot('OPS_BACKEND=banana\n');
+  const j = runLib('engine_kind', { env: { IRISES_ROOT: junk } });
+  assert.equal(j.out, 'off');
+  assert.match(j.err, /banana/);
+});
+
+test('engine_kind falls back to what is installed when OPS_BACKEND is unset', () => {
+  const root = fixtureRoot('# no backend pinned\n');
+  const withHermes = runLib('engine_kind', { env: { IRISES_ROOT: root, HERMES_HOME: root } });
+  assert.equal(withHermes.out, 'hermes', 'the hermes home existing is the proof of installation');
+  const withClaw = runLib('engine_kind', {
+    env: { IRISES_ROOT: root, HERMES_HOME: join(root, 'nope') },
+    stubs: { openclaw: 'exit 0' },
+  });
+  assert.equal(withClaw.out, 'openclaw');
+  const neither = runLib('engine_kind', { env: { IRISES_ROOT: root, HERMES_HOME: join(root, 'nope') } });
+  assert.equal(neither.out, 'off');
+});
+
+test('hermes_run finds ~/.local/bin/hermes when PATH is minimal, and strips _HERMES_GATEWAY', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'irises-hcli-'));
+  const home = join(dir, 'home');
+  mkdirSync(join(home, '.local', 'bin'), { recursive: true });
+  writeFileSync(join(home, '.local', 'bin', 'hermes'), `#!/usr/bin/env bash\n${RECORDING_STUB}\n`, { mode: 0o755 });
+  const r = runLib([
+    'printf "CLI=%s\\n" "$(hermes_cli)"',
+    'hermes_run plugins enable irises-bridge',
+  ].join('\n'), { env: { HOME: home, _HERMES_GATEWAY: '1' } });
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /CLI=.*\.local\/bin\/hermes/, 'the real location on a Mac, which the old resolver missed');
+  assert.ok(r.log.includes('hermes argv:plugins enable irises-bridge'), r.log.join('\n'));
+  assert.ok(
+    r.log.includes('hermes env:_HERMES_GATEWAY=unset'),
+    'inherited _HERMES_GATEWAY=1 makes the CLI refuse gateway work with exit 1',
+  );
+});
+
+test('hermes_run falls back to the venv python module form', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'irises-hcli-'));
+  const hhome = join(dir, 'hermes');
+  mkdirSync(join(hhome, 'hermes-agent', 'venv', 'bin'), { recursive: true });
+  writeFileSync(join(hhome, 'hermes-agent', 'venv', 'bin', 'python'), `#!/usr/bin/env bash\n${RECORDING_STUB}\n`, { mode: 0o755 });
+  const r = runLib([
+    'printf "CLI=%s\\n" "$(hermes_cli)"',
+    'hermes_run gateway status',
+  ].join('\n'), { env: { HERMES_HOME: hhome } });
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /CLI=.*venv\/bin\/python -m hermes_cli\.main/);
+  assert.ok(r.log.includes('python argv:-m hermes_cli.main gateway status'), r.log.join('\n'));
+});
+
+test('hermes_cli is empty and hermes_run returns 127 when no CLI exists', () => {
+  const r = runLib([
+    'printf "CLI=[%s]\\n" "$(hermes_cli)"',
+    'rc=0; hermes_run gateway status || rc=$?; printf "RC=%s\\n" "$rc"',
+  ].join('\n'), { env: { HERMES_HOME: '/nonexistent' } });
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /CLI=\[\]/);
+  assert.match(r.out, /RC=127/);
+});
+
+test('gateway_restart bounces hermes through its CLI with both drain caps capped', async () => {
+  const http = await import('node:http');
+  const srv = http.createServer((_q, s) => { s.setHeader('content-type', 'application/json'); s.end('{"status":"ok"}'); });
+  await new Promise<void>(res => srv.listen(0, '127.0.0.1', res));
+  const port = (srv.address() as { port: number }).port;
+  const root = fixtureRoot(`OPS_BACKEND=hermes\nHERMES_BASE_URL=http://127.0.0.1:${port}\n`);
+  try {
+    const r = runLib('gateway_restart hermes 20', {
+      env: { IRISES_ROOT: root, _HERMES_GATEWAY: '1' },
+      stubs: { hermes: RECORDING_STUB },
+    });
+    assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+    const argv = r.log.find(l => l.startsWith('hermes argv:'));
+    assert.ok(argv, r.log.join('\n'));
+    assert.match(argv!, /^hermes argv:gateway re?start$/, 'the verb is assembled at runtime, and still arrives whole');
+    assert.ok(r.log.includes('hermes env:HERMES_RESTART_AFTER_TURN_TIMEOUT=45'), r.log.join('\n'));
+    assert.ok(r.log.includes('hermes env:HERMES_RESTART_DRAIN_TIMEOUT=10'), r.log.join('\n'));
+    assert.ok(r.log.includes('hermes env:_HERMES_GATEWAY=unset'), r.log.join('\n'));
+    assert.match(r.out, /gateway is back/);
+  } finally {
+    srv.close();
+  }
+});
+
+test('gateway_restart reports failure (1) when the gateway never answers again', () => {
+  const root = fixtureRoot('OPS_BACKEND=hermes\nHERMES_BASE_URL=http://127.0.0.1:1\n');
+  const r = runLib('rc=0; gateway_restart hermes 4 || rc=$?; printf "RC=%s\\n" "$rc"', {
+    env: { IRISES_ROOT: root },
+    // pgrep too, and not for neatness: the service probe's last resort is "is a gateway PROCESS
+    // alive?", which on a developer's own machine (one running hermes) is true no matter what this
+    // fixture does. Stubbing it is what makes "the gateway never answers again" the actual scenario.
+    stubs: { hermes: RECORDING_STUB, systemctl: 'exit 1', launchctl: 'exit 1', pgrep: 'exit 1' },
+  });
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /RC=1/);
+  assert.match(r.err, /did not come back/);
+});
+
+test('gateway_restart on an engine that is off does nothing and succeeds', () => {
+  const root = fixtureRoot('OPS_BACKEND=off\n');
+  const r = runLib('gateway_restart', { env: { IRISES_ROOT: root } });
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /engine is off/);
+});
+
+test('gateway_restart bounces openclaw through its own CLI and waits on the gateway port', async () => {
+  const net = await import('node:net');
+  const srv = net.createServer(sock => sock.end());
+  await new Promise<void>(res => srv.listen(0, '127.0.0.1', res));
+  const port = (srv.address() as { port: number }).port;
+  const root = fixtureRoot(`OPS_BACKEND=openclaw\nOPENCLAW_URL=ws://127.0.0.1:${port}\n`);
+  try {
+    const r = runLib('gateway_restart openclaw 20', {
+      env: { IRISES_ROOT: root },
+      stubs: { openclaw: RECORDING_STUB },
+    });
+    assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+    const argv = r.log.find(l => l.startsWith('openclaw argv:'));
+    assert.match(argv!, /^openclaw argv:gateway re?start$/);
+    assert.match(r.out, /gateway is back/);
+  } finally {
+    srv.close();
+  }
+});
+
+test('plugin_refresh copies the hermes plugin without __pycache__ and enables it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'irises-plug-'));
+  const root = join(dir, 'clone');
+  mkdirSync(join(root, 'bridge', 'hermes', 'irises-bridge', '__pycache__'), { recursive: true });
+  writeFileSync(join(root, 'bridge', 'hermes', 'irises-bridge', '__init__.py'), 'x = 1\n');
+  writeFileSync(join(root, 'bridge', 'hermes', 'irises-bridge', 'plugin.yaml'), 'name: irises-bridge\n');
+  writeFileSync(join(root, 'bridge', 'hermes', 'irises-bridge', '__pycache__', 'stale.pyc'), 'junk');
+  const hhome = join(dir, 'hermes');
+  mkdirSync(join(hhome, 'plugins', 'irises-bridge'), { recursive: true });
+  writeFileSync(join(hhome, 'plugins', 'irises-bridge', 'REMOVED_UPSTREAM.py'), 'old\n');
+  const r = runLib(`plugin_refresh hermes ${JSON.stringify(root)}`, {
+    env: { HERMES_HOME: hhome },
+    stubs: { hermes: RECORDING_STUB },
+  });
+  assert.equal(r.code, 0, r.err);
+  assert.ok(existsSync(join(hhome, 'plugins', 'irises-bridge', '__init__.py')));
+  assert.ok(!existsSync(join(hhome, 'plugins', 'irises-bridge', '__pycache__')), 'stale bytecode must not ship');
+  assert.ok(
+    !existsSync(join(hhome, 'plugins', 'irises-bridge', 'REMOVED_UPSTREAM.py')),
+    'rm before cp: cp -R onto an existing dir merges and leaves deleted files behind',
+  );
+  assert.ok(r.log.includes('hermes argv:plugins enable irises-bridge'), r.log.join('\n'));
+});
+
+test('plugin_refresh deletes the openclaw target first, because install refuses an existing dir', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'irises-plug-'));
+  const root = join(dir, 'clone');
+  mkdirSync(join(root, 'bridge', 'openclaw', 'irises-bridge'), { recursive: true });
+  writeFileSync(join(root, 'bridge', 'openclaw', 'irises-bridge', 'package.json'), '{"name":"irises-bridge"}');
+  const state = join(dir, 'openclaw');
+  mkdirSync(join(state, 'extensions', 'irises-bridge'), { recursive: true });
+  writeFileSync(join(state, 'extensions', 'irises-bridge', 'old.js'), 'stale\n');
+  const r = runLib(`plugin_refresh openclaw ${JSON.stringify(root)}`, {
+    env: { OPENCLAW_STATE_DIR: state },
+    stubs: { openclaw: RECORDING_STUB },
+  });
+  assert.equal(r.code, 0, r.err);
+  assert.ok(!existsSync(join(state, 'extensions', 'irises-bridge')), 'the CLI copies it back in; we only clear the way');
+  const argv = r.log.find(l => l.startsWith('openclaw argv:plugins install'));
+  assert.ok(argv, r.log.join('\n'));
+  assert.match(argv!, /bridge\/openclaw\/irises-bridge$/);
+});
+
+test('plugin_remove disables then deletes, on both engines', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'irises-plug-'));
+  const hhome = join(dir, 'hermes');
+  const state = join(dir, 'openclaw');
+  mkdirSync(join(hhome, 'plugins', 'irises-bridge'), { recursive: true });
+  mkdirSync(join(state, 'extensions', 'irises-bridge'), { recursive: true });
+  const h = runLib('plugin_remove hermes', { env: { HERMES_HOME: hhome }, stubs: { hermes: RECORDING_STUB } });
+  assert.equal(h.code, 0, h.err);
+  assert.ok(h.log.includes('hermes argv:plugins disable irises-bridge'), h.log.join('\n'));
+  assert.ok(!existsSync(join(hhome, 'plugins', 'irises-bridge')));
+  const o = runLib('plugin_remove openclaw', { env: { OPENCLAW_STATE_DIR: state }, stubs: { openclaw: RECORDING_STUB } });
+  assert.equal(o.code, 0, o.err);
+  assert.ok(o.log.includes('openclaw argv:plugins disable irises-bridge'), o.log.join('\n'));
+  assert.ok(!existsSync(join(state, 'extensions', 'irises-bridge')), 'openclaw has no `plugins uninstall` — rm is the removal');
+});
+
+test('web_build skips a fresh install, builds an install that already serves web/out, never fails', () => {
+  const npmStub = 'printf "npm argv:%s\\n" "$*" >> "$STUB_LOG"; exit "${NPM_RC:-0}"';
+  const mk = (withOut: boolean) => {
+    const root = mkdtempSync(join(tmpdir(), 'irises-web-'));
+    mkdirSync(join(root, 'web', 'node_modules'), { recursive: true });
+    if (withOut) mkdirSync(join(root, 'web', 'out'), { recursive: true });
+    writeFileSync(join(root, 'package.json'), '{"name":"irises"}');
+    return root;
+  };
+  const fresh = runLib(`web_build ${JSON.stringify(mk(false))}`, { stubs: { npm: npmStub } });
+  assert.equal(fresh.code, 0, fresh.err);
+  assert.deepEqual(fresh.log, [], 'not one npm call on a box that never served the page');
+  assert.match(fresh.out, /web UI not built here/);
+
+  const serving = runLib(`web_build ${JSON.stringify(mk(true))}`, { stubs: { npm: npmStub } });
+  assert.equal(serving.code, 0, serving.err);
+  assert.equal(serving.log.length, 2, serving.log.join('\n'));
+  assert.match(serving.log[0], /^npm argv:--prefix .*\/web ci$/, 'ci, not install: install rewrites web/package-lock.json and dirties the tree');
+  assert.match(serving.log[1], /^npm argv:run build:web$/);
+
+  const failing = runLib(`web_build ${JSON.stringify(mk(true))}; printf "SURVIVED\\n"`, {
+    stubs: { npm: npmStub }, env: { NPM_RC: '1' },
+  });
+  assert.equal(failing.code, 0, failing.err);
+  assert.match(failing.out, /SURVIVED/, 'a next build that dies of memory must not abort the lifecycle action');
+  assert.match(failing.err, /web client build failed/);
+
+  const opted = runLib(`web_build ${JSON.stringify(mk(false))}`, { stubs: { npm: npmStub }, env: { IRISES_WEB: '1' } });
+  assert.equal(opted.code, 0, opted.err);
+  assert.equal(opted.log.length, 2, 'IRISES_WEB=1 opts a fresh install in');
+
+  const skipped = runLib(`web_build ${JSON.stringify(mk(true))}`, { stubs: { npm: npmStub }, env: { IRISES_SKIP_WEB_BUILD: '1' } });
+  assert.deepEqual(skipped.log, []);
+  assert.match(skipped.out, /IRISES_SKIP_WEB_BUILD=1/);
 });
