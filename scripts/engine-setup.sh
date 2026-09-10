@@ -1,565 +1,447 @@
 #!/usr/bin/env bash
-# Irises engine setup — wire this clone to an UNMODIFIED hermes-agent or OpenClaw engine.
+# Irises install / uninstall — wire this clone to an UNMODIFIED hermes-agent or OpenClaw engine,
+# install Irises as a user-level service, and verify the whole thing came up.
 #
-#   bash ./scripts/engine-setup.sh --engine hermes             # or: openclaw (bridge mode is ON by default)
-#   bash ./scripts/engine-setup.sh --engine hermes --yes        # never prompt, take every default
-#   bash ./scripts/engine-setup.sh --engine hermes --no-bridge  # opt OUT: leave the engine fronting its own channels
-#   bash ./scripts/engine-setup.sh --engine hermes --revert     # undo bridge mode (unfront / uninstall plugin)
+#   bash ./scripts/engine-setup.sh                      # install (engine auto-detected)
+#   bash ./scripts/engine-setup.sh --engine hermes --yes # install, never prompt
+#   bash ./scripts/engine-setup.sh --no-service          # do not install a service; run detached
+#   bash ./scripts/engine-setup.sh --no-bridge           # leave the engine answering its own channels
+#   bash ./scripts/engine-setup.sh --port 3001           # pin a different port
+#   bash ./scripts/engine-setup.sh --uninstall           # remove Irises, keep your data
+#   bash ./scripts/engine-setup.sh --uninstall --purge-data   # …and delete $IRISES_HOME too
 #
-# NON-INTERACTIVE BY DEFAULT when nobody is watching: if stdin is not a terminal — an agent running
-# this for you — the script behaves as if --yes was passed, takes every default, and never blocks on
-# (or dies at) a prompt. Bridge mode is ON by default (Irises fronts the engine's channels); opt out
-# with --no-bridge.
+# The TERMINAL is the only install/update/uninstall path. There is no in-chat installer: Irises can
+# tell you the command and read you the outcome, but a rebuild that restarts the process talking to
+# you cannot honestly report on itself.
 #
-# NOTE: Irises ALSO auto-detects the engine at boot (src/agents/ops/engineDiscovery.ts) — it sets
-# OPS_BACKEND, reuses the engine's API key, and inherits its model with no .env. This script does the
-# parts discovery can't: enabling the engine's API surface, generating the push token, pinning the
-# port, building, and installing + enabling the bridge plugin (default) so Irises fronts the engine's
-# channels out of the box. The .env values it writes are just
-# made explicit — harmless and overrideable. So it's the "fuller wiring" path; plain boot-time
-# discovery covers the basics alone.
+# WHAT IT TOUCHES, in order: this clone's .env (chmod 600) · node_modules + dist · optionally
+# web/out · a systemd --user unit, a LaunchAgent, or a Task Scheduler task on Windows · the engine's
+# .env (backed up first, every added key recorded in $IRISES_HOME/install-manifest.json) · the
+# engine's plugin dir · the engine's gateway, which is ALWAYS bounced at the end because the plugin,
+# IRISES_FRONT and API_SERVER_* are only read when it starts.
 #
-# It finishes by STARTING Irises detached (nohup/setsid, stdin closed), so the server outlives this
-# script and the shell — or agent session — that ran it. The pid lands in irises.pid and the boot log
-# in irises.log, both in this clone's root. It is LEFT RUNNING on purpose.
+# EXIT CODES
+#   0  installed (or uninstalled) and verified
+#   1  a step failed — read the message; nothing is left half-started that we can tell you about
+#   2  wrong usage (unknown flag, unknown engine, bad port)
+#   4  Irises did not report the expected build on /health within the budget
+#   5  Irises is fine, but its engine's gateway could not be verified back up
+# The last line of stdout is always `RESULT: <token>` for scripts that wrap this one.
 #
-# Idempotent: safe to re-run. Every config change is printed before it is made, the engine's config
-# is only ever APPENDED to (the one exception: an Irises-owned IRISES_* line that has drifted out of
-# sync is rewritten in place — never any other line), and nothing in either engine's code is touched.
+# Idempotent: re-run it any time. It adopts a server it finds already running, never overwrites a
+# value you set yourself, and touches no engine source code.
 set -euo pipefail
 
-ENGINE=""
-REVERT=0
+source "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/lib/irises-lib.sh"
+IRISES_LOG_TAG="irises-setup"
+
+MODE="install"
+ENGINE_FLAG=""
 ASSUME_YES=0
-BRIDGE=1               # DEFAULT ON: 1 = bridge (front the engine's channels with Irises), 0 = --no-bridge
-BRIDGE_TOKEN_SYNCED=0  # so the bridge secret is never re-reported when it was already put in step
+BRIDGE=1
+SERVICE=1
+PURGE_DATA=0
+PORT_FLAG=""
 
 usage() {
   cat <<'EOF'
-usage: bash ./scripts/engine-setup.sh --engine hermes|openclaw [options]
+usage: bash ./scripts/engine-setup.sh [options]          # install
+       bash ./scripts/engine-setup.sh --uninstall [options]
 
-  --engine hermes|openclaw   which engine this clone talks to (required)
-  --yes, -y                  non-interactive: assume defaults, never prompt
-  --bridge                   install + enable the bridge plugin (default; front the engine with Irises)
-  --no-bridge                opt out: leave the engine answering its own channels
-  --revert                   print how to undo bridge mode, then exit
-  -h, --help                 this help
+  --engine hermes|openclaw   which engine this clone talks to (default: auto-detect)
+  --yes, -y                  non-interactive: take every default, never prompt
+  --no-bridge                leave the engine answering its own channels (no plugin, no fronting)
+  --no-service               do not install a user service; run Irises detached instead
+  --port N                   pin the port Irises listens on (default 3000)
+  --uninstall                remove Irises: service, plugin, engine keys. Your data is KEPT, and so
+                             is this clone (the exact rm for each is printed)
+  --purge-data               with --uninstall: also delete $IRISES_HOME (irises.db + memories)
+  -h, --help                 this text
 
-Stdin not a terminal implies --yes. Bridge mode is ON by default (opt out with --no-bridge).
+exit codes: 0 ok · 1 a step failed · 2 usage · 4 health not verified · 5 gateway not verified
+the last line of stdout is always: RESULT: <token>
 EOF
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --engine)     ENGINE="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
-    --engine=*)   ENGINE="${1#--engine=}"; shift ;;
-    --revert)     REVERT=1; shift ;;
-    --yes|-y)     ASSUME_YES=1; shift ;;
-    --bridge)     BRIDGE=1; shift ;;
-    --no-bridge)  BRIDGE=0; shift ;;
-    -h|--help)    usage; exit 0 ;;
-    *) echo "unknown arg: $1 (try --help)"; exit 2 ;;
+    --engine)      ENGINE_FLAG="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --engine=*)    ENGINE_FLAG="${1#--engine=}"; shift ;;
+    --port)        PORT_FLAG="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --port=*)      PORT_FLAG="${1#--port=}"; shift ;;
+    --uninstall)   MODE="uninstall"; shift ;;
+    --purge-data)  PURGE_DATA=1; shift ;;
+    --yes|-y)      ASSUME_YES=1; shift ;;
+    --bridge)      BRIDGE=1; shift ;;
+    --no-bridge)   BRIDGE=0; shift ;;
+    --service)     SERVICE=1; shift ;;
+    --no-service)  SERVICE=0; shift ;;
+    -h|--help)     usage; exit 0 ;;
+    --revert)
+      err "--revert is gone. Use --uninstall (it removes the plugin, the engine keys and the"
+      err "service, and keeps your data), or edit IRISES_FRONT to stop fronting without removing"
+      err "anything:  bash ./scripts/engine-setup.sh --uninstall"
+      exit 2 ;;
+    *) err "unknown arg: $1 (try --help)"; exit 2 ;;
   esac
 done
-[ "$ENGINE" = "hermes" ] || [ "$ENGINE" = "openclaw" ] || { usage; exit 2; }
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ENV_FILE="$ROOT/.env"
-PIDFILE="$ROOT/irises.pid"
-LOGFILE="$ROOT/irises.log"
-say()  { printf '\033[36m[irises-setup]\033[0m %s\n' "$*"; }
-warn() { printf '\033[33m[irises-setup]\033[0m %s\n' "$*"; }
+case "$ENGINE_FLAG" in
+  ''|hermes|openclaw|off) ;;
+  *) err "unknown engine '$ENGINE_FLAG' — expected hermes, openclaw or off"; exit 2 ;;
+esac
+case "$PORT_FLAG" in
+  '') ;;
+  *[!0-9]*) err "--port needs a plain port number, got '$PORT_FLAG'"; exit 2 ;;
+esac
 
-# No TTY = nobody can answer a question, so don't ask one. (An agent-driven run lands here: hermes
-# and OpenClaw both spawn shell commands with stdin at /dev/null, so any `read` would hit EOF.)
+# No TTY = nobody can answer a question, so don't ask one. An agent-driven run lands here (both
+# engines spawn shell commands with stdin at /dev/null, so any `read` would hit EOF immediately).
 if [ ! -t 0 ] && [ "$ASSUME_YES" != "1" ]; then
   ASSUME_YES=1
-  say "stdin is not a terminal — running non-interactive (same as --yes): defaults, no prompts"
+  say "stdin is not a terminal — running non-interactive (same as --yes)"
 fi
 
-# ── helpers ──────────────────────────────────────────────────────────────────
-rand_token() { node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"; }
-
-# Read KEY= from an env file, the way dotenv does: tolerate leading whitespace, trim the value, and
-# strip one layer of matching quotes (so API_SERVER_KEY="abc" resolves to abc, as the engine sees it).
-get_env() {
-  local v; v="$(grep -E "^[[:space:]]*${1}=" "${2}" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-  v="${v#"${v%%[![:space:]]*}"}"   # ltrim
-  v="${v%"${v##*[![:space:]]}"}"   # rtrim
-  case "$v" in
-    '"'*'"') v="${v#\"}"; v="${v%\"}" ;;
-    "'"*"'") v="${v#\'}"; v="${v%\'}" ;;
-  esac
-  printf '%s' "$v"
-}
-
-# Appending to a file whose last byte is not a newline GLUES the new line onto the old one. A live run
-# did exactly that and turned a model id + HERMES_BASE_URL into one corrupt line, breaking both — so
-# every append in this script goes through here first.
-ensure_trailing_newline() { # $1=file
-  local f="$1" last
-  [ -s "$f" ] || return 0
-  last="$(LC_ALL=C tail -c1 "$f" 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n' || true)"
-  [ "$last" = "0a" ] || printf '\n' >> "$f"
-}
-
-# set KEY=VALUE in .env — replaces an existing empty/same-key line, never a user's non-empty value
-set_env() {
-  local key="$1" val="$2"
-  touch "$ENV_FILE"
-  local current; current="$(get_env "$key" "$ENV_FILE")"
-  if [ -n "$current" ] && [ "$current" != "$val" ]; then
-    say "keeping your existing ${key} (not overwriting)"
-    return 0
-  fi
-  if grep -qE "^[[:space:]]*${key}=" "$ENV_FILE"; then
-    # portable in-place edit (BSD/GNU sed differ; use a temp file). grep exits 1 when it drops the
-    # only line in the file — that is a legitimately empty result, not a failure.
-    grep -vE "^[[:space:]]*${key}=" "$ENV_FILE" > "$ENV_FILE.tmp" || true
-    mv "$ENV_FILE.tmp" "$ENV_FILE"
-  fi
-  say "setting ${key} in .env"
-  ensure_trailing_newline "$ENV_FILE"
-  printf '%s=%s\n' "$key" "$val" >> "$ENV_FILE"
-}
-
-# Ask a [y/N] question. Returns the default without prompting when non-interactive (--yes or no TTY),
-# and an EOF answer can never abort the script under `set -e` — the whole point: a prompt must never
-# be able to cost someone their install.
-ask_yn() { # $1=question  $2=default (y|n)
-  local q="$1" def="${2:-n}" yn=""
-  if [ "$ASSUME_YES" = "1" ] || [ ! -t 0 ]; then
-    say "$q — assuming '$def' (no prompt: --yes / non-interactive stdin)"
+ask_yn() { # QUESTION DEFAULT(y|n) -> 0 = yes
+  local q="${1:-}" def="${2:-n}" yn=""
+  if [ "$ASSUME_YES" = "1" ]; then
+    say "$q — taking '$def' (--yes / non-interactive)"
     if [ "$def" = "y" ]; then return 0; fi
     return 1
   fi
-  printf '\033[33m[irises-setup]\033[0m %s [y/N] ' "$q"
-  read -r yn || yn=""    # EOF must not kill the script
+  printf '\033[33m[%s]\033[0m %s [y/N] ' "$IRISES_LOG_TAG" "$q"
+  read -r yn || yn=""
   case "$yn" in y|Y|yes|YES) return 0 ;; esac
   return 1
 }
 
-# Rewrite ONE key's line in the engine's env file, leaving every other byte alone (BSD/GNU sed
-# differ, so do it in the shell). Only ever used for a key Irises itself owns.
-replace_line() { # $1=file $2=key $3=value
-  local f="$1" key="$2" val="$3" tmp line trimmed
-  tmp="$f.irises.tmp.$$"
-  : > "$tmp" || return 1
-  chmod 600 "$tmp" 2>/dev/null || true
-  while IFS= read -r line || [ -n "$line" ]; do
-    trimmed="${line#"${line%%[![:space:]]*}"}"
-    case "$trimmed" in
-      "$key="*) printf '%s=%s\n' "$key" "$val" ;;
-      *)        printf '%s\n' "$line" ;;
-    esac
-  done < "$f" >> "$tmp"
-  cat "$tmp" > "$f"    # same inode, so the file keeps its own permissions
-  rm -f "$tmp"
-}
+ROOT="$(irises_root)"
+ENV_FILE="$ROOT/.env"
+cd "$ROOT"
 
-# Keep an Irises-OWNED key in the engine's env file in step with Irises. Absent → append it under a
-# dated comment (append-only, like every other engine-side write here). Present but DIFFERENT → the
-# two sides no longer share the secret, which fails silently (403 on every push), so rewrite that one
-# line. Present and equal → say so and touch nothing.
-sync_engine_key() { # $1=file $2=key $3=value $4=comment tag for a fresh append
-  local f="$1" key="$2" val="$3" tag="$4" cur
-  if grep -qE "^[[:space:]]*${key}=" "$f" 2>/dev/null; then
-    cur="$(get_env "$key" "$f")"
-    if [ "$cur" = "$val" ]; then
-      say "$key in $f already matches Irises — leaving it"
-      return 0
-    fi
-    say "updating $key in $f — it drifted from Irises's ENGINE_PUSH_TOKEN, and a mismatched token"
-    say "makes the engine's posts back to Irises fail 403 with nothing said out loud"
-    replace_line "$f" "$key" "$val"
-    return 0
-  fi
-  say "appending $key to $f (same secret as Irises's ENGINE_PUSH_TOKEN)"
-  ensure_trailing_newline "$f"
-  { echo ""; echo "# — added by Irises setup ($(date +%F)) — $tag —"; printf '%s=%s\n' "$key" "$val"; } >> "$f"
-}
+# Armed HERE, past every usage exit and before the first byte of real work: the guard releases the
+# lock and prints `RESULT: partial` for the two paths that never reach `summary` — a `set -e` abort
+# on some statement nobody guarded, and a Ctrl+C. A usage error (exit 2) stays a usage error.
+trap 'lifecycle_exit_guard $?' EXIT
 
-# ── prerequisites ────────────────────────────────────────────────────────────
-command -v node >/dev/null || { echo "node is required (22.13+)"; exit 1; }
-command -v npm  >/dev/null || { echo "npm is required"; exit 1; }
-# 22.13 is the floor: Irises's local store uses the builtin node:sqlite, unflagged since 22.13.
-NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
-NODE_MINOR="$(node -p 'process.versions.node.split(".")[1]')"
-if [ "$NODE_MAJOR" -lt 22 ] || { [ "$NODE_MAJOR" -eq 22 ] && [ "$NODE_MINOR" -lt 13 ]; }; then
-  echo "Node 22.13+ required (found $(node -v))"; exit 1
-fi
+rand_token() { node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"; }
 
-# ══ Revert (bridge mode) ═════════════════════════════════════════════════════
-HERMES_HOME_DIR="${HERMES_HOME:-$HOME/.hermes}"
-HERMES_CONFIG="$HERMES_HOME_DIR/config.yaml"
-HERMES_ENV="$HERMES_HOME_DIR/.env"
+# ══ install ══════════════════════════════════════════════════════════════════
+do_install() {
+  local engine port kind node_bin unit="" plugin_dir="" adopted=0
+  local keys_added="" keys_pre="" backup="" token engine_env=""
+  local sha="" live_sha="" gateway_ok=1 result="ok" rc=0
 
-# Resolve the hermes CLI for the actions this script now takes for you (enable plugin, restart
-# gateway). PATH first (an interactive shell has it), then the standard venv wrapper, then the module
-# form — an agent-driven run often has none of hermes on PATH. Prints empty if it truly can't be found.
-_hermes_cli() {
-  if command -v hermes >/dev/null 2>&1; then printf 'hermes'; return 0; fi
-  if [ -x "$HERMES_HOME_DIR/hermes-agent/hermes" ]; then printf '%s' "$HERMES_HOME_DIR/hermes-agent/hermes"; return 0; fi
-  if [ -x "$HERMES_HOME_DIR/hermes-agent/venv/bin/python" ]; then printf '%s -m hermes_cli.main' "$HERMES_HOME_DIR/hermes-agent/venv/bin/python"; return 0; fi
-  return 0
-}
+  # ── 1. prerequisites. PATH first: a non-login shell (and every agent-spawned run) can be missing
+  #      node entirely — on the production VPS node lives at ~/.local/bin/node and nothing puts it
+  #      on PATH for a non-interactive command.
+  augment_path
+  require_tools git curl npm || exit 1
+  require_node_version 22.13 || exit 1
+  node_bin="$(command -v node)"
+  say "node:  $node_bin ($(node -v))"
+  say "clone: $ROOT"
 
-bridge_revert() {
-  say "reverting bridge mode:"
-  say "to stop fronting instantly, blank IRISES_FRONT in the engine's environment and restart its"
-  say "gateway. To remove the plugin entirely:"
-  if [ "$ENGINE" = "hermes" ]; then
-    say "  hermes:   remove 'irises-bridge' from plugins.enabled in $HERMES_CONFIG"
-    say "            (or: hermes plugins disable irises-bridge), delete ~/.hermes/plugins/irises-bridge,"
-    say "            then: hermes gateway restart"
-  else
-    say "  openclaw: openclaw plugins disable irises-bridge   (uninstall: openclaw plugins uninstall irises-bridge)"
-    say "            then restart the OpenClaw gateway"
-  fi
-  exit 0
-}
-
-if [ "$REVERT" = "1" ]; then bridge_revert; fi
-
-# ══ Bridge mode (front the engine's channels with Irises) ════════════════════
-# The plugins ship in this repo (bridge/hermes, bridge/openclaw) and install via each engine's
-# OFFICIAL plugin mechanism — engine code stays byte-for-byte untouched. Fronting is opt-in per
-# chat/platform via IRISES_FRONT patterns; with it unset the plugin is inert and the engine
-# answers everything itself, exactly as before.
-
-# Decide once: bridge is ON by default (BRIDGE=1); --no-bridge opts out. The ask branch below only
-# runs if BRIDGE is set to -1 elsewhere — kept for anyone who wants the old interactive prompt.
-want_bridge() { # $1=engine label for the question
-  case "$BRIDGE" in
-    1) return 0 ;;
-    0) say "skipping bridge mode (--no-bridge)"; return 1 ;;
+  # ── 2. engine: DETECT and READ only. Nothing is written to the engine until Irises itself is up,
+  #      so a failed build can never leave keys pointing at a server that does not exist.
+  engine="$(engine_kind "$ENGINE_FLAG")" || exit 2
+  case "$engine" in
+    hermes)
+      engine_env="$(hermes_home)/.env"
+      if [ ! -d "$(hermes_home)" ]; then
+        die 1 "hermes not found (no $(hermes_home)) — install hermes-agent first, or pass --engine off"
+      fi
+      say "engine: hermes at $(hermes_home)"
+      ;;
+    openclaw)
+      if ! command -v openclaw >/dev/null 2>&1; then
+        die 1 "the openclaw CLI is not on PATH — install OpenClaw first, or pass --engine off"
+      fi
+      say "engine: OpenClaw at $(openclaw_home)"
+      ;;
+    off)
+      say "engine: none (standalone) — no engine wiring, no gateway bounce"
+      ;;
   esac
-  if ask_yn "front $1 channels (WhatsApp, Discord, Slack, …) with Irises? — bridge mode" n; then
-    return 0
+
+  # ── 3. port. Probe BEFORE any write: an install that edits config and then fails to bind leaves
+  #      a half-wired engine pointing at nothing.
+  port="${PORT_FLAG:-}"
+  if [ -z "$port" ]; then
+    port="$(env_get "$ENV_FILE" PORT)"
+    if [ -z "$port" ]; then port="3000"; fi
   fi
-  say "skipping bridge mode — add it later with --bridge (docs/ENGINES.md § Bridge mode)"
-  return 1
-}
-
-bridge_offer_hermes() {
-  want_bridge "hermes" || return 0
-  local pdir="$HERMES_HOME_DIR/plugins"
-  local henv="$HERMES_ENV"
-  say "installing the irises-bridge plugin: copying bridge/hermes/irises-bridge -> $pdir/"
-  mkdir -p "$pdir"
-  cp -R "$ROOT/bridge/hermes/irises-bridge" "$pdir/"
-  local ptoken; ptoken="$(get_env ENGINE_PUSH_TOKEN "$ENV_FILE")"
-  # (already done above when the key was there before this run — don't say it twice)
-  [ "$BRIDGE_TOKEN_SYNCED" = "1" ] || sync_engine_key "$henv" IRISES_BRIDGE_TOKEN "$ptoken" "bridge mode"
-  # The plugin dials IRISES_URL (its own default is :3000). We pinned the port above, so say where.
-  local iurl; iurl="$(get_env IRISES_URL "$henv")"
-  if [ -z "$iurl" ]; then
-    say "appending IRISES_URL=http://127.0.0.1:$PORT_PINNED to $henv (where the plugin forwards to)"
-    ensure_trailing_newline "$henv"
-    { echo ""; echo "# — added by Irises setup ($(date +%F)) — bridge target —"; echo "IRISES_URL=http://127.0.0.1:$PORT_PINNED"; } >> "$henv"
-  elif [ "$iurl" != "http://127.0.0.1:$PORT_PINNED" ]; then
-    warn "leaving your IRISES_URL ($iurl) alone — but Irises listens on :$PORT_PINNED, so make sure it points there"
-  fi
-  # Enable the plugin through hermes's OWN CLI (the supported way to flip plugins.enabled — this
-  # script still never hand-edits config.yaml).
-  local hcli; hcli="$(_hermes_cli)"
-  if [ -n "$hcli" ]; then
-    say "enabling the irises-bridge plugin (hermes plugins enable irises-bridge)"
-    $hcli plugins enable irises-bridge >/dev/null 2>&1 \
-      || warn "could not enable irises-bridge via CLI — enable it yourself: hermes plugins enable irises-bridge"
-  else
-    warn "hermes CLI not found — enable the plugin yourself: hermes plugins enable irises-bridge"
-  fi
-
-  # Front EVERYTHING by default so Irises actually takes over out of the box. This is the crux of a
-  # seamless install: with IRISES_FRONT empty the plugin is INERT and hermes keeps answering (the #1
-  # "why is the engine still replying?" gotcha). Narrow it later by editing this one line, e.g.
-  # IRISES_FRONT=telegram:*,whatsapp:+1555*  — patterns are fnmatch globs over <platform>:<chat_id>.
-  local ifront; ifront="$(get_env IRISES_FRONT "$henv")"
-  if [ -z "$ifront" ]; then
-    say "setting IRISES_FRONT=*:* in $henv — Irises fronts every chat on every platform (edit to narrow)"
-    ensure_trailing_newline "$henv"
-    { echo ""; echo "# — added by Irises setup ($(date +%F)) — front scope (edit to narrow, e.g. telegram:*) —"; echo "IRISES_FRONT=*:*"; } >> "$henv"
-  else
-    say "keeping your existing IRISES_FRONT ($ifront) — leaving it alone"
-  fi
-  say "fail policy: if Irises is down, hermes answers fronted chats itself (set IRISES_BRIDGE_FAIL=closed for silence instead)"
-  say "the gateway restart at the end of this script loads the plugin + IRISES_FRONT (they are read at start)"
-}
-
-bridge_offer_openclaw() {
-  want_bridge "OpenClaw" || return 0
-  say "installing the irises-bridge plugin via OpenClaw's own installer"
-  if openclaw plugins install "$ROOT/bridge/openclaw/irises-bridge"; then
-    openclaw plugins enable irises-bridge || warn "could not enable via CLI — set plugins.entries.irises-bridge.enabled: true yourself"
-  else
-    warn "install failed — run it yourself:  openclaw plugins install $ROOT/bridge/openclaw/irises-bridge"
-    return 0
-  fi
-  warn "manual steps:"
-  warn "  1. give the OpenClaw GATEWAY process three environment variables:"
-  warn "       IRISES_BRIDGE_TOKEN=<the ENGINE_PUSH_TOKEN value from $ENV_FILE>"
-  warn "       IRISES_URL=http://127.0.0.1:$PORT_PINNED        # where Irises listens"
-  warn "       IRISES_FRONT=whatsapp:*,telegram:123        # patterns over <channel>:<conversation>"
-  warn "     unset/empty IRISES_FRONT = front NOTHING (OpenClaw behaves exactly as before)"
-  warn "  2. restart the OpenClaw gateway"
-  say "fail policy: if Irises is down, OpenClaw answers fronted chats itself (set IRISES_BRIDGE_FAIL=closed for silence instead)"
-}
-
-# ── the port, pinned ─────────────────────────────────────────────────────────
-# deploy/app.env (COMMITTED, and loaded first by src/loadEnv.ts) pins PORT=8080 for the Docker image
-# behind Caddy. On a clone that number wins at boot while every doc, `npm run chat` and the bridge
-# plugin's IRISES_URL all assume 3000 — so the server ends up somewhere nobody looks. Pin it in .env
-# (which overrides app.env) and use that ONE resolved value for the start, the health check, every
-# URL printed, and the bridge target.
-pin_port() {
-  set_env PORT "${PORT:-3000}"
-  PORT_PINNED="$(get_env PORT "$ENV_FILE")"
-  [ -n "$PORT_PINNED" ] || PORT_PINNED="${PORT:-3000}"
-  say "Irises will listen on :$PORT_PINNED (deploy/app.env's 8080 is for the Docker image)"
-}
-PORT_PINNED="${PORT:-3000}"
-
-# ══ hermes ═══════════════════════════════════════════════════════════════════
-setup_hermes() {
-  local hhome="$HERMES_HOME_DIR" henv="$HERMES_ENV"
-  # Presence of the hermes HOME is the real proof of installation. ~/.hermes/.env is not: hermes only
-  # writes it when it stores a secret, so an OAuth/portal login (or keys in the shell) leaves a
-  # perfectly working hermes with no .env at all. Create it and carry on — never claim hermes is
-  # missing while we are very likely running inside it.
-  [ -d "$hhome" ] || { echo "hermes not found (no $hhome) — install hermes-agent first"; exit 1; }
-  if [ ! -f "$henv" ]; then
-    say "creating $henv (chmod 600) — hermes only writes this file when it stores a secret, so an"
-    say "empty one is normal on an OAuth/portal install; Irises's keys go here"
-    ( umask 077; touch "$henv" )
-    chmod 600 "$henv" 2>/dev/null || true
-  fi
-
-  # 1. API server on the hermes side (append-only; hermes reads these at gateway start)
-  local key
-  key="$(get_env API_SERVER_KEY "$henv")"
-  if [ -z "$key" ]; then
-    key="$(rand_token)"
-    say "enabling the hermes API server: appending API_SERVER_ENABLED + API_SERVER_KEY to $henv"
-    ensure_trailing_newline "$henv"
-    { echo ""; echo "# — added by Irises setup ($(date +%F)) —"; echo "API_SERVER_ENABLED=true"; echo "API_SERVER_KEY=$key"; } >> "$henv"
-    warn "restart the hermes gateway to pick this up:  hermes gateway restart"
-  else
-    say "hermes API server key found — reusing it"
-    grep -qE '^[[:space:]]*API_SERVER_ENABLED=true' "$henv" || { say "appending API_SERVER_ENABLED=true to $henv"; ensure_trailing_newline "$henv"; echo "API_SERVER_ENABLED=true" >> "$henv"; warn "enabled API server; restart the hermes gateway"; }
-  fi
-
-  # 2. Irises .env
-  set_env OPS_BACKEND "hermes"
-  set_env HERMES_BASE_URL "http://127.0.0.1:8642"
-  set_env HERMES_API_KEY "$key"
-  set_env ENGINE_PUSH_TOKEN "$(rand_token)"
-  set_env WEB_ENABLED "true"
-  pin_port
-  if [ -n "$key" ] && [ "$(get_env HERMES_API_KEY "$ENV_FILE")" != "$key" ]; then
-    warn "your .env HERMES_API_KEY is not hermes's current API_SERVER_KEY — deep work will 401 until"
-    warn "they match (clear the .env line and re-run to adopt hermes's key)"
-  fi
-
-  # 2b. The same secret on the hermes side, under the name its cron jobs reference. The reminder job
-  # prompt tells hermes to POST back with "x-engine-token: $IRISES_PUSH_TOKEN" — without that
-  # variable in hermes's environment every fired reminder is rejected 403 and the user never hears it.
-  local ptoken; ptoken="$(get_env ENGINE_PUSH_TOKEN "$ENV_FILE")"
-  sync_engine_key "$henv" IRISES_PUSH_TOKEN "$ptoken" "reminder push-back"
-
-  # 2c. If bridge mode was set up on some earlier run, keep ITS copy of the secret in step too —
-  # whatever the answer to the bridge question below is. A stale IRISES_BRIDGE_TOKEN 403s every
-  # fronted message while hermes stays quiet, so it must not depend on saying yes again.
-  if grep -qE '^[[:space:]]*IRISES_BRIDGE_TOKEN=' "$henv" 2>/dev/null; then
-    sync_engine_key "$henv" IRISES_BRIDGE_TOKEN "$ptoken" "bridge mode"
-    BRIDGE_TOKEN_SYNCED=1
-  fi
-
-  # 3. Voice-model keys + endpoint: reuse what hermes already has (never overwrite user-set values).
-  # OPENAI_* covers the generic OpenAI-compatible lane, so a hermes on OpenAI/Azure/vLLM/deepseek/etc.
-  # gives Irises's voice a working key (boot discovery also reads model.base_url/api_key from config).
-  local k
-  for k in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY OPENAI_BASE_URL; do
-    local v; v="$(get_env "$k" "$henv")"
-    [ -n "$v" ] && set_env "$k" "$v"
-  done
-  if [ -z "$(get_env ANTHROPIC_API_KEY "$ENV_FILE")" ] && [ -z "$(get_env OPENROUTER_API_KEY "$ENV_FILE")" ] && [ -z "$(get_env OPENAI_API_KEY "$ENV_FILE")" ]; then
-    warn "no ANTHROPIC_API_KEY, OPENROUTER_API_KEY, or OPENAI_API_KEY found to reuse — add one to .env before starting"
-    warn "(Irises's own voice models need it; the engine key only covers deep work)"
-  fi
-
-  bridge_offer_hermes
-}
-
-# ══ OpenClaw ═════════════════════════════════════════════════════════════════
-setup_openclaw() {
-  command -v openclaw >/dev/null || { echo "openclaw CLI not found — install OpenClaw first"; exit 1; }
-  local token
-  token="$(openclaw config get gateway.auth.token 2>/dev/null | tr -d '"' || true)"
-  [ -n "$token" ] && [ "$token" != "undefined" ] || { echo "could not read gateway.auth.token — is the OpenClaw gateway configured?"; exit 1; }
-
-  set_env OPS_BACKEND "openclaw"
-  set_env OPENCLAW_URL "ws://127.0.0.1:18789"
-  set_env OPENCLAW_TOKEN "$token"
-  set_env ENGINE_PUSH_TOKEN "$(rand_token)"
-  set_env WEB_ENABLED "true"
-  pin_port
-  # @openclaw/gateway-client is installed AFTER the build — `npm ci` deletes anything that isn't in
-  # the lockfile, so installing it here (as this script used to) quietly wiped it again.
-
-  if [ -z "$(get_env ANTHROPIC_API_KEY "$ENV_FILE")" ] && [ -z "$(get_env OPENROUTER_API_KEY "$ENV_FILE")" ] && [ -z "$(get_env OPENAI_API_KEY "$ENV_FILE")" ]; then
-    warn "add an ANTHROPIC_API_KEY, OPENROUTER_API_KEY, or OPENAI_API_KEY to .env before starting"
-    warn "(Irises's own voice models need it; the gateway token only covers deep work)"
-    warn "(on an OpenAI-compatible API also set OPENAI_BASE_URL + <ROLE>_PROVIDER=openai)"
-  fi
-  warn "note: reminders via Irises are hermes-only for now (OpenClaw cron wiring pending — docs/ENGINES.md)"
-
-  bridge_offer_openclaw
-}
-
-if [ "$ENGINE" = "hermes" ]; then setup_hermes; else setup_openclaw; fi
-
-# ══ build ════════════════════════════════════════════════════════════════════
-# --include=dev: the build itself needs devDeps (tsc, cpx), which npm would skip in an environment
-# that exports NODE_ENV=production.
-say "installing dependencies + building (npm ci --include=dev, then npm run build)"
-( cd "$ROOT" && npm ci --include=dev && npm run build )
-
-# The browser chat under web/ is a SEPARATE npm project (no workspaces, no postinstall), so the ci
-# above never touches it and web/out — what the server serves at / — stays absent, leaving a bare
-# "Cannot GET /". Optional: if it fails, that costs the browser page, not the install.
-WEB_OK=0
-say "building the web chat client (web/ — optional; npm run chat works without it)"
-if ( cd "$ROOT" && npm run install:web ) && ( cd "$ROOT" && npm run build:web ); then
-  WEB_OK=1
-else
-  warn "web client build failed — Irises still runs; talk to it with 'npm run chat' instead"
-  warn "(retry any time:  npm run install:web && npm run build:web)"
-fi
-
-# OpenClaw's gateway client goes in AFTER npm ci, or ci prunes it right back out.
-if [ "$ENGINE" = "openclaw" ]; then
-  say "installing @openclaw/gateway-client into this clone (optional dep, OpenClaw mode only)"
-  ( cd "$ROOT" && npm install --no-save "@openclaw/gateway-client" ) \
-    || warn "npm install of @openclaw/gateway-client failed (package may not be published yet) — Irises will report the engine as unavailable until it installs"
-fi
-
-# ══ start + verify ═══════════════════════════════════════════════════════════
-BASE="http://127.0.0.1:$PORT_PINNED"
-
-# No pipeline (a `curl | grep -q` can return grep's early exit as a curl write error under pipefail).
-health_ok() {
-  local body; body="$(curl -fsS -m 5 "$BASE/health" 2>/dev/null || true)"
-  case "$body" in *'"status":"ok"'*) return 0 ;; esac
-  return 1
-}
-
-# Only ever signal/record a pid we can identify as this server (a stale pid gets reused by the OS).
-is_our_server() {
-  local cmd
-  [ -n "${1:-}" ] || return 1
-  cmd="$(ps -p "$1" -o command= 2>/dev/null || true)"
-  case "$cmd" in *dist/index.js*) return 0 ;; esac
-  return 1
-}
-
-# `setsid` forks when its caller is already a process-group leader, so $! can name setsid rather than
-# node. Walk one level down to record node's OWN pid — the old script's `kill $!` killed a wrapper
-# subshell instead, leaving an untracked server holding the port.
-child_server_pid() {
-  local p
-  for p in $(ps -A -o pid=,ppid= 2>/dev/null | awk -v pp="$1" '$2==pp {print $1}'); do
-    if is_our_server "$p"; then printf '%s' "$p"; return 0; fi
-  done
-  return 1
-}
-
-SRV_PID=""
-if health_ok; then
-  say "Irises already running on :$PORT_PINNED and answering /health — leaving it alone"
-  if [ -f "$PIDFILE" ]; then SRV_PID="$(cat "$PIDFILE" 2>/dev/null || true)"; fi
-else
-  cd "$ROOT"    # node resolves deploy/app.env and web/out relative to the cwd
-  say "starting Irises detached on :$PORT_PINNED — it stays up after this script exits"
-  say "  log:  $LOGFILE"
-  if command -v setsid >/dev/null 2>&1; then
-    nohup setsid node dist/index.js </dev/null >>"$LOGFILE" 2>&1 &
-  else
-    nohup node dist/index.js </dev/null >>"$LOGFILE" 2>&1 &
-  fi
-  CAND=$!
-  disown 2>/dev/null || true    # belt-and-braces: no SIGHUP when this shell goes away
-  say "waiting for /health on :$PORT_PINNED (up to 30s — boot asks the engine a few questions first)"
-  i=0
-  while [ "$i" -lt 30 ] && ! health_ok; do sleep 1; i=$((i+1)); done
-  SRV_PID="$CAND"
-  if ! is_our_server "$SRV_PID"; then SRV_PID="$(child_server_pid "$CAND" || printf '%s' "$CAND")"; fi
-  printf '%s\n' "$SRV_PID" > "$PIDFILE"
-  if health_ok; then
-    say "health OK — Irises is up (pid $SRV_PID)"
-  else
-    warn "no /health answer on :$PORT_PINNED after 30s — Irises may still be booting, or it never got up."
-    warn "read the tail of the log:  tail -n 40 $LOGFILE"
-    warn "'EADDRINUSE' there means something else holds :$PORT_PINNED (an older Irises? kill \$(cat $PIDFILE))"
-    warn "a missing voice-model key or a bad build shows up there too."
-  fi
-fi
-
-# ══ engine round-trip ════════════════════════════════════════════════════════
-# Irises's own /health says nothing about the engine, and the engine's API server only exists while
-# its gateway RUNS — with the key we just appended only read at gateway start. So ask the engine
-# directly. Never fatal: Irises retries the connection by itself once the gateway comes up.
-if [ "$ENGINE" = "hermes" ]; then
-  HBASE="$(get_env HERMES_BASE_URL "$ENV_FILE")"; [ -n "$HBASE" ] || HBASE="http://127.0.0.1:8642"
-  HKEY="$(get_env HERMES_API_KEY "$ENV_FILE")"
-  if curl -fsS -m 5 -H "Authorization: Bearer $HKEY" "$HBASE/v1/capabilities" >/dev/null 2>&1; then
-    say "engine round-trip OK — hermes answered $HBASE/v1/capabilities with Irises's key"
-  else
-    warn "hermes's API server did not answer at $HBASE — normal right after this setup, because the"
-    warn "gateway only reads API_SERVER_ENABLED / API_SERVER_KEY when it starts. Bring it up:"
-    warn "  already installed as a service:  hermes gateway restart"
-    warn "  never installed yet:             hermes gateway install    (then: hermes gateway start)"
-    say "not a failure — Irises connects on its own once the gateway is up; deep work (research,"
-    say "email, files, reminders) stays unavailable until then, and chat works regardless."
-  fi
-fi
-
-# ══ where to talk to it ══════════════════════════════════════════════════════
-echo
-if health_ok; then
-  say "talk to Irises:"
-  if [ "$WEB_OK" = "1" ]; then
-    say "  web chat:   $BASE"
-  else
-    say "  web chat:   $BASE   (page not built — run: npm run install:web && npm run build:web)"
-  fi
-  say "  terminal:   npm run chat        (from $ROOT)"
-  say "  log:        $LOGFILE"
-  if [ -n "$SRV_PID" ]; then say "  stop it:    kill \$(cat $PIDFILE)"; fi
-  say "  re-run this script any time — it is idempotent, and it won't start a second server."
-else
-  warn "Irises is not answering on :$PORT_PINNED — start it by hand once the log tells you why:"
-  warn "  cd $ROOT && npm start"
-fi
-
-# ══ load the bridge (restart the engine gateway) ═════════════════════════════
-# The plugin, IRISES_FRONT, and API_SERVER_* are only read when the gateway STARTS, so a fresh install
-# won't front anything until the gateway is bounced. Do it here so the experience is seamless — you
-# shouldn't have to restart by hand. Best-effort and time-boxed; the printed command is the fallback.
-# NOTE: if an AGENT running INSIDE the gateway invokes this script, this restart ends that agent's turn
-# mid-reply (it is restarting the very process it runs in). Prefer running installs from a shell.
-if [ "$ENGINE" = "hermes" ] && [ "$BRIDGE" != "0" ]; then
-  hcli_r="$(_hermes_cli)"
-  if [ -n "$hcli_r" ]; then
-    say "restarting the hermes gateway to load the bridge (irises-bridge + IRISES_FRONT)"
-    if timeout 90 $hcli_r gateway restart >/dev/null 2>&1; then
-      say "hermes gateway restarted — bridge is live; message the engine's channels and Irises answers"
+  if tcp_open 127.0.0.1 "$port"; then
+    live_sha="$(wait_health_sha "http://127.0.0.1:$port" "" 2 || true)"
+    if [ -n "$live_sha" ]; then
+      say "an Irises is already on :$port (build ${live_sha:0:7}) — this run will adopt it"
+      adopted=1
     else
-      warn "could not restart the gateway automatically — do it yourself:  hermes gateway restart"
+      err "something else already holds :$port and it is not Irises."
+      err "free the port, or choose another:  bash ./scripts/engine-setup.sh --port 3001"
+      exit 1
     fi
-  else
-    warn "restart the hermes gateway to load the bridge:  hermes gateway restart"
   fi
-fi
 
-say "done. Full docs: docs/ENGINES.md (security notes, bridge mode, troubleshooting)."
+  lock_acquire || exit 1
+
+  # ── 4. this clone's .env. chmod 600 from the start (the old script created it with touch → 0644,
+  #      world-readable secrets). Never overwrite a value the operator set — except the port, which
+  #      is what --port is for.
+  if [ ! -e "$ENV_FILE" ]; then ( umask 077; : > "$ENV_FILE" ); fi
+  chmod 600 "$ENV_FILE" 2>/dev/null || true
+  env_set "$ENV_FILE" PORT "$port"
+  env_set_default "$ENV_FILE" WEB_ENABLED "true"
+  say "Irises will listen on :$port (deploy/app.env's 8080 is for the Docker image behind Caddy)"
+
+  if [ "$engine" = "hermes" ]; then
+    # Reuse the engine's own API key when it has one. env_get is last-wins, exactly like dotenv, so
+    # a hermes .env carrying two API_SERVER_KEY blocks yields the LIVE one.
+    local ekey
+    ekey="$(env_get "$engine_env" API_SERVER_KEY)"
+    if [ -z "$ekey" ]; then ekey="$(rand_token)"; fi
+    env_set "$ENV_FILE" OPS_BACKEND hermes
+    env_set_default "$ENV_FILE" HERMES_BASE_URL "http://127.0.0.1:8642"
+    env_set "$ENV_FILE" HERMES_API_KEY "$ekey"
+    env_set_default "$ENV_FILE" ENGINE_PUSH_TOKEN "$(rand_token)"
+    local k v
+    for k in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY OPENAI_BASE_URL; do
+      v="$(env_get "$engine_env" "$k")"
+      if [ -n "$v" ]; then env_set_default "$ENV_FILE" "$k" "$v"; fi
+    done
+  elif [ "$engine" = "openclaw" ]; then
+    local otoken
+    otoken="$(openclaw config get gateway.auth.token 2>/dev/null | tr -d '"' || true)"
+    if [ -z "$otoken" ] || [ "$otoken" = "undefined" ]; then
+      die 1 "could not read gateway.auth.token from OpenClaw — is its gateway configured?"
+    fi
+    env_set "$ENV_FILE" OPS_BACKEND openclaw
+    env_set_default "$ENV_FILE" OPENCLAW_URL "ws://127.0.0.1:18789"
+    env_set "$ENV_FILE" OPENCLAW_TOKEN "$otoken"
+    env_set_default "$ENV_FILE" ENGINE_PUSH_TOKEN "$(rand_token)"
+  else
+    env_set "$ENV_FILE" OPS_BACKEND off
+  fi
+
+  if [ -z "$(env_get "$ENV_FILE" ANTHROPIC_API_KEY)" ] \
+     && [ -z "$(env_get "$ENV_FILE" OPENROUTER_API_KEY)" ] \
+     && [ -z "$(env_get "$ENV_FILE" OPENAI_API_KEY)" ]; then
+    warn "no ANTHROPIC_API_KEY / OPENROUTER_API_KEY / OPENAI_API_KEY in $ENV_FILE"
+    warn "Irises's own voice needs one (the engine key only covers deep work) — add it and restart"
+  fi
+
+  # ── 5. build. --include=dev FORCES devDependencies even under NODE_ENV=production (the documented
+  #      prod env in deploy/app.env): tsc, cpx and tsx live there, so a bare `npm ci` strips the
+  #      build toolchain and `npm run build` then dies with "tsc: not found".
+  say "installing dependencies + building (npm ci --include=dev && npm run build)"
+  npm ci --include=dev
+  npm run build
+  sha="$(built_sha "$ROOT")"
+  if [ -z "$sha" ]; then
+    warn "dist/version.json carries no sha — health will be verified by liveness only"
+  else
+    say "built ${sha:0:7}"
+  fi
+
+  # OpenClaw's gateway client goes in AFTER npm ci, or ci prunes anything not in the lockfile.
+  if [ "$engine" = "openclaw" ]; then
+    say "installing @openclaw/gateway-client (optional dep, OpenClaw mode only)"
+    npm install --no-save "@openclaw/gateway-client" \
+      || warn "that failed — Irises will report the engine as unavailable until it installs"
+  fi
+
+  web_build "$ROOT"
+
+  # ── 6. the service. This is the default: a nohup server does not survive a reboot, and nothing
+  #      else on the box knows how to bring Irises back.
+  kind="$(service_kind)"
+  if [ "$SERVICE" = "0" ]; then
+    say "--no-service — Irises will run detached; nothing will restart it after a reboot"
+    kind="none"
+  fi
+  if [ "$adopted" = "1" ]; then
+    # Adopt whatever is already serving :$port, so a re-run converts a hand-launched server into a
+    # managed one instead of fighting it for the port.
+    local pid
+    pid="$(server_pid)"
+    if [ -n "$pid" ]; then
+      say "stopping the server we found (pid $pid) so the service can own the port"
+      server_stop 20
+    else
+      warn "an Irises answers on :$port but no pidfile at $(irises_home)/irises.pid names it"
+      if ! command -v pgrep >/dev/null 2>&1; then
+        # No pgrep (Git Bash ships none), so there is no honest way to tell that server from any
+        # other node on the box — and guessing here would end someone else's process.
+        err "there is no pgrep on this box, so we cannot match it by command line either."
+        die 1 "stop that server yourself, then re-run (its pidfile, when it writes one, is $(irises_home)/irises.pid)"
+      fi
+      if ask_yn "stop it by process match (pgrep -f dist/index.js under $ROOT) and take over?" y; then
+        # Unix-only by the pgrep gate above: is_our_server confirms each candidate is OUR server
+        # before anything is signalled.
+        local p
+        for p in $(pgrep -f "$ROOT/dist/index.js" 2>/dev/null || true); do
+          if is_our_server "$p"; then say "stopping pid $p"; kill "$p" 2>/dev/null || true; fi
+        done
+        sleep 3
+      else
+        die 1 "leaving it alone — stop it yourself, then re-run"
+      fi
+    fi
+  fi
+  case "$kind" in
+    none)
+      server_start_detached "$ROOT"
+      ;;
+    *)
+      unit="$(service_install "$ROOT" "$node_bin")" || die 1 "could not install the $kind service"
+      service_restart || die 1 "the $kind service would not start — check $(irises_home)/logs/server.log"
+      say "Irises is a $kind service now ($unit)"
+      ;;
+  esac
+
+  # ── 7. verify the build we just made is the build that answers. "Something answers /health" was
+  #      the old check, and it is satisfied by the OLD process still holding the port.
+  if ! live_sha="$(wait_health_sha "http://127.0.0.1:$port" "$sha" 60)"; then
+    err "Irises did not report build ${sha:0:7} on http://127.0.0.1:$port/health within 60s"
+    err "read the log:  tail -n 40 $(irises_home)/logs/server.log"
+    err "'EADDRINUSE' there means something else holds :$port; a missing voice-model key shows there too"
+    summary health-failed \
+      "engine:   $engine" \
+      "built:    ${sha:0:7} — NOT confirmed live" \
+      "service:  $kind${unit:+ ($unit)}" \
+      "log:      $(irises_home)/logs/server.log"
+    exit 4
+  fi
+  say "health OK on :$port — build ${live_sha:0:7} is live"
+
+  # ── 8. engine-side writes. Now, not earlier: the engine only ever points at a server we have
+  #      SEEN answer. Back the file up first, and record exactly which keys were ours so
+  #      --uninstall can put it back without guessing.
+  if [ "$engine" = "hermes" ]; then
+    if [ ! -f "$engine_env" ]; then
+      say "creating $engine_env (chmod 600) — hermes only writes this file when it stores a secret,"
+      say "so an empty one is normal on an OAuth/portal install"
+      ( umask 077; : > "$engine_env" )
+      chmod 600 "$engine_env" 2>/dev/null || true
+    fi
+    backup="$(env_backup "$engine_env" pre-install)"
+    token="$(env_get "$ENV_FILE" ENGINE_PUSH_TOKEN)"
+    local pairs="" key val kv
+    for kv in \
+      "API_SERVER_ENABLED=true" \
+      "API_SERVER_KEY=$(env_get "$ENV_FILE" HERMES_API_KEY)" \
+      "IRISES_PUSH_TOKEN=$token" \
+      "IRISES_URL=http://127.0.0.1:$port"
+    do
+      key="${kv%%=*}"; val="${kv#*=}"
+      if [ "$(env_count "$engine_env" "$key")" != "0" ]; then
+        keys_pre="$keys_pre $key"
+        # A duplicated key is collapsed onto its live value here — production carried two
+        # API_SERVER_KEY blocks with different values, and only the last one was in effect.
+        if [ "$key" = "API_SERVER_KEY" ]; then
+          local cur; cur="$(env_get "$engine_env" "$key")"
+          if [ "$(env_count "$engine_env" "$key")" != "1" ]; then
+            say "adopting the engine's existing API_SERVER_KEY (collapsing $(env_count "$engine_env" "$key") copies)"
+          fi
+          env_set "$engine_env" "$key" "$cur"
+        else
+          env_set "$engine_env" "$key" "$val"
+        fi
+      else
+        keys_added="$keys_added $key"
+        pairs="$pairs
+$key=$val"
+      fi
+    done
+    if [ -n "$pairs" ]; then
+      # shellcheck disable=SC2086  # $pairs is newline-separated KEY=VALUE, no spaces in values
+      env_append_block "$engine_env" "Irises server" $pairs
+    fi
+    if [ "$BRIDGE" = "1" ]; then
+      if [ "$(env_count "$engine_env" IRISES_BRIDGE_TOKEN)" = "0" ]; then
+        keys_added="$keys_added IRISES_BRIDGE_TOKEN"
+        env_append_block "$engine_env" "bridge mode" "IRISES_BRIDGE_TOKEN=$token"
+      else
+        keys_pre="$keys_pre IRISES_BRIDGE_TOKEN"
+        # A drifted bridge token 403s every fronted message while the engine stays silent about it.
+        env_set "$engine_env" IRISES_BRIDGE_TOKEN "$token"
+      fi
+      if [ "$(env_count "$engine_env" IRISES_FRONT)" = "0" ]; then
+        keys_added="$keys_added IRISES_FRONT"
+        env_append_block "$engine_env" "front scope (edit to narrow, e.g. telegram:*)" "IRISES_FRONT=*:*"
+        warn "IRISES_FRONT=*:*  — Irises now answers EVERY chat on EVERY platform this engine fronts."
+        warn "Narrow it in $engine_env (patterns are fnmatch globs over <platform>:<chat_id>)."
+      else
+        keys_pre="$keys_pre IRISES_FRONT"
+        say "keeping your IRISES_FRONT ($(env_get "$engine_env" IRISES_FRONT))"
+      fi
+      # plugin_dir is set only when the refresh actually put the plugin there — the summary and the
+      # manifest both read it, and neither may claim a plugin that is not on disk.
+      if plugin_refresh hermes "$ROOT"; then
+        plugin_dir="$(hermes_home)/plugins/irises-bridge"
+      else
+        warn "the plugin did not install — fronting will not work yet"
+      fi
+      say "fail policy: if Irises is down the engine answers fronted chats itself"
+      say "(set IRISES_BRIDGE_FAIL=closed in $engine_env for silence instead)"
+    else
+      say "--no-bridge: the engine keeps answering its own channels. API_SERVER_* is still wired,"
+      say "so Irises can do deep work through it."
+    fi
+  elif [ "$engine" = "openclaw" ] && [ "$BRIDGE" = "1" ]; then
+    if plugin_refresh openclaw "$ROOT"; then
+      plugin_dir="$(openclaw_home)/extensions/irises-bridge"
+    else
+      warn "the plugin did not install — fronting will not work yet"
+    fi
+    warn "give the OpenClaw GATEWAY process these three variables (its own env, not this clone's):"
+    warn "  IRISES_BRIDGE_TOKEN=$(env_get "$ENV_FILE" ENGINE_PUSH_TOKEN)"
+    warn "  IRISES_URL=http://127.0.0.1:$port"
+    warn "  IRISES_FRONT=whatsapp:*,telegram:123    # empty = front NOTHING"
+  fi
+
+  # ── 9. the manifest: what to undo, and what was never ours.
+  manifest_write "$(manifest_path)" \
+    "root=$ROOT" \
+    "irisesHome=$(irises_home)" \
+    "port=$port" \
+    "engine=$engine" \
+    "engineEnvFile=${engine_env:-}" \
+    "engineEnvBackup=${backup:-}" \
+    "pluginDir=${plugin_dir:-}" \
+    "serviceKind=$kind" \
+    "serviceUnit=${unit:-}" \
+    "nodeBin=$node_bin" \
+    "keysAdded=${keys_added# }" \
+    "keysPreExisting=${keys_pre# }" \
+    "bridge=$BRIDGE"
+
+  # ── 10. the gateway. ALWAYS, when an engine is configured: the plugin, IRISES_FRONT and
+  #       API_SERVER_* are only read when the gateway starts, so an install that skips this is an
+  #       install that does nothing until the operator works out why.
+  if [ "$engine" != "off" ]; then
+    if ! gateway_restart "$engine" 90; then
+      gateway_ok=0
+      result="gateway-failed"
+      rc=5
+    fi
+  fi
+
+  if [ "$adopted" = "1" ] && [ "$result" = "ok" ]; then result="adopted"; fi
+
+  summary "$result" \
+    "engine:    $engine${plugin_dir:+ (bridge plugin at $plugin_dir)}" \
+    "build:     ${live_sha:0:7} — confirmed live on http://127.0.0.1:$port/health" \
+    "service:   $kind${unit:+ ($unit)}" \
+    "data:      $(irises_home)  (irises.db + memories/ — never touched by an update)" \
+    "logs:      $(irises_home)/logs/server.log" \
+    "gateway:   $(if [ "$engine" = "off" ]; then printf 'n/a (standalone)'; elif [ "$gateway_ok" = "1" ]; then printf 'bounced and verified'; else printf 'NOT verified — bounce it yourself'; fi)" \
+    "talk to it: $(if [ -d "$ROOT/web/out" ]; then printf 'http://127.0.0.1:%s  ·  npm run chat' "$port"; else printf 'npm run chat   (web UI not built — IRISES_WEB=1 to build it)'; fi)" \
+    "update it: bash scripts/update.sh        remove it: bash scripts/engine-setup.sh --uninstall"
+  exit "$rc"
+}
+
+case "$MODE" in
+  install)   do_install ;;
+  uninstall) die 1 "--uninstall lands in the next commit" ;;
+esac

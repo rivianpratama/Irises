@@ -5,6 +5,11 @@ dist/
 npm-debug.log*
 *.tsbuildinfo
 
+# The old setup script wrote a SECOND pidfile into the clone root while the server wrote its own to
+# $IRISES_HOME. There is one pidfile now ($IRISES_HOME/irises.pid); this keeps a stale one from a
+# pre-rewrite install out of git.
+irises.pid
+
 # Local state dir (if IRISES_HOME points into the repo)
 .irises/
 
