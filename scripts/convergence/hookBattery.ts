@@ -607,16 +607,14 @@ export const CHECKS: Record<CheckId, HookCheck> = {
         return unscored(`the turn was closed to hooks before anything could carry one (reason `
           + `'${ev.select?.reason ?? 'not reported'}') — the kill switch or the affect floor got there first`);
       }
-      // A hook-mode turn with EVERY kind closed carried nothing because there was nothing to carry.
-      // The common way here is the clock: a late idle turn is a closed-kinds hook turn (the sleep
-      // branch, reason `sleep`), one short line about going to bed and no beat at all. The rare way
-      // is three overlapping vetoes — a room, a flattened mood and a callback she just used twice.
-      // Either way this is the engine working, and scoring it as the leaf failure would fail every
-      // round anybody runs after midnight in their own timezone.
+      // A hook-mode turn with EVERY kind closed carried nothing because there was nothing to carry:
+      // three overlapping vetoes — a room, a flattened mood and a callback she just used twice. The
+      // clock is NOT one of them; a late idle turn is an ordinary hook turn at a lower volume and is
+      // scored like any other. This is the engine working, so it is unscored rather than a leaf.
       if (ev.select && ev.select.forbidden.length >= HOOK_WORDS.length) {
         return unscored(`the turn reached hook mode with no kind open (reason '${ev.select.reason}') — the beat `
-          + 'was spent before she could carry one. On `sleep` that is the clock: re-run the round at an '
-          + 'hour that is not the middle of the night where the debug handle\'s timezone puts it');
+          + 'was spent before she could carry one. Read the forbidden list in the table: a room, a flat '
+          + 'mood and a repeated kind have to overlap for this to happen');
       }
       const carried: string[] = [];
       if (h.emitted !== 'none') carried.push(`hook_kind '${h.emitted}'`);
@@ -1207,14 +1205,15 @@ export const SCRIPT_CHECKS: Record<ScriptCheckId, ScriptCheck> = {
       + 'positive control reads. A run with hook-mode turns and no beats in any of them is the leaf '
       + 'failure spread over thirty turns',
     run(ev) {
-      // Hook-mode turns that had a kind OPEN. A late idle turn is a closed-kinds hook turn (the
-      // selector's sleep branch), which carries no beat by design — counting those would make a run
-      // started after midnight look like thirty leaves.
+      // Hook-mode turns that had a kind OPEN. The closed-kinds shape carries no beat by design (a
+      // room, a flat mood and a repeated kind overlapping), so it is filtered out rather than
+      // counted as a dud. A LATE turn is not that shape — the clock only lowers the volume — so
+      // late turns are scored here like any other idle turn.
       const hookTurns = scored(ev).filter(r =>
         r.trace!.outcome.hook?.mode === 'hook' && (r.select?.forbidden.length ?? 0) < HOOK_WORDS.length);
       if (!hookTurns.length) {
         return unscored('no turn in the run reached hook mode with a kind open — every idle turn was vetoed, '
-          + 'forced quiet, closed by the affect floor, or late enough that the clock closed the kinds. '
+          + 'forced quiet, or closed by the affect floor. '
           + 'Read the hooks:select reasons in the table before re-running');
       }
       // All THREE beats, because the probe round's `hook_present` counts all three and two batteries

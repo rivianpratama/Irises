@@ -99,7 +99,7 @@ export type HookAllowance = 'all' | 'no_judgment' | 'no_tangent' | 'none';
  *  full `AffectDirective`, so the caller passes the directive itself and nothing converts. */
 export interface HookAffectInput {
   hooks: HookAllowance;
-  sleepQuiet: boolean;
+  lateNight: boolean;
 }
 
 /** The decision, as the prompt renderer and the thread engine consume it. */
@@ -110,12 +110,11 @@ export interface HookDirective {
    *  quiet turn the MODE forbids every kind already, and listing them there would give two
    *  different answers to "what stopped this hook". */
   forbidden: HookWord[];
-  /** It is late where they are. Passed through in every mode so a consumer can read it without first
-   *  checking which branch it came from — but on an IDLE turn it is also what closed every kind
-   *  (see `selectHook`'s sleep branch), so the reply she is told to write is one short thing about
-   *  sleeping. The mode stays `hook`: the corrective re-ask is for the turns the ledger or the mood
-   *  FORCED quiet, and being told the better reply is a short one is not being forced. */
-  sleepQuiet: boolean;
+  /** It is late where they are. REGISTER ONLY, and passed through in every mode so a consumer can
+   *  read it without first checking which branch it came from. It closes no kind, shuts no sampler
+   *  and selects no mode: a late idle turn is an ordinary idle turn whose reply is smaller. The
+   *  clock decides the volume; the mood, the register and the ledger decide the content. */
+  lateNight: boolean;
   /** Whether the moment sampler may run — and, downstream, whether sampled moments render at all. */
   moments: boolean;
   /** Whether the thread engine may make an OFFER this turn. The engine keeps running either way:
@@ -126,13 +125,14 @@ export interface HookDirective {
 /**
  * Does this turn actually have a beat she may spend?
  *
- * `mode === 'hook'` is NOT that question, and the difference is the sleep branch: a late idle turn
- * is a hook-mode directive with every kind forbidden, so the mode says "hook" while the turn has
- * nothing open. Anything that changes what the model READS on the strength of a hook has to ask this
- * question instead of the mode — the climate span in the internal-weather block (persona/climate.ts
- * HOOK_NAMING, gated at the assembler seam) and the drift anchor's law at the recency edge both do.
- * Ask the mode and a 2am turn is handed "a tangent or a callback is expected of you here" beside
- * "No kind is open this turn", which is the disagreement the sleep branch was written to end.
+ * `mode === 'hook'` is NOT that question: hook mode with every kind forbidden is a real shape (a
+ * room that closes judgment, plus a flattened mood that closes tangent, plus a callback she just
+ * used twice), so the mode says "hook" while the turn has nothing open. Anything that changes what
+ * the model READS on the strength of a hook has to ask this question instead of the mode — the
+ * climate span in the internal-weather block (persona/climate.ts HOOK_NAMING, gated at the
+ * assembler seam) and the drift anchor's law at the recency edge both do. Ask the mode and such a
+ * turn is handed "a tangent or a callback is expected of you here" beside "No kind is open this
+ * turn", which is two copies of one turn disagreeing.
  *
  * The renderer itself builds the same reading out of the same two fields (`allowed.length > 0` in
  * `renderHooksSection`), because it needs the LIST and not just the answer; this is the predicate
@@ -147,9 +147,9 @@ export function hookKindOpen(directive: HookDirective | null | undefined): boole
 
 /** Why this turn got the mode it got. The buckets are DISJOINT and cover every path: a receipt that
  *  could say both `kill_switch` and `affect_floor` would make the battery unable to tell a working
- *  kill switch from a flat mood. `sleep` is its own bucket for the same reason — a 2am turn and a
- *  spent rhythm are fixed in different places, and the clock is not a failure of anything. */
-export type HookSelectReason = 'not_idle' | 'kill_switch' | 'affect_floor' | 'sleep' | 'hook';
+ *  kill switch from a flat mood. The clock has no bucket, because the clock decides nothing here —
+ *  a late turn lands in `hook` like any other idle turn and reads its register off `lateNight`. */
+export type HookSelectReason = 'not_idle' | 'kill_switch' | 'affect_floor' | 'hook';
 
 /** The receipt half. Names and numbers only — never her words, never a moment's text. */
 export interface HookSelectReport {
@@ -180,6 +180,14 @@ function repeatedTailKind(lastKinds: readonly HookKind[]): HookWord | null {
  * no room and no sampler may talk its way past. `now` is taken (and, today, unused) so the entry
  * point matches every other engine in this stack: no branch added here can ever be the one that
  * reaches for the wall clock.
+ *
+ * THE CLOCK IS NOT A BRANCH. `affect.lateNight` is carried into every directive and consulted by
+ * none of them: it is a register, so it changes the SIZE of the reply (the rendered late line) and
+ * never which kinds are open, whether the sampler runs, or which mode the turn is in. A late idle
+ * turn is an ordinary idle turn — whatever the mood, the room and the ledger left open stays open,
+ * and the kill switch plus the no-same-kind-three-times rule supply the same variety at 2am they
+ * supply at noon. This used to be a branch that forbade every kind, which made "go to sleep" the
+ * only content a late turn could hold and turned one hour of the clock into a script.
  */
 export function selectHook(
   state: HookState,
@@ -199,13 +207,13 @@ export function selectHook(
 
   if (!idle) {
     return {
-      directive: { idle: false, mode: 'task', forbidden: [], sleepQuiet: affect.sleepQuiet, moments: false, offerAllowed: false },
+      directive: { idle: false, mode: 'task', forbidden: [], lateNight: affect.lateNight, moments: false, offerAllowed: false },
       report: report('not_idle', []),
     };
   }
 
   const quiet = (reason: HookSelectReason) => ({
-    directive: { idle: true, mode: 'quiet' as const, forbidden: [], sleepQuiet: affect.sleepQuiet, moments: false, offerAllowed: false },
+    directive: { idle: true, mode: 'quiet' as const, forbidden: [], lateNight: affect.lateNight, moments: false, offerAllowed: false },
     report: report(reason, []),
   });
 
@@ -214,31 +222,6 @@ export function selectHook(
   if (lastKinds.length >= HOOK_RUN_LIMIT && lastKinds.every(k => k !== 'none')) return quiet('kill_switch');
   // The affect floor: the compiled directive can close hooks outright (a flat mood, a spent battery).
   if (affect.hooks === 'none') return quiet('affect_floor');
-
-  // IT IS THE MIDDLE OF THEIR NIGHT. Three copies of this turn used to disagree about it: the
-  // rendered section offered her a judgment, a callback or a tangent in one line and told her to
-  // send them to bed in the next, while the drift anchor at the recency edge said "one hook". A
-  // closed-kinds HOOK turn is the shape that says one thing — the beat is spent, and what is left
-  // is the short reply about sleeping (the renderer prints HOOK_NONE_OPEN and the sleep line from
-  // exactly this directive, with no new prose).
-  //
-  // It stays mode `hook` rather than becoming mode `quiet`, and the difference is the corrective
-  // re-ask: `quiet` is what the ledger and the mood FORCE, and a forced turn that comes back loud
-  // is re-asked once. The clock does not force anything — the plan is explicit that the quiet reply
-  // is PREFERRED at this hour, not compelled — so a late turn that came back with two bubbles is
-  // hers to have written, and no guard spends a second call arguing with it.
-  //
-  // Nothing is billed either: `moments` and `offerAllowed` are both false, so the sampler and the
-  // thread offer stay shut on a turn whose whole content is "go to sleep".
-  if (affect.sleepQuiet) {
-    return {
-      directive: {
-        idle: true, mode: 'hook', forbidden: [...HOOK_WORDS], sleepQuiet: true,
-        moments: false, offerAllowed: false,
-      },
-      report: report('sleep', [...HOOK_WORDS]),
-    };
-  }
 
   // HOOK_WORDS order, so the rendered sentence and the receipt read the same way every time, and so
   // three overlapping reasons to forbid a kind still name it exactly once.
@@ -257,7 +240,7 @@ export function selectHook(
       idle: true,
       mode: 'hook',
       forbidden,
-      sleepQuiet: affect.sleepQuiet,
+      lateNight: affect.lateNight,
       // A moment can only ride out as a callback, so a forbidden callback makes the sample dead
       // weight — and sampling bills the moment either way, which is why the gate sits here rather
       // than in the renderer.
@@ -332,20 +315,21 @@ export const HOOK_LEAD = 'They sent you nothing, so nothing of theirs comes back
  *  named: naming it is an instruction to think about it. */
 export const HOOK_OPEN_LINE = 'Open to you this turn: {kinds}. One of them, never two, never a kind not named here, and said as a statement, never asked.';
 
-/** Two ways here, and the common one is the clock. EVERY late-night idle turn closes all three kinds
- *  (`selectHook`'s sleep branch), and this line plus the sleep line below is the whole section she
- *  gets — one instruction instead of the three-way contradiction the section used to print at 2am.
- *  The rare way is a room (no judgment) plus a flattened mood (no tangent) plus a callback she just
- *  used twice. The turn stays a hook turn — a plain short answer still belongs to it — but the extra
+/** Rare, and it takes three pressures at once: a room (no judgment) plus a flattened mood (no
+ *  tangent) plus a callback she just used twice. The clock is NOT one of them — an hour never closes
+ *  a kind. The turn stays a hook turn — a plain short answer still belongs to it — but the extra
  *  beat is spent. */
 export const HOOK_NONE_OPEN = 'No kind is open this turn. Short and flat, and let the beat pass.';
 
-export const HOOK_SLEEP_LINE = 'It is late where they are. The right reply is that they should sleep — one short bubble, or a tapback, no greeting back — and the hook keeps.';
+/** The register line, rendered after the open/none line whenever it is late where they are. It says
+ *  how BIG the reply is and never what is in it: the kinds above still pick the content, and the
+ *  last clause is the whole anti-repeat intervention for a shape she used last night. */
+export const HOOK_LATE_LINE = 'It is late where they are: one short bubble, or a tapback, and nothing heavy. Same rules as any idle turn, at a lower volume, and never the line you sent them last night.';
 
 export const MOMENTS_LEAD = 'Kept about them, in case a callback fits. Retell one in fresh words, never read it out, never its date, never more than one.';
 
 export const QUIET_HEADING = '## This turn is quiet (INTERNAL)';
-export const QUIET_LAW = 'Three sharp things in a row already, or your weather says so, or it is late for them. One plain short bubble, or a tapback, or nothing — no hook, no question, no offer. Do not explain the quiet.';
+export const QUIET_LAW = 'Three sharp things in a row already, or your weather says so. One plain short bubble, or a tapback, or nothing — no hook, no question, no offer. Do not explain the quiet.';
 
 /** The allowed kinds as English. `a judgment, a callback or a tangent` — an oxford-less list because
  *  it is a sentence she reads, not a config value she parses. */
@@ -373,7 +357,7 @@ export function renderHooksSection(directive: HookDirective, momentLines: string
     const allowed = HOOK_WORDS.filter(w => !directive.forbidden.includes(w));
     lines.push(HOOK_HEADING, HOOK_LEAD);
     lines.push(allowed.length > 0 ? HOOK_OPEN_LINE.replace('{kinds}', nameKinds(allowed)) : HOOK_NONE_OPEN);
-    if (directive.sleepQuiet) lines.push(HOOK_SLEEP_LINE);
+    if (directive.lateNight) lines.push(HOOK_LATE_LINE);
     const moments = directive.moments ? momentLines.map(l => l.trim()).filter(Boolean) : [];
     if (moments.length > 0) lines.push(MOMENTS_LEAD, ...moments);
   }

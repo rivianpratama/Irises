@@ -9,8 +9,9 @@
 // So the machinery stays and the prose goes. The gauges, the Willcox core and the standing register
 // COMPILE, here, into at most four imperative lines: how sharp (the core's own sentence), how short
 // (the social battery), whether the beat is open at all (the mood floor, the core and the climate
-// floors), and whether it is late where they are. Everything above is arithmetic the model never
-// sees; everything below is a sentence it can obey.
+// floors), and whether it is late where they are — which is a REGISTER and nothing else: the hour
+// lowers the volume of a reply and never picks its content. Everything above is arithmetic the model
+// never sees; everything below is a sentence it can obey.
 //
 // THE WHEEL IS THE VARIABLE. `mood_label` is the one thing the model still reports about how it
 // feels, `coreForLabel` (mood.ts) is what files that word under one of six cores, and CORE_DIRECTIVES
@@ -43,14 +44,16 @@ export type BrevityBand = 'normal' | 'tight' | 'minimal';
 export type HookAllowance = 'all' | 'no_judgment' | 'no_tangent' | 'none';
 
 /** This turn's compiled affect, as instructions rather than texture. Every field is read by code —
- *  `hooks` and `sleepQuiet` by the rhythm engine (hooks.ts), `bubbleCap`/`brevity` by the renderer
+ *  `hooks` and `lateNight` by the rhythm engine (hooks.ts), `bubbleCap`/`brevity` by the renderer
  *  and the quiet guard, `mood` by the one line that still names how she feels. */
 export interface AffectDirective {
   mood: { core: MoodCore; word: string };
   bubbleCap: 1 | 2 | 3;
   brevity: BrevityBand;
   hooks: HookAllowance;
-  sleepQuiet: boolean;
+  /** It is late where they are. A register flag: smaller and quieter, nothing more. It closes no
+   *  hook kind, shuts no sampler and forces no mode — see hooks.ts `selectHook`. */
+  lateNight: boolean;
 }
 
 /**
@@ -113,9 +116,9 @@ export const HOOK_MOOD_FLOOR = 35;
  *  no read yet, so there is nothing for the register to be built out of. */
 export const DEFAULT_MOOD: { core: MoodCore; word: string } = { core: 'peaceful', word: 'content' };
 
-/** The two slots where the right reply is that they should sleep. Typed against the slot union so a
- *  renamed slot fails here rather than silently switching the sleep line off forever. */
-const SLEEP_SLOTS: readonly CircadianSlot[] = ['dead_night', 'pre_sleep'];
+/** The two slots where the reply gets smaller, and nothing more than that. Typed against the slot
+ *  union so a renamed slot fails here rather than silently switching the late line off forever. */
+const LATE_SLOTS: readonly CircadianSlot[] = ['dead_night', 'pre_sleep'];
 
 /** Every gauge is a 1-100 integer by TYPE, and by the time a row has been through `affectGaugesFrom`
  *  it is one in fact too — but this reads rows off disk and out of hand-built fixtures, so a garbled
@@ -201,7 +204,7 @@ export function compileAffect(
     bubbleCap: capFor(brevity),
     brevity,
     hooks,
-    sleepQuiet: SLEEP_SLOTS.includes(computed.circadian.slot),
+    lateNight: LATE_SLOTS.includes(computed.circadian.slot),
   };
 }
 
@@ -218,10 +221,11 @@ export const BREVITY_LINES: Record<Exclude<BrevityBand, 'normal'>, string> = {
   tight: 'Fewer words than usual. Two bubbles at most.',
 };
 
-/** The sleep line. A PREFERENCE about an idle turn, not a gag: the hook engine's `sleepQuiet` says
- *  the same thing to the selector, and neither of them drops a reply. */
-export const SLEEP_QUIET_LINE =
-  'It is late where they are. If this turn is idle, the right reply is that they should sleep.';
+/** The late-night line. REGISTER, not content: it says how big the reply is and never what is in
+ *  it. The hook engine reads the same flag (`lateNight`) and does the same thing with it — lowers
+ *  the volume, closes nothing. */
+export const LATE_NIGHT_LINE =
+  'It is late where they are. Smaller and quieter than daytime: fewer words and nothing heavy.';
 
 /** `- You are <word> (<core>). <the core's imperative>` — the one line that still names a feeling,
  *  and it names it in order to hand over an instruction. */
@@ -236,7 +240,7 @@ export function renderBrevityLine(brevity: BrevityBand): string[] {
 
 /**
  * The compiled block, between the weather header and the climate lines: the brevity line when there
- * is one, the sleep line when it is late, the mood line and its imperative, and last turn's
+ * is one, the late-night line when it is late, the mood line and its imperative, and last turn's
  * note-to-self. At most four lines, every one of them an instruction.
  *
  * Order is the prose's (policy-strings.md, AFFECT DIRECTIVE LINES): the two lines about the SHAPE of
@@ -260,7 +264,7 @@ export function renderAffectDirective(
   void climate;
   const lines: string[] = [];
   lines.push(...renderBrevityLine(directive.brevity));
-  if (directive.sleepQuiet) lines.push(`- ${SLEEP_QUIET_LINE}`);
+  if (directive.lateNight) lines.push(`- ${LATE_NIGHT_LINE}`);
   lines.push(renderMoodLine(directive.mood));
   // The self-recursive loop, unchanged and byte-identical: last turn's private note, quoted back.
   if (last?.meta_prompt) lines.push(`- Your read going into this message (from last turn): "${last.meta_prompt}"`);

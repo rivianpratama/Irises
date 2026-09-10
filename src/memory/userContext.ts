@@ -52,28 +52,28 @@ function renderStructuredPrefs(prefs: Record<string, unknown>): string {
 }
 
 /**
- * Identity + the one rule for how to address the user. Always present — the no-address-term fallback
- * needs no stored data. Precedence: an explicit `address_as` preference > their known name > nothing.
+ * Identity + the one rule for how to address the user. Always present — the no-address-term default
+ * needs no stored data. Precedence: an explicit `address_as` preference > no address term at all.
  * A free-form addressing directive in USER PREFERENCES also wins (it sits below this block).
+ *
+ * NO NAME LINE and no name push, byte-identical to the live renderer next door (wrappers.ts
+ * renderAddressingHeader): the name is a thing she knows from the profile row and the dossier, not
+ * a word the prompt tells her to drop into a bubble.
  */
 function renderAddressing(profile: UserProfile | null, prefs: Record<string, unknown>): string {
-  const name = profile?.name?.trim() || '';
   const addressAs = typeof prefs.address_as === 'string' ? prefs.address_as.trim() : '';
 
   const lines: string[] = ['## Who they are and how to address them'];
-  lines.push(`Name: ${name || "unknown — you haven't learned it yet"}`);
   const known = renderKnownFacts(profile?.facts ?? []);
   if (known) lines.push(known);
   if (addressAs) lines.push(`They asked to be addressed as: "${addressAs}"`);
 
-  let rule: string;
-  if (addressAs) rule = `call them "${addressAs}" — that's how they asked to be addressed, and it overrides everything else`;
-  else if (name) rule = `use their name, "${name}"`;
-  else rule = `you don't know their name yet, so use no address term at all — second person only, never an invented nickname`;
+  const rule = addressAs
+    ? `call them "${addressAs}" — they asked for that, and it overrides everything else; even so, most bubbles carry no name at all`
+    : `use no address term at all — second person only, never their name, never an invented nickname`;
   lines.push(
-    `How to address them: ${rule}. Do it occasionally, the way a real person texting drops a name in — ` +
-    `not in every bubble. If a preference below says how they want to be addressed, that wins. ` +
-    `In a group chat, address people by name as usual.`,
+    `How to address them: ${rule}. If a preference below says how they want to be addressed, ` +
+    `that wins. In a group chat, address people by name as usual.`,
   );
   return lines.join('\n');
 }

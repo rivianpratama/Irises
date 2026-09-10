@@ -225,8 +225,14 @@ function innerWeatherSection(): string {
  * the one place a description of the two new stores could plausibly have grown back — it is the
  * paragraph that tells her what the per-turn block she is handed contains — and the audit found it
  * had not.
+ *
+ * Now **2,389**, from 2,431: the late-night register rewrite shortened the one clause in the
+ * per-turn-block paragraph that described the clock's line. That clause used to name the one right
+ * reply at that hour, which made it a SCRIPT stated in the persona as well as in the compiled line;
+ * it now says only that it is late and everything gets smaller. Ceiling ratcheted to +0.8% of the
+ * new number, the same band it has always stood at.
  */
-const INNER_WEATHER_CEILING = 2_450;
+const INNER_WEATHER_CEILING = 2_408;
 
 /** How much the ceiling may sit above the measurement, copied from promptBudget.test.ts so this
  *  section is held to the same band as every other prose line. The downward assertion below is the

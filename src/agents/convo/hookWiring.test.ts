@@ -31,7 +31,7 @@ import { craftModuleText } from './personaModules.js';
 import { DYN_SECTION_IDS, type SectionId } from './promptSections.js';
 import { REACTION_TOOL, DELEGATE_TO_OPS_TOOL } from './tools.js';
 import {
-  HOOK_HEADING, HOOK_NONE_OPEN, HOOK_SLEEP_LINE, HOOK_WORDS, MOMENTS_LEAD, QUIET_LAW, renderHooksSection,
+  HOOK_HEADING, HOOK_NONE_OPEN, HOOK_LATE_LINE, HOOK_WORDS, MOMENTS_LEAD, QUIET_LAW, renderHooksSection,
   type HookDirective, type HookSelectReport, type HookState,
 } from '../../persona/hooks.js';
 import { getHookState } from '../../db/repositories/hookState.js';
@@ -105,7 +105,7 @@ const MOMENT_LINES = [
 ];
 
 const HOOK: HookDirective = {
-  idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: false, offerAllowed: true,
+  idle: true, mode: 'hook', forbidden: [], lateNight: false, moments: false, offerAllowed: true,
 };
 const QUIET: HookDirective = { ...HOOK, mode: 'quiet', offerAllowed: false };
 const TASK: HookDirective = { ...HOOK, idle: false, mode: 'task', offerAllowed: false };
@@ -617,11 +617,11 @@ test('an IDLE message through the front door renders the hooks block, the Turn l
   const chatId = randomUUID();
   // A relationship that has actually MOVED, stored before the turn so the real read picks it up
   // (db/repositories/relationshipClimate.ts, handle-keyed like the memory tiers). Without it this
-  // turn renders no climate span at all, and the span is where the fourth copy of this turn hid: a
-  // late idle turn is a closed-kinds HOOK turn, so a span gated on the MODE hands it "a tangent or a
-  // callback is expected of you here" in the same prompt as "No kind is open this turn". Every dial
-  // is past its silent band, so all four hook-naming band lines are live and only the gate can be
-  // what keeps them out.
+  // turn renders no climate span at all, and the span is the other place this turn is described: it
+  // rides every Convo turn whatever the mode, so it and the hooks section have to agree about what
+  // is open. Every dial here is past its silent band — candor below its floor, which is also the
+  // thing that closes one kind on this turn — so the hook-naming band lines are live rather than
+  // silently absent.
   await saveRelationshipClimate(SENDER, {
     ...defaultClimate(), dials: { ease: 70, candor: 30, playfulness: 60 }, evalCount: 30,
   });
@@ -641,41 +641,47 @@ test('an IDLE message through the front door renders the hooks block, the Turn l
   assert.equal(select?.idleLayer, 'fast_path', 'a known English stall costs no call at all');
   assert.equal(receipt('idle:classify'), undefined, '…so layer 3 was never reached');
 
-  // THE PLAN'S OWN 2AM CASE, end to end, and the reason it lands here rather than needing a fixture
-  // of its own: this file's frozen clock is 02:00 UTC, which `computeCircadian` reads as
-  // `dead_night` and `compileAffect` turns into `sleepQuiet` — so the front door on this clock
-  // ALWAYS produces the sleep branch, and pinning it to the wide-open one would have been pinning a
-  // turn the clock cannot make. (`convo/earnedMaterial.test.ts` runs the same front door on an
-  // afternoon clock, which is where the all-three-kinds branch is exercised.)
+  // THE 2AM CASE, end to end, and the reason it lands here rather than needing a fixture of its
+  // own: this file's frozen clock is 02:00 UTC, which `computeCircadian` reads as `dead_night` and
+  // `compileAffect` turns into `lateNight` — so every turn the front door produces on this clock is
+  // a late one. (`convo/earnedMaterial.test.ts` runs the same front door on an afternoon clock.)
   //
-  // Three copies of this turn used to disagree: the section offered her a judgment, a callback or a
-  // tangent in one line and told her to send them to bed in the next, while the anchor at the
-  // recency edge said "one hook". Now all three say one thing.
-  assert.equal(select?.reason, 'sleep');
-  assert.deepEqual(select?.forbidden, ['judgment', 'callback', 'tangent']);
-  assert.equal(select?.moments, false, 'and nothing is billed on a turn whose content is "go to sleep"');
-  assert.ok(system.includes(HOOK_NONE_OPEN), 'the section names no kind at all');
-  assert.ok(system.includes(HOOK_SLEEP_LINE));
-  assert.ok(!system.includes('Open to you this turn'));
-  // The anchor's mode moves with it: the law at the recency edge is the quiet one, which is the
-  // third copy. It is still not a FORCED-quiet turn — the guard files nothing (a preference is not a
-  // compulsion), and this reply is two words with no hook in it either way.
-  assert.ok(system.includes('- If it is late where they are, the one right line is that they should sleep.'),
-    'the drift anchor states the quiet law');
-  assert.ok(!system.includes('- This is an idle turn: one hook, of a kind the hooks section above still allows, and only one.'),
-    '…and not the hook law, which is the copy that used to contradict the section');
-  assert.equal(quietReceipt(), undefined, 'the clock prefers a short reply; it does not force one');
+  // The hour is a REGISTER and nothing more. It used to close every kind, shut the sampler and the
+  // thread offer and take a `sleep` bucket of its own, which left one sentence — go to bed — as the
+  // only content a late idle turn could carry, restated in seven prompt surfaces. Now the turn is an
+  // ordinary idle turn: the kinds are open, the anchor states the HOOK law, and the one thing the
+  // clock adds is the register line saying the reply is small.
+  assert.equal(select?.reason, 'hook', 'the clock is not a reason for anything');
+  // The one kind closed here is the CLIMATE's doing, not the hour's: this chat's candor sits below
+  // its floor band, which is what `compileAffect` reads as `no_judgment`.
+  assert.deepEqual(select?.forbidden, ['judgment'], 'the clock closes nothing of its own');
+  assert.ok(system.includes(HOOK_LATE_LINE), 'the register line rode along');
+  assert.ok(system.includes('Open to you this turn: a callback or a tangent.'),
+    'under an open line naming the kinds the register left');
+  assert.ok(!system.includes(HOOK_NONE_OPEN));
+  // The anchor's law at the recency edge is the HOOK one, and it agrees with the section.
+  assert.ok(system.includes('- This is an idle turn: one hook, of a kind the hooks section above still allows, and only one.'),
+    'the drift anchor states the hook law');
+  assert.ok(!system.includes('- Three sharp things in a row already, or your weather closed the beat: this reply is one plain short bubble, a tapback, or nothing.'),
+    '…and not the quiet law, which is not this turn');
+  // NOTHING in the assembled prompt tells her to send them to bed — the complaint that produced
+  // this design was that one line arriving every night, from seven places at once.
+  assert.ok(!system.includes('should sleep'), 'no prompt surface tells her what to send at this hour');
+  assert.equal(quietReceipt(), undefined, 'the clock forces nothing');
 
-  // …and the FOURTH copy, which is why this chat carries a moved climate: the standing register
-  // renders on every Convo turn whatever the mode, and four of its twelve band lines name a hook
-  // kind (persona/climate.ts HOOK_NAMING). Gated on the MODE, this exact turn printed "A tangent or
-  // a callback is expected of you here" and "Hold the judgment kind of hook this turn" beside a
-  // section saying no kind is open. The span is gated on the OPEN KIND now (persona/hooks.ts
-  // `hookKindOpen`), so it renders here with its ease line and neither of those.
+  // …and the standing register, which is why this chat carries a moved climate: it renders on every
+  // Convo turn whatever the mode, and four of its twelve band lines name a hook kind
+  // (persona/climate.ts HOOK_NAMING). They are gated on whether a KIND IS OPEN (`hookKindOpen`),
+  // never on the mode — and a late turn HAS kinds open, so they ride it here, saying the same thing
+  // the section's open line says. That agreement is the pin: the register and the section are two
+  // readings of one directive.
   const weather = system.slice(system.indexOf('standing register'), system.indexOf('Re-report your `status`'));
   assert.ok(weather.length > 0 && weather.includes('- No runway at all with this person.'),
     'the climate span really rendered on this turn');
-  assert.doesNotMatch(weather, /judgment|callback|tangent/);
+  assert.ok(weather.includes('- Directness has been landing badly. No judgment this turn.'),
+    'the band line that closed judgment says so, on a turn that has a beat to spend');
+  assert.ok(weather.includes('- A tangent or a callback is expected of you here.'),
+    '…and the register names exactly the kinds the section left open');
 
   // The SAME reading also gates the hook craft page (convo/personaModules.ts `idle_turn`), which is
   // the other thing the pre-read hands the assembler. Read as the page off disk rather than as a

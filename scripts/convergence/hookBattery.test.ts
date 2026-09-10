@@ -453,23 +453,23 @@ test('h1: an idle hook turn that carried nothing is the leaf this build is named
   assert.equal(r.layer, LAYERS.hooks_page);
 });
 
-// The clock's own turn, and the reason it cannot be scored as the leaf: a late idle turn is a
-// closed-kinds hook turn (persona/hooks.ts's sleep branch) — one short line about going to bed, no
-// beat by design. Scored as a failure, every round anybody ran after midnight in the debug handle's
-// own timezone would report the leaf this build is named after.
+// The closed-kinds turn, and the reason it cannot be scored as the leaf: three pressures overlapped
+// — a room forbids judgment, a flattened mood forbids the tangent, a callback she just used twice
+// forbids the third — so there was no beat to carry. Scored as a failure it would report the leaf
+// this build is named after on a turn where the engine did exactly what it should. The CLOCK is not
+// one of those pressures any more: a late idle turn has its kinds open and is scored like any other.
 test('h1: a hook turn with no kind open carried nothing because there was nothing to carry', () => {
   const r = score(item('h1'), {
     trace: trace({ hook: { idle: true, mode: 'hook', emitted: 'none', violation: false } }),
-    select: select({ reason: 'sleep', mode: 'hook', forbidden: [...HOOK_WORDS], moments: false }),
+    select: select({ reason: 'hook', mode: 'hook', forbidden: [...HOOK_WORDS], moments: false }),
     threadSelect: threads(),
     momentOfferedHere: false,
   });
   assert.equal(r.verdict, 'UNSCORED');
   assert.match(r.evidence, /no kind open/);
-  assert.match(r.evidence, /middle of the night/);
+  assert.match(r.evidence, /a room, a flat mood and a repeated kind/);
 
-  // The rare non-clock way here — a room, a flattened mood and a callback she just used twice — is
-  // the same reading for the same reason: the beat was spent before she could carry one.
+  // Same reading through the check's own entry point, so the unscored path is pinned on both seams.
   const spent = CHECKS.hook_present.run(evidence({
     trace: trace({ hook: { idle: true, mode: 'hook', emitted: 'none', violation: false } }),
     select: select({ reason: 'hook', mode: 'hook', forbidden: [...HOOK_WORDS] }),
@@ -971,22 +971,23 @@ test('a hook-mode turn whose only beat was a moment offer carried something', ()
   assert.equal(r.warnings.find(w => w.id === 'hooks_on_idle'), undefined, JSON.stringify(r.warnings));
 });
 
-test('a run held at a closed-kinds hour is not thirty leaves', () => {
-  // Every idle turn a closed-kinds hook turn — a whole run started after midnight in the debug
-  // handle's own timezone (persona/hooks.ts's sleep branch). Nothing carried a beat, and nothing was
-  // supposed to: the positive control has no reading here, so it takes none rather than reporting
-  // the failure this build is named after.
+test('a run held at closed kinds throughout is not thirty leaves', () => {
+  // Every idle turn a closed-kinds hook turn — a run inside a room, on a flattened mood, with a
+  // repeated kind at the tail of the ledger. Nothing carried a beat, and nothing was supposed to:
+  // the positive control has no reading here, so it takes none rather than reporting the failure
+  // this build is named after.
   const r = scoreScript(scriptEvidence((base, t) => (
     t.kind === 'idle'
       ? {
         trace: trace({ hook: { idle: true, mode: 'hook', emitted: 'none', violation: false } }),
-        select: select({ reason: 'sleep', mode: 'hook', forbidden: [...HOOK_WORDS], moments: false }),
+        select: select({ reason: 'hook', mode: 'hook', forbidden: [...HOOK_WORDS], moments: false }),
       }
       : {}
   )));
   assert.ok(r.unscoredChecks.some(u => u.id === 'hooks_on_idle'), JSON.stringify(r.unscoredChecks));
   assert.equal(r.findings.find(f => f.id === 'hooks_on_idle'), undefined, JSON.stringify(r.findings));
-  assert.ok(r.checks.some(c => /hooks_on_idle: unscored/.test(c) && /closed the kinds/.test(c)), r.checks.join('\n'));
+  assert.ok(r.checks.some(c => /hooks_on_idle: unscored/.test(c) && /closed by the affect floor/.test(c)),
+    r.checks.join('\n'));
 });
 
 test('a run with no hook-mode turn at all cannot answer the positive control', () => {

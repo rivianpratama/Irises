@@ -104,7 +104,7 @@ test('an offered thread lands between the internal-weather block and conversatio
 // because it is the contract that says whether this turn may pick anything up at all.
 test('the thread offer leads and the rhythm contract follows it, at the recency edge', () => {
   const prompt = build({ offer: THEME, outcomeAsk: null }, {
-    hooks: { idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: false, offerAllowed: true },
+    hooks: { idle: true, mode: 'hook', forbidden: [], lateNight: false, moments: false, offerAllowed: true },
     moments: [], thesis: '',
   });
   const thread = prompt.indexOf("## A thread you've half-noticed");

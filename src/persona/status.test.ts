@@ -1015,30 +1015,34 @@ test('the turn mode gates the hook-naming climate lines, and nothing else in the
   assert.equal(renderStatusForPrompt(state, COMPUTED, undefined, true), bare);
 });
 
-// THE PLAN'S OWN 2AM CASE, at this seam. A late idle turn is a closed-kinds HOOK turn: the mode says
-// `hook`, every kind is forbidden, and the section it renders says "No kind is open this turn" and
-// sends them to bed. Gate this span on the MODE and that same prompt also carries "A tangent or a
-// callback is expected of you here" — the register door the sleep branch was closing, re-opened one
-// function away, and on the one turn the whole build is named after. The reading is composed here
-// out of the real directive rather than a hand-set boolean, so the pin is about what the assembler
-// actually passes down (agents/convo/shared.ts `kindOpen`).
+// THE CLOSED-KINDS TURN, at this seam. It is hook MODE with every kind forbidden — a room forbids
+// judgment, a flattened mood forbids the tangent, a callback she just used twice forbids the third —
+// and the section it renders says "No kind is open this turn". Gate this span on the MODE and that
+// same prompt also carries "A tangent or a callback is expected of you here", which is the register
+// door left open one function away. The reading is composed here out of the real directive rather
+// than a hand-set boolean, so the pin is about what the assembler actually passes down
+// (agents/convo/shared.ts `kindOpen`). The CLOCK never produces this shape: a late turn is an
+// ordinary idle turn at a lower volume, so its kinds stay open and this span rides it.
 test('a closed-kinds hook turn reads as NO hook here — the mode is not the question', () => {
   const state = { last: carried(0), moodHistory: [] };
   const open: HookDirective = {
-    idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: true, offerAllowed: true,
+    idle: true, mode: 'hook', forbidden: [], lateNight: false, moments: true, offerAllowed: true,
   };
-  const asleep: HookDirective = { ...open, forbidden: [...HOOK_WORDS], sleepQuiet: true, moments: false, offerAllowed: false };
+  const spent: HookDirective = { ...open, forbidden: [...HOOK_WORDS], moments: false, offerAllowed: false };
 
-  const late = renderStatusForPrompt(state, COMPUTED, movedClimate(), hookKindOpen(asleep));
-  assert.match(late, /standing register/, 'the climate really rendered');
-  assert.doesNotMatch(withoutMoodLine(late), /judgment|callback|tangent/);
+  const closed = renderStatusForPrompt(state, COMPUTED, movedClimate(), hookKindOpen(spent));
+  assert.match(closed, /standing register/, 'the climate really rendered');
+  assert.doesNotMatch(withoutMoodLine(closed), /judgment|callback|tangent/);
   // …and it is byte-identical to the task turn's block: one filter, one span, no third shape.
-  assert.equal(late, renderStatusForPrompt(state, COMPUTED, movedClimate(), false));
+  assert.equal(closed, renderStatusForPrompt(state, COMPUTED, movedClimate(), false));
 
-  // The rare non-clock shape reads the same: a room forbids judgment, a flat mood forbids a tangent,
-  // a repeated callback forbids the third, and between them the turn has no beat left to spend.
-  const spent: HookDirective = { ...open, forbidden: [...HOOK_WORDS] };
-  assert.equal(renderStatusForPrompt(state, COMPUTED, movedClimate(), hookKindOpen(spent)), late);
+  // A LATE turn is not that shape. The hour is a register: the kinds stay open, so this span rides
+  // the turn exactly as it does at noon.
+  const late: HookDirective = { ...open, lateNight: true };
+  assert.equal(
+    renderStatusForPrompt(state, COMPUTED, movedClimate(), hookKindOpen(late)),
+    renderStatusForPrompt(state, COMPUTED, movedClimate(), hookKindOpen(open)),
+  );
 
   // And the open turn is still the open turn — this filter must not have swallowed the feature.
   assert.match(

@@ -23,7 +23,7 @@ import assert from 'node:assert/strict';
 import {
   compileAffect, renderAffectDirective, renderMoodLine, renderBrevityLine,
   moodOf, brevityOf, capFor, tightenHooks,
-  CORE_DIRECTIVES, DEFAULT_MOOD, BREVITY_LINES, SLEEP_QUIET_LINE,
+  CORE_DIRECTIVES, DEFAULT_MOOD, BREVITY_LINES, LATE_NIGHT_LINE,
   HOOK_MOOD_FLOOR, SOCIAL_BATTERY_MINIMAL, SOCIAL_BATTERY_TIGHT,
   type AffectDirective, type BrevityBand, type HookAllowance,
 } from './affectCompiler.js';
@@ -36,7 +36,7 @@ import { THREAD_MOOD_FLOOR } from './threads.js';
 
 const T0 = Date.UTC(2026, 3, 1);
 
-/** A clock that is neither of the two sleep slots — 16:00 is `afternoon_peak`. */
+/** A clock that is neither of the two late slots — 16:00 is `afternoon_peak`. */
 const COMPUTED: ComputedState = {
   cycle: computeCycle(T0, T0),
   circadian: computeCircadian(Date.UTC(2026, 3, 1, 16, 0, 0), 'UTC'),
@@ -165,8 +165,8 @@ test('the mood floor closes every kind, from both sides, and mirrors the thread 
   assert.equal(HOOK_MOOD_FLOOR, THREAD_MOOD_FLOOR);
 });
 
-test('the sleep slots are the two late ones, and nothing else', () => {
-  const quiet = (hour: number) => compileAffect(carried(), at(hour)).sleepQuiet;
+test('the late slots are the two late ones, and nothing else', () => {
+  const quiet = (hour: number) => compileAffect(carried(), at(hour)).lateNight;
   for (const hour of [0, 3, 4, 22, 23]) assert.equal(quiet(hour), true, `hour ${hour} is late`);
   for (const hour of [5, 8, 11, 13, 16, 19, 21]) assert.equal(quiet(hour), false, `hour ${hour} is not late`);
   // The slots themselves, so a renamed slot fails here rather than switching the line off forever.
@@ -227,22 +227,22 @@ test('a core ban and a climate ban compose rather than replacing each other', ()
 test('no carried row compiles to the loosest reading, and the clock still applies', () => {
   const d = compileAffect(undefined, COMPUTED);
   assert.deepEqual(d, {
-    mood: DEFAULT_MOOD, bubbleCap: 3, brevity: 'normal', hooks: 'all', sleepQuiet: false,
+    mood: DEFAULT_MOOD, bubbleCap: 3, brevity: 'normal', hooks: 'all', lateNight: false,
   } satisfies AffectDirective);
   // A first message is not a tired one — but it can still be a late one, and it can still land in a
   // relationship that has moved. Neither of those is about HER.
-  assert.equal(compileAffect(undefined, at(2)).sleepQuiet, true);
+  assert.equal(compileAffect(undefined, at(2)).lateNight, true);
   assert.equal(compileAffect(undefined, COMPUTED, belowBand('candor')).hooks, 'no_judgment');
 });
 
 // ══ 6. The rendered lines ════════════════════════════════════════════════════
 
-test('the block renders in the prose order: shape, sleep, mood, self-note', () => {
+test('the block renders in the prose order: shape, late, mood, self-note', () => {
   const last = carried('hopeful', { social_battery: 20 }, 'they are about to ask about thursday');
   const lines = renderAffectDirective(compileAffect(last, at(2)), last, at(2));
   assert.deepEqual(lines, [
     `- ${BREVITY_LINES.minimal}`,
-    `- ${SLEEP_QUIET_LINE}`,
+    `- ${LATE_NIGHT_LINE}`,
     '- You are hopeful (powerful). A judgment lands flat and certain. Do not explain it.',
     '- Your read going into this message (from last turn): "they are about to ask about thursday"',
   ]);
@@ -295,6 +295,6 @@ test('the compile is pure: frozen inputs survive it and the same inputs give the
   const b = compileAffect(last, computed, climate);
   assert.deepEqual(a, b);
   assert.deepEqual(a, {
-    mood: { core: 'sad', word: 'drained' }, bubbleCap: 1, brevity: 'minimal', hooks: 'none', sleepQuiet: true,
+    mood: { core: 'sad', word: 'drained' }, bubbleCap: 1, brevity: 'minimal', hooks: 'none', lateNight: true,
   } satisfies AffectDirective);
 });

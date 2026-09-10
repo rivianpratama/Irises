@@ -179,7 +179,7 @@ test('the persona describes no envelope field and copies no wheel — it points 
  *  one, and hooks.test.ts owns the selector. */
 function turnInMode(mode: DriftMode): PersonaTurn {
   const hooks: HookDirective = {
-    idle: mode !== 'task', mode, forbidden: [], sleepQuiet: false,
+    idle: mode !== 'task', mode, forbidden: [], lateNight: false,
     moments: false, offerAllowed: mode === 'hook',
   };
   return { hooks, moments: [], thesis: '' };

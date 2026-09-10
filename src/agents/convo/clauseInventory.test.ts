@@ -141,7 +141,7 @@ const HISTORY: StoredMessage[] = [
 /** The rhythm decision this census is taken under: an idle turn with every kind still open, which
  *  is the widest the `hooks` section gets (persona/hooks.ts). */
 const HOOK_DIRECTIVE: HookDirective = {
-  idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: false, offerAllowed: true,
+  idle: true, mode: 'hook', forbidden: [], lateNight: false, moments: false, offerAllowed: true,
 };
 
 /** Her one read on this person, rendered through the real seam (memory/thesisEngine.ts), so the

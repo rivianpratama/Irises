@@ -638,16 +638,20 @@ function renderZone(prefs: Record<string, unknown>): string {
 
 /** The one addressing rule, rendered as flexible-header prose (it IS the marquee example of a
  *  style default the flexible layer tunes). Same precedence as the legacy renderAddressing:
- *  explicit address_as > known name > nothing (never an invented nickname). A GROUP identity gets no personal fallbacks —
- *  people are addressed by name from the labeled messages; a group-level address_as (set by
- *  the members, e.g. "call us the A-team") still wins for addressing the room. */
+ *  explicit address_as > no address term at all. An INDIVIDUAL header names nobody: it prints no
+ *  `Name:` line and never pushes the name into a bubble, because a standing nudge to drop a name
+ *  in is what turned every reply into a name-plus-line. The name itself stays where memory keeps
+ *  it (the profile row, the dossier's own line), so "what is my name" still has an answer — it is
+ *  a thing she knows, not a word the prompt tells her to say. A GROUP identity is untouched: a
+ *  room needs names to tell speakers apart, so people are addressed by name from the labeled
+ *  messages, and a group-level address_as (set by the members, e.g. "call us the A-team") still
+ *  wins for addressing the room. */
 function renderAddressingHeader(
   profile: UserProfile | null,
   prefs: Record<string, unknown>,
   audience: MemoryAudience = 'individual',
   standing?: StandingRender,
 ): string {
-  const name = profile?.name?.trim() || '';
   const addressAs = typeof prefs.address_as === 'string' ? prefs.address_as.trim() : '';
   // The standing settings ride at the END of the header, on both audiences — a room can ask for a
   // language exactly as one person can, and the line reads the same either way.
@@ -664,18 +668,16 @@ function renderAddressingHeader(
     if (standingLine) lines.push(standingLine);
     return lines.join('\n');
   }
-  const lines: string[] = [`Name: ${name || "unknown — you haven't learned it yet"}`];
+  const lines: string[] = [];
   const known = renderKnownFacts(profile?.facts ?? []);
   if (known) lines.push(known);
   if (addressAs) lines.push(`They asked to be addressed as: "${addressAs}"`);
-  let rule: string;
-  if (addressAs) rule = `call them "${addressAs}" — that's how they asked to be addressed, and it overrides everything else`;
-  else if (name) rule = `use their name, "${name}"`;
-  else rule = `you don't know their name yet, so use no address term at all — second person only, never an invented nickname`;
+  const rule = addressAs
+    ? `call them "${addressAs}" — they asked for that, and it overrides everything else; even so, most bubbles carry no name at all`
+    : `use no address term at all — second person only, never their name, never an invented nickname`;
   lines.push(
-    `How to address them: ${rule}. Do it occasionally, the way a real person texting drops a name in — ` +
-    `not in every bubble. If a preference below says how they want to be addressed, that wins. ` +
-    `In a group chat, address people by name as usual.`,
+    `How to address them: ${rule}. If a preference below says how they want to be addressed, ` +
+    `that wins. In a group chat, address people by name as usual.`,
   );
   if (standingLine) lines.push(standingLine);
   return lines.join('\n');

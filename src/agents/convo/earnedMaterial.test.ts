@@ -36,13 +36,14 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
 // A frozen clock, for the reason hookWiring.test.ts installs one: the assembler reads the wall clock,
 // and the sampler's seed is `now`.
 //
-// TUESDAY AFTERNOON rather than 2am, and the hour is load-bearing here in a way it is nowhere else
-// in this suite. Two of the files that drive `chat` end to end pin 02:00, which `computeCircadian`
-// reads as `dead_night` and `compileAffect` turns into `sleepQuiet` — and a late idle turn closes
-// every hook kind and shuts the sampler with them (persona/hooks.ts's sleep branch: a moment can
-// only ride out as a callback, and sampling BILLS the moment). A moment-offer test on that clock
-// would be a test of the bedtime branch wearing the sampler's name. Every age band below is computed
-// off differences from this instant (`FROZEN_MS - 10 * DAY`), so moving the hour moves nothing else.
+// TUESDAY AFTERNOON rather than 2am, and the hour is load-bearing here only in what it keeps OUT of
+// the assembled prompt. Two of the files that drive `chat` end to end pin 02:00, which
+// `computeCircadian` reads as `dead_night` and `compileAffect` turns into `lateNight` — a register
+// flag that adds one line about the size of the reply and changes nothing the sampler does
+// (persona/hooks.ts `selectHook` has no clock branch at all). On that clock every rendered hooks
+// section here would carry the late line, which is prose this file is not about. Every age band
+// below is computed off differences from this instant (`FROZEN_MS - 10 * DAY`), so moving the hour
+// moves nothing else.
 const FROZEN_MS = Date.UTC(2026, 0, 6, 14, 0, 0);
 const DAY = 24 * 60 * 60 * 1000;
 const RealDate = Date;
@@ -87,7 +88,7 @@ const READ = 'They decide fast on things that cost money and slowly on things th
 const MOMENT_LINE = '- (habit, last week) checked the volcano dashboard again and decided nothing';
 
 const HOOK: HookDirective = {
-  idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: true, offerAllowed: true,
+  idle: true, mode: 'hook', forbidden: [], lateNight: false, moments: true, offerAllowed: true,
 };
 
 type BuildArgs = Parameters<typeof buildSystemPromptSections>;

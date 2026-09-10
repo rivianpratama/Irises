@@ -934,13 +934,14 @@ export function buildSystemPromptSections(
   const hookDirective = personaTurn?.hooks && hooksEnabled() ? personaTurn.hooks : null;
 
   // …and the reading those four band lines are ACTUALLY gated on: not the mode, but whether a kind
-  // is open (persona/hooks.ts `hookKindOpen`). The two came apart the moment a late idle turn became
-  // a closed-kinds HOOK turn — mode `hook`, every kind forbidden — and gating on the mode handed
-  // that turn "A tangent or a callback is expected of you here" in the same prompt as "No kind is
-  // open this turn", which is the register door the sleep branch was closing. The rare non-clock
-  // shape (a room, a flat mood and a repeated kind between them forbidding all three) reads the
-  // same way and gets the same answer. Read ONCE, here, for the same reason the directive is: the
-  // climate span and the anchor's law below must never answer it differently.
+  // is open (persona/hooks.ts `hookKindOpen`). The two come apart on a closed-kinds HOOK turn —
+  // mode `hook`, every kind forbidden because a room, a flat mood and a repeated kind between them
+  // closed all three — and gating on the mode would hand that turn "A tangent or a callback is
+  // expected of you here" in the same prompt as "No kind is open this turn", which is the register
+  // door left open. The clock never produces that shape: a late turn is an ordinary idle turn at a
+  // lower volume, so its kinds are open and these lines ride it. Read ONCE, here, for the same
+  // reason the directive is: the climate span and the anchor's law below must never answer it
+  // differently.
   const kindOpen = hookKindOpen(hookDirective);
 
   // Synchronous, in-memory "research is running right now" awareness (NOT from durable prefs —
@@ -1125,10 +1126,12 @@ export function buildSystemPromptSections(
   //     default, because a turn wrongly told it may carry a hook is a leaf and a turn wrongly told
   //     to answer flat is merely plain. ONE translation happens on the way in, and it is the SAME
   //     reading the climate span above was gated on (`kindOpen`, persona/hooks.ts `hookKindOpen`):
-  //     a hook-mode turn with every kind CLOSED — the sleep branch, or the rare room-plus-flat-mood
+  //     a hook-mode turn with every kind CLOSED — the rare room-plus-flat-mood-plus-repeated-kind
   //     shape that forbids all three — needs the quiet law here, one short thing and no beat, not
   //     "you may carry one hook", which is the sentence the section above deliberately does not
-  //     print either. The directive's own mode is untouched by this, so the quiet GUARD still does
+  //     print either. A LATE turn is not that shape: the hour is a register, its kinds stay open,
+  //     and it gets the HOOK law here like any other idle turn. The directive's own mode is
+  //     untouched by this, so the quiet GUARD still does
   //     not run on those turns: the anchor states the law, and the guard enforces the two turns the
   //     ledger and the mood FORCED;
   //   • the WINDOW, the character length of the history rows this same call was handed. Characters,

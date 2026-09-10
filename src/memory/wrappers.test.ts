@@ -193,20 +193,26 @@ test('empty tiers: short renders nothing, medium/long carry their self-retiring 
   assert.ok(!out.includes("durable facts you've learned about them")); // no REAL medium block yet
   assert.ok(out.includes('## Medium-term memory — how they want you to work (nothing learned yet)')); // medium default stance
   assert.ok(out.includes('## Long-term memory'));
-  assert.ok(out.includes('use their name, "Jordan"'));
+  // No name push and no `Name:` line, even with a name on file: the name is a thing she knows from
+  // the profile row and the dossier, not a word the prompt tells her to drop into a bubble.
+  assert.ok(out.includes('use no address term at all'));
+  assert.ok(!out.includes('Name: Jordan'));
+  assert.ok(!out.includes('Jordan'), 'the header names nobody');
   assert.ok(out.includes('### Your default way of being with them (the seed — it retires itself)')); // empty long tier → the default stance
 });
 
-test('addressing precedence: address_as > name > no address term at all (legacy parity)', () => {
+test('addressing precedence: address_as > no address term at all (legacy parity)', () => {
   const withPref = baseData({ memory: { handle: 'h', dossierMd: '', prefs: { address_as: 'Chief' } } });
-  assert.ok(renderUserMemory('convo', withPref, NOW).includes('call them "Chief"'));
+  const asked = renderUserMemory('convo', withPref, NOW);
+  assert.ok(asked.includes('call them "Chief" — they asked for that, and it overrides everything else; even so, most bubbles carry no name at all'));
 
-  // The bottom of the ladder is now NOTHING rather than a placeholder nickname: an unknown name gets
-  // second person and no address term, because a nickname she was not given is a nickname she made up.
-  const noName = baseData({ profile: null });
-  const out = renderUserMemory('convo', noName, NOW);
-  assert.ok(out.includes('use no address term at all — second person only, never an invented nickname'));
+  // The ladder is now TWO rungs, not three: a term they asked for, or nothing. Their own name is not
+  // a rung — it is a fact she holds, and a standing instruction to work it into replies is what put
+  // it in every bubble. A nickname she was not given is one she made up, so that is out too.
+  const out = renderUserMemory('convo', baseData(), NOW);
+  assert.ok(out.includes('use no address term at all — second person only, never their name, never an invented nickname'));
   assert.ok(!out.includes('"boss"'), 'no invented placeholder anywhere in the stack');
+  assert.ok(!out.includes('Name:'), 'and no Name line to read a name off');
 });
 
 test('legacy fallbacks: dossier_md fills an empty long doc; prefs.directives fill empty rows', () => {
@@ -592,9 +598,10 @@ test('prefs address_as wins over a medium fact during the soak window', () => {
   assert.ok(!out.includes('call them "Cap"'));
 });
 
-test('no address_as anywhere still falls back to the profile name rule', () => {
+test('no address_as anywhere renders no address term and no name', () => {
   const out = renderUserMemory('convo', baseData(), NOW);
-  assert.ok(out.includes('use their name, "Jordan"'));
+  assert.ok(out.includes('use no address term at all — second person only, never their name, never an invented nickname'));
+  assert.ok(!out.includes('Jordan'), 'a name on file is not a name in the prompt');
 });
 
 // ── Group audience (fresh shared identity, no personal fallbacks) ─────────────
@@ -829,7 +836,11 @@ test('the identity card leads the stack: who they are, their standing rules, the
   assert.ok(!out.includes('## Your memory of this user'), 'the preamble it replaces is gone');
 
   const card = out.slice(0, out.indexOf('## Medium-term memory'));
-  assert.ok(card.includes('Name: Jordan'));
+  // The card opens on the addressing header, which names nobody: no `Name:` line in either form.
+  // What the card carries about identity is how to ADDRESS them, and that is a term they asked for
+  // or nothing at all.
+  assert.ok(!card.includes('Name:'));
+  assert.ok(!card.includes('Jordan'));
   assert.ok(card.includes('call them "Chief"'));
   assert.ok(card.includes('How they communicate: clipped, lowercase'));
   assert.ok(card.includes('Where they are: America/Denver'));
@@ -1058,14 +1069,22 @@ test('the flag-off stack is byte-for-byte the one P2 inherited', () => {
   // texture dial, and law three says a bare greeting gets a greeting or one hook instead of the same
   // greeting back. Convo 9,284 → 9,132; the relay lanes 3,892 → 3,926 (the neutral stance is one word
   // different, and the addressing rule they share is the longer sentence).
+  //
+  // RE-TAKEN again in the no-name commit, on both paths and for one reason: the addressing header
+  // stops naming them. The `Name: …` line is gone in both its forms, and the rule no longer says to
+  // work their name in occasionally — it says to use no address term at all unless they asked for
+  // one. Their name is still stored (the profile row, the dossier's own line), so "what is my name"
+  // has an answer; what is gone is the standing instruction that put it in every bubble. Convo
+  // 9,132 → 9,056; the relay lanes 3,926 → 3,850, the same −76 on both, because the header is the
+  // one block every lane receives whatever its tier matrix says.
   assert.equal(
     stackPrint(renderUserMemory('convo', richCardData(), NOW)),
-    '9132:4b4791298c0d13f1',
+    '9056:9dabeceba90a1f16',
     'the pre-router convo stack changed bytes — CONVO_MEMORY_RELEVANCE off must render what it always did',
   );
   assert.equal(
     stackPrint(renderUserMemory('composer', richCardData(), NOW)),
-    '3926:427ab729a4383225',
+    '3850:6f3e27707236d2c0',
     'the composer stack changed bytes — the relay lanes render the pre-card path on every turn',
   );
 });

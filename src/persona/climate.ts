@@ -315,11 +315,11 @@ const BAND_LINES: Record<DialKey, Record<Exclude<Band, 'none'>, string>> = {
  *
  * So `climateLines` takes one boolean about the turn and drops these four unless it is true. What
  * that boolean must be is the thing worth stating here: whether a hook KIND IS OPEN, never whether
- * the mode says `hook`. The two came apart when a late idle turn became a closed-kinds hook turn
- * (persona/hooks.ts `hookKindOpen`, which is the reading the assembler passes down): mode `hook`,
- * every kind forbidden, one instruction about going to bed — and a turn like that told "a tangent
- * or a callback is expected of you here" is the same drift arriving through the same door, now with
- * the hooks section itself contradicting it in the same prompt.
+ * the mode says `hook`. The two come apart on a closed-kinds hook turn (persona/hooks.ts
+ * `hookKindOpen`, which is the reading the assembler passes down): mode `hook`, every kind
+ * forbidden by three pressures at once, nothing left but a short flat reply — and a turn like that
+ * told "a tangent or a callback is expected of you here" is the same drift arriving through the
+ * same door, now with the hooks section itself contradicting it in the same prompt.
  *
  * The ease lines and the two RAISED/HIGH candor lines are about how she says a thing rather than
  * what extra beat she may carry, so they ride every turn exactly as they did.

@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import {
   selectHook, recordHook, quietViolation, renderHooksSection, defaultHookState, hookKindOpen,
   HOOK_WORDS, HOOK_RUN_LIMIT, MOMENT_IDLE_INTERVAL, QUIET_MAX_WORDS,
-  HOOK_CLAMP, HOOK_HEADING, HOOK_LEAD, HOOK_OPEN_LINE, HOOK_NONE_OPEN, HOOK_SLEEP_LINE,
+  HOOK_CLAMP, HOOK_HEADING, HOOK_LEAD, HOOK_OPEN_LINE, HOOK_NONE_OPEN, HOOK_LATE_LINE,
   MOMENTS_LEAD, QUIET_HEADING, QUIET_LAW,
   type HookAffectInput, type HookDirective, type HookKind, type HookState, type HookWord,
 } from './hooks.js';
@@ -32,7 +32,7 @@ function state(over: Partial<HookState> = {}): HookState {
   return { ...defaultHookState(), ...over };
 }
 
-const OPEN: HookAffectInput = { hooks: 'all', sleepQuiet: false };
+const OPEN: HookAffectInput = { hooks: 'all', lateNight: false };
 
 /** Selection with the boring arguments filled in: an idle turn, a wide-open mood, a one-to-one chat. */
 function pick(
@@ -117,7 +117,7 @@ test('a short ledger cannot fire the switch, and a long one is read at its tail'
 });
 
 test('a flat mood closes hooks outright, in its own bucket', () => {
-  const { directive, report } = pick(state(), { affect: { hooks: 'none', sleepQuiet: false } });
+  const { directive, report } = pick(state(), { affect: { hooks: 'none', lateNight: false } });
   assert.equal(directive.mode, 'quiet');
   assert.equal(directive.offerAllowed, false);
   assert.equal(report.reason, 'affect_floor');
@@ -129,7 +129,7 @@ test('a flat mood closes hooks outright, in its own bucket', () => {
 test('the kill switch outranks the affect floor, the room and a spent moment interval', () => {
   const { directive, report } = pick(
     state({ lastKinds: ['judgment', 'judgment', 'judgment'], idleSinceMoment: 99 }),
-    { affect: { hooks: 'none', sleepQuiet: true }, isGroup: true, layer: 'classify' },
+    { affect: { hooks: 'none', lateNight: true }, isGroup: true, layer: 'classify' },
   );
   assert.equal(directive.mode, 'quiet');
   assert.equal(directive.moments, false);
@@ -153,9 +153,9 @@ test('the same kind twice in a row forbids the third', () => {
 });
 
 test('the compiled mood forbids its own kind', () => {
-  assert.deepEqual(pick(state(), { affect: { hooks: 'no_judgment', sleepQuiet: false } }).directive.forbidden, ['judgment']);
-  assert.deepEqual(pick(state(), { affect: { hooks: 'no_tangent', sleepQuiet: false } }).directive.forbidden, ['tangent']);
-  assert.deepEqual(pick(state(), { affect: { hooks: 'all', sleepQuiet: false } }).directive.forbidden, []);
+  assert.deepEqual(pick(state(), { affect: { hooks: 'no_judgment', lateNight: false } }).directive.forbidden, ['judgment']);
+  assert.deepEqual(pick(state(), { affect: { hooks: 'no_tangent', lateNight: false } }).directive.forbidden, ['tangent']);
+  assert.deepEqual(pick(state(), { affect: { hooks: 'all', lateNight: false } }).directive.forbidden, []);
 });
 
 // A read is between the two of them. In a room there is no `them` for it to be about, so the
@@ -177,13 +177,13 @@ test('the kill switch fires in a group too', () => {
 test('overlapping reasons name a kind once, in HOOK_WORDS order', () => {
   const { directive } = pick(
     state({ lastKinds: ['none', 'judgment', 'judgment'] }),
-    { affect: { hooks: 'no_judgment', sleepQuiet: false }, isGroup: true },
+    { affect: { hooks: 'no_judgment', lateNight: false }, isGroup: true },
   );
   assert.deepEqual(directive.forbidden, ['judgment'], 'three reasons, one entry');
 
   const { directive: two } = pick(
     state({ lastKinds: ['none', 'tangent', 'tangent'] }),
-    { affect: { hooks: 'no_judgment', sleepQuiet: false } },
+    { affect: { hooks: 'no_judgment', lateNight: false } },
   );
   assert.deepEqual(two.forbidden, ['judgment', 'tangent'], 'always the array order, never the discovery order');
 });
@@ -194,56 +194,56 @@ test('overlapping reasons name a kind once, in HOOK_WORDS order', () => {
 test('every kind can be spoken for at once, and the turn is still a hook turn', () => {
   const { directive } = pick(
     state({ lastKinds: ['none', 'callback', 'callback'] }),
-    { affect: { hooks: 'no_tangent', sleepQuiet: false }, isGroup: true },
+    { affect: { hooks: 'no_tangent', lateNight: false }, isGroup: true },
   );
   assert.equal(directive.mode, 'hook');
   assert.equal(directive.offerAllowed, true);
   assert.deepEqual(directive.forbidden, ['judgment', 'callback', 'tangent']);
 });
 
-// ══ 3. Sleep quiet and moments ═══════════════════════════════════════════════
+// ══ 3. The late-night register and moments ═══════════════════════════════════
 
 // Passed through in every mode so a consumer never has to check which branch it came from.
-test('sleepQuiet rides through every mode untouched', () => {
-  const late: HookAffectInput = { hooks: 'all', sleepQuiet: true };
-  assert.equal(pick(state(), { affect: late }).directive.sleepQuiet, true);
-  assert.equal(pick(state(), { affect: late, idle: false }).directive.sleepQuiet, true);
-  assert.equal(pick(state({ lastKinds: ['judgment', 'callback', 'tangent'] }), { affect: late }).directive.sleepQuiet, true);
-  assert.equal(pick(state(), { affect: { hooks: 'all', sleepQuiet: false } }).directive.sleepQuiet, false);
+test('lateNight rides through every mode untouched', () => {
+  const late: HookAffectInput = { hooks: 'all', lateNight: true };
+  assert.equal(pick(state(), { affect: late }).directive.lateNight, true);
+  assert.equal(pick(state(), { affect: late, idle: false }).directive.lateNight, true);
+  assert.equal(pick(state({ lastKinds: ['judgment', 'callback', 'tangent'] }), { affect: late }).directive.lateNight, true);
+  assert.equal(pick(state(), { affect: { hooks: 'all', lateNight: false } }).directive.lateNight, false);
 });
 
-// THE 2AM TURN, and the three-way contradiction it used to print. `sleepQuiet` was additive: the
-// section offered her a judgment, a callback or a tangent in one line and told her to send them to
-// bed in the next, while the drift anchor at the recency edge said "one hook". Now the clock CLOSES
-// the kinds, so all three copies say the same thing — the beat is spent, the reply is one short
-// thing about sleeping.
-//
-// Still mode `hook`, and the mode is the whole point of the distinction: `quiet` is what the ledger
-// and the mood FORCE, and a forced turn that comes back loud is re-asked once (convo/shared.ts
-// enforceQuiet). The clock forces nothing — the plan says the quiet reply is PREFERRED at this hour
-// — so a late turn she answered in two bubbles is hers to have written and no guard argues with it.
-test('a late-night idle turn closes every kind and bills nothing, in its own bucket', () => {
-  const late: HookAffectInput = { hooks: 'all', sleepQuiet: true };
+// THE 2AM TURN, and the one line it used to print every night. The clock used to CLOSE every kind
+// and shut the sampler and the thread offer, which left sending them to bed as the only content a
+// late turn could hold — a script, restated in seven prompt surfaces, and the person on the other
+// end got it every night with their name attached. The hour is a REGISTER now: it lowers the volume
+// (the rendered late line) and decides nothing else, so a late idle turn falls through to the
+// ordinary hook path and the mood, the room and the ledger pick the content the way they do at noon.
+test('a late-night idle turn is an ordinary hook turn at a lower volume', () => {
+  const late: HookAffectInput = { hooks: 'all', lateNight: true };
   const { directive, report } = pick(state({ idleSinceMoment: MOMENT_IDLE_INTERVAL + 5 }), { affect: late });
-  assert.equal(directive.mode, 'hook', 'late is a hook turn with nothing open — never a FORCED quiet one');
-  assert.deepEqual(directive.forbidden, [...HOOK_WORDS]);
-  assert.equal(directive.sleepQuiet, true);
-  assert.equal(directive.moments, false, 'the sampler bills, and there is no callback to spend it on');
-  assert.equal(directive.offerAllowed, false, 'and the thread offer is shut for the same reason');
-  assert.equal(report.reason, 'sleep');
-  assert.deepEqual(report.forbidden, [...HOOK_WORDS]);
-  // …and this is exactly why `mode === 'hook'` stopped being the question anything else may ask.
-  assert.equal(hookKindOpen(directive), false, 'hook MODE, and no beat in it');
+  assert.equal(directive.mode, 'hook');
+  assert.deepEqual(directive.forbidden, [], 'the clock closes no kind');
+  assert.equal(directive.lateNight, true);
+  assert.equal(directive.moments, true, 'the interval was spent, and the hour does not shut the sampler');
+  assert.equal(directive.offerAllowed, true, 'nor the thread offer');
+  assert.equal(report.reason, 'hook', 'the clock has no bucket of its own — there is nothing to explain');
+  assert.deepEqual(report.forbidden, []);
+  assert.equal(hookKindOpen(directive), true, 'so the beat is open and the anchor gets the HOOK law');
+  // Byte-identical to the same state in daylight, apart from the flag itself: proof the hour is a
+  // register and not a branch.
+  const day = pick(state({ idleSinceMoment: MOMENT_IDLE_INTERVAL + 5 }), { affect: OPEN });
+  assert.deepEqual({ ...directive, lateNight: false }, day.directive);
+  assert.deepEqual(report, day.report);
 });
 
 // The predicate every consumer outside the renderer has to use, and the reason it exists: the mode
-// and "is there a beat" came apart the day the clock started closing the kinds, and two of the three
-// copies of this turn read the mode. A closed-kinds hook directive told the climate span it was a
-// hook turn put "A tangent or a callback is expected of you here" in the same prompt as "No kind is
-// open this turn" — the register door the sleep branch was closing, re-opened one function away.
+// and "is there a beat" come apart on the closed-kinds shape — a room, a flattened mood and a
+// repeated kind overlapping. A directive like that read as a hook turn by the climate span would put
+// "A tangent or a callback is expected of you here" in the same prompt as "No kind is open this
+// turn", which is the register door left open one function away.
 test('hookKindOpen answers whether a beat is OPEN, never what the mode says', () => {
   const hook: HookDirective = {
-    idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: true, offerAllowed: true,
+    idle: true, mode: 'hook', forbidden: [], lateNight: false, moments: true, offerAllowed: true,
   };
   assert.equal(hookKindOpen(hook), true, 'all three open');
   // Any ONE kind left is still a beat she may spend, so the boundary is the whole set and not a
@@ -251,7 +251,7 @@ test('hookKindOpen answers whether a beat is OPEN, never what the mode says', ()
   for (const w of HOOK_WORDS) {
     assert.equal(hookKindOpen({ ...hook, forbidden: HOOK_WORDS.filter(k => k !== w) }), true, w);
   }
-  assert.equal(hookKindOpen({ ...hook, forbidden: [...HOOK_WORDS] }), false, 'the sleep shape');
+  assert.equal(hookKindOpen({ ...hook, forbidden: [...HOOK_WORDS] }), false, 'the closed-kinds shape');
   // Which is why the reading is taken over the SET and not off `forbidden.length`: a list that
   // carries a duplicate has HOOK_WORDS.length entries and still leaves a kind open. The renderer
   // always read the set (`allowed.length > 0`), so a counting predicate would have called this turn
@@ -273,15 +273,15 @@ test('hookKindOpen answers whether a beat is OPEN, never what the mode says', ()
   assert.equal(hookKindOpen(undefined), false);
 });
 
-// The two forced-quiet buckets outrank the clock, and that ordering is what keeps the receipt
-// honest: a battery scores the kill switch off `kill_switch`, and a bedtime that could wear that
-// name would make a dead switch indistinguishable from a working one at night.
-test('the kill switch and the affect floor both outrank the sleep branch', () => {
-  const late: HookAffectInput = { hooks: 'all', sleepQuiet: true };
+// The two forced-quiet buckets are unmoved by the hour: they fire at 2am exactly as they fire at
+// noon, and the receipt names the thing that actually decided. A run of three is still a run of
+// three after midnight, and the clock never gets to talk one of them out of firing.
+test('the kill switch and the affect floor still fire at night', () => {
+  const late: HookAffectInput = { hooks: 'all', lateNight: true };
   const killed = pick(state({ lastKinds: ['judgment', 'callback', 'tangent'] }), { affect: late });
   assert.equal(killed.directive.mode, 'quiet');
   assert.equal(killed.report.reason, 'kill_switch');
-  const floored = pick(state(), { affect: { hooks: 'none', sleepQuiet: true } });
+  const floored = pick(state(), { affect: { hooks: 'none', lateNight: true } });
   assert.equal(floored.directive.mode, 'quiet');
   assert.equal(floored.report.reason, 'affect_floor');
 });
@@ -289,21 +289,22 @@ test('the kill switch and the affect floor both outrank the sleep branch', () =>
 // A late TASK turn is a task turn. Somebody who asks for something at 2am gets the answer, flat,
 // with the real numbers — the clock only ever spends the extra beat, never the work.
 test('the clock never touches a task turn', () => {
-  const { directive, report } = pick(state(), { affect: { hooks: 'all', sleepQuiet: true }, idle: false });
+  const { directive, report } = pick(state(), { affect: { hooks: 'all', lateNight: true }, idle: false });
   assert.equal(directive.mode, 'task');
   assert.deepEqual(directive.forbidden, [], 'the MODE forbids every kind already');
   assert.equal(report.reason, 'not_idle');
 });
 
-// The rendered section for that turn, char-for-char, and it is the same five lines the
-// every-kind-spoken-for case renders below — which is the point: the sleep branch invents no prose.
-test('the sleep turn renders the none-open block and the sleep line, and nothing else', () => {
-  const { directive } = pick(state(), { affect: { hooks: 'all', sleepQuiet: true } });
-  assert.equal(renderHooksSection(directive, ['a moment handed in against the gate']), [
+// The rendered section for that turn, char-for-char: the OPEN line naming all three kinds, then the
+// register line under it. Nothing in the block tells her what to send, and the word "sleep" is not
+// in it — the whole complaint that produced this design was one sentence arriving every night.
+test('a late idle turn renders the open line and the late line, and says nothing about sleep', () => {
+  const { directive } = pick(state(), { affect: { hooks: 'all', lateNight: true } });
+  assert.equal(renderHooksSection(directive), [
     '## This turn may carry one hook (INTERNAL)',
     'They sent you nothing, so nothing of theirs comes back, not their greeting, not their word. This is the one turn that earns a hook, and it earns exactly one.',
-    'No kind is open this turn. Short and flat, and let the beat pass.',
-    'It is late where they are. The right reply is that they should sleep — one short bubble, or a tapback, no greeting back — and the hook keeps.',
+    'Open to you this turn: a judgment, a callback or a tangent. One of them, never two, never a kind not named here, and said as a statement, never asked.',
+    'It is late where they are: one short bubble, or a tapback, and nothing heavy. Same rules as any idle turn, at a lower volume, and never the line you sent them last night.',
     'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
   ].join('\n'));
 });
@@ -383,17 +384,17 @@ test('the moment clock ticks on idle turns and resets on an offer', () => {
 // ══ 5. The quiet law ═════════════════════════════════════════════════════════
 
 test('quietViolation catches a hook, a second bubble, and a long one', () => {
-  const short = ['sleep'];
+  const short = ['fair'];
   assert.equal(quietViolation(undefined, short), false);
   for (const w of HOOK_WORDS) {
     assert.equal(quietViolation(w, short), true, `${w} on a quiet turn is a violation`);
   }
-  assert.equal(quietViolation(undefined, ['sleep', 'or dont']), true, 'more than one bubble');
+  assert.equal(quietViolation(undefined, ['fair', 'or dont']), true, 'more than one bubble');
   const atCap = Array.from({ length: QUIET_MAX_WORDS }, (_, i) => `w${i}`).join(' ');
   assert.equal(quietViolation(undefined, [atCap]), false, 'the cap itself is fine');
   assert.equal(quietViolation(undefined, [`${atCap} more`]), true, 'one word past it is not');
   // Whitespace is not words: a padded short line is still a short line.
-  assert.equal(quietViolation(undefined, ['  sleep\n\n  ']), false);
+  assert.equal(quietViolation(undefined, ['  fair\n\n  ']), false);
   // Silence and a bare tapback are both legal quiet replies, and neither sends a bubble.
   assert.equal(quietViolation(undefined, []), false);
   assert.equal(quietViolation(undefined, ['']), false);
@@ -402,7 +403,7 @@ test('quietViolation catches a hook, a second bubble, and a long one', () => {
 // ══ 6. The rendered section ══════════════════════════════════════════════════
 
 const HOOK_DIRECTIVE: HookDirective = {
-  idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: false, offerAllowed: true,
+  idle: true, mode: 'hook', forbidden: [], lateNight: false, moments: false, offerAllowed: true,
 };
 
 // THE no-regression pin: on the turns that are actually work the block is not merely short, it is
@@ -426,12 +427,12 @@ test('the hook block renders char-for-char', () => {
 // over the constant's own value: it proves the renderer used the constant and says nothing at all
 // about whether the constant still matches the staging prose. threads.test.ts pins every rendered
 // block this way and this file is written to that precedent.
-test('the every-kind-spoken-for block, with the sleep line, renders char-for-char', () => {
-  assert.equal(renderHooksSection({ ...HOOK_DIRECTIVE, forbidden: [...HOOK_WORDS], sleepQuiet: true }), [
+test('the every-kind-spoken-for block, with the late line, renders char-for-char', () => {
+  assert.equal(renderHooksSection({ ...HOOK_DIRECTIVE, forbidden: [...HOOK_WORDS], lateNight: true }), [
     '## This turn may carry one hook (INTERNAL)',
     'They sent you nothing, so nothing of theirs comes back, not their greeting, not their word. This is the one turn that earns a hook, and it earns exactly one.',
     'No kind is open this turn. Short and flat, and let the beat pass.',
-    'It is late where they are. The right reply is that they should sleep — one short bubble, or a tapback, no greeting back — and the hook keeps.',
+    'It is late where they are: one short bubble, or a tapback, and nothing heavy. Same rules as any idle turn, at a lower volume, and never the line you sent them last night.',
     'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
   ].join('\n'));
 });
@@ -458,18 +459,27 @@ test('only the ALLOWED kinds are named — what is off the table is never spoken
   assert.doesNotMatch(none, /judgment|callback|tangent/);
 });
 
-test('the sleep line rides along on a hook turn, and the quiet block never needs it', () => {
-  const late = renderHooksSection({ ...HOOK_DIRECTIVE, sleepQuiet: true });
-  assert.ok(late.includes(HOOK_SLEEP_LINE));
+test('the late line rides along on a hook turn, and the quiet block never needs it', () => {
+  const late = renderHooksSection({ ...HOOK_DIRECTIVE, lateNight: true });
+  assert.ok(late.includes(HOOK_LATE_LINE));
+  assert.ok(late.includes(HOOK_OPEN_LINE.replace('{kinds}', 'a judgment, a callback or a tangent')),
+    'the register line rides UNDER the open line — it does not replace it');
   assert.ok(late.endsWith(HOOK_CLAMP), 'the clamp stays last');
-  const quiet = renderHooksSection({ ...HOOK_DIRECTIVE, mode: 'quiet', sleepQuiet: true, offerAllowed: false });
-  assert.equal(quiet.includes(HOOK_SLEEP_LINE), false, 'a quiet turn is already the quiet reply');
+  const quiet = renderHooksSection({ ...HOOK_DIRECTIVE, mode: 'quiet', lateNight: true, offerAllowed: false });
+  assert.equal(quiet.includes(HOOK_LATE_LINE), false, 'a quiet turn is already the quiet reply');
+  // The whole point of the redesign: no rendered shape of this section tells her to send them to bed.
+  for (const mode of ['hook', 'quiet'] as const) {
+    for (const lateNight of [false, true]) {
+      const block = renderHooksSection({ ...HOOK_DIRECTIVE, mode, lateNight, moments: false });
+      assert.doesNotMatch(block, /sleep/i, `${mode}/${lateNight} named sleep`);
+    }
+  }
 });
 
 test('the quiet block renders char-for-char', () => {
   assert.equal(renderHooksSection({ ...HOOK_DIRECTIVE, mode: 'quiet', offerAllowed: false }), [
     '## This turn is quiet (INTERNAL)',
-    'Three sharp things in a row already, or your weather says so, or it is late for them. One plain short bubble, or a tapback, or nothing — no hook, no question, no offer. Do not explain the quiet.',
+    'Three sharp things in a row already, or your weather says so. One plain short bubble, or a tapback, or nothing — no hook, no question, no offer. Do not explain the quiet.',
     'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
   ].join('\n'));
 });
@@ -496,7 +506,7 @@ test('moments render only when the directive allowed them', () => {
 // own week — so the pin is on the consts, and on a render with nothing interpolated.)
 test('not one digit anywhere in the prose consts', () => {
   const consts = {
-    HOOK_CLAMP, HOOK_HEADING, HOOK_LEAD, HOOK_OPEN_LINE, HOOK_NONE_OPEN, HOOK_SLEEP_LINE,
+    HOOK_CLAMP, HOOK_HEADING, HOOK_LEAD, HOOK_OPEN_LINE, HOOK_NONE_OPEN, HOOK_LATE_LINE,
     MOMENTS_LEAD, QUIET_HEADING, QUIET_LAW,
   };
   for (const [name, line] of Object.entries(consts)) {
@@ -505,9 +515,9 @@ test('not one digit anywhere in the prose consts', () => {
   }
   const forbiddenSets: HookWord[][] = [[], ['judgment'], [...HOOK_WORDS]];
   for (const forbidden of forbiddenSets) {
-    for (const sleepQuiet of [false, true]) {
+    for (const lateNight of [false, true]) {
       for (const mode of ['hook', 'quiet'] as const) {
-        const block = renderHooksSection({ ...HOOK_DIRECTIVE, mode, forbidden, sleepQuiet, moments: true });
+        const block = renderHooksSection({ ...HOOK_DIRECTIVE, mode, forbidden, lateNight, moments: true });
         assert.doesNotMatch(block, /\d/, `${mode} block leaked a number`);
         // Every block ends on the same clamp: the one unrecoverable failure of this feature is her
         // telling someone she keeps notes on them, or that something told her what to say.
@@ -524,8 +534,8 @@ test('not one digit anywhere in the prose consts', () => {
 
 test('selectHook and recordHook are pure: frozen inputs survive, same in same out', () => {
   const before = deepFreeze(state({ lastKinds: ['none', 'judgment', 'judgment'], idleStreak: 3, idleSinceMoment: 9 }));
-  const a = pick(before, { affect: { hooks: 'no_tangent', sleepQuiet: true } });
-  const b = pick(before, { affect: { hooks: 'no_tangent', sleepQuiet: true } });
+  const a = pick(before, { affect: { hooks: 'no_tangent', lateNight: true } });
+  const b = pick(before, { affect: { hooks: 'no_tangent', lateNight: true } });
   assert.deepEqual(a.directive, b.directive);
   assert.deepEqual(a.report, b.report);
   assert.notEqual(a.report.lastKinds, before.lastKinds, 'the receipt gets its own array');

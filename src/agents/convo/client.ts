@@ -417,7 +417,7 @@ export async function chat(
     const affectDirective = compileAffect(affectState.last, computed, climate);
     const picked = selectHook(
       hookState, idle.idle, idle.layer,
-      { hooks: affectDirective.hooks, sleepQuiet: affectDirective.sleepQuiet },
+      { hooks: affectDirective.hooks, lateNight: affectDirective.lateNight },
       isGroupChat, nowMs,
     );
     hookDirective = picked.directive;

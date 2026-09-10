@@ -141,9 +141,26 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * three items and then said where to leave the overflow, and it now says "the top of it now and
  * stop" (−18); the anchor is generated prose at the recency edge rather than a page of the corpus
  * (promptSections.test.ts pins its bytes, promptPolicy.ts its size).
+ *
+ * Then **+326** in the late-night-register commit, the first of these that BUYS prose rather than
+ * deleting it — because the thing being deleted is a SCRIPT, and a script is replaced by a register
+ * rather than by silence. Three files moved:
+ *   · craft/hooks.md +242: the quiet-reply paragraph splits in two. "The quiet reply." keeps the
+ *     fixed shape and stops mentioning the hour at all; "Late is not quiet." is new, and it is where
+ *     the whole intervention lives — a late turn is an idle turn with whatever kinds it left open, at
+ *     a lower volume, their goodnight never comes back as hers, and never the same shape two nights
+ *     running. Longer than the clause it replaces, and it has to be: one sentence telling her what to
+ *     send is short, and telling her that the hour changes only the volume takes a paragraph.
+ *   · PERSONA_BLOCK +71 (policy.ts, rendered ahead of Context.md in this corpus): the late-night
+ *     sentence says the hour makes her smaller and quieter and changes nothing else, and the
+ *     addressing sentence drops "else their name" — their name is a thing she knows, not a word she
+ *     drops into a bubble.
+ *   · Context.md +13: −42 in the per-turn-block paragraph (the clock's line described as a size
+ *     rather than a script) and +55 in the time-of-day bullet, which now says the hour changes the
+ *     volume and the ordinary idle-turn rules pick the content.
  */
-const CORPUS_CHARS = 121_830;
-const CORPUS_SHA256 = 'e5e782799716a4983b217907228343683dce2b0d5fa7ec0c54863a94c01d8bd6';
+const CORPUS_CHARS = 122_156;
+const CORPUS_SHA256 = '911f261bc09eb6e5f79628f7fde0f334ad11d84c44fe3b9d111f80bc07cf807e';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 

@@ -5,10 +5,12 @@
 //
 // TWO NUMBERS AND A SLOT, and nothing else leaves this file. `energy` feeds the gauge targets
 // (persona/affectDrift.ts) and the `slot` answers exactly one question the prompt asks: is it late
-// enough where they are that the right reply is that they should sleep (persona/affectCompiler.ts
-// SLEEP_SLOTS). The seven paragraphs of per-slot texture that used to ride every turn are deleted:
-// a paragraph about the cortisol window told the model how to FEEL and left what to DO to be
-// inferred, and inference is what the compiler does now, in one line, from the same slot.
+// enough where they are that the reply gets smaller (persona/affectCompiler.ts LATE_SLOTS). The
+// hour is a register and never a script — it lowers the volume and never picks the content, which
+// is why nothing downstream branches on it. The seven paragraphs of per-slot texture that used to
+// ride every turn are deleted: a paragraph about the cortisol window told the model how to FEEL and
+// left what to DO to be inferred, and inference is what the compiler does now, in one line, from
+// the same slot.
 
 import { hourInZone } from '../pipeline/chatTime.js';
 import { DEFAULT_TZ } from '../pipeline/zonedTime.js';

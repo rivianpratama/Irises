@@ -48,7 +48,7 @@ import { defaultClimate, type RelationshipClimate } from '../../persona/climate.
 import {
   renderMomentLines, MOMENT_AGE_WORDS, MOMENT_TEXT_MAX, type MomentEntry,
 } from '../../persona/moments.js';
-import { HOOK_WORDS, type HookDirective } from '../../persona/hooks.js';
+import type { HookDirective } from '../../persona/hooks.js';
 import type { ThreadCandidate } from '../../persona/threads.js';
 import type { ThreadTurn } from '../../memory/threadHarvest.js';
 import type { TurnFocusInput } from './turnFocus.js';
@@ -500,41 +500,43 @@ const HISTORY_80_DENSE = history(80, DENSE_TEXTS);
 // turn would measure a shape the assembler can no longer build. That fixture is where
 // `craft_modules` reaches its maximum, and the hook page is now part of that maximum.
 
-// `sleepQuiet` is not a choice either. These fixtures run on a frozen clock of 02:00 UTC
+// `lateNight` is not a choice either. These fixtures run on a frozen clock of 02:00 UTC
 // (`FROZEN_MS`), which `computeCircadian` reads as `dead_night`, and `compileAffect` sets the flag
-// straight off that slot (persona/affectCompiler.ts — no flag, no store, no mood in it). A hook
-// directive compiled from this turn's own `COMPUTED` therefore carries the sleep line, and a fixture
-// that turned it off would be measuring a shape the clock cannot produce.
+// straight off that slot (persona/affectCompiler.ts — no flag, no store, no mood in it). Every idle
+// directive below therefore carries it, and a fixture that turned it off would be measuring a shape
+// this clock cannot produce.
 //
-// Which is why the sleep turn's WHOLE shape is written out here rather than just its flag. A late
-// idle turn is a closed-kinds hook turn (persona/hooks.ts's sleep branch): every kind forbidden, no
-// moments, no thread offer — one instruction, where the section used to offer her a judgment, a
-// callback or a tangent in one line and tell her to send them to bed in the next. What it renders is
-// the heading, the lead, the none-open line, the sleep line and the clamp; and the drift anchor's
-// mode moves with it, so the cold fixture's `behavior_anchor` is the QUIET law rather than the hook
-// one. Both numbers are measured on that.
+// What the flag DOES is the whole reason these two directives now look alike. It is a REGISTER: it
+// adds one line saying the reply is small and quiet, and it closes no kind, shuts no sampler and
+// picks no mode (persona/hooks.ts `selectHook` — the clock has no branch there at all). So a late
+// idle turn is an ordinary idle turn, its `behavior_anchor` is the HOOK law like any other idle
+// turn's, and the widest `hooks` section there is is late + every kind open + the widest moment
+// sample. That is fixture 5, and it is measured on exactly that shape below.
+//
+// It used to be the opposite: the clock closed all three kinds, shut the sampler and the thread
+// offer, and took a bucket of its own, so this fixture measured heading + lead + the none-open line
+// + a sentence telling her to send them to bed, and its anchor was the QUIET law. That was one
+// script, restated in seven prompt surfaces, arriving every night.
 const HOOK_TURN: PersonaTurn = {
   hooks: {
-    idle: true, mode: 'hook', forbidden: [...HOOK_WORDS], sleepQuiet: true,
-    moments: false, offerAllowed: false,
+    idle: true, mode: 'hook', forbidden: [], lateNight: true,
+    moments: false, offerAllowed: true,
   },
   moments: [],
   thesis: '',
 };
 
-/** The OTHER hook turn, and the one the `hooks` ceiling is actually taken on: an ordinary daytime
- *  idle turn with every kind open and the spacing interval spent, which is the only shape that can
- *  carry the moment lead at all (the sleep branch above shuts the sampler, because a moment can only
- *  ride out as a callback and sampling bills it either way). This fixture's own 02:00 clock cannot
- *  produce it — but the directive is HANDED to the assembler rather than compiled inside it, and
- *  production has twenty-four hours in the day, so this is the widest section the engine can build
- *  and therefore the honest ceiling. Everything else about fixture 5 stays on the shared clock.
+/** The OTHER hook turn, and the one the `hooks` ceiling is actually taken on: the same late idle
+ *  turn with the spacing interval SPENT, which is what opens the moment lead (a moment can only ride
+ *  out as a callback and sampling bills it either way, so the gate sits on the directive). Every
+ *  kind open, the register line under the open line, and the widest sample the sampler can build —
+ *  the widest section the engine can produce, and therefore the honest ceiling.
  *
- *  Fixture 7 carries the same directive, for the same reason read at the other end of the prompt:
- *  the anchor's hook law is only reached while a kind is still open, and the sleep branch would send
- *  it to the quiet law instead (shared.ts translates an all-kinds-closed hook turn into 'quiet'). */
-const DAYTIME_HOOK: HookDirective = {
-  idle: true, mode: 'hook', forbidden: [], sleepQuiet: false, moments: true, offerAllowed: true,
+ *  Fixture 7 carries the same directive, read at the other end of the prompt: the anchor's hook law
+ *  is only reached while a kind is still open (shared.ts translates an all-kinds-closed hook turn
+ *  into 'quiet'), and the hook law is the longest of the three. */
+const OPEN_HOOK: HookDirective = {
+  idle: true, mode: 'hook', forbidden: [], lateNight: true, moments: true, offerAllowed: true,
 };
 
 /**
@@ -749,7 +751,7 @@ const FIXTURES: Fixture[] = [
       // than on the cold one because both are things a nine-month relationship has and a first
       // reply does not — and because the directive has to open the moment lead for them to render
       // at all (`moments: true`, which `sampleMoments`' own spacing interval earns).
-      personaTurn: { hooks: DAYTIME_HOOK, moments: MOMENT_LINES, thesis: THESIS },
+      personaTurn: { hooks: OPEN_HOOK, moments: MOMENT_LINES, thesis: THESIS },
     },
     memoryStack: MATURE_STACK,
     sections: [
@@ -802,12 +804,13 @@ const FIXTURES: Fixture[] = [
     // (convergence/focusBattery.ts prose_budget scores this key against real traffic, where a hook
     // turn on a long window is an ordinary evening).
     //
-    // DAYTIME_HOOK is the directive on purpose — the same one fixture 5 carries. The sleep branch
-    // would send the anchor to its QUIET law (shared.ts translates a hook directive with every kind
-    // closed into 'quiet'), which is the NARROWEST of the six, so a fixture built on this file's own
-    // 02:00 clock would measure the wrong end of the range. No moment sample: the widest `hooks`
-    // section is fixture 5's and this row is not competing for that ceiling — what it is here to
-    // measure sits after `</prompt>`.
+    // OPEN_HOOK is the directive on purpose — the same one fixture 5 carries. A hook directive with
+    // every kind CLOSED would send the anchor to its QUIET law (shared.ts makes that translation),
+    // which is the NARROWEST of the six, so a fixture built on the closed-kinds shape would measure
+    // the wrong end of the range. The clock is not what produces that shape — it is a register and
+    // closes nothing — so this row is late like every other one here and still gets the hook law.
+    // No moment sample: the widest `hooks` section is fixture 5's and this row is not competing for
+    // that ceiling — what it is here to measure sits after `</prompt>`.
     name: 'idle turn on a long thread',
     spec: {
       chatContext: {
@@ -824,7 +827,7 @@ const FIXTURES: Fixture[] = [
       climate: MOVED_CLIMATE,
       turnFocus: { text: IDLE_TURN_TEXT, hits: [], idle: true, idleStreak: 4, messageChars: 41 },
       craft: craftFacts(MATURE_DATA, IDLE_TURN_TEXT, 'individual', true),
-      personaTurn: { hooks: DAYTIME_HOOK, moments: [], thesis: '' },
+      personaTurn: { hooks: OPEN_HOOK, moments: [], thesis: '' },
     },
     memoryStack: MATURE_STACK,
     sections: [
@@ -939,8 +942,9 @@ test('the memory stack is inside its budget on every fixture that carries one', 
  *  Fixture 6 is the long TASK variant and fixture 7 the long HOOK one, which is the wider of the two
  *  (persona/policy.ts DRIFT_MODE_BULLETS — the hook law is the longest of the three), so it is the
  *  one the ceiling stands on. Pinning the mode each fixture reaches, and not just the band, is what
- *  stops a later edit turning fixture 7's directive back into a task or a sleep turn and dropping
- *  the measurement to a narrower variant with every test here still green. */
+ *  stops a later edit turning fixture 7's directive into a task turn, or into a hook turn with every
+ *  kind closed, and dropping the measurement to a narrower variant with every test here still
+ *  green. */
 test("the long-thread fixtures really are past the drift anchor's window band", () => {
   const cases: Array<[number, string, 'task' | 'hook']> = [
     [5, 'mature profile on a long thread', 'task'],
