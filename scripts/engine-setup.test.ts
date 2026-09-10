@@ -1,6 +1,7 @@
 // Run with: npm test   (scripts/**/*.test.ts is in the test glob). NOTHING HERE INSTALLS ANYTHING —
 // but two tests do run `--uninstall --yes` for real, so they run it inside a throwaway HOME /
-// IRISES_ROOT / IRISES_HOME / HERMES_HOME (see `sandbox()`), never against this machine. Everything
+// IRISES_ROOT / IRISES_HOME / HERMES_HOME (see `sandbox()`), never against this machine — and they
+// skip themselves on Windows, where one probe escapes that sandbox (see `SKIP_ON_WINDOWS`). Everything
 // else is the ARGUMENT and EXIT-CODE contract: the parts an operator or a wrapping script depends on
 // and that a rewrite silently changes. The install path, and the lifecycle end to end, is covered by
 // scripts/e2e/lifecycle-sandbox.sh (npm run e2e:lifecycle).
@@ -50,6 +51,22 @@ function sandbox(): { env: Record<string, string>; root: string; state: string }
     },
   };
 }
+
+/**
+ * …and the one box the sandbox above cannot reach. On Windows the install is a Task Scheduler entry,
+ * so `service_installed` runs `schtasks //Query //TN Irises` — a query against a machine-wide
+ * registry that no HOME, IRISES_HOME, IRISES_ROOT or HERMES_HOME redirects. On a Windows dev box
+ * with Irises actually installed, `npm test` would therefore delete the real scheduled task and
+ * stop the live server. Every test that EXECUTES the uninstaller carries this gate; the
+ * argument-and-exit-code tests (`--help`, an unknown flag, `--revert`, `--port`) never get that far
+ * and stay unconditional. node reports `win32` under Git Bash, which is where these would run.
+ */
+const SKIP_ON_WINDOWS = {
+  skip:
+    process.platform === 'win32'
+      ? 'the uninstall probe reaches Task Scheduler, which the sandbox cannot scope'
+      : false,
+};
 
 function runUninstall(args: string[], box = sandbox()) {
   const r = spawnSync('/bin/bash', [SCRIPT, ...args], {
@@ -101,7 +118,7 @@ test('the exit-code table is documented in the header', () => {
   assert.match(r.out, /5[^\n]*gateway/i);
 });
 
-test('--uninstall on a box with nothing installed says so and still exits 0', () => {
+test('--uninstall on a box with nothing installed says so and still exits 0', SKIP_ON_WINDOWS, () => {
   // No manifest, no service, no plugin: an uninstall that finds nothing to do is a SUCCESS. The
   // opposite (exit 1) would make the documented "run it again if unsure" advice a lie.
   const r = runUninstall(['--uninstall', '--yes']);
@@ -115,7 +132,7 @@ test('--uninstall on a box with nothing installed says so and still exits 0', ()
   assert.ok(!r.out.includes(process.cwd()), `this checkout is never touched:\n${r.out}`);
 });
 
-test('--uninstall never deletes data without --purge-data, and prints the exact rm', () => {
+test('--uninstall never deletes data without --purge-data, and prints the exact rm', SKIP_ON_WINDOWS, () => {
   const r = runUninstall(['--uninstall', '--yes']);
   assert.equal(r.code, 0, `${r.out}\n${r.err}`);
   assert.match(r.out, /rm -rf/, 'the command to remove the data is printed, never run');

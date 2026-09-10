@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Irises updater — pull the latest code onto a git-clone install, rebuild, restart, and prove the
-# new build is the one answering.
+# new build is the one answering; only THEN refresh the engine's plugin copy and bounce its gateway,
+# so a run that rolls back leaves the engine on the plugin that matches the code it went back to.
 #
 #   bash scripts/update.sh                      # apply (asks first), restart, verify
 #   bash scripts/update.sh --yes                # no questions
@@ -33,7 +34,8 @@
 #   10  --check only: an update is available
 # Every run that gets past the flags ends with `RESULT: <token>` as its last line of stdout:
 #   ok | noop | up-to-date | update-available | rolled-back | gateway-failed — or `partial` for a
-#   run that could not finish and had nothing to undo; the lines above it say what state you are in.
+#   run that stopped before finishing: either nothing had been changed yet, or an undo failed and
+#   the tree/node_modules/dist may be inconsistent; read the messages above.
 set -euo pipefail
 
 source "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/lib/irises-lib.sh"
@@ -50,7 +52,7 @@ while [ $# -gt 0 ]; do
     --yes|-y)              ASSUME_YES=1; shift ;;
     --no-restart)          DO_RESTART=0; shift ;;
     --no-gateway-restart)  DO_GATEWAY=0; shift ;;
-    -h|--help)             sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)             sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --restart)
       err "--restart is gone: an update restarts Irises and verifies the new build every time."
       err "If you want the old behaviour — apply to disk and leave the process alone — use --no-restart."
@@ -116,11 +118,15 @@ if [ "$CHECK" != "1" ]; then
   lock_acquire || exit 1
 fi
 
-# One round trip that updates every remote-tracking ref, rather than `fetch origin "$BRANCH"`: a
-# branch that exists only here (a worktree, a local experiment) makes the narrow form fail with
-# "couldn't find remote ref", which is indistinguishable from a network that is down.
+# The named branch FIRST: a single-branch clone (`git clone --single-branch`, which is what a small
+# box or a CI image often has) fetches only its own branch's refspec, so the wide form would never
+# bring anything down for any other branch — and it silently reports success while doing it. The
+# wide fetch is the fallback, because the narrow form fails with "couldn't find remote ref" for a
+# branch that exists only here (a worktree, a local experiment), which is indistinguishable from a
+# network that is down. Only BOTH failing is treated as "origin unreachable".
 say "fetching from origin …"
-git fetch --quiet origin || die 1 "could not fetch from origin — check the network, then re-run"
+git fetch --quiet origin "$BRANCH" 2>/dev/null || git fetch --quiet origin \
+  || die 1 "could not fetch from origin — check the network, then re-run"
 
 if ! git rev-parse --verify --quiet "refs/remotes/origin/$BRANCH" >/dev/null; then
   say "branch $BRANCH does not exist on origin — there is nothing upstream to pull"
@@ -143,14 +149,24 @@ write_receipt() { # OLD NEW  (equal shas → an empty changelog, which still fir
   # KEEP the argument list identical to the pre-rewrite call: scripts/write-update-receipt.js reads
   # OLD, NEW and BRANCH off argv and the commit lines off stdin, and src/update/receipt.ts consumes
   # what it writes at boot. This is the whole channel through which Irises learns she was upgraded.
+  # Written through a temp file and moved into place: `> …/update-receipt.json` truncates the file
+  # before the pipeline runs, so a node that then failed left an EMPTY receipt behind — which
+  # src/update/receipt.ts has to parse and reject at every boot until someone deletes it.
+  local tmp
   RECEIPT_OK=0
-  mkdir -p "$STATE_DIR"
+  mkdir -p "$STATE_DIR" || {
+    warn "could not create $STATE_DIR — no receipt, so nothing will be announced in chat"
+    return 0
+  }
+  tmp="$STATE_DIR/update-receipt.json.tmp.$$"
   if git --no-pager log --oneline "$1..$2" \
-     | node "$ROOT/scripts/write-update-receipt.js" "$1" "$2" "$BRANCH" > "$STATE_DIR/update-receipt.json"; then
+     | node "$ROOT/scripts/write-update-receipt.js" "$1" "$2" "$BRANCH" > "$tmp" \
+     && mv "$tmp" "$STATE_DIR/update-receipt.json"; then
     say "wrote the update receipt to $STATE_DIR/update-receipt.json"
     RECEIPT_OK=1
     return 0
   fi
+  rm -f "$tmp"
   warn "could not write the update receipt (the upgrade still applied; Irises just won't announce it)"
   return 0
 }
@@ -170,7 +186,7 @@ withdraw_receipt() {
 # only that "something answers /health" is satisfied by the OLD process still holding the port —
 # which is exactly how a restart that never took could look like a success.
 restart_and_verify() { # EXPECTED_SHA SECS
-  local want="${1:-}" secs="${2:-45}" kind live
+  local want="${1:-}" secs="${2:-45}" kind live pid verb=restarted
   # service_installed(), not a look at the unit and the plist: on Windows the install is a Task
   # Scheduler entry and there is no file to find.
   if service_installed; then
@@ -181,7 +197,24 @@ restart_and_verify() { # EXPECTED_SHA SECS
       return 1
     fi
   else
-    say "no service installed — cycling the detached server"
+    # No pidfile'd server of ours, but the port is taken: something else is holding it — almost
+    # always `npm run dev` in another terminal. Starting a second server would lose the bind, log a
+    # port-in-use crash, and then fail verification with the dev server still answering — so refuse
+    # here, where the reason can still be named.
+    pid="$(server_pid)"
+    if [ -z "$pid" ] && tcp_open 127.0.0.1 "$PORT"; then
+      err "something is already listening on :$PORT and it is not a server this updater can cycle:"
+      err "  there is no live pid in $STATE_DIR/irises.pid"
+      err "it is probably a dev server (npm run dev). Stop it, then re-run — starting a second"
+      err "server on that port would only crash and leave the old code answering."
+      return 1
+    fi
+    if [ -z "$pid" ]; then
+      say "no service installed and nothing running — starting the detached server"
+      verb=started
+    else
+      say "no service installed — cycling the detached server"
+    fi
     server_stop 20
     if ! server_start_detached "$ROOT"; then
       err "could not start the server detached"
@@ -193,7 +226,7 @@ restart_and_verify() { # EXPECTED_SHA SECS
     err "read the log:  tail -n 40 $STATE_DIR/logs/server.log"
     return 1
   fi
-  say "restarted — build ${live:0:7} is live on :$PORT"
+  say "$verb — build ${live:0:7} is live on :$PORT"
   return 0
 }
 
@@ -253,8 +286,8 @@ if [ "$OLD" = "$NEW" ]; then
       # Nothing to roll back to: HEAD was already at ${NEW:0:7} before this run, and origin is there
       # too. So this is not `rolled-back` — the clone is exactly as broken as we found it.
       summary partial \
-        "the repair build failed at ${NEW:0:7}" \
-        "nothing was rolled back — HEAD was already at ${NEW:0:7} when this run started" \
+        "nothing was undone, because nothing had changed: the repair build failed at ${NEW:0:7}" \
+        "HEAD was already at ${NEW:0:7} when this run started — there was no rollback to make" \
         "run the two commands above by hand once you know why the build failed"
       exit 3
     fi
@@ -270,7 +303,7 @@ if [ "$OLD" = "$NEW" ]; then
       if ! restart_and_verify "$NEW" 45; then
         withdraw_receipt
         summary partial \
-          "the repaired build ${NEW:0:7} did not answer /health" \
+          "nothing was undone, because nothing had changed: the repaired build ${NEW:0:7} did not answer /health" \
           "the tree and dist are at ${NEW:0:7} — there is no older build to go back to" \
           "read $STATE_DIR/logs/server.log, then: cd $ROOT && npm start"
         exit 4
@@ -330,7 +363,8 @@ if ! ( npm ci --include=dev && npm run build ); then
   err "the build failed at ${NEW:0:7}"
   rollback_to "$OLD" || {
     summary partial \
-      "the build failed at ${NEW:0:7} AND the rollback itself failed — see the commands above" \
+      "an undo FAILED: the build failed at ${NEW:0:7} and the rollback could not put the clone back" \
+      "the tree, node_modules and dist may all disagree — see the commands above" \
       "the running server was never touched; it is still serving whatever it had"
     exit 3
   }
@@ -354,19 +388,6 @@ web_build "$ROOT"
 WEB_STATE="$(web_state)"
 [ -z "$WEB_MARKER" ] || rm -f "$WEB_MARKER"
 
-# The bridge plugin is a COPY, so a repo update always leaves a stale one on the engine. Refresh it
-# every time now: the gateway gets bounced at the end regardless, and "only when bridge/ changed"
-# quietly skipped a refresh whenever a previous update's copy had failed.
-ENGINE="$(engine_kind)"
-PLUGIN_STATE="n/a (standalone install — no engine)"
-if [ "$ENGINE" != "off" ]; then
-  if plugin_refresh "$ENGINE" "$ROOT"; then
-    PLUGIN_STATE="refreshed"
-  else
-    PLUGIN_STATE="NOT refreshed — see the warning above"
-  fi
-fi
-
 write_receipt "$OLD" "$NEW"
 
 RESTART_STATE="skipped (--no-restart) — the new build is on disk, not running"
@@ -383,21 +404,41 @@ if [ "$DO_RESTART" = "1" ]; then
         summary rolled-back \
           "${NEW:0:7} would not serve; rolled back to ${OLD:0:7}" \
           "Irises is back up on the OLD build — nothing was announced in chat" \
+          "plugin:   untouched (still the previous copy)" \
           "the failure is in $STATE_DIR/logs/server.log"
         exit 4
       fi
       summary rolled-back \
         "${NEW:0:7} would not serve; the clone is back at ${OLD:0:7}, but it did not come back up" \
+        "plugin:   untouched (still the previous copy)" \
         "Irises is DOWN — read $STATE_DIR/logs/server.log, then: cd $ROOT && npm start"
       exit 4
     fi
     summary partial \
-      "${NEW:0:7} would not serve, and the rollback itself failed — see the commands above" \
+      "an undo FAILED: ${NEW:0:7} would not serve and the rollback could not put the clone back" \
+      "the tree, node_modules and dist may all disagree — see the commands above" \
       "Irises is DOWN — put the clone back by hand first, then: cd $ROOT && npm start"
     exit 4
   fi
 else
   say "(--no-restart) the new build is on disk; restart Irises yourself to run it"
+fi
+
+# LAST, and only now. The bridge plugin is a COPY, so a repo update always leaves a stale one on the
+# engine; it is refreshed every time (the gateway is bounced right below regardless, and "only when
+# bridge/ changed" quietly skipped a refresh whenever a previous update's copy had failed). What it
+# may NOT do is run before the restart is verified: a rollback undoes the clone, not the engine's
+# copy, so a refresh up there left the engine loading the NEW plugin against OLD code — a mismatch
+# nothing in either summary mentioned. The only ordering this step actually needs is to precede the
+# bounce, since plugins load at gateway start.
+ENGINE="$(engine_kind)"
+PLUGIN_STATE="n/a (standalone install — no engine)"
+if [ "$ENGINE" != "off" ]; then
+  if plugin_refresh "$ENGINE" "$ROOT"; then
+    PLUGIN_STATE="refreshed"
+  else
+    PLUGIN_STATE="NOT refreshed — see the warning above"
+  fi
 fi
 
 GATEWAY_STATE="skipped (--no-gateway-restart)"
