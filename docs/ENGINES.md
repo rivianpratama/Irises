@@ -78,21 +78,31 @@ The script is idempotent, prints every change before making it, and never edits 
 hermes it appends two lines to `~/.hermes/.env` (`API_SERVER_ENABLED`, `API_SERVER_KEY`) — the
 documented way to enable its API server; for OpenClaw it only *reads* the existing gateway token.
 
+On Windows those two commands run in **Git Bash** (it ships with the Git for Windows the clone needs
+anyway) or inside a **WSL2** shell. The Windows paths are stub-tested only and have not yet been run
+on a real Windows box — Linux and macOS are the verified platforms.
+
 Flags: `--yes` runs non-interactively (assume every default, never prompt — which is also what a run
-with no terminal on stdin does by itself), `--bridge` / `--no-bridge` choose bridge mode outright
-(no bridge is the default without a terminal), `--revert` undoes bridge mode.
+with no terminal on stdin does by itself), `--bridge` / `--no-bridge` choose bridge mode outright,
+`--no-service` skips the user-level service, `--port N` picks the port. **Bridge mode is ON by
+default, including on a run with no terminal**, and the installer writes `IRISES_FRONT=*:*` — Irises
+fronts every chat on every platform out of the box, so narrow that list afterwards rather than
+assuming an opt-in. The engine gateway is restarted at the end of every install, with or without
+bridge mode. `--uninstall` takes the whole install back out again (the user service, the plugin, the
+engine-side keys the installer added), restarts the gateway on its way out, and keeps your data
+unless you add `--purge-data`.
 
 What it leaves behind: `PORT=3000` pinned in the Irises `.env` — the committed `deploy/app.env`
 baseline of `8080` is the Docker image's port behind Caddy, so pinning 3000 keeps the server, the
 printed URL, `npm run chat` and the bridge plugin's `IRISES_URL` default all pointing at one place.
-It builds both halves (the server and the web client), starts Irises **detached** so it outlives the
-shell that ran the script, health-checks it with retries, and — on hermes, when the gateway is up —
-runs a real engine round-trip (`GET /v1/capabilities` on the API server with the key). Then it
-**leaves Irises running** and prints the web chat URL (`http://127.0.0.1:3000`), `npm run chat`, and
-how to stop it. If the hermes gateway isn't running it prints the exact command to bring it up
-(`hermes gateway restart`, or `hermes gateway install` when it was never installed as a service) and
-notes that Irises reconnects on its own once it is — nothing to re-run. Run the script again on a box
-where a healthy Irises already serves that port and it reports "already running" and skips the start.
+It builds both halves (the server, and the web client where that one is in use), registers Irises as
+a **user-level service** — `systemd --user` on Linux, a LaunchAgent on macOS, a Task Scheduler task
+named `Irises` on Windows, and a detached `nohup` launch where none of those exists — health-checks
+it until the new build answers, and — on hermes — runs a real engine round-trip
+(`GET /v1/capabilities` on the API server with the key). Then it **leaves Irises running**, prints the
+web chat URL (`http://127.0.0.1:3000`), `npm run chat`, and the service controls, and bounces the
+gateway last so the API server, the plugin and `IRISES_FRONT` are all live. Run the script again on a
+box where a healthy Irises already serves that port and it adopts it instead of starting a second one.
 
 ## Zero-config discovery (what happens at boot)
 
@@ -288,9 +298,9 @@ character of it reaches a prompt or a memory tier. Influence through Irises's ow
 decides and writes.
 
 **One-shot, and it stays that way.** State lives in `$IRISES_HOME/first-move.json` (default
-`~/.irises`), keyed by engine name, claimed *before* the send. It survives restarts,
-`scripts/update.sh` and `--revert` — none of which touch `$IRISES_HOME` — so the introduction can
-never fire twice. `/forget me` deliberately does **not** re-arm it: forgetting what she knows about
+`~/.irises`), keyed by engine name, claimed *before* the send. It survives restarts and
+`scripts/update.sh`, and an `--uninstall` without `--purge-data` — none of which touch
+`$IRISES_HOME` — so the introduction can never fire twice. `/forget me` deliberately does **not** re-arm it: forgetting what she knows about
 someone is not the same as never having met them. Deleting the file by hand is the only way to make
 her do it again. `ENGINE_ONBOARDING=off` only removes the wait-for-doctrine gate (the first move
 still runs); `CONVO_THREADING_ENABLED=false` only skips the seeded themes.
@@ -343,8 +353,10 @@ IRISES_FRONT=telegram:*,whatsapp:+1555*,discord:12345
 
 Comma-separated glob patterns matched (case-insensitively) against `<platform>:<chat_id>`
 (hermes) / `<channel>:<conversation>` (OpenClaw). **Unset or empty = front nothing** — the plugin
-is inert and the engine behaves exactly as before. Never pattern your operator/control chats
-unless you mean it: a fronted chat talks to Irises, not to the engine.
+is inert and the engine behaves exactly as before. The installer does **not** leave it empty: it
+writes `IRISES_FRONT=*:*`, so a default install fronts everything and you narrow from there. Never
+pattern your operator/control chats unless you mean it: a fronted chat talks to Irises, not to the
+engine.
 
 ### Failure policy
 
@@ -362,7 +374,7 @@ can still be lost (it is logged at ERROR), and everything after it goes to herme
 
 | Key | Default | Meaning |
 |---|---|---|
-| `IRISES_FRONT` | *(empty — front nothing)* | comma-separated glob patterns choosing fronted chats |
+| `IRISES_FRONT` | `*:*` (what the installer writes — *unset or empty = front nothing*, if you set it by hand) | comma-separated glob patterns choosing fronted chats |
 | `IRISES_BRIDGE_TOKEN` | — | shared secret; must equal Irises's `ENGINE_PUSH_TOKEN`. Required: unset, the hermes listener still binds but refuses every send with a 403 naming the missing variable (a misconfiguration you can read, instead of anonymous sends on loopback) |
 | `IRISES_URL` | `http://127.0.0.1:3000` | where the plugin POSTs inbound messages |
 | `IRISES_BRIDGE_FAIL` | `open` | `open` = engine answers on bridge failure; `closed` = silence |
@@ -427,14 +439,46 @@ loopback listener; OpenClaw needs nothing extra (outbound rides the existing gat
   `photon-sidecar: inbound reply -> target …` in `~/.hermes/logs/gateway.log`. No Irises code is
   involved; the other channels were never affected.
 
-### Install / remove
+### Install / uninstall
 
-`bash ./scripts/engine-setup.sh --engine hermes|openclaw --bridge` sets bridge mode up (it copies
-the plugin via `~/.hermes/plugins/` or `openclaw plugins install`, wires the token, and prints every
-change); an interactive run without the flag offers it, and a non-interactive one skips it. Remove:
-blank `IRISES_FRONT` (instant), or disable the plugin
-(`hermes plugins disable irises-bridge` / `openclaw plugins disable irises-bridge`) and restart
-the gateway; `--revert` prints the same steps.
+`bash ./scripts/engine-setup.sh --engine hermes|openclaw` sets bridge mode up as part of the install:
+it copies the plugin (via `~/.hermes/plugins/` or `openclaw plugins install`), wires the token,
+writes `IRISES_FRONT=*:*`, prints every change before making it, records every engine-side key it
+added in `~/.irises/install-manifest.json`, and restarts the engine gateway at the end so all of it
+takes effect. `--no-bridge` installs Irises without the plugin or the fronting; the gateway is still
+restarted so the engine picks up its API-server setting.
+
+Taking it out again, in order of how much you want gone:
+
+- **Pause fronting, instantly:** blank `IRISES_FRONT` on the engine side. The plugin stays installed
+  and inert, and no restart is needed.
+- **Disable the plugin:** `hermes plugins disable irises-bridge` /
+  `openclaw plugins disable irises-bridge`, then bring the gateway back the way you normally would.
+- **Remove Irises entirely:** `bash ./scripts/engine-setup.sh --uninstall` — stops and unregisters
+  the user-level service, removes the plugin, removes the engine-side keys the installer added (from
+  the manifest, after a backup of the engine's env file), restarts the gateway, and keeps your data
+  under `$IRISES_HOME`. Add `--purge-data` to delete that too.
+
+All of these are run from a terminal on the engine's own machine (Git Bash or WSL2 on Windows). The
+installer and the uninstaller both cycle the gateway, which is exactly why neither can be run from a
+gateway-hosted chat: the agent would be killing its own supervisor mid-turn. The two setup skills are
+guides for that reason — they hand the person the commands and verify afterwards, and run nothing
+themselves.
+
+### Gateway restart notifications
+
+Install, update and uninstall each end by restarting the engine gateway, and hermes announces its own
+return: **"♻️ Gateway online — Hermes is back and ready."**, posted to the user's home channel after
+every restart. That message is hermes's, not Irises's — she does not send it and cannot suppress it.
+
+If the user would rather not see it, hermes silences it per platform with
+
+```yaml
+<platform>.gateway_restart_notification: false
+```
+
+in hermes's own config. Irises never edits hermes's config, and neither the installer nor the setup
+skills will touch it, so this is always the operator's own change to make.
 
 ## Where to talk to what
 

@@ -135,46 +135,108 @@ To ship an update: rebuild + push the image, then `docker compose pull && docker
 ### Updating a git-clone install
 
 Installs made with `git clone` + `scripts/engine-setup.sh` (rather than the Docker image) update in
-place:
+place, from a terminal on the box, in the Irises folder — Git Bash or a WSL2 shell on Windows:
 
 ```bash
-bash scripts/update.sh        # add --check to preview, --yes to skip the prompt, --restart to relaunch
+bash scripts/update.sh        # add --check to preview, --yes to skip the prompt
 ```
 
-The script fast-forwards `git pull`s the current branch, runs `npm ci && npm run build` (and
-`npm run install:web && npm run build:web` when the web client is present), refreshes the engine
-bridge plugin only if `bridge/` changed between the old and new commit — then reminds you to restart
-the engine gateway — and writes `$IRISES_HOME/update-receipt.json`. Restart the server (or pass
-`--restart`, which cycles it via `$IRISES_HOME/irises.pid`) to run the new build. Your data under
-`$IRISES_HOME` is never touched, and a divergent local branch is never auto-merged (the script stops
-and tells you to reconcile it).
+The script fast-forward `git pull`s the current branch, runs `npm ci && npm run build` (and the web
+client build when `web/out` exists — or `IRISES_WEB=1` asks for it — and the box has ~1.5 GB of
+memory free; `IRISES_SKIP_WEB_BUILD=1` skips it outright, and a web build that fails warns instead of
+failing the update), refreshes the engine bridge plugin, writes `$IRISES_HOME/update-receipt.json` —
+then **restarts Irises** (the user-level service, or the pidfile at `$IRISES_HOME/irises.pid`) **and
+restarts the engine gateway**, in that order. The plugin is refreshed on every run, after the restart
+is verified, so a run that rolls back leaves the engine on the plugin that matches the code it went
+back to. Nothing is left for the operator to restart. There is no chat trigger for any of this and
+none can be added: the script cycles the gateway, so an agent running it from a gateway-hosted chat
+would kill its own supervisor mid-turn.
 
-Or skip the terminal entirely: tell Irises **"update yourself"** in chat. It spawns the same
-`scripts/update.sh --yes --restart` as a detached process (so the updater survives the restart), acks
-immediately, and voices the result — "got my upgrades" on success, "already on the latest" or the
-failure reason otherwise. This is single-user by design (`UPDATE_SELF_ENABLED`, default `true`); if
-bridge mode fronts other people's chats, set `UPDATE_SELF_ENABLED=false` so only the terminal path
-remains.
+**Rollback.** If the new commit fails to compile, or compiles and then fails to answer `/health` with
+the new build inside the boot window, the script returns the worktree to the commit that was running,
+rebuilds THAT, and brings it back up. The failing tree is left in the log, not on the box.
+`$IRISES_HOME` (your data) is never touched, a divergent local branch is never auto-merged (the script
+stops and tells you to reconcile it), and a single-updater lock stops two runs racing on git and the
+build.
 
-One edge to know: if a new build *compiles* but then crashes on boot, the self-update has already
-stopped the old server to relaunch, so nothing is left running to voice the failure — check
-`$IRISES_HOME/logs/server.log` and `self-update.log`. (A build that fails to compile never restarts, so
-the old server keeps running and voices the failure normally.)
+**Exit codes** — worth reading if you script it. The last stdout line is always
+`RESULT: ok|noop|up-to-date|update-available|rolled-back|gateway-failed`, or `RESULT: partial` for a
+run that stopped before finishing (either nothing had been changed yet, or an undo failed and the
+tree, `node_modules` and `dist` may be inconsistent — read the messages above it).
+
+| Code | Meaning |
+|---|---|
+| `0` | already up to date, or updated and healthy |
+| `1` | preflight refused: dirty tree, detached HEAD, missing tool, Node below 22.13, no `.git`, another run holds the lock, or the pull could not fast-forward |
+| `2` | bad arguments |
+| `3` | the new build failed to compile — **rolled back**, the old build is running |
+| `4` | the new build compiled but failed to boot — **rolled back**, the old build is running |
+| `5` | Irises is on the new build, but the engine gateway would not restart — fix the gateway by hand |
+| `10` | `--check` only: an update is available |
+
+Flags: `--check`, `--yes`, `--no-restart` (pull and build only), `--no-gateway-restart` (leave the
+gateway alone; the refreshed plugin loads on its next restart).
+
+`scripts/engine-setup.sh` uses the same contract on its own side: `0` ok, `1` a step failed, `2` bad
+arguments, `4` Irises never reported the expected build on `/health`, `5` the gateway could not be
+verified back up — ending in `RESULT: ok|adopted|health-failed|gateway-failed` for an install and
+`RESULT: ok|partial|gateway-failed|noop` for an `--uninstall`.
+
+**After the gateway restart** hermes posts its own note into the user's home channel — *"♻️ Gateway
+online — Hermes is back and ready."* That is hermes's message, not Irises's; she neither sends it nor
+can suppress it. Silence it per platform with `<platform>.gateway_restart_notification: false` in
+hermes's own config. Irises never edits hermes's config, so that is always the operator's own change.
 
 The running server also checks the remote itself and reports what it finds:
 
 - `GET /health` gains a `version` object (git `sha` / `branch` / build stamp) and an `update` object
   (`available`, `remoteSha`, `lastCheckAt`, `lastCheckOk`).
 - The `/dashboard` overview shows a **version** card that turns amber when an update is available.
-- In chat, Irises mentions a waiting upgrade once to recently-active chats and voices a short
-  confirmation after you apply it.
+- In chat, Irises mentions a waiting upgrade once to recently-active chats, relays the
+  `bash scripts/update.sh` line verbatim, and says a short "back on the new build" after the script
+  restarts her. She also states her own build and whether one is waiting when asked — and says
+  plainly that applying it is not something she can do.
 
 Knobs (in `deploy/app.env` / `.env`): `UPDATE_CHECK_ENABLED` (default `true`),
 `UPDATE_CHECK_INTERVAL_MS` (default 6h, floored at 15min), `UPDATE_CHECK_BRANCH` (defaults to the
 clone's branch), `UPDATE_ANNOUNCE_ENABLED` (default `true` — `false` keeps detection but sends no
-chat messages), `UPDATE_ANNOUNCE_ACTIVE_WINDOW_MS` (default 48h, the "recently active" window),
-`UPDATE_SELF_ENABLED` (default `true` — the chat "update yourself" trigger). A
-Docker image built without `.git` reports `version.source: "unknown"` and disables the checker.
+chat messages), `UPDATE_ANNOUNCE_ACTIVE_WINDOW_MS` (default 48h, the "recently active" window). A
+Docker image built without `.git` reports `version.source: "unknown"`, disables the checker, and
+makes Irises say she cannot tell whether an update is waiting.
+
+**Service control.** The installer registers a user-level service, so none of this needs root:
+
+```bash
+systemctl --user status irises                     # Linux (systemd --user)
+launchctl print gui/$(id -u)/ai.irises.server      # macOS (LaunchAgent)
+schtasks /Query /TN Irises                         # Windows (Task Scheduler, from Git Bash)
+tail -f "${IRISES_HOME:-$HOME/.irises}/logs/server.log"
+```
+
+`schtasks /Run /TN Irises` and `schtasks /End /TN Irises` start and stop the Windows one; the task is
+registered from an XML definition (restart-on-failure, no execution time limit) and its action is the
+launcher `%USERPROFILE%\.irises\irises-start.cmd`, which is what appends to
+`%USERPROFILE%\.irises\logs\server.log`. Under WSL2 the systemd path is used instead, and reboot
+survival there needs systemd enabled in `/etc/wsl.conf` (`[boot] systemd=true`). **The Windows paths
+are stub-tested only — no one has yet run them on a real Windows box**; Linux and macOS are the
+verified platforms.
+
+Where none of the three exists (a bare container, a shell with no user session bus) the installer
+falls back to a detached `nohup` launch; stop that one with `kill $(cat "$IRISES_HOME/irises.pid")`.
+
+**Uninstall.** `bash scripts/engine-setup.sh --uninstall` stops and unregisters the service, removes
+the bridge plugin and the engine-side keys the installer added (read from
+`$IRISES_HOME/install-manifest.json`, after backing the engine's env file up — with no manifest it
+falls back to the Irises-marked `IRISES_*` keys and leaves `API_SERVER_*` alone), restarts the
+gateway, and keeps your data; `--purge-data` also deletes `$IRISES_HOME` after you type `delete` to
+confirm (`--yes` skips the question), which is not reversible. The clone is never deleted; the script
+prints the command. If the Photon reply-context patch series is applied to the hermes checkout, the
+uninstall prints the revert instructions rather than touching it.
+
+**Before you ship a change to any of this**, run the lifecycle battery: `npm run e2e:lifecycle`
+exercises a real install → update → rollback → uninstall in a sandbox (throwaway `HOME`,
+`IRISES_HOME` and engine home, ephemeral ports, an origin made from the clone's own objects) in about
+three minutes. It is deliberately not part of `npm test`.
 
 ---
 
