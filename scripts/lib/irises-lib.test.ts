@@ -500,12 +500,14 @@ test('hermes_cli is empty and hermes_run returns 127 when no CLI exists', () => 
   assert.match(r.out, /RC=127/);
 });
 
-test('gateway_restart bounces hermes through its CLI with both drain caps capped', async () => {
-  const http = await import('node:http');
-  const srv = http.createServer((_q, s) => { s.setHeader('content-type', 'application/json'); s.end('{"status":"ok"}'); });
-  await new Promise<void>(res => srv.listen(0, '127.0.0.1', res));
-  const port = (srv.address() as { port: number }).port;
-  const root = fixtureRoot(`OPS_BACKEND=hermes\nHERMES_BASE_URL=http://127.0.0.1:${port}\n`);
+test('gateway_restart bounces hermes through its CLI with both drain caps capped', () => {
+  // The engine's /v1/health must answer from ANOTHER process (see startHealthServer). Otherwise the
+  // probe falls through to the service/process branch — and on any machine that actually runs hermes
+  // that branch says "up" no matter what this fixture does, so the http path is never exercised.
+  const shaFile = join(mkdtempSync(join(tmpdir(), 'irises-gw-')), 'live-sha');
+  writeFileSync(shaFile, 'a'.repeat(40));
+  const { base, stop } = startHealthServer(shaFile);
+  const root = fixtureRoot(`OPS_BACKEND=hermes\nHERMES_BASE_URL=${base}\n`);
   try {
     const r = runLib('gateway_restart hermes 20', {
       env: { IRISES_ROOT: root, _HERMES_GATEWAY: '1' },
@@ -520,7 +522,7 @@ test('gateway_restart bounces hermes through its CLI with both drain caps capped
     assert.ok(r.log.includes('hermes env:_HERMES_GATEWAY=unset'), r.log.join('\n'));
     assert.match(r.out, /gateway is back/);
   } finally {
-    srv.close();
+    stop();
   }
 });
 
