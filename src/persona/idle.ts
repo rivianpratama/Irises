@@ -1,30 +1,39 @@
-// The idle gate: does this turn ask for anything, or is it a stall?
+// The turn gate: does this turn ask for anything, hand her something, or stall?
 //
-// One boolean, and the whole hook engine hangs off it. An idle turn is the one turn a reply may
-// carry a hook (persona/hooks.ts); a task turn gets the answer, flat, with the real numbers, and
-// nothing else. So a gate that reads "deploy prod" as idle spends a work turn on a clever line, and
-// a gate that reads "hmm" as work produces the leaf this whole build is named after.
+// THREE KINDS OF TURN, and the whole hook engine hangs off which one this is (persona/hooks.ts). A
+// TASK turn gets the answer, flat, with the real numbers and nothing else. An IDLE turn — they sent
+// nothing to act on and told nothing either — is the one turn a reply may carry a hook. A SHARE turn
+// is the one in between: they handed her something about their own day and asked for nothing, which
+// is a bid, and the reply is one move about the thing they handed her. So a gate that reads "deploy
+// prod" as idle spends a work turn on a clever line, a gate that reads "hmm" as work produces the
+// leaf this whole build is named after, and a gate that reads "morning meeting moved" as either one
+// answers a bid with a receipt.
 //
 // LANGUAGE-AGNOSTIC, THREE LAYERS, FAILING TOWARD TASK. This is the 2026-09-04 rule (see the header
 // of agents/ops/consent.ts, which reads a reply the same way): no hand-written word list is ever the
 // last word on what a person's message means, because a person may text in any language and a list
 // only ever knows one.
 //
-//   1. STRUCTURAL VETOES — script-independent facts about the message and the turn around it. A
-//      question mark, a digit, a link, length; a file that arrived, a burst, a look already running,
-//      an outstanding question of hers, and — only against that question — a reply the consent
-//      reader settled. Any one of them and the turn is work. These are the layer that carries the
-//      weight, and none of them reads a word.
+//   1. STRUCTURAL READS — script-independent facts about the message and the turn around it, split
+//      in two by what they can prove. A WORK VETO proves the turn is work: a question mark, a link,
+//      a message past the share cap, a file that arrived, a look already running, an answer owed.
+//      Any one of them and the turn is a task, with no call at all. A NOT-A-STALL SIGNAL proves
+//      something weaker and useful — a digit, a sentence's worth of tokens or characters, a burst —
+//      namely that whatever this message is, it is not one of the stalls the English list knows. It
+//      bars the fast path and goes on to layer 3, because "too long to be a stall" is the commonest
+//      shape a share arrives in. Neither layer reads a word.
 //   2. THE ENGLISH FAST PATH — LEAF_EXAMPLES below. EXAMPLES, NOT A LAW: a short message every one
 //      of whose tokens is a known English stall is idle, for free, with no call. The list is small
 //      on purpose and extensible without a code change (LEAF_EXAMPLES_EXTRA), because it is a
 //      shortcut for the commonest case and never a definition of the case. It may only speak for a
-//      message it can READ WHOLE — see `fastPathCanRead`, and the paragraph under it.
-//   3. THE CLASSIFY FALLBACK — everything short and veto-free the fast path could not read: a
-//      Spanish "nada", an Indonesian "bosan", a Japanese stall with no Latin tokens at all. The
-//      caller injects it (T7 wires the classify lane); this module only knows it returns one of
-//      three words. `stall` is idle. Anything else — `ask`, `unclear`, a garbled answer, a thrown
-//      call, a lane that timed out — is a task.
+//      message it can READ WHOLE — see `fastPathCanRead`, and the paragraph under it — and never for
+//      one a signal already marked as no stall.
+//   3. THE CLASSIFY FALLBACK — everything veto-free the fast path could not read or was barred from:
+//      a Spanish "nada", an Indonesian "bosan", a Japanese stall with no Latin tokens at all, and
+//      every message long enough to be a share. The caller injects it (convo/idleClassify.ts wires
+//      it); this module only knows it returns one of four words. `stall` and `share` are the two
+//      that are not work. Anything else — `ask`, `unclear`, a garbled answer, a thrown call, a lane
+//      that timed out — is a task.
 //
 // AND THE FAST PATH NEVER HALF-READS A MESSAGE. A person may text in any language, and a real
 // message is often MIXED: one English ack and a clause in another script ("ok 볼래", "hmm 明日は").
@@ -35,6 +44,11 @@
 // tokenizer would drop (`fastPathCanRead`). Everything else belongs to layer 3, which reads any
 // script — one small call, never a wrong reading.
 //
+// THE THIRD SHAPE IS FLAGGED (`IdleOptions.shareTurns`, CONVO_SHARE_TURNS_ENABLED at the caller).
+// Off, every signal is a veto again and a `share` verdict is read as a task, which is this gate's
+// answer to every message in the pre-share table, layer for layer. The flag's whole contract is that
+// an install with it off cannot tell this file changed.
+//
 // This file is a LEAF: it imports nothing, from anywhere. `words` below is MIRRORED from
 // convo/turnFocus.ts rather than imported for exactly that reason (that module imports the prompt
 // tagger), and the consent reading arrives as a plain union rather than as ops/consent.ts's `Consent`
@@ -44,10 +58,18 @@
 // PURE: no clock, no DB, no LLM of its own. The one env read is LEAF_EXAMPLES_EXTRA, parsed at CALL
 // time so a live install can widen the fast path without a restart.
 
-/** The three readings the injected classifier may come back with. Deliberately its own tiny union:
+/** The three kinds of turn, and the vocabulary every engine downstream of this one speaks (the hook
+ *  selector's mode, the `Turn:` line, the drift anchor, the craft gates). Deliberately NOT
+ *  `TurnShape`: convo/turnFocus.ts owns that name for the shape of the message SURFACE (one line, a
+ *  paragraph, a burst), which is a different question about the same turn. */
+export const TURN_KINDS = ['task', 'idle', 'share'] as const;
+export type TurnKind = typeof TURN_KINDS[number];
+
+/** The four readings the injected classifier may come back with. Deliberately its own tiny union:
  *  the fallback is a seam, and a caller that wires a different classifier still has to answer this
- *  question in these words. */
-export type IdleVerdict = 'stall' | 'ask' | 'unclear';
+ *  question in these words. `share` is the one that carries the bid — a message that TELLS her
+ *  something and asks for nothing — and it is the reading `stall` used to swallow. */
+export type IdleVerdict = 'stall' | 'share' | 'ask' | 'unclear';
 
 /** Which layer decided, for the receipt (`hooks:select` carries it, persona/hooks.ts). Four values,
  *  disjoint and exhaustive: `veto` a structural fact, `fast_path` the English examples, `classify`
@@ -71,19 +93,43 @@ export interface IdleFacts {
    *  a thing to do, whatever the caption says. */
   attachmentNote: boolean;
   /** How many messages arrived in this turn's burst (1 on a normal turn). Somebody who sent three
-   *  texts in a row is not stalling, they are mid-thought. */
+   *  texts in a row is not stalling, they are mid-thought — which is a signal rather than a veto,
+   *  because mid-thought is exactly how a share arrives. */
   burstSize: number;
   /** A look of theirs is running or queued for this chat. Their short message is landing on it —
    *  "ok" while she is mid-research is bookkeeping, not a stall. */
   activeOps: boolean;
-  /** SHE asked something and has not been answered: an approval or steering question is outstanding,
-   *  or her previous turn ended in a question mark of any script (see `endsInQuestion`). Their next
-   *  short message is an ANSWER, and answering is work. */
-  pendingQuestion: boolean;
+  /** An approval or steering question of HERS is parked and unanswered — the memory read's own
+   *  reading, not a punctuation guess. Their next message is the answer to it, and answering is
+   *  work, so this one is a veto on every shape and is never relaxed. */
+  pendingAsk: boolean;
+  /** Her previous turn ended on a question mark of any script (`endsInQuestion` below computes it).
+   *  Owed an answer the same way — unless the question she asked was a FOLLOW-UP, which is the one
+   *  question of hers that is a move rather than an ask; see `followUpOnly`. */
+  endsInQuestion: boolean;
+  /** Her last reply's move WAS that follow-up question: the rhythm ledger's tail kind is `question`
+   *  (persona/hooks.ts). It is what tells her own confirm question ("want me to send it?", owed an
+   *  answer) from her own follow-up ("what did they say", owed nothing but a turn), and the whole
+   *  reason this fact is separate from `endsInQuestion`.
+   *
+   *  A stray question emitted off a share turn — the slip `hook:off_turn` reports — therefore hands
+   *  the next short message a share turn it did not strictly earn. Known and harmless: the cost is
+   *  one reply that turns toward what they said instead of carrying a hook. */
+  followUpOutstanding: boolean;
   /** What the consent reader made of this message (ops/consent.ts). A settled yes or no is an answer
-   *  to a parked action — which is why it only vetoes alongside `pendingQuestion`, there being no
+   *  to a parked action — which is why it only vetoes alongside an answer being owed, there being no
    *  parked action without one; `unclear` settles nothing and vetoes nothing either way. */
   consent: IdleConsent;
+}
+
+/** What the CALLER's switches say this gate may do. One field, and the reason it is an options bag
+ *  rather than a boolean parameter is that the flag is the caller's fact about the install, not a
+ *  fact about the turn — everything in `IdleFacts` is the latter. */
+export interface IdleOptions {
+  /** CONVO_SHARE_TURNS_ENABLED (persona/featureFlags.ts). Off: the not-a-stall signals are work
+   *  vetoes again, the follow-up relaxation never applies, and a classified `share` reads as a task.
+   *  Nothing about this file's shape changes either way — only which side of it ships. */
+  shareTurns?: boolean;
 }
 
 /**
@@ -127,8 +173,8 @@ const BASE_EXAMPLES: ReadonlySet<string> = new Set(LEAF_EXAMPLES);
  * NOTHING here. A WHOLLY non-Latin message is therefore harmless — zero tokens can never match the
  * English examples, so it falls straight through to the classify layer, which is exactly where it
  * belongs. A MIXED one is the dangerous case, and `fastPathCanRead` below is what handles it.
- * All of this is also why the token cap below is not the load-bearing length veto: the CHARACTER cap
- * is, and that one counts every script.
+ * All of this is also why the token count below is not the load-bearing length read: the CHARACTER
+ * counts are, and those count every script.
  */
 function words(text: string): string[] {
   return text.toLowerCase().replace(/['’]/g, '').split(/[^a-z0-9%]+/).filter(Boolean);
@@ -194,9 +240,9 @@ function hasQuestionMark(text: string): boolean {
 
 /**
  * Did HER last turn end on a question? Exported because it is how the caller computes
- * `IdleFacts.pendingQuestion` for the commonest case, and computing it twice in two places is how
- * the two copies end up disagreeing about the fullwidth mark. Trailing whitespace and a closing
- * bracket or quote are ignored, because "so, thursday then?" survives being quoted.
+ * `IdleFacts.endsInQuestion`, and computing it twice in two places is how the two copies end up
+ * disagreeing about the fullwidth mark. Trailing whitespace and a closing bracket or quote are
+ * ignored, because "so, thursday then?" survives being quoted.
  */
 export function endsInQuestion(text: string | null | undefined): boolean {
   const trimmed = (text ?? '').replace(/[\s"'’)\]}»”]+$/u, '');
@@ -213,7 +259,8 @@ export function endsInQuestion(text: string | null | undefined): boolean {
 const URL_SHAPE = /(?:[a-z][a-z0-9+.-]*:\/\/|www\.|\b[a-z0-9][a-z0-9-]*\.[a-z]{2,}\/)/i;
 
 /** Any decimal digit, in any script (`\p{Nd}`, not `\d`): a number is a fact, and a message carrying
- *  one is carrying something to act on. Arabic-Indic digits count the same as ASCII ones. */
+ *  one is carrying something to act on — or at least is no stall. Arabic-Indic digits count the same
+ *  as ASCII ones. */
 const DIGIT_SHAPE = /\p{Nd}/u;
 
 /** How many tokens a stall may be. Six is generous for "nothing much just tired" and short of any
@@ -221,12 +268,25 @@ const DIGIT_SHAPE = /\p{Nd}/u;
 export const IDLE_MAX_TOKENS = 6;
 
 /** …and how many characters, counted in code points so an astral emoji costs what a person thinks
- *  it costs. This is the LANGUAGE-AGNOSTIC length veto: it reads a script the tokenizer cannot. */
+ *  it costs. This is the LANGUAGE-AGNOSTIC read of length: it measures a script the tokenizer cannot
+ *  see at all. Past it a message is no stall — which is the signal, not a veto. */
 export const IDLE_MAX_CHARS = 40;
 
 /**
- * Every structural reason this turn is work, by name, in a fixed order. Empty means nothing
- * structural stands in the way of calling it idle — which is NOT the same as calling it idle.
+ * How long a message may be and still be read for a share at all: ten times the stall cap, which is
+ * a paragraph about a day and well short of a pasted document, a forwarded thread or an error log.
+ *
+ * This is the one length that IS a veto, and the cap Rivian's decision names ("share detection runs
+ * on longer messages up to a cap"). Two reasons for a ceiling rather than none: past it a message is
+ * work far more often than it is a bid — the thing people paste is a thing they want done with —
+ * and every message under it that is not obviously a stall costs one classify call, so the cap is
+ * also what keeps the layer-3 bill a function of conversation rather than of paste size.
+ */
+export const SHARE_MAX_CHARS = 600;
+
+/**
+ * Every structural reason this turn is WORK, by name, in a fixed order. Empty means nothing proves
+ * the turn is a task — which is NOT the same as calling it idle, or a share.
  *
  * Named rather than boolean because the receipt has to be able to say WHICH fact decided: a gate
  * reporting only "task" cannot tell a burst from a pending question, and the battery scores the
@@ -236,92 +296,176 @@ export const IDLE_MAX_CHARS = 40;
  * person actually typed), the turn-side facts after, each named for the fact rather than for its
  * effect.
  */
-export function idleVetoes(text: string, facts: IdleFacts): string[] {
+export function idleVetoes(text: string, facts: IdleFacts, opts?: IdleOptions): string[] {
   const t = (text ?? '').trim();
   const out: string[] = [];
 
   // A question is the one shape that is owed an answer, and answering is work — whatever else the
   // message looks like.
   if (hasQuestionMark(t)) out.push('question_mark');
-  if (DIGIT_SHAPE.test(t)) out.push('digit');
   if (URL_SHAPE.test(t)) out.push('url');
-  if (words(t).length > IDLE_MAX_TOKENS) out.push('too_many_tokens');
-  if ([...t].length > IDLE_MAX_CHARS) out.push('too_long');
+  // Past the share cap nothing here is being read for a bid any more: see SHARE_MAX_CHARS.
+  if ([...t].length > SHARE_MAX_CHARS) out.push('over_share_cap');
 
   if (facts.attachmentNote) out.push('attachment_note');
-  if (facts.burstSize > 1) out.push('burst');
   if (facts.activeOps) out.push('active_ops');
-  // Her question is outstanding, so their next short message is an ANSWER: "yes please" after
-  // "want me to send it?" is the most load-bearing task turn there is.
-  if (facts.pendingQuestion) out.push('pending_question');
+
+  // An answer of theirs is owed: a parked approval the memory read reported, or her own last turn
+  // ending on a question mark. Their next message is that answer, and answering is work.
+  //
+  // …unless the only question of hers standing is the FOLLOW-UP she asked on a share turn, which is
+  // the one question of hers that asks for nothing to be done. Their reply to it is more of their
+  // own story, which is another share and not a task — and routing it to work here is exactly what
+  // made the follow-up impossible to ask in the first place (the pre-2026-09-11 gate treated every
+  // question of hers alike, so a hook that came out as a question turned their next stall into an
+  // answer turn and the kill switch could never fire). A parked APPROVAL is never relaxed: with one
+  // outstanding the follow-up is not the only thing owed, so `followUpOnly` reads false and both
+  // vetoes stand.
+  const answerOwed = facts.pendingAsk || facts.endsInQuestion;
+  const relaxed = opts?.shareTurns === true && followUpOnly(facts);
+  if (answerOwed && !relaxed) out.push('pending_question');
   // …and the same message read as a settled yes or no by the consent gate is an answer twice over —
   // but only where there was an answer to give. A consent word answers something only when there is
   // something to answer: the reader says what "ok" WOULD mean if it settled something, which on its
   // own is not a fact about the turn. Read unconditionally it made "ok", "yes" and "sure"
   // permanently un-idle, and those are the commonest stalls there are (live: a bare "ok" after a
-  // line of hers that asked nothing). So the veto is conditional on her question being outstanding:
-  // with one open, `pending_question` fires and consent joins it — "yes please" after "want me to
-  // send it?" is named by both — and with nothing open a bare "ok" is a stall, which is what it
-  // looks like.
-  if ((facts.consent === 'yes' || facts.consent === 'no') && facts.pendingQuestion) out.push('consent');
+  // line of hers that asked nothing). So the veto is conditional on an answer being owed: with one
+  // owed, `pending_question` fires and consent joins it — "yes please" after "want me to send it?"
+  // is named by both — and with nothing owed a bare "ok" is a stall, which is what it looks like.
+  if ((facts.consent === 'yes' || facts.consent === 'no') && answerOwed && !relaxed) out.push('consent');
 
   return out;
 }
 
-// ── the three layers, in order ───────────────────────────────────────────────
+/**
+ * Every structural reason this message is NO STALL, by name, in a fixed order. Weaker than a veto
+ * and useful for exactly that reason: none of these proves the turn is work, and every one of them
+ * proves the English examples cannot speak for it.
+ *
+ * Two effects, and no third: the fast path is barred (a message with a digit, a sentence's worth of
+ * tokens, forty characters of text or a burst behind it is not made of the tokens LEAF_EXAMPLES
+ * lists), and a layer-3 `stall` on such a message is read as a SHARE rather than as a stall — the
+ * classifier answering "it asks for nothing" about a message too long to be a filler is describing
+ * a bid. Each of these was a veto before 2026-09-11, which is why "morning meeting moved" came back
+ * to a flat task turn with nothing to deliver.
+ */
+export function idleSignals(text: string, facts: IdleFacts): string[] {
+  const t = (text ?? '').trim();
+  const out: string[] = [];
 
-/** What the gate decided, and which layer decided it. Both halves ride the receipt. */
-export interface IdleReading {
-  idle: boolean;
-  layer: IdleLayer;
+  if (DIGIT_SHAPE.test(t)) out.push('digit');
+  if (words(t).length > IDLE_MAX_TOKENS) out.push('too_many_tokens');
+  if ([...t].length > IDLE_MAX_CHARS) out.push('too_long');
+
+  if (facts.burstSize > 1) out.push('burst');
+
+  return out;
 }
 
 /**
- * Is this turn idle? The three layers in order, failing toward task at every step.
+ * Is the ONLY question of hers still standing the follow-up she asked last turn?
+ *
+ * The distinction the whole share shape rests on: her confirm question is owed an answer and their
+ * reply to it is work, while her follow-up asked for nothing to be done and their reply to it is
+ * more of the thing they were already telling her. A parked approval outranks it — `pendingAsk` is
+ * a fact about an action waiting on a word, and no ledger entry relaxes that.
+ */
+export function followUpOnly(facts: IdleFacts): boolean {
+  return facts.followUpOutstanding && !facts.pendingAsk;
+}
+
+// ── the three layers, in order ───────────────────────────────────────────────
+
+/** What the gate decided, which layer decided it, and what the message was marked as no stall for.
+ *  All three ride the receipt (`hooks:select`): the shape is the answer, the layer says whether the
+ *  fallback is alive, and the signals say why a short-looking message went to it. */
+export interface IdleReading {
+  shape: TurnKind;
+  layer: IdleLayer;
+  signals: readonly string[];
+}
+
+/**
+ * Which kind of turn is this? The three layers in order, failing toward task at every step.
  *
  * `classify` is INJECTED: this module never picks a lane, never sets a timeout and never caches, so
- * a test can drive all three layers without a network and the production wiring (T7) owns the model,
- * the budget and the deadline. A classifier that rejects — including one that rejected because it
- * timed out — is read as a task, which is the same answer a dead lane gives and the same answer an
- * `unclear` gives: the cost of a wrong task turn is one flat reply; the cost of a wrong idle turn is
- * a clever line answering a piece of work.
+ * a test can drive all three layers without a network and the production wiring (convo/idleClassify.ts)
+ * owns the model, the budget and the deadline. A classifier that rejects — including one that
+ * rejected because it timed out — is read as a task, which is the same answer a dead lane gives and
+ * the same answer an `unclear` gives: the cost of a wrong task turn is one flat reply; the cost of a
+ * wrong idle turn is a clever line answering a piece of work.
  *
  * The `none` layer is the turn with nothing in it: a media-only message whose whole text is the
  * attachment note the caller stripped, or an empty string. There is no message to read, so no layer
  * reads one, and a turn nobody can read is a task.
+ *
+ * THE SHAPE TABLE, which is this function in full and the flag's contract in one place:
+ *
+ *   |                  | fast path | `stall`  | `share` | `ask` / `unclear` / throw |
+ *   | plain            | idle      | idle     | share   | task                      |
+ *   | `followUpOnly`   | share     | share    | share   | task                      |
+ *   | a signal hit     | barred    | share    | share   | task                      |
+ *
+ * With `shareTurns` off the bottom two rows cannot be reached — a signal is a veto again and the
+ * relaxation never applies — and a `share` verdict collapses to `task`, so every row of the
+ * pre-share table comes back with the same layer and the same answer it did before this file grew a
+ * third kind.
  */
 export async function isIdleTurn(
   text: string,
   facts: IdleFacts,
   classify: (text: string) => Promise<IdleVerdict>,
+  opts?: IdleOptions,
 ): Promise<IdleReading> {
+  const shareOn = opts?.shareTurns === true;
   const t = (text ?? '').trim();
-  if (!t) return { idle: false, layer: 'none' };
+  if (!t) return { shape: 'task', layer: 'none', signals: [] };
 
-  if (idleVetoes(t, facts).length) return { idle: false, layer: 'veto' };
+  // Both structural reads, always, so the receipt carries the signals whichever way the turn went.
+  const signals = idleSignals(t, facts);
+  const vetoed = idleVetoes(t, facts, opts).length > 0
+    // With the third shape off, a signal is what every one of these facts was before it existed: a
+    // veto. This one line is the whole of the flag's off path in this layer.
+    || (!shareOn && signals.length > 0);
+  if (vetoed) return { shape: 'task', layer: 'veto', signals };
 
-  // Two conditions before the examples are even consulted. The message has to be one the tokenizer
-  // read WHOLE (`fastPathCanRead`) — otherwise "ok 볼래" is judged on its one ASCII token and a
-  // request is read as a stall. And it has to have produced at least one token: a message that
+  const relaxed = shareOn && followUpOnly(facts);
+  // A message that is not a stall cannot be a stall made of examples, so the fast path is skipped
+  // rather than consulted — and the skip is not a veto: layer 3 still reads the whole message.
+  //
+  // Two further conditions before the examples are consulted. The message has to be one the
+  // tokenizer read WHOLE (`fastPathCanRead`) — otherwise "ok 볼래" is judged on its one ASCII token
+  // and a request is read as a stall. And it has to have produced at least one token: a message that
   // tokenizes to nothing would otherwise pass "every token is an example" vacuously, and a non-Latin
   // stall would be called idle for the wrong reason — right answer, unreadable receipt, and wrong on
   // the first message that isn't one.
   const tokens = words(t);
   const examples = leafTokens();
-  if (fastPathCanRead(t) && tokens.length && tokens.every(tok => examples.has(tok))) {
-    return { idle: true, layer: 'fast_path' };
+  if (!signals.length && fastPathCanRead(t) && tokens.length && tokens.every(tok => examples.has(tok))) {
+    // Their stall lands on her own follow-up: a one-word "meh" answering "how did it sit with you"
+    // is the smallest share there is, and reading it as an idle turn would spend a hook on it and
+    // leave the question she asked hanging.
+    return { shape: relaxed ? 'share' : 'idle', layer: 'fast_path', signals };
   }
 
   try {
     const verdict = await classify(t);
     // Normalised rather than compared: a lane answers with a word, and a word with a newline or a
-    // capital on it is the same answer. Anything that is not exactly `stall` is a task.
+    // capital on it is the same answer. Anything that is neither `stall` nor `share` is a task.
     const word = String(verdict ?? '').trim().toLowerCase();
-    return { idle: word === 'stall', layer: 'classify' };
+    // `share` needs no qualification — the classifier read a bid in the message itself. A `stall` is
+    // a share only in the two cases the message could not have been a filler: it answers a follow-up
+    // of hers, or a signal already said it is too long, too numerous or too many messages to be one.
+    const shape: TurnKind = word === 'share'
+      ? 'share'
+      : word === 'stall'
+        ? (relaxed || signals.length ? 'share' : 'idle')
+        : 'task';
+    return { shape: shareOn || shape !== 'share' ? shape : 'task', layer: 'classify', signals };
   } catch {
     // A thrown call, a spent budget, an install with no classify lane, a deadline that fired. The
     // gate is not the place to log it — the caller owns the receipt and the error report, the same
     // way resolveConsent's caller does.
-    return { idle: false, layer: 'classify' };
+    return { shape: 'task', layer: 'classify', signals };
   }
 }

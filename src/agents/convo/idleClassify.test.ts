@@ -14,14 +14,20 @@ import {
   IDLE_CLASSIFY_CACHE_MAX, IDLE_CLASSIFY_MAX_TOKENS, IDLE_CLASSIFY_PROMPT, IDLE_CLASSIFY_TIMEOUT_MS,
   clearIdleClassifyCache, idleCacheKey, idleClassifyCacheSize, makeIdleClassifier, readIdleVerdict,
 } from './idleClassify.js';
-import { isIdleTurn, type IdleFacts } from '../../persona/idle.js';
+import { isIdleTurn, type IdleFacts, type IdleOptions } from '../../persona/idle.js';
 import { getTraces, clearTraces } from '../../diagnostics/trace.js';
 import type { LlmRequest, LlmResult } from '../../llm/types.js';
 
 /** Nothing structural in the way, so every message below reaches the layer under test. */
 const CLEAR: IdleFacts = {
-  attachmentNote: false, burstSize: 1, activeOps: false, pendingQuestion: false, consent: 'unclear',
+  attachmentNote: false, burstSize: 1, activeOps: false,
+  pendingAsk: false, endsInQuestion: false, followUpOutstanding: false,
+  consent: 'unclear',
 };
+
+/** The caller with CONVO_SHARE_TURNS_ENABLED on. Only the two share tests pass it: everything else
+ *  in this file is the wiring as it ships today, which is the flag-off side (persona/idle.ts). */
+const SHARE_ON: IdleOptions = { shareTurns: true };
 
 /** A short stall in a script the English fast path cannot read a single token of — the exact case
  *  this layer exists for (persona/idle.ts's header names it). */
@@ -45,10 +51,12 @@ function receipts() {
 test('a one-word answer is read past its punctuation, and anything unknown is unclear', () => {
   assert.equal(readIdleVerdict('stall'), 'stall');
   assert.equal(readIdleVerdict('  STALL.\n'), 'stall', 'a lane that punctuates has still answered');
+  assert.equal(readIdleVerdict('share'), 'share');
+  assert.equal(readIdleVerdict(' Share.\n'), 'share', 'the fourth word is read exactly like the other three');
   assert.equal(readIdleVerdict('ask'), 'ask');
   assert.equal(readIdleVerdict('unclear'), 'unclear');
-  // Failing toward task: everything that is not one of the three is the third one.
-  for (const junk of ['', null, undefined, 'idle', 'yes', '{"verdict":"stall"}']) {
+  // Failing toward task: everything that is not one of the four is the last one.
+  for (const junk of ['', null, undefined, 'idle', 'bid', 'yes', '{"verdict":"stall"}']) {
     assert.equal(readIdleVerdict(junk as string), 'unclear', JSON.stringify(junk));
   }
 });
@@ -68,7 +76,7 @@ test('a stall verdict makes the turn idle, and the receipt says the classify lay
   const classify = makeIdleClassifier({
     chatId: 'c1', handle: '+15550001111', llm: async () => { asked++; return result('stall'); },
   });
-  assert.deepEqual(await isIdleTurn(NON_ENGLISH_STALL, CLEAR, classify), { idle: true, layer: 'classify' });
+  assert.deepEqual(await isIdleTurn(NON_ENGLISH_STALL, CLEAR, classify), { shape: 'idle', layer: 'classify', signals: [] });
   assert.equal(asked, 1);
   assert.deepEqual(receipts(), [{ verdict: 'stall', cached: false, chars: 5 }]);
 });
@@ -78,7 +86,7 @@ test('a thrown lane is a TASK turn, and the receipt says the call failed rather 
   const classify = makeIdleClassifier({
     chatId: 'c1', llm: async () => { throw new TypeError('no classify lane configured'); },
   });
-  assert.deepEqual(await isIdleTurn(NON_ENGLISH_STALL, CLEAR, classify), { idle: false, layer: 'classify' });
+  assert.deepEqual(await isIdleTurn(NON_ENGLISH_STALL, CLEAR, classify), { shape: 'task', layer: 'classify', signals: [] });
   const [only] = receipts();
   assert.equal((only as { verdict: string }).verdict, 'unclear', 'a dead lane settles nothing');
   assert.equal((only as { failed?: string }).failed, 'TypeError', 'and the receipt tells a dead lane from a hedging one');
@@ -87,7 +95,24 @@ test('a thrown lane is a TASK turn, and the receipt says the call failed rather 
 test('an `ask` verdict is a task turn — only the exact word stall is idle', async () => {
   setup();
   const classify = makeIdleClassifier({ chatId: 'c1', llm: async () => result('ask') });
-  assert.deepEqual(await isIdleTurn('kirim ke mereka sekarang', CLEAR, classify), { idle: false, layer: 'classify' });
+  assert.deepEqual(await isIdleTurn('kirim ke mereka sekarang', CLEAR, classify), { shape: 'task', layer: 'classify', signals: [] });
+});
+
+test('a `share` verdict rides the same wiring, and the receipt names it like any other reading', async () => {
+  setup();
+  // A sentence about their own day, past the stall cap in tokens — which is the commonest shape a
+  // bid arrives in, and the exact message the old three-word prompt had no word for.
+  const bid = 'the morning meeting moved to friday and my whole week shifted with it';
+  const classify = makeIdleClassifier({ chatId: 'c1', llm: async () => result('share') });
+  assert.deepEqual(await isIdleTurn(bid, CLEAR, classify, SHARE_ON),
+    { shape: 'share', layer: 'classify', signals: ['too_many_tokens', 'too_long'] });
+  assert.deepEqual(receipts(), [{ verdict: 'share', cached: false, chars: [...bid].length }]);
+
+  // The same message on an install with the flag off never even reaches this layer: over the stall
+  // caps, every signal is a work veto again, so the turn is settled before a lane is picked and the
+  // ring stays at the one receipt above (persona/idle.ts's flag contract).
+  assert.equal((await isIdleTurn(bid, CLEAR, classify)).shape, 'task');
+  assert.equal(receipts().length, 1, 'no second reading, because no second call');
 });
 
 test('a failure is NOT cached — the next turn gets its own attempt', async () => {
@@ -97,9 +122,9 @@ test('a failure is NOT cached — the next turn gets its own attempt', async () 
     chatId: 'c1',
     llm: async () => { calls++; if (calls === 1) throw new Error('lane down'); return result('stall'); },
   });
-  assert.equal((await isIdleTurn(NON_ENGLISH_STALL, CLEAR, classify)).idle, false);
+  assert.equal((await isIdleTurn(NON_ENGLISH_STALL, CLEAR, classify)).shape, 'task');
   assert.equal(idleClassifyCacheSize(), 0, 'nothing was learned, so nothing is remembered');
-  assert.equal((await isIdleTurn(NON_ENGLISH_STALL, CLEAR, classify)).idle, true, 'the lane came back');
+  assert.equal((await isIdleTurn(NON_ENGLISH_STALL, CLEAR, classify)).shape, 'idle', 'the lane came back');
   assert.equal(calls, 2);
 });
 
@@ -120,8 +145,9 @@ test('the call is the classify lane, five tokens, the fixed prompt, and the mess
   const content = String(seen[0].messages[0].content);
   assert.match(content, /^<prompt>/, 'wrapped, so the message is context and not instruction');
   assert.match(content, /<message>[\s\S]*ちょっとね[\s\S]*<\/message>/, 'and sub-tagged as their own words');
-  // The prompt is Fable's, and it defines all three words it will accept back.
-  for (const word of ['stall', 'ask', 'unclear']) assert.ok(IDLE_CLASSIFY_PROMPT.includes(`${word} —`), word);
+  // The prompt is Fable's, and it defines all four words it will accept back — `share` included,
+  // which is the word the third turn shape needed from this lane and the one `stall` used to swallow.
+  for (const word of ['stall', 'share', 'ask', 'unclear']) assert.ok(IDLE_CLASSIFY_PROMPT.includes(`${word} —`), word);
 });
 
 test('the deadline fires and the turn goes on as work', async () => {
@@ -137,7 +163,7 @@ test('the deadline fires and the turn goes on as work', async () => {
   });
   const reading = await isIdleTurn(NON_ENGLISH_STALL, CLEAR, classify);
   clearTimeout(late);
-  assert.deepEqual(reading, { idle: false, layer: 'classify' }, 'a lane that missed the deadline settles nothing');
+  assert.deepEqual(reading, { shape: 'task', layer: 'classify', signals: [] }, 'a lane that missed the deadline settles nothing');
   assert.equal((receipts()[0] as { failed?: string }).failed, 'Error');
   assert.equal(idleClassifyCacheSize(), 0, 'and a timeout teaches the cache nothing');
 
@@ -153,7 +179,7 @@ test('the same stall costs ONE call however many turns it arrives on, and every 
   let calls = 0;
   const classify = makeIdleClassifier({ chatId: 'c1', llm: async () => { calls++; return result('stall'); } });
   for (const text of [NON_ENGLISH_STALL, NON_ENGLISH_STALL, `  ${NON_ENGLISH_STALL.toUpperCase()} `]) {
-    assert.equal((await isIdleTurn(text, CLEAR, classify)).idle, true, text);
+    assert.equal((await isIdleTurn(text, CLEAR, classify)).shape, 'idle', text);
   }
   assert.equal(calls, 1, 'a person\'s handful of stalls is a handful of calls, not one per turn');
   // A cache hit that filed nothing would make a busy install look like a lane nobody is calling.
@@ -181,10 +207,11 @@ test('a structural veto and the fast path both settle the turn without a call at
   setup();
   let calls = 0;
   const classify = makeIdleClassifier({ chatId: 'c1', llm: async () => { calls++; return result('stall'); } });
-  // Layer 1: a digit is a fact, and a message carrying one is carrying something to act on.
-  assert.deepEqual(await isIdleTurn('deploy 3 now', CLEAR, classify), { idle: false, layer: 'veto' });
+  // Layer 1: a digit is a fact, and with the third shape off a message carrying one is carrying
+  // something to act on — the signal is a work veto again (persona/idle.ts's flag contract).
+  assert.deepEqual(await isIdleTurn('deploy 3 now', CLEAR, classify), { shape: 'task', layer: 'veto', signals: ['digit'] });
   // Layer 2: every token is a known English stall.
-  assert.deepEqual(await isIdleTurn('hey', CLEAR, classify), { idle: true, layer: 'fast_path' });
+  assert.deepEqual(await isIdleTurn('hey', CLEAR, classify), { shape: 'idle', layer: 'fast_path', signals: [] });
   assert.equal(calls, 0, 'the lane is only reached by what the two free layers could not read');
   assert.deepEqual(receipts(), [], 'and a layer that never ran files nothing');
 });

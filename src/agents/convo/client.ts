@@ -33,7 +33,7 @@ import { pickThreadForTurn, type ThreadTurn } from '../../memory/threadHarvest.j
 import { endsInQuestion, isIdleTurn, type IdleFacts, type IdleReading } from '../../persona/idle.js';
 import { makeIdleClassifier } from './idleClassify.js';
 import { defaultHookState, selectHook, type HookDirective, type HookSelectReport } from '../../persona/hooks.js';
-import { hooksEnabled, momentsEnabled, thesisEnabled } from '../../persona/featureFlags.js';
+import { hooksEnabled, momentsEnabled, shareTurnsEnabled, thesisEnabled } from '../../persona/featureFlags.js';
 import { compileAffect } from '../../persona/affectCompiler.js';
 import { classifyConsent } from '../ops/consent.js';
 import { defaultClimate } from '../../persona/climate.js';
@@ -368,43 +368,67 @@ export async function chat(
   // the thread pre-read, because its answer gates that one: a task turn makes no thread offer.
   //
   // Three steps, all of them decided before a single prompt byte is assembled:
-  //   1. the idle gate (persona/idle.ts) — structural vetoes, then the English fast path, then at
-  //      most one tiny classify call for a short message in a script the fast path cannot read;
+  //   1. the turn gate (persona/idle.ts) — the structural reads, then the English fast path, then at
+  //      most one tiny classify call for a message the fast path could not read or was barred from;
   //   2. the compiled affect directive (persona/affectCompiler.ts) — the same gauges the weather
   //      block renders, read for what they CLOSE rather than for what they say;
   //   3. the selector (persona/hooks.ts) — the ledger, the kill switch, the group rules.
   //
-  // The whole block is gated by CONVO_HOOKS_ENABLED. Off means no idle gate runs at all (so no
+  // The whole block is gated by CONVO_HOOKS_ENABLED. Off means no turn gate runs at all (so no
   // classify call is ever made), the directive is null, the `Turn:` line and the `hooks` section are
   // never rendered, the hook craft page never loads, and the thread engine offers exactly as it did
   // before any of this existed.
   const hooksOn = hooksEnabled();
-  // Her question is outstanding: an approval or a steering question the memory read just told us is
-  // live, or her previous turn simply ending on a question mark of any script. Their next short
-  // message is an ANSWER — "yes please" after "want me to send it?" is the most load-bearing task
-  // turn there is — so this is a veto, not a hint.
-  const lastAssistant = [...history].reverse().find(m => m.role === 'assistant');
-  const idleFacts: IdleFacts = {
-    attachmentNote: !!attachNote,
-    burstSize: chatContext?.burstManifest?.length ?? 1,
-    activeOps: activeOps.length > 0,
-    pendingQuestion: context.pendingAsk || endsInQuestion(lastAssistant?.content),
-    // The consent reader's PURE half only (agents/ops/consent.ts classifyConsent). The lane half of
-    // that module is for a turn where an approval is really parked and the words are worth a call;
-    // here the question is only "did they answer yes or no", one settled word is the whole signal,
-    // and an idle gate that could spend a second call on every stall would be a per-turn tax.
-    consent: classifyConsent(typedText),
-  };
-  const idle: IdleReading = hooksOn
-    ? await isIdleTurn(typedText, idleFacts, makeIdleClassifier({ chatId, handle }))
-    : { idle: false, layer: 'none' };
 
   // The ledger row for this chat, and the epoch it was read under: the write at the end of the turn
   // is fenced on the epoch, so a /forget landing mid-turn cannot have its wipe undone by a save that
   // read the pre-forget state. Defaults (and epoch 0) with the flag off — nothing is read and
   // nothing will be written.
+  //
+  // Read BEFORE the gate rather than after it, which is the 2026-09-11 move: the gate now needs the
+  // ledger's tail kind to tell her own confirm question from her own follow-up, and a row read after
+  // the decision cannot inform it. It is the same row, read the same way, one await earlier.
   const hookState = hooksOn ? await getHookState(chatId) : defaultHookState();
   const hookEpoch = hooksOn ? getForgetEpoch(handle ?? '') : 0;
+
+  // The facts the gate reads the turn against — every one of them computed somewhere else and passed
+  // in, which is what keeps that module a leaf.
+  //
+  // The two question facts are SEPARATE on purpose, and the separation is the whole share shape.
+  // `pendingAsk` is an action parked behind a word of theirs (the memory read's own reading), and it
+  // is a work veto that nothing relaxes: "yes please" after "want me to send it?" is the most
+  // load-bearing task turn there is. `endsInQuestion` is the weaker punctuation read, and it is owed
+  // an answer in the same way UNLESS the only question standing is the follow-up she asked on a share
+  // turn, which asked for nothing to be done — their reply to that is more of their own story, not a
+  // piece of work. The ledger tail is what tells the two apart.
+  const lastAssistant = [...history].reverse().find(m => m.role === 'assistant');
+  const idleFacts: IdleFacts = {
+    attachmentNote: !!attachNote,
+    burstSize: chatContext?.burstManifest?.length ?? 1,
+    activeOps: activeOps.length > 0,
+    pendingAsk: context.pendingAsk,
+    endsInQuestion: endsInQuestion(lastAssistant?.content),
+    // The rhythm ledger's tail, and nothing more: the move her LAST reply carried. `question` there
+    // means the question outstanding is a follow-up (persona/hooks.ts records the emitted kind), and
+    // with the hook flag off the state is the default, whose window is empty and whose tail is
+    // therefore nothing at all.
+    followUpOutstanding: hookState.lastKinds[hookState.lastKinds.length - 1] === 'question',
+    // The consent reader's PURE half only (agents/ops/consent.ts classifyConsent). The lane half of
+    // that module is for a turn where an approval is really parked and the words are worth a call;
+    // here the question is only "did they answer yes or no", one settled word is the whole signal,
+    // and a turn gate that could spend a second call on every stall would be a per-turn tax.
+    consent: classifyConsent(typedText),
+  };
+  const idle: IdleReading = hooksOn
+    ? await isIdleTurn(typedText, idleFacts, makeIdleClassifier({ chatId, handle }), { shareTurns: shareTurnsEnabled() })
+    : { shape: 'task', layer: 'none', signals: [] };
+  // A share reads as a task for now: the gate can tell a bid from an ask, and nothing downstream of
+  // this line can do anything with the answer yet — the selector, the share section, the drift
+  // anchor and the craft page all arrive in the tasks after this one. Until they do, the only effect
+  // of a `share` reading is that it is not an idle turn, which it never was. The collapse lives here
+  // rather than in the gate because the gate's own flag-off path is a separate contract (a build with
+  // CONVO_SHARE_TURNS_ENABLED off must be unable to tell the gate changed at all).
+  const idleTurn = idle.shape === 'idle';
   const isGroupChat = chatContext?.isGroupChat ?? false;
   let hookDirective: HookDirective | null = null;
   let hookReport: HookSelectReport | null = null;
@@ -414,7 +438,7 @@ export async function chat(
     // the same turn.
     const affectDirective = compileAffect(affectState.last, computed, climate);
     const picked = selectHook(
-      hookState, idle.idle, idle.layer,
+      hookState, idleTurn, idle.layer,
       { hooks: affectDirective.hooks, lateNight: affectDirective.lateNight },
       isGroupChat, nowMs,
     );
@@ -560,7 +584,7 @@ export async function chat(
     // The streak is the STORED count plus this turn — the ledger row is written after the reply, so
     // what is in hand here is how many idle turns came BEFORE this one.
     ...(hooksOn
-      ? { idle: idle.idle, idleStreak: hookState.idleStreak + 1, messageChars: [...typedText].length }
+      ? { idle: idleTurn, idleStreak: hookState.idleStreak + 1, messageChars: [...typedText].length }
       : {}),
   };
 
@@ -575,7 +599,7 @@ export async function chat(
   // re-derived: the attachment note this turn's text already carries, and the two reads the memory
   // loaders answered on the way past (memory/dossier.ts). Everything else a gate needs — the
   // reply-order read, the burst, the tapped reply, the tool list — the assembler is already holding.
-  const craftFacts: CraftTurnFacts = { ...context.craft, attachmentNote: !!attachNote, idleTurn: idle.idle };
+  const craftFacts: CraftTurnFacts = { ...context.craft, attachmentNote: !!attachNote, idleTurn };
   // What the per-turn persona engines decided (convo/shared.ts PersonaTurn), all three live now: the
   // hook directive (which the `hooks` section and the drift anchor's mode read), the sampled moment
   // lines that ride inside that section when the directive allows one, and her one read on this
