@@ -2,10 +2,10 @@
 //
 // Context.md is the always-on core — how the front line works, the laws that rank with the bubble
 // rule — with the shared persona block ahead of it saying who is typing (persona/policy.ts, the same
-// bytes all four prompt surfaces render). Beside it, under craft/, sit nine pages that teach ONE
+// bytes all four prompt surfaces render). Beside it, under craft/, sit ten pages that teach ONE
 // move each: how to pick up a thread of theirs, how to read a thread in send order, how to answer a
 // burst, what to do with an attachment, how to get to know somebody new, what an idle turn may
-// carry.
+// carry, what to do with something they handed you and asked nothing for.
 // Every one of them used to be a section of Context.md, which meant every one of them was in front
 // of the model on every turn — the burst tradecraft on a single message, nine thousand characters of
 // onboarding craft nine months into a relationship, the send-order read on a turn with no history to
@@ -38,10 +38,10 @@ import { SCHEDULE_AUTOMATION_TOOL } from './tools.js';
  * meaning — that is the difference between a gate that can be tested and a gate that has to be
  * trusted.
  *
- * The assembler fills the first four from what it is already computing (convo/shared.ts); the last
- * three ride in from the caller, because they are facts of reads that happened before the prompt was
- * assembled (convo/client.ts: the attachment note it folded into the turn text, and the two reads
- * the memory loaders answered — memory/dossier.ts).
+ * The assembler fills the structural ones from what it is already computing (convo/shared.ts); five
+ * ride in from the caller, because they are facts of reads that happened before the prompt was
+ * assembled (convo/client.ts: the attachment note it folded into the turn text, the two reads the
+ * memory loaders answered — memory/dossier.ts — and the two turn shapes the idle gate returned).
  */
 export interface ModuleGateInput {
   /** The thread section rendered this turn: renderThreadForPrompt produced a block, i.e. the thread
@@ -70,10 +70,18 @@ export interface ModuleGateInput {
    *  and on every other turn that page is nine hundred characters teaching a beat the reply is not
    *  allowed to carry. */
   idleTurn: boolean;
+  /** This turn handed her something and asked for nothing: the same idle gate read it as a share
+   *  (persona/idle.ts) before the prompt was built. Structural exactly as `idleTurn` is, and
+   *  DISJOINT from it — one gate returns one shape, so no turn ever loads both pages, and the two
+   *  facts are separate booleans rather than one enum because a gate here reads a boolean somebody
+   *  else already computed and the receipt says which fact decided which page. On a task turn the
+   *  share page is four thousand characters teaching a move the flat answer forbids; on an idle turn
+   *  it is a page about a thing they did not send. */
+  shareTurn: boolean;
 }
 
 /**
- * The four facts the prompt assembler cannot see for itself, handed in by the caller that already
+ * The five facts the prompt assembler cannot see for itself, handed in by the caller that already
  * knows them (convo/client.ts). Absent reads as false — which is what every non-Convo caller of the
  * assembler gets, and the honest answer for a lane that never did those reads.
  *
@@ -86,6 +94,7 @@ export interface CraftTurnFacts {
   emailFlag?: boolean;
   thinProfile?: boolean;
   idleTurn?: boolean;
+  shareTurn?: boolean;
 }
 
 /** One page of craft, its file, and the structural fact it loads on. */
@@ -168,12 +177,25 @@ export const CRAFT_MODULES = [
   {
     id: 'hooks',
     file: 'craft/hooks.md',
-    // LAST in the registry because it is the only page written for the prompt rather than moved into
-    // it — the canonical order above is the order those sections stood in before P4a, and appending
-    // keeps that reading true. The gate is the idle turn itself: the hook craft is instructions for a turn that asked
-    // for nothing, and a task turn that read it would be a task turn tempted to add a beat.
+    // The first of the pages written FOR the prompt rather than moved into it, and appended for that
+    // reason — the canonical order above is the order those sections stood in before P4a, and every
+    // page with no place in that order goes on the end in the order it was written, which keeps the
+    // reading true. The gate is the idle turn itself: the hook craft is instructions for a turn that
+    // asked for nothing, and a task turn that read it would be a task turn tempted to add a beat.
     gateName: 'idle_turn',
     gate: (ctx: ModuleGateInput) => ctx.idleTurn,
+  },
+  {
+    id: 'share',
+    file: 'craft/share.md',
+    // The second page written for the prompt, behind the hook page it is the sibling of: the same
+    // gate returns both shapes and returns exactly one, so these two rows can never fire together
+    // and the order between them is a reading convention rather than a precedence. The gate is the
+    // share turn itself, and the page is unusable off it in both directions — a task turn that read
+    // it would answer the ask and then turn toward it as well, and an idle turn has nothing to turn
+    // toward, which is why the idle shape stays statement-only and keeps its own page.
+    gateName: 'share_turn',
+    gate: (ctx: ModuleGateInput) => ctx.shareTurn,
   },
 ] as const satisfies readonly CraftModule[];
 

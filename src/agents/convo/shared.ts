@@ -935,6 +935,11 @@ export function buildSystemPromptSections(
     // out, and a rendering flag that changes the page set has stopped being byte-inert. Absent → false,
     // which is the honest answer for every caller that never ran the gate.
     idleTurn: !!craftFacts?.idleTurn,
+    // Its sibling shape off the same gate, arriving by the same route and for the same reasons. The
+    // two are mutually exclusive upstream — one read returns one shape — so nothing here enforces
+    // that, and nothing here should: a gate that corrected its input would be deciding the turn
+    // shape a second time, in the one place that cannot see the message.
+    shareTurn: !!craftFacts?.shareTurn,
   };
   const craft = modulesOn ? renderCraftModules(craftGate) : { text: '', modules: [] };
   if (craft.text) push('craft_modules', craft.text);

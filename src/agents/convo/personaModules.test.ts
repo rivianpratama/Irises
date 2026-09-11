@@ -1,6 +1,6 @@
 // Run with: npm test   (TZ=UTC tsx --test — runner pins DATA_BACKEND=memory)
 //
-// The craft modules: nine pages of Convo's persona that only some turns need.
+// The craft modules: ten pages of Convo's persona that only some turns need.
 //
 // Until P4a/P4b every one of them was a section of Context.md, which means every one of them was in
 // front of the model on every turn — the send-order read on a turn with no history, the burst
@@ -167,9 +167,21 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  *     keep their exact values. It is the general rule the corpus until now stated only at its sites
  *     (the settled-ground re-ask, holding lines, hook callbacks, teases), and it lives in the block
  *     because the block is the one string every lane renders. Context.md and every page: untouched.
+ *
+ * Then **+4,307** in the share-craft commit, which is a TENTH PAGE and not an edit to any of the nine:
+ *   · craft/share.md, new, 4,305 characters, plus the `\n\n` a page brings with it into the
+ *     concatenation (personaModules.ts). It teaches the third turn shape: they handed her something
+ *     and asked for nothing, a receipt turns that away, and the reply turns toward the thing itself
+ *     in one move — the four kinds open to it, the statement-or-question decision rule (a gap she can
+ *     guess is hers to state, a gap only they can fill is hers to ask for when her weather leaves it
+ *     open), the three shapes that wear a follow-up's clothes and are not one, the dose, weight, good
+ *     news, the me-too ban, and the register. The page it sits behind, craft/hooks.md, did not move:
+ *     a share turn and an idle turn are different shapes off the same gate, so the beat the hook page
+ *     teaches is untouched by the move this one teaches. Every other byte of the corpus held, which
+ *     is why exactly one addend moved.
  */
-const CORPUS_CHARS = 122_798;
-const CORPUS_SHA256 = '4b7f396d9ebbf7fb7be49407cc6b06b2cc136f58c41ef47a783be9484d869ca9';
+const CORPUS_CHARS = 127_105;
+const CORPUS_SHA256 = '8b6f475c6048c472d624862df4f6aecdb60490b27e5b195585a2bd125bbb1fcd';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
@@ -206,7 +218,7 @@ test('the off path puts the same bytes in the cached prefix instead of the block
 // ── the registry ─────────────────────────────────────────────────────────────
 
 test('the registry is a usable table — unique ids, unique files, every file loads', () => {
-  assert.equal(CRAFT_MODULES.length, 9, 'the seven sections P4a relocated, P4b\'s threading craft, and the hook craft — the first page written for the prompt rather than moved into it');
+  assert.equal(CRAFT_MODULES.length, 10, 'the seven sections P4a relocated, P4b\'s threading craft, and the two pages written for the prompt rather than moved into it — the hook craft, then the share craft behind it');
   assert.equal(CRAFT_MODULES[0].id, 'threading', 'canonical order: the threading craft came from Context.md ahead of the seven P4a moved');
   const ids = CRAFT_MODULES.map(m => m.id);
   assert.equal(new Set(ids).size, ids.length, 'no id is used twice');
@@ -236,7 +248,7 @@ const TOOLS_OPENCLAW = [REACTION_TOOL, REMEMBER_USER_TOOL].map(t => t.name);
 /** Every fact false — the turn that needs no craft at all. */
 const NO_FACTS: ModuleGateInput = {
   threadSection: false, replyOrderSection: false, attachmentNote: false, burstSize: 1, toolNames: [],
-  tappedReply: false, emailFlag: false, thinProfile: false, idleTurn: false,
+  tappedReply: false, emailFlag: false, thinProfile: false, idleTurn: false, shareTurn: false,
 };
 
 const rendered = (ctx: Partial<ModuleGateInput>): CraftModuleId[] =>
@@ -259,6 +271,19 @@ test('each gate turns on exactly its own module', () => {
   assert.deepEqual(rendered({ thinProfile: true }), ['onboarding']);
   assert.deepEqual(rendered({ attachmentNote: true }), ['attachments']);
   assert.deepEqual(rendered({ idleTurn: true }), ['hooks']);
+  assert.deepEqual(rendered({ shareTurn: true }), ['share']);
+});
+
+test('the two turn-shape pages never arrive together, because one gate decides between them', () => {
+  // The idle gate returns ONE shape (persona/idle.ts), so these two facts are never both true on a
+  // live turn — and the registry does not enforce that, deliberately: a gate that corrected its
+  // input would be deciding the turn shape a second time. What this pins is the honest consequence.
+  // A turn read as a stall gets the beat page and not the bid page; a turn read as a bid gets the
+  // reverse; and the impossible input loads both rather than silently picking one, which is how a
+  // caller that wires the facts wrong fails loudly instead of reading plausible craft.
+  assert.deepEqual(rendered({ idleTurn: true }), ['hooks']);
+  assert.deepEqual(rendered({ shareTurn: true }), ['share']);
+  assert.deepEqual(rendered({ idleTurn: true, shareTurn: true }), ['hooks', 'share']);
 });
 
 test('the burst gate reads a real burst, not a single message', () => {
@@ -320,6 +345,13 @@ test('five representative turns load the craft they structurally need', () => {
     rendered({ threadSection: true, replyOrderSection: true, toolNames: TOOLS_HERMES }),
     ['threading', 'send_order', 'reminders'],
   );
+  // 7. a share: they handed her a piece of their day on a live thread, so the order read and the
+  //    reminder tools are there as on any other turn and the bid page comes in behind them. The
+  //    hook page does not: the gate read this turn as a share, which is not a stall.
+  assert.deepEqual(
+    rendered({ replyOrderSection: true, shareTurn: true, toolNames: TOOLS_HERMES }),
+    ['send_order', 'reminders', 'share'],
+  );
 });
 
 test('the rendered text is the loaded modules joined in canonical order, and nothing else', () => {
@@ -375,7 +407,7 @@ test('the craft section sits right after the tool docs, once, inside the block',
     craft.filter(m => m.rendered).map(m => m.id), ['send_order', 'reminders'],
     'the result carries the receipt rows the turn trace reports',
   );
-  assert.equal(craft.length, CRAFT_MODULES.length, 'including the seven modules this turn did not need');
+  assert.equal(craft.length, CRAFT_MODULES.length, 'including the eight modules this turn did not need');
 });
 
 test('the threading craft follows the thread section the engine really rendered, not the mere fact of a thread', () => {
