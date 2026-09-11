@@ -12,6 +12,10 @@
 //     beat exists at all.
 //   • PERMISSIONS COMBINE, never overwrite. The core, the candor floor and the playfulness floor
 //     each close a kind; two different closures round DOWN to `none`, which is the safe direction.
+//   • THE QUESTION IS A CEILING AND IT IS ONE-WAY. Four things can close her one follow-up question
+//     — the wheel, the carried read of what they were doing, closeness, the two gauges that already
+//     close the extra beat — and nothing opens one the core shut. Neither the ceiling nor the weight
+//     flag reaches a rendered line: the model sees a section, never a sentence about a question.
 //   • NOT ONE DIGIT reaches a rendered line. The gauges are the reason the lines say what they say
 //     and they never appear in one — the same bargain the envelope's own shrink made (charter §6.4).
 //   • PURE. No clock read, no store, no lane: the clock arrives as `ComputedState`, and a frozen
@@ -21,16 +25,22 @@ process.env.TZ = 'UTC';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  compileAffect, renderAffectDirective, renderMoodLine, renderBrevityLine,
+  compileAffect, compileQuestionGate, compileHeavy,
+  renderAffectDirective, renderMoodLine, renderBrevityLine,
   moodOf, brevityOf, capFor, tightenHooks,
   CORE_DIRECTIVES, DEFAULT_MOOD, BREVITY_LINES, LATE_NIGHT_LINE,
   HOOK_MOOD_FLOOR, SOCIAL_BATTERY_MINIMAL, SOCIAL_BATTERY_TIGHT,
-  type AffectDirective, type BrevityBand, type HookAllowance,
+  RAPPORT_RESTING, RAPPORT_QUESTION_BAND, QUESTION_CLOSED_MODES, HEAVY_MODES,
+  type AffectDirective, type BrevityBand, type CarriedIntent, type HookAllowance, type QuestionGate,
 } from './affectCompiler.js';
-import { coerceStatus, mergeStatus, type AffectGauges, type AffectStatus, type ComputedState } from './status.js';
+import {
+  coerceStatus, mergeStatus, INTENT_MODES,
+  type AffectGauges, type AffectStatus, type ComputedState, type IntentMode,
+} from './status.js';
 import { computeCycle } from './cycle.js';
 import { computeCircadian } from './circadian.js';
-import { MOOD_CORES, WILLCOX_WHEEL, coreForLabel, type MoodCore } from './mood.js';
+import { GAUGE_SPECS } from './affectDrift.js';
+import { CORE_VALENCE_BAND, MOOD_CORES, WILLCOX_WHEEL, coreForLabel, type MoodCore } from './mood.js';
 import { defaultClimate, DIALS, type DialKey, type RelationshipClimate } from './climate.js';
 import { THREAD_MOOD_FLOOR } from './threads.js';
 
@@ -66,6 +76,14 @@ const WORD_FOR: Record<MoodCore, string> = Object.fromEntries(
   MOOD_CORES.map(c => [c, WILLCOX_WHEEL[c].secondary[0]]),
 ) as Record<MoodCore, string>;
 
+/** A carried read of what THEY were doing last turn, as the caller hands it over once the freshness
+ *  window has already been checked (the window is threads.ts's `AFFECT_FRESH_MS` and the caller's
+ *  job; a stale row reaches the compiler as `undefined`). */
+const mode = (intentMode: IntentMode): CarriedIntent => ({ intentMode });
+
+/** Where the 1-100 gauges sit at rest, and the line `CORE_VALENCE_BAND` splits the wheel across. */
+const MIDPOINT = 50;
+
 /** A climate with one dial pushed to a value, everything else at its default. */
 function climateAt(over: Partial<Record<DialKey, number>>): RelationshipClimate {
   const base = defaultClimate();
@@ -85,14 +103,19 @@ function deepFreeze<T>(v: T): T {
 
 // ══ 1. The wheel is the variable ═════════════════════════════════════════════
 
-test('every core carries one imperative and the permission that sentence describes', () => {
-  const expected: Record<MoodCore, HookAllowance> = {
-    mad: 'all', sad: 'no_tangent', scared: 'no_judgment',
-    joyful: 'all', powerful: 'all', peaceful: 'all',
+test('every core carries one imperative, the permission that sentence describes, and a question ceiling', () => {
+  const expected: Record<MoodCore, { hooks: HookAllowance; question: QuestionGate }> = {
+    mad: { hooks: 'all', question: 'closed' },
+    sad: { hooks: 'no_tangent', question: 'closed' },
+    scared: { hooks: 'no_judgment', question: 'closed' },
+    joyful: { hooks: 'all', question: 'open' },
+    powerful: { hooks: 'all', question: 'open' },
+    peaceful: { hooks: 'all', question: 'open' },
   };
   for (const core of MOOD_CORES) {
     const row = CORE_DIRECTIVES[core];
-    assert.equal(row.hooks, expected[core], `${core}: the permission the table hands the selector`);
+    assert.equal(row.hooks, expected[core].hooks, `${core}: the permission the table hands the selector`);
+    assert.equal(row.question, expected[core].question, `${core}: the question ceiling the table hands the selector`);
     assert.ok(row.line.length > 0, `${core}: has a sentence`);
     assert.doesNotMatch(row.line, /\d/, `${core}: a number reached an imperative`);
     // The two halves of the row are two readings of one decision, so they have to agree: a sentence
@@ -100,6 +123,17 @@ test('every core carries one imperative and the permission that sentence describ
     // one bug a table with both in it exists to make visible.
     if (/no judgment/i.test(row.line)) assert.equal(row.hooks, 'no_judgment', `${core}: sentence says no judgment`);
     if (/no tangents/i.test(row.line)) assert.equal(row.hooks, 'no_tangent', `${core}: sentence says no tangents`);
+    // The question column is the one cell the sentence must NOT state: the ceiling reaches the model
+    // as a section that either carries its question line or does not, and an imperative announcing
+    // an available question would be read as an instruction to ask one.
+    assert.doesNotMatch(row.line, /question/i, `${core}: the question ceiling reached an imperative`);
+    // So it is pinned to the chart instead of to the sentence, on the split the wheel already makes:
+    // the cores that sit high on the valence bands open the question, the low three close it.
+    const [bandFloor] = CORE_VALENCE_BAND[core];
+    assert.equal(row.question, bandFloor > MIDPOINT ? 'open' : 'closed', `${core}: valence band floor`);
+    // And a core already withdrawing a kind never spends their effort on a question: the cheaper
+    // move being shut is the stronger statement of the two.
+    if (row.hooks !== 'all') assert.equal(row.question, 'closed', `${core}: a closed kind, an open question`);
   }
 });
 
@@ -222,12 +256,124 @@ test('a core ban and a climate ban compose rather than replacing each other', ()
   );
 });
 
-// ══ 5. The cold start ════════════════════════════════════════════════════════
+// ══ 5. The question ceiling, and the weight flag ═════════════════════════════
+
+test('the wheel opens the question on the high cores and closes it on the low ones', () => {
+  for (const core of MOOD_CORES) {
+    const d = compileAffect(carried(WORD_FOR[core]), COMPUTED);
+    assert.equal(d.question, CORE_DIRECTIVES[core].question, `${core}: the compile reads its own row`);
+  }
+});
+
+test('closeness closes the question a band below resting, and the band IS the gauge arithmetic', () => {
+  const q = (rapport: number) => compileAffect(carried('hopeful', { rapport }), COMPUTED).question;
+  const floor = RAPPORT_RESTING - RAPPORT_QUESTION_BAND;
+  assert.equal(q(floor), 'open');
+  assert.equal(q(floor - 1), 'closed');
+  assert.equal(q(1), 'closed');
+  assert.equal(q(100), 'open');
+  // Resting is the gauge's OWN default (see RAPPORT_RESTING's comment): the band is drawn around it,
+  // so a gauge that started somewhere else would put a first conversation inside or outside the band
+  // by accident.
+  const spec = GAUGE_SPECS.find(s => s.key === 'rapport')!;
+  assert.equal(RAPPORT_RESTING, spec.dflt, 'the mirror the band is measured from');
+  // And the width is the evidence rule, in the gauge's own asymmetric steps: a follow-up pushed back
+  // costs `down`, one taken buys `up`. Two bounces close the question; the first landing reopens it.
+  assert.equal(q(RAPPORT_RESTING - spec.down), 'open', 'one bounce is not evidence');
+  assert.equal(q(RAPPORT_RESTING - 2 * spec.down), 'closed', 'two in a row is');
+  assert.equal(q(RAPPORT_RESTING - 2 * spec.down + spec.up), 'open', 'and one landing reopens it');
+});
+
+test('the two gauges that close the extra beat close the question too, from both sides', () => {
+  const q = (gauges: Partial<AffectGauges>) => compileAffect(carried('hopeful', gauges), COMPUTED).question;
+  assert.equal(q({ social_battery: SOCIAL_BATTERY_MINIMAL }), 'open');
+  assert.equal(q({ social_battery: SOCIAL_BATTERY_MINIMAL - 1 }), 'closed');
+  assert.equal(q({ mood_level: HOOK_MOOD_FLOOR }), 'open');
+  assert.equal(q({ mood_level: HOOK_MOOD_FLOOR - 1 }), 'closed');
+  // The tight cut is about LENGTH and says nothing about whether she may ask: a two-bubble reply is
+  // still a reply, and the question fits in one of them.
+  assert.equal(q({ social_battery: SOCIAL_BATTERY_TIGHT - 1 }), 'open');
+});
+
+test('the carried read closes the question on the four turns a question would land wrong', () => {
+  assert.deepEqual([...QUESTION_CLOSED_MODES], ['overwhelmed', 'deflecting', 'joking', 'confused']);
+  for (const m of INTENT_MODES) {
+    assert.equal(
+      compileAffect(carried('hopeful'), COMPUTED, undefined, mode(m)).question,
+      QUESTION_CLOSED_MODES.includes(m) ? 'closed' : 'open',
+      m,
+    );
+  }
+  // A read the caller found too stale arrives as NO read, and no read restricts nothing — the same
+  // direction the missing row takes.
+  assert.equal(compileAffect(carried('hopeful'), COMPUTED, undefined, undefined).question, 'open');
+});
+
+test('the ceiling is one-way: no gauge and no read opens a question the core shut', () => {
+  const loudest: Partial<AffectGauges> = { rapport: 100, social_battery: 100, mood_level: 100 };
+  for (const core of MOOD_CORES) {
+    if (CORE_DIRECTIVES[core].question === 'open') continue;
+    for (const gauges of [{}, loudest]) {
+      for (const m of [undefined, mode('sharing_update'), mode('thanking')]) {
+        assert.equal(
+          compileAffect(carried(WORD_FOR[core], gauges), COMPUTED, undefined, m).question, 'closed',
+          `${core}: something below the wheel reopened its question`,
+        );
+      }
+    }
+  }
+});
+
+test('the gate stands alone, and a cold start leaves the question open', () => {
+  assert.equal(compileAffect(undefined, COMPUTED).question, 'open');
+  assert.equal(compileQuestionGate(undefined, 'peaceful'), 'open');
+  assert.equal(compileQuestionGate(undefined, 'sad'), 'closed', 'the wheel applies with no row too');
+  assert.equal(compileQuestionGate(undefined, 'peaceful', mode('overwhelmed')), 'closed');
+  // A garbled stored gauge lands in a band rather than closing by accident — the same rescue
+  // `brevityOf` gets, and in the same direction.
+  const row = { ...carried(), rapport: 'nonsense' as unknown as number };
+  assert.equal(compileQuestionGate(row, 'peaceful'), 'open');
+});
+
+test('weight is read off what THEY were doing, and off nothing else', () => {
+  assert.deepEqual([...HEAVY_MODES], ['venting', 'overwhelmed']);
+  for (const m of INTENT_MODES) assert.equal(compileHeavy(mode(m)), HEAVY_MODES.includes(m), m);
+  assert.equal(compileHeavy(undefined), false, 'no read is not a heavy turn');
+  // How SHE feels is not weight they brought: the flattest possible row with no carried read is not
+  // a heavy turn, and a bright row with a vent behind it is.
+  assert.equal(compileAffect(carried(WORD_FOR.sad, { mood_level: 5 }), COMPUTED).heavy, false);
+  assert.equal(compileAffect(carried('hopeful'), COMPUTED, undefined, mode('venting')).heavy, true);
+  // `overwhelmed` sits in both sets, and that is the honest reading of the turn: weighty, and no
+  // question on it.
+  const d = compileAffect(carried('hopeful'), COMPUTED, undefined, mode('overwhelmed'));
+  assert.deepEqual([d.heavy, d.question], [true, 'closed']);
+});
+
+test('neither ceiling reaches a rendered line', () => {
+  const last = carried('hopeful', {}, 'a note with no numbers in it');
+  const plain = renderAffectDirective(compileAffect(last, COMPUTED), last, COMPUTED);
+  for (const m of INTENT_MODES) {
+    const d = compileAffect(last, COMPUTED, undefined, mode(m));
+    assert.deepEqual(renderAffectDirective(d, last, COMPUTED), plain, `${m} changed the weather block`);
+  }
+  // …and a core whose question is shut still renders exactly its own imperative and nothing about it.
+  for (const core of MOOD_CORES) {
+    const row = carried(WORD_FOR[core]);
+    assert.deepEqual(
+      renderAffectDirective(compileAffect(row, COMPUTED), row, COMPUTED),
+      [`- You are ${WORD_FOR[core]} (${core}). ${CORE_DIRECTIVES[core].line}`],
+      core,
+    );
+  }
+});
+
+// ══ 6. The cold start ════════════════════════════════════════════════════════
 
 test('no carried row compiles to the loosest reading, and the clock still applies', () => {
   const d = compileAffect(undefined, COMPUTED);
   assert.deepEqual(d, {
-    mood: DEFAULT_MOOD, bubbleCap: 3, brevity: 'normal', hooks: 'all', lateNight: false,
+    mood: DEFAULT_MOOD, bubbleCap: 3, brevity: 'normal', hooks: 'all',
+    question: 'open', heavy: false, lateNight: false,
   } satisfies AffectDirective);
   // A first message is not a tired one — but it can still be a late one, and it can still land in a
   // relationship that has moved. Neither of those is about HER.
@@ -235,7 +381,7 @@ test('no carried row compiles to the loosest reading, and the clock still applie
   assert.equal(compileAffect(undefined, COMPUTED, belowBand('candor')).hooks, 'no_judgment');
 });
 
-// ══ 6. The rendered lines ════════════════════════════════════════════════════
+// ══ 7. The rendered lines ════════════════════════════════════════════════════
 
 test('the block renders in the prose order: shape, late, mood, self-note', () => {
   const last = carried('hopeful', { social_battery: 20 }, 'they are about to ask about thursday');
@@ -285,16 +431,18 @@ test("the self-note is quoted verbatim — it is the only line that is hers", ()
   assert.ok(lines.includes(`- Your read going into this message (from last turn): "${note}"`));
 });
 
-// ══ 7. Purity ════════════════════════════════════════════════════════════════
+// ══ 8. Purity ════════════════════════════════════════════════════════════════
 
 test('the compile is pure: frozen inputs survive it and the same inputs give the same answer', () => {
   const last = deepFreeze(carried('drained', { social_battery: 30, mood_level: 20 }));
   const computed = deepFreeze(at(23));
   const climate = deepFreeze(belowBand('playfulness'));
-  const a = compileAffect(last, computed, climate);
-  const b = compileAffect(last, computed, climate);
+  const read = deepFreeze(mode('venting'));
+  const a = compileAffect(last, computed, climate, read);
+  const b = compileAffect(last, computed, climate, read);
   assert.deepEqual(a, b);
   assert.deepEqual(a, {
-    mood: { core: 'sad', word: 'drained' }, bubbleCap: 1, brevity: 'minimal', hooks: 'none', lateNight: true,
+    mood: { core: 'sad', word: 'drained' }, bubbleCap: 1, brevity: 'minimal', hooks: 'none',
+    question: 'closed', heavy: true, lateNight: true,
   } satisfies AffectDirective);
 });

@@ -13,6 +13,14 @@
 // lowers the volume of a reply and never picks its content. Everything above is arithmetic the model
 // never sees; everything below is a sentence it can obey.
 //
+// NOT EVERY COMPILED FIELD IS A SENTENCE, and since the share turn landed two of them are not.
+// `question` (may this reply carry the one follow-up question) and `heavy` (they brought weight)
+// are CEILINGS the rhythm engine reads; the renderer never writes either one down. What reaches the
+// model is a presence and an absence: whether the share section carries its question line, and how
+// short that section's list of open kinds is. A rendered line announcing that a question is
+// available would be read as an instruction to ask one, which is the exact failure this shape
+// corrects — the machinery sets the ceiling and she judges inside it.
+//
 // THE WHEEL IS THE VARIABLE. `mood_label` is the one thing the model still reports about how it
 // feels, `coreForLabel` (mood.ts) is what files that word under one of six cores, and CORE_DIRECTIVES
 // is what each core CHANGES about the reply. That is the whole loop: she says a true word, the chart
@@ -32,7 +40,7 @@
 import { coreForLabel, type MoodCore } from './mood.js';
 import { bandForDial, clampToSpec, type RelationshipClimate } from './climate.js';
 import type { CircadianSlot } from './circadian.js';
-import type { AffectStatus, ComputedState } from './status.js';
+import type { AffectStatus, ComputedState, IntentMode } from './status.js';
 
 /** How many words she has this turn, as a band. `normal` renders NO line at all — the default
  *  costs the prompt nothing, which is the same bargain the climate deadzone makes. */
@@ -43,14 +51,38 @@ export type BrevityBand = 'normal' | 'tight' | 'minimal';
  *  nothing); the selector consumes this value through that. */
 export type HookAllowance = 'all' | 'no_judgment' | 'no_tangent' | 'none';
 
+/** Whether the one question of hers that is a move and not a probe is available at all this turn.
+ *  A CEILING, never an instruction: `open` means the share turn's selector MAY leave that kind in
+ *  the allowed set and she decides inside it; `closed` means the reply stays statement-shaped
+ *  whatever she judges. Declared as its own union for the reason `HookAllowance` is one — the
+ *  rhythm engine reads it through a structural subset and never learns how it was decided. */
+export type QuestionGate = 'open' | 'closed';
+
+/** The carried read of what THEY were doing, as the question gate and the weight flag consume it:
+ *  last turn's `intent_mode`, and only while it is still fresh enough to describe this turn. The
+ *  freshness read is the CALLER's (the same window threads.ts takes, `AFFECT_FRESH_MS`), because a
+ *  pure compiler has no clock — a stale row arrives here as no row at all. */
+export interface CarriedIntent {
+  intentMode: IntentMode;
+}
+
 /** This turn's compiled affect, as instructions rather than texture. Every field is read by code —
- *  `hooks` and `lateNight` by the rhythm engine (hooks.ts), `bubbleCap`/`brevity` by the renderer
- *  and the quiet guard, `mood` by the one line that still names how she feels. */
+ *  `hooks`, `question`, `heavy` and `lateNight` by the rhythm engine (hooks.ts),
+ *  `bubbleCap`/`brevity` by the renderer and the quiet guard, `mood` by the one line that still
+ *  names how she feels. */
 export interface AffectDirective {
   mood: { core: MoodCore; word: string };
   bubbleCap: 1 | 2 | 3;
   brevity: BrevityBand;
   hooks: HookAllowance;
+  /** Whether a share turn may carry the follow-up question. The one compiled field that reaches the
+   *  prompt as a PRESENCE rather than a sentence: nothing here renders a weather line about it, and
+   *  the model only ever sees whether the share section's question line is there. */
+  question: QuestionGate;
+  /** There is real weight in what they handed her (the carried read says venting or overwhelmed).
+   *  Narrows what a share turn may do with it — analysis is not company — and keeps the climate
+   *  span from announcing that a tangent is welcome on the turn someone let the tank out. */
+  heavy: boolean;
   /** It is late where they are. A register flag: smaller and quieter, nothing more. It closes no
    *  hook kind, shuts no sampler and forces no mode — see hooks.ts `selectHook`. */
   lateNight: boolean;
@@ -58,39 +90,58 @@ export interface AffectDirective {
 
 /**
  * The six Willcox cores → what each one CHANGES about the reply, in one imperative sentence, plus
- * the hook kinds it leaves open. The sentence and the permission are two readings of the same
- * decision and they live on the same row so they cannot drift apart: "No judgment this turn; a
- * callback or nothing" and `hooks: 'no_judgment'` have to agree, and a table with both in it is the
- * only arrangement where a reviewer can see that they do.
+ * the hook kinds it leaves open and whether it leaves the follow-up question open. The sentence and
+ * the hook permission are two readings of the same decision and they live on the same row so they
+ * cannot drift apart: "No judgment this turn; a callback or nothing" and `hooks: 'no_judgment'` have
+ * to agree, and a table with both in it is the only arrangement where a reviewer can see that they
+ * do.
+ *
+ * The `question` column is the one cell on the row that is NOT a reading of the sentence, and the
+ * sentences are unchanged by its arrival: no imperative here mentions a question, because the
+ * ceiling reaches the model as a presence (whether the share section renders its question line) and
+ * never as a per-core instruction. It splits the wheel where the wheel already splits itself —
+ * joyful, powerful and peaceful open, mad, sad and scared closed — which is `CORE_VALENCE_BAND`'s
+ * own division of the chart, pinned that way in the test rather than as a hand list. The reason is
+ * the only one that matters here: a question spends THEIR effort, so the turns where she is sharp,
+ * flat or careful are the turns to state the guess and take what they said.
  *
  * The sentences are Fable's, pasted byte-for-byte from the staging prose (policy-strings.md,
  * CORE_DIRECTIVES). Nothing here is a word list: the three hook words appear because they are the
  * three kinds the engine actually has, not because any code matches her reply against them.
  */
-export const CORE_DIRECTIVES: Record<MoodCore, { line: string; hooks: Exclude<HookAllowance, 'none'> }> = {
+export const CORE_DIRECTIVES: Record<
+  MoodCore,
+  { line: string; hooks: Exclude<HookAllowance, 'none'>; question: QuestionGate }
+> = {
   mad: {
     line: 'Sharper and shorter than usual. A judgment comes easily today; keep it on what they did, never on who they are.',
     hooks: 'all',
+    question: 'closed',
   },
   sad: {
     line: 'Fewer words. No tangents. Answer, then stop.',
     hooks: 'no_tangent',
+    question: 'closed',
   },
   scared: {
     line: 'Flat and careful. No judgment this turn; a callback or nothing.',
     hooks: 'no_judgment',
+    question: 'closed',
   },
   joyful: {
     line: 'A tangent is allowed. Still deadpan, still short.',
     hooks: 'all',
+    question: 'open',
   },
   powerful: {
     line: 'A judgment lands flat and certain. Do not explain it.',
     hooks: 'all',
+    question: 'open',
   },
   peaceful: {
     line: 'Even and flat. Nothing extra.',
     hooks: 'all',
+    question: 'open',
   },
 };
 
@@ -109,6 +160,31 @@ export const SOCIAL_BATTERY_TIGHT = 50;
  *  Kept as its own constant rather than imported because threads.ts is a much heavier module and
  *  this is a leaf — the two numbers are pinned together by affectCompiler.test.ts instead. */
 export const HOOK_MOOD_FLOOR = 35;
+
+/** Where `rapport` sits when nothing has happened yet. It MIRRORS the gauge's own default
+ *  (`GAUGE_SPECS` rapport, affectDrift.ts) and has to: the question gate is a band around the
+ *  RESTING value, so a gauge that starts somewhere else would make a first conversation begin
+ *  inside or outside the band by accident. Kept as its own constant rather than imported for the
+ *  reason `HOOK_MOOD_FLOOR` is — this is a leaf and affectDrift is the heavy module — and pinned to
+ *  the spec by affectCompiler.test.ts instead. */
+export const RAPPORT_RESTING = 40;
+
+/** How far below resting closeness has to fall before the question closes. Chosen against the
+ *  gauge's own asymmetric step (rapport moves up a point at a time and down two): two follow-ups
+ *  pushed back close the question, and one taken reopens it. That is the evidence rule the whole
+ *  band exists for — she stops asking when asking has been landing badly, and she is allowed to
+ *  start again the first time it lands. */
+export const RAPPORT_QUESTION_BAND = 3;
+
+/** Carried reads that close the question whatever the wheel says. Not a weight list: each of these
+ *  is a turn where a question of hers takes the reply somewhere it must not go — someone drowning
+ *  is not being asked for detail, someone dodging is not asked again, a bit is not interrogated,
+ *  and a person already lost gets an answer rather than another question. */
+export const QUESTION_CLOSED_MODES: readonly IntentMode[] = ['overwhelmed', 'deflecting', 'joking', 'confused'];
+
+/** Carried reads that make a share HEAVY. `overwhelmed` sits in both sets, which is the honest
+ *  reading: the turn is weighty AND no question opens on it. */
+export const HEAVY_MODES: readonly IntentMode[] = ['venting', 'overwhelmed'];
 
 /** The mood a turn with no carried row compiles to. `peaceful`/`content` because it is the same
  *  fallback the rest of the wheel already uses for a word it cannot place (mood.ts coreForLabel),
@@ -172,8 +248,48 @@ export function capFor(brevity: BrevityBand): 1 | 2 | 3 {
 }
 
 /**
- * The whole compile. Four inputs' worth of machinery — the carried row's two gauges and its feeling
- * word, the clock's slot, the standing register's two floor bands — and one small struct out.
+ * The CEILING on her one question, from the four things that can say no.
+ *
+ * The wheel goes first because it is the cheapest and the most decisive: three cores close the
+ * question outright. Then the carried read of what they were doing, then closeness, then the two
+ * gauges that already decide whether an extra beat exists at all — the same social-battery cut that
+ * makes a reply one bubble and the same mood floor that closes every hook kind. Nothing here is a
+ * new floor: a question is the most expensive move she has, so it answers to every floor the
+ * cheaper moves answer to, plus one of its own.
+ *
+ * ONE-WAY, and that is the point: every branch below can only close. There is no arrangement of
+ * gauges that opens a question a core shut, because the ceiling is hers to work inside and never a
+ * reason to ask — the judgment of whether this particular share wants a question stays with her.
+ *
+ * Cold start is OPEN, for the reason the whole cold start is the loosest reading: with no carried
+ * row there is no evidence of anything landing badly, and a first conversation that cannot ask
+ * anything is the tired version of her.
+ */
+export function compileQuestionGate(
+  last: AffectStatus | undefined,
+  core: MoodCore,
+  carried?: CarriedIntent,
+): QuestionGate {
+  if (CORE_DIRECTIVES[core].question === 'closed') return 'closed';
+  if (carried && QUESTION_CLOSED_MODES.includes(carried.intentMode)) return 'closed';
+  if (!last) return 'open';
+  if (level(last.rapport) < RAPPORT_RESTING - RAPPORT_QUESTION_BAND) return 'closed';
+  if (level(last.social_battery) < SOCIAL_BATTERY_MINIMAL) return 'closed';
+  if (level(last.mood_level) < HOOK_MOOD_FLOOR) return 'closed';
+  return 'open';
+}
+
+/** Whether there is real weight in what they handed her. The carried read is the only evidence the
+ *  compiler has for it and the only one it should have: weight is something THEY brought, so it is
+ *  read off what they were doing and never off how she feels about it. */
+export function compileHeavy(carried?: CarriedIntent): boolean {
+  return !!carried && HEAVY_MODES.includes(carried.intentMode);
+}
+
+/**
+ * The whole compile. Five inputs' worth of machinery — the carried row's gauges and its feeling
+ * word, the clock's slot, the standing register's two floor bands, last turn's read of what they
+ * were doing — and one small struct out.
  *
  * The floors are read in the order they are argued, and the order does not matter because
  * `tightenHooks` is commutative: the core's own permission, then candor's floor band (directness has
@@ -182,14 +298,20 @@ export function capFor(brevity: BrevityBand): 1 | 2 | 3 {
  * than overwrite: a scared core under a playfulness floor must not come out looser than either.
  *
  * With no carried row this is the cold start, and it is deliberately the loosest reading: the
- * default mood, three bubbles, ordinary length, every kind open. There is no evidence yet for any
- * restriction, and inventing one from a default would make her first message to someone the tired
- * version of her. The clock and the register still apply — neither of those is about her.
+ * default mood, three bubbles, ordinary length, every kind open, the question open. There is no
+ * evidence yet for any restriction, and inventing one from a default would make her first message to
+ * someone the tired version of her. The clock and the register still apply — neither of those is
+ * about her.
+ *
+ * `carried` is OPTIONAL and absent means "no read", not "a neutral read": the freshness window lives
+ * with the caller (see `CarriedIntent`), so a row too old to describe this turn arrives as nothing
+ * and restricts nothing — which is the same direction the missing row takes.
  */
 export function compileAffect(
   last: AffectStatus | undefined,
   computed: ComputedState,
   climate?: RelationshipClimate,
+  carried?: CarriedIntent,
 ): AffectDirective {
   const mood = moodOf(last);
   const brevity = brevityOf(last);
@@ -204,6 +326,8 @@ export function compileAffect(
     bubbleCap: capFor(brevity),
     brevity,
     hooks,
+    question: compileQuestionGate(last, mood.core, carried),
+    heavy: compileHeavy(carried),
     lateNight: LATE_SLOTS.includes(computed.circadian.slot),
   };
 }
