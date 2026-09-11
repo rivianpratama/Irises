@@ -73,6 +73,18 @@ test('the Inner state view defines and calls the thesis, moments and rhythm pane
   assert.ok(js.includes('d.momentsFile'), 'the moments panel does not read the file state at all');
 });
 
+// A column the server computes and the view never prints is invisible in exactly the way an absent
+// column is, and no other test in this file goes red for it. The mode is the half of the hook cell
+// that says which law the reply was written under (api/affect.ts `TraceRow.hook_mode`) — a beat word
+// alone stopped being readable once a third turn shape could produce one — so it is pinned as read
+// AND rendered beside the kind it qualifies, not merely defined.
+test('the turn:trace cell prints the hook mode beside the beat it qualifies', () => {
+  const js = VIEWS.find(v => v.id === 'affect')?.js ?? '';
+  assert.ok(js.includes('function hookMode('), 'the mode helper is gone');
+  assert.ok(js.includes('hookChip(r.hook_kind)+hookMode(r.hook_mode)'),
+    'the mode is not rendered beside the kind in the turn:trace row');
+});
+
 test('login page stays standalone and self-closing', () => {
   assert.ok(LOGIN_PAGE.includes('/dashboard/login'));
   assert.equal(LOGIN_PAGE.split('<script>').length, 2);

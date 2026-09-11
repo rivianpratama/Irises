@@ -168,6 +168,17 @@ export const AFFECT_JS = `
     return '<span class="chip" style="color:'+col+';border-color:'+col+'">'+M.esc(k)+'</span>';
   }
 
+  // The contract the beat was taken under, muted beside the beat itself. The kind says what the
+  // reply carried and the mode says which law it carried it under, and since a third turn shape
+  // landed neither reads without the other: 'judgment' is a beat after an answer under 'hook' and
+  // the whole reply under 'share', and 'question' is the share's own move under 'share' and a slip
+  // anywhere else. The receipt writes the two as one field (turnTrace.ts, outcome.hook), so a kind
+  // with no mode is a row no build files; it prints the chip alone, never a gap where a word goes.
+  // (A comment in here ships as client JS too, so it names that field without backticks.)
+  function hookMode(m){
+    return m ? ' <span class="gauges">'+M.esc(m)+'</span>' : '';
+  }
+
   function rhythmPanel(d){
     var r = d.rhythm||{lastKinds:[],idleStreak:0,idleSinceMoment:0,updatedAt:0};
     var kinds = (r.lastKinds||[]).length
@@ -270,7 +281,7 @@ export const AFFECT_JS = `
           + '<td>'+(r.silent ? '<span class="pill warn">silent</span>' : (r.bubbles.count==null?'\\u2014':r.bubbles.count+' bubbles'))
           // Absent when the rhythm engine never ran on the turn, which is the negative control's
           // reading and deliberately not the same cell as a flat reply's 'none'.
-          + (r.hook_kind==null ? '' : ' '+hookChip(r.hook_kind))
+          + (r.hook_kind==null ? '' : ' '+hookChip(r.hook_kind)+hookMode(r.hook_mode))
           + (r.bubbles.overLaw ? ' <span class="pill err">over law '+r.bubbles.overLaw+'</span>' : '')
           + (r.wasEnvelope ? '' : ' <span class="pill err">not envelope</span>')
           + (r.affectSource==='defaulted' ? ' <span class="pill warn">status defaulted</span>' : '')

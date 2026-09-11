@@ -400,6 +400,18 @@ export interface TraceRow {
    * printed `none` for both would make it unreadable.
    */
   hook_kind: string | null;
+  /**
+   * The contract that beat was taken under (`outcome.hook.mode`): `task` and `share` are the turn
+   * gate's own answers, and an idle turn splits into `hook` (budget left) or `quiet` (the kill
+   * switch spent it). `null` on exactly the turns `hook_kind` is null on — the selector never ran —
+   * because the receipt writes the two as one fact (diagnostics/turnTrace.ts `outcome.hook`).
+   *
+   * It is a column and not a footnote because the kind stopped describing itself the day a third
+   * turn shape landed: the same `judgment` is a beat AFTER an answer under `hook` and the whole
+   * reply under `share`, and a `question` is the share's own move under `share` and a slip
+   * anywhere else. Read beside the kind, the pair says which law the reply was written to.
+   */
+  hook_mode: string | null;
   memory: Array<{ block: string; verdict: string; reason: string; dropped: number | null }>;
   hits: string[];
   routingGate: string | null;
@@ -496,6 +508,7 @@ function rowFor(turnId: string, at: number, detail: unknown): TraceRow | null {
     sections: sectionsOf(prompt.sections),
     threads: threads ? asStr(threads.reason) : null,
     hook_kind: hook ? asStr(hook.emitted) : null,
+    hook_mode: hook ? asStr(hook.mode) : null,
     memory: memoryOf(gates),
     hits: asStrs(d?.hits),
     routingGate: outcome ? asStr(outcome.routingGate) : null,

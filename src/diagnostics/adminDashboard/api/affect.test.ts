@@ -374,8 +374,9 @@ test('the trace rows are the newest receipts, flattened, newest first', () => {
     { systemChars: 102_700, messagesChars: 800, share: 0.0077, rows: 12, breakpoints: 2 },
   );
   assert.deepEqual(r.sections, [{ name: 'persona', chars: 90_000 }, { name: 'turn_focus', chars: 400 }]);
-  assert.deepEqual({ threads: r.threads, hook_kind: r.hook_kind }, { threads: 'offered_theme', hook_kind: null },
-    'a receipt whose selector never ran reads null in the hook column, not a beat and not `none`');
+  assert.deepEqual({ threads: r.threads, hook_kind: r.hook_kind, hook_mode: r.hook_mode },
+    { threads: 'offered_theme', hook_kind: null, hook_mode: null },
+    'a receipt whose selector never ran reads null in BOTH hook columns, not a beat and not `none`');
   assert.deepEqual(r.memory, [{ block: 'notes', verdict: 'digest', reason: 'partly_kept', dropped: 3 }]);
   assert.equal(r.routingGate, 'skipped_memory_hit');
   assert.deepEqual(r.drift, { changed: ['warmth'], capped: ['anxiety'], atBound: [], applied: { warmth: 3 }, brokeDowngraded: false });
@@ -407,21 +408,27 @@ test('the trace row tells a flat reply apart from a turn the rhythm engine never
   // two sides: `gates.hooks` is the selector's report and is null when it never ran, `outcome.hook`
   // is what its turn came to and is ABSENT on the same turns. A row with one and not the other is a
   // receipt no turn can file, so the fixtures never build one.
+  // The MODE travels with the kind for the reason the column exists: the same word means different
+  // turns under different contracts, so the pair is asserted as a pair and never one at a time.
   const ran = (emitted: string, mode: string) => ({
-    gates: { hooks: { reason: 'hook', idleLayer: 'fast_path', forbidden: [], lastKinds: ['none', 'tangent'] } },
+    gates: { hooks: { reason: mode === 'task' ? 'not_idle' : mode, idleLayer: 'fast_path', forbidden: [], lastKinds: ['none', 'tangent'] } },
     outcome: {
       wasEnvelope: true, silent: false,
-      hook: { idle: mode !== 'task', mode, emitted, violation: false },
+      hook: { idle: mode === 'hook' || mode === 'quiet', mode, emitted, violation: false },
     },
   });
-  assert.equal(traceRows([turn('hooked', NOW, [traceEvent(NOW, ran('judgment', 'hook'))])], 20)[0].hook_kind, 'judgment');
-  const flat = traceEvent(NOW, ran('none', 'task'));
-  assert.equal(traceRows([turn('flat', NOW, [flat])], 20)[0].hook_kind, 'none');
-  const neverRan = traceEvent(NOW, { gates: {}, outcome: { wasEnvelope: true, silent: false } });
-  assert.equal(traceRows([turn('off', NOW, [neverRan])], 20)[0].hook_kind, null);
+  const beat = (id: string, over: Record<string, unknown>) => {
+    const r = traceRows([turn(id, NOW, [traceEvent(NOW, over)])], 20)[0];
+    return { hook_kind: r.hook_kind, hook_mode: r.hook_mode };
+  };
+  assert.deepEqual(beat('hooked', ran('judgment', 'hook')), { hook_kind: 'judgment', hook_mode: 'hook' });
+  assert.deepEqual(beat('shared', ran('question', 'share')), { hook_kind: 'question', hook_mode: 'share' },
+    'the one contract under which a question of hers is the move, and the mode column is what says so');
+  assert.deepEqual(beat('flat', ran('none', 'task')), { hook_kind: 'none', hook_mode: 'task' });
+  assert.deepEqual(beat('off', { gates: {}, outcome: { wasEnvelope: true, silent: false } }),
+    { hook_kind: null, hook_mode: null });
   // A receipt from before the field existed reads the same as the flag being off.
-  const noOutcome = traceEvent(NOW, { outcome: undefined });
-  assert.equal(traceRows([turn('old', NOW, [noOutcome])], 20)[0].hook_kind, null);
+  assert.deepEqual(beat('old', { outcome: undefined }), { hook_kind: null, hook_mode: null });
 });
 
 test('a corrupt or partial receipt is skipped rather than crashing the panel', () => {
