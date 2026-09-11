@@ -30,11 +30,15 @@ import {
   billOffers, renderMomentLines, sampleMoments, MOMENT_RECENT_EXCLUDE_MS,
 } from '../../persona/moments.js';
 import { pickThreadForTurn, type ThreadTurn } from '../../memory/threadHarvest.js';
-import { endsInQuestion, isIdleTurn, type IdleFacts, type IdleReading } from '../../persona/idle.js';
+import {
+  classifyNeeded, endsInQuestion, isIdleTurn,
+  type IdleFacts, type IdleReading, type IdleVerdict,
+} from '../../persona/idle.js';
 import { makeIdleClassifier } from './idleClassify.js';
 import { defaultHookState, selectHook, type HookDirective, type HookSelectReport } from '../../persona/hooks.js';
 import { hooksEnabled, momentsEnabled, shareTurnsEnabled, thesisEnabled } from '../../persona/featureFlags.js';
-import { compileAffect } from '../../persona/affectCompiler.js';
+import { compileAffect, type CarriedIntent } from '../../persona/affectCompiler.js';
+import { AFFECT_FRESH_MS } from '../../persona/threads.js';
 import { classifyConsent } from '../ops/consent.js';
 import { defaultClimate } from '../../persona/climate.js';
 import { computeCycle } from '../../persona/cycle.js';
@@ -217,6 +221,49 @@ export async function chat(
     // must not repoint it, or a member's private delivery lands in the room.
     void ensureChatId(handle, chatId); // so engine-initiated pushes can reach them
   }
+
+  // Read ONCE for the turn, and read HERE because the prefetch below is the first thing that needs
+  // it: everything the rhythm pre-read does further down hangs off this flag, and two reads of one
+  // env var in one turn is a turn that could start a classify call for a gate that never runs.
+  const hooksOn = hooksEnabled();
+
+  // ── the classify prefetch ─────────────────────────────────────────────────────────────────────
+  // Layer 3 of the turn gate, started in PARALLEL with the memory read rather than behind it. The
+  // call is five tokens and a six-second deadline (convo/idleClassify.ts), and every millisecond of
+  // it used to sit between their message and the first byte of the prompt, because the gate runs
+  // after the dossier comes back and the gate is what asks.
+  //
+  // THE PROMISE IS THREADED, NOT THE CACHE. Warming the classifier's cache here would double the
+  // work on exactly the messages it is meant to save — the store has no in-flight coalescing, so a
+  // prefetch that has not answered by the time the gate asks is a second call and a second receipt,
+  // and the live round reads "two receipts on one turn" as a broken prefetch. So the pending promise
+  // itself is what the gate consumes, through the same classifier instance, and the reading is filed
+  // exactly once.
+  //
+  // Two conditions, both about being able to promise the gate the SAME message. A voice memo folds
+  // its transcript into the text further down, so the string the gate reads does not exist yet; and
+  // `classifyNeeded` answers whether layer 3 will be reached at all, from the facts available before
+  // the memory read (persona/idle.ts). The prediction is one-directional: a call this starts on a
+  // turn a later veto settles is five tokens wasted, and the gate's own identity check below is what
+  // makes a wrong guess about the TEXT cost nothing at all.
+  const classifyIdle = makeIdleClassifier({ chatId, handle });
+  const earlyText = userMessage.trim();
+  const earlyClassify: Promise<IdleVerdict> | null = hooksOn
+    && media.audio.length === 0
+    && classifyNeeded(earlyText, {
+      // The attachment note as it WILL be built below: with no audio on the turn there is no
+      // transcription to fail, so this is the same string that call produces, asked of the same
+      // function rather than guessed at.
+      attachmentNote: !!describeAttachments(media, { transcriptionFailed: false }),
+      burstSize: chatContext?.burstManifest?.length ?? 1,
+    }, { shareTurns: shareTurnsEnabled() })
+    ? classifyIdle(earlyText)
+    : null;
+  // The classifier swallows its own failures (it files `unclear` and returns), so this can only be
+  // insurance — but an unconsumed rejection is a process-level event, and this promise is deliberately
+  // allowed to go unconsumed when the gate reads a different string than the one predicted.
+  if (earlyClassify) void earlyClassify.catch(() => {});
+
   const [context, agentTz, climate, thesisDoc] = handle
     ? await Promise.all([
         // Pass the current turn text so the short-tier renderer can gate whether the freshest research
@@ -374,11 +421,11 @@ export async function chat(
   //      block renders, read for what they CLOSE rather than for what they say;
   //   3. the selector (persona/hooks.ts) — the ledger, the kill switch, the group rules.
   //
-  // The whole block is gated by CONVO_HOOKS_ENABLED. Off means no turn gate runs at all (so no
-  // classify call is ever made), the directive is null, the `Turn:` line and the `hooks` section are
-  // never rendered, the hook craft page never loads, and the thread engine offers exactly as it did
-  // before any of this existed.
-  const hooksOn = hooksEnabled();
+  // The whole block is gated by CONVO_HOOKS_ENABLED, read once at the top of the turn (`hooksOn`,
+  // up beside the prefetch that is the flag's other consumer). Off means no turn gate runs at all —
+  // so no classify call is ever made, by the gate or by the prefetch — the directive is null, the
+  // `Turn:` line and the `hooks` section are never rendered, the hook and share craft pages never
+  // load, and the thread engine offers exactly as it did before any of this existed.
 
   // The ledger row for this chat, and the epoch it was read under: the write at the end of the turn
   // is fenced on the epoch, so a /forget landing mid-turn cannot have its wipe undone by a save that
@@ -420,32 +467,52 @@ export async function chat(
     consent: classifyConsent(typedText),
   };
   const idle: IdleReading = hooksOn
-    ? await isIdleTurn(typedText, idleFacts, makeIdleClassifier({ chatId, handle }), { shareTurns: shareTurnsEnabled() })
+    ? await isIdleTurn(
+        typedText, idleFacts,
+        // The prefetch, consumed. The identity check is the whole of the seam: when the message the
+        // gate is reading is the one the prefetch predicted, the pending promise IS the answer, and
+        // when it is not — a voice memo, a caller that reshaped the text — the classifier is called
+        // for real on the string actually in hand. The same instance either way, so one reading files
+        // one receipt whichever branch runs.
+        t => (earlyClassify && t === earlyText ? earlyClassify : classifyIdle(t)),
+        { shareTurns: shareTurnsEnabled() },
+      )
     : { shape: 'task', layer: 'none', signals: [] };
-  // A share reads as a task for now: the gate can tell a bid from an ask, and nothing downstream of
-  // this line can do anything with the answer yet — the selector, the share section, the drift
-  // anchor and the craft page all arrive in the tasks after this one. Until they do, the only effect
-  // of a `share` reading is that it is not an idle turn, which it never was. The collapse lives here
-  // rather than in the gate because the gate's own flag-off path is a separate contract (a build with
-  // CONVO_SHARE_TURNS_ENABLED off must be unable to tell the gate changed at all).
+  // The gate's answer as the two craft gates take it: a boolean each, because a gate answers one
+  // question about one page (convo/personaModules.ts) and a union there would be a gate deciding the
+  // turn shape a second time. Derived once, here, beside the reading itself — the selector and the
+  // `Turn:` line take `idle.shape` whole, and a turn that was a share in the prompt and an idle turn
+  // in the ledger is the contradiction this pre-read exists to make impossible.
   const idleTurn = idle.shape === 'idle';
+  const shareTurn = idle.shape === 'share';
   const isGroupChat = chatContext?.isGroupChat ?? false;
   let hookDirective: HookDirective | null = null;
   let hookReport: HookSelectReport | null = null;
   if (hooksOn) {
+    // LAST TURN'S READ OF WHAT THEY WERE DOING, while it is still fresh enough to describe this one.
+    // The compiler is pure and has no clock, so the freshness window is the caller's — the same six
+    // hours the thread engine takes over the same row (persona/threads.ts AFFECT_FRESH_MS, and the
+    // same both-ended comparison: a stamp from the future is as unusable as a stale one). Past the
+    // window the read arrives as NOTHING rather than as a neutral mode, which is the direction that
+    // restricts nothing: an old "venting" must not make today's share heavy, and an old "joking"
+    // must not close today's question.
+    const last = affectState.last;
+    const carried: CarriedIntent | undefined =
+      last && nowMs - last.at <= AFFECT_FRESH_MS && nowMs >= last.at
+        ? { intentMode: last.intent_mode }
+        : undefined;
     // The affect directive is compiled from exactly the row the weather block is rendered from, so
     // "her mood closed the hook" and "her mood set the register" can never be two different reads of
     // the same turn.
-    const affectDirective = compileAffect(affectState.last, computed, climate);
+    const affectDirective = compileAffect(last, computed, climate, carried);
     const picked = selectHook(
-      // The gate's own reading is still collapsed here (see `idleTurn` above): the selector knows the
-      // share branch, and the section, the anchor and the craft page it would be rendered beside do
-      // not exist yet. A `share` reading therefore reaches the selector as a task, which is what it
-      // reached it as before the branch was written.
-      hookState, idleTurn ? 'idle' : 'task', idle.layer,
+      // The gate's own reading, whole. The selector is the one place the three kinds are still three
+      // — everything downstream of it reads the MODE it produced (persona/hooks.ts `HookMode`), which
+      // splits an idle turn in two and leaves the other two alone.
+      hookState, idle.shape, idle.layer,
       // The two ceilings ride along from the same compile: the question gate and the weight flag are
-      // read ONLY by the share branch, so on every turn this build can actually produce they are
-      // carried and not consulted.
+      // read ONLY by the share branch, and carried on every other turn so nothing downstream has to
+      // ask which branch produced the directive it is holding.
       {
         hooks: affectDirective.hooks,
         question: affectDirective.question,
@@ -460,9 +527,22 @@ export async function chat(
     // nothing. Same doctrine as `threads:select` next door: a healthy no-op IS the receipt, and an
     // engine that stopped running and an engine that keeps finding nothing to say are otherwise
     // indistinguishable.
+    //
+    // The gate's own two fields ride along beside the selector's: `shape` is the reading the mode was
+    // derived FROM (a `hook` and a `quiet` mode are both an idle turn, so the mode cannot be read
+    // backwards into it), and `signals` is why a short-looking message went to layer 3 at all — the
+    // pair a live round needs to tell a share the classifier found from a share the ledger's own
+    // follow-up handed over.
     record({
       type: 'event', label: HOOKS_SELECT_LABEL, chatId, handle,
-      detail: { ...picked.report, mode: picked.directive.mode, idle: picked.directive.idle, moments: picked.directive.moments },
+      detail: {
+        ...picked.report,
+        mode: picked.directive.mode,
+        idle: picked.directive.idle,
+        moments: picked.directive.moments,
+        shape: idle.shape,
+        signals: [...idle.signals],
+      },
     });
   }
 
@@ -594,9 +674,11 @@ export async function chat(
     // are absent together: with CONVO_HOOKS_ENABLED off no `Turn:` line renders at all and the block
     // is byte-identical to the one every install built before the gate existed (convo/turnFocus.ts).
     // The streak is the STORED count plus this turn — the ledger row is written after the reply, so
-    // what is in hand here is how many idle turns came BEFORE this one.
+    // what is in hand here is how many idle turns came BEFORE this one. The renderer drops it on a
+    // share turn, where the count describes the silences before they spoke rather than this turn;
+    // that reading belongs there, with the other three, and not to a caller filling a struct.
     ...(hooksOn
-      ? { idle: idleTurn, idleStreak: hookState.idleStreak + 1, messageChars: [...typedText].length }
+      ? { shape: idle.shape, idleStreak: hookState.idleStreak + 1, messageChars: [...typedText].length }
       : {}),
   };
 
@@ -611,7 +693,12 @@ export async function chat(
   // re-derived: the attachment note this turn's text already carries, and the two reads the memory
   // loaders answered on the way past (memory/dossier.ts). Everything else a gate needs — the
   // reply-order read, the burst, the tapped reply, the tool list — the assembler is already holding.
-  const craftFacts: CraftTurnFacts = { ...context.craft, attachmentNote: !!attachNote, idleTurn };
+  // The two turn-shape facts are the gate's, not the renderer's: they arrive on this struct rather
+  // than off the turn-focus input, because that one sits behind its own operator flag and a gate that
+  // read it would drop a craft page on the strength of a rendering switch (convo/shared.ts says the
+  // same thing at the seam that consumes them). Mutually exclusive by construction — one reading
+  // returns one shape — and nothing downstream re-checks that.
+  const craftFacts: CraftTurnFacts = { ...context.craft, attachmentNote: !!attachNote, idleTurn, shareTurn };
   // What the per-turn persona engines decided (convo/shared.ts PersonaTurn), all three live now: the
   // hook directive (which the `hooks` section and the drift anchor's mode read), the sampled moment
   // lines that ride inside that section when the directive allows one, and her one read on this

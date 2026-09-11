@@ -32,9 +32,10 @@ import { DYN_SECTION_IDS, type SectionId } from './promptSections.js';
 import { REACTION_TOOL, DELEGATE_TO_OPS_TOOL } from './tools.js';
 import {
   HOOK_HEADING, HOOK_NONE_OPEN, HOOK_LATE_LINE, HOOK_WORDS, MOMENTS_LEAD, QUIET_LAW, renderHooksSection,
+  SHARE_HEADING, SHARE_LATE_LINE, SHARE_LEAD, SHARE_QUESTION_LINE,
   type HookDirective, type HookSelectReport, type HookState,
 } from '../../persona/hooks.js';
-import { getHookState } from '../../db/repositories/hookState.js';
+import { getHookState, saveHookState } from '../../db/repositories/hookState.js';
 import { saveRelationshipClimate } from '../../db/repositories/relationshipClimate.js';
 import { defaultClimate } from '../../persona/climate.js';
 import { groupHandle } from '../../memory/identity.js';
@@ -82,6 +83,7 @@ beforeEach(() => {
   delete process.env.MEMORY_THESIS_ENABLED;
   delete process.env.MEMORY_MOMENTS_ENABLED;
   delete process.env.CONVO_UNKEPT_PROMISE_GUARD;
+  delete process.env.CONVO_SHARE_TURNS_ENABLED;
 });
 
 // ── the three modes through the assembler ────────────────────────────────────
@@ -668,6 +670,18 @@ const clientCtx = (over: Partial<ChatContext> = {}): ChatContext => ({
 const receipt = (label: string) =>
   getTraces().find(e => e.type === 'event' && e.label === label)?.detail as Record<string, unknown> | undefined;
 
+/** EVERY row under a label, because two of the claims down here are claims about the COUNT: one
+ *  reading of the turn files one `idle:classify` row whether the prefetch answered it or the gate
+ *  did, and a second row is the prefetch warming a cache instead of handing over its promise. */
+const receipts = (label: string) => getTraces().filter(e => e.type === 'event' && e.label === label);
+
+/** The ledger tail that makes her last move a FOLLOW-UP question — the one question of hers that is
+ *  owed nothing but a turn. Seeded before the turn so the real read picks it up, exactly the way the
+ *  climate is seeded above: this is the fact `persona/idle.ts` reads to tell a bid from an answer,
+ *  and a test that handed it in directly would be testing the gate rather than the wiring. */
+const seedFollowUp = (chatId: string) =>
+  saveHookState(chatId, SENDER, { lastKinds: ['question'], idleStreak: 0, idleSinceMoment: 0, updatedAt: 0 });
+
 test('an IDLE message through the front door renders the hooks block, the Turn line, and leaves a ledger row', async () => {
   const chatId = randomUUID();
   // A relationship that has actually MOVED, stored before the turn so the real read picks it up
@@ -766,6 +780,11 @@ test('a TASK message closes the thread offer, renders no hooks block, and still 
   const classified = receipt('idle:classify');
   assert.equal(classified?.verdict, 'unclear');
   assert.equal(classified?.cached, false);
+  // ONE row, and this is the prefetch's own pin. The call was started in parallel with the memory
+  // read (convo/client.ts) and the gate consumed the PENDING PROMISE rather than a warmed cache — a
+  // prefetch that warmed the cache instead would file a second row here, cached or not, and the live
+  // round reads two rows on one turn as exactly that failure.
+  assert.equal(receipts('idle:classify').length, 1, 'one reading, one receipt, prefetched or not');
   assert.equal(receipt('hooks:select')?.reason, 'not_idle');
 
   // The rhythm engine's one veto over the thread engine: selection never ran, so nothing was billed.
@@ -822,4 +841,92 @@ test('the gate reads what they TYPED, not the annotated message the machinery bu
     'the annotation really did ride along on the message');
   assert.ok((seen[0].system ?? '').includes(HOOK_HEADING), 'and the turn is still idle');
   assert.equal(receipt('hooks:select')?.idleLayer, 'fast_path', 'decided on the typed word alone');
+});
+
+// ── the third shape, through the same front door ─────────────────────────────
+// The turn every piece of this build exists for, assembled by the real client: the gate reads a
+// share, the selector takes the bid branch, the section and the anchor state the share law, the
+// craft page loads, the `Turn:` line says so, and the ledger records a turn on which they SPOKE.
+//
+// It is reached through the FOLLOW-UP relaxation rather than through the classifier, and that is
+// deliberate twice over. This file has no lane, so a layer-3 share is unreachable here by
+// construction — and the answer-to-her-question turn is the share shape with the most machinery
+// behind it: her last move was the one question of hers that asks for nothing to be done, so their
+// next message is more of their own story and not the answer to a piece of work.
+
+test('a SHARE turn through the front door renders the share block, the anchor law, the craft page and the Turn line', async () => {
+  process.env.CONVO_SHARE_TURNS_ENABLED = 'on';
+  const chatId = randomUUID();
+  await seedFollowUp(chatId);
+  const { seen, call } = fakeLane(envelope(['the northern yard never says anything on a friday']));
+  await chat(chatId, 'hmm', emptyMedia(), clientCtx(), call);
+
+  const system = seen[0].system ?? '';
+  assert.ok(system.includes(SHARE_HEADING) && system.includes(SHARE_LEAD), 'the share section reached the prompt');
+  assert.ok(!system.includes(HOOK_HEADING), 'and not the hook section, which is the other shape');
+  // The line at the recency edge, with the character count and NO streak clause: the count of turns
+  // in a row they sent nothing ended on this turn, so printing it here would be a checkable fact
+  // that is false (convo/turnFocus.ts).
+  assert.ok(system.includes('Turn: share · their message: 3 characters\n'), 'the reading, in full');
+  assert.ok(!system.includes('idle in a row'), 'a share turn ends the streak, so it carries none');
+
+  const select = receipt('hooks:select');
+  assert.equal(select?.reason, 'share', 'its own bucket, tellable from an idle turn that left the same kinds open');
+  assert.equal(select?.mode, 'share');
+  assert.equal(select?.idle, false, 'they said something');
+  // The gate's own two fields, which the mode cannot be read backwards into: the reading, and why a
+  // short-looking message went where it went. 'hmm' is three characters of pure example text, so no
+  // signal fired at all — the ledger's follow-up is the whole reason this is a share.
+  assert.equal(select?.shape, 'share');
+  assert.deepEqual(select?.signals, []);
+  assert.equal(select?.idleLayer, 'fast_path');
+  assert.equal(receipt('idle:classify'), undefined, 'the follow-up relaxation costs no call at all');
+
+  // THE DOSE, end to end. Her last move was a question, so the kind is closed this turn whatever her
+  // weather says (persona/hooks.ts: the ledger tail is read separately from the compiled ceiling),
+  // and the line that says what a follow-up IS is absent rather than negated.
+  assert.deepEqual(select?.forbidden, ['question'], 'when they answer, the next move is what you make of the answer');
+  assert.ok(system.includes('Open to you this turn: a judgment, a callback or a tangent. One of them, never two, and it is the reply, not a beat after one.'));
+  assert.ok(!system.includes(SHARE_QUESTION_LINE), 'a ban she reads is a kind she is thinking about');
+  // The hour is a register here exactly as it is on an idle turn (this file's clock is 02:00 UTC).
+  assert.ok(system.includes(SHARE_LATE_LINE), 'the same volume rule, in the share block\'s own words');
+
+  // The law at the recency edge, and the page behind it — both off the SAME reading, which is the
+  // whole point of deriving the two craft facts once in the client.
+  assert.ok(system.includes('- This is a share turn: they handed you something and asked for nothing. The reply is about that thing, one move, shaped by what the share section above leaves open. Never a receipt, never nothing.'),
+    'the drift anchor states the share law');
+  assert.ok(system.includes(craftModuleText('share')), 'the share craft page loaded off the same reading');
+  assert.ok(!system.includes(craftModuleText('hooks')), '…and the hook page did not, because this is not that turn');
+
+  // The ledger: the move she carried (none, here) appended, and the streak ENDED — the count is how
+  // many turns in a row they sent nothing, and this was not one of them.
+  const state = await getHookState(chatId);
+  assert.deepEqual(state.lastKinds, ['question', 'none']);
+  assert.equal(state.idleStreak, 0, 'a share ends the streak exactly as a task turn does');
+});
+
+test('with the share flag OFF the same turn is byte-identical to one whose ledger never held a question', async () => {
+  // The flag's whole contract, at the seam that consumes it: with CONVO_SHARE_TURNS_ENABLED off, the
+  // ledger fact the share shape reads changes NOTHING. The same message, the same handle and the
+  // same empty world, differing only in a tail of `question` — and the two prompts have to come out
+  // the same string, because on this build the follow-up relaxation does not exist and 'hmm' is the
+  // idle turn it always was.
+  const seeded = randomUUID();
+  await seedFollowUp(seeded);
+  const first = fakeLane(envelope(['mm']));
+  await chat(seeded, 'hmm', emptyMedia(), clientCtx(), first.call);
+  const withTail = first.seen[0].system ?? '';
+
+  // A pristine world for the control, so the only thing that differs between the two turns is the
+  // ledger row one of them was seeded with.
+  resetStorageForTests();
+  clearTraces();
+  const plain = randomUUID();
+  const second = fakeLane(envelope(['mm']));
+  await chat(plain, 'hmm', emptyMedia(), clientCtx(), second.call);
+
+  assert.equal(withTail, second.seen[0].system ?? '', 'not one byte of the prompt knows about the tail');
+  assert.ok(withTail.includes(HOOK_HEADING) && withTail.includes('Turn: idle'), 'both are the idle turn they were before');
+  assert.ok(!withTail.includes(SHARE_HEADING) && !withTail.includes('Turn: share'));
+  assert.ok(!withTail.includes(craftModuleText('share')), 'and the share page is not on this build');
 });

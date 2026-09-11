@@ -10,9 +10,10 @@
 //      prompt rather than something 40k characters back up in the transcript;
 //   2. NAMES its shape, classified in code (see classifyTurnShape) — a greeting is not a work ask,
 //      and the fast tier should not have to infer that from a wall of prose;
-//   3. SAYS WHAT THE TURN IS FOR — work, or a turn that asked for nothing, decided by the idle gate
-//      (persona/idle.ts) before the prompt was built, plus the two checkable facts an idle turn
-//      carries. That line is ABSENT, not false, on a caller that never ran the gate;
+//   3. SAYS WHAT THE TURN IS FOR — work, a turn that asked for nothing, or a turn that handed her
+//      something and asked for nothing, decided by the idle gate (persona/idle.ts) before the prompt
+//      was built, plus the checkable facts each kind carries. That line is ABSENT, not false, on a
+//      caller that never ran the gate;
 //   4. SHOWS the one or two held items that actually touch it. This is the inversion the block
 //      exists for: association arrives as EVIDENCE ("here is what touches this, and nothing else
 //      does") rather than as another instruction to associate. When nothing touches it, the block
@@ -24,6 +25,11 @@
 // The one env read is the feature flag at the bottom, which gates the PUSH SITE, not the renderer.
 
 import { dataTag, neutralizeTagBreakouts } from '../../llm/promptTag.js';
+// The gate's own vocabulary, TYPE-ONLY: this line is erased at compile time, so the runtime edge
+// still runs one way (persona/idle.ts is a leaf that mirrors this file's tokenizer rather than
+// importing it, and its header says why). The three words belong to the gate, and a second copy of
+// them here would be a second answer to "how many kinds of turn are there".
+import type { TurnKind } from '../../persona/idle.js';
 
 /**
  * What a message IS, as far as code can tell from its surface. Six shapes, single-sourced here so
@@ -60,23 +66,25 @@ export interface TurnFocusInput {
   /** Held things that touch it, best first. At most TURN_FOCUS_MAX_HITS are rendered. */
   hits: readonly TurnFocusHit[];
   /**
-   * Did this turn ask for anything? Decided by the idle gate before the prompt is built
+   * WHICH KIND of turn this is: work, a turn that asked for nothing, or a turn that handed her
+   * something and asked for nothing. Decided by the idle gate before the prompt is built
    * (persona/idle.ts), which is three layers of structural reads and at most one tiny classify call
    * — none of which belongs in a renderer.
    *
-   * ABSENT is a third state, not a false: a caller that never ran the gate (the composer's second
+   * ABSENT is a fourth state, not a `task`: a caller that never ran the gate (the composer's second
    * pass, an install with the hook machinery off) renders NO `Turn:` line at all, and the block is
-   * byte-identical to the one it produced before this field existed. `false` is the positive claim
+   * byte-identical to the one it produced before this field existed. `'task'` is the positive claim
    * "this is work", which is a different thing to say and worth one line to say it.
    */
-  idle?: boolean;
+  shape?: TurnKind;
   /** How many turns in a row have now been idle, including this one (persona/hooks.ts keeps the
    *  count). Rendered only on an idle turn: how many times running somebody has sent nothing is a
    *  checkable fact about them, and checkable facts are what a hook is made of. */
   idleStreak?: number;
   /** How long their message is, in characters — the raw inbound length, not the clipped restatement
    *  above it. The other checkable fact an idle turn carries: "hey" and a three-line stall are both
-   *  idle and are not the same turn. */
+   *  idle and are not the same turn. It is a fact about a SHARE turn too, and a truer one there —
+   *  the dose rule the share section states turns on whether they wrote more than a line. */
   messageChars?: number;
 }
 
@@ -97,6 +105,11 @@ export const TURN_FOCUS_MAX_HITS = 2;
 const HEADER = "## This turn — what you're answering";
 const TURN_IDLE = 'Turn: idle';
 const TURN_TASK = 'Turn: task';
+/** The third reading, and the one the whole share shape needs said out loud at the recency edge:
+ *  they handed her something. Its own const rather than a computed `Turn: ${shape}` for the reason
+ *  the two above are consts — these three strings are prompt text, and prompt text is written, not
+ *  assembled out of an identifier that happens to read well in English. */
+const TURN_SHARE = 'Turn: share';
 const HITS_LABEL = 'What you hold that touches it: ';
 const NO_HITS = 'nothing here touches it; answer from the thread above.';
 const CLOSER = 'Answer THIS. Everything above is background — it may shape HOW you answer, never WHAT.';
@@ -278,25 +291,34 @@ function ordinal(n: number): string {
 }
 
 /**
- * The turn's own reading: work, or a turn that asked for nothing plus the two checkable facts a
- * hook may be built out of (persona/hooks.ts, craft/hooks.md).
+ * The turn's own reading: work, a turn that asked for nothing plus the two checkable facts a hook
+ * may be built out of (persona/hooks.ts, craft/hooks.md), or a share plus the one fact that is true
+ * of it.
  *
- * '' when the caller never ran the idle gate — see `TurnFocusInput.idle`. Each clause of the idle
- * form is dropped when its number is absent or nonsensical rather than rendered as "undefined" or
- * "0th": the line is evidence, and a made-up count is worse than a missing one.
+ * '' when the caller never ran the idle gate — see `TurnFocusInput.shape`. Each clause is dropped
+ * when its number is absent or nonsensical rather than rendered as "undefined" or "0th": the line is
+ * evidence, and a made-up count is worse than a missing one.
+ *
+ * A SHARE TURN CARRIES NO STREAK, and that is arithmetic rather than taste. The count is how many
+ * turns in a row they sent NOTHING, and a share turn is them sending something — the ledger ends the
+ * streak on it (persona/hooks.ts `recordHook`), so the number in hand at prompt time describes the
+ * silences before this message and not this turn. Printing it beside `Turn: share` would be a
+ * checkable fact that is false, on the block whose whole job is evidence. The character count is
+ * kept on both, because it is a fact about the message they actually sent.
  */
 function renderTurnLine(input: TurnFocusInput): string {
-  if (input.idle === undefined) return '';
-  if (!input.idle) return TURN_TASK;
+  const shape = input.shape;
+  if (shape === undefined) return '';
+  if (shape === 'task') return TURN_TASK;
 
-  const parts = [TURN_IDLE];
+  const parts = [shape === 'share' ? TURN_SHARE : TURN_IDLE];
   const chars = input.messageChars;
   if (typeof chars === 'number' && Number.isFinite(chars) && chars >= 0) {
     const n = Math.floor(chars);
     parts.push(`their message: ${n} ${n === 1 ? 'character' : 'characters'}`);
   }
   const streak = input.idleStreak;
-  if (typeof streak === 'number' && Number.isFinite(streak) && streak >= 1) {
+  if (shape === 'idle' && typeof streak === 'number' && Number.isFinite(streak) && streak >= 1) {
     parts.push(`${ordinal(Math.floor(streak))} idle in a row`);
   }
   return parts.join(' · ');

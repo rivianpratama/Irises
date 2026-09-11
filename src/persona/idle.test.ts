@@ -30,10 +30,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   isIdleTurn, idleVetoes, idleSignals, followUpOnly, leafTokens, leafExamplesExtra, endsInQuestion,
-  fastPathCanRead,
+  fastPathCanRead, classifyNeeded,
   LEAF_EXAMPLES, IDLE_LAYERS, IDLE_MAX_TOKENS, IDLE_MAX_CHARS, SHARE_MAX_CHARS, TURN_KINDS,
   QUESTION_MARKS,
-  type IdleFacts, type IdleOptions, type IdleVerdict,
+  type CheapIdleFacts, type IdleFacts, type IdleOptions, type IdleVerdict,
 } from './idle.js';
 
 /** The quiet turn: nothing arrived, nothing is running, nothing is outstanding. */
@@ -505,4 +505,54 @@ test('the gate is deterministic — the same message twice is the same answer tw
   assert.deepEqual(await isIdleTurn('bosan', CLEAR, s.fn, SHARE_ON), await isIdleTurn('bosan', CLEAR, s.fn, SHARE_ON));
   assert.deepEqual(idleVetoes('did the 3 land?', CLEAR), idleVetoes('did the 3 land?', CLEAR));
   assert.deepEqual(idleSignals('did the 3 land?', CLEAR), idleSignals('did the 3 land?', CLEAR));
+});
+
+// ── the prefetch predicate ───────────────────────────────────────────────────
+//
+// `classifyNeeded` is the caller's licence to start layer 3 in parallel with its own memory read
+// (convo/client.ts), so it answers with a SUBSET of the facts the gate will have. Its contract is
+// one-directional and that is the only thing worth pinning: it may say yes where the gate later
+// vetoes (five wasted tokens), and it may never say no where the gate goes on to classify (a wrong
+// reading paid for with a latency win nobody asked for).
+
+/** The prefetch's view of a turn: the two facts a caller holds before the memory read answers. */
+const CHEAP: CheapIdleFacts = { attachmentNote: false, burstSize: 1 };
+
+test('the predicate never withholds a call the gate goes on to make', async () => {
+  // Every shape in this file's tables, on both sides of the flag: a stall, a share, a work ask, a
+  // message the tokenizer cannot read, a burst, an attachment, a vetoed message, a signal-bearing
+  // one. The gate is driven with the LOOSEST facts the predicate assumes, because that is the case
+  // where the two are actually comparable — with a veto in hand the gate stops early and the
+  // prediction is allowed to have been wrong.
+  const messages = [
+    'hey', 'ok', SEVEN, 'bosan', 'ok 볼래', 'hmm 明日は', 'deploy the cedars order',
+    'the morning meeting moved to friday', 'nothing much just tired', 'i am so done with today',
+    'ok.thanks', 'a'.repeat(SHARE_MAX_CHARS + 1), 'did the 3 land', 'hey?', '',
+  ];
+  for (const opts of [undefined, SHARE_ON]) {
+    for (const text of messages) {
+      const c = stub('share');
+      await isIdleTurn(text, CLEAR, c.fn, opts);
+      const predicted = classifyNeeded(text, CHEAP, opts);
+      if (c.calls.length) {
+        assert.equal(predicted, true, `the gate classified "${text}" and the predicate said no`);
+      }
+      // …and the other direction is a claim about waste, not about correctness: a predicted call the
+      // gate did not make is only ever legal where a fact the predicate cannot see decided it, and
+      // with CLEAR facts there is no such fact.
+      assert.equal(predicted, c.calls.length > 0, `"${text}" (share turns ${opts ? 'on' : 'off'})`);
+    }
+  }
+});
+
+test('the predicate reads the two facts it is given, and assumes nothing about the rest', () => {
+  // A file that really arrived is a veto the caller holds before the memory read, so it spends no
+  // call at all. A burst is a SIGNAL — with the third shape on it bars the fast path and the message
+  // goes to the lane, and with it off it is a veto again, exactly as in the gate's own table.
+  assert.equal(classifyNeeded('bosan', { ...CHEAP, attachmentNote: true }, SHARE_ON), false);
+  assert.equal(classifyNeeded('hey', { ...CHEAP, burstSize: 3 }, SHARE_ON), true, 'a burst is not a stall');
+  assert.equal(classifyNeeded('hey', { ...CHEAP, burstSize: 3 }), false, 'and off the flag it is a veto');
+  // The facts it CANNOT see are assumed at their loosest, which is what makes a yes here safe: a
+  // parked approval settles the turn at the gate, and the abandoned call is the price of the guess.
+  assert.equal(classifyNeeded('bosan', CHEAP, SHARE_ON), true);
 });

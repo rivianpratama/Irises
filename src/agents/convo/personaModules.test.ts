@@ -457,7 +457,7 @@ test('the hook page loads off the caller\'s fact, never off the turn-focus block
   // line at all, and would make a rendering flag decide which pages the model reads. Both halves
   // pinned: the block alone loads nothing, the fact alone loads the page.
   const blockOnly = args();
-  blockOnly[14] = { text: 'hey', hits: [], idle: true, idleStreak: 1, messageChars: 3 };
+  blockOnly[14] = { text: 'hey', hits: [], shape: 'idle', idleStreak: 1, messageChars: 3 };
   const rendering = buildSystemPromptSections(...blockOnly);
   assert.ok(rendering.system.includes('Turn: idle'), 'the turn-focus block really did render the idle line');
   assert.ok(

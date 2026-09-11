@@ -33,7 +33,9 @@
 //      every message long enough to be a share. The caller injects it (convo/idleClassify.ts wires
 //      it); this module only knows it returns one of four words. `stall` and `share` are the two
 //      that are not work. Anything else — `ask`, `unclear`, a garbled answer, a thrown call, a lane
-//      that timed out — is a task.
+//      that timed out — is a task. That call sits on the reply path, so `classifyNeeded` below lets
+//      the caller PREDICT it from the facts it holds early and start it in parallel with its own
+//      memory read; the prediction is allowed to be wrong in one direction only, and says so.
 //
 // AND THE FAST PATH NEVER HALF-READS A MESSAGE. A person may text in any language, and a real
 // message is often MIXED: one English ack and a clause in another script ("ok 볼래", "hmm 明日は").
@@ -374,6 +376,77 @@ export function followUpOnly(facts: IdleFacts): boolean {
   return facts.followUpOutstanding && !facts.pendingAsk;
 }
 
+/**
+ * Layer 2 in one predicate: can the English examples speak for this message, and do they call it a
+ * stall?
+ *
+ * Extracted rather than left inline because TWO callers now ask it — the gate itself, and the
+ * prefetch predicate below, which exists to answer "will layer 3 be reached" before the memory read
+ * has come back. A second copy of the three conditions would be a copy that decides a call is
+ * unnecessary on a message the gate then classifies anyway, i.e. the latency win handed back with a
+ * doubled bill. One copy, two readers.
+ *
+ * The three conditions are the gate's own, in the gate's order: a message already marked as no stall
+ * is not one made of stall tokens, a message the tokenizer cannot read WHOLE is not one the English
+ * list may judge, and a message that tokenized to nothing must not pass "every token is an example"
+ * vacuously.
+ */
+function fastPathStall(text: string, signals: readonly string[]): boolean {
+  if (signals.length) return false;
+  if (!fastPathCanRead(text)) return false;
+  const tokens = words(text);
+  const examples = leafTokens();
+  return tokens.length > 0 && tokens.every(tok => examples.has(tok));
+}
+
+/**
+ * The facts a caller can have in hand BEFORE the memory read has answered — the message-side ones,
+ * plus the burst the webhook already counted and the attachment note the media already decides.
+ *
+ * Deliberately a SUBSET of `IdleFacts` and deliberately not all of it: the three question facts are
+ * the memory read's and the ledger's, and waiting for them is exactly what the prefetch below exists
+ * not to do. `activeOps` is left out for a different reason — it is an in-memory read the caller
+ * takes at its own point in the turn, and a second sample here would be a second answer to "is a
+ * look running" with no one to arbitrate between them.
+ */
+export type CheapIdleFacts = Pick<IdleFacts, 'attachmentNote' | 'burstSize'>;
+
+/**
+ * WILL THIS TURN REACH LAYER 3? Answered from the cheap facts alone, so the caller can start the
+ * classify call in parallel with the memory read instead of behind it (convo/client.ts).
+ *
+ * It is a prediction and it is allowed to be wrong in exactly one direction. A `true` that the gate
+ * then vetoes — a parked approval the memory read reports, her own last turn ending on a question,
+ * a look that started — costs one abandoned five-token call and nothing else. A `false` costs a
+ * wrong reading, so every branch here has to be one the full gate would take too: the vetoes are
+ * asked with the unknown facts at their LOOSEST (nothing owed, nothing consented), which can only
+ * ever make this answer more permissive than the gate's, and the fast path is asked through the very
+ * function the gate asks.
+ *
+ * The flag rides along for the one thing it changes up here: with the third shape off a not-a-stall
+ * signal is a veto again, so the long message a share arrives in never reaches the lane and must not
+ * be prefetched either.
+ */
+export function classifyNeeded(text: string, facts: CheapIdleFacts, opts?: IdleOptions): boolean {
+  const t = (text ?? '').trim();
+  if (!t) return false;
+
+  // The unknowns at their loosest. Anything else here would be this function inventing a fact about
+  // the turn, which is the one thing the gate's own inputs are arranged never to do.
+  const full: IdleFacts = {
+    ...facts,
+    activeOps: false,
+    pendingAsk: false,
+    endsInQuestion: false,
+    followUpOutstanding: false,
+    consent: 'unclear',
+  };
+  const signals = idleSignals(t, full);
+  if (idleVetoes(t, full, opts).length > 0) return false;
+  if (opts?.shareTurns !== true && signals.length > 0) return false;
+  return !fastPathStall(t, signals);
+}
+
 // ── the three layers, in order ───────────────────────────────────────────────
 
 /** What the gate decided, which layer decided it, and what the message was marked as no stall for.
@@ -430,18 +503,10 @@ export async function isIdleTurn(
   if (vetoed) return { shape: 'task', layer: 'veto', signals };
 
   const relaxed = shareOn && followUpOnly(facts);
-  // A message that is not a stall cannot be a stall made of examples, so the fast path is skipped
-  // rather than consulted — and the skip is not a veto: layer 3 still reads the whole message.
-  //
-  // Two further conditions before the examples are consulted. The message has to be one the
-  // tokenizer read WHOLE (`fastPathCanRead`) — otherwise "ok 볼래" is judged on its one ASCII token
-  // and a request is read as a stall. And it has to have produced at least one token: a message that
-  // tokenizes to nothing would otherwise pass "every token is an example" vacuously, and a non-Latin
-  // stall would be called idle for the wrong reason — right answer, unreadable receipt, and wrong on
-  // the first message that isn't one.
-  const tokens = words(t);
-  const examples = leafTokens();
-  if (!signals.length && fastPathCanRead(t) && tokens.length && tokens.every(tok => examples.has(tok))) {
+  // The examples, under their three conditions (`fastPathStall` above states all three and why each
+  // one is there). A message they cannot speak for is not vetoed by that — it simply goes on to
+  // layer 3, which reads the whole message in any script.
+  if (fastPathStall(t, signals)) {
     // Their stall lands on her own follow-up: a one-word "meh" answering "how did it sit with you"
     // is the smallest share there is, and reading it as an idle turn would spend a hook on it and
     // leave the question she asked hanging.
