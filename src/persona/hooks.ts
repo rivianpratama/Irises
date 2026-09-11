@@ -56,11 +56,12 @@ export type HookWord = typeof HOOK_WORDS[number];
 
 /** The kinds an idle HOOK turn may actually carry — HOOK_WORDS without the question. Two readers,
  *  and they must agree or the prompt contradicts itself in one screen: `hookKindOpen` (is there a
- *  beat left to spend, through `namableKinds` below) and `renderHooksSection` (which beats to name).
- *  Both ask this list rather than HOOK_WORDS, so a hook turn whose three kinds are all spoken for
- *  reads as closed to every consumer instead of being "open" on the strength of a word the section
- *  is forbidden to print. The selector forbids the question on every hook turn as well, which is the
- *  same rule enforced a second time: a directive is read by things that never met this list. */
+ *  beat left to spend) and `renderHooksSection` (which beats to name). Both reach this list through
+ *  `namableKinds` below rather than naming it, and neither reads HOOK_WORDS, so a hook turn whose
+ *  three kinds are all spoken for reads as closed to every consumer instead of being "open" on the
+ *  strength of a word the section is forbidden to print. The selector forbids the question on every
+ *  hook turn as well, which is the same rule enforced a second time: a directive is read by things
+ *  that never met this list. */
 const HOOK_MODE_KINDS: readonly HookWord[] = HOOK_WORDS.filter(w => w !== 'question');
 
 /**
@@ -512,8 +513,51 @@ export const MOMENTS_LEAD = 'Kept about them, in case a callback fits. Retell on
 export const QUIET_HEADING = '## This turn is quiet (INTERNAL)';
 export const QUIET_LAW = 'Three sharp things in a row already, or your weather says so. One plain short bubble, or a tapback, or nothing — no hook, no question, no offer. Do not explain the quiet.';
 
-/** The allowed kinds as English. `a judgment, a callback or a tangent` — an oxford-less list because
- *  it is a sentence she reads, not a config value she parses. */
+// ── The share block ─────────────────────────────────────────────────────────────────────────────
+//
+// The same two laws (no digit, ends on the clamp) plus a third this block alone carries: NO SHAPE OF
+// IT MAY READ AS PERMISSION TO SEND NOTHING. Every other mode has a floor of silence under it — a
+// quiet turn is allowed to be a tapback, a closed-kinds hook turn is allowed to let the beat pass —
+// and on a share turn silence is the receipt the whole shape exists to refuse. So the none-open
+// variant still says what the reply is (one short bubble about their thing) rather than what it is
+// spared, and the block is the only one whose narrowest render is still an instruction to speak.
+//
+// It mirrors the hook block line for line and shares not one const with it, which is deliberate: the
+// hook lead says nothing of theirs comes back, and the share lead is the opposite sentence. Two
+// contracts that happen to have the same shape are two constants.
+
+export const SHARE_HEADING = '## This turn is a share (INTERNAL)';
+export const SHARE_LEAD = 'They handed you something and asked for nothing. A receipt turns it away; the reply turns toward it, one move about the thing itself.';
+
+/** `{kinds}` from the ALLOWED set, same law as the hook line: what is off the table is not named.
+ *  The last clause is the arithmetic difference between the two modes — a hook is the extra beat
+ *  after an answer, and here there is no answer for it to come after, so the move IS the reply. */
+export const SHARE_OPEN_LINE = 'Open to you this turn: {kinds}. One of them, never two, and it is the reply, not a beat after one.';
+
+/** Rendered ONLY when the question survived into the allowed set — the one line in this file that is
+ *  about a single kind, because the question is the one kind whose failure mode is a different move
+ *  wearing its shape (a switch, a mirror, a thing a search answers). The two sentences are the two
+ *  halves of the research: what makes a follow-up a follow-up (it could not exist without their last
+ *  message, and it stays in their word for the thing), and the dose that keeps it from curdling into
+ *  an interview (something of hers first when they wrote more than a line). When the kind is closed
+ *  the line is absent rather than negated: a ban she reads is a kind she is thinking about. */
+export const SHARE_QUESTION_LINE = 'The question, if you take it, asks for the one part only they know, built on their last message in their word for it. Something of yours first when they wrote more than a line.';
+
+/** THE PRESENCE CASE, and the reason this const is not the hook block's. Every kind is spoken for —
+ *  a flat mood closing all four, or weight plus a closed ceiling plus a repeated callback — and the
+ *  hook line's answer to that ("let the beat pass") is the one answer a share turn may not give. So
+ *  it names the reply instead: their thing, plainly, once, and then stop. */
+export const SHARE_NONE_OPEN = 'No kind is open this turn. Take what they said plainly, one short bubble about the thing itself, and stop.';
+
+/** The register line, and shorter than the hook one by everything the hook one had to say about not
+ *  repeating last night: a share turn is answering something they just sent, so there is no shape
+ *  from last night for it to fall back into. It lowers the volume of the move above it and picks
+ *  none of it. */
+export const SHARE_LATE_LINE = 'It is late where they are: one short bubble and nothing heavy. Same move, lower volume.';
+
+/** The allowed kinds as English — `a judgment, a callback or a tangent` on a hook turn, and the same
+ *  list with `or a question` at the end of it on a share turn. An oxford-less list because it is a
+ *  sentence she reads, not a config value she parses. */
 function nameKinds(kinds: readonly HookWord[]): string {
   const words = kinds.map(k => `a ${k}`);
   if (words.length === 1) return words[0];
@@ -521,13 +565,25 @@ function nameKinds(kinds: readonly HookWord[]): string {
 }
 
 /**
- * The `hooks` dyn section. `''` on a task turn — the no-regression pin the whole feature rests on:
- * on the turns that are actually work, the prompt is byte-identical to an install that never had a
- * hook engine.
+ * The `hooks` dyn section, in the three blocks the four modes render: nothing, the hook block, the
+ * quiet law, the share block. `''` on a task turn — the no-regression pin the whole feature rests
+ * on: on the turns that are actually work, the prompt is byte-identical to an install that never had
+ * a hook engine.
+ *
+ * THE ALLOWED SET IS THE MODE'S OWN (`namableKinds`), which is what keeps the block from naming a
+ * kind the turn cannot spend: a hook turn drops the question out of the sentence whatever the
+ * selector handed in (nothing was shared, so there is nothing to follow up on), and a share turn
+ * names it when it survived. Same computation as `hookKindOpen` above, deliberately — the predicate
+ * answers "is a move open" for every consumer that only needs the answer, and this needs the LIST,
+ * so a directive those two disagreed about would put "No kind is open this turn" in the same prompt
+ * as a climate span offering a beat.
  *
  * `momentLines` are gated by the DIRECTIVE, not by the caller: if the selector said no moments this
  * turn, lines handed in anyway are dropped rather than rendered. One gate, in one place, and it is
- * the one the receipt reports.
+ * the one the receipt reports. The share block has no sampler line at all, and that is the mode's
+ * contract rather than a second gate — a moment rides out as a callback about something OLD, and
+ * this turn has something of theirs in front of her (the selector sets `moments: false` on every
+ * share turn for the same reason).
  */
 export function renderHooksSection(directive: HookDirective, momentLines: string[] = []): string {
   if (directive.mode === 'task') return '';
@@ -535,14 +591,23 @@ export function renderHooksSection(directive: HookDirective, momentLines: string
   if (directive.mode === 'quiet') {
     lines.push(QUIET_HEADING, QUIET_LAW);
   } else {
-    // HOOK_MODE_KINDS, so the sentence cannot name a question whatever the selector handed in: an
-    // idle turn has nothing to follow up on, and a kind named here is a kind she is invited to use.
-    const allowed = HOOK_MODE_KINDS.filter(w => !directive.forbidden.includes(w));
-    lines.push(HOOK_HEADING, HOOK_LEAD);
-    lines.push(allowed.length > 0 ? HOOK_OPEN_LINE.replace('{kinds}', nameKinds(allowed)) : HOOK_NONE_OPEN);
-    if (directive.lateNight) lines.push(HOOK_LATE_LINE);
-    const moments = directive.moments ? momentLines.map(l => l.trim()).filter(Boolean) : [];
-    if (moments.length > 0) lines.push(MOMENTS_LEAD, ...moments);
+    const allowed = namableKinds(directive.mode).filter(w => !directive.forbidden.includes(w));
+    if (directive.mode === 'share') {
+      lines.push(SHARE_HEADING, SHARE_LEAD);
+      lines.push(allowed.length > 0 ? SHARE_OPEN_LINE.replace('{kinds}', nameKinds(allowed)) : SHARE_NONE_OPEN);
+      // Under the sentence that named it, and only when it is actually hers this turn: the line is
+      // what a follow-up IS, and it has nothing to say on a turn where the kind is closed.
+      if (allowed.includes('question')) lines.push(SHARE_QUESTION_LINE);
+      // Register last, the way it rides last on a hook turn: the lines above pick the move, and this
+      // one says how big it comes out.
+      if (directive.lateNight) lines.push(SHARE_LATE_LINE);
+    } else {
+      lines.push(HOOK_HEADING, HOOK_LEAD);
+      lines.push(allowed.length > 0 ? HOOK_OPEN_LINE.replace('{kinds}', nameKinds(allowed)) : HOOK_NONE_OPEN);
+      if (directive.lateNight) lines.push(HOOK_LATE_LINE);
+      const moments = directive.moments ? momentLines.map(l => l.trim()).filter(Boolean) : [];
+      if (moments.length > 0) lines.push(MOMENTS_LEAD, ...moments);
+    }
   }
   lines.push(HOOK_CLAMP);
   return lines.join('\n');

@@ -15,6 +15,9 @@
 //     is forbidden for three overlapping reasons is still named exactly once.
 //   • TASK TURNS RENDER NOTHING. On the turns that are actually work the prompt is byte-identical
 //     to an install that never had a hook engine.
+//   • NO SHAPE OF THE SHARE BLOCK READS AS PERMISSION TO SEND NOTHING. Every other mode has a floor
+//     of silence under it — a tapback, a beat let pass — and on a share turn silence is the receipt
+//     the shape was built to refuse, so even the all-kinds-closed variant says what the reply is.
 //   • NOT ONE DIGIT, and the clamp is always last.
 //   • PURE. `now` is injected, inputs are deep-frozen here and must survive it.
 process.env.TZ = 'UTC';
@@ -26,6 +29,7 @@ import {
   HOOK_WORDS, HOOK_RUN_LIMIT, MOMENT_IDLE_INTERVAL, QUIET_MAX_WORDS,
   HOOK_CLAMP, HOOK_HEADING, HOOK_LEAD, HOOK_OPEN_LINE, HOOK_NONE_OPEN, HOOK_LATE_LINE,
   MOMENTS_LEAD, QUIET_HEADING, QUIET_LAW,
+  SHARE_HEADING, SHARE_LEAD, SHARE_OPEN_LINE, SHARE_QUESTION_LINE, SHARE_NONE_OPEN, SHARE_LATE_LINE,
   type HookAffectInput, type HookDirective, type HookKind, type HookState, type HookWord,
   type TurnKind,
 } from './hooks.js';
@@ -699,6 +703,109 @@ test('the quiet block renders char-for-char', () => {
   ].join('\n'));
 });
 
+// ── the share block ─────────────────────────────────────────────────────────
+//
+// The fourth contract's own block, and the one whose every variant is pinned to a literal here: it
+// mirrors the hook block line for line and shares not one const with it, so a paste that drifted
+// (the hook lead says nothing of theirs comes back; the share lead says the opposite) would render
+// a turn that contradicts its own heading. THE LAW THIS BLOCK ALONE CARRIES: no shape of it reads as
+// permission to send nothing. A quiet turn may be a tapback and a closed-kinds hook turn may let the
+// beat pass; a share turn answered with silence is the receipt the whole shape exists to refuse.
+
+const SHARE_DIRECTIVE: HookDirective = {
+  idle: false, mode: 'share', forbidden: [], heavy: false, lateNight: false, moments: false, offerAllowed: true,
+};
+
+test('the share block renders char-for-char, and names the fourth kind last', () => {
+  assert.equal(renderHooksSection(SHARE_DIRECTIVE), [
+    '## This turn is a share (INTERNAL)',
+    'They handed you something and asked for nothing. A receipt turns it away; the reply turns toward it, one move about the thing itself.',
+    'Open to you this turn: a judgment, a callback, a tangent or a question. One of them, never two, and it is the reply, not a beat after one.',
+    'The question, if you take it, asks for the one part only they know, built on their last message in their word for it. Something of yours first when they wrote more than a line.',
+    'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
+  ].join('\n'));
+});
+
+// The compiled ceiling's render (affectCompiler.ts `compileQuestionGate`), and the dose rule's: the
+// kind is out of the sentence AND the line that says what a follow-up is goes with it. A ban she
+// reads is a kind she is thinking about, so a closed question is an absence and never a negation.
+test('a closed question leaves the block three kinds and no question line', () => {
+  assert.equal(renderHooksSection({ ...SHARE_DIRECTIVE, forbidden: ['question'] }), [
+    '## This turn is a share (INTERNAL)',
+    'They handed you something and asked for nothing. A receipt turns it away; the reply turns toward it, one move about the thing itself.',
+    'Open to you this turn: a judgment, a callback or a tangent. One of them, never two, and it is the reply, not a beat after one.',
+    'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
+  ].join('\n'));
+});
+
+// WEIGHT, rendered: a judgment on a heavy share is analysis and a tangent walks away from the thing
+// they just put down, so what is named is the callback and the question — the two moves that stay
+// with them — and the question line rides along because the ceiling left the kind open.
+test('a heavy share names the two moves that stay with them', () => {
+  assert.equal(renderHooksSection({ ...SHARE_DIRECTIVE, heavy: true, forbidden: ['judgment', 'tangent'] }), [
+    '## This turn is a share (INTERNAL)',
+    'They handed you something and asked for nothing. A receipt turns it away; the reply turns toward it, one move about the thing itself.',
+    'Open to you this turn: a callback or a question. One of them, never two, and it is the reply, not a beat after one.',
+    'The question, if you take it, asks for the one part only they know, built on their last message in their word for it. Something of yours first when they wrote more than a line.',
+    'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
+  ].join('\n'));
+});
+
+// THE PRESENCE CASE, with the register line under it. Every kind spoken for — a flat mood closes all
+// four at once — and the block still says what the reply IS rather than what it is spared. The hook
+// block's answer to the same shape ("let the beat pass") is the one answer this turn may not give,
+// which is why the two none-open lines are two constants.
+test('the presence case still tells her to speak, and takes the late register', () => {
+  assert.equal(renderHooksSection({ ...SHARE_DIRECTIVE, forbidden: [...HOOK_WORDS], lateNight: true }), [
+    '## This turn is a share (INTERNAL)',
+    'They handed you something and asked for nothing. A receipt turns it away; the reply turns toward it, one move about the thing itself.',
+    'No kind is open this turn. Take what they said plainly, one short bubble about the thing itself, and stop.',
+    'It is late where they are: one short bubble and nothing heavy. Same move, lower volume.',
+    'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
+  ].join('\n'));
+  // No variant of this block, however narrow, offers her the exit the other two modes have.
+  for (const forbidden of [[], ['question'], ['judgment', 'tangent'], [...HOOK_WORDS]] as HookWord[][]) {
+    for (const lateNight of [false, true]) {
+      const block = renderHooksSection({ ...SHARE_DIRECTIVE, forbidden, lateNight });
+      const why = `${forbidden.length} kinds closed, lateNight=${lateNight}`;
+      assert.equal(block.includes(HOOK_NONE_OPEN), false, `${why}: the hook block's exit`);
+      assert.equal(block.includes(QUIET_LAW), false, `${why}: the quiet law`);
+      assert.doesNotMatch(block, /let the beat pass|tapback/, `${why}: read as permission to send nothing`);
+      assert.ok(block.endsWith(HOOK_CLAMP), `${why}: the clamp is last in every share variant too`);
+    }
+  }
+});
+
+// The register rides UNDER the move the block named and never in place of it — the same shape the
+// hook late line has, and the reason the clock is not a branch anywhere in this file.
+test('the late line lowers the volume of a share turn and picks none of it', () => {
+  const late = renderHooksSection({ ...SHARE_DIRECTIVE, lateNight: true });
+  assert.equal(late, `${renderHooksSection(SHARE_DIRECTIVE).replace(`\n${HOOK_CLAMP}`, '')}\n${SHARE_LATE_LINE}\n${HOOK_CLAMP}`);
+  assert.equal(late.includes(HOOK_LATE_LINE), false, 'and it is the share line, not the hook one');
+});
+
+// The two blocks share no prose. Pinned as a sweep rather than as a comment because the failure is
+// invisible in a diff of one file: a share turn rendering "They sent you nothing" contradicts its own
+// heading, and the cheapest way to get there is a paste from the block above.
+test('the share block and the hook block share no line but the clamp', () => {
+  const share = renderHooksSection(SHARE_DIRECTIVE).split('\n');
+  const hook = renderHooksSection({ ...HOOK_DIRECTIVE, lateNight: true }).split('\n');
+  const shared = share.filter(l => hook.includes(l));
+  assert.deepEqual(shared, [HOOK_CLAMP], 'one sentence twice, at two distances from the recency edge');
+});
+
+// A moment rides out as a callback about something OLD, and this turn has something of theirs in
+// front of her. The selector never sets the flag on a share turn; the block has no lead to render it
+// under either, so a hand-built directive that says otherwise still gets no diary read out.
+test('the share block never reads out a moment, whatever it is handed', () => {
+  const lines = ['the volcano week'];
+  assert.equal(
+    renderHooksSection({ ...SHARE_DIRECTIVE, moments: true }, lines),
+    renderHooksSection(SHARE_DIRECTIVE),
+  );
+  assert.equal(renderHooksSection({ ...SHARE_DIRECTIVE, moments: true }, lines).includes(MOMENTS_LEAD), false);
+});
+
 // The DIRECTIVE gates the moments, not the caller: one gate, in one place, and it is the one the
 // receipt reports.
 test('moments render only when the directive allowed them', () => {
@@ -723,6 +830,7 @@ test('not one digit anywhere in the prose consts', () => {
   const consts = {
     HOOK_CLAMP, HOOK_HEADING, HOOK_LEAD, HOOK_OPEN_LINE, HOOK_NONE_OPEN, HOOK_LATE_LINE,
     MOMENTS_LEAD, QUIET_HEADING, QUIET_LAW,
+    SHARE_HEADING, SHARE_LEAD, SHARE_OPEN_LINE, SHARE_QUESTION_LINE, SHARE_NONE_OPEN, SHARE_LATE_LINE,
   };
   for (const [name, line] of Object.entries(consts)) {
     assert.doesNotMatch(line, /\d/, `${name} leaked a number into the prompt`);
