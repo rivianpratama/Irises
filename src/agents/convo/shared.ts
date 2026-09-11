@@ -3087,14 +3087,36 @@ export async function processConvoResult(args: {
     // turn it fixed did not break the quiet.
     hookViolation = hookTurn.directive.mode === 'quiet'
       && quietViolation(emitted?.hook_kind, replyBubbles(reply));
-    // A hook word on a TASK turn is not re-asked — the answer already went out flat or it did not,
-    // and a second call over one envelope field would spend a turn's recovery on bookkeeping. It is
-    // counted (the ledger line below reads the same field) and receipted, which is what the battery
-    // scores. Only on a turn the gate actually read as work.
-    if (hookTurn.directive.mode === 'task' && emitted?.hook_kind) {
+    // A move the SHAPE of the turn had no room for is not re-asked — the reply already went out or
+    // it did not, and a second call over one envelope field would spend a turn's recovery on
+    // bookkeeping. It is counted (the ledger line below reads the same field) and receipted, which
+    // is what the battery scores. Two shapes reach this receipt, and `mode` is what tells them
+    // apart at a glance, in the ring and in a round's table:
+    //
+    //   task + ANY word — the answer that was supposed to go out flat carried a beat instead. The
+    //     original case, and the one that made the idle gate necessary.
+    //   hook + `question` — the idle law's one ban, broken. Idle mode forbids the question outright
+    //     (persona/hooks.ts) because nothing was handed to her for a follow-up to be about, and a
+    //     question of hers on a stall costs more than the beat: their next stall becomes the answer
+    //     to it, the gate's pending veto routes that to work, and the kill switch it would have
+    //     fired never gets the turn. The gate reads the slip back off the ledger tail too
+    //     (persona/idle.ts `followUpOutstanding`), so this receipt is where a reader learns why the
+    //     next short message came up a share.
+    //
+    // Neither of the other two modes reaches it, for different reasons. A loud word on a QUIET turn
+    // is the guard's business one line above — that one IS re-asked. And on a SHARE turn every kind
+    // including the question is shape-legal; what closes the question there is the affect ceiling or
+    // the no-two-running rule, which live INSIDE the shape, and a slip against those is scored off
+    // the trace and the ledger rather than filed as a turn that carried the wrong sort of move.
+    const offTurnMode = hookTurn.directive.mode;
+    if (emitted?.hook_kind
+      && (offTurnMode === 'task' || (offTurnMode === 'hook' && emitted.hook_kind === 'question'))) {
       record({
         type: 'event', label: HOOK_OFF_TURN_LABEL, chatId, handle,
-        detail: { emitted: emitted.hook_kind, idle: hookTurn.directive.idle },
+        // `idle` is now derivable from `mode` (task is never idle, hook always is) and is kept
+        // anyway: it is what the battery's evidence line prints, and dropping it would rewrite the
+        // shape of every row a past round was read on for no reading anyone gains.
+        detail: { emitted: emitted.hook_kind, idle: hookTurn.directive.idle, mode: offTurnMode },
       });
     }
     // The KIND of turn, read back off the directive the selector produced (persona/hooks.ts

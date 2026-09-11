@@ -320,9 +320,12 @@ export interface QuietGuardDetail {
   resolved: 'clean' | 'quiet' | 'kept_original' | 'stood_down';
 }
 
-/** `hook:off_turn` (agents/convo/shared.ts): a hook word that rode a task turn. Counted and
- *  receipted, never re-asked. */
-export interface OffTurnDetail { emitted: HookWord; idle: boolean }
+/** `hook:off_turn` (agents/convo/shared.ts): a move the shape of the turn had no room for. Counted
+ *  and receipted, never re-asked. Two shapes file it — any word on a task turn, and the `question`
+ *  on a hook turn, which idle mode forbids outright — and `mode` is which. OPTIONAL because a round
+ *  may be read against an engine that predates the field; a row without it is the task case, since
+ *  that was the only case that existed. */
+export interface OffTurnDetail { emitted: HookWord; idle: boolean; mode?: HookMode }
 
 /**
  * `moments:offer` (agents/convo/client.ts): EVERY run of the sampler, the healthy no-op included.

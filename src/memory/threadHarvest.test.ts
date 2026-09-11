@@ -211,6 +211,41 @@ test('a bare tick still writes the row, and is deliberately NOT traced', async (
   assert.equal(trace('threads:harvest'), undefined);
 });
 
+// The same policy, second shape. An outcome with no offer behind it is `orphaned` — code never
+// asked for feedback, so the harvest applies nothing — and it is now what an ordinary share turn
+// produces: the envelope asks her to report how her own follow-up question landed, and on the turns
+// where no thread block rendered that report has no offer to be about. Every-turn noise is exactly
+// what the receipt policy above exists to keep out of the ring.
+test('an orphaned outcome that moved nothing is not traced — and one that moved something still is', async () => {
+  await seed(H, { themes: [taggableTheme(T0)], harvestCount: 3 });
+
+  await updateThreadInventory(H, status({ thread_outcome: 'took' }), { now: T0 });
+  assert.equal((await getThreadInventory(H)).harvestCount, 4, 'the tick still ran');
+  assert.equal(trace('threads:harvest'), undefined, 'and it left no receipt');
+  // Nothing was lost with the row: `rapport` drifts off the emitted field itself
+  // (persona/status.ts mergeStatusWithDrift), and the turn's own `convo:status` still carries it.
+
+  // A NOTE in the same envelope keeps the row, orphan and all — the drop is about the turns where
+  // the harvest did nothing, not about the word `orphaned`.
+  clearTraces();
+  await updateThreadInventory(H, status({ thread_outcome: 'took', thread_note: 'goal: ship the rewrite' }), { now: T0 });
+  assert.equal(detail(trace('threads:harvest')).outcome, 'orphaned');
+
+  // And so does a transition: the tick's own clock work is a real movement, and a row that says a
+  // loop expired is a row a reader needs whatever else the envelope claimed.
+  clearTraces();
+  await seed(H, {
+    loops: [{
+      id: 'l1', label: 'the cedars', note: 'waiting on the north supplier', status: 'open',
+      capturedAt: T0 - 40 * DAY, lastSeenAt: T0 - 40 * DAY, offeredAt: 0, askedAt: 0, resolvedAt: 0, passes: 0,
+    }],
+  });
+  await updateThreadInventory(H, status({ thread_outcome: 'took' }), { now: T0 });
+  const ev = detail(trace('threads:harvest'));
+  assert.equal(ev.outcome, 'orphaned');
+  assert.deepEqual(ev.transitions, ['loop l1 open→expired (quiet)']);
+});
+
 test('an in-flight harvest is not started twice for the same handle', async () => {
   const first = updateThreadInventory(H, status({ thread_note: 'tension: speed vs craft' }), { now: T0 });
   const second = updateThreadInventory(H, status({ thread_note: 'goal: ship the rewrite' }), { now: T0 });

@@ -130,7 +130,21 @@ export async function updateThreadInventory(
     // threads:harvest event on every reply in the ring buffer and drown the dashboard in the one
     // shape that carries no information. Per-turn visibility already rides `convo:status`, which
     // carries the two emitted fields; this event is for the turns where something actually MOVED.
-    if (report.note !== 'none' || report.outcome !== 'none' || report.transitions.length > 0) {
+    //
+    // AN ORPHANED OUTCOME THAT MOVED NOTHING IS THE SAME NOTHING. `orphaned` is what an outcome with
+    // no offer behind it is called (persona/threads.ts): code never asked for feedback, so nothing
+    // was applied and no transition was pushed. It used to be rare enough to be worth a row — the
+    // model inventing a report on a tag it was never handed. It stops being rare the turn she gets a
+    // follow-up question of her own: `thread_outcome` now also fires when her own question landed or
+    // bounced (persona/status.ts's trigger clause), and on the far more common turn where no thread
+    // block rendered at all that report arrives with no offer behind it and reads as orphaned. A
+    // receipt on every one of those is the drowning this policy exists to prevent. Nothing downstream
+    // loses the reading: `rapport` drifts off `emitted.thread_outcome` itself
+    // (persona/status.ts `mergeStatusWithDrift`), never off this report, and `convo:status` still
+    // carries the field. An orphan that DID move something — the mid-flight eviction, where a sweep
+    // in the same pass left transitions — keeps its row.
+    const outcomeMoved = report.outcome !== 'none' && report.outcome !== 'orphaned';
+    if (report.note !== 'none' || outcomeMoved || report.transitions.length > 0) {
       record({
         type: 'event',
         label: 'threads:harvest',

@@ -109,6 +109,11 @@ const HOOK: HookDirective = {
 };
 const QUIET: HookDirective = { ...HOOK, mode: 'quiet', offerAllowed: false };
 const TASK: HookDirective = { ...HOOK, idle: false, mode: 'task', offerAllowed: false };
+/** The fourth mode, as the selector hands it over: they said something, so `idle` is false, and the
+ *  question is one of the kinds the shape leaves open. Only the post-model block below needs it —
+ *  what a share turn RENDERS is pinned in persona/hooks.test.ts, and the front-door case that
+ *  produces one of these for real is the client seam's. */
+const SHARE: HookDirective = { ...HOOK, idle: false, mode: 'share' };
 
 type BuildArgs = Parameters<typeof buildSystemPromptSections>;
 
@@ -536,7 +541,48 @@ test('a task turn that hooked anyway is counted and receipted, and is NOT re-ask
   assert.deepEqual(calls, [], 'a second call over one envelope field is not worth a turn\'s recovery');
   assert.equal(quietReceipt(), undefined);
   const off = getTraces().find(e => e.label === 'hook:off_turn')?.detail;
-  assert.deepEqual(off, { emitted: 'judgment', idle: false });
+  assert.deepEqual(off, { emitted: 'judgment', idle: false, mode: 'task' });
+});
+
+test('a HOOK turn that ASKED is off-turn too — the one ban an idle turn carries', async () => {
+  // The second shape of the same receipt. An idle turn forbids the question with no condition
+  // attached (persona/hooks.ts), and the cost of the slip outlives the beat: the ledger tail is now
+  // `question`, which is what hands the NEXT short message a share turn it did not earn
+  // (persona/idle.ts `followUpOutstanding`). So the row has to exist, and it has to say which mode
+  // had no room for the move — a reader who only saw `emitted: 'question'` would go looking for the
+  // task answer that never happened.
+  const calls: string[] = [];
+  const args = turnArgs();
+  await processConvoResult({
+    ...args,
+    res: envelope(['what did they end up saying'], 'question'),
+    hooks: hookArgs(HOOK),
+    turn: turnCtx(async req => { calls.push(String(req.trace?.label)); return envelope(['x']); }),
+  });
+  assert.deepEqual(calls, [], 'the same bargain as the task case: counted, never re-asked');
+  assert.equal(quietReceipt(), undefined, 'nothing forced this turn quiet');
+  const off = getTraces().find(e => e.label === 'hook:off_turn')?.detail;
+  assert.deepEqual(off, { emitted: 'question', idle: true, mode: 'hook' });
+  assert.deepEqual((await getHookState(args.chatId)).lastKinds, ['question'],
+    'and the ledger records what shipped, the way it does for a violation');
+});
+
+test('the three CARRYING kinds on a hook turn are not off-turn, and a question on a SHARE turn is its move', async () => {
+  // The boundary, from both sides. An idle turn is what the other three kinds are FOR, so a row
+  // there would fire on the engine working. And on a share turn every kind including the question is
+  // shape-legal: what closes the question there is the affect ceiling or the no-two-running rule,
+  // both inside the shape, and a slip against those is read off the trace and the ledger rather than
+  // filed as a turn that carried the wrong sort of move.
+  for (const kind of ['judgment', 'callback', 'tangent'] as const) {
+    clearTraces();
+    await processConvoResult({ ...turnArgs(), res: envelope(['mm'], kind), hooks: hookArgs(HOOK) });
+    assert.equal(getTraces().find(e => e.label === 'hook:off_turn'), undefined, `${kind} is what an idle turn is for`);
+  }
+  for (const kind of ['judgment', 'callback', 'tangent', 'question'] as const) {
+    clearTraces();
+    await processConvoResult({ ...turnArgs(), res: envelope(['mm'], kind), hooks: hookArgs(SHARE) });
+    assert.equal(getTraces().find(e => e.label === 'hook:off_turn'), undefined, `${kind} is open to a share turn`);
+  }
 });
 
 test('the ledger records what shipped — a violation counts as its emitted kind', async () => {
@@ -727,7 +773,7 @@ test('a TASK message closes the thread offer, renders no hooks block, and still 
   assert.equal(threads?.reason, 'offer_suppressed');
 
   // …and the envelope field she should not have sent on a work turn is counted, not re-asked.
-  assert.deepEqual(receipt('hook:off_turn'), { emitted: 'judgment', idle: false });
+  assert.deepEqual(receipt('hook:off_turn'), { emitted: 'judgment', idle: false, mode: 'task' });
   assert.deepEqual((await getHookState(chatId)).lastKinds, ['judgment']);
 });
 
