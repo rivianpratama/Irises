@@ -246,18 +246,25 @@ test('hookKindOpen answers whether a beat is OPEN, never what the mode says', ()
     idle: true, mode: 'hook', forbidden: [], lateNight: false, moments: true, offerAllowed: true,
   };
   assert.equal(hookKindOpen(hook), true, 'all three open');
-  // Any ONE kind left is still a beat she may spend, so the boundary is the whole set and not a
-  // count: a room forbids judgment and a flat mood forbids a tangent, and a callback is still a hook.
+  // Any ONE carrying kind left is still a beat she may spend, so the boundary is the whole set and
+  // not a count: a room forbids judgment and a flat mood forbids a tangent, and a callback is still
+  // a hook. The question is the one word the predicate reads past — a hook turn cannot spend it
+  // (nothing was shared, so there is nothing to follow up on) and the section it ships is forbidden
+  // to name it, so a turn whose only "open" kind is the question has to read closed HERE too, or the
+  // climate span offers a beat the prompt never named.
   for (const w of HOOK_WORDS) {
-    assert.equal(hookKindOpen({ ...hook, forbidden: HOOK_WORDS.filter(k => k !== w) }), true, w);
+    assert.equal(hookKindOpen({ ...hook, forbidden: HOOK_WORDS.filter(k => k !== w) }), w !== 'question', w);
   }
   assert.equal(hookKindOpen({ ...hook, forbidden: [...HOOK_WORDS] }), false, 'the closed-kinds shape');
   // Which is why the reading is taken over the SET and not off `forbidden.length`: a list that
-  // carries a duplicate has HOOK_WORDS.length entries and still leaves a kind open. The renderer
-  // always read the set (`allowed.length > 0`), so a counting predicate would have called this turn
-  // closed while the section it ships names tangent — the disagreement this predicate exists to end.
+  // carries a duplicate has as many entries as there are carrying kinds and still leaves one open.
+  // The renderer always read the set (`allowed.length > 0`), so a counting predicate would have
+  // called this turn closed while the section it ships names tangent — the disagreement this
+  // predicate exists to end. The count to fool is the CARRYING kinds, not the vocabulary: the
+  // question is in HOOK_WORDS and in no hook turn's set.
+  const carrying = HOOK_WORDS.filter(w => w !== 'question');
   const dupe: HookDirective = { ...hook, forbidden: ['judgment', 'judgment', 'callback'] };
-  assert.equal(dupe.forbidden.length, HOOK_WORDS.length, 'the shape that fools a count');
+  assert.equal(dupe.forbidden.length, carrying.length, 'the shape that fools a count');
   assert.equal(hookKindOpen(dupe), true, 'tangent is still open');
   assert.equal(
     renderHooksSection(dupe),

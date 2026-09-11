@@ -104,7 +104,15 @@ test('every consumer the table names is still an exported function', () => {
 
 /**
  * What `JSON.stringify(STATUS_SCHEMA_PROP)` stands at TODAY, in characters, rounded up inside the 2%
- * PROMPT_BUDGET holds its own lines to. 3,413 measured. The Never-Send-a-Leaf rewrite: +218, from
+ * PROMPT_BUDGET holds its own lines to. 3,587 measured. The share turn: +174, from 3,413, over two
+ * descriptions and no new row — +140 on `hook_kind`, which names a fourth word (`question`) and
+ * carries the two sentences that are the model's whole side of the question gate (a question
+ * outranks the other kinds when one was asked; a question off a share turn is reported rather than
+ * hidden, because the receipt that catches it reads this field), and +34 on `thread_outcome`, whose
+ * trigger clause gains her own follow-up landing or bouncing. The cheap alternative was a field
+ * asking her whether she asked a question, which would have been a fifth droppable row paid for on
+ * every request to both lanes; the word rides the row that already reports the move. The ceiling
+ * below stands at +1.8% of the measurement, inside the band. Was 3,413 measured. The Never-Send-a-Leaf rewrite: +218, from
  * 3,195, and all of it `hook_kind` joining the table — a 193-character row for the rhythm engine's
  * one input, plus 25 for its key on both of the wrapper's lists. Nothing else in the phase reached
  * this copy: the character rebuild happened in prose the schema does not carry, and re-measuring at
@@ -113,14 +121,14 @@ test('every consumer the table names is still an exported function', () => {
  * the only channel through which a language the English fast path cannot read reaches code at all).
  *
  * It is deliberately NOT the 1,600 the task brief targeted, and the arithmetic says why. The ten
- * rows are 3,010 of the 3,413; the wrapper (`required`, the types, `additionalProperties`) is the
- * remaining 403. `thread_note` alone is 1,022 and `thread_outcome` 454 — 43% of the schema in
- * two rows — because those two descriptions are where P1 re-homed three CAPTURE rules that had lived
+ * rows are 3,184 of the 3,587; the wrapper (`required`, the types, `additionalProperties`) is the
+ * remaining 403, and has not moved through any of this. `thread_note` alone is 1,022 and
+ * `thread_outcome` 488 — 42% of the schema in two rows — because those two descriptions are where P1 re-homed three CAPTURE rules that had lived
  * in Context.md only: the venting clause, the bare-fact exclusion and the anti-optimism read
  * (RESCUED_CAPTURE_RULES in status.test.ts, `thread_note_precedence` and
  * `thread_note_capture_when_heavy` in CLAUSE_INVENTORY). Deleting the pair would land the schema at
- * ~1,937, under the target — and would delete three behaviour rules with no other home. Every other
- * row is already one sentence or an enum list.
+ * ~2,077 — and would delete three behaviour rules with no other home. Every other row is already
+ * one sentence or an enum list.
  *
  * So the number to hold is the measurement, and the way to move it is to shorten a rule, in the
  * table, where both copies change together. Ratchet it here in the same commit when one does.
@@ -134,7 +142,7 @@ test('every consumer the table names is still an exported function', () => {
  * field asking her to nominate her own moments — which would have been paid for on every request to
  * both lanes, twice over, whether or not a moment was ever minted.
  */
-const SCHEMA_JSON_CEILING = 3_470;
+const SCHEMA_JSON_CEILING = 3_650;
 
 /** How much the ceiling may sit above the measurement, copied from promptBudget.test.ts so this copy
  *  of the descriptions is held to the same band as the `status_contract` copy of them. The downward

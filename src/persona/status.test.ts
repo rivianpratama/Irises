@@ -192,15 +192,20 @@ test('an adversarial thread_note comes out inert', () => {
 
 // ── the rhythm engine's one input: `hook_kind` ───────────────────────────────
 // The one field of the envelope that reports on the REPLY rather than on her or on them: what the
-// text she just wrote actually carried beyond the answer. Everything else about the rhythm — the
+// text she just wrote actually carried — beyond the answer on a task turn, and as the whole reply
+// on a share turn, which is why the description calls it a move rather than a beat. Everything else about the rhythm — the
 // run, the window, the kill switch, the forbidden kinds — is arithmetic over one stored row
 // (persona/hooks.ts), so this word is the whole of the model's influence over it.
 
-test('coerceStatus takes the three hook words trimmed + lowercased, and nothing else', () => {
+test('coerceStatus takes the hook words trimmed + lowercased, and nothing else', () => {
   const hook = (v: unknown) => coerceStatus({ ...RAW_V2, hook_kind: v })!.hook_kind;
   assert.equal(hook(' Judgment '), 'judgment');
   assert.equal(hook('CALLBACK'), 'callback');
   assert.equal(hook('tangent'), 'tangent');
+  // The fourth word arrives with the share turn, and the door is the same door: a question she
+  // asked is a move the ledger has to see, or the one-question-per-two-turns rule is arithmetic
+  // over a field that lied.
+  assert.equal(hook('Question'), 'question');
   // No default, ever — the same rule as thread_outcome, with a different thing at stake. `recordHook`
   // (persona/hooks.ts) reads an absent key as `none`, so a near miss costs her nothing; a DEFAULTED
   // one would spend a beat of the kill switch's three-turn window on a reply that carried no hook at
@@ -215,7 +220,7 @@ test('coerceStatus takes the three hook words trimmed + lowercased, and nothing 
   // Absent, not present-and-undefined: JSON.stringify must drop it from a persisted affect row.
   assert.equal('hook_kind' in coerceStatus({ ...RAW_V2, hook_kind: 'witty' })!, false);
   assert.equal('hook_kind' in coerceStatus({ ...RAW_V2, hook_kind: null })!, false);
-  // …and the three words are HOOK_WORDS itself rather than a copy of it: a fourth kind added to the
+  // …and the accepted set is HOOK_WORDS itself rather than a copy of it: a kind added to the
   // ledger's vocabulary and not here is a word the ledger records and the schema refuses.
   for (const w of HOOK_WORDS) assert.equal(hook(w), w);
 });
@@ -530,6 +535,15 @@ test('STATUS_SCHEMA_PROP is a flat, nullable, strict object', () => {
 //     the reply she just wrote, which is why it files with the six above it rather than with the two
 //     CAPTURE rows that stay the envelope's tail. Both are `["string", "null"]` and both are
 //     droppable, so each re-take is one inserted property and one inserted `required` key.
+//   • REWORDED SINCE, no row added or removed, +174 characters over two descriptions: the share
+//     turn. `hook_kind` names a fourth word (`question`, HOOK_WORDS, +140): the beat became a MOVE
+//     — on a share turn the one move IS the reply rather than something carried beyond it — and the
+//     two new sentences are the whole of the model's side of the gate, that a question outranks the
+//     others when one was asked, and that a question anywhere but a share turn is reported rather
+//     than hidden (the receipt that catches it cannot fire on a word she swallowed). `thread_outcome`
+//     gains a third trigger (+34): her own follow-up landing or bouncing is the same evidence about
+//     the person as a thread offer landing, and `rapport` is the gauge that decides whether she may
+//     ask again.
 
 const SCHEMA_V2 = {
   type: ['object', 'null'],
@@ -544,10 +558,10 @@ const SCHEMA_V2 = {
     terminal_closure: { type: "boolean", description: "true when the conversation is resolved / they are closing → reply minimally or react only" },
     epistemic_trigger: { type: "string", description: "one of: none | knowledge_gap | logic_valid | emotional_pressure — did new INFORMATION move you (logic_valid/knowledge_gap) or just PRESSURE (emotional_pressure)" },
     meta_prompt: { type: "string", description: "private note to yourself for next turn: what they will likely do and how to meet it, ~40 words" },
-    hook_kind: { type: ["string", "null"], description: "null on a flat task answer or a quiet reply; otherwise the one extra beat this reply carried beyond the answer — one of: judgment | callback | tangent" },
+    hook_kind: { type: ["string", "null"], description: "null on a flat task answer or a quiet reply; otherwise the one move this reply carried — one of: judgment | callback | tangent | question. A question outranks the others when the reply carried one. Only a share turn opens a question; a question on any other turn is a slip you still report." },
     language_request: { type: ["string", "null"], description: "null unless they explicitly asked you, THIS turn, to reply in a language from now on — then that language named in English (e.g. \"English\", \"Indonesian\"). A message merely written in a language is never an ask." },
     thread_note: { type: ["string", "null"], description: "null most turns. Three uses, one per turn, prefixed: (1) \"loop: <thing>\" — something pending in their life with a how-did-it-go attached (an interview, a surgery, a launch, a dreaded talk), in their own word for it; one mention is enough. Catch a loop even on a venting or overwhelmed turn — a loop is asked about later, never in the moment. (2) \"resolved: <thing>\" — a pending thing you were tracking just got its outcome, whatever it was. (3) a recurring theme of theirs as \"kind: theme\", kind one of value | tension | goal | phrase (e.g. \"tension: speed vs craft\"); only for things likely to recur, never something they merely CLAIM is a pattern. A loop is an unanswered outcome and a theme is a because — neither is ever a bare fact (\"has a meeting friday\" belongs to your memory tools, not here). Precedence when more than one fits: \"resolved:\" > \"loop:\" > theme — a resolution outranks a pending loop, a pending loop outranks a fresh theme, one note per turn." },
-    thread_outcome: { type: ["string", "null"], description: "only when your LAST reply tagged a standing thread or asked about something pending of theirs: how they just took it — one of: took (they picked it up) | passed (they let it lie, fine) | pushed_back (they corrected it or bristled). Read it from their message alone, never from hope — a pass reported as a take poisons the thread. Otherwise null, including when you were offered a thread and chose not to use it." },
+    thread_outcome: { type: ["string", "null"], description: "only when your LAST reply tagged a standing thread, asked about something pending of theirs, or asked them a follow-up question: how they just took it — one of: took (they picked it up) | passed (they let it lie, fine) | pushed_back (they corrected it or bristled). Read it from their message alone, never from hope — a pass reported as a take poisons the thread. Otherwise null, including when you were offered a thread and chose not to use it." },
   },
 };
 
@@ -612,12 +626,14 @@ const RESCUED_CAPTURE_RULES: ReadonlyArray<{
  * ("`intent_mode` — what THEY are doing") and the weather block's deleted re-report tail ("what they
  * are doing (intent)"). P1 part 2 deleted both, so the description says it now.
  *
- * This is not a wording nicety: the value is a code GATE on both of its consumers.
+ * This is not a wording nicety: the value is a code GATE on all three of its consumers.
  * `THREAD_BLOCKING_MODES` (persona/threads.ts) suppresses the whole thread offer on
- * venting/overwhelmed/confused/deflecting, and `DISTRESSED_MODES` (memory/threadHarvest.ts) pins a
- * theme minted this turn to the fact rung for the rest of its life. A mode read off HER instead of
- * them therefore closes threading on turns where the person is perfectly fine — and, the other way
- * round, hands back a named pattern on a turn they were falling apart.
+ * venting/overwhelmed/confused/deflecting, `DISTRESSED_MODES` (memory/threadHarvest.ts) pins a
+ * theme minted this turn to the fact rung for the rest of its life, and `compileQuestionGate`
+ * (persona/affectCompiler.ts) reads the mode she carried out of the LAST turn to decide whether the
+ * follow-up question is open on this one. A mode read off HER instead of them therefore closes
+ * threading on turns where the person is perfectly fine — and, the other way round, hands back a
+ * named pattern on a turn they were falling apart.
  */
 const INTENT_MODE_SUBJECT = 'what THEY are doing this turn';
 
@@ -640,11 +656,11 @@ test('`intent_mode` says whose mode it is, before it lists the modes', () => {
   const row = ENVELOPE_FIELDS.find(f => f.key === 'intent_mode')!;
   assert.ok(
     row.description.startsWith(INTENT_MODE_SUBJECT),
-    `\`intent_mode\`'s description opens with the enum and never says whose mode it is: ${JSON.stringify(row.description.slice(0, 60))}. It is the only field of the envelope that reads the USER, the contract's lead line asks her to read HERSELF, and five of the twelve modes fit her just as well — so it has to say "${INTENT_MODE_SUBJECT}" here or nowhere. Both consumers gate on the value: THREAD_BLOCKING_MODES (persona/threads.ts) and DISTRESSED_MODES (memory/threadHarvest.ts).`,
+    `\`intent_mode\`'s description opens with the enum and never says whose mode it is: ${JSON.stringify(row.description.slice(0, 60))}. It is the only field of the envelope that reads the USER, the contract's lead line asks her to read HERSELF, and five of the twelve modes fit her just as well — so it has to say "${INTENT_MODE_SUBJECT}" here or nowhere. All three consumers gate on the value: THREAD_BLOCKING_MODES (persona/threads.ts), DISTRESSED_MODES (memory/threadHarvest.ts) and compileQuestionGate (persona/affectCompiler.ts).`,
   );
   assert.deepEqual(
-    row.consumers, ['selectThreadCandidate', 'updateThreadInventory'],
-    'the two gates that read this field are still the reason the definition matters',
+    row.consumers, ['selectThreadCandidate', 'updateThreadInventory', 'compileQuestionGate'],
+    'the three gates that read this field are still the reason the definition matters',
   );
 
   // And it reaches the model that way — on the bullet for the field, once.

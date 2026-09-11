@@ -139,9 +139,18 @@ test('a QUIET turn renders the quiet block, and a HOOK turn the open-kinds one',
   const quiet = buildSystemPromptSections(...build({ hooks: QUIET, moments: [], thesis: '' }));
   assert.ok(quiet.system.includes(renderHooksSection(QUIET)));
   assert.ok(quiet.system.includes(QUIET_LAW));
-  // A quiet block never names a kind: the mode has already spent the beat, and naming one would be
-  // an instruction to think about it.
-  for (const w of HOOK_WORDS) assert.ok(!renderHooksSection(QUIET).includes(w), w);
+  // A quiet block never names a kind as hers to spend: the mode has already spent the beat, and
+  // naming one would be an instruction to think about it. The fourth word is the exception that
+  // states the rule rather than breaking it — QUIET_LAW has always carried "no question", inside the
+  // clause that FORBIDS the three things a quiet turn may not do, and a ban is the one place a kind
+  // may appear. So the sweep is the three carrying kinds, and the question is pinned to its ban.
+  const quietBlock = renderHooksSection(QUIET);
+  for (const w of HOOK_WORDS) {
+    if (w === 'question') continue;
+    assert.ok(!quietBlock.includes(w), w);
+  }
+  assert.ok(quietBlock.includes('no hook, no question, no offer'), 'the one naming is the prohibition');
+  assert.equal(quietBlock.split('question').length - 1, 1, 'and it appears there and nowhere else');
 
   const hook = buildSystemPromptSections(...build({ hooks: HOOK, moments: [], thesis: '' }));
   assert.ok(hook.system.includes('Open to you this turn: a judgment, a callback or a tangent.'));

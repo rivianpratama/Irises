@@ -269,8 +269,13 @@ export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
     // the subject. It matters because both consumers GATE on the value (THREAD_BLOCKING_MODES in
     // threads.ts, DISTRESSED_MODES in memory/threadHarvest.ts): a mode read off her closes threading
     // on a turn the person is fine, and pins a theme to the fact rung for a distress that was hers.
+    // A third gate reads it now, one turn later than the other two: `compileQuestionGate`
+    // (persona/affectCompiler.ts) carries the mode forward and closes the follow-up question on the
+    // modes where asking is the wrong move (overwhelmed, deflecting, joking, confused). Same reason
+    // the subject clause is load-bearing — a mode read off HER shuts the question on a turn the
+    // person was perfectly fine.
     description: `what THEY are doing this turn — one of: ${INTENT_MODES.join(' | ')}`,
-    consumers: ['selectThreadCandidate', 'updateThreadInventory'],
+    consumers: ['selectThreadCandidate', 'updateThreadInventory', 'compileQuestionGate'],
   },
   {
     key: 'terminal_closure', type: 'boolean', required: true,
@@ -299,8 +304,13 @@ export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
     // kind is a beat `recordHook` writes into the ledger, and three of those in a row force the
     // fourth turn quiet. So an unreadable value leaves the key ABSENT, which `recordHook` reads as
     // `none` — the reading that costs her nothing she did not spend.
+    // The fourth word (`question`) is the one the model must report against itself: it is open on a
+    // share turn only, so a question reported off one is the receipt that finds the slip
+    // (`hook:off_turn`). Asking her to report it anyway is the cheaper half of the bargain — a
+    // question she hides is a question the ledger cannot space out, and the no-two-turns-running
+    // rule is arithmetic over exactly this field.
     key: 'hook_kind', type: ['string', 'null'], required: true,
-    description: `null on a flat task answer or a quiet reply; otherwise the one extra beat this reply carried beyond the answer — one of: ${HOOK_WORDS.join(' | ')}`,
+    description: `null on a flat task answer or a quiet reply; otherwise the one move this reply carried — one of: ${HOOK_WORDS.join(' | ')}. A question outranks the others when the reply carried one. Only a share turn opens a question; a question on any other turn is a slip you still report.`,
     consumers: ['recordHook', 'quietViolation'],
   },
   {
@@ -329,7 +339,12 @@ export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
     // code: a `took` steps the theme's confidence up and counts an uptake, and two uptakes promote it
     // taggable → shorthand (threads.ts). The per-turn ask prose de-biases the same reading ("passed
     // if they let it lie (that is fine)"), but only on the turn it renders.
-    description: 'only when your LAST reply tagged a standing thread or asked about something pending of theirs: how they just took it — one of: took (they picked it up) | passed (they let it lie, fine) | pushed_back (they corrected it or bristled). Read it from their message alone, never from hope — a pass reported as a take poisons the thread. Otherwise null, including when you were offered a thread and chose not to use it.',
+    //
+    // The third trigger is her own follow-up question, and it is here for `rapport` rather than for
+    // the inventory: a question of hers that lands is the same evidence about the person as an offer
+    // that lands, and without this clause the one move that asks them for something would be the one
+    // move that never taught the gauge which decides whether she may ask again.
+    description: 'only when your LAST reply tagged a standing thread, asked about something pending of theirs, or asked them a follow-up question: how they just took it — one of: took (they picked it up) | passed (they let it lie, fine) | pushed_back (they corrected it or bristled). Read it from their message alone, never from hope — a pass reported as a take poisons the thread. Otherwise null, including when you were offered a thread and chose not to use it.',
     // The second reader is v2's: how an offer LANDED is the only evidence `rapport` ever answers to,
     // because a closeness gauge that rises when she says it rises is a gauge that will rise.
     consumers: ['updateThreadInventory', 'applyAffectDrift'],

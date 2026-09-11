@@ -25,18 +25,31 @@
 // the thread offer. Someone who has sent nothing four times running is not asking for a fourth
 // clever line, and a bot that keeps producing them is the exact thing the manifesto refuses.
 
-/** The three kinds of extra beat, and the ONLY three words the model may emit in `hook_kind`. The
+/** The kinds of move a reply may carry, and the ONLY words the model may emit in `hook_kind`. The
  *  runtime list lives beside the type it describes (threads.ts's THEME_KINDS precedent) because the
- *  rendered section builds its "open to you" sentence out of THIS array: a fourth kind added to the
- *  type alone would be a word the schema accepted, the ledger recorded, and the prompt never named.
+ *  rendered sections build their "open to you" sentence out of THIS array: a kind added to the type
+ *  alone would be a word the schema accepted, the ledger recorded, and the prompt never named.
  *
- *  Why exactly these three: a judgment CLOSES a beat (they now have to prove or disprove it), a
- *  tangent OPENS one, and a callback does both. Anything else on an idle turn is a question handed
- *  back, which is zero information with the turn attached. */
-export const HOOK_WORDS = ['judgment', 'callback', 'tangent'] as const;
+ *  Why these three first: a judgment CLOSES a beat (they now have to prove or disprove it), a
+ *  tangent OPENS one, and a callback does both. `question` is the fourth, and it is the odd one —
+ *  the other three are things she does with what she already holds, and a question is the one move
+ *  that asks THEM for something. It is therefore not a kind an idle turn can reach: nothing was
+ *  shared, so there is nothing to follow up on, and a question into that silence is the probe the
+ *  whole ban was written against. It belongs to the turn where they handed her something, and the
+ *  list below (HOOK_MODE_KINDS) is what keeps the idle section from ever naming it. The word lives
+ *  in the ledger, the schema and the envelope from here, so the one place that decides whether it
+ *  is open is the selector and not the vocabulary. */
+export const HOOK_WORDS = ['judgment', 'callback', 'tangent', 'question'] as const;
 
 /** What the model may emit. */
 export type HookWord = typeof HOOK_WORDS[number];
+
+/** The kinds an idle HOOK turn may actually carry — HOOK_WORDS without the question. Two readers,
+ *  and they must agree or the prompt contradicts itself in one screen: `hookKindOpen` (is there a
+ *  beat left to spend) and `renderHooksSection` (which beats to name). Both ask this list rather
+ *  than HOOK_WORDS, so a hook turn whose three kinds are all spoken for reads as closed to every
+ *  consumer instead of being "open" on the strength of a word the section is forbidden to print. */
+const HOOK_MODE_KINDS: readonly HookWord[] = HOOK_WORDS.filter(w => w !== 'question');
 
 /** What the LEDGER records. `none` is a first-class entry, not a gap: a flat task answer and a
  *  quiet reply both push `none`, and that is precisely what breaks a run — the kill switch reads a
@@ -138,11 +151,13 @@ export interface HookDirective {
  * `renderHooksSection`), because it needs the LIST and not just the answer; this is the predicate
  * for every consumer that only needs the answer. It is computed the same way the renderer computes
  * it — over the SET of kinds, never by counting `forbidden` — so a directive whose `forbidden`
- * happened to carry a duplicate could not tell the predicate "closed" and the renderer "open".
+ * happened to carry a duplicate could not tell the predicate "closed" and the renderer "open". The
+ * set is HOOK_MODE_KINDS and not HOOK_WORDS, for the same reason: a question is not a beat a hook
+ * turn may spend, so it can neither be left open into this answer nor forbidden out of it.
  */
 export function hookKindOpen(directive: HookDirective | null | undefined): boolean {
   return !!directive && directive.mode === 'hook'
-    && HOOK_WORDS.some(w => !directive.forbidden.includes(w));
+    && HOOK_MODE_KINDS.some(w => !directive.forbidden.includes(w));
 }
 
 /** Why this turn got the mode it got. The buckets are DISJOINT and cover every path: a receipt that
@@ -354,7 +369,9 @@ export function renderHooksSection(directive: HookDirective, momentLines: string
   if (directive.mode === 'quiet') {
     lines.push(QUIET_HEADING, QUIET_LAW);
   } else {
-    const allowed = HOOK_WORDS.filter(w => !directive.forbidden.includes(w));
+    // HOOK_MODE_KINDS, so the sentence cannot name a question whatever the selector handed in: an
+    // idle turn has nothing to follow up on, and a kind named here is a kind she is invited to use.
+    const allowed = HOOK_MODE_KINDS.filter(w => !directive.forbidden.includes(w));
     lines.push(HOOK_HEADING, HOOK_LEAD);
     lines.push(allowed.length > 0 ? HOOK_OPEN_LINE.replace('{kinds}', nameKinds(allowed)) : HOOK_NONE_OPEN);
     if (directive.lateNight) lines.push(HOOK_LATE_LINE);
