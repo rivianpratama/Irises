@@ -2,7 +2,7 @@
 //
 // The ratchet. Convo's system prompt assembles to ~136k characters — ~84k of it the persona — and
 // it had only ever grown, one well-argued block at a time. This file measures the prompt through
-// the real assembler (buildSystemPromptSections, the Task-1 seam) on seven representative turns and
+// the real assembler (buildSystemPromptSections, the Task-1 seam) on eight representative turns and
 // holds every part under the ceiling it stands at TODAY (promptPolicy.ts) — so the next block that
 // quietly doubles fails here instead of quietly costing the live thread its share of the context.
 //
@@ -25,7 +25,7 @@ import assert from 'node:assert/strict';
 import { buildSystemPromptSections, formatHistory, type ChatContext } from './shared.js';
 import { SECTION_IDS, sectionsTotalChars, type SectionId } from './promptSections.js';
 import { PROMPT_BUDGET, MIN_TRANSCRIPT_SHARE, type BudgetKey } from './promptPolicy.js';
-import { renderDriftAnchor, DRIFT_LONG_WINDOW_CHARS } from '../../persona/policy.js';
+import { renderDriftAnchor, DRIFT_LONG_WINDOW_CHARS, type DriftMode } from '../../persona/policy.js';
 import { buildTurnTraceDraft, type MeasuredPrompt, type TranscriptMessage } from '../../diagnostics/turnTrace.js';
 import {
   REACTION_TOOL, REMEMBER_USER_TOOL, delegateToOpsTool, SET_PREFERENCE_TOOL, SCHEDULE_AUTOMATION_TOOL,
@@ -48,7 +48,7 @@ import { defaultClimate, type RelationshipClimate } from '../../persona/climate.
 import {
   renderMomentLines, MOMENT_AGE_WORDS, MOMENT_TEXT_MAX, type MomentEntry,
 } from '../../persona/moments.js';
-import type { HookDirective } from '../../persona/hooks.js';
+import type { HookDirective, TurnKind } from '../../persona/hooks.js';
 import type { ThreadCandidate } from '../../persona/threads.js';
 import type { ThreadTurn } from '../../memory/threadHarvest.js';
 import type { TurnFocusInput } from './turnFocus.js';
@@ -173,18 +173,23 @@ function craftFacts(
   data: UserMemoryData,
   turnText: string,
   audience: MemoryAudience = 'individual',
-  idleTurn = false,
+  shape: TurnKind = 'task',
 ): CraftTurnFacts {
   return {
     attachmentNote: turnText.includes('[they attached'),
     emailFlag: data.short.some(e => e.kind === 'email_flag' && e.expiresAt > FROZEN_MS),
     thinProfile: audience !== 'group' && profileIsThin(data),
-    // The one fact of the four the memory read cannot answer: the idle gate decided it before the
-    // prompt was built (persona/idle.ts), so it is passed per fixture rather than derived from the
-    // data. It gates craft/hooks.md, which is why the two fixtures that carry a hook directive set
-    // it — a fixture whose prompt says "you may carry one hook" and whose craft set is missing the
-    // page teaching the beat would be measuring a turn that cannot happen.
-    idleTurn,
+    // The two facts of the five the memory read cannot answer, and they arrive here as ONE argument
+    // because the gate that answers them is one gate: the idle reading decided this turn's kind
+    // before the prompt was built (persona/idle.ts), and it returns exactly one of the three. Taking
+    // the kind rather than two booleans is what makes a fixture that claims both shapes at once
+    // unwritable — the pages are disjoint in production (personaModules.ts), and a fixture that
+    // loaded craft/hooks.md and craft/share.md together would be measuring a turn no gate can hand
+    // the assembler. Each page is measured on the shape it is for: a prompt that says "you may carry
+    // one hook", or "they handed you something", with the page teaching that move missing from the
+    // craft set would be measuring a turn that cannot happen.
+    idleTurn: shape === 'idle',
+    shareTurn: shape === 'share',
   };
 }
 
@@ -487,11 +492,12 @@ const HISTORY_12 = history(12);
 const HISTORY_80_DENSE = history(80, DENSE_TEXTS);
 
 // ── what the rhythm engine decided ───────────────────────────────────────────
-// Three of the seven fixtures are IDLE turns, and the first two are the two that have to be: the
-// `hooks` section and the `thesis` section are measured budget lines, so a fixture has to render
-// each of them or the ceiling is a number nobody took. (The third, fixture 7, is idle for a reason
-// that has nothing to do with the section it renders and everything to do with the one after
-// it — see its own comment, and `behavior_anchor`.)
+// Four of the eight fixtures are turns that asked for nothing — three idle, one share — and the
+// first two are the two that have to be: the `hooks` section and the `thesis` section are measured
+// budget lines, so a fixture has to render each of them or the ceiling is a number nobody took.
+// (The other two, fixtures 7 and 8, carry a directive for a reason that has nothing to do with the
+// section it renders and everything to do with the one after it — see their own comments, and
+// `behavior_anchor`.)
 //
 // Which two is not arbitrary. The cold "hey" is the idle turn the manifesto is named after. The
 // THREAD-OFFER fixture is the other one because it now has no choice: an offer is only ever made on
@@ -539,6 +545,24 @@ const OPEN_HOOK: HookDirective = {
   idle: true, mode: 'hook', forbidden: [], lateNight: true, moments: true, offerAllowed: true,
 };
 
+/** The share turn's directive, and the widest shape that mode has: every one of its FOUR kinds open,
+ *  the question among them, and the late register under the sentence that names them. Fixture 8 is
+ *  the only one that carries it, and the reason it is open all the way is the same argument fixture
+ *  7's directive is built on, run over a mode with one more kind in it — the anchor states the share
+ *  law whatever the section left open (shared.ts maps share to its own law unconditionally, so there
+ *  is no all-kinds-closed translation to fall through here), and the SECTION is what narrows: a
+ *  closed question drops `SHARE_QUESTION_LINE` and every kind closed drops the whole sentence for
+ *  `SHARE_NONE_OPEN`. So this is the honest maximum of both, taken on one turn.
+ *
+ *  `idle: false` is not a detail: they SENT something. It is what the ledger reads to end the idle
+ *  streak, and what the `Turn:` line reads to print the character count without a streak beside it
+ *  (convo/turnFocus.ts). `heavy` is absent, which is the same answer as false and the shape the
+ *  compiler hands a turn with no weight in it — a heavy share closes the judgment and the tangent
+ *  (persona/hooks.ts) and would measure a narrower section than production's widest. */
+const OPEN_SHARE: HookDirective = {
+  idle: false, mode: 'share', forbidden: [], lateNight: true, moments: false, offerAllowed: true,
+};
+
 /**
  * The moment sample at its WIDEST, because `hooks` is a prose ceiling the live battery enforces
  * (convergence/focusBattery.ts `prose_budget`) and the moment lead is the one part of that section
@@ -569,6 +593,14 @@ const MOMENT_TEXTS: readonly string[] = [
  *  a turn the engines cannot produce. */
 const IDLE_TURN_TEXT = 'anyway the dock is still one weekend away';
 
+/** The share line fixture 8 arrives on: a thing that happened in their day, handed over with no ask
+ *  in it anywhere — not a question, not an instruction, and nothing the reply has to go and fetch.
+ *  That is the whole of what the gate reads as a share (persona/idle.ts, and the classifier's own
+ *  word for it), and it is a different turn from fixture 7's, which restates a running joke and
+ *  hands her nothing new. The distinction is the feature: one of them earns a hook and the other
+ *  earns a move about the thing itself. */
+const SHARE_TURN_TEXT = 'the mill rang while i was loading the truck, they are swapping the two loads after all';
+
 /** Forty days back: inside the 35–75 day band `momentAgeWords` renders as the longest phrase. */
 const MOMENT_AT = FROZEN_MS - 40 * 24 * 60 * 60 * 1000;
 
@@ -585,7 +617,7 @@ const MOMENT_LINES: string[] = renderMomentLines(MOMENT_SAMPLE, FROZEN_MS);
 const THESIS = `## Your read on them (INTERNAL — never recite, never name; every judgment is made of it)
 They decide fast on things that cost money and slowly on things that cost a conversation, which is why the supplier disputes sit open for weeks. They would rather re-do a job than ask someone to fix it, and they read a question about the schedule as a question about their competence.`;
 
-// ── the seven fixtures ───────────────────────────────────────────────────────
+// ── the eight fixtures ───────────────────────────────────────────────────────
 
 interface Fixture {
   name: string;
@@ -611,7 +643,7 @@ const FIXTURES: Fixture[] = [
       incomingText: 'hey',
       introWeave: INTRO_WEAVE_BLOCK,
       turnFocus: { text: 'hey', hits: [], shape: 'idle', idleStreak: 1, messageChars: 3 },
-      craft: craftFacts(COLD_DATA, 'hey', 'individual', true),
+      craft: craftFacts(COLD_DATA, 'hey', 'individual', 'idle'),
       personaTurn: HOOK_TURN,
     },
     memoryStack: COLD_STACK,
@@ -745,7 +777,7 @@ const FIXTURES: Fixture[] = [
         idleStreak: 12,
         messageChars: 43,
       },
-      craft: craftFacts(MATURE_DATA, 'honestly i just want it done right this time', 'individual', true),
+      craft: craftFacts(MATURE_DATA, 'honestly i just want it done right this time', 'individual', 'idle'),
       // The one fixture that carries earned material: her read behind the dossier, and the widest
       // moment sample the engine can build inside the hooks section. Both live on THIS turn rather
       // than on the cold one because both are things a nine-month relationship has and a first
@@ -827,8 +859,60 @@ const FIXTURES: Fixture[] = [
       capability: { classes: ['web', 'files', 'code', 'media', 'scheduling'], complete: true },
       climate: MOVED_CLIMATE,
       turnFocus: { text: IDLE_TURN_TEXT, hits: [], shape: 'idle', idleStreak: 4, messageChars: 41 },
-      craft: craftFacts(MATURE_DATA, IDLE_TURN_TEXT, 'individual', true),
+      craft: craftFacts(MATURE_DATA, IDLE_TURN_TEXT, 'individual', 'idle'),
       personaTurn: { hooks: OPEN_HOOK, moments: [], thesis: '' },
+    },
+    memoryStack: MATURE_STACK,
+    sections: [
+      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'update_status',
+      'context_block', 'current_time', 'weather', 'status_contract', 'conversation_timing',
+      'reply_order', 'hooks', 'turn_focus', 'behavior_anchor', 'json_anchor',
+    ],
+  },
+  {
+    // 8. THE LONG THREAD, SHARE: fixture 7's window, fixture 7's person and fixture 7's argument,
+    // run over the third turn shape — the turn where they handed her something and asked for
+    // nothing. It exists for the same ONE number the two rows above it exist for, and it takes it
+    // off them: the anchor's SHARE law is longer than its hook law, so share/long is the widest of
+    // the eight variants the renderer now has, and until this row nothing here could reach it. The
+    // key is enforced LIVE (convergence/focusBattery.ts prose_budget), where a share turn on a long
+    // window is the ordinary evening this whole shape was built for, so the ceiling had to be moved
+    // by a fixture that renders the maximum rather than by reading it off the renderer and writing
+    // it down — which is exactly how the seventh row moved it onto hook/long.
+    //
+    // It is also the one row here that measures the SHARE section and the share craft page inside a
+    // real prompt. Neither takes its ceiling: `hooks` stands on fixture 5's moment sample, which is
+    // three times the widest block the share mode has, and `craft_modules` stands on fixture 5's
+    // thread-offer set, which carries craft/threading.md. What this row proves about those two is
+    // narrower and still worth a fixture — that the block and the page assemble into a live prompt
+    // at all, and that the sum they land in is comfortably under the sum a thread offer already
+    // measured.
+    //
+    // OPEN_SHARE for the same reason fixture 7 carries OPEN_HOOK: the section narrows with the
+    // directive and the anchor does not, so the widest shape of the mode is the honest one to
+    // measure both on at once. Late like every other row here — the frozen clock is 02:00 and the
+    // register rides the directive, closing nothing.
+    name: 'share turn on a long thread',
+    spec: {
+      chatContext: {
+        isGroupChat: false, participantNames: [], chatName: null,
+        senderHandle: HANDLE, senderProfile: MATURE_PROFILE,
+      },
+      contextBlock: contextBlockWith(MATURE_STACK),
+      tools: TOOLS_1TO1,
+      history: HISTORY_80_DENSE,
+      incomingText: SHARE_TURN_TEXT,
+      affect: affect(),
+      computed: COMPUTED,
+      capability: { classes: ['web', 'files', 'code', 'media', 'scheduling'], complete: true },
+      climate: MOVED_CLIMATE,
+      // No streak, and it is not an omission: a share turn ends the run of silences the count is of
+      // (persona/hooks.ts recordHook), so the number in hand at prompt time is about the turns
+      // before this message. The character count is kept — it is a fact about the message they
+      // really sent, and the one the share section's dose rule turns on.
+      turnFocus: { text: SHARE_TURN_TEXT, hits: [], shape: 'share', messageChars: SHARE_TURN_TEXT.length },
+      craft: craftFacts(MATURE_DATA, SHARE_TURN_TEXT, 'individual', 'share'),
+      personaTurn: { hooks: OPEN_SHARE, moments: [], thesis: '' },
     },
     memoryStack: MATURE_STACK,
     sections: [
@@ -934,22 +1018,25 @@ test('the memory stack is inside its budget on every fixture that carries one', 
   }
 });
 
-/** The window band fixtures 6 and 7 exist to reach, asserted rather than assumed: a rewrite of
+/** The window band fixtures 6, 7 and 8 exist to reach, asserted rather than assumed: a rewrite of
  *  DENSE_TEXTS that quietly fell under DRIFT_LONG_WINDOW_CHARS would leave `behavior_anchor`
  *  measured on the short variants again, and the ceiling would go stale in exactly the silent way
  *  those fixtures were added to stop.
  *
- *  BOTH MODES, because the anchor is picked on two axes and the ratchet only ever sees the maximum.
- *  Fixture 6 is the long TASK variant and fixture 7 the long HOOK one, which is the wider of the two
- *  (persona/policy.ts DRIFT_MODE_BULLETS — the hook law is the longest of the three), so it is the
- *  one the ceiling stands on. Pinning the mode each fixture reaches, and not just the band, is what
- *  stops a later edit turning fixture 7's directive into a task turn, or into a hook turn with every
- *  kind closed, and dropping the measurement to a narrower variant with every test here still
- *  green. */
+ *  ALL THREE MODES a long window can be in, because the anchor is picked on two axes and the ratchet
+ *  only ever sees the maximum. Fixture 6 is the long TASK variant, fixture 7 the long HOOK one, and
+ *  fixture 8 the long SHARE one — the widest of the eight (persona/policy.ts DRIFT_MODE_BULLETS: the
+ *  share law says the most, because it has to state the guess-or-ask decision as well as the move),
+ *  so it is the one the ceiling now stands on. The fourth law, quiet, is the narrowest of the four
+ *  and is reached from a hook directive with every kind closed, which is why no fixture spends a
+ *  window on it. Pinning the mode each fixture reaches, and not just the band, is what stops a later
+ *  edit turning one of these directives into a task turn, or into a hook turn with every kind
+ *  closed, and dropping the measurement to a narrower variant with every test here still green. */
 test("the long-thread fixtures really are past the drift anchor's window band", () => {
-  const cases: Array<[number, string, 'task' | 'hook']> = [
+  const cases: Array<[number, string, DriftMode]> = [
     [5, 'mature profile on a long thread', 'task'],
     [6, 'idle turn on a long thread', 'hook'],
+    [7, 'share turn on a long thread', 'share'],
   ];
   for (const [i, name, mode] of cases) {
     const f = FIXTURES[i];
@@ -980,7 +1067,7 @@ test('the moment sample really is the widest one the renderer can build', () => 
   }
 });
 
-/** The largest each budget line reaches across the seven fixtures — the number its ceiling is meant to
+/** The largest each budget line reaches across the eight fixtures — the number its ceiling is meant to
  *  be a rounded-up copy of. `memory_stack` comes off the fixtures' own stacks because it is a part of
  *  `context_block` rather than a section of its own. */
 function measuredMaxima(): Map<BudgetKey, number> {
