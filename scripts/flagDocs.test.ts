@@ -73,9 +73,11 @@ const FLAGS: readonly FlagDoc[] = [
   { name: 'CONVO_HOOKS_ENABLED', probe: () => onOff(hooksEnabled()) },
   { name: 'MEMORY_MOMENTS_ENABLED', probe: () => onOff(momentsEnabled()) },
   { name: 'MEMORY_THESIS_ENABLED', probe: () => onOff(thesisEnabled()) },
-  // Still landing, so the parser answers `off` here and both files have to say so: a switch whose
-  // doc says "default on" while the series that builds it is half-shipped is exactly the wrong
-  // direction to flip at 3am. This row starts asserting `on` the commit the default flips.
+  // The parser answered `off` here for the length of the series that built the shape and answers
+  // `on` from the commit that finished it — and both files had to follow it in the same commit,
+  // each time, because a doc that says "default off" beside a switch that is on is the one that
+  // gets flipped in the wrong direction at 3am. Nothing about this row changed at the flip: it
+  // reads the answer out of the parser, which is the whole reason it survives one.
   { name: 'CONVO_SHARE_TURNS_ENABLED', probe: () => onOff(shareTurnsEnabled()) },
   { name: 'CONVO_HISTORY_MAX', probe: () => String(convoHistoryMax()) },
   { name: 'OPS_WALLED_URL_HINT', probe: () => onOff(walledUrlHintEnabled()) },

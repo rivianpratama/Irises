@@ -972,8 +972,13 @@ test('with the share flag OFF the same turn is byte-identical to one whose ledge
   // The flag's whole contract, at the seam that consumes it: with CONVO_SHARE_TURNS_ENABLED off, the
   // ledger fact the share shape reads changes NOTHING. The same message, the same handle and the
   // same empty world, differing only in a tail of `question` — and the two prompts have to come out
-  // the same string, because on this build the follow-up relaxation does not exist and 'hmm' is the
-  // idle turn it always was.
+  // the same string, because with the switch off the follow-up relaxation does not exist and 'hmm'
+  // is the idle turn it always was.
+  //
+  // Set here in the word an operator would type, not left to the default: the default flipped on
+  // the commit that finished the shape, and this test is the one that has to keep measuring the OFF
+  // path after it — a way back nobody exercises is a way back nobody has.
+  process.env.CONVO_SHARE_TURNS_ENABLED = 'off';
   const seeded = randomUUID();
   await seedFollowUp(seeded);
   const first = fakeLane(envelope(['mm']));

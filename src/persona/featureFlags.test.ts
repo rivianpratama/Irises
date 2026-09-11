@@ -5,10 +5,11 @@
 // `off`, `no` and a typo do here without reading a second doc — and a typo doing something OTHER
 // than off is how a switch gets flipped in the wrong direction during an incident.
 //
-// One of the four is still landing and so ships default OFF. That difference is the ONLY one this
-// file tolerates: the accepted words are identical, the garbage state is still off, and the empty
-// string still means whatever unset means — which is why it is asserted beside the default here
-// instead of being listed among the on-words (provenance.test.ts:93 is the same shape).
+// All four ship default ON now that the share turn's series is whole — the youngest of them spent
+// the build shipping OFF, and this table is where that flip is stated as a fact rather than as a
+// plan. The default is asserted per flag beside the word lists on purpose: the accepted words are
+// identical whichever side a switch ships on, the garbage state is off either way, and the empty
+// string always means whatever unset means (provenance.test.ts:93 is the same shape).
 //
 // Read at CALL time, so each case sets the var and calls again; the var is saved and restored so a
 // test that runs after these sees the environment it expected (the turnFocus.test.ts shape).
@@ -29,9 +30,9 @@ const FLAGS: Array<{ name: string; read: () => boolean; dflt: boolean }> = [
   { name: 'CONVO_HOOKS_ENABLED', read: hooksEnabled, dflt: true },
   { name: 'MEMORY_MOMENTS_ENABLED', read: momentsEnabled, dflt: true },
   { name: 'MEMORY_THESIS_ENABLED', read: thesisEnabled, dflt: true },
-  // The share turn, still landing: default OFF so every intermediate build of the series is inert
-  // on a live box and only the last commit changes a reply. The body is its siblings' body.
-  { name: 'CONVO_SHARE_TURNS_ENABLED', read: shareTurnsEnabled, dflt: false },
+  // The share turn: default OFF through the whole series that built it, ON from the commit that
+  // finished it. The body never changed across that flip, which is what made the flip one line.
+  { name: 'CONVO_SHARE_TURNS_ENABLED', read: shareTurnsEnabled, dflt: true },
 ];
 
 for (const flag of FLAGS) {

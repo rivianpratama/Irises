@@ -71,22 +71,25 @@ export function thesisEnabled(): boolean {
 }
 
 /**
- * The third turn shape (env: CONVO_SHARE_TURNS_ENABLED). Default **OFF** while the shape lands.
+ * The third turn shape (env: CONVO_SHARE_TURNS_ENABLED). Default ON.
  *
  * Gates the whole share turn: the idle gate's third verdict, the share section beside the turn
  * block, its craft page, the drift anchor that reads for it, and the one follow-up question the
  * affect compiler may leave open. Off, the gate maps a share back onto a task, so a message that
- * hands her something and asks for nothing is answered flat exactly as it is today — the prompt is
- * byte-identical, down to the bytes, which is the contract the flag exists to keep and what
- * hookWiring's off-path pin measures.
+ * hands her something and asks for nothing is answered flat exactly as it was before the shape
+ * existed — the prompt is byte-identical, down to the bytes, which is the contract the flag exists
+ * to keep and what hookWiring's off-path pin measures.
  *
  * Subordinate to CONVO_HOOKS_ENABLED: with the machinery off there is no gate to read a third
- * shape, so this switch has nothing to turn on. It is default off only until the series that builds
- * the shape is whole; every commit before that last one is inert on a live box, deliberately, so a
- * half-built shape can never reach a reply.
+ * shape, so this switch has nothing to turn on. It shipped default OFF for the length of the series
+ * that built it, so every half-built commit was inert on a live box and only one commit could ever
+ * change a reply; this is that commit, and the shape behind the default is whole. The switch stays
+ * because the byte-identical off path is the only way back that costs a restart rather than a
+ * revert — a shape that turns out to interrogate has to be stoppable by an operator, not by a
+ * deploy.
  */
 export function shareTurnsEnabled(): boolean {
   const v = (process.env.CONVO_SHARE_TURNS_ENABLED || '').trim().toLowerCase();
-  if (v === '') return false;
+  if (v === '') return true;
   return ['true', '1', 'on', 'yes'].includes(v);
 }
