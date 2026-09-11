@@ -179,8 +179,13 @@ test('the persona describes no envelope field and copies no wheel — it points 
  *  one, and hooks.test.ts owns the selector. */
 function turnInMode(mode: DriftMode): PersonaTurn {
   const hooks: HookDirective = {
-    idle: mode !== 'task', mode, forbidden: [], lateNight: false,
-    moments: false, offerAllowed: mode === 'hook',
+    // `idle` is "they sent nothing", which is TRUE on the two idle modes and false on both of the
+    // gate's own answers: a share turn is the opposite of an idle one (they said something), so it
+    // reads false here the way the selector sets it. The anchor reads neither field — the mode is
+    // its whole input — but a fixture that carries a shape the selector cannot produce is a fixture
+    // the next reader believes.
+    idle: mode === 'hook' || mode === 'quiet', mode, forbidden: [], lateNight: false,
+    moments: false, offerAllowed: mode === 'hook' || mode === 'share',
   };
   return { hooks, moments: [], thesis: '' };
 }
@@ -217,7 +222,7 @@ test('the drift anchor states no bubble number at all, in any mode — the JSON 
   //
   // It runs once per mode now, and that is the point of running it here rather than in policy.test.ts
   // (which pins the same two properties over the renderer directly): what the model actually reads at
-  // the recency edge is whatever the ASSEMBLER put there, and only one of the three modes can be the
+  // the recency edge is whatever the ASSEMBLER put there, and only one of the four modes can be the
   // one a given turn renders. A mode that grew a seventh bullet, or a spelled number that came back as
   // a digit, would otherwise fail on whichever mode a fixture happened to pick.
   const cases: ReadonlyArray<readonly [string, PersonaTurn | undefined]> = [
@@ -232,7 +237,7 @@ test('the drift anchor states no bubble number at all, in any mode — the JSON 
     assert.equal(bullets.length, 6, `${name}: the anchor is the six lines that drift first, and stays that short`);
   }
 
-  // …and the three modes really do say different things, or the mode input is decoration.
+  // …and the four modes really do say different things, or the mode input is decoration.
   const rendered = DRIFT_MODES.map(mode => anchors(turnInMode(mode)).behavior);
   assert.equal(new Set(rendered).size, DRIFT_MODES.length, 'each mode puts its own law at the edge');
   assert.equal(anchors().behavior, anchors(turnInMode('task')).behavior, 'no directive reads as a task turn');

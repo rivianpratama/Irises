@@ -74,7 +74,7 @@ import {
   type AffectState, type ComputedState,
 } from '../../persona/status.js';
 import { renderThreadForPrompt } from '../../persona/threads.js';
-import { renderDriftAnchor } from '../../persona/policy.js';
+import { renderDriftAnchor, type DriftMode } from '../../persona/policy.js';
 import {
   hookKindOpen, QUIET_LAW, quietViolation, recordHook, renderHooksSection, shapeOf,
   type HookDirective, type HookSelectReport, type HookState, type HookWord,
@@ -1204,13 +1204,20 @@ export function buildSystemPromptSections(
   //     and it gets the HOOK law here like any other idle turn. The directive's own mode is
   //     untouched by this, so the quiet GUARD still does
   //     not run on those turns: the anchor states the law, and the guard enforces the two turns the
-  //     ledger and the mood FORCED;
+  //     ledger and the mood FORCED. A SHARE turn is exempt from that translation, and the exemption
+  //     is the whole reason the translation is spelled out per mode rather than applied to every
+  //     non-task directive: a share turn with every kind spoken for is the PRESENCE case, which is
+  //     still a turn about the thing they handed her — one plain sentence that stays on it — and the
+  //     quiet law would answer it with a tapback or nothing, i.e. the receipt the share law exists
+  //     to forbid. The share law reads true in both shapes (policy.ts DRIFT_MODE_BULLETS: "Never a
+  //     receipt, never nothing"), and the section above says which kinds are left, so the edge can
+  //     state the law unconditionally and let the section carry the arithmetic;
   //   • the WINDOW, the character length of the history rows this same call was handed. Characters,
   //     not rows: what buries the persona head is bytes between it and the reply (policy.ts
   //     DRIFT_LONG_WINDOW_CHARS).
   //
   // Identity still owns these lines; the mode bullets are the one deliberate second copy of a law
-  // stated elsewhere — the task, idle and quiet laws the shared persona block owns. That copy is
+  // stated elsewhere — the task, idle, quiet and share laws of the shared persona block. That copy is
   // SEMANTIC rather than literal: the block hard-wraps its paragraphs, so a bullet here shares no
   // exact substring with the sentence it restates, and CLAUSE_INVENTORY (promptPolicy.ts) counts
   // substrings. It cannot see this copy, which is why every `anchorCopies` there is still 0 — a
@@ -1218,7 +1225,10 @@ export function buildSystemPromptSections(
   // Behaviour goes here; the format contract stays LAST below (a persona slip is recoverable, a
   // broken envelope is not).
   const windowChars = history?.reduce((n, m) => n + m.content.length, 0) ?? 0;
-  const anchorMode = !hookDirective || hookDirective.mode === 'task' ? 'task' : kindOpen ? 'hook' : 'quiet';
+  const anchorMode: DriftMode =
+    !hookDirective || hookDirective.mode === 'task' ? 'task'
+      : hookDirective.mode === 'share' ? 'share'
+        : kindOpen ? 'hook' : 'quiet';
   const behaviorAnchor = renderDriftAnchor(anchorMode, windowChars);
 
   // The bubble numbers in the law sentence below are interpolated from the constants the code

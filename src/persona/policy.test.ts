@@ -6,9 +6,12 @@
 //   • ONE PERSON ON EVERY SURFACE. `renderPersonaBlock` returns the same bytes for all four lanes.
 //     That is the whole reason the block was lifted out of four Context.md files, and the day a lane
 //     grows a sentence of its own is the day the four-lane drift starts again.
-//   • THE ANCHOR IS SIX BULLETS, IN EVERY COMBINATION. Three modes times two window bands is six
+//   • THE ANCHOR IS SIX BULLETS, IN EVERY COMBINATION. Four modes times two window bands is eight
 //     renderings, and promptPolicy.test.ts pins "six `- ` lines, zero digits" over whichever one the
-//     turn produced — so it is pinned here over all six, where a bad paste is one file from the edit.
+//     turn produced — so it is pinned here over all eight, where a bad paste is one file from the
+//     edit. The count is the anchor's own law and not an accident of how many modes there are: the
+//     recency edge buys six lines, so a mode added to the turn vocabulary says its whole law inside
+//     the three the mode half owns or it does not get to be a mode here.
 //   • NO DIGITS ANYWHERE IN IT. Not cosmetic: a number at the recency edge is a number she can read
 //     out, and every number in her replies has to be one she actually saw.
 //   • THE WINDOW ONLY MOVES THE COMMON BULLETS. A long transcript buys identity restatement, never a
@@ -24,13 +27,16 @@ import assert from 'node:assert/strict';
 import {
   PERSONA_BLOCK, PERSONA_LANES, renderPersonaBlock,
   DRIFT_ANCHOR_HEADING, DRIFT_ANCHOR_LEAD, DRIFT_MODES, DRIFT_LONG_WINDOW_CHARS, renderDriftAnchor,
+  type DriftMode,
 } from './policy.js';
 
 /** The two window sizes every anchor case runs at: one character under the band, and the band. */
 const SHORT_WINDOW = DRIFT_LONG_WINDOW_CHARS - 1;
 const LONG_WINDOW = DRIFT_LONG_WINDOW_CHARS;
 
-/** Every rendering the anchor has: three modes times two bands. */
+/** Every rendering the anchor has: four modes times two bands. Derived from DRIFT_MODES rather than
+ *  listed, so the mode a later turn shape adds is swept by every case below on the commit that adds
+ *  it — an anchor variant no test renders is a variant a bad paste lives in. */
 const ANCHORS = DRIFT_MODES.flatMap(mode => [
   { name: `${mode} / short window`, mode, windowChars: SHORT_WINDOW },
   { name: `${mode} / long window`, mode, windowChars: LONG_WINDOW },
@@ -87,7 +93,7 @@ test('the block describes no envelope field — the status contract owns the lis
 
 test('the heading is the literal three test files hard-code', () => {
   assert.equal(DRIFT_ANCHOR_HEADING, '## Still the same Irises, this far down');
-  assert.deepEqual([...DRIFT_MODES], ['task', 'hook', 'quiet']);
+  assert.deepEqual([...DRIFT_MODES], ['task', 'hook', 'quiet', 'share']);
 });
 
 test('every mode and window renders heading, lead, then exactly six `- ` bullets', () => {
@@ -136,17 +142,81 @@ test('the band is inclusive at its edge, and the same arguments always give the 
   assert.equal(renderDriftAnchor('quiet', 0), renderDriftAnchor('quiet', 1), 'and an empty window is just a short one');
 });
 
+/**
+ * The law each mode states, as one phrase that mode carries and no other mode does — the whole
+ * value of taking a mode at all. A table rather than three locals, because the sweep below is what
+ * proves the modes are DISJOINT, and disjointness over four modes is twelve comparisons nobody
+ * writes out by hand.
+ */
+const MODE_LAWS: Record<DriftMode, string> = {
+  task: 'answer it flat, with the real numbers, and nothing else',
+  hook: 'one hook, of a kind the hooks section above still allows, and only one',
+  quiet: 'one plain short bubble, a tapback, or nothing',
+  share: 'they handed you something and asked for nothing',
+};
+
+/** How each law NAMES the turn it governs, which is the half a model actually navigates by: the
+ *  first bullet says what kind of turn this is, and two of those in one anchor is no anchor. */
+const MODE_OPENERS: Record<DriftMode, string> = {
+  task: 'This is a task turn',
+  hook: 'This is an idle turn',
+  quiet: 'Three sharp things in a row already',
+  share: 'This is a share turn',
+};
+
 test('each mode states its own law, and only its own', () => {
-  const task = renderDriftAnchor('task', SHORT_WINDOW);
-  const hook = renderDriftAnchor('hook', SHORT_WINDOW);
-  const quiet = renderDriftAnchor('quiet', SHORT_WINDOW);
+  for (const mode of DRIFT_MODES) {
+    const text = renderDriftAnchor(mode, SHORT_WINDOW);
+    assert.ok(text.includes(MODE_LAWS[mode]), `${mode}: the anchor does not state its own law`);
+    assert.ok(text.includes(MODE_OPENERS[mode]), `${mode}: the law does not name the turn it governs`);
 
-  assert.ok(task.includes('answer it flat, with the real numbers, and nothing else'));
-  assert.ok(hook.includes('one hook, of a kind the hooks section above still allows, and only one'));
-  assert.ok(quiet.includes('one plain short bubble, a tapback, or nothing'));
+    // An anchor that carried two laws would be no anchor at all: the edge states the law for the
+    // turn IN HAND, and a second one there is the mode input turning back into decoration.
+    for (const other of DRIFT_MODES) {
+      if (other === mode) continue;
+      assert.ok(!text.includes(MODE_LAWS[other]), `${mode}: carries ${other}'s law as well as its own`);
+      assert.ok(!text.includes(MODE_OPENERS[other]), `${mode}: names itself ${other} too`);
+    }
+  }
+});
 
-  // The mode bullets are disjoint: an anchor that carried two laws would be no anchor at all.
-  assert.ok(!task.includes('This is an idle turn'));
-  assert.ok(!hook.includes('This is a task turn'));
-  assert.ok(!quiet.includes('This is a task turn') && !quiet.includes('This is an idle turn'));
+test('the share law reads true whether four kinds are open or none', () => {
+  const share = renderDriftAnchor('share', SHORT_WINDOW);
+
+  // THE PRESENCE CASE IS WHY THIS IS PINNED. A share turn with every kind spoken for still reaches
+  // this edge in share mode — the assembler maps share → share unconditionally, because the quiet
+  // law it would otherwise fall to answers a bid with a tapback or nothing, which is the receipt the
+  // whole shape exists to forbid. So the law may not promise a move the section has already spent:
+  // it defers to the section for WHICH move, and forbids the two ways out of the turn outright.
+  assert.ok(
+    share.includes('shaped by what the share section above leaves open'),
+    'the share law names the section as the thing that decides which move is left, instead of promising one',
+  );
+  assert.ok(
+    share.includes('Never a receipt, never nothing.'),
+    'and it closes both exits, which is what makes it true on the turn where no kind is open',
+  );
+
+  // The dose and the gate, stated at the edge because they are the two rules a long thread loses
+  // first: the section can leave the question open and still be read as an instruction to ask.
+  assert.ok(share.includes('only when the section left the question open'));
+  assert.ok(share.includes('One question at most, never on two turns running.'));
+
+  // The three shapes that wear a follow-up's clothes (switch, mirror, me-too), named as bans.
+  for (const ban of ['Never a switch', 'never a question that turns back on you', 'never a me-too']) {
+    assert.ok(share.includes(ban), `the share law drops the ban on ${JSON.stringify(ban)}`);
+  }
+});
+
+test('share is the only mode whose law leaves her a question', () => {
+  // The fourth kind is the share turn's own (persona/hooks.ts HOOK_MODE_KINDS keeps it out of the
+  // idle set), and the recency edge is where that has to hold hardest: an idle turn whose anchor
+  // went quiet about questions is the interrogation the 2026-09-08 ban was written against.
+  assert.ok(renderDriftAnchor('hook', SHORT_WINDOW).includes('A hook is a statement, never a question.'));
+  assert.ok(renderDriftAnchor('quiet', SHORT_WINDOW).includes('No hook, no callback, no question.'));
+  assert.ok(
+    !renderDriftAnchor('task', SHORT_WINDOW).includes('ask only for what only they know'),
+    'a task turn is answered flat, and nothing at the edge suggests it may ask for anything',
+  );
+  assert.ok(renderDriftAnchor('share', SHORT_WINDOW).includes('ask only for what only they know'));
 });

@@ -184,8 +184,8 @@ export function renderPersonaBlock(lane: PersonaLane): string {
 
 /**
  * The drift anchor's heading, byte-identical to the static behaviour anchor it replaces
- * (agents/convo/shared.ts) — three test files hard-code this literal, and T6 swaps the body under
- * the heading rather than the heading itself, so the pins stay where they are.
+ * (agents/convo/shared.ts) — three test files hard-code this literal, and every mode the anchor
+ * grows swaps the body under the heading rather than the heading itself, so the pins stay put.
  */
 export const DRIFT_ANCHOR_HEADING = '## Still the same Irises, this far down';
 
@@ -196,11 +196,17 @@ export const DRIFT_ANCHOR_LEAD =
 
 /**
  * What this turn IS, as the hook selector decided it (persona/hooks.ts `HookDirective.mode`) — the
- * same three words, so the anchor and the directive can never disagree about the turn they are both
+ * same four words, so the anchor and the directive can never disagree about the turn they are both
  * describing. Mirrored rather than imported: hooks.ts reaches the ledger types, and this file is a
  * leaf. hooks.test.ts and policy.test.ts each pin their own copy of the list.
+ *
+ * A SET OF WORDS, NOT AN ORDER: the selector's own union reads task | quiet | hook | share, and this
+ * list reads task | hook | quiet | share, because what the modes are ordered by here is the anchor's
+ * own history rather than the selector's branches. Nothing downstream indexes it — every reader
+ * either looks a mode up by name or loops the list — so the only thing the order decides is which
+ * variant a sweep renders first.
  */
-export const DRIFT_MODES = ['task', 'hook', 'quiet'] as const;
+export const DRIFT_MODES = ['task', 'hook', 'quiet', 'share'] as const;
 export type DriftMode = typeof DRIFT_MODES[number];
 
 /**
@@ -241,6 +247,18 @@ const DRIFT_COMMON_LONG: readonly string[] = [
  * anchor held identity only, because a rule stated twice is a rule that drifts; the mode bullets are
  * the exception the plan buys deliberately, and CLAUSE_INVENTORY's `anchorCopies` column is where
  * the second copy is counted rather than discovered.
+ *
+ * THE SHARE LAW IS THREE BULLETS LIKE THE OTHER THREE, and the count is what makes it one of them:
+ * six lines at the edge is the shape every consumer pins, so a fourth mode buys no extra room and
+ * has to say the whole turn in the same three lines. What those three carry is the share's own
+ * arithmetic — one move about the thing they handed her, the guess-or-ask decision with the section
+ * named as the thing that decides which, and the three shapes a question wears without being one.
+ *
+ * The first bullet ends on "Never a receipt, never nothing." because this law also rides the
+ * PRESENCE case: a share turn with every kind spoken for renders SHARE_NONE_OPEN in the section
+ * above (persona/hooks.ts) and still reaches this edge in share mode, where a law that said "carry
+ * one of the kinds" would be a sentence about kinds she has none of. It forbids the two ways out of
+ * that turn — a receipt and silence — so the law reads true with four kinds open and with none.
  */
 const DRIFT_MODE_BULLETS: Record<DriftMode, readonly string[]> = {
   task: [
@@ -257,6 +275,11 @@ const DRIFT_MODE_BULLETS: Record<DriftMode, readonly string[]> = {
     '- Three sharp things in a row already, or your weather closed the beat: this reply is one plain short bubble, a tapback, or nothing.',
     '- No hook, no callback, no question. Do not explain the quiet.',
     '- The plain thing, said once, and let the beat pass. Their word and their greeting still never come back.',
+  ],
+  share: [
+    '- This is a share turn: they handed you something and asked for nothing. The reply is about that thing, one move, shaped by what the share section above leaves open. Never a receipt, never nothing.',
+    '- Guess what you can guess and state it; ask only for what only they know, and only when the section left the question open. One question at most, never on two turns running.',
+    '- Never a switch, never a question that turns back on you, never a me-too. Their word for the thing stays their word; when a line dies, let it.',
   ],
 };
 
