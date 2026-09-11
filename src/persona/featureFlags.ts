@@ -1,4 +1,4 @@
-// The three switches this phase ships, in one leaf.
+// The four switches this phase ships, in one leaf.
 //
 // They live together, and away from the engines they gate, for one reason: every engine here is a
 // pure module that a test imports for the price of a string (persona/hooks.ts, persona/moments.ts,
@@ -16,6 +16,11 @@
 // is OFF, and a flip needs no restart. Each one is a row in scripts/flagDocs.test.ts, which reads
 // its default out of the parser below and fails unless deploy/app.env and .env.example both say the
 // same word beside the same var.
+//
+// A switch that is still landing keeps the same four lines with the empty default inverted, so every
+// intermediate build is inert and the last commit of the series is the only one that changes a reply
+// (memory/provenance.ts's `provenanceEnabled` is that template). The body is what has to be
+// byte-identical either way; the default is only which side of it ships today.
 
 /**
  * The hook machinery (env: CONVO_HOOKS_ENABLED). Default ON.
@@ -62,5 +67,26 @@ export function momentsEnabled(): boolean {
 export function thesisEnabled(): boolean {
   const v = (process.env.MEMORY_THESIS_ENABLED || '').trim().toLowerCase();
   if (v === '') return true;
+  return ['true', '1', 'on', 'yes'].includes(v);
+}
+
+/**
+ * The third turn shape (env: CONVO_SHARE_TURNS_ENABLED). Default **OFF** while the shape lands.
+ *
+ * Gates the whole share turn: the idle gate's third verdict, the share section beside the turn
+ * block, its craft page, the drift anchor that reads for it, and the one follow-up question the
+ * affect compiler may leave open. Off, the gate maps a share back onto a task, so a message that
+ * hands her something and asks for nothing is answered flat exactly as it is today — the prompt is
+ * byte-identical, down to the bytes, which is the contract the flag exists to keep and what
+ * hookWiring's off-path pin measures.
+ *
+ * Subordinate to CONVO_HOOKS_ENABLED: with the machinery off there is no gate to read a third
+ * shape, so this switch has nothing to turn on. It is default off only until the series that builds
+ * the shape is whole; every commit before that last one is inert on a live box, deliberately, so a
+ * half-built shape can never reach a reply.
+ */
+export function shareTurnsEnabled(): boolean {
+  const v = (process.env.CONVO_SHARE_TURNS_ENABLED || '').trim().toLowerCase();
+  if (v === '') return false;
   return ['true', '1', 'on', 'yes'].includes(v);
 }

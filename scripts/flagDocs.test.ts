@@ -40,7 +40,7 @@ import { unkeptPromiseGuardEnabled } from '../src/agents/convo/unkeptPromise.js'
 import { starvedRetryEnabled, reasoningDisableEnabled, llmCallTimeoutMs } from '../src/llm/openrouterRequest.js';
 import { browserLegBudgetMs, opsCancelEngineAbortEnabled } from '../src/agents/ops/engineBackend.js';
 import { leafExamplesExtra } from '../src/persona/idle.js';
-import { hooksEnabled, momentsEnabled, thesisEnabled } from '../src/persona/featureFlags.js';
+import { hooksEnabled, momentsEnabled, thesisEnabled, shareTurnsEnabled } from '../src/persona/featureFlags.js';
 
 const REPO = process.cwd();
 const APP_ENV = readFileSync(join(REPO, 'deploy/app.env'), 'utf8');
@@ -73,6 +73,10 @@ const FLAGS: readonly FlagDoc[] = [
   { name: 'CONVO_HOOKS_ENABLED', probe: () => onOff(hooksEnabled()) },
   { name: 'MEMORY_MOMENTS_ENABLED', probe: () => onOff(momentsEnabled()) },
   { name: 'MEMORY_THESIS_ENABLED', probe: () => onOff(thesisEnabled()) },
+  // Still landing, so the parser answers `off` here and both files have to say so: a switch whose
+  // doc says "default on" while the series that builds it is half-shipped is exactly the wrong
+  // direction to flip at 3am. This row starts asserting `on` the commit the default flips.
+  { name: 'CONVO_SHARE_TURNS_ENABLED', probe: () => onOff(shareTurnsEnabled()) },
   { name: 'CONVO_HISTORY_MAX', probe: () => String(convoHistoryMax()) },
   { name: 'OPS_WALLED_URL_HINT', probe: () => onOff(walledUrlHintEnabled()) },
   { name: 'HERMES_SESSION_ROTATION', probe: () => hermesSessionRotation() },
