@@ -76,7 +76,7 @@ import {
 import { renderThreadForPrompt } from '../../persona/threads.js';
 import { renderDriftAnchor } from '../../persona/policy.js';
 import {
-  hookKindOpen, QUIET_LAW, quietViolation, recordHook, renderHooksSection,
+  hookKindOpen, QUIET_LAW, quietViolation, recordHook, renderHooksSection, shapeOf,
   type HookDirective, type HookSelectReport, type HookState, type HookWord,
 } from '../../persona/hooks.js';
 import { hooksEnabled, momentsEnabled, thesisEnabled } from '../../persona/featureFlags.js';
@@ -3087,7 +3087,11 @@ export async function processConvoResult(args: {
         detail: { emitted: emitted.hook_kind, idle: hookTurn.directive.idle },
       });
     }
-    const next = recordHook(hookTurn.state, emitted?.hook_kind, hookTurn.directive.idle, hookTurn.momentOffered, Date.now());
+    // The KIND of turn, read back off the directive the selector produced (persona/hooks.ts
+    // `shapeOf`) rather than threaded down from the gate: one answer to the question, on the one
+    // struct this half of the turn actually holds. It is what tells the two ledger clocks a silence
+    // from a turn where they said something — a share ends the streak the way a task does.
+    const next = recordHook(hookTurn.state, emitted?.hook_kind, shapeOf(hookTurn.directive), hookTurn.momentOffered, Date.now());
     await saveHookState(chatId, handle ?? '', next, { ifForgetEpoch: hookTurn.forgetEpoch });
   }
 

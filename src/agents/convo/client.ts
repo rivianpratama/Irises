@@ -438,8 +438,20 @@ export async function chat(
     // the same turn.
     const affectDirective = compileAffect(affectState.last, computed, climate);
     const picked = selectHook(
-      hookState, idleTurn, idle.layer,
-      { hooks: affectDirective.hooks, lateNight: affectDirective.lateNight },
+      // The gate's own reading is still collapsed here (see `idleTurn` above): the selector knows the
+      // share branch, and the section, the anchor and the craft page it would be rendered beside do
+      // not exist yet. A `share` reading therefore reaches the selector as a task, which is what it
+      // reached it as before the branch was written.
+      hookState, idleTurn ? 'idle' : 'task', idle.layer,
+      // The two ceilings ride along from the same compile: the question gate and the weight flag are
+      // read ONLY by the share branch, so on every turn this build can actually produce they are
+      // carried and not consulted.
+      {
+        hooks: affectDirective.hooks,
+        question: affectDirective.question,
+        heavy: affectDirective.heavy,
+        lateNight: affectDirective.lateNight,
+      },
       isGroupChat, nowMs,
     );
     hookDirective = picked.directive;

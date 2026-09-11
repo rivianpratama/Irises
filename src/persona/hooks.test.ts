@@ -1,11 +1,14 @@
 // Run with: npm test   (TZ=UTC tsx --test — runner pins DATA_BACKEND=memory)
-// The hook engine is the CODE half of the idle-turn law: the model contributes one word out of
-// three, and every run, cap, interval and veto below it is arithmetic in hooks.ts. These tests pin
-// all of it, plus the invariants the rest of pillar three leans on:
+// The hook engine is the CODE half of the turn law: the model contributes one word out of four, and
+// every run, cap, interval and veto below it is arithmetic in hooks.ts. These tests pin all of it,
+// plus the invariants the rest of pillar three leans on:
 //
-//   • THE KILL SWITCH OUTRANKS EVERYTHING. Three hooked replies in a row and the fourth turn is
-//     quiet whatever the mood, the room, or the sampler would have said. It is checked before any
-//     of them, and its receipt says so in its own disjoint bucket.
+//   • THE KILL SWITCH OUTRANKS EVERYTHING ON AN IDLE TURN. Three hooked replies in a row and the
+//     fourth turn is quiet whatever the mood, the room, or the sampler would have said. It is
+//     checked before any of them, and its receipt says so in its own disjoint bucket. A SHARE turn
+//     is outside it entirely — they spoke — and can never be forced quiet.
+//   • THE QUESTION IS THE SHARE TURN'S ALONE. An idle turn forbids it with no condition attached;
+//     a share turn opens it only inside the compiled ceiling, never twice running, never in a room.
 //   • `none` IS AN ENTRY, not a gap. One flat reply anywhere in the window buys the next hook back,
 //     which is what keeps the window three turns wide instead of three weeks wide.
 //   • DISJOINT REPORTS. Every turn the selector ran lands in exactly one `reason`, and a kind that
@@ -19,11 +22,12 @@ process.env.TZ = 'UTC';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  selectHook, recordHook, quietViolation, renderHooksSection, defaultHookState, hookKindOpen,
+  selectHook, recordHook, quietViolation, renderHooksSection, defaultHookState, hookKindOpen, shapeOf,
   HOOK_WORDS, HOOK_RUN_LIMIT, MOMENT_IDLE_INTERVAL, QUIET_MAX_WORDS,
   HOOK_CLAMP, HOOK_HEADING, HOOK_LEAD, HOOK_OPEN_LINE, HOOK_NONE_OPEN, HOOK_LATE_LINE,
   MOMENTS_LEAD, QUIET_HEADING, QUIET_LAW,
   type HookAffectInput, type HookDirective, type HookKind, type HookState, type HookWord,
+  type TurnKind,
 } from './hooks.js';
 
 const T0 = Date.UTC(2026, 3, 1);
@@ -32,16 +36,21 @@ function state(over: Partial<HookState> = {}): HookState {
   return { ...defaultHookState(), ...over };
 }
 
-const OPEN: HookAffectInput = { hooks: 'all', lateNight: false };
+/** Nothing closed by her weather: every kind allowed, the question ceiling open, no weight, daylight.
+ *  The question being OPEN here is what makes every idle case below a statement about the MODE — an
+ *  idle turn forbids the fourth kind with the ceiling wide open, which is the ban with no condition. */
+const OPEN: HookAffectInput = { hooks: 'all', question: 'open', heavy: false, lateNight: false };
 
-/** Selection with the boring arguments filled in: an idle turn, a wide-open mood, a one-to-one chat. */
+/** Selection with the boring arguments filled in: an idle turn, a wide-open mood, a one-to-one chat.
+ *  `shape` is the gate's reading (persona/idle.ts `TurnKind`) and the default is `idle`, so a case
+ *  that says nothing about it is a case about the turn the hook engine was built for. */
 function pick(
   s: HookState,
-  over: { idle?: boolean; layer?: string; affect?: HookAffectInput; isGroup?: boolean } = {},
+  over: { shape?: TurnKind; layer?: string; affect?: HookAffectInput; isGroup?: boolean } = {},
 ) {
   return selectHook(
     s,
-    over.idle ?? true,
+    over.shape ?? 'idle',
     over.layer ?? 'fast_path',
     over.affect ?? OPEN,
     over.isGroup ?? false,
@@ -57,10 +66,10 @@ function deepFreeze<T>(v: T): T {
   return v;
 }
 
-// ══ 1. The three modes ═══════════════════════════════════════════════════════
+// ══ 1. The four modes ════════════════════════════════════════════════════════
 
 test('a task turn carries no hook, no offer and no moment, and says why', () => {
-  const { directive, report } = pick(state({ idleSinceMoment: 99 }), { idle: false, layer: 'veto' });
+  const { directive, report } = pick(state({ idleSinceMoment: 99 }), { shape: 'task', layer: 'veto' });
   assert.equal(directive.mode, 'task');
   assert.equal(directive.idle, false);
   assert.equal(directive.offerAllowed, false);
@@ -70,14 +79,20 @@ test('a task turn carries no hook, no offer and no moment, and says why', () => 
   assert.equal(report.idleLayer, 'veto', 'the layer that decided rides through untouched');
 });
 
-test('an idle turn with an empty ledger opens all three kinds', () => {
+// An idle turn opens the three CARRYING kinds and closes the fourth, with an empty ledger, a
+// wide-open mood and the compiled question ceiling saying `open`. That last clause is the pin: the
+// question is not closed here by her weather, it is closed by the SHAPE of the turn. They sent
+// nothing, so there is nothing to follow up on, and a question into that silence is the probe the
+// ban was written against.
+test('an idle turn with an empty ledger opens all three carrying kinds and never the question', () => {
   const { directive, report } = pick(state());
   assert.equal(directive.mode, 'hook');
   assert.equal(directive.idle, true);
   assert.equal(directive.offerAllowed, true);
-  assert.deepEqual(directive.forbidden, []);
+  assert.deepEqual(directive.forbidden, ['question']);
   assert.equal(report.reason, 'hook');
   assert.deepEqual(report.lastKinds, []);
+  assert.equal(directive.heavy, undefined, 'weight is a property of a thing handed over, and nothing was');
 });
 
 // THE load-bearing rule. Three sharp replies in a row and the fourth turn is quiet — no hook, no
@@ -117,7 +132,7 @@ test('a short ledger cannot fire the switch, and a long one is read at its tail'
 });
 
 test('a flat mood closes hooks outright, in its own bucket', () => {
-  const { directive, report } = pick(state(), { affect: { hooks: 'none', lateNight: false } });
+  const { directive, report } = pick(state(), { affect: { ...OPEN, hooks: 'none' } });
   assert.equal(directive.mode, 'quiet');
   assert.equal(directive.offerAllowed, false);
   assert.equal(report.reason, 'affect_floor');
@@ -129,7 +144,7 @@ test('a flat mood closes hooks outright, in its own bucket', () => {
 test('the kill switch outranks the affect floor, the room and a spent moment interval', () => {
   const { directive, report } = pick(
     state({ lastKinds: ['judgment', 'judgment', 'judgment'], idleSinceMoment: 99 }),
-    { affect: { hooks: 'none', lateNight: true }, isGroup: true, layer: 'classify' },
+    { affect: { ...OPEN, hooks: 'none', lateNight: true }, isGroup: true, layer: 'classify' },
   );
   assert.equal(directive.mode, 'quiet');
   assert.equal(directive.moments, false);
@@ -139,23 +154,43 @@ test('the kill switch outranks the affect floor, the room and a spent moment int
 
 // ══ 2. Forbidden kinds ═══════════════════════════════════════════════════════
 
+// Every list below ends on `question` and none of them earned it: the idle mode closes that kind
+// before any of these rules are read, so each case is "the rule's own kind, plus the one the shape
+// always closes".
 test('the same kind twice in a row forbids the third', () => {
-  for (const w of HOOK_WORDS) {
+  for (const w of ['judgment', 'callback', 'tangent'] as HookWord[]) {
     const { directive, report } = pick(state({ lastKinds: ['none', w, w] }));
     assert.equal(directive.mode, 'hook', 'a repeat is a forbidden kind, never a quiet turn');
-    assert.deepEqual(directive.forbidden, [w]);
-    assert.deepEqual(report.forbidden, [w], 'the receipt carries the same list');
+    assert.deepEqual(directive.forbidden, [w, 'question']);
+    assert.deepEqual(report.forbidden, [w, 'question'], 'the receipt carries the same list');
   }
+  // The fourth word cannot be repeated INTO anything here: it is already closed, so a ledger whose
+  // tail is two questions (a pair of share turns, then a stall) adds nothing to the list.
+  assert.deepEqual(pick(state({ lastKinds: ['none', 'question', 'question'] })).directive.forbidden, ['question']);
   // Two of the same kind NOT adjacent is not a tic.
-  assert.deepEqual(pick(state({ lastKinds: ['judgment', 'none', 'judgment'] })).directive.forbidden, []);
+  assert.deepEqual(pick(state({ lastKinds: ['judgment', 'none', 'judgment'] })).directive.forbidden, ['question']);
   // And two flat replies in a row is just a conversation, not a repeated kind.
-  assert.deepEqual(pick(state({ lastKinds: ['tangent', 'none', 'none'] })).directive.forbidden, []);
+  assert.deepEqual(pick(state({ lastKinds: ['tangent', 'none', 'none'] })).directive.forbidden, ['question']);
 });
 
 test('the compiled mood forbids its own kind', () => {
-  assert.deepEqual(pick(state(), { affect: { hooks: 'no_judgment', lateNight: false } }).directive.forbidden, ['judgment']);
-  assert.deepEqual(pick(state(), { affect: { hooks: 'no_tangent', lateNight: false } }).directive.forbidden, ['tangent']);
-  assert.deepEqual(pick(state(), { affect: { hooks: 'all', lateNight: false } }).directive.forbidden, []);
+  assert.deepEqual(pick(state(), { affect: { ...OPEN, hooks: 'no_judgment' } }).directive.forbidden, ['judgment', 'question']);
+  assert.deepEqual(pick(state(), { affect: { ...OPEN, hooks: 'no_tangent' } }).directive.forbidden, ['tangent', 'question']);
+  assert.deepEqual(pick(state(), { affect: OPEN }).directive.forbidden, ['question']);
+});
+
+// The one ban on an idle turn with no condition attached anywhere: her weather says the question is
+// open, the ledger is empty, the room is a one-to-one, and the kind is closed anyway. The ceiling is
+// not even consulted on this branch — a question on an idle turn is a probe whatever the mood.
+test('an idle turn closes the question whatever the compiled ceiling says', () => {
+  for (const question of ['open', 'closed'] as const) {
+    const { directive } = pick(state(), { affect: { ...OPEN, question } });
+    assert.deepEqual(directive.forbidden, ['question'], question);
+  }
+  // …and the weight flag is a share-turn read: it neither closes a kind here nor rides the directive.
+  const heavy = pick(state(), { affect: { ...OPEN, heavy: true } });
+  assert.deepEqual(heavy.directive.forbidden, ['question']);
+  assert.equal(heavy.directive.heavy, undefined);
 });
 
 // A read is between the two of them. In a room there is no `them` for it to be about, so the
@@ -163,7 +198,7 @@ test('the compiled mood forbids its own kind', () => {
 test('a group forbids judgment and keeps the rest', () => {
   const { directive } = pick(state(), { isGroup: true });
   assert.equal(directive.mode, 'hook');
-  assert.deepEqual(directive.forbidden, ['judgment']);
+  assert.deepEqual(directive.forbidden, ['judgment', 'question']);
 });
 
 // Rooms accumulate a ledger exactly like a one-to-one chat does — the write sits outside the
@@ -177,15 +212,16 @@ test('the kill switch fires in a group too', () => {
 test('overlapping reasons name a kind once, in HOOK_WORDS order', () => {
   const { directive } = pick(
     state({ lastKinds: ['none', 'judgment', 'judgment'] }),
-    { affect: { hooks: 'no_judgment', lateNight: false }, isGroup: true },
+    { affect: { ...OPEN, hooks: 'no_judgment' }, isGroup: true },
   );
-  assert.deepEqual(directive.forbidden, ['judgment'], 'three reasons, one entry');
+  assert.deepEqual(directive.forbidden, ['judgment', 'question'], 'three reasons, one entry');
 
   const { directive: two } = pick(
     state({ lastKinds: ['none', 'tangent', 'tangent'] }),
-    { affect: { hooks: 'no_judgment', lateNight: false } },
+    { affect: { ...OPEN, hooks: 'no_judgment' } },
   );
-  assert.deepEqual(two.forbidden, ['judgment', 'tangent'], 'always the array order, never the discovery order');
+  assert.deepEqual(two.forbidden, ['judgment', 'tangent', 'question'],
+    'always the array order, never the discovery order');
 });
 
 // Reachable, and rarely: a room (no judgment), a flattened mood (no tangent), and a callback she
@@ -194,22 +230,148 @@ test('overlapping reasons name a kind once, in HOOK_WORDS order', () => {
 test('every kind can be spoken for at once, and the turn is still a hook turn', () => {
   const { directive } = pick(
     state({ lastKinds: ['none', 'callback', 'callback'] }),
-    { affect: { hooks: 'no_tangent', lateNight: false }, isGroup: true },
+    { affect: { ...OPEN, hooks: 'no_tangent' }, isGroup: true },
   );
   assert.equal(directive.mode, 'hook');
   assert.equal(directive.offerAllowed, true);
-  assert.deepEqual(directive.forbidden, ['judgment', 'callback', 'tangent']);
+  assert.deepEqual(directive.forbidden, [...HOOK_WORDS],
+    'the three carrying kinds, each for its own reason, and the fourth for the shape of the turn');
 });
 
-// ══ 3. The late-night register and moments ═══════════════════════════════════
+// ══ 3. The share branch ══════════════════════════════════════════════════════
+//
+// They handed her something and asked for nothing. The move is the whole reply rather than a beat
+// after one, which is why the two things that can silence an idle turn must not silence this one:
+// answering a bid with a receipt is what this shape was built to refuse, and answering it with
+// nothing at all is the same failure with the volume down. So the kill switch does not reach here
+// and the affect floor narrows the turn instead of closing it. The fourth kind is reachable on this
+// branch and on no other.
+
+test('a share turn is its own mode, its own bucket, and opens all four kinds', () => {
+  const { directive, report } = pick(state({ idleSinceMoment: 99 }), { shape: 'share', layer: 'classify' });
+  assert.equal(directive.mode, 'share');
+  assert.equal(directive.idle, false, 'they said something — the streak this feeds counts silences');
+  assert.deepEqual(directive.forbidden, [], 'the question included: this is the turn it belongs to');
+  assert.equal(directive.heavy, false);
+  assert.equal(directive.offerAllowed, true);
+  assert.equal(directive.moments, false,
+    'a spent interval buys nothing here — what a callback could be made of is in front of her already');
+  assert.equal(report.reason, 'share', 'not a flavour of `hook`: the battery has to be able to tell them apart');
+  assert.equal(report.idleLayer, 'classify', 'the layer that decided rides through untouched');
+  assert.equal(hookKindOpen(directive), true);
+});
+
+// THE SCOPE OF THE KILL SWITCH, stated where it stops. It is a switch on silence answered with
+// cleverness — four turns of someone sending nothing and getting a clever line back — so a run of
+// three means nothing on the turn where the person actually spoke. Same ledger, same state, two
+// answers, and the share one is not even a different reason.
+test('the kill switch never fires on a share turn', () => {
+  const full = state({ lastKinds: ['judgment', 'callback', 'tangent'] });
+  assert.equal(pick(full).directive.mode, 'quiet', 'the same window forces an IDLE turn quiet');
+  const { directive, report } = pick(full, { shape: 'share' });
+  assert.equal(directive.mode, 'share');
+  assert.equal(report.reason, 'share');
+  assert.deepEqual(directive.forbidden, [], 'and the run costs the share turn nothing');
+  assert.deepEqual(report.lastKinds, ['judgment', 'callback', 'tangent']);
+});
+
+// The affect floor's other half. On an idle turn `hooks: 'none'` IS the quiet bucket; here it is the
+// presence case — every kind closed, the turn still a share turn, and the section's own law is that
+// one plain sentence about their thing is what is left. A mood too flat for a move is not a reason to
+// answer a person with nothing.
+test('a flat mood narrows a share turn to presence and never closes it', () => {
+  const { directive, report } = pick(state(), { shape: 'share', affect: { ...OPEN, hooks: 'none' } });
+  assert.equal(directive.mode, 'share', 'never quiet');
+  assert.deepEqual(directive.forbidden, [...HOOK_WORDS]);
+  assert.equal(directive.offerAllowed, true);
+  assert.equal(report.reason, 'share', 'and no affect_floor bucket: nothing was floored, the turn was narrowed');
+  assert.equal(hookKindOpen(directive), false, 'nothing open, and the section still forbids silence');
+});
+
+// The compiled CEILING (affectCompiler.ts `compileQuestionGate`): her weather saying the reply stays
+// statement-shaped. `open` is a permission and never an instruction — the kind stays in the set and
+// she judges whether this particular share wants a question — and nothing on this branch turns
+// `closed` back into `open`.
+test('the compiled ceiling closes the question and leaves the rest', () => {
+  const closed = pick(state(), { shape: 'share', affect: { ...OPEN, question: 'closed' } });
+  assert.deepEqual(closed.directive.forbidden, ['question']);
+  assert.equal(hookKindOpen(closed.directive), true, 'the guess is still hers to state');
+  assert.deepEqual(pick(state(), { shape: 'share', affect: { ...OPEN, question: 'open' } }).directive.forbidden, []);
+});
+
+// THE DOSE, and it is not the repeat rule. Two of a kind in a row is a tic; a question on two turns
+// running is an interview, which is a stricter rule — so a single `question` at the tail closes the
+// next one even though nothing was repeated, and one reply later it is hers again.
+test('a question at the ledger tail closes the next one, with no repeat needed', () => {
+  const after = pick(state({ lastKinds: ['none', 'judgment', 'question'] }), { shape: 'share' });
+  assert.deepEqual(after.directive.forbidden, ['question'],
+    'she asked last turn, so this turn is what she makes of the answer');
+  const later = pick(state({ lastKinds: ['question', 'none', 'judgment'] }), { shape: 'share' });
+  assert.deepEqual(later.directive.forbidden, [], 'one reply on, and the question is available again');
+});
+
+// A room closes the two moves that need one person to be aimed at: a verdict in front of an audience,
+// and a follow-up that puts one member on the spot to answer in front of everyone. A callback and a
+// tangent are about the thing, so they survive — the same fence every per-person read sits behind.
+test('a room closes the judgment and the question on a share turn', () => {
+  const { directive } = pick(state(), { shape: 'share', isGroup: true });
+  assert.equal(directive.mode, 'share');
+  assert.deepEqual(directive.forbidden, ['judgment', 'question']);
+});
+
+// WEIGHT. A judgment on a heavy share is analysis, and analysis is not company; a tangent walks away
+// from the thing they just put down. What is left is a callback and — if the ceiling left it open — a
+// question about what happened or how it sat. The flag rides the directive because the climate span
+// reads it too: it must not tell her a tangent is welcome on the turn someone let the tank out.
+test('weight closes the judgment and the tangent, and rides the directive', () => {
+  const { directive } = pick(state(), { shape: 'share', affect: { ...OPEN, heavy: true } });
+  assert.deepEqual(directive.forbidden, ['judgment', 'tangent']);
+  assert.equal(directive.heavy, true);
+  assert.equal(hookKindOpen(directive), true, 'a callback and the question are still moves');
+  // The narrowest share there is — weight plus a closed ceiling, which is exactly what someone
+  // overwhelmed compiles to — and it is still a share turn with a law that forbids silence.
+  const narrow = pick(state(), { shape: 'share', affect: { ...OPEN, heavy: true, question: 'closed' } });
+  assert.equal(narrow.directive.mode, 'share');
+  assert.deepEqual(narrow.directive.forbidden, ['judgment', 'tangent', 'question']);
+  assert.equal(hookKindOpen(narrow.directive), true, 'the callback is what is left');
+});
+
+test('the repeat rule and the sampler behave on a share turn too', () => {
+  const { directive } = pick(
+    state({ lastKinds: ['none', 'callback', 'callback'], idleSinceMoment: MOMENT_IDLE_INTERVAL + 5 }),
+    { shape: 'share' },
+  );
+  assert.deepEqual(directive.forbidden, ['callback'], 'two in a row is a tic on any turn');
+  assert.equal(directive.moments, false, 'and the sampler is for the turn with nothing else in it');
+});
+
+test('overlapping reasons name a kind once on a share turn, in HOOK_WORDS order', () => {
+  const { directive } = pick(
+    state({ lastKinds: ['none', 'judgment', 'judgment'] }),
+    { shape: 'share', affect: { ...OPEN, hooks: 'no_judgment', heavy: true }, isGroup: true },
+  );
+  assert.deepEqual(directive.forbidden, ['judgment', 'tangent', 'question'],
+    'four reasons closed the judgment, one entry');
+});
+
+// The clock is not a branch here either: it lowers the volume of the one move and picks none of it.
+test('lateNight rides a share turn as a register and closes nothing', () => {
+  const { directive } = pick(state(), { shape: 'share', affect: { ...OPEN, lateNight: true } });
+  assert.equal(directive.lateNight, true);
+  assert.deepEqual(directive.forbidden, []);
+  const day = pick(state(), { shape: 'share' });
+  assert.deepEqual({ ...directive, lateNight: false }, day.directive);
+});
+
+// ══ 4. The late-night register and moments ═══════════════════════════════════
 
 // Passed through in every mode so a consumer never has to check which branch it came from.
 test('lateNight rides through every mode untouched', () => {
-  const late: HookAffectInput = { hooks: 'all', lateNight: true };
+  const late: HookAffectInput = { ...OPEN, lateNight: true };
   assert.equal(pick(state(), { affect: late }).directive.lateNight, true);
-  assert.equal(pick(state(), { affect: late, idle: false }).directive.lateNight, true);
+  assert.equal(pick(state(), { affect: late, shape: 'task' }).directive.lateNight, true);
   assert.equal(pick(state({ lastKinds: ['judgment', 'callback', 'tangent'] }), { affect: late }).directive.lateNight, true);
-  assert.equal(pick(state(), { affect: { hooks: 'all', lateNight: false } }).directive.lateNight, false);
+  assert.equal(pick(state(), { affect: OPEN }).directive.lateNight, false);
 });
 
 // THE 2AM TURN, and the one line it used to print every night. The clock used to CLOSE every kind
@@ -219,15 +381,15 @@ test('lateNight rides through every mode untouched', () => {
 // (the rendered late line) and decides nothing else, so a late idle turn falls through to the
 // ordinary hook path and the mood, the room and the ledger pick the content the way they do at noon.
 test('a late-night idle turn is an ordinary hook turn at a lower volume', () => {
-  const late: HookAffectInput = { hooks: 'all', lateNight: true };
+  const late: HookAffectInput = { ...OPEN, lateNight: true };
   const { directive, report } = pick(state({ idleSinceMoment: MOMENT_IDLE_INTERVAL + 5 }), { affect: late });
   assert.equal(directive.mode, 'hook');
-  assert.deepEqual(directive.forbidden, [], 'the clock closes no kind');
+  assert.deepEqual(directive.forbidden, ['question'], 'the clock closes no kind — the SHAPE closes that one');
   assert.equal(directive.lateNight, true);
   assert.equal(directive.moments, true, 'the interval was spent, and the hour does not shut the sampler');
   assert.equal(directive.offerAllowed, true, 'nor the thread offer');
   assert.equal(report.reason, 'hook', 'the clock has no bucket of its own — there is nothing to explain');
-  assert.deepEqual(report.forbidden, []);
+  assert.deepEqual(report.forbidden, ['question']);
   assert.equal(hookKindOpen(directive), true, 'so the beat is open and the anchor gets the HOOK law');
   // Byte-identical to the same state in daylight, apart from the flag itself: proof the hour is a
   // register and not a branch.
@@ -271,6 +433,16 @@ test('hookKindOpen answers whether a beat is OPEN, never what the mode says', ()
     renderHooksSection({ ...hook, forbidden: ['judgment', 'callback'] }),
     'and the renderer agrees — the same section as the deduped directive, naming tangent',
   );
+  // A SHARE turn answers this question too, and over FOUR kinds: the question is a move there, so
+  // the one word the two modes disagree about has to be read against the mode that shipped. The same
+  // directive shape, the same forbidden list, two different answers.
+  const share: HookDirective = { ...hook, idle: false, mode: 'share', heavy: false, moments: false };
+  assert.equal(hookKindOpen({ ...share, forbidden: [...carrying] }), true,
+    'the question alone is still a move to make');
+  assert.equal(hookKindOpen({ ...hook, forbidden: [...carrying] }), false,
+    '…and on a hook turn the same list is the closed-kinds shape');
+  assert.equal(hookKindOpen({ ...share, forbidden: [...HOOK_WORDS] }), false,
+    'the presence case: nothing open, and the share section still forbids silence');
   // The other two modes never populate `forbidden` — the MODE forbade every kind already — so the
   // predicate must not read an empty list there as "everything is open".
   assert.equal(hookKindOpen({ ...hook, mode: 'quiet', forbidden: [] }), false);
@@ -284,11 +456,11 @@ test('hookKindOpen answers whether a beat is OPEN, never what the mode says', ()
 // noon, and the receipt names the thing that actually decided. A run of three is still a run of
 // three after midnight, and the clock never gets to talk one of them out of firing.
 test('the kill switch and the affect floor still fire at night', () => {
-  const late: HookAffectInput = { hooks: 'all', lateNight: true };
+  const late: HookAffectInput = { ...OPEN, lateNight: true };
   const killed = pick(state({ lastKinds: ['judgment', 'callback', 'tangent'] }), { affect: late });
   assert.equal(killed.directive.mode, 'quiet');
   assert.equal(killed.report.reason, 'kill_switch');
-  const floored = pick(state(), { affect: { hooks: 'none', lateNight: true } });
+  const floored = pick(state(), { affect: { ...OPEN, hooks: 'none', lateNight: true } });
   assert.equal(floored.directive.mode, 'quiet');
   assert.equal(floored.report.reason, 'affect_floor');
 });
@@ -296,7 +468,7 @@ test('the kill switch and the affect floor still fire at night', () => {
 // A late TASK turn is a task turn. Somebody who asks for something at 2am gets the answer, flat,
 // with the real numbers — the clock only ever spends the extra beat, never the work.
 test('the clock never touches a task turn', () => {
-  const { directive, report } = pick(state(), { affect: { hooks: 'all', lateNight: true }, idle: false });
+  const { directive, report } = pick(state(), { affect: { ...OPEN, lateNight: true }, shape: 'task' });
   assert.equal(directive.mode, 'task');
   assert.deepEqual(directive.forbidden, [], 'the MODE forbids every kind already');
   assert.equal(report.reason, 'not_idle');
@@ -306,7 +478,7 @@ test('the clock never touches a task turn', () => {
 // register line under it. Nothing in the block tells her what to send, and the word "sleep" is not
 // in it — the whole complaint that produced this design was one sentence arriving every night.
 test('a late idle turn renders the open line and the late line, and says nothing about sleep', () => {
-  const { directive } = pick(state(), { affect: { hooks: 'all', lateNight: true } });
+  const { directive } = pick(state(), { affect: { ...OPEN, lateNight: true } });
   assert.equal(renderHooksSection(directive), [
     '## This turn may carry one hook (INTERNAL)',
     'They sent you nothing, so nothing of theirs comes back, not their greeting, not their word. This is the one turn that earns a hook, and it earns exactly one.',
@@ -339,15 +511,15 @@ test('a group never samples moments', () => {
   assert.equal(pick(s).directive.moments, true);
 });
 
-// ══ 4. The ledger ════════════════════════════════════════════════════════════
+// ══ 5. The ledger ════════════════════════════════════════════════════════════
 
 test('recordHook pushes the emitted kind and caps the window', () => {
   let s = defaultHookState();
-  s = recordHook(s, 'judgment', true, false, T0);
-  s = recordHook(s, 'callback', true, false, T0 + 1);
-  s = recordHook(s, 'tangent', true, false, T0 + 2);
+  s = recordHook(s, 'judgment', 'idle', false, T0);
+  s = recordHook(s, 'callback', 'idle', false, T0 + 1);
+  s = recordHook(s, 'tangent', 'idle', false, T0 + 2);
   assert.deepEqual(s.lastKinds, ['judgment', 'callback', 'tangent']);
-  s = recordHook(s, undefined, true, false, T0 + 3);
+  s = recordHook(s, undefined, 'idle', false, T0 + 3);
   assert.deepEqual(s.lastKinds, ['callback', 'tangent', 'none'], 'oldest out, most recent last, capped');
   assert.equal(s.lastKinds.length, HOOK_RUN_LIMIT);
   assert.equal(s.updatedAt, T0 + 3, 'the injected clock, never the wall clock');
@@ -355,40 +527,74 @@ test('recordHook pushes the emitted kind and caps the window', () => {
 
 // A droppable envelope field: a model that said nothing about its hook did not hook.
 test('an absent kind reads as none', () => {
-  assert.deepEqual(recordHook(defaultHookState(), undefined, true, false, T0).lastKinds, ['none']);
-  assert.deepEqual(recordHook(defaultHookState(), 'nonsense' as never, true, false, T0).lastKinds, ['none'],
-    'a word outside the three is no kind at all');
+  assert.deepEqual(recordHook(defaultHookState(), undefined, 'idle', false, T0).lastKinds, ['none']);
+  assert.deepEqual(recordHook(defaultHookState(), 'nonsense' as never, 'idle', false, T0).lastKinds, ['none'],
+    'a word outside the four is no kind at all');
 });
 
-test('the idle streak counts consecutive idle turns and a real ask resets it', () => {
-  let s = recordHook(defaultHookState(), 'judgment', true, false, T0);
+// THE ROW TWO OTHER ENGINES READ. A question emitted on a share turn is written down like any other
+// kind, and the tail is then the whole of the dose rule (the next share turn closes the question)
+// and the whole of the gate's follow-up read (persona/idle.ts `followUpOutstanding`). So the shape
+// of the turn changes the two clocks and never what is recorded.
+test('a question is a ledger entry like any other kind, whatever the shape recorded it', () => {
+  const asked = recordHook(defaultHookState(), 'question', 'share', false, T0);
+  assert.deepEqual(asked.lastKinds, ['question']);
+  // …and the selector reads it straight back as the closer on the next share turn.
+  assert.deepEqual(pick(state({ lastKinds: asked.lastKinds }), { shape: 'share' }).directive.forbidden, ['question']);
+});
+
+test('the idle streak counts consecutive idle turns, and an ask or a share resets it', () => {
+  let s = recordHook(defaultHookState(), 'judgment', 'idle', false, T0);
   assert.equal(s.idleStreak, 1);
-  s = recordHook(s, undefined, true, false, T0 + 1);
+  s = recordHook(s, undefined, 'idle', false, T0 + 1);
   assert.equal(s.idleStreak, 2);
-  s = recordHook(s, undefined, false, false, T0 + 2);
+  s = recordHook(s, undefined, 'task', false, T0 + 2);
   assert.equal(s.idleStreak, 0, 'one real ask and the streak is over');
-  s = recordHook(s, undefined, true, false, T0 + 3);
+  s = recordHook(s, undefined, 'idle', false, T0 + 3);
   assert.equal(s.idleStreak, 1);
+  // A SHARE ends it exactly as a task does: the count is "how many times in a row they sent
+  // nothing", and someone who handed her a piece of their day sent something.
+  s = recordHook(s, 'question', 'share', false, T0 + 4);
+  assert.equal(s.idleStreak, 0);
 });
 
 test('the moment clock ticks on idle turns and resets on an offer', () => {
   let s = defaultHookState();
-  s = recordHook(s, undefined, true, false, T0);
-  s = recordHook(s, undefined, true, false, T0 + 1);
+  s = recordHook(s, undefined, 'idle', false, T0);
+  s = recordHook(s, undefined, 'idle', false, T0 + 1);
   assert.equal(s.idleSinceMoment, 2);
-  s = recordHook(s, undefined, false, false, T0 + 2);
+  s = recordHook(s, undefined, 'task', false, T0 + 2);
   assert.equal(s.idleSinceMoment, 2, 'a task turn neither spends nor tops up the moment clock');
-  s = recordHook(s, 'callback', true, true, T0 + 3);
+  // Nor does a share turn, and for the same reason the sampler never runs on one: a callback about
+  // something old is not what this turn is short of.
+  s = recordHook(s, 'callback', 'share', false, T0 + 3);
+  assert.equal(s.idleSinceMoment, 2);
+  s = recordHook(s, 'callback', 'idle', true, T0 + 4);
   assert.equal(s.idleSinceMoment, 0, 'the offer was made, so the spacing starts again');
   assert.equal(s.idleStreak, 1, 'and the two clocks are independent — the task turn reset only one of them');
   // The reset wins on a task turn too: the offer happened either way.
-  s = recordHook(s, undefined, true, false, T0 + 4);
+  s = recordHook(s, undefined, 'idle', false, T0 + 5);
   assert.equal(s.idleSinceMoment, 1);
-  s = recordHook(s, undefined, false, true, T0 + 5);
+  s = recordHook(s, undefined, 'task', true, T0 + 6);
   assert.equal(s.idleSinceMoment, 0);
 });
 
-// ══ 5. The quiet law ═════════════════════════════════════════════════════════
+// The ledger write reads the KIND off the directive it shipped (convo/shared.ts), so the mapping
+// that gets it there is pinned here rather than at the seam: the mode says share or it does not, and
+// `idle` says whether they sent anything. A quiet turn is an idle turn the switch spent, and it
+// counts toward the streak the way it always has.
+test('shapeOf reads the turn kind back off the directive that shipped', () => {
+  assert.equal(shapeOf(pick(state(), { shape: 'task' }).directive), 'task');
+  assert.equal(shapeOf(pick(state()).directive), 'idle');
+  assert.equal(shapeOf(pick(state({ lastKinds: ['judgment', 'callback', 'tangent'] })).directive), 'idle',
+    'a forced-quiet turn is an idle turn that was spent');
+  assert.equal(shapeOf(pick(state(), { shape: 'share' }).directive), 'share');
+  // The presence case is still a share turn: every kind closed changes what she may do and not what
+  // kind of turn it was.
+  assert.equal(shapeOf(pick(state(), { shape: 'share', affect: { ...OPEN, hooks: 'none' } }).directive), 'share');
+});
+
+// ══ 6. The quiet law ═════════════════════════════════════════════════════════
 
 test('quietViolation catches a hook, a second bubble, and a long one', () => {
   const short = ['fair'];
@@ -407,7 +613,7 @@ test('quietViolation catches a hook, a second bubble, and a long one', () => {
   assert.equal(quietViolation(undefined, ['']), false);
 });
 
-// ══ 6. The rendered section ══════════════════════════════════════════════════
+// ══ 7. The rendered section ══════════════════════════════════════════════════
 
 const HOOK_DIRECTIVE: HookDirective = {
   idle: true, mode: 'hook', forbidden: [], lateNight: false, moments: false, offerAllowed: true,
@@ -475,7 +681,9 @@ test('the late line rides along on a hook turn, and the quiet block never needs 
   const quiet = renderHooksSection({ ...HOOK_DIRECTIVE, mode: 'quiet', lateNight: true, offerAllowed: false });
   assert.equal(quiet.includes(HOOK_LATE_LINE), false, 'a quiet turn is already the quiet reply');
   // The whole point of the redesign: no rendered shape of this section tells her to send them to bed.
-  for (const mode of ['hook', 'quiet'] as const) {
+  // Every mode that renders a block, the share turn included: the register is the one thing the clock
+  // is allowed to change, and it is not allowed to change it into content.
+  for (const mode of ['hook', 'quiet', 'share'] as const) {
     for (const lateNight of [false, true]) {
       const block = renderHooksSection({ ...HOOK_DIRECTIVE, mode, lateNight, moments: false });
       assert.doesNotMatch(block, /sleep/i, `${mode}/${lateNight} named sleep`);
@@ -523,7 +731,7 @@ test('not one digit anywhere in the prose consts', () => {
   const forbiddenSets: HookWord[][] = [[], ['judgment'], [...HOOK_WORDS]];
   for (const forbidden of forbiddenSets) {
     for (const lateNight of [false, true]) {
-      for (const mode of ['hook', 'quiet'] as const) {
+      for (const mode of ['hook', 'quiet', 'share'] as const) {
         const block = renderHooksSection({ ...HOOK_DIRECTIVE, mode, forbidden, lateNight, moments: true });
         assert.doesNotMatch(block, /\d/, `${mode} block leaked a number`);
         // Every block ends on the same clamp: the one unrecoverable failure of this feature is her
@@ -537,17 +745,22 @@ test('not one digit anywhere in the prose consts', () => {
   assert.match(withDigits, /the 3am deploy/);
 });
 
-// ══ 7. Purity ════════════════════════════════════════════════════════════════
+// ══ 8. Purity ════════════════════════════════════════════════════════════════
 
 test('selectHook and recordHook are pure: frozen inputs survive, same in same out', () => {
   const before = deepFreeze(state({ lastKinds: ['none', 'judgment', 'judgment'], idleStreak: 3, idleSinceMoment: 9 }));
-  const a = pick(before, { affect: { hooks: 'no_tangent', lateNight: true } });
-  const b = pick(before, { affect: { hooks: 'no_tangent', lateNight: true } });
+  const a = pick(before, { affect: { ...OPEN, hooks: 'no_tangent', lateNight: true } });
+  const b = pick(before, { affect: { ...OPEN, hooks: 'no_tangent', lateNight: true } });
   assert.deepEqual(a.directive, b.directive);
   assert.deepEqual(a.report, b.report);
   assert.notEqual(a.report.lastKinds, before.lastKinds, 'the receipt gets its own array');
+  // The share branch is the same function under the same rule: one state in, two identical readings.
+  const shareA = pick(before, { shape: 'share', affect: { ...OPEN, heavy: true } });
+  const shareB = pick(before, { shape: 'share', affect: { ...OPEN, heavy: true } });
+  assert.deepEqual(shareA.directive, shareB.directive);
+  assert.deepEqual(shareA.report, shareB.report);
 
-  const next = recordHook(before, 'callback', true, true, T0 + 10);
+  const next = recordHook(before, 'callback', 'idle', true, T0 + 10);
   assert.deepEqual(next.lastKinds, ['judgment', 'judgment', 'callback']);
   assert.deepEqual(before.lastKinds, ['none', 'judgment', 'judgment'], 'the input was not touched');
   assert.equal(before.idleSinceMoment, 9);

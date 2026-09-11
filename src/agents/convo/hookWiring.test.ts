@@ -661,9 +661,12 @@ test('an IDLE message through the front door renders the hooks block, the Turn l
   // ordinary idle turn: the kinds are open, the anchor states the HOOK law, and the one thing the
   // clock adds is the register line saying the reply is small.
   assert.equal(select?.reason, 'hook', 'the clock is not a reason for anything');
-  // The one kind closed here is the CLIMATE's doing, not the hour's: this chat's candor sits below
-  // its floor band, which is what `compileAffect` reads as `no_judgment`.
-  assert.deepEqual(select?.forbidden, ['judgment'], 'the clock closes nothing of its own');
+  // The one CARRYING kind closed here is the CLIMATE's doing, not the hour's: this chat's candor
+  // sits below its floor band, which is what `compileAffect` reads as `no_judgment`. The question
+  // beside it was closed by the SHAPE — an idle turn forbids that kind with no condition attached,
+  // because nothing was shared for it to follow up on (persona/hooks.ts `selectHook`) — and the
+  // section below it names neither one.
+  assert.deepEqual(select?.forbidden, ['judgment', 'question'], 'the clock closes nothing of its own');
   assert.ok(system.includes(HOOK_LATE_LINE), 'the register line rode along');
   assert.ok(system.includes('Open to you this turn: a callback or a tangent.'),
     'under an open line naming the kinds the register left');

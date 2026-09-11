@@ -1,12 +1,20 @@
-// The HOOK engine: what an idle turn is allowed to carry, which kinds are still open to it, and the
+// The HOOK engine: what a turn is allowed to carry, which kinds are still open to it, and the
 // ledger that makes three sharp replies in a row cost the fourth one.
 //
 // A hook is the ONE extra beat an idle turn may carry — a judgment, a callback, or a tangent. It
 // exists because the alternative is the failure this whole build is named after: "hey" answered
 // with "hey", a contentless reply that spends a turn and hands back nothing. Task turns get NO hook
 // (the answer, flat, with the real numbers, is the entire reply), and quiet turns get less than
-// that. So the three modes are not three volumes of the same voice — they are three different
-// contracts, and exactly one of them is live per turn.
+// that. So the modes are not volumes of the same voice — they are different contracts, and exactly
+// one of them is live per turn.
+//
+// A SHARE turn is the fourth contract and the one that inverts the arithmetic above. They handed her
+// something and asked for nothing, which is a bid, and the move is not an extra beat after an answer
+// — it IS the reply, because there is nothing else for the reply to be. So the share branch has no
+// kill switch (a run of moves on share turns is a conversation, not a tic), never goes quiet (a bid
+// answered with silence is the receipt this shape exists to refuse), and is the one place the fourth
+// kind — the question — can be open at all. Everything else it reads, it reads the same way a hook
+// turn does: the repeated tail kind, the mood's own bans, the room.
 //
 // Doctrine, inherited whole from threads.ts next door: the model contributes ONE word inside the
 // envelope it already emits (`hook_kind`), and every count, transition and budget below is
@@ -20,10 +28,12 @@
 // battery re-exports the constants below as VALUES rather than re-typing the numbers — a threshold
 // pinned to a copied number is a threshold that silently stops describing the engine.
 //
-// The kill switch is the load-bearing piece. Three hooked replies in a row and the fourth turn goes
-// quiet whatever else is true: it outranks the affect floor, the group rules, the moment sampler and
-// the thread offer. Someone who has sent nothing four times running is not asking for a fourth
-// clever line, and a bot that keeps producing them is the exact thing the manifesto refuses.
+// The kill switch is the load-bearing piece. Three hooked replies in a row and the fourth IDLE turn
+// goes quiet whatever else is true: it outranks the affect floor, the group rules, the moment
+// sampler and the thread offer. Someone who has sent nothing four times running is not asking for a
+// fourth clever line, and a bot that keeps producing them is the exact thing the manifesto refuses.
+// What it is a switch on is SILENCE answered with cleverness, which is why a share turn is outside
+// it: the person on the other end just said something.
 
 /** The kinds of move a reply may carry, and the ONLY words the model may emit in `hook_kind`. The
  *  runtime list lives beside the type it describes (threads.ts's THEME_KINDS precedent) because the
@@ -46,10 +56,30 @@ export type HookWord = typeof HOOK_WORDS[number];
 
 /** The kinds an idle HOOK turn may actually carry — HOOK_WORDS without the question. Two readers,
  *  and they must agree or the prompt contradicts itself in one screen: `hookKindOpen` (is there a
- *  beat left to spend) and `renderHooksSection` (which beats to name). Both ask this list rather
- *  than HOOK_WORDS, so a hook turn whose three kinds are all spoken for reads as closed to every
- *  consumer instead of being "open" on the strength of a word the section is forbidden to print. */
+ *  beat left to spend, through `namableKinds` below) and `renderHooksSection` (which beats to name).
+ *  Both ask this list rather than HOOK_WORDS, so a hook turn whose three kinds are all spoken for
+ *  reads as closed to every consumer instead of being "open" on the strength of a word the section
+ *  is forbidden to print. The selector forbids the question on every hook turn as well, which is the
+ *  same rule enforced a second time: a directive is read by things that never met this list. */
 const HOOK_MODE_KINDS: readonly HookWord[] = HOOK_WORDS.filter(w => w !== 'question');
+
+/**
+ * Which kinds a MODE is allowed to name at all — four on a share turn, three on a hook turn.
+ *
+ * The vocabulary is one list and the modes disagree about one word in it, so the disagreement lives
+ * in exactly one function and every reader asks it: `hookKindOpen` (is there a move left) and the
+ * renderer's own allowed set (which moves to name). A mode is handed in rather than a directive
+ * because that is all the question is about — the forbidden list is the caller's other half of it.
+ *
+ * `task` and `quiet` name nothing, which is not a special case: the MODE has already spent the turn,
+ * and a kind named in either block would be an instruction to think about a move that is not
+ * available. The empty list is that fact, arithmetically.
+ */
+function namableKinds(mode: HookMode): readonly HookWord[] {
+  if (mode === 'share') return HOOK_WORDS;
+  if (mode === 'hook') return HOOK_MODE_KINDS;
+  return [];
+}
 
 /** What the LEDGER records. `none` is a first-class entry, not a gap: a flat task answer and a
  *  quiet reply both push `none`, and that is precisely what breaks a run — the kill switch reads a
@@ -96,33 +126,69 @@ export const MOMENT_IDLE_INTERVAL = 4;
  *  corrective re-ask exists to catch. */
 export const QUIET_MAX_WORDS = 12;
 
-/** This turn's contract, in the three shapes it can take.
+/** This turn's contract, in the four shapes it can take.
  *  • `task`  — she was asked for something. Nothing renders; no hook, no offer, no moment.
  *  • `quiet` — the kill switch or the affect floor fired. Less than a hook: one short bubble, a
  *              tapback, or nothing.
- *  • `hook`  — an idle turn with budget left. One extra beat, of a kind not in `forbidden`. */
-export type HookMode = 'task' | 'quiet' | 'hook';
+ *  • `hook`  — an idle turn with budget left. One extra beat, of a kind not in `forbidden`.
+ *  • `share` — they handed her something. One move, of a kind not in `forbidden`, and the move is
+ *              the whole reply rather than a beat after one. Never forced quiet.
+ *
+ *  FOUR MODES OVER THREE TURN KINDS, and the asymmetry is the point: `task` and `share` are the
+ *  gate's own answers, while an idle turn splits in two on the ledger and the mood. So the mode is
+ *  what every downstream reader wants (the section, the anchor, the receipt) and the KIND is what
+ *  the caller hands in. */
+export type HookMode = 'task' | 'quiet' | 'hook' | 'share';
+
+/** The kind of turn the gate read, as the selector takes it. MIRRORED from persona/idle.ts's
+ *  `TurnKind` — structurally identical, so the gate's own reading assigns straight into the
+ *  parameter — and declared here rather than imported for the reason `idleLayer` below is a plain
+ *  `string`: this file is a leaf, and a leaf that imported the gate's vocabulary would be a leaf
+ *  that depends on the gate. The layer is a passthrough and can stay a string; this one BRANCHES,
+ *  so it has to be the union. */
+export type TurnKind = 'task' | 'idle' | 'share';
 
 /** What the compiled affect directive allows this turn. Declared HERE as a structural subset rather
  *  than imported from the affect compiler: this is a leaf, and the compiler is free to grow fields
  *  that the rhythm engine has no business knowing about. The union is the compiler's own. */
 export type HookAllowance = 'all' | 'no_judgment' | 'no_tangent' | 'none';
 
+/** Whether her one question is available this turn at all — the compiler's ceiling, mirrored the way
+ *  `HookAllowance` is and for the same reason. `open` is a PERMISSION and never an instruction: it
+ *  means the kind may stay in the allowed set and she judges whether this particular share wants a
+ *  question. Nothing here ever turns `closed` back into `open`. */
+export type QuestionGate = 'open' | 'closed';
+
 /** The slice of the affect directive the selector reads. Structurally satisfied by the compiler's
  *  full `AffectDirective`, so the caller passes the directive itself and nothing converts. */
 export interface HookAffectInput {
   hooks: HookAllowance;
+  /** The ceiling on the fourth kind. Read ONLY by the share branch: an idle turn forbids the
+   *  question whatever this says, because nothing was shared for it to follow up on. */
+  question: QuestionGate;
+  /** They brought real weight (the compiler's read of what they were doing). Narrows a share turn
+   *  to the kinds that are company rather than analysis. */
+  heavy: boolean;
   lateNight: boolean;
 }
 
 /** The decision, as the prompt renderer and the thread engine consume it. */
 export interface HookDirective {
+  /** They sent nothing this turn. TRUE on `hook` and `quiet`, false on `task` — and false on
+   *  `share`, which is the one that has to be said out loud: a share turn is the opposite of an idle
+   *  one (they said something) and the streak this flag feeds counts turns where they said nothing. */
   idle: boolean;
   mode: HookMode;
-  /** Kinds that may NOT be emitted this turn. Only ever populated in `hook` mode: on a task or a
-   *  quiet turn the MODE forbids every kind already, and listing them there would give two
+  /** Kinds that may NOT be emitted this turn. Only ever populated in `hook` and `share` mode: on a
+   *  task or a quiet turn the MODE forbids every kind already, and listing them there would give two
    *  different answers to "what stopped this hook". */
   forbidden: HookWord[];
+  /** There is real weight in what they handed her. Set ONLY on a share turn, because weight is a
+   *  property of the thing THEY brought and nothing is brought on an idle or a task turn — which is
+   *  also why an absent field reads as no weight rather than as unknown. Two readers: the kinds this
+   *  turn narrows to (here), and the climate span, which must not tell her a tangent is welcome on
+   *  the turn someone let the tank out. */
+  heavy?: boolean;
   /** It is late where they are. REGISTER ONLY, and passed through in every mode so a consumer can
    *  read it without first checking which branch it came from. It closes no kind, shuts no sampler
    *  and selects no mode: a late idle turn is an ordinary idle turn whose reply is smaller. The
@@ -152,19 +218,31 @@ export interface HookDirective {
  * for every consumer that only needs the answer. It is computed the same way the renderer computes
  * it — over the SET of kinds, never by counting `forbidden` — so a directive whose `forbidden`
  * happened to carry a duplicate could not tell the predicate "closed" and the renderer "open". The
- * set is HOOK_MODE_KINDS and not HOOK_WORDS, for the same reason: a question is not a beat a hook
- * turn may spend, so it can neither be left open into this answer nor forbidden out of it.
+ * set is the MODE's own (`namableKinds`), which is why the same question has two different answers
+ * about the same word: a question is not a beat a hook turn may spend, so on a hook turn it can
+ * neither be left open into this answer nor forbidden out of it, and on a share turn it is the
+ * fourth move and counts like the other three.
+ *
+ * A SHARE turn answers here too, and it has to: the two consumers are the climate span and the
+ * anchor's law, and both of them ride every turn. A share turn with every kind spoken for is the
+ * presence case — one plain sentence about their thing — and a span telling her a tangent is welcome
+ * there is the same contradiction in a different mode.
  */
 export function hookKindOpen(directive: HookDirective | null | undefined): boolean {
-  return !!directive && directive.mode === 'hook'
-    && HOOK_MODE_KINDS.some(w => !directive.forbidden.includes(w));
+  return !!directive && namableKinds(directive.mode).some(w => !directive.forbidden.includes(w));
 }
 
 /** Why this turn got the mode it got. The buckets are DISJOINT and cover every path: a receipt that
  *  could say both `kill_switch` and `affect_floor` would make the battery unable to tell a working
  *  kill switch from a flat mood. The clock has no bucket, because the clock decides nothing here —
- *  a late turn lands in `hook` like any other idle turn and reads its register off `lateNight`. */
-export type HookSelectReason = 'not_idle' | 'kill_switch' | 'affect_floor' | 'hook';
+ *  a late turn lands in `hook` like any other idle turn and reads its register off `lateNight`.
+ *
+ *  `share` is a bucket of its own and not a flavour of `hook`, for the reason every other bucket is
+ *  one: the battery scores a shape off the name, and a turn that took the bid branch — no kill
+ *  switch, no quiet, the fourth kind reachable — has to be tellable from an idle turn that happened
+ *  to leave the same three kinds open. It is also the bucket with no counter-case: a share turn
+ *  cannot land anywhere else. */
+export type HookSelectReason = 'not_idle' | 'kill_switch' | 'affect_floor' | 'hook' | 'share';
 
 /** The receipt half. Names and numbers only — never her words, never a moment's text. */
 export interface HookSelectReport {
@@ -203,10 +281,18 @@ function repeatedTailKind(lastKinds: readonly HookKind[]): HookWord | null {
  * and the kill switch plus the no-same-kind-three-times rule supply the same variety at 2am they
  * supply at noon. This used to be a branch that forbade every kind, which made "go to sleep" the
  * only content a late turn could hold and turned one hour of the clock into a script.
+ *
+ * THE SHARE BRANCH SITS ABOVE THE KILL SWITCH, which is the one ordering decision in this function
+ * that is not about precedence but about scope. The switch exists because four silences answered
+ * with four clever lines is a bot performing at someone; a share turn is the opposite situation —
+ * they spoke — so the run of moves the switch counts is not evidence of anything on it. Nothing
+ * below it can force a share turn quiet either: a bid met with silence is the receipt this whole
+ * shape was built to refuse, so the flat-mood floor narrows a share turn to presence instead of
+ * closing it, and the turn still has to say one plain thing about their thing.
  */
 export function selectHook(
   state: HookState,
-  idle: boolean,
+  shape: TurnKind,
   idleLayer: string,
   affect: HookAffectInput,
   isGroup: boolean,
@@ -220,10 +306,62 @@ export function selectHook(
   const report = (reason: HookSelectReason, forbidden: HookWord[]): HookSelectReport =>
     ({ reason, idleLayer, forbidden, lastKinds: [...lastKinds] });
 
-  if (!idle) {
+  if (shape === 'task') {
     return {
       directive: { idle: false, mode: 'task', forbidden: [], lateNight: affect.lateNight, moments: false, offerAllowed: false },
       report: report('not_idle', []),
+    };
+  }
+
+  // HOOK_WORDS order, so the rendered sentence and the receipt read the same way every time, and so
+  // three overlapping reasons to forbid a kind still name it exactly once. Read before either branch
+  // because both of them owe the same answer: two of a kind in a row is a tic on a share turn as
+  // much as on an idle one.
+  const repeated = repeatedTailKind(lastKinds);
+
+  if (shape === 'share') {
+    const forbidden = HOOK_WORDS.filter(w =>
+      // The flat-mood floor, which on an idle turn is `quiet` and here is PRESENCE: every kind
+      // closed, the turn still a share turn, and the section's own law is that one plain sentence
+      // about their thing is what is left. A mood too flat for a move is not a reason to answer a
+      // person with nothing.
+      affect.hooks === 'none'
+      || w === repeated
+      || (affect.hooks === 'no_judgment' && w === 'judgment')
+      || (affect.hooks === 'no_tangent' && w === 'tangent')
+      // A room closes the two moves that need one person to be aimed at: a judgment is a verdict in
+      // front of an audience, and a follow-up puts one member on the spot to answer in front of
+      // everyone. A callback and a tangent are about the thing, so they survive.
+      || (isGroup && (w === 'judgment' || w === 'question'))
+      // The question's own two closers, and they are different in kind. The compiled CEILING is her
+      // weather saying the reply stays statement-shaped (affectCompiler.ts `compileQuestionGate`).
+      // The ledger tail is the dose: she asked last turn, so this turn is what she makes of the
+      // answer — the rule that keeps interest from curdling into an interview, and the reason it is
+      // read here rather than left to the repeat rule above (a question two turns running is barred
+      // even when the intervening reply was flat).
+      || (w === 'question' && (affect.question === 'closed' || lastKinds[lastKinds.length - 1] === 'question'))
+      // WEIGHT narrows the turn to the two moves that stay with them. A judgment on a heavy share is
+      // analysis, and analysis is not company; a tangent walks away from the thing they just put
+      // down. A callback and — when the ceiling left it open — a question about what happened or how
+      // it sat are what is left.
+      || (affect.heavy && (w === 'judgment' || w === 'tangent')));
+
+    return {
+      directive: {
+        // NOT an idle turn: they said something. The streak this feeds counts silences.
+        idle: false,
+        mode: 'share',
+        forbidden,
+        heavy: affect.heavy,
+        lateNight: affect.lateNight,
+        // A moment rides out as a callback about something OLD, and this turn already has something
+        // of theirs in front of her. The sampler stays for idle turns, where there is nothing else
+        // for a callback to be made of (a stored moment connected to what they shared is a v2 idea,
+        // and it needs the sampler to be handed the share text before it can pick one).
+        moments: false,
+        offerAllowed: true,
+      },
+      report: report('share', forbidden),
     };
   }
 
@@ -238,11 +376,13 @@ export function selectHook(
   // The affect floor: the compiled directive can close hooks outright (a flat mood, a spent battery).
   if (affect.hooks === 'none') return quiet('affect_floor');
 
-  // HOOK_WORDS order, so the rendered sentence and the receipt read the same way every time, and so
-  // three overlapping reasons to forbid a kind still name it exactly once.
-  const repeated = repeatedTailKind(lastKinds);
   const forbidden = HOOK_WORDS.filter(w =>
-    w === repeated
+    // ALWAYS, and it is the one ban with no condition on it anywhere in this function: nothing was
+    // shared on an idle turn, so there is nothing to follow up on, and a question into that silence
+    // is the probe the whole ban was written against. The ceiling the compiler produced is not even
+    // consulted here — an open question on a flat idle turn would still be a probe.
+    w === 'question'
+    || w === repeated
     || (affect.hooks === 'no_judgment' && w === 'judgment')
     || (affect.hooks === 'no_tangent' && w === 'tangent')
     // A judgment in a room is a verdict delivered in front of an audience: a read is between the two
@@ -267,24 +407,50 @@ export function selectHook(
 }
 
 /**
+ * Which kind of turn a directive came from — the selector's input, read back off its output.
+ *
+ * The post-model half of the turn (convo/shared.ts) holds the DIRECTIVE and not the gate's reading,
+ * and the ledger write needs the kind: the streak counts silences, so a share turn ends it exactly
+ * as a task turn does. Deriving it here rather than threading the reading down keeps one answer to
+ * the question — the mode says `share` or it does not, and `idle` says whether they sent anything —
+ * instead of two fields on two structs that can disagree about the same turn.
+ *
+ * `quiet` maps to `idle`, which is not a special case: a quiet turn is an idle turn the switch or the
+ * floor spent, and it counts toward the streak the way it always has.
+ */
+export function shapeOf(directive: HookDirective): TurnKind {
+  if (directive.mode === 'share') return 'share';
+  return directive.idle ? 'idle' : 'task';
+}
+
+/**
  * The ledger after this turn. Pure: a fresh state, the input untouched, `now` injected.
  *
  * An ABSENT `emitted` reads as `none`, which is the honest reading of a droppable envelope field —
  * a model that said nothing about its hook did not hook. `momentOffered` resets the moment spacing
  * whether or not the turn was idle, because the offer was made either way.
+ *
+ * THE KIND IS RECORDED WHATEVER THE SHAPE, and only the two clocks read the shape. A `question` on a
+ * share turn is the entry the next turn's dose rule reads (the selector closes the question when the
+ * tail is one) and the entry the turn gate reads to tell her follow-up from her confirm question
+ * (persona/idle.ts `followUpOutstanding`), so the one word she emitted is the one row two engines
+ * consult. Both clocks count SILENCES: a share turn ends the streak exactly as a task turn does,
+ * because they said something, and it neither spends nor tops up the moment spacing for the same
+ * reason a task turn does not — the sampler only ever runs on the turn with nothing else in it.
  */
 export function recordHook(
   state: HookState,
   emitted: HookWord | undefined,
-  idle: boolean,
+  shape: TurnKind,
   momentOffered: boolean,
   now: number,
 ): HookState {
   const kind: HookKind = emitted && (HOOK_WORDS as readonly string[]).includes(emitted) ? emitted : 'none';
+  const idle = shape === 'idle';
   return {
     lastKinds: [...state.lastKinds, kind].slice(-HOOK_RUN_LIMIT),
     // A task turn ENDS the streak: the count is "how many times in a row they sent nothing", and one
-    // real ask is them sending something.
+    // real ask is them sending something. So is one real share.
     idleStreak: idle ? state.idleStreak + 1 : 0,
     idleSinceMoment: momentOffered ? 0 : idle ? state.idleSinceMoment + 1 : state.idleSinceMoment,
     updatedAt: now,
