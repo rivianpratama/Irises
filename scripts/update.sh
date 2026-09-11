@@ -37,6 +37,7 @@
 #   4   the built code did not answer /health — rolled back to the old build and restarted
 #   5   Irises IS updated and live, but its engine's gateway could not be verified back up
 #   10  --check only: an update is available
+#   130/143  stopped mid-run by a signal (Ctrl+C / SIGTERM); RESULT: partial, read the messages above
 # Every run that gets past the flags ends with `RESULT: <token>` as its last line of stdout:
 #   ok | noop | up-to-date | update-available | rolled-back | gateway-failed — or `partial` for a
 #   run that stopped before finishing, which is one of: nothing had been changed yet; an undo failed
@@ -59,7 +60,7 @@ while [ $# -gt 0 ]; do
     --yes|-y)              ASSUME_YES=1; shift ;;
     --no-restart)          DO_RESTART=0; shift ;;
     --no-gateway-restart)  DO_GATEWAY=0; shift ;;
-    -h|--help)             sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)             sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --restart)
       err "--restart is gone: an update restarts Irises and verifies the new build every time."
       err "If you want the old behaviour — apply to disk and leave the process alone — use --no-restart."

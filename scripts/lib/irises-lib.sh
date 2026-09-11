@@ -1659,7 +1659,7 @@ lock_acquire() { # [NAME]
   if mkdir "$dir" 2>/dev/null; then
     printf '%s\n' "$$" > "$dir/pid" || warn "took the lock but could not record our pid in $dir/pid"
     IRISES_LOCK_DIR="$dir"
-    warn "reclaimed a lock left behind by a dead run (pid ${other:-unknown}) — how far it got: $home/logs/update.log"
+    warn "reclaimed a lock left behind by a dead run (pid ${other:-unknown}) — see the previous run's log under $home/logs/ (update.sh writes update.log)"
     return 0
   fi
   err "could not take the lifecycle lock at $dir"
