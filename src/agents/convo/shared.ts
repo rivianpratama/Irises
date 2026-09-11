@@ -572,6 +572,15 @@ export function renderActiveOps(activeOps: ActiveOps[]): string {
   // only instruction for: everything ELSE they might say about a live look — an addition, a
   // narrowing, a correction, a replacement — landed as either a duplicate delegation or nothing.
   blocks.push('If their new message ADDS to, narrows, or corrects the running lookup ("also check…", "actually in…", "only under…"): call steer_research with their addition as `guidance` — the run keeps going with it folded in. Ack it in one short bubble ("adding that in"), no new timeline. If instead they\'ve changed the ask to something genuinely different that REPLACES the running one: call cancel_research AND delegate_to_ops in this same turn (drop the old, start the new), and say so plainly in one line. One lookup running → act right away (empty match). Several → ask which one first.');
+  // Between the steer block and the stop block, because it is the case that fell between them live
+  // (2026-09-11): the running look was named again ("oppo find n6", seven minutes in, right after she
+  // offered "a different angle"), and with no rule for a bare restatement the model read it as a fresh
+  // ask — a second delegate_to_ops, a second engine run from zero, the same answer twice. The code
+  // guard (opsCoordination.ts isDuplicateDelegation) only catches the byte-identical re-ask, so a
+  // reworded one is stopped here or nowhere.
+  // Stated as the principle (same subject ⇒ same run; only its direction or its existence can change),
+  // not as sample phrasings: a rule keyed to wordings generalises exactly as far as the wordings.
+  blocks.push('A message about the subject of a look that is already running is about that run. The subject is already being served, so the message can never be a new ask; decide only what it changes. If it gives the run a direction it does not yet have — anything that narrows or redirects where or how to look, including a direction you proposed and they accepted — call steer_research with that direction as `guidance` and ack it in one short bubble. If it changes nothing about the run, it is a status question: answer from the status above. Never delegate_to_ops for a subject that is already running — the second run knows nothing the first has learned, so it can only cost time and return the same answer twice.');
   blocks.push('If they tell you to STOP ("stop", "cancel that", "nevermind", "forget it"): call cancel_research. One lookup running → cancel it right away (empty match) and confirm lightly. Several running and they didn\'t say which → ask which one in ONE short bubble first (the list above names them), no cancel yet. A bare "ok"/"thanks" is NEVER a cancel.');
   return `\n\n${blocks.join('\n')}`;
 }

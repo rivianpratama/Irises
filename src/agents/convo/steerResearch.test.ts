@@ -238,6 +238,22 @@ test('the steer/redirect instruction block is there, and the STOP block still co
   assert.match(out, /call cancel_research AND delegate_to_ops in this same turn/);
 });
 
+test('a bare restatement or a "keep going" nudge is a steer or a status read, never a second delegation', () => {
+  // The 2026-09-11 live failure: "oppo find n6" typed while the N6 look was seven minutes in became a
+  // second delegate_to_ops (empty kind), a second engine run from zero, and the same answer twice.
+  const out = renderActiveOps([running()]);
+  const steerAt = out.indexOf('call steer_research with their addition as `guidance`');
+  const nudgeAt = out.indexOf('so the message can never be a new ask');
+  const stopAt = out.indexOf('If they tell you to STOP');
+  assert.ok(nudgeAt > steerAt, 'the nudge rule follows the steer/redirect block it refines');
+  assert.ok(stopAt > nudgeAt, 'and still sits above the stop block');
+  // The rule is the principle, not a list of phrasings: same subject ⇒ same run, and only the run's
+  // direction (steer) or its existence (stop/replace) can change.
+  assert.match(out, /is about that run\./);
+  assert.match(out, /Never delegate_to_ops for a subject that is already running/);
+  assert.ok(!/oppo|find it|look harder|try again/.test(out), 'no sample utterances in the rule');
+});
+
 test('what they added rides on the status line — running and queued alike', () => {
   const one = renderActiveOps([running({ steers: ['also check jakarta'] })]);
   assert.match(one, /— you added: "also check jakarta"/);
