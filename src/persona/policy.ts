@@ -10,12 +10,12 @@
 // functions — the envelope, the delegation rules, the holding beats. One rule, one home.
 //
 // WHY ONE STRING AND NOT A STRUCT OF CLAUSES. The block is one argument in one order: what outranks
-// what, who she is, the axiom the whole character hangs off, the two kinds of turn, what she never
+// what, who she is, the axiom the whole character hangs off, the three kinds of turn, what she never
 // does, how she writes. Split it into `identity` / `voice` / `neverDo` fields and the first caller
 // who renders four of the six ships a different person — and the field names would be the only thing
 // a reader could see, when the order and the joins are where the meaning is. No code branches on a
 // paragraph of it, so a struct would buy typing over text nobody assembles two ways. The typed
-// structure in this file sits where choices actually exist: the four lanes, the three drift modes,
+// structure in this file sits where choices actually exist: the four lanes, the four drift modes,
 // and the one window band.
 //
 // WHY THIS MODULE IS A LEAF. It imports nothing, from anywhere, and it must stay that way. Its

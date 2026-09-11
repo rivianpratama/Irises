@@ -39,6 +39,9 @@ import type { ThreadTurn } from '../../memory/threadHarvest.js';
 import { getHookState, saveHookState } from '../../db/repositories/hookState.js';
 import { saveRelationshipClimate } from '../../db/repositories/relationshipClimate.js';
 import { defaultClimate } from '../../persona/climate.js';
+import { computeCycle } from '../../persona/cycle.js';
+import { computeCircadian } from '../../persona/circadian.js';
+import type { ComputedState } from '../../persona/status.js';
 import { groupHandle } from '../../memory/identity.js';
 import { resetStorageForTests } from '../../db/sqlite.js';
 import { emptyMedia } from '../../webhook/types.js';
@@ -97,6 +100,14 @@ const HISTORY: StoredMessage[] = [
   { role: 'assistant', content: 'six to eight weeks from the north supplier', at: Date.UTC(2026, 0, 6, 1, 42) },
 ];
 const CONTEXT_BLOCK = '## Who you are talking to\nSam, three months in.';
+/** The clock-computed half of her weather, on this file's own frozen instant. Only the heavy-share
+ *  case below needs it: the internal-weather block — and therefore the climate span inside it — is
+ *  guarded on `computed` being present, so a turn that passes none renders no register at all and
+ *  could not tell a line that was dropped from a line that was never built. */
+const COMPUTED: ComputedState = {
+  cycle: computeCycle(FROZEN_MS, FROZEN_MS),
+  circadian: computeCircadian(FROZEN_MS, 'UTC'),
+};
 const EXTRA = '## One more thing\nAn addendum the caller tacked on.';
 const THESIS = '## Your read on them (INTERNAL)\nThey decide fast on money and slowly on people.';
 /** A moment sample as `renderMomentLines` hands it over — two lines, in the store's own shape. Only
@@ -229,6 +240,43 @@ test('a SHARE turn that also carries a thread block has its question spent befor
   // never names the question whatever the selector says, so the two blocks cannot collide there.
   const idleWithLoop = buildSystemPromptSections(...buildWithThread({ hooks: HOOK, moments: [], thesis: '' }, LOOP_TURN));
   assert.ok(idleWithLoop.system.includes(renderHooksSection(HOOK)));
+});
+
+test('a HEAVY share turn never reads a band line naming a kind its section closed', () => {
+  // The register's half of the same contradiction the collision case closes, and the only seam where
+  // `heavy` is read outside the selector. Weight shuts judgment and tangent in the directive
+  // (persona/hooks.ts), and two of the four band lines that name a kind are playfulness's — so a
+  // weather block gated on the MODE alone would hand someone emptying the tank "a tangent is
+  // welcome" beside a section naming only a callback. The assembler narrows the reading by weight
+  // for exactly this (`kindOpen && !heavy`).
+  //
+  // The climate moves ONE dial, into the band whose line is a tangent, so what the span costs a
+  // heavy turn is the whole span: with no bullet left, the lead-in and the clamp go too
+  // (persona/climate.ts `renderBands`), and the assertion is an absence with nothing to hide in.
+  const climate = { ...defaultClimate(), dials: { ease: 35, candor: 45, playfulness: 40 }, evalCount: 30 };
+  const TANGENT_LINE = '- In-jokes and shorthand carry between you now. A tangent is welcome.';
+  const withClimate = (hooks: HookDirective): string => {
+    const args = build({ hooks, moments: [], thesis: '' });
+    args[9] = COMPUTED;
+    args[11] = climate;
+    return buildSystemPromptSections(...args).system;
+  };
+
+  // The control: an ordinary share turn, every kind open, and the register says the same thing the
+  // section does.
+  const light = withClimate(SHARE);
+  assert.ok(light.includes(TANGENT_LINE), 'the band line rides a share turn that can spend the kind');
+  assert.ok(light.includes('Open to you this turn: a judgment, a callback, a tangent or a question.'));
+
+  // …and the same climate on the turn someone let the tank out. The selector's own output is used
+  // rather than a hand-built struct: `heavy` and the two kinds it closes are one decision, and a
+  // fixture that set the flag without the bans would pin a shape the engine never produces.
+  const heavy: HookDirective = { ...SHARE, heavy: true, forbidden: ['judgment', 'tangent'] };
+  const weighted = withClimate(heavy);
+  assert.ok(!weighted.includes(TANGENT_LINE), 'no kind the weight closed is named back to her');
+  assert.ok(!weighted.includes('standing register'), 'and the span it was the only bullet of is gone whole');
+  assert.ok(weighted.includes('Open to you this turn: a callback or a question.'),
+    'while the section still names what the weight left');
 });
 
 test('the two new sections land where the vocabulary says they do', () => {

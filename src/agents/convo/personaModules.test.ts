@@ -194,9 +194,24 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  *     render, so the shape exists for a lane that has no craft pages at all. Context.md and every
  *     page, the one the previous commit added included: untouched, which is again why exactly one
  *     addend moved.
+ *
+ * Then **+872** in the fix wave, ONE file again and this time the front-line one — the third half of
+ * the share turn, in the file that is always rendered and was the last surface still teaching two
+ * shapes:
+ *   · Context.md +872: both places that asked "task or idle" ask a three-way question and say where a
+ *     share stops (the first principle, and step 1 of the stack); the classification list gained the
+ *     share bullet and the banter bullet points at it, because a message that TELLS her something was
+ *     landing on idle ground; the probe section's second exception is the share's own move rather than
+ *     "a real question about THEM on an idle turn", which is the one clause here that had to change
+ *     rather than merely grow — the selector forbids `question` on every hook turn and the envelope
+ *     asks her to self-report one as a slip, so the old sentence authorised what two engines now
+ *     catch; and the predict paragraph states the distinction that decides the case (a probe hands
+ *     the turn back empty and is banned everywhere, a follow-up asks for the part of their own story
+ *     they left out). The block and every page: untouched, which is once more why exactly one addend
+ *     moved.
  */
-const CORPUS_CHARS = 127_881;
-const CORPUS_SHA256 = 'bf375e25146491b3f539b97e2ae8f6b53bfc5f0887f27dbe63204a7cfe1a389e';
+const CORPUS_CHARS = 128_753;
+const CORPUS_SHA256 = '0978cdc41a577ed0513169b8317a1734ec970f3f86e04f932af377f41ec4a971';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 

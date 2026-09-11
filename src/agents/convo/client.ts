@@ -226,6 +226,12 @@ export async function chat(
   // it: everything the rhythm pre-read does further down hangs off this flag, and two reads of one
   // env var in one turn is a turn that could start a classify call for a gate that never runs.
   const hooksOn = hooksEnabled();
+  // Read ONCE for the same reason, one line down because it answers a narrower question: whether the
+  // gate may return the third shape at all. Two reads — the prefetch's `classifyNeeded` and the gate
+  // below — could answer differently if the env flipped between them, and a turn whose prefetch was
+  // started under the share law and whose gate ran under the two-shape one either wastes a five-token
+  // call or, the other way round, pays for it in latency on the turn it was meant to save.
+  const shareOn = shareTurnsEnabled();
 
   // ── the classify prefetch ─────────────────────────────────────────────────────────────────────
   // Layer 3 of the turn gate, started in PARALLEL with the memory read rather than behind it. The
@@ -256,7 +262,7 @@ export async function chat(
       // function rather than guessed at.
       attachmentNote: !!describeAttachments(media, { transcriptionFailed: false }),
       burstSize: chatContext?.burstManifest?.length ?? 1,
-    }, { shareTurns: shareTurnsEnabled() })
+    }, { shareTurns: shareOn })
     ? classifyIdle(earlyText)
     : null;
   // The classifier swallows its own failures (it files `unclear` and returns), so this can only be
@@ -475,7 +481,7 @@ export async function chat(
         // for real on the string actually in hand. The same instance either way, so one reading files
         // one receipt whichever branch runs.
         t => (earlyClassify && t === earlyText ? earlyClassify : classifyIdle(t)),
-        { shareTurns: shareTurnsEnabled() },
+        { shareTurns: shareOn },
       )
     : { shape: 'task', layer: 'none', signals: [] };
   // The gate's answer as the two craft gates take it: a boolean each, because a gate answers one

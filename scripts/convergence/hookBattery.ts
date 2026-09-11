@@ -376,6 +376,33 @@ export interface QuietGuardDetail {
 export interface OffTurnDetail { emitted: HookWord; idle: boolean; mode?: HookMode }
 
 /**
+ * `threads:select` (memory/threadHarvest.ts): the thread engine's own report, plus the one field the
+ * engine records beside it and the report itself does not carry.
+ *
+ * `outcomeAsk` is the material of the bookkeeping ask, when one rendered — and it is INDEPENDENT of
+ * the offer, because the ask rides the turn after whatever was offered last turn, on a turn that may
+ * well offer nothing new. That independence is why `threadBlockRendered` below has to read both: the
+ * reasons say an OFFER was made, and half the turns that put a thread block in the prompt made no
+ * offer at all. OPTIONAL for the reason every other widened field here is: a round may be read
+ * against an engine that predates it, and a row without it is a turn whose ask, if it had one, is
+ * simply not reported.
+ */
+export type ThreadSelectDetail = ThreadSelectReport & { outcomeAsk?: 'loop' | 'theme' | null };
+
+/**
+ * Did a THREAD BLOCK reach this turn's prompt? Read off the receipt, in the two shapes the assembler
+ * renders it in (agents/convo/shared.ts `renderThreadForPrompt`): an offer the engine chose this
+ * turn, or the outcome ask for what it chose last turn.
+ *
+ * It exists for one reading — the share turn that carried both blocks — and it is deliberately the
+ * BLOCK rather than the offer: both halves hold out a question, which is the whole of the collision
+ * the assembler closes.
+ */
+export function threadBlockRendered(d: ThreadSelectDetail | null): boolean {
+  return !!d && (d.reason.startsWith('offered_') || !!d.outcomeAsk);
+}
+
+/**
  * `moments:offer` (agents/convo/client.ts): EVERY run of the sampler, the healthy no-op included.
  * `excluded` is the count of held episodes the 24-hour no-repeat window kept out of the draw, which
  * is the whole evidence the spacing probe has.
@@ -428,9 +455,10 @@ export interface TurnEvidence {
   quietGuard: QuietGuardDetail | null;
   /** A hook word that rode a task turn, if one did. */
   offTurn: OffTurnDetail | null;
-  /** The threading engine's receipt — read for ONE thing here: whether an offer was consumed on an
-   *  idle turn, which is one of the two ways the positive control can be satisfied. */
-  threadSelect: ThreadSelectReport | null;
+  /** The threading engine's receipt. Read for TWO things: whether an offer was consumed on an idle
+   *  turn, which is one of the two ways the positive control can be satisfied, and whether a thread
+   *  block stood beside the share section, which is the turn where one question has to cover both. */
+  threadSelect: ThreadSelectDetail | null;
   /** Whether a REAL moment offer was billed on THIS turn — something rendered, not merely that the
    *  sampler ran and found nothing (see `realOffer`). */
   momentOfferedHere: boolean;
@@ -862,13 +890,24 @@ export const CHECKS: Record<CheckId, HookCheck> = {
   // (agents/convo/shared.ts says so at the call site). What closes it there is the ceiling her
   // weather compiled or the no-two-running rule, and both live inside the shape — so the only place a
   // slip against them shows is the trace beside the ledger, which is exactly what this reads.
+  //
+  // …and one closer the SELECTOR never knew about, which is why the third reading exists. Two blocks
+  // in one prompt, each holding out a question, is two questions in one reply, so the assembler
+  // renders the share section from a COPY with the kind shut whenever a thread block stands beside it
+  // (agents/convo/shared.ts, at the hooks push site). The copy is deliberately invisible to
+  // `hooks:select` — that receipt reports what her weather and her ledger allowed, and must keep
+  // doing so — so on exactly the turn the prompt closed the question, the forbidden list read above
+  // says open. Nothing else in the round can see that turn, which is what made the collision the one
+  // hazard this battery was blind to. The thread's own ask lands as a CALLBACK in the vocabulary (a
+  // how-did-it-go question is the callback hook, and Context.md says so), so `question` beside a
+  // rendered thread block is a SECOND one and never the block's own.
   one_question_max: {
     verdict: 'QUESTION_UNEARNED',
     layer: 'selector',
     why: 'a question of hers lands only where the shape left room for one: never on two turns running — '
-      + 'when they answer, the next move is what she makes of the answer — and never after the ceiling '
-      + 'closed it. Interest compounds when it is spent that way and curdles into an interview when it '
-      + 'is not',
+      + 'when they answer, the next move is what she makes of the answer — never after the ceiling '
+      + 'closed it, and never beside a thread block that is already holding one out. Interest compounds '
+      + 'when it is spent that way and curdles into an interview when it is not',
     run(ev) {
       const h = ev.trace!.outcome.hook;
       if (!h) return unscored('the trace carries no hook field — the selector never ran on this turn');
@@ -888,6 +927,13 @@ export const CHECKS: Record<CheckId, HookCheck> = {
         return fail(`the section closed the question this turn (forbidden ${ev.select.forbidden.join('/') || 'nothing'}) `
           + `and the reply carried one anyway (${reading}) — the ceiling her weather compiled, the room, or the `
           + 'weight read was rendered and not obeyed');
+      }
+      if (h.mode === 'share' && threadBlockRendered(ev.threadSelect)) {
+        return fail(`a thread block stood beside the share section on this turn (threads:select `
+          + `'${ev.threadSelect!.reason}', outcome ask ${ev.threadSelect!.outcomeAsk ?? 'none'}) and the reply `
+          + `still asked a question of her own (${reading}) — the two blocks share one question, so the `
+          + 'assembler renders the section with that kind shut and the receipt above still reads open. The '
+          + 'thread\'s own how-did-it-go is a callback, so this reply spent the dose twice');
       }
       if (marks > 1) {
         return warn(`one question was open and one was taken, but the reply carries ${marks} question marks `
@@ -2245,7 +2291,7 @@ async function runProbes(cfg: {
     const classify = one<IdleClassifyDetail>(IDLE_CLASSIFY_LABEL);
     const quietGuard = one<QuietGuardDetail>(QUIET_GUARD_LABEL);
     const offTurn = one<OffTurnDetail>(HOOK_OFF_TURN_LABEL);
-    const threadSelect = one<ThreadSelectReport>(THREADS_SELECT_LABEL);
+    const threadSelect = one<ThreadSelectDetail>(THREADS_SELECT_LABEL);
     const momentOfferedHere = realOffer(one<MomentOfferDetail>(MOMENTS_OFFER_LABEL)) !== null;
 
     const ev: TurnEvidence = {

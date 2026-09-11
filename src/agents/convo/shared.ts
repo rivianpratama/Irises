@@ -1018,7 +1018,21 @@ export function buildSystemPromptSections(
   // lower volume, so its kinds are open and these lines ride it. Read ONCE, here, for the same
   // reason the directive is: the climate span and the anchor's law below must never answer it
   // differently.
-  const kindOpen = hookKindOpen(hookDirective);
+  //
+  // …and narrowed once more by WEIGHT, which is the share shape's own version of the same failure.
+  // A heavy share — they are venting, or they are overwhelmed — closes judgment and tangent in the
+  // selector, because analysis is not company and a step sideways off a tank being emptied is a
+  // change of subject. Every one of the four band lines names one of those two, so without this the
+  // weather block would print "a tangent is welcome" beside a share section naming only a callback:
+  // two copies of one turn's law disagreeing, on the turn where being wrong costs the most.
+  //
+  // It is deliberately the whole span and not a line-by-line filter, which costs one true sentence:
+  // the highest playfulness line names a callback beside its tangent, and the callback IS open on a
+  // heavy turn. A line is the smallest thing HOOK_NAMING can hold out, the one that agrees with the
+  // weight only agrees by naming the banned kind back to her, and the section below states what is
+  // open in its own words — so the register is the copy that yields. Nothing else about the climate
+  // moves: a heavy turn still reads every band line that is about HOW she says a thing.
+  const kindOpen = hookKindOpen(hookDirective) && !hookDirective?.heavy;
 
   // Synchronous, in-memory "research is running right now" awareness (NOT from durable prefs —
   // that path loses the read-after-write race against a fast follow-up). Stops the redundant

@@ -343,7 +343,10 @@ mandated confirm question does not fail `voice_clean`; orphaned outcome receipt 
   `verdict:'share'`, exactly ONE receipt per turn (two ⇒ the prefetch is warming the cache);
   `turn:trace` `outcome.hook.mode==='share'`, `emitted ∈ judgment|callback|tangent|question`,
   `violation:false`, craft shows `share` rendered and `hooks` not. Never-events to grep: `hook:off_turn`
-  with `emitted:'question'` on a hook-mode turn; two consecutive turns with `emitted:'question'`.
+  with `emitted:'question'` on a hook-mode turn; two consecutive turns with `emitted:'question'`; a share
+  turn with a thread block whose reply emitted `question` (`threads:select` `offered_*` or a non-null
+  `outcomeAsk` beside `turn:trace` `outcome.hook.emitted:'question'` — the assembler closed that kind in
+  a copy `hooks:select` cannot see, so `one_question_max` scores it off the thread receipt).
   h1 still `hook`; h2/h5 flat with `hook_kind` null; h6 `pending_question` still vetoes (pendingAsk not
   weakened); h7 now `share`; h8 classify alive; h9–h12 green.
 - Hand-read on the live transcript: questions carry their noun, none is a mirror/switch/search

@@ -36,6 +36,7 @@ import {
   realOffer,
   scoreItem,
   scoreScript,
+  threadBlockRendered,
   type HookFailure,
   type HookItem,
   type HooksSelectDetail,
@@ -45,6 +46,7 @@ import {
   type Receipt,
   type ScriptEvidence,
   type ScriptReply,
+  type ThreadSelectDetail,
   type TurnEvidence,
   type VoiceVerdict,
 } from './hookBattery.js';
@@ -60,7 +62,6 @@ import {
   type HookKind,
   type HookMode,
   type MemoryGateReports,
-  type ThreadSelectReport,
   type TurnTraceDetail,
 } from './expectations.js';
 
@@ -82,7 +83,7 @@ function blocks(): MemoryGateReports {
 interface TracePatch {
   /** Absent `hook` is the reading CONVO_HOOKS_ENABLED off gives: the selector never ran. */
   hook?: { idle: boolean; mode: HookMode; emitted: HookKind; violation: boolean } | null;
-  threads?: ThreadSelectReport | null;
+  threads?: ThreadSelectDetail | null;
   bubbles?: Partial<TurnTraceDetail['bubbles']>;
   /** The tools the turn actually ran, by name. Non-empty is what a delegated turn looks like, and
    *  what exempts its mandated holding line from the leaf rule. */
@@ -140,7 +141,7 @@ function select(over: Partial<HooksSelectDetail> = {}): HooksSelectDetail {
   };
 }
 
-function threads(over: Partial<ThreadSelectReport> = {}): ThreadSelectReport {
+function threads(over: Partial<ThreadSelectDetail> = {}): ThreadSelectDetail {
   return {
     reason: 'no_eligible',
     filtered: {
@@ -909,6 +910,49 @@ test('h11: one question on a turn that left it open is the pass, and two marks o
   const twoMarks = score(item('h11'), { ...open, bubbles: ['wait, seriously? how did that land?'] });
   assert.equal(twoMarks.verdict, 'WARN');
   assert.match(twoMarks.evidence, /2 question marks/);
+});
+
+test('h11: a thread block beside the share section spends the one question for her', () => {
+  // HAZARD 1, and the one the battery could not see until this reading existed. The assembler closes
+  // the question in a COPY when both blocks render (agents/convo/shared.ts), and the copy never
+  // reaches `hooks:select` — by design, because that receipt reports what her weather and her ledger
+  // allowed. So the forbidden list here reads OPEN on exactly the turn the prompt shut it, and the
+  // collision has to be scored off the thread receipt instead.
+  const asked: Partial<TurnEvidence> = {
+    ...shareTurn(),
+    trace: trace({ hook: { idle: false, mode: 'share', emitted: 'question', violation: false } }),
+    select: select({
+      reason: 'share', idleLayer: 'classify', mode: 'share', idle: false, shape: 'share',
+      forbidden: [], lastKinds: ['tangent', 'judgment'],
+    }),
+    bubbles: ['and what did the north yard say'],
+  };
+
+  // The OFFER half.
+  const offered = score(item('h11'), { ...asked, threadSelect: threads({ reason: 'offered_loop' }) });
+  assert.equal(offered.verdict, 'QUESTION_UNEARNED');
+  assert.equal(offered.layer, LAYERS.selector);
+  assert.match(offered.evidence, /thread block stood beside the share section/);
+
+  // …and the OUTCOME-ASK half, which is the one the reasons alone cannot see: the ask renders the
+  // turn after whatever was offered last turn, so the engine reports a turn that offered nothing.
+  const asking = score(item('h11'), {
+    ...asked,
+    threadSelect: threads({ reason: 'awaiting_outcome', outcomeAsk: 'loop' }),
+  });
+  assert.equal(asking.verdict, 'QUESTION_UNEARNED');
+  assert.match(asking.evidence, /outcome ask loop/);
+
+  // A turn where the engine considered its inventory and offered nothing put no block in the prompt,
+  // so the question was hers to spend and this is the pass it was before.
+  const alone = score(item('h11'), { ...asked, threadSelect: threads() });
+  assert.equal(alone.verdict, 'PASS');
+
+  // The same reading at its own seam, because both halves of the block are one claim about the turn.
+  assert.equal(threadBlockRendered(null), false);
+  assert.equal(threadBlockRendered(threads()), false);
+  assert.equal(threadBlockRendered(threads({ reason: 'offered_theme' })), true);
+  assert.equal(threadBlockRendered(threads({ outcomeAsk: 'theme' })), true);
 });
 
 test('h11: a reply that carried no question spends no dose, whatever the ledger holds', () => {
