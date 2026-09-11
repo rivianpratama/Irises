@@ -64,6 +64,33 @@ test('the block opens on its own heading and carries exactly one', () => {
 });
 
 /**
+ * The turn shapes, in the order the block defines them. Mirrored as literals for the same reason the
+ * envelope keys below are: this module is a leaf and its test keeps that property, so the list the
+ * gate owns (persona/idle.ts TURN_KINDS) is copied here rather than imported.
+ */
+const BLOCK_TURN_SHAPES = ['task', 'idle', 'share'] as const;
+
+test('the block counts its turn shapes, and the count is the paragraphs', () => {
+  // The one sentence in the block that is ARITHMETIC about the rest of it. A fourth shape pasted in
+  // as a paragraph while the count sentence still says three teaches her two laws in one breath, and
+  // the one she would believe is the count, because it comes first and it is shorter. Nothing else
+  // in this file can catch that: the heading pin reads the top, the envelope pin reads for a bullet
+  // shape, and the corpus sha over in personaModules.test.ts says the bytes moved without saying
+  // whether they moved together.
+  assert.ok(
+    PERSONA_BLOCK.includes('Three kinds of turn, and you never confuse them.'),
+    'the block no longer counts three kinds of turn',
+  );
+  const defined = PERSONA_BLOCK.split('\n\n')
+    .map(p => /^An? (\w+) turn is when /.exec(p)?.[1])
+    .filter((k): k is string => k !== undefined);
+  assert.deepEqual(
+    defined, [...BLOCK_TURN_SHAPES],
+    'the paragraphs that define a turn shape are not the three the count promises, in the order the gate decides them',
+  );
+});
+
+/**
  * The ten envelope keys, MIRRORED from ENVELOPE_FIELDS (persona/status.ts) as literals rather than
  * imported — this module is a leaf and its test keeps that property, because importing status.ts to
  * read ten strings would drag the LLM client into the cheapest test in the repo. The corpus-wide

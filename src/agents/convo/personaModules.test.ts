@@ -179,9 +179,24 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  *     a share turn and an idle turn are different shapes off the same gate, so the beat the hook page
  *     teaches is untouched by the move this one teaches. Every other byte of the corpus held, which
  *     is why exactly one addend moved.
+ *
+ * Then **+776** in the persona-paragraph commit, ONE file and no new page — the other half of the
+ * share turn, written where every lane can read it:
+ *   · PERSONA_BLOCK +776 (policy.ts): the turn law counts three kinds where it counted two (+2, one
+ *     word), and the third kind gets its own paragraph seated between the idle one it is not and the
+ *     judgment rule that follows both (+774, the prose plus the blank line that seats it). It states
+ *     in one paragraph what the page added last commit teaches in full: a share is a bid, a receipt
+ *     turns a bid away, the reply is one move about the thing they handed her, a gap she can guess is
+ *     hers to state and a gap only they can fill is hers to ask for when her weather leaves it open,
+ *     and a question askable of anyone, or turning back on her, or answerable by a search, is not
+ *     that one. The overlap with craft/share.md is deliberate and is not drift: the page renders on
+ *     the turn it governs and on this lane only, while the block is the one string all four surfaces
+ *     render, so the shape exists for a lane that has no craft pages at all. Context.md and every
+ *     page, the one the previous commit added included: untouched, which is again why exactly one
+ *     addend moved.
  */
-const CORPUS_CHARS = 127_105;
-const CORPUS_SHA256 = '8b6f475c6048c472d624862df4f6aecdb60490b27e5b195585a2bd125bbb1fcd';
+const CORPUS_CHARS = 127_881;
+const CORPUS_SHA256 = 'bf375e25146491b3f539b97e2ae8f6b53bfc5f0887f27dbe63204a7cfe1a389e';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
