@@ -1167,8 +1167,37 @@ export function buildSystemPromptSections(
   // future caller that fills the struct without re-reading — would render moments into a MEASURED
   // section on an install that turned them off, and the flag's byte-identity contract would be a
   // property of one call site rather than of the assembler.
+  //
+  // THE ONE THING THIS SITE DECIDES FOR ITSELF, and it is an arithmetic the selector cannot do: two
+  // blocks in one prompt, each holding out a question, is two questions in one reply. The thread
+  // block above is the older claim — a loop is ASKED ("one flat, plain question … the one hook this
+  // turn carries") and a fact-rung theme is offered as one too — and the share section's fourth kind
+  // is the newer one. The dose is one question per reply and never two turns running (the share
+  // craft page, and the selector's own ledger read), so on a share turn that also carries a thread
+  // block the question is already spoken for, and the section renders from a COPY with that kind
+  // closed. The copy is the whole fix: nothing writes back to the directive, so the receipt still
+  // reports the kinds the SELECTOR closed and the ledger still records what she actually emitted —
+  // two different questions ("what did her weather and her ledger allow" vs "what did this prompt
+  // leave room for") keep two different answers.
+  //
+  // Both halves of the thread block qualify, and the second is not the looser case it looks like.
+  // An offer is the live one. An outcome-ask renders the turn AFTER she floated or asked something,
+  // which is the same shape the ledger's own tail closes: they are answering her, and the next move
+  // is what she makes of the answer, not the next question. So the rule is the block, not the offer.
+  //
+  // Scoped to this push site on purpose. The other two readings of the directive — the climate span's
+  // `kindOpen` up at the weather block, and the anchor's law at the recency edge — are unaffected by
+  // construction: the anchor reads `share` unconditionally, and a share turn on which the question is
+  // the LAST kind standing is heavy by arithmetic (nothing but `hooks === 'none'` closes all three of
+  // the others at once, and that closes the question too), which the span already reads as closed.
   if (hookDirective) {
-    const hooksBlock = renderHooksSection(hookDirective, momentsEnabled() ? personaTurn?.moments : []);
+    const sectionDirective: HookDirective =
+      hookDirective.mode === 'share' && threadBlock && !hookDirective.forbidden.includes('question')
+        // Appended, never re-sorted: `question` is last in HOOK_WORDS, which is the order the
+        // selector builds `forbidden` in and the order the rendered sentence reads back.
+        ? { ...hookDirective, forbidden: [...hookDirective.forbidden, 'question'] }
+        : hookDirective;
+    const hooksBlock = renderHooksSection(sectionDirective, momentsEnabled() ? personaTurn?.moments : []);
     if (hooksBlock) push('hooks', hooksBlock);
   }
 

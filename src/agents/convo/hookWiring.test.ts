@@ -35,6 +35,7 @@ import {
   SHARE_HEADING, SHARE_LATE_LINE, SHARE_LEAD, SHARE_QUESTION_LINE,
   type HookDirective, type HookSelectReport, type HookState,
 } from '../../persona/hooks.js';
+import type { ThreadTurn } from '../../memory/threadHarvest.js';
 import { getHookState, saveHookState } from '../../db/repositories/hookState.js';
 import { saveRelationshipClimate } from '../../db/repositories/relationshipClimate.js';
 import { defaultClimate } from '../../persona/climate.js';
@@ -133,6 +134,26 @@ function build(personaTurn?: PersonaTurn): BuildArgs {
 const sectionsOf = (personaTurn?: PersonaTurn): SectionId[] =>
   buildSystemPromptSections(...build(personaTurn)).sections.map(s => s.name);
 
+/** The two halves of the thread block, as the pre-turn read hands them over (memory/threadHarvest.ts
+ *  ThreadTurn). Only the collision case needs them: what they RENDER is persona/threads.test.ts's,
+ *  and all this file asks is that the block exist on the turn. */
+const LOOP_TURN: ThreadTurn = {
+  offer: { material: 'loop', rungCeiling: 'fact', label: 'the cedars order', note: 'waiting on the north supplier', id: 'l1' },
+  outcomeAsk: null,
+};
+const OUTCOME_ASK_TURN: ThreadTurn = {
+  offer: null,
+  outcomeAsk: { label: 'the cedars order', material: 'loop' },
+};
+
+/** `build` with the thread slot filled. By index, because the parameter list is positional and a
+ *  second hand-written tuple would be a second thing to keep in step with the signature. */
+function buildWithThread(personaTurn: PersonaTurn, thread: ThreadTurn): BuildArgs {
+  const args = build(personaTurn);
+  args[12] = thread;
+  return args;
+}
+
 test('a TASK turn renders no hooks section — and not one byte differs from a turn with no directive', () => {
   const task = buildSystemPromptSections(...build({ hooks: TASK, moments: [], thesis: '' }));
   const none = buildSystemPromptSections(...build());
@@ -166,6 +187,48 @@ test('a QUIET turn renders the quiet block, and a HOOK turn the open-kinds one',
   const narrowed: HookDirective = { ...HOOK, forbidden: ['judgment', 'tangent'] };
   const one = buildSystemPromptSections(...build({ hooks: narrowed, moments: [], thesis: '' }));
   assert.ok(one.system.includes('Open to you this turn: a callback.'));
+});
+
+test('a SHARE turn that also carries a thread block has its question spent before the section renders', () => {
+  // TWO BLOCKS, ONE QUESTION. The thread block holds out a question of its own — a loop is asked
+  // ("one flat, plain question … the one hook this turn carries"), a fact-rung theme is offered as
+  // one — and the share section's fourth kind is the other. The dose is one per reply, so on the
+  // turn that carries both, the section renders from a copy with the question closed (convo/shared.ts
+  // at the hooks push site). This is the only place in the build where a directive is narrowed by
+  // something other than the selector, which is why it is pinned against the selector's own output
+  // rather than against a literal.
+  const open: PersonaTurn = { hooks: SHARE, moments: [], thesis: '' };
+
+  // The same turn with nothing standing beside it: all four kinds named, and the line saying what a
+  // follow-up IS rides under them.
+  const alone = buildSystemPromptSections(...build(open));
+  assert.ok(alone.system.includes('Open to you this turn: a judgment, a callback, a tangent or a question.'));
+  assert.ok(alone.system.includes(SHARE_QUESTION_LINE));
+
+  const withLoop = buildSystemPromptSections(...buildWithThread(open, LOOP_TURN));
+  assert.ok(withLoop.sections.some(s => s.name === 'thread'), 'the thread block really rendered');
+  assert.ok(withLoop.system.includes('Open to you this turn: a judgment, a callback or a tangent.'),
+    'the three moves she makes out of what she holds survive; the one that asks them does not');
+  assert.ok(!withLoop.system.includes(SHARE_QUESTION_LINE), 'a ban she reads is a kind she is thinking about');
+  // And the section is byte-for-byte the one a selector that had closed the kind itself would have
+  // produced — the copy narrows the directive, it does not render a fourth variant of the block.
+  assert.ok(withLoop.system.includes(renderHooksSection({ ...SHARE, forbidden: ['question'] })));
+
+  // The OUTCOME-ASK half qualifies too, and it is not the looser case it looks like: that block only
+  // renders the turn after she floated or asked something, which is the same shape the ledger's own
+  // tail closes — they are answering her, and the next move is what she makes of the answer.
+  const withAsk = buildSystemPromptSections(...buildWithThread(open, OUTCOME_ASK_TURN));
+  assert.ok(withAsk.sections.some(s => s.name === 'thread'));
+  assert.ok(!withAsk.system.includes(SHARE_QUESTION_LINE));
+
+  // Nothing wrote back: the directive the caller handed in is what the receipt and the ledger read,
+  // and it still says what her weather and her ledger allowed, not what this prompt had room for.
+  assert.deepEqual(SHARE.forbidden, []);
+
+  // An IDLE turn beside the same block is untouched, because there was nothing to touch — hook mode
+  // never names the question whatever the selector says, so the two blocks cannot collide there.
+  const idleWithLoop = buildSystemPromptSections(...buildWithThread({ hooks: HOOK, moments: [], thesis: '' }, LOOP_TURN));
+  assert.ok(idleWithLoop.system.includes(renderHooksSection(HOOK)));
 });
 
 test('the two new sections land where the vocabulary says they do', () => {
