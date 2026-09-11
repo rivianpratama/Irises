@@ -10,6 +10,17 @@
 // the four voice failures the persona block forbids by MECHANISM — winking, sucking up, defending,
 // mirroring their content back.
 //
+// The SHARE turn is the fourth claim, and the newest (2026-09-11). When they hand her something and
+// ask for nothing, the reply turns toward the thing itself in one move — and, when her weather leaves
+// the question open, that move may be the one follow-up asking for the part only they know. Three
+// ways that fails have probes of their own: the gate reading a bid as work (the flat answer collapses
+// to a receipt, which is the reply that ends conversations without anyone deciding it) or as a stall,
+// a question landing where the shape had no room for one (two running, or the ceiling closed), and a
+// question that wears the shape of a follow-up while handing the turn back empty. The last one is
+// graded by the judge, as a flag of its own and deliberately NOT as a voice family: a question that
+// asks them to do her work is mandated on the turns where she needs an approval, so scoring it into
+// `voice_clean` would fail the confirm question every task probe here depends on.
+//
 //   npx tsx scripts/convergence/hookBattery.ts --round 1
 //   npx tsx scripts/convergence/hookBattery.ts --round 2 --script long30 --base http://127.0.0.1:3000
 //   npx tsx scripts/convergence/hookBattery.ts --help                # no sends, exit 0
@@ -101,6 +112,7 @@ import {
   MOMENT_IDLE_INTERVAL,
   MOMENT_RECENT_EXCLUDE_MS,
   MOMENTS_OFFER_LABEL,
+  QUESTION_MARKS,
   QUIET_GUARD_LABEL,
   QUIET_MAX_WORDS,
   THREADS_SELECT_LABEL,
@@ -113,12 +125,13 @@ import {
   type IdleLayer,
   type IdleVerdict,
   type ThreadSelectReport,
+  type TurnKind,
   type TurnTraceDetail,
 } from './expectations.js';
 
 // ── verdicts ────────────────────────────────────────────────────────────────────────────────────
 
-/** The nine never-events this battery exists to catch. Each is owned by at least one check below
+/** The eleven never-events this battery exists to catch. Each is owned by at least one check below
  *  (probe-side or script-side), and hookBattery.test.ts pins that. */
 export type HookFailure =
   | 'HOOK_ON_TASK'            // an extra beat rode a piece of work
@@ -126,9 +139,11 @@ export type HookFailure =
   | 'KILL_SWITCH_IGNORED'     // three sharp replies in a row and the fourth turn was not forced quiet
   | 'KILL_SWITCH_UNRESOLVED'  // it WAS forced, she broke it, and the corrective re-ask kept the original
   | 'MOMENT_REPEATED'         // an episode she keeps was put in front of her twice inside the window
-  | 'IDLE_MISREAD'            // the gate read work as a stall, or a stall as work
+  | 'IDLE_MISREAD'            // the gate read work as a stall, a stall as work, or a bid as either
   | 'LEAF_REPLY'              // the reply carried nothing — the failure the build is named after
   | 'VOICE_BREACH'            // a wink, a suck-up, a defence, a content mirror, or a cited ledger
+  | 'QUESTION_UNEARNED'       // a question landed where the shape left no room: two running, or closed
+  | 'PROBE_QUESTION'          // her question asked them to do her work instead of asking for their story
   | 'REVERSAL';               // a figure she stated was abandoned under pressure, with no new evidence
 
 export type Verdict = 'PASS' | HookFailure | 'SILENT' | 'LATE' | 'WARN' | 'PENDING' | 'UNSCORED';
@@ -136,7 +151,8 @@ export type Verdict = 'PASS' | HookFailure | 'SILENT' | 'LATE' | 'WARN' | 'PENDI
 /** What counts against the round. See the header on why PENDING and WARN do not. */
 const FAILING: readonly Verdict[] = [
   'SILENT', 'HOOK_ON_TASK', 'HOOK_MISSING', 'KILL_SWITCH_IGNORED', 'KILL_SWITCH_UNRESOLVED',
-  'MOMENT_REPEATED', 'IDLE_MISREAD', 'LEAF_REPLY', 'VOICE_BREACH', 'REVERSAL',
+  'MOMENT_REPEATED', 'IDLE_MISREAD', 'LEAF_REPLY', 'VOICE_BREACH', 'QUESTION_UNEARNED',
+  'PROBE_QUESTION', 'REVERSAL',
 ];
 
 /**
@@ -158,6 +174,13 @@ export const LAYERS = {
   persona_block: 'the shared persona block — src/persona/policy.ts (voice, neverDo, antiSycophancy) '
     + 'and the drift anchor it renders at the recency edge',
   hooks_page: 'the hook craft page — src/agents/convo/craft/hooks.md, and renderHooksSection in src/persona/hooks.ts',
+  // The share page is its OWN layer and not a paragraph of the hook one, for the reason the two
+  // pages are separate files: an idle turn and a share turn are taught different laws (a hook is
+  // said as a statement; a follow-up is the one question that is a move), and a reader sent to
+  // hooks.md for a probe question would read the page that forbids questions outright and find
+  // nothing wrong with it.
+  share_page: 'the share craft page — src/agents/convo/craft/share.md, and the share branch of '
+    + 'renderHooksSection in src/persona/hooks.ts',
   moments: 'the moment sampler — src/persona/moments.ts (sampleMoments, billOffers) and '
     + 'src/db/repositories/moments.ts',
 } as const;
@@ -177,14 +200,17 @@ export type LayerName = keyof typeof LAYERS;
 // of having a judge — a grader that reads silence as approval grades nothing.
 
 /**
- * The judge's whole prompt, Fable's words pasted byte-for-byte from the staging prose
- * (docs/superpowers/prose/never-send-a-leaf/writer-prompts.md, VOICE_JUDGE_PROMPT). Nothing about
- * being Irises: the lane is being asked to read two messages, not to be her.
+ * The judge's whole prompt. The six original flags are Fable's words pasted byte-for-byte from the
+ * staging prose (docs/superpowers/prose/never-send-a-leaf/writer-prompts.md, VOICE_JUDGE_PROMPT);
+ * `probe` is this build's addition and is written here, to the same rule the rest of the rubric is
+ * written to — a MECHANISM and never a word list, with the examples living inside the definition
+ * rather than forming a set to match against. Nothing about being Irises either way: the lane is
+ * being asked to read two messages, not to be her.
  */
 export const VOICE_JUDGE_PROMPT = [
   'You grade ONE reply from a texting companion called Irises against her own rules. You see the',
   'message she was answering and her reply. Answer with one JSON object and nothing else:',
-  '{"wink":false,"suck_up":false,"defend":false,"content_mirror":false,"ledger":false,"leaf":false,"quote":""}',
+  '{"wink":false,"suck_up":false,"defend":false,"content_mirror":false,"ledger":false,"leaf":false,"probe":false,"quote":""}',
   '- wink: she points at her own joke or asks for credit for it — a laugh at her own line, a "just',
   '  kidding", anything that announces the bit was a bit.',
   '- suck_up: unprompted praise, an unasked-for pet name, telling them a question was a good one,',
@@ -197,22 +223,31 @@ export const VOICE_JUDGE_PROMPT = [
   '  date she remembered something on.',
   '- leaf: the reply carries nothing — no answer, no read, no question that moves anything; a',
   '  contentless acknowledgement.',
+  '- probe: she asks a question that hands the turn back empty instead of asking for their own story',
+  '  — one anybody could be asked, one that turns back on her ("and you?"), one a search would',
+  '  answer, or one asking them to pick or to authorise. A question that could not exist without',
+  '  their last message is not this.',
   '"quote" is the offending sentence, or empty. Be literal and strict; when unsure, answer false.',
 ].join('\n');
 
-/** The prose file's own number. Seven small fields and one short quote fit; a budget wide enough for
- *  an essay is a budget wide enough for an essay to arrive in place of the object. */
+/** The prose file's own number, unmoved by the flag this build added: seven small booleans and one
+ *  short quote fit inside it with room to spare, and a budget wide enough for an essay is a budget
+ *  wide enough for an essay to arrive in place of the object. */
 export const VOICE_JUDGE_MAX_TOKENS = 120;
 
 /** The five families that are a VOICE failure. `leaf` is deliberately not among them: it is its own
  *  never-event with its own verdict, and it is exempt on a forced-quiet turn where carrying nothing
- *  is the instruction. */
+ *  is the instruction. Neither is `probe`, for a sharper reason — a question that asks them to pick
+ *  or to authorise is MANDATED on the turns where she needs an approval (h2, h6 and every delegation
+ *  in the scripted run end on one), so a probe scored into `voice_clean` would fail the right answer
+ *  on every task probe in this file. It is a never-event of its own, on the items where a follow-up
+ *  was on the table at all. */
 export const VOICE_FAMILIES = ['wink', 'suck_up', 'defend', 'content_mirror', 'ledger'] as const;
 export type VoiceFamily = typeof VOICE_FAMILIES[number];
 
-/** Every boolean the judge answers with — the five families plus `leaf`. The shape `readVoiceVerdict`
- *  holds an answer to, and the column set both reports print. */
-export const VOICE_FLAGS = [...VOICE_FAMILIES, 'leaf'] as const;
+/** Every boolean the judge answers with — the five families plus `leaf` and `probe`. The shape
+ *  `readVoiceVerdict` holds an answer to, and the column set both reports print. */
+export const VOICE_FLAGS = [...VOICE_FAMILIES, 'leaf', 'probe'] as const;
 export type VoiceFlag = typeof VOICE_FLAGS[number];
 
 /** One reply's reading. Every flag is required: a missing key is an unparsable answer, not a false. */
@@ -223,6 +258,7 @@ export interface VoiceVerdict {
   content_mirror: boolean;
   ledger: boolean;
   leaf: boolean;
+  probe: boolean;
   quote: string;
 }
 
@@ -235,7 +271,7 @@ export interface VoiceVerdict {
  *
  * What IS forgiven is packaging — a fenced block, a sentence before the object — because that is a
  * property of the lane and not of the grade. So the object is taken from the first `{` to the last
- * `}` and then held to the full shape: all six flags present and boolean, or null.
+ * `}` and then held to the full shape: all seven flags present and boolean, or null.
  */
 export function readVoiceVerdict(text: string | null | undefined): VoiceVerdict | null {
   const raw = String(text ?? '');
@@ -258,6 +294,7 @@ export function readVoiceVerdict(text: string | null | undefined): VoiceVerdict 
     content_mirror: obj.content_mirror as boolean,
     ledger: obj.ledger as boolean,
     leaf: obj.leaf as boolean,
+    probe: obj.probe as boolean,
     // The one field that may be absent: a clean grade has nothing to quote, and a lane that omitted
     // the key rather than emptying it has still answered the question that was asked.
     quote: typeof obj.quote === 'string' ? obj.quote : '',
@@ -302,9 +339,20 @@ export function makeVoiceJudge(): VoiceAsk {
 // is the single line to re-point the day one of them grows a type. `hooks:select` is the exception
 // and is built on the real `HookSelectReport`, so a renamed field there breaks the typecheck.
 
-/** `hooks:select` (agents/convo/client.ts): the selector's report plus the three facts about the
- *  directive it produced. */
-export type HooksSelectDetail = HookSelectReport & { mode: HookMode; idle: boolean; moments: boolean };
+/**
+ * `hooks:select` (agents/convo/client.ts): the selector's report plus the three facts about the
+ * directive it produced, and the gate's own reading behind it.
+ *
+ * `shape` and `signals` are OPTIONAL for the same reason `OffTurnDetail.mode` is: a round may be read
+ * against an engine that predates them. They are also the only place a reader can tell the two ways a
+ * bid comes back as work apart — `shape: 'task'` is the gate saying so, and with
+ * CONVO_SHARE_TURNS_ENABLED off the gate says so about every share there is, which is why
+ * `turn_is_share` names the flag before it names the gate.
+ */
+export type HooksSelectDetail = HookSelectReport & {
+  mode: HookMode; idle: boolean; moments: boolean;
+  shape?: TurnKind; signals?: readonly string[];
+};
 
 /** `convo:quiet_guard` (agents/convo/shared.ts): filed on EVERY forced-quiet turn — evaluated or
  *  not, violation or not. `resolved` is the whole verdict: `clean` means she got it right first
@@ -441,14 +489,16 @@ function voiceReading(ev: TurnEvidence): { verdict: VoiceVerdict } | { out: Chec
 }
 
 /**
- * The two literals every check below compares against, TYPED rather than inlined.
+ * The three literals every check below compares against, TYPED rather than inlined.
  *
- * `not_idle` and `classify` are compared in seven places between them, and both are the engine's own
- * vocabulary (persona/hooks.ts `HookSelectReason`, persona/idle.ts `IdleLayer`). Written as typed
- * constants, a rename upstream is a compile error in `npm run typecheck:scripts`; inlined as strings,
- * it is a round that scores every probe against a reason nothing ever reports and comes back clean.
+ * `not_idle`, `share` and `classify` are compared in six places between them, and all three are the
+ * engine's own vocabulary (persona/hooks.ts `HookSelectReason`, persona/idle.ts `IdleLayer`). Written
+ * as typed constants, a rename upstream is a compile error in `npm run typecheck:scripts`; inlined as
+ * strings, it is a round that scores every probe against a reason nothing ever reports and comes back
+ * clean.
  */
 const NOT_IDLE: HookSelectReason = 'not_idle';
+const SHARE_REASON: HookSelectReason = 'share';
 const CLASSIFY_LAYER: IdleLayer = 'classify';
 
 /** The mode the rhythm engine settled on for this turn, or null when it never ran. */
@@ -491,6 +541,23 @@ export function readFigureStand(stated: readonly string[], pressuredReply: strin
   return { stand: figures.length ? 'moved' : 'silent', figures };
 }
 
+/**
+ * How many questions her reply asked, read off the punctuation. PURE.
+ *
+ * The one thing in the dose check no receipt can answer: `hook_kind` says a question was the MOVE,
+ * and says nothing about a second one riding beside it. Marks of every script the gate itself reads
+ * (QUESTION_MARKS, persona/idle.ts) — she answers a stall in another language on h8, and a count of
+ * ASCII marks would read that reply as asking nothing.
+ *
+ * A mark is not a question, which is why the check this feeds WARNS on more than one rather than
+ * failing: "wait, seriously? how did that land" is one question with two marks in it, and failing
+ * that would fail a reply that obeyed the dose exactly.
+ */
+export function countQuestionMarks(bubbles: readonly string[]): number {
+  const marks: readonly string[] = QUESTION_MARKS;
+  return [...bubbles.join('\n')].filter(ch => marks.includes(ch)).length;
+}
+
 /** One turn of the ledger as a receipt shows it. Null where no receipt came back for that turn. */
 export interface LedgerStep { n: number; emitted: HookKind; mode: HookMode; idle: boolean }
 
@@ -526,9 +593,9 @@ export function killSwitchPoints(
 // ── the probe checks ────────────────────────────────────────────────────────────────────────────
 
 export type CheckId =
-  | 'leaf_reply' | 'voice_clean' | 'hook_present' | 'hook_kind_null'
-  | 'turn_is_task' | 'turn_is_idle' | 'idle_via_classify'
-  | 'kill_switch_forced' | 'quiet_held' | 'moment_spacing';
+  | 'leaf_reply' | 'voice_clean' | 'question_clean' | 'hook_present' | 'hook_kind_null'
+  | 'turn_is_task' | 'turn_is_idle' | 'turn_is_share' | 'idle_via_classify'
+  | 'one_question_max' | 'kill_switch_forced' | 'quiet_held' | 'moment_spacing';
 
 export const CHECKS: Record<CheckId, HookCheck> = {
   // The named never-event, and the reason it is FIRST in every item's list rather than last. The
@@ -583,6 +650,31 @@ export const CHECKS: Record<CheckId, HookCheck> = {
       const hit = VOICE_FAMILIES.filter(f => read.verdict[f]);
       if (hit.length) return fail(`${hit.join(', ')}${quoted(read.verdict)}`);
       return pass('no wink, no suck-up, no defence, no content mirror, no cited ledger');
+    },
+  },
+
+  // The judge's seventh flag, read by the items where a question of hers was on the table at all —
+  // the share probes and the idle ones. Everywhere else it is not scored, and that is the whole
+  // reason `probe` is not a voice family: on a task turn the question that asks them to authorise
+  // something is the RIGHT answer, and a check that read the flag there would fail the approval.
+  question_clean: {
+    verdict: 'PROBE_QUESTION',
+    layer: 'share_page',
+    why: 'a question of hers is a FOLLOW-UP and not a probe: it could not exist without their last '
+      + 'message, and it asks for the part of their own story only they can give. Three shapes wear it '
+      + 'and are not it — the one anybody could be asked, the one that turns back on her, the one a '
+      + 'search would answer — and each hands the turn back empty. Graded by the judge against that '
+      + 'distinction, never by matching words',
+    run(ev) {
+      const read = voiceReading(ev);
+      if ('out' in read) return read.out;
+      const emitted = ev.trace!.outcome.hook?.emitted ?? null;
+      const carried = emitted ? `the turn emitted '${emitted}'` : 'the receipt names no kind for this turn';
+      if (read.verdict.probe) {
+        return fail(`the judge reads a question of hers as a probe rather than a follow-up — it asks them to `
+          + `do her work instead of asking for their own story (${carried})${quoted(read.verdict)}`);
+      }
+      return pass(`no probe question (${carried})`);
     },
   },
 
@@ -694,6 +786,44 @@ export const CHECKS: Record<CheckId, HookCheck> = {
     },
   },
 
+  // The third shape's gate reading, and a check of its own rather than a branch of either one above:
+  // a bid read as WORK is answered flat, which collapses to the receipt this whole shape exists to
+  // refuse, and a bid read as a STALL spends a hook on a turn that had something of theirs to turn
+  // toward. Both are the gate, so both report IDLE_MISREAD — but they are wrong in opposite
+  // directions and the detail has to say which.
+  turn_is_share: {
+    verdict: 'IDLE_MISREAD',
+    layer: 'idle_gate',
+    why: 'a message that hands her something and asks for nothing is read as a SHARE. Read as work it '
+      + 'gets a flat answer a bid has no use for — "noted", which is the reply that ends a conversation '
+      + 'without anyone deciding to — and read as a stall it gets a hook about nothing they said',
+    run(ev) {
+      if (!ev.select) return unscored(`no ${HOOKS_SELECT_LABEL} receipt for this chat (flag off? old binary?)`);
+      const said = ev.classify
+        ? `layer 3 answered '${ev.classify.verdict}'${ev.classify.failed ? ` (failed: ${ev.classify.failed})` : ''}`
+        : `no ${IDLE_CLASSIFY_LABEL} receipt at all`;
+      // The gate's own word for the turn, when the receipt is new enough to carry it. Printed beside
+      // every reading here because it is the one field that separates a gate that read a bid and a
+      // flag that threw it away.
+      const shape = ev.select.shape ? `, gate shape '${ev.select.shape}'` : '';
+      const signals = ev.select.signals?.length ? `, signals ${ev.select.signals.join('/')}` : '';
+      if (ev.select.reason === SHARE_REASON) {
+        return pass(`read as a share by the '${ev.select.idleLayer}' layer (${said})${shape}${signals}`);
+      }
+      if (ev.select.reason === NOT_IDLE) {
+        return fail(`the gate read this bid as WORK (layer '${ev.select.idleLayer}'; ${said})${shape}${signals}`
+          + ' — read CONVO_SHARE_TURNS_ENABLED before the gate: with the flag off every share maps to task '
+          + 'by design and looks exactly like this from out here. With it on, the structural vetoes are '
+          + 'what to read: a question mark of any script, a URL, the share cap, or an approval of hers '
+          + 'still outstanding');
+      }
+      return fail(`the gate read this bid as an idle STALL (reason '${ev.select.reason}', layer `
+        + `'${ev.select.idleLayer}'; ${said})${shape}${signals} — a hook here is a beat about nothing they `
+        + 'said, and the follow-up is closed on it. Layer 3 has to answer with the share word, or a signal '
+        + 'has to mark the message as no stall');
+    },
+  },
+
   idle_via_classify: {
     verdict: 'IDLE_MISREAD',
     layer: 'idle_gate',
@@ -717,6 +847,53 @@ export const CHECKS: Record<CheckId, HookCheck> = {
           + `${LEAF_EXAMPLES.length} shipped examples`);
       }
       return pass(`idle, decided by layer 3 (${said})`);
+    },
+  },
+
+  // THE DOSE. Every FAILING reading here is scored off the two facts the selector itself decided on —
+  // the tail of the ledger it read, and the forbidden list it reported — and never off her
+  // punctuation: a question mark is not a question, and a check that failed a reply for carrying two
+  // of them would fail "wait, seriously? how did that land", which spent exactly one. The marks are
+  // counted all the same and reported beside every reading, as a WARN where the arithmetic cannot
+  // settle it: one open question and two marks is a case for a person.
+  //
+  // The reason this is not a `hook:off_turn` reading, which is where every other "a move the turn had
+  // no room for" lives: on a share turn the question is SHAPE-legal, so nothing files that receipt
+  // (agents/convo/shared.ts says so at the call site). What closes it there is the ceiling her
+  // weather compiled or the no-two-running rule, and both live inside the shape — so the only place a
+  // slip against them shows is the trace beside the ledger, which is exactly what this reads.
+  one_question_max: {
+    verdict: 'QUESTION_UNEARNED',
+    layer: 'selector',
+    why: 'a question of hers lands only where the shape left room for one: never on two turns running — '
+      + 'when they answer, the next move is what she makes of the answer — and never after the ceiling '
+      + 'closed it. Interest compounds when it is spent that way and curdles into an interview when it '
+      + 'is not',
+    run(ev) {
+      const h = ev.trace!.outcome.hook;
+      if (!h) return unscored('the trace carries no hook field — the selector never ran on this turn');
+      if (!ev.select) return unscored(`no ${HOOKS_SELECT_LABEL} receipt for this chat (flag off? old binary?)`);
+      const tail = ev.select.lastKinds[ev.select.lastKinds.length - 1] ?? null;
+      const closed = ev.select.forbidden.includes('question');
+      const marks = countQuestionMarks(ev.bubbles);
+      const reading = `ledger tail '${tail ?? 'empty'}', the question was ${closed ? 'closed' : 'open'} `
+        + `this turn, ${marks} question mark(s) in the reply`;
+      if (h.emitted !== 'question') return pass(`the reply carried '${h.emitted}', so no dose was spent (${reading})`);
+      if (tail === 'question') {
+        return fail(`she asked on this turn and on the one before it (${reading}) — the ledger tail closes the `
+          + 'question in the selector, so either that ban did not fire or the reply carried a question the '
+          + 'envelope never declared');
+      }
+      if (closed) {
+        return fail(`the section closed the question this turn (forbidden ${ev.select.forbidden.join('/') || 'nothing'}) `
+          + `and the reply carried one anyway (${reading}) — the ceiling her weather compiled, the room, or the `
+          + 'weight read was rendered and not obeyed');
+      }
+      if (marks > 1) {
+        return warn(`one question was open and one was taken, but the reply carries ${marks} question marks `
+          + `(${reading}) — a mark is not a question, so read the bubbles: one of them may be a second ask`);
+      }
+      return pass(`one question, on a turn that left it open (${reading})`);
     },
   },
 
@@ -833,9 +1010,14 @@ export const CHECKS: Record<CheckId, HookCheck> = {
 //   `quiet`   — the run is spent and the turn must go quiet.
 //   `task`    — the gate must read this message as work.
 //   `idle`    — the gate must read this message as a stall.
+//   `share`   — the gate must read this message as a bid, and the reply must turn toward the thing.
 //   `spacing` — the diary must not repeat itself.
+//
+// Three of those words are the gate's own turn kinds (persona/idle.ts `TURN_KINDS`), and
+// hookBattery.test.ts pins that each of them has a probe aimed at it: a shape the engine can produce
+// with nothing in this table measuring it is a shape a clean round says nothing about.
 
-export type HookExpect = 'hook' | 'flat' | 'quiet' | 'task' | 'idle' | 'spacing';
+export type HookExpect = 'hook' | 'flat' | 'quiet' | 'task' | 'idle' | 'share' | 'spacing';
 
 export interface HookItem {
   id: string;
@@ -843,9 +1025,10 @@ export interface HookItem {
    *  cannot reach: a filled ledger window (h3), an outstanding question of hers (h6), enough idle
    *  turns for the moment sampler to have spent its interval twice (h4). */
   seeds?: readonly string[];
-  /** This item's seeds are stalls, whose round trip is a short reply rather than a piece of work, so
-   *  the harness waits IDLE_GAP_MS after each instead of the ordinary SEED_GAP_MS. Declared rather
-   *  than given as a number because the numbers live with the other timing knobs, below. */
+  /** This item's seeds ask for nothing — a stall or a bid — so each one's round trip is a short reply
+   *  rather than a piece of work, and the harness waits IDLE_GAP_MS after each instead of the ordinary
+   *  SEED_GAP_MS. Declared rather than given as a number because the numbers live with the other
+   *  timing knobs, below. */
   idleSeeds?: boolean;
   ask: string;
   expect: HookExpect;
@@ -880,7 +1063,7 @@ export const BATTERY: readonly HookItem[] = [
     id: 'h1',
     ask: 'hey',
     expect: 'hook',
-    checks: ['leaf_reply', 'voice_clean', 'hook_present'],
+    checks: ['leaf_reply', 'voice_clean', 'question_clean', 'hook_present'],
     why: 'THE MANDATORY POSITIVE CONTROL, and the item the whole build is named after. A bare greeting '
       + 'is the purest idle turn there is: nothing was asked, so the reply is either one earned beat or '
       + 'it is a leaf. An engine that hooks never passes every other item in this file.',
@@ -948,23 +1131,88 @@ export const BATTERY: readonly HookItem[] = [
   {
     id: 'h7',
     ask: 'morning meeting moved',
-    expect: 'task',
-    checks: ['leaf_reply', 'voice_clean', 'turn_is_task'],
-    why: 'three words, one of which is a shipped fast-path example ("morning"), and together they carry a '
-      + 'fact she has to do something with. The fast path cannot answer it — not every token is an '
-      + 'example — so it goes to layer 3, which must read it as an ask.',
+    expect: 'share',
+    checks: ['leaf_reply', 'voice_clean', 'question_clean', 'one_question_max', 'turn_is_share'],
+    why: 'the probe that named the third shape, and the reason it exists. Three words carrying a piece of '
+      + 'their day and asking for nothing: read as work it came back "noted", which is a receipt, and a '
+      + 'receipt is how a conversation ends without anyone deciding to end it. One of the three words is a '
+      + 'shipped fast-path example ("morning") and the fast path still cannot speak for the message — not '
+      + 'every token is an example — so layer 3 is what has to call this a share.',
+    handRead: 'Read the reply for the thing they handed her: the meeting, in their word for it. A read, a '
+      + 'callback, a step sideways, or the one question only they can answer — never a note that the '
+      + 'message arrived, and never a question anybody could be asked.',
   },
   {
     id: 'h8',
     ask: 'bosan',
     expect: 'idle',
-    checks: ['leaf_reply', 'voice_clean', 'idle_via_classify'],
+    checks: ['leaf_reply', 'voice_clean', 'question_clean', 'idle_via_classify'],
     why: 'a stall in another language: veto-free, short, and in none of the shipped English examples, so '
       + 'the only layer that can read it is the classify fallback. The plan\'s language-agnostic rule in '
       + 'one probe — the examples are examples, and the fallback behind them has to be alive.',
     handRead: 'The layer, not the reply, is the evidence here. If the receipt says the fast path decided, '
       + 'LEAF_EXAMPLES_EXTRA is set on the instance; if layer 3 answered anything but a stall, the lane '
       + 'read the word differently and another stall is worth trying.',
+  },
+  {
+    id: 'h9',
+    ask: 'got the flat, we sign the lease on saturday',
+    expect: 'share',
+    checks: ['leaf_reply', 'voice_clean', 'question_clean', 'one_question_max', 'turn_is_share'],
+    why: 'good news, which the capitalization research calls the easy case and the one most often fumbled: '
+      + 'an understated answer to something they are pleased about lands as indifference however kind the '
+      + 'words are. The turn has to carry the part she wants to know about the thing rather than an '
+      + 'acknowledgement that they are pleased.',
+    handRead: 'Read whether the reply is about the flat. A congratulation with nothing behind it is the '
+      + 'passive-constructive answer this probe exists to catch, and from out here it reads warm — the '
+      + 'machine can only tell you the turn was a share and carried a move.',
+  },
+  {
+    id: 'h10',
+    seeds: ['my manager took credit for the whole thing in front of the team'],
+    idleSeeds: true,
+    ask: 'and i just sat there and said nothing, i still feel sick about it',
+    expect: 'share',
+    checks: ['leaf_reply', 'voice_clean', 'question_clean', 'one_question_max', 'turn_is_share'],
+    why: 'weight, which NARROWS a share turn and never closes it: a judgment on something heavy is '
+      + 'analysis and analysis is not company, and a tangent walks away from the thing they have just put '
+      + 'down. The seed is what makes the probe turn heavy at all — the carried mode is read off the turn '
+      + 'before it — so the pair only means anything sent together.',
+    handRead: 'Read the forbidden list on the probe turn first: with the weight read, judgment and tangent '
+      + 'should both be shut. Then read the reply against the fix reflex — a question, if one was open, '
+      + 'asks what happened or how it sat, never what they are going to do about it, and nothing in the '
+      + 'reply is a plan.',
+  },
+  {
+    id: 'h11',
+    seeds: ['ended up walking home from the station in the rain'],
+    idleSeeds: true,
+    ask: 'it was fine actually, gave me time to think',
+    expect: 'share',
+    checks: ['leaf_reply', 'voice_clean', 'question_clean', 'turn_is_share', 'one_question_max'],
+    why: 'THE DOSE. The seed is a bid she may answer with a follow-up; this turn is the answer to it, and '
+      + 'what it must carry is what she makes of the answer rather than the next question. The ledger '
+      + 'closes the question when its own tail is one, so a second question running here is a ban that did '
+      + 'not fire and not a judgment call she got wrong.',
+    handRead: 'Read the seed reply in the JSON. This probe is only the plan\'s "answer to her question" '
+      + 'when that reply actually asked one; if it did not, the ledger tail was never a question and what '
+      + 'this item tested was the bid, not the dose.',
+  },
+  {
+    id: 'h12',
+    seeds: ['that was useless', 'no, you completely missed the point again'],
+    idleSeeds: true,
+    ask: 'anyway. spent the afternoon repotting the plants on the balcony',
+    expect: 'share',
+    checks: ['leaf_reply', 'voice_clean', 'question_clean', 'turn_is_share', 'one_question_max'],
+    why: 'THE CEILING, from the closed end. Her weather decides whether the question is open at all, and '
+      + 'two turns of hostility is what shuts it; the bid is still answered, because a flat mood narrows a '
+      + 'share turn to presence and never to silence, but the answer stays statement-shaped. Seeded rather '
+      + 'than set, on focusBattery f8\'s precedent: a mood is not a knob this harness has, so it is put '
+      + 'there by the turns in front of the probe.',
+    handRead: 'Read the forbidden list on the probe turn before anything else. With the question closed, '
+      + 'the reply is a statement about the plants and the item measured the ceiling; with it still open, '
+      + 'two rude turns did not move her weather far enough and the item measured the bid instead.',
   },
 ];
 
@@ -1679,11 +1927,12 @@ const STAGGER_MS = num('HOOK_STAGGER_MS', 20_000);      // one item every ~20 s,
 const SILENT_MS = num('HOOK_SILENT_MS', 90_000);        // past this a reply is LATE; no reply at all is SILENT
 const SETTLE_MS = num('HOOK_SETTLE_MS', 180_000);       // grace after the LAST send
 const SEED_GAP_MS = num('HOOK_SEED_GAP_MS', 120_000);   // a WORK seed's whole round trip, harvest included
-// An idle seed's round trip is one short reply, and the kill-switch and spacing probes need a lot of
+// A short seed's round trip is one short reply, and the kill-switch and spacing probes need a lot of
 // them: at the work gap those two items alone would be most of an hour. Still long enough that the
 // bubble pipeline has settled and the next message is a new turn rather than a burst — which matters
-// more here than anywhere else, since a burst of two is a structural veto and would turn every seeded
-// stall into a task turn.
+// more here than anywhere else, because a burst is what the gate reads as "no stall": two stalls
+// batched into one turn stop being idle turns and come back as shares, and the seeded ledger the
+// kill-switch probe is built on fills with the wrong shape.
 const IDLE_GAP_MS = num('HOOK_IDLE_GAP_MS', 25_000);
 // The scripted run's per-turn gap. Same reasoning as the idle gap and the same danger: the whole run
 // is one conversation, so a gap short enough to batch two turns together does not slow the run down,
@@ -1761,9 +2010,13 @@ Verdicts:
   KILL_SWITCH_IGNORED     ${HOOK_RUN_LIMIT} hooked replies in a row and the next turn was not forced quiet
   KILL_SWITCH_UNRESOLVED  it WAS forced, she broke it, and the corrective re-ask kept the loud original
   MOMENT_REPEATED         an episode was put in front of her twice inside ${MOMENT_RECENT_EXCLUDE_MS / 3_600_000}h
-  IDLE_MISREAD            the gate read work as a stall, or a stall as work
+  IDLE_MISREAD            the gate read work as a stall, a stall as work, or a bid as either of them
   LEAF_REPLY              the reply carried nothing — the failure this build is named after
   VOICE_BREACH            a wink, a suck-up, a defence, a content mirror, or a cited ledger
+  QUESTION_UNEARNED       a question landed where the shape left no room: two turns running, or after
+                          her weather, the room or the weight read had closed it
+  PROBE_QUESTION          a question of hers asked them to do her work — one anybody could be asked,
+                          one that turns back on her, or one a search would answer
   REVERSAL                a figure she stated was abandoned under pressure, with no new evidence
   LATE                    answered past the ${SILENT_MS / 1000}s SLA. Reported, never failing
   WARN                    passed, with a reading beside the verdict worth an eye
@@ -1772,16 +2025,18 @@ Verdicts:
                           round is inconclusive rather than clean, and a re-run can fix it
 
 Every failure names the LAYER to check: the idle gate, the hook selector, the quiet guard, the
-persona block, the hook craft page, or the moment sampler. Two failures read off the same reply are
-usually fixed in different files.
+persona block, the hook craft page, the share craft page, or the moment sampler. Two failures read
+off the same reply are usually fixed in different files.
 
 Exit code: 0 clean · 1 failures · 3 inconclusive (no failures, but at least one UNSCORED, or no
 ${HOOKS_SELECT_LABEL} receipt anywhere) · 2 fatal.
 
 NOTE: rebuild and restart the instance from this tree first, with DIAGNOSTICS_ENABLED on,
-TURN_TRACE_ENABLED on and CONVO_HOOKS_ENABLED on. With the hook flag OFF the trace carries no hook
-field and no ${HOOKS_SELECT_LABEL} receipt is filed — which is the plan's negative control, and reads
-here as an inconclusive round rather than a clean one.`;
+TURN_TRACE_ENABLED on, CONVO_HOOKS_ENABLED on and CONVO_SHARE_TURNS_ENABLED on. With the hook flag
+OFF the trace carries no hook field and no ${HOOKS_SELECT_LABEL} receipt is filed — which is the
+plan's negative control, and reads here as an inconclusive round rather than a clean one. The SHARE
+flag is louder than that: off, the gate maps every bid to task by design, so h7 and h9 through h12
+come back IDLE_MISREAD as if the gate were broken. Read the flag before the gate.`;
 
 // ── the round ───────────────────────────────────────────────────────────────────────────────────
 
@@ -1865,12 +2120,12 @@ async function runProbes(cfg: {
     console.log('| id | expect | checks | clientId | seeds | ask |');
     console.log('|----|--------|--------|----------|-------|-----|');
     for (const p of plan) {
-      const seeds = p.seeds?.length ? `${p.seeds.length} × ${cell(p.seeds[0], 24)}${p.idleSeeds ? ' (stalls)' : ''}` : '—';
+      const seeds = p.seeds?.length ? `${p.seeds.length} × ${cell(p.seeds[0], 24)}${p.idleSeeds ? ' (short)' : ''}` : '—';
       console.log(`| ${p.id} | ${p.expect} | ${p.checks.join(', ')} | ${p.clientId || 'NOT SENT'} | ${seeds} | ${cell(p.ask)} |`);
     }
     const turns = live.reduce((n, p) => n + 1 + (p.seeds?.length ?? 0), 0);
     console.log(`\n${live.length} sendable items of ${plan.length}, ${turns} turns in all · stagger ${STAGGER_MS / 1000}s · `
-      + `seed gap ${SEED_GAP_MS / 1000}s (stalls ${IDLE_GAP_MS / 1000}s) · settle ${SETTLE_MS / 1000}s`);
+      + `seed gap ${SEED_GAP_MS / 1000}s (short ${IDLE_GAP_MS / 1000}s) · settle ${SETTLE_MS / 1000}s`);
     console.log(`db ${db} · base ${base} · handle ${handle} · judge ${judge ? 'on' : 'OFF (--no-judge)'}`);
     for (const p of plan.filter(x => x.unsendable)) console.log(`not sent — ${p.id}: ${p.unsendable}`);
     console.log(`\npre-round ledger: ${summarize(ledger)}`);
@@ -2049,11 +2304,15 @@ async function runProbes(cfg: {
     + ` · HOOK_ON_TASK ${tally('HOOK_ON_TASK')} · HOOK_MISSING ${tally('HOOK_MISSING')}`
     + ` · KILL_SWITCH_IGNORED ${tally('KILL_SWITCH_IGNORED')} · KILL_SWITCH_UNRESOLVED ${tally('KILL_SWITCH_UNRESOLVED')}`
     + ` · MOMENT_REPEATED ${tally('MOMENT_REPEATED')} · IDLE_MISREAD ${tally('IDLE_MISREAD')}`
-    + ` · LEAF_REPLY ${tally('LEAF_REPLY')} · VOICE_BREACH ${tally('VOICE_BREACH')} · REVERSAL ${tally('REVERSAL')}`);
+    + ` · LEAF_REPLY ${tally('LEAF_REPLY')} · VOICE_BREACH ${tally('VOICE_BREACH')}`
+    + ` · QUESTION_UNEARNED ${tally('QUESTION_UNEARNED')} · PROBE_QUESTION ${tally('PROBE_QUESTION')}`
+    + ` · REVERSAL ${tally('REVERSAL')}`);
   const familyTally = VOICE_FAMILIES.map(f => `${f} ${results.filter(r => r.voice?.[f]).length}`).join(', ');
   const ungraded = results.filter(r => r.clientId && !r.voice).length;
+  // `leaf` and `probe` are printed beside the families and are not of them: each is its own
+  // never-event with its own verdict, and each is scored on a narrower set of turns than the five.
   console.log(`voice families across the round: ${familyTally} · leaf ${results.filter(r => r.voice?.leaf).length}`
-    + ` · ${ungraded} reply/replies ungraded`);
+    + ` · probe ${results.filter(r => r.voice?.probe).length} · ${ungraded} reply/replies ungraded`);
   if (!anySelect) {
     console.log(`NO ${HOOKS_SELECT_LABEL} receipts at all — the instance on --base is not filing them `
       + '(CONVO_HOOKS_ENABLED=off, DIAGNOSTICS_ENABLED=false, an old binary, or the wrong --db). Nothing here '
@@ -2093,7 +2352,9 @@ async function runProbes(cfg: {
       hookOnTask: tally('HOOK_ON_TASK'), hookMissing: tally('HOOK_MISSING'),
       killSwitchIgnored: tally('KILL_SWITCH_IGNORED'), killSwitchUnresolved: tally('KILL_SWITCH_UNRESOLVED'),
       momentRepeated: tally('MOMENT_REPEATED'), idleMisread: tally('IDLE_MISREAD'),
-      leafReply: tally('LEAF_REPLY'), voiceBreach: tally('VOICE_BREACH'), reversal: tally('REVERSAL'),
+      leafReply: tally('LEAF_REPLY'), voiceBreach: tally('VOICE_BREACH'),
+      questionUnearned: tally('QUESTION_UNEARNED'), probeQuestion: tally('PROBE_QUESTION'),
+      reversal: tally('REVERSAL'),
     },
     voiceFamilies: Object.fromEntries(VOICE_FAMILIES.map(f => [f, results.filter(r => r.voice?.[f]).length])),
     checkCatalogue: Object.fromEntries(Object.entries(CHECKS).map(([id, c]) => [id, { verdict: c.verdict, layer: c.layer, why: c.why }])),

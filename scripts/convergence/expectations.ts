@@ -97,12 +97,21 @@ export type {
 } from '../../src/persona/hooks.js';
 
 // ── the idle gate (persona/idle.ts) ──────────────────────────────────────────────────────────────
-// A VALUE, because the battery has to be able to say which of its probes the English fast path can
-// answer on its own: a stall the examples already hold could never exercise the classify layer, and
-// a probe aimed at layer 3 has to be written against a token that is NOT in this list. The list is
-// documented upstream as examples rather than a law, and the battery treats it as exactly that.
-export { LEAF_EXAMPLES } from '../../src/persona/idle.js';
-export type { IdleLayer, IdleVerdict } from '../../src/persona/idle.js';
+// LEAF_EXAMPLES is a VALUE, because the battery has to be able to say which of its probes the English
+// fast path can answer on its own: a stall the examples already hold could never exercise the classify
+// layer, and a probe aimed at layer 3 has to be written against a token that is NOT in this list. The
+// list is documented upstream as examples rather than a law, and the battery treats it as exactly that.
+//
+// TURN_KINDS is a VALUE for a different piece of arithmetic: the battery's `expect` column names turn
+// kinds among its own words, and hookBattery.test.ts walks this list to pin that every kind the gate
+// can answer with has a probe aimed at it. A fourth kind added upstream with no probe behind it would
+// otherwise be a shape nothing in the round measures.
+//
+// QUESTION_MARKS, likewise, and for the reason the constant exists upstream: the dose check counts the
+// questions in her reply, and a battery that retyped `'?'` would read a reply in another script as
+// carrying none — on the one battery that deliberately texts her in one (h8).
+export { LEAF_EXAMPLES, QUESTION_MARKS, TURN_KINDS } from '../../src/persona/idle.js';
+export type { IdleLayer, IdleVerdict, TurnKind } from '../../src/persona/idle.js';
 
 // ── the moment store's one clock (persona/moments.ts) ────────────────────────────────────────────
 // A VALUE: the "never offered twice" probe divides it to print a window in hours, and the sentence

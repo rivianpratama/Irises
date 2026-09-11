@@ -27,6 +27,7 @@ import {
   VOICE_JUDGE_PROMPT,
   allFigures,
   attributeSequence,
+  countQuestionMarks,
   killSwitchPoints,
   mergeReceipts,
   readFigureStand,
@@ -53,7 +54,9 @@ import {
   LEAF_EXAMPLES,
   MOMENT_IDLE_INTERVAL,
   MOMENT_RECENT_EXCLUDE_MS,
+  QUESTION_MARKS,
   QUIET_MAX_WORDS,
+  TURN_KINDS,
   type HookKind,
   type HookMode,
   type MemoryGateReports,
@@ -123,11 +126,16 @@ function select(over: Partial<HooksSelectDetail> = {}): HooksSelectDetail {
   return {
     reason: 'hook',
     idleLayer: 'fast_path',
-    forbidden: [],
+    // The idle law's one unconditional ban, and it belongs in the DEFAULT rather than in the tests
+    // that care: every idle turn forbids the question outright (persona/hooks.ts), so a fixture with
+    // an empty forbidden list would be an idle turn no engine ever produces.
+    forbidden: ['question'],
     lastKinds: [],
     mode: 'hook',
     idle: true,
     moments: false,
+    shape: 'idle',
+    signals: [],
     ...over,
   };
 }
@@ -146,7 +154,8 @@ function threads(over: Partial<ThreadSelectReport> = {}): ThreadSelectReport {
 }
 
 const CLEAN_VOICE: VoiceVerdict = {
-  wink: false, suck_up: false, defend: false, content_mirror: false, ledger: false, leaf: false, quote: '',
+  wink: false, suck_up: false, defend: false, content_mirror: false, ledger: false, leaf: false,
+  probe: false, quote: '',
 };
 
 function voice(over: Partial<VoiceVerdict> = {}): VoiceVerdict {
@@ -192,7 +201,21 @@ function evidence(over: Partial<TurnEvidence> = {}): TurnEvidence {
 function taskTurn(over: Partial<TurnEvidence> = {}): Partial<TurnEvidence> {
   return {
     trace: trace({ hook: { idle: false, mode: 'task', emitted: 'none', violation: false } }),
-    select: select({ reason: 'not_idle', idleLayer: 'veto', mode: 'task', idle: false }),
+    select: select({ reason: 'not_idle', idleLayer: 'veto', mode: 'task', idle: false, shape: 'task', forbidden: [] }),
+    ...over,
+  };
+}
+
+/** …and a turn the gate read as a BID: the third shape, where all four kinds including the question
+ *  are on the table and the reply is one move about the thing they handed her. The share probes are
+ *  scored against this the way the work probes are scored against `taskTurn`. */
+function shareTurn(over: Partial<TurnEvidence> = {}): Partial<TurnEvidence> {
+  return {
+    trace: trace({ hook: { idle: false, mode: 'share', emitted: 'judgment', violation: false } }),
+    select: select({
+      reason: 'share', idleLayer: 'classify', mode: 'share', idle: false, shape: 'share', forbidden: [],
+    }),
+    classify: { verdict: 'share', cached: false, chars: 21 },
     ...over,
   };
 }
@@ -274,8 +297,9 @@ test('importing the battery does not load a provider SDK either', () => {
 
 // ── the table itself ────────────────────────────────────────────────────────────────────────────
 
-test('the battery is the plan\'s eight probes, and h1 is the positive control', () => {
-  assert.deepEqual(BATTERY.map(i => i.id), ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'h7', 'h8']);
+test('the battery is the plan\'s twelve probes, and h1 is the positive control', () => {
+  assert.deepEqual(BATTERY.map(i => i.id),
+    ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'h7', 'h8', 'h9', 'h10', 'h11', 'h12']);
   for (const i of BATTERY) {
     assert.ok(i.why.length > 40, `${i.id} has no why`);
     assert.ok(i.checks.length > 0, `${i.id} runs no check`);
@@ -286,6 +310,36 @@ test('the battery is the plan\'s eight probes, and h1 is the positive control', 
   const positive = BATTERY.filter(i => i.checks.includes('hook_present'));
   assert.deepEqual(positive.map(i => i.id), ['h1']);
   assert.equal(item('h1').expect, 'hook');
+});
+
+test('every turn kind the gate can answer with has a probe aimed at it', () => {
+  // TURN_KINDS is imported as a VALUE for this one assertion. The `expect` column names the three
+  // kinds among its own words, and a kind added upstream with nothing aimed at it would be a shape
+  // the engine can produce and a clean round says nothing about — which is how the bare life update
+  // went uncovered for a whole build (h7 was written as a task probe because `share` did not exist).
+  const expected = new Set(BATTERY.map(i => i.expect));
+  for (const kind of TURN_KINDS) {
+    assert.ok(expected.has(kind), `no probe expects a '${kind}' turn`);
+  }
+  // …and the bid has more than one, because the three ways it fails are different failures: the gate
+  // reading, the dose, and the probe question.
+  const shares = BATTERY.filter(i => i.expect === 'share');
+  assert.deepEqual(shares.map(i => i.id), ['h7', 'h9', 'h10', 'h11', 'h12']);
+  for (const i of shares) {
+    assert.ok(i.checks.includes('turn_is_share'), `${i.id} does not read the gate`);
+    assert.ok(i.checks.includes('one_question_max'), `${i.id} does not read the dose`);
+  }
+});
+
+test('a question of hers is graded wherever one was on the table, and nowhere else', () => {
+  // `question_clean` reads the judge's `probe` flag, which is NOT a voice family — on a task turn the
+  // question that asks them to authorise something is the right answer (h6's whole seed is one), so
+  // scoring it there would fail the engine for obeying the approval gate.
+  const graded = BATTERY.filter(i => i.checks.includes('question_clean')).map(i => i.id);
+  const open = BATTERY.filter(i => i.expect === 'share' || i.expect === 'hook' || i.expect === 'idle').map(i => i.id);
+  assert.deepEqual(graded, open);
+  assert.ok(!(VOICE_FAMILIES as readonly string[]).includes('probe'),
+    'probe is a voice family — a mandated confirm question would fail voice_clean on every task probe');
 });
 
 test('every probe grades the reply for emptiness and for voice, leaf first', () => {
@@ -301,7 +355,8 @@ test('every probe grades the reply for emptiness and for voice, leaf first', () 
 test('every check declares a verdict from the exported failure union, and a layer to read', () => {
   const union = new Set<HookFailure>([
     'HOOK_ON_TASK', 'HOOK_MISSING', 'KILL_SWITCH_IGNORED', 'KILL_SWITCH_UNRESOLVED',
-    'MOMENT_REPEATED', 'IDLE_MISREAD', 'LEAF_REPLY', 'VOICE_BREACH', 'REVERSAL',
+    'MOMENT_REPEATED', 'IDLE_MISREAD', 'LEAF_REPLY', 'VOICE_BREACH', 'QUESTION_UNEARNED',
+    'PROBE_QUESTION', 'REVERSAL',
   ]);
   const declared = new Set<HookFailure>();
   for (const [id, check] of [...Object.entries(CHECKS), ...Object.entries(SCRIPT_CHECKS)]) {
@@ -378,22 +433,28 @@ test('the judge prompt is the staged prose and asks for the six flags by name', 
 
 test('a well-formed answer reads back as itself', () => {
   const got = readVoiceVerdict('{"wink":false,"suck_up":true,"defend":false,"content_mirror":false,'
-    + '"ledger":false,"leaf":false,"quote":"good question!"}');
+    + '"ledger":false,"leaf":false,"probe":false,"quote":"good question!"}');
   assert.deepEqual(got, { ...CLEAN_VOICE, suck_up: true, quote: 'good question!' });
 });
 
 test('packaging is forgiven and a missing flag is not', () => {
   // A fenced block or a sentence in front of the object is a property of the lane, not of the grade.
   const fenced = readVoiceVerdict('```json\n{"wink":false,"suck_up":false,"defend":false,'
-    + '"content_mirror":false,"ledger":false,"leaf":true,"quote":"hey"}\n```');
+    + '"content_mirror":false,"ledger":false,"leaf":true,"probe":false,"quote":"hey"}\n```');
   assert.equal(fenced?.leaf, true);
   // …but a flag that is not there was not graded, and reading it as `false` is exactly the pass this
-  // must never hand out.
+  // must never hand out. The EIGHTH flag is the live case rather than a hypothetical one: a lane
+  // answering the six-flag object this rubric asked for before the share build is an answer that
+  // graded nothing about her question, and it must come back null rather than clean.
+  assert.equal(readVoiceVerdict('{"wink":false,"suck_up":false,"defend":false,"content_mirror":false,'
+    + '"ledger":false,"leaf":false,"quote":""}'), null);
   assert.equal(readVoiceVerdict('{"wink":false,"suck_up":false,"defend":false,"content_mirror":false,"ledger":false}'), null);
-  assert.equal(readVoiceVerdict('{"wink":"no","suck_up":false,"defend":false,"content_mirror":false,"ledger":false,"leaf":false}'), null);
+  assert.equal(readVoiceVerdict('{"wink":"no","suck_up":false,"defend":false,"content_mirror":false,'
+    + '"ledger":false,"leaf":false,"probe":false}'), null);
   // A missing `quote` IS forgiven: a clean grade has nothing to quote.
   assert.equal(
-    readVoiceVerdict('{"wink":false,"suck_up":false,"defend":false,"content_mirror":false,"ledger":false,"leaf":false}')?.quote,
+    readVoiceVerdict('{"wink":false,"suck_up":false,"defend":false,"content_mirror":false,"ledger":false,'
+      + '"leaf":false,"probe":false}')?.quote,
     '',
   );
 });
@@ -745,19 +806,166 @@ test('h4: an episode drawn again inside the window is MOMENT_REPEATED', () => {
   assert.equal(r.layer, LAYERS.moments);
 });
 
-test('h5 and h7: a task read as work is the pass, and the deciding layer is printed', () => {
-  const taskEv: Partial<TurnEvidence> = {
-    trace: trace({ hook: { idle: false, mode: 'task', emitted: 'none', violation: false } }),
-    select: select({ reason: 'not_idle', idleLayer: 'veto', mode: 'task', idle: false }),
-  };
-  assert.equal(score(item('h5'), taskEv).verdict, 'PASS');
-  const viaClassify = score(item('h7'), {
-    ...taskEv,
-    select: select({ reason: 'not_idle', idleLayer: 'classify', mode: 'task', idle: false }),
+test('h5 and h6: a task read as work is the pass, and the deciding layer is printed', () => {
+  assert.equal(score(item('h5'), taskTurn()).verdict, 'PASS');
+  const viaClassify = score(item('h6'), {
+    ...taskTurn(),
+    select: select({
+      reason: 'not_idle', idleLayer: 'classify', mode: 'task', idle: false, shape: 'task', forbidden: [],
+    }),
     classify: { verdict: 'ask', cached: false, chars: 21 },
   });
   assert.equal(viaClassify.verdict, 'PASS');
   assert.match(viaClassify.evidence, /layer 3 answered 'ask'/);
+});
+
+// ── the share turn ──────────────────────────────────────────────────────────────────────────────
+
+test('h7: a bid read as a share, answered with one move, is the pass', () => {
+  const r = score(item('h7'), shareTurn());
+  assert.equal(r.verdict, 'PASS');
+  assert.ok(r.checks.some(c => /turn_is_share: pass/.test(c)), r.checks.join(' | '));
+  assert.match(r.evidence, /read as a share by the 'classify' layer/);
+  assert.match(r.evidence, /gate shape 'share'/);
+});
+
+test('h7: a bid read as WORK names the flag before it names the gate', () => {
+  // The failure the whole shape exists to stop — "morning meeting moved" answered flat comes back
+  // "noted" — and the one reading that is NOT a broken gate: with CONVO_SHARE_TURNS_ENABLED off the
+  // gate maps every share to task on purpose, and from out here the two are the same receipt.
+  const r = score(item('h7'), taskTurn());
+  assert.equal(r.verdict, 'IDLE_MISREAD');
+  assert.equal(r.layer, LAYERS.idle_gate);
+  assert.match(r.evidence, /read this bid as WORK/);
+  assert.match(r.evidence, /CONVO_SHARE_TURNS_ENABLED/);
+});
+
+test('h7: a bid read as an idle stall is the other half of the same misread', () => {
+  // A hook on this turn is a beat about nothing they said, and it costs the follow-up too: idle mode
+  // forbids the question outright.
+  const r = score(item('h7'), {
+    trace: trace({ hook: { idle: true, mode: 'hook', emitted: 'tangent', violation: false } }),
+    select: select({ reason: 'hook', idleLayer: 'fast_path' }),
+  });
+  assert.equal(r.verdict, 'IDLE_MISREAD');
+  assert.match(r.evidence, /read this bid as an idle STALL/);
+  assert.equal(r.layer, LAYERS.idle_gate);
+});
+
+test('h9: the share checks are unscored, never passed, when the selector never reported', () => {
+  const r = score(item('h9'), { ...shareTurn(), select: null });
+  assert.equal(r.verdict, 'UNSCORED');
+  assert.match(r.evidence, /hooks:select/);
+});
+
+test('h10: a question the ledger closed and she asked anyway is QUESTION_UNEARNED', () => {
+  // The never-event the plan names: two turns running. The ledger tail is what the selector itself
+  // reads, so a question behind one is a ban that did not fire rather than a judgment call.
+  const r = score(item('h10'), {
+    ...shareTurn(),
+    trace: trace({ hook: { idle: false, mode: 'share', emitted: 'question', violation: false } }),
+    select: select({
+      reason: 'share', idleLayer: 'classify', mode: 'share', idle: false, shape: 'share',
+      forbidden: ['question'], lastKinds: ['tangent', 'question'],
+    }),
+    bubbles: ['and how did that sit with you'],
+  });
+  assert.equal(r.verdict, 'QUESTION_UNEARNED');
+  assert.equal(r.layer, LAYERS.selector);
+  assert.match(r.evidence, /on this turn and on the one before it/);
+});
+
+test('h10: a question asked after the ceiling closed it is the same verdict, read off the section', () => {
+  // The other closer, and the one h12 is aimed at: her weather, the room or the weight read shut the
+  // question, the section rendered without it, and the reply carried one regardless.
+  const r = score(item('h10'), {
+    ...shareTurn(),
+    trace: trace({ hook: { idle: false, mode: 'share', emitted: 'question', violation: false } }),
+    select: select({
+      reason: 'share', idleLayer: 'classify', mode: 'share', idle: false, shape: 'share',
+      forbidden: ['judgment', 'tangent', 'question'], lastKinds: ['callback'],
+    }),
+    bubbles: ['what happened after'],
+  });
+  assert.equal(r.verdict, 'QUESTION_UNEARNED');
+  assert.match(r.evidence, /closed the question this turn/);
+  assert.match(r.evidence, /judgment\/tangent\/question/);
+});
+
+test('h11: one question on a turn that left it open is the pass, and two marks only warn', () => {
+  const open: Partial<TurnEvidence> = {
+    ...shareTurn(),
+    trace: trace({ hook: { idle: false, mode: 'share', emitted: 'question', violation: false } }),
+    select: select({
+      reason: 'share', idleLayer: 'classify', mode: 'share', idle: false, shape: 'share',
+      forbidden: [], lastKinds: ['tangent', 'judgment'],
+    }),
+    bubbles: ['what did you end up thinking about'],
+  };
+  assert.equal(score(item('h11'), open).verdict, 'PASS');
+
+  // A mark is not a question: "wait, seriously? how did that land" obeys the dose and carries two of
+  // them, so this is a reading for a person and never a failing verdict.
+  const twoMarks = score(item('h11'), { ...open, bubbles: ['wait, seriously? how did that land?'] });
+  assert.equal(twoMarks.verdict, 'WARN');
+  assert.match(twoMarks.evidence, /2 question marks/);
+});
+
+test('h11: a reply that carried no question spends no dose, whatever the ledger holds', () => {
+  const r = score(item('h11'), {
+    ...shareTurn(),
+    select: select({
+      reason: 'share', idleLayer: 'classify', mode: 'share', idle: false, shape: 'share',
+      forbidden: ['question'], lastKinds: ['question'],
+    }),
+  });
+  assert.equal(r.verdict, 'PASS');
+  assert.ok(r.checks.some(c => /one_question_max: pass — the reply carried 'judgment'/.test(c)), r.checks.join(' | '));
+});
+
+test('h12: a probe wearing the shape of a follow-up is its own verdict, and its own layer', () => {
+  // Not a voice family and not a leaf: the reply carried a question, it moved nothing, and the file
+  // to read is the page that teaches the distinction rather than the persona block.
+  const r = score(item('h12'), {
+    ...shareTurn(),
+    trace: trace({ hook: { idle: false, mode: 'share', emitted: 'question', violation: false } }),
+    select: select({
+      reason: 'share', idleLayer: 'classify', mode: 'share', idle: false, shape: 'share', forbidden: [],
+    }),
+    bubbles: ['so what are you up to this weekend'],
+    voice: voice({ probe: true, quote: 'so what are you up to this weekend' }),
+  });
+  assert.equal(r.verdict, 'PROBE_QUESTION');
+  assert.equal(r.layer, LAYERS.share_page);
+  assert.match(r.evidence, /probe rather than a follow-up/);
+  assert.match(r.evidence, /this weekend/);
+});
+
+test('a probe is NOT a voice breach, and a voice breach is not a probe', () => {
+  // The two graders are told apart on purpose: `voice_clean` reads the five families and would pass
+  // a probe, `question_clean` reads the eighth flag and would pass a suck-up. An item that runs both
+  // reports whichever fired, under the verdict that names the right file.
+  const probeOnly = score(item('h9'), {
+    ...shareTurn(),
+    voice: voice({ probe: true, quote: 'which one' }),
+  });
+  assert.equal(probeOnly.verdict, 'PROBE_QUESTION');
+  const voiceOnly = score(item('h9'), {
+    ...shareTurn(),
+    voice: voice({ suck_up: true, quote: 'thats lovely news' }),
+  });
+  assert.equal(voiceOnly.verdict, 'VOICE_BREACH');
+  assert.equal(voiceOnly.layer, LAYERS.persona_block);
+});
+
+test('question marks are counted in every script the gate reads', () => {
+  // A count of ASCII marks would read a reply to h8 — the one probe deliberately written in another
+  // language — as carrying no question at all.
+  assert.equal(countQuestionMarks([]), 0);
+  assert.equal(countQuestionMarks(['no question here']), 0);
+  assert.equal(countQuestionMarks(['and then?']), 1);
+  assert.equal(countQuestionMarks(['wait, seriously?', 'how did that land?']), 2);
+  for (const mark of QUESTION_MARKS) assert.equal(countQuestionMarks([`terus${mark}`]), 1, mark);
 });
 
 test('h5: no hooks:select receipt leaves the gate unscored', () => {
