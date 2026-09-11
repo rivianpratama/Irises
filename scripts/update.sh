@@ -150,6 +150,21 @@ if [ "$CHECK" != "1" ]; then
   else
     warn "this run is NOT being logged to $UPDATE_LOG (no tee, no process substitution, or no room)"
   fi
+
+  # HUP is ignored from the moment we hold the LOCK, not from the apply. Everything past this point
+  # can outlive the session that started it — the repair path below rebuilds without asking anything
+  # at all — and a hangup used to kill the script outright, which is how the incident ended with the
+  # lock dir still on disk holding a dead pid: bash runs no EXIT trap when it dies of a signal nobody
+  # caught. Ignoring it here (children inherit that, so the build survives too) means the run always
+  # reaches its own ending, and the lock always comes back.
+  #
+  # A run that loses its terminal AT THE CONFIRMATION PROMPT is not left waiting either: `read` gets
+  # EOF from the gone stdin, the abort branch takes it as a "no", and the summary says nothing
+  # changed. That is also what a piped stdin has always done, which is the behaviour it borrows.
+  trap '' HUP
+  if [ "$UPDATE_LOG_ON" = "1" ]; then
+    say "progress is also written to $UPDATE_LOG — if this session drops, reconnect and: tail -f $UPDATE_LOG"
+  fi
 fi
 
 # The named branch FIRST: a single-branch clone (`git clone --single-branch`, which is what a small
@@ -293,7 +308,7 @@ rollback_to() { # SHA
 
 # The 408 MB box this was written for pushes `npm ci` and `tsc` deep into swap for minutes at a
 # time, and that thrash is what killed the operator's SSH session mid-build. The run survives it now
-# (the apply phase ignores HUP, and the log above outlives the terminal), but nobody should have to
+# (HUP is ignored from the lock onwards, and the log above outlives the terminal), but nobody should have to
 # guess why their terminal went quiet — so say it before it happens. Warning only; nothing is gated
 # on the number, and macOS reports none at all (mem_available_mb stays empty there).
 warn_if_low_memory() {
@@ -426,17 +441,10 @@ if [ "$DO_RESTART" = "1" ] \
 fi
 
 # ── apply, with a rollback around the parts that can fail ────────────────────
-# Past the confirmation, the run matters more than the session that started it: on a small box the
-# build alone can outlast an SSH connection, and a hangup used to kill the script outright — after
-# the restart, before the gateway bounce, with the lifecycle lock still on disk and the EXIT guard
-# never reached, because bash runs no EXIT trap when it dies of a signal nobody caught. So HUP is
-# ignored from here on (children inherit that, which is what keeps the build alive too), and the
-# two signals that SHOULD end a run now end it through the guard, which releases the lock and leaves
-# the one `RESULT:` line a caller parses.
-if [ "$UPDATE_LOG_ON" = "1" ]; then
-  say "progress is also written to $UPDATE_LOG — if this session drops, reconnect and: tail -f $UPDATE_LOG"
-fi
-trap '' HUP
+# HUP has been ignored since the lock, up at the top. What is added here is the other half: the two
+# signals that SHOULD end a run — a Ctrl+C, a supervisor's SIGTERM — now end it THROUGH the guard,
+# so from the first changed byte onwards there is no way out that skips releasing the lock and
+# leaving the one `RESULT:` line a caller parses.
 trap 'lifecycle_exit_guard 130' INT
 trap 'lifecycle_exit_guard 143' TERM
 
