@@ -662,11 +662,16 @@ hermes_cli() {
   return 0
 }
 
-# Invoke the hermes CLI. Two things every caller would otherwise have to remember:
+# Invoke the hermes CLI. Three things every caller would otherwise have to remember:
 #   • `_HERMES_GATEWAY=1` is inherited by anything the gateway spawns, and the CLI REFUSES gateway
 #     lifecycle work (exit 1) when it sees it — so it is always unset here.
 #   • $IRISES_HERMES_ENV carries extra KEY=VALUE settings (whitespace-separated, values with no
 #     spaces — ours are all integers); it is intentionally unquoted so it word-splits.
+#   • STDIN IS /dev/null. Every call here is made from a script whose output is being read by
+#     someone else (a log, a pipe, an SSH session that may already be gone), so a CLI that decides
+#     to ask something — capability consent for a plugin it does not consider bundled is the real
+#     case — would sit on an invisible prompt forever, holding the lifecycle lock. With stdin
+#     closed it gets EOF, gives up, and returns a code the caller can report.
 hermes_run() { # ARGS…
   local hhome; hhome="$(hermes_home)"
   if command -v hermes >/dev/null 2>&1; then
@@ -682,7 +687,7 @@ hermes_run() { # ARGS…
   fi
   local rc=0
   # shellcheck disable=SC2086  # IRISES_HERMES_ENV must split into separate assignments
-  env -u _HERMES_GATEWAY ${IRISES_HERMES_ENV:-} "$@" || rc=$?
+  env -u _HERMES_GATEWAY ${IRISES_HERMES_ENV:-} "$@" </dev/null || rc=$?
   return "$rc"
 }
 
@@ -826,8 +831,13 @@ gateway_restart() { # [ENGINE] [SECS]
 
 # Refresh the bridge plugin from this clone. ALWAYS run on install and update: the plugin is a COPY,
 # a lifecycle action bounces the gateway anyway, and plugins load only at gateway start.
+# How long the engine CLI gets for a plugins enable/disable before it is treated as hung. The two
+# calls are one config edit each and answer in under a second; the budget exists for the case where
+# the CLI decides to ask a question nobody can see. $IRISES_PLUGIN_CLI_TIMEOUT is a test hook.
+_plugin_cli_secs() { printf '%s' "${IRISES_PLUGIN_CLI_TIMEOUT:-60}"; }
+
 plugin_refresh() { # ENGINE [ROOT]
-  local engine="${1:-}" root="${2:-}" pdir ext
+  local engine="${1:-}" root="${2:-}" pdir ext rc secs
   if [ -z "$root" ]; then root="$(irises_root)"; fi
   case "$engine" in
     hermes)
@@ -845,8 +855,16 @@ plugin_refresh() { # ENGINE [ROOT]
       find "$pdir/irises-bridge" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
       say "refreshed $pdir/irises-bridge (from this clone, minus __pycache__)"
       if [ -n "$(hermes_cli)" ]; then
-        if hermes_run plugins enable irises-bridge >/dev/null 2>&1; then
+        # Time-boxed, and hermes_run has already closed its stdin: a CLI that stops to ask for
+        # consent must cost this run a warning, never the rest of the update.
+        secs="$(_plugin_cli_secs)"
+        rc=0
+        portable_timeout "$secs" hermes_run plugins enable irises-bridge >/dev/null 2>&1 || rc=$?
+        if [ "$rc" = "0" ]; then
           say "irises-bridge is enabled in the engine's config"
+        elif [ "$rc" = "124" ]; then
+          warn "the hermes CLI did not answer within ${secs}s (waiting on a prompt nobody can see?)"
+          warn "enable it yourself once it does: hermes plugins enable irises-bridge"
         else
           warn "could not enable it through the CLI — run: hermes plugins enable irises-bridge"
         fi
@@ -885,13 +903,18 @@ plugin_refresh() { # ENGINE [ROOT]
 # Take the plugin off the engine: disable it in config (so a stale entry can't warn at every start),
 # then delete the copy. OpenClaw has NO `plugins uninstall` — removal IS disable + rm.
 plugin_remove() { # ENGINE
-  local engine="${1:-}" pdir ext
+  local engine="${1:-}" pdir ext rc secs
   case "$engine" in
     hermes)
       pdir="$(hermes_home)/plugins"
       if [ -n "$(hermes_cli)" ]; then
-        if hermes_run plugins disable irises-bridge >/dev/null 2>&1; then
+        secs="$(_plugin_cli_secs)"
+        rc=0
+        portable_timeout "$secs" hermes_run plugins disable irises-bridge >/dev/null 2>&1 || rc=$?
+        if [ "$rc" = "0" ]; then
           say "disabled irises-bridge in the engine's config"
+        elif [ "$rc" = "124" ]; then
+          warn "the hermes CLI did not answer within ${secs}s — remove 'irises-bridge' from plugins.enabled yourself"
         else
           warn "could not disable it through the CLI — remove 'irises-bridge' from plugins.enabled yourself"
         fi
@@ -1636,7 +1659,7 @@ lock_acquire() { # [NAME]
   if mkdir "$dir" 2>/dev/null; then
     printf '%s\n' "$$" > "$dir/pid" || warn "took the lock but could not record our pid in $dir/pid"
     IRISES_LOCK_DIR="$dir"
-    warn "reclaimed a lock left behind by a dead run (pid ${other:-unknown})"
+    warn "reclaimed a lock left behind by a dead run (pid ${other:-unknown}) — how far it got: $home/logs/update.log"
     return 0
   fi
   err "could not take the lifecycle lock at $dir"
@@ -1669,10 +1692,14 @@ summary() { # TOKEN LINE…
 
 # The safety net under the RESULT contract. Every lifecycle script installs it as
 #   trap 'lifecycle_exit_guard $?' EXIT
-# so the two paths that never reach `summary` — a `set -e` abort on some statement nobody guarded,
-# and a Ctrl+C — still leave the lock released and ONE machine-readable line on stdout. Without it a
-# caller that greps stdout for `RESULT:` gets nothing back and cannot tell a failed run from a run
-# that is somehow still going. It never changes the exit code: the abort keeps its own.
+# so the paths that never reach `summary` — a `set -e` abort on some statement nobody guarded, a
+# Ctrl+C, a SIGTERM from a supervisor — still leave the lock released and ONE machine-readable line
+# on stdout. Without it a caller that greps stdout for `RESULT:` gets nothing back and cannot tell a
+# failed run from a run that is somehow still going. It never changes the exit code: it EXITS with
+# the code it was handed, which is the abort's own from the EXIT trap and 130/143 from the signal
+# traps the scripts also point here. Those two paths overlap by design — a signal trap's `exit`
+# fires the EXIT trap as well — so the RESULT line is latched: exactly one, whichever got there
+# first. Killing the run outright (SIGKILL) is still the one case nothing can report.
 lifecycle_exit_guard() { # RC
   local rc="${1:-0}"
   lock_release
@@ -1680,6 +1707,7 @@ lifecycle_exit_guard() { # RC
   if [ "$rc" != "0" ] && [ "${IRISES_SUMMARY_DONE:-}" != "1" ]; then
     err "aborted with exit $rc before the summary — see the messages above"
     printf 'RESULT: partial\n'
+    IRISES_SUMMARY_DONE=1
   fi
-  return 0
+  exit "$rc"
 }

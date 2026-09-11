@@ -27,7 +27,8 @@
 #                    names OUR keys as ours instead of forgetting them to "pre-existing", and the
 #                    restore point stays the FIRST install's backup
 #   2   update      — a commit published to the fake origin is applied, the LIVE sha flips to it, the
-#                    receipt is written, the plugin is refreshed, the engine CLI is called
+#                    receipt is written, the plugin is refreshed, the engine CLI is called, and the
+#                    whole run is readable afterwards in $IRISES_HOME/logs/update.log
 #   2b  repair      — dist/version.json stamped from a sha nobody has: HEAD is current, so this is
 #                    not an update but an unfinished build, and it is rebuilt and re-verified
 #   3a  exit 3      — a commit that does not compile: the tree, dist and node_modules all go back,
@@ -501,6 +502,16 @@ else
   bad "no receipt anywhere — Irises would never mention the upgrade"
 fi
 check "no update-status.json was left behind" test ! -f "$STATE/update-status.json"
+# The run's own log. Everything from the lock onwards is tee'd into it, so an update whose SSH
+# session dies in the build can still be read to the end afterwards — the whole point being that it
+# reaches the RESULT line and not just the `tsc` line the operator last saw.
+if [ -f "$STATE/logs/update.log" ] \
+   && present "$STATE/logs/update.log" '=== update started' \
+   && present "$STATE/logs/update.log" 'RESULT: ok'; then
+  ok "the run was tee'd to logs/update.log, header and RESULT line included"
+else
+  bad "logs/update.log is missing, has no '=== update started' header, or stops before RESULT: ok"
+fi
 
 # ── 2b. repair ────────────────────────────────────────────────────────────────
 # HEAD is current and origin has nothing new, but dist/ was stamped from a sha nobody has: a previous

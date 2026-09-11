@@ -151,7 +151,8 @@ gateway**. The plugin is refreshed on every run, and always after the restart is
 undoes this clone, not the engine's copy, so a refresh any earlier would leave the engine loading the
 new plugin against the old code. Nothing is left for the operator to restart. There is no chat trigger
 for any of this and none can be added: the script cycles the gateway, so an agent running it from a
-gateway-hosted chat would kill its own supervisor mid-turn.
+gateway-hosted chat would kill its own supervisor mid-turn. On a small box the build can take minutes
+and may outlive a dropped SSH session; the run keeps going and logs to `~/.irises/logs/update.log`.
 
 **Rollback.** If the new commit fails to compile, or compiles and then fails to answer `/health` with
 the new build inside the boot window, the script returns the worktree to the commit that was running,

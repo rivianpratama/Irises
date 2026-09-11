@@ -197,7 +197,7 @@ do_install() {
   local engine port kind node_bin unit="" plugin_dir="" adopted=0
   local keys_added="" keys_pre="" prev_added="" backup="" restore_from="" token engine_env=""
   local keys_retargeted="" prev_retargeted=""
-  local sha="" live_sha="" gateway_ok=1 result="ok" rc=0
+  local sha="" live_sha="" gateway_ok=1 result="ok" rc=0 mem_mb=""
 
   # ── 1. prerequisites. PATH first: a non-login shell (and every agent-spawned run) can be missing
   #      node entirely — on the production VPS node lives at ~/.local/bin/node and nothing puts it
@@ -326,6 +326,16 @@ do_install() {
   #      and tsc's 2 is `--port` usage while its 4 is "health not verified" — a build failure that
   #      reports itself as one of the two documented outcomes it is not.
   say "installing dependencies + building (npm ci --include=dev && npm run build)"
+  #      A 400 MB box swaps its way through this for minutes, and that thrash is enough to drop the
+  #      SSH session the install is running in — which kills the install. Say so before it happens.
+  mem_mb="$(mem_available_mb)"
+  case "${mem_mb:-}" in
+    ''|*[!0-9]*) ;;
+    *) if [ "$mem_mb" -lt 300 ]; then
+         warn "only ${mem_mb} MB of memory is free — this build can take several minutes, and the"
+         warn "swap thrash can drop an SSH session with it. Run it inside tmux or screen if you can."
+       fi ;;
+  esac
   npm ci --include=dev || die 1 "npm ci failed — see above"
   npm run build || die 1 "the build failed — see above"
   sha="$(built_sha "$ROOT")"

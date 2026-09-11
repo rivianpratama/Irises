@@ -80,6 +80,8 @@ cd "$ROOT"
 PORT="$(irises_port)"
 BASE="http://127.0.0.1:$PORT"
 STATE_DIR="$(irises_home)"
+UPDATE_LOG="$STATE_DIR/logs/update.log"
+UPDATE_LOG_ON=0
 
 # ── preflight ────────────────────────────────────────────────────────────────
 # Tools first: `git rev-parse` on a box without git would otherwise report "not a git clone", which
@@ -120,9 +122,34 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   fi
 fi
 
-# --check is read-only (fetch + report), so it takes no lock.
+# --check is read-only (fetch + report), so it takes no lock — and nothing to log.
 if [ "$CHECK" != "1" ]; then
   lock_acquire || exit 1
+
+  # From here the whole run — stdout AND stderr — is duplicated into $UPDATE_LOG. What the operator
+  # lost in the incident behind this was the OUTPUT: their SSH session died in the memory thrash of
+  # the build, and everything after the `tsc` line (a finished build, a written receipt, a verified
+  # restart on the new sha) went with it. Two details make the log worth having in exactly that case:
+  #   • the tee IGNORES HUP itself, inside the process substitution, before exec'ing — a tee that
+  #     dies with the terminal leaves the script writing into a closed pipe, which is a SIGPIPE and
+  #     a log truncated mid-build: the same silence with extra steps;
+  #   • fd 1 and 2 become that pipe, so once the pty is gone the script's own writes still succeed
+  #     instead of failing with EIO half-way through the apply.
+  # `exec` ONCE, never a pipeline around the script: `… | tee` would hand the caller tee's exit code
+  # and break every exit code in the header, and the `RESULT:` line with them.
+  # Process substitution is bash-only and absent in POSIX mode and in a restricted shell, so it is
+  # PROBED in a subshell and applied through eval: a `>(` this shell cannot parse must not become a
+  # syntax error in the middle of an update. The probe needs its own subshell because the `2>/dev/null`
+  # that silences it would otherwise be restored over the real redirection's `2>&1`.
+  if command -v tee >/dev/null 2>&1 \
+     && mkdir -p "$STATE_DIR/logs" 2>/dev/null \
+     && ( eval 'exec 9> >(cat >/dev/null)' ) 2>/dev/null \
+     && printf '=== update started %s ===\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$UPDATE_LOG" 2>/dev/null; then
+    eval 'exec > >(trap "" HUP; exec tee -a "$UPDATE_LOG") 2>&1'
+    UPDATE_LOG_ON=1
+  else
+    warn "this run is NOT being logged to $UPDATE_LOG (no tee, no process substitution, or no room)"
+  fi
 fi
 
 # The named branch FIRST: a single-branch clone (`git clone --single-branch`, which is what a small
@@ -264,6 +291,23 @@ rollback_to() { # SHA
   return 0
 }
 
+# The 408 MB box this was written for pushes `npm ci` and `tsc` deep into swap for minutes at a
+# time, and that thrash is what killed the operator's SSH session mid-build. The run survives it now
+# (the apply phase ignores HUP, and the log above outlives the terminal), but nobody should have to
+# guess why their terminal went quiet — so say it before it happens. Warning only; nothing is gated
+# on the number, and macOS reports none at all (mem_available_mb stays empty there).
+warn_if_low_memory() {
+  local mb
+  mb="$(mem_available_mb)"
+  case "${mb:-}" in ''|*[!0-9]*) return 0 ;; esac
+  if [ "$mb" -lt 300 ]; then
+    warn "only ${mb} MB of memory is free — this build can take several minutes, and the swap"
+    warn "thrash can freeze or drop an SSH session. The run keeps going if the session goes."
+    if [ "$UPDATE_LOG_ON" = "1" ]; then warn "watch it with:  tail -f $UPDATE_LOG"; fi
+  fi
+  return 0
+}
+
 # What the web step actually did on THIS run, for the summary. web_build() never fails an update, so
 # "web/out exists" on its own says nothing about whether it was rebuilt just now — the marker taken
 # before the call is what separates the two.
@@ -289,6 +333,7 @@ if [ "$OLD" = "$NEW" ]; then
     # then its build (or its box) died. Reporting "up to date" would strand that half-applied state.
     warn "code is at ${NEW:0:7} but the built version is ${BUILT:0:7} — a previous build didn't finish"
     say "repairing the build"
+    warn_if_low_memory
     if ! ( npm ci --include=dev && npm run build ); then
       err "the repair build failed at ${NEW:0:7}"
       err "  cd $ROOT && npm ci --include=dev && npm run build"
@@ -381,6 +426,20 @@ if [ "$DO_RESTART" = "1" ] \
 fi
 
 # ── apply, with a rollback around the parts that can fail ────────────────────
+# Past the confirmation, the run matters more than the session that started it: on a small box the
+# build alone can outlast an SSH connection, and a hangup used to kill the script outright — after
+# the restart, before the gateway bounce, with the lifecycle lock still on disk and the EXIT guard
+# never reached, because bash runs no EXIT trap when it dies of a signal nobody caught. So HUP is
+# ignored from here on (children inherit that, which is what keeps the build alive too), and the
+# two signals that SHOULD end a run now end it through the guard, which releases the lock and leaves
+# the one `RESULT:` line a caller parses.
+if [ "$UPDATE_LOG_ON" = "1" ]; then
+  say "progress is also written to $UPDATE_LOG — if this session drops, reconnect and: tail -f $UPDATE_LOG"
+fi
+trap '' HUP
+trap 'lifecycle_exit_guard 130' INT
+trap 'lifecycle_exit_guard 143' TERM
+
 # The exact sha we compared and listed above, not the ref: what gets applied is what was announced.
 say "fast-forwarding to origin/$BRANCH (${NEW:0:7})"
 git merge --ff-only "$NEW" || {
@@ -390,6 +449,7 @@ git merge --ff-only "$NEW" || {
 }
 
 say "installing dependencies + building (npm ci --include=dev && npm run build)"
+warn_if_low_memory
 if ! ( npm ci --include=dev && npm run build ); then
   err "the build failed at ${NEW:0:7}"
   rollback_to "$OLD" || {

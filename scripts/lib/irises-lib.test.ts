@@ -652,6 +652,83 @@ test('plugin_remove disables then deletes, on both engines', () => {
   assert.ok(!existsSync(join(state, 'extensions', 'irises-bridge')), 'openclaw has no `plugins uninstall` — rm is the removal');
 });
 
+// ── the engine CLI can neither wait on stdin nor hang ───────────────────────────────────────────
+//
+// Both of these are the same production failure: a plugin refresh where the hermes CLI decided to
+// ask something (capability consent for a plugin it does not consider bundled) with the terminal as
+// its stdin and no time limit. The prompt is invisible — the caller sent the CLI's output to
+// /dev/null — so the update simply stops, holding the lifecycle lock, for as long as anyone leaves
+// it there.
+
+test('hermes_run hands the CLI /dev/null, so a prompt cannot eat the caller\'s stdin', () => {
+  // A CLI that prompts does `read` on its stdin. On a terminal that BLOCKS, which is untestable
+  // here (a spawned child's stdin is already at EOF) — so the caller's stdin is given a line
+  // instead: a CLI that can reach it consumes that line, and one handed /dev/null cannot.
+  const promptingStub = [
+    'if read -r line; then',
+    '  printf "hermes stdin:%s\\n" "$line" >> "$STUB_LOG"',
+    'else',
+    '  printf "hermes stdin:closed\\n" >> "$STUB_LOG"',
+    'fi',
+    'printf "hermes argv:%s\\n" "$*" >> "$STUB_LOG"',
+    'exit 0',
+  ].join('\n');
+  const r = runLib(
+    'printf "operator-typing\\n" | hermes_run plugins enable irises-bridge',
+    { stubs: { hermes: promptingStub } },
+  );
+  assert.equal(r.code, 0, r.err);
+  assert.ok(r.log.includes('hermes argv:plugins enable irises-bridge'), r.log.join('\n'));
+  assert.ok(
+    r.log.includes('hermes stdin:closed'),
+    `the CLI must see EOF, not the terminal (or this pipe):\n${r.log.join('\n')}`,
+  );
+  assert.ok(
+    !r.log.some(l => l.includes('operator-typing')),
+    'a CLI that can read the caller\'s stdin can also block on it',
+  );
+});
+
+test('plugin_refresh and plugin_remove time-box the CLI instead of hanging on it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'irises-plug-'));
+  const root = join(dir, 'clone');
+  mkdirSync(join(root, 'bridge', 'hermes', 'irises-bridge'), { recursive: true });
+  writeFileSync(join(root, 'bridge', 'hermes', 'irises-bridge', 'plugin.yaml'), 'name: irises-bridge\n');
+  const hhome = join(dir, 'hermes');
+  mkdirSync(join(hhome, 'plugins', 'irises-bridge'), { recursive: true });
+  // 60s in production; 2s here, through the same hook the budget is read from. hermes_run is a
+  // FUNCTION, so portable_timeout takes its bash watchdog path either way.
+  const env = { HERMES_HOME: hhome, IRISES_PLUGIN_CLI_TIMEOUT: '2' };
+  const hung = { hermes: 'sleep 30' };
+
+  const started = Date.now();
+  const refresh = runLib([
+    `rc=0; plugin_refresh hermes ${JSON.stringify(root)} || rc=$?`,
+    'printf "RC=%s\\n" "$rc"',
+    'printf "SURVIVED\\n"',
+  ].join('\n'), { env, stubs: hung });
+  const elapsed = Date.now() - started;
+  assert.equal(refresh.code, 0, `${refresh.out}\n${refresh.err}`);
+  assert.ok(elapsed < 20000, `the refresh waited on the CLI for ${elapsed}ms`);
+  assert.match(refresh.out, /RC=0/, 'the plugin was copied — only the enable could not be confirmed');
+  assert.match(refresh.out, /SURVIVED/);
+  assert.match(refresh.err, /did not answer within 2s/);
+  assert.match(refresh.err, /hermes plugins enable irises-bridge/, 'the warn hands over the manual command');
+  assert.ok(existsSync(join(hhome, 'plugins', 'irises-bridge', 'plugin.yaml')), 'the copy still happened');
+
+  const remove = runLib([
+    'rc=0; plugin_remove hermes || rc=$?',
+    'printf "RC=%s\\n" "$rc"',
+  ].join('\n'), { env, stubs: hung });
+  assert.equal(remove.code, 0, `${remove.out}\n${remove.err}`);
+  assert.match(remove.out, /RC=0/);
+  assert.match(remove.err, /did not answer within 2s/);
+  assert.ok(
+    !existsSync(join(hhome, 'plugins', 'irises-bridge')),
+    'a CLI that will not answer must not keep the plugin dir on the box',
+  );
+});
+
 test('web_build skips a fresh install, builds an install that already serves web/out, never fails', () => {
   const npmStub = 'printf "npm argv:%s\\n" "$*" >> "$STUB_LOG"; exit "${NPM_RC:-0}"';
   const mk = (withOut: boolean) => {
