@@ -52,12 +52,24 @@ so Linux and macOS are the platforms with mileage on them.
 
 ```bash
 git clone https://github.com/rivianpratama/irises ~/irises && cd ~/irises
+bash ./scripts/irises.sh
+```
+
+The second command opens a menu — install or repair, update, uninstall, status, advanced — that asks
+which engine, which chats Irises fronts, which port, whether she runs as a service, and whether her
+own voice keeps inheriting this OpenClaw's model, then prints the exact command it is about to run
+before running it. `npm run setup` is the same menu.
+
+If they would rather not be asked anything, the one-shot form does the same install with every
+default:
+
+```bash
 bash ./scripts/engine-setup.sh --engine openclaw --yes
 ```
 
-`--yes` means non-interactive: assume every default, never prompt. Drop it if they would rather be
-asked. Any folder is fine — the second command runs from inside whichever one they chose, in a
-terminal on this machine (Git Bash or WSL2 if that machine is Windows).
+`--yes` means non-interactive: assume every default, never prompt. Any folder is fine — the second
+command runs from inside whichever one they chose, in a terminal on this machine (Git Bash or WSL2 if
+that machine is Windows).
 
 What the script does, so you can answer questions about it:
 
@@ -76,7 +88,19 @@ What the script does, so you can answer questions about it:
 - waits for her to answer `/health`, then sets up **bridge mode by default**: installs the plugin
   with `openclaw plugins install` and then **prints three variables for the person to set on the
   OpenClaw gateway process themselves** — it edits no OpenClaw config, so until they set them nothing
-  is fronted (see the consequences below). `--no-bridge` skips the plugin and the printout,
+  is fronted (see the consequences below). The `IRISES_FRONT` value it prints is the one they chose:
+  the menu asks which chats Irises fronts, `--front` is the flag form, and the default is `*:*`.
+  `--no-bridge` skips the plugin and the printout,
+- optionally gives Irises's own voice a model instead of inheriting this OpenClaw's — the menu's model
+  step, or `--model-lane` + `--model-slug`. Tell them what that trade is: the voice then runs on the
+  key they supply (given through `IRISES_MODEL_API_KEY` in their environment, never as a flag) and
+  stops borrowing this OpenClaw's key and endpoint. Deep work still runs on this OpenClaw's model,
+- optionally writes two of this clone's own settings, which the menu offers as skippable extras and
+  the flags spell `--web on|off` (`WEB_ENABLED` — the browser chat UI and `npm run chat`; unset leaves
+  the clone's `.env` alone, and a fresh install has it on) and `--tz ZONE` (`IRISES_TZ` — the wall
+  clock she reads; unset means the host's own zone). The admin dashboard's password goes the way the
+  model key does: `IRISES_DASHBOARD_PASSWORD` in their environment, never a flag, never printed —
+  leaving it blank keeps the shipped default rather than changing anything,
 - **restarts the gateway last** so the plugin is loaded, and prints a summary with an honest exit code.
 
 ## 3. Set these two expectations before they run it
@@ -111,6 +135,9 @@ move", see Notes). A text from her out of the blue is the feature working, not a
 ## 4. Never do any of this
 
 - **Never clone, install, build, or start anything.** Not in a temp folder, not "just to check".
+- **Never open the menu.** `bash ./scripts/irises.sh` and `npm run setup` are the person's command,
+  not yours — it installs, updates, uninstalls and detaches, and every one of those ends in a gateway
+  bounce. Hand it over; do not run it, and do not pipe answers into it on their behalf.
 - **Never run the setup script or the updater**, and never run any command that restarts or cycles
   the gateway or its supervisor — not through the OpenClaw CLI's own gateway subcommands, not through
   `systemctl`, `launchctl`, `kickstart`, `schtasks`, or direct process control.
@@ -127,7 +154,10 @@ healthy install. Then tell them where to talk to her: any fronted engine channel
 `http://127.0.0.1:3000`, or `npm run chat` in the clone. If the health check fails, point them at
 `~/.irises/logs/server.log` and the script's own output — do not try to fix it by starting anything.
 
-## 6. The other two commands, for later
+## 6. The other commands, for later
+
+All of them are in the same menu (`bash ./scripts/irises.sh`, from the Irises folder), and all of them
+are theirs to run, never yours.
 
 **Update** (from the Irises folder, in their terminal):
 
@@ -147,7 +177,23 @@ bash ./scripts/engine-setup.sh --uninstall
 ```
 
 Stops and unregisters the service, removes the bridge plugin, restarts the gateway, and keeps their
-data. `--purge-data` deletes `~/.irises` too, and that is not reversible.
+data. `--purge-data` deletes `~/.irises` too, and that is not reversible — `--archive-data` alongside
+it writes a `~/.irises-backup-<timestamp>.tar.gz` first, and nothing is deleted if that archive cannot
+be written.
+
+**Detach** (from the Irises folder) — the middle rung, and usually the one someone actually wants when
+they say they want this OpenClaw back:
+
+```bash
+bash ./scripts/engine-setup.sh --detach-engine
+```
+
+It undoes every engine-side change — the bridge plugin, any key Irises added, any value it moved — and
+bounces the gateway, so **this OpenClaw is left as if Irises had never been installed, except that the
+`.bak-irises-*` backup files stay**. On this engine the installer writes no config in the first place,
+so what comes out is the plugin; the three gateway variables they set by hand are theirs to unset.
+Irises herself is untouched: her service keeps running, the clone stays, and `~/.irises` — her memory
+and database — is left alone. They can attach her again later by running the install once more.
 
 ## Notes
 

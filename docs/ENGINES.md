@@ -54,8 +54,28 @@ OpenClaw is untouched: it still speaks the gateway `agent` RPC.
 
 ```bash
 git clone https://github.com/rivianpratama/irises && cd irises
-bash ./scripts/engine-setup.sh --engine hermes     # or: --engine openclaw
+bash ./scripts/irises.sh                           # the menu; `npm run setup` is the same thing
 ```
+
+The menu is the front door for a person: a status header (engine, installed build, service, port) over
+**install or repair**, **update**, **uninstall**, **status** and **advanced**. It owns no lifecycle
+logic of its own — every entry translates your answers into flags on the two scripts below, prints the
+exact command line, and runs it. The install wizard is seven steps, and the sixth — **optional
+extras** — is skipped unless asked for: the browser chat UI, the timezone, and the dashboard password,
+which is typed unseen and, left blank, keeps the shipped default rather than setting anything. Every
+prompt answers to a number, going back included, and the uninstall menu defaults to **Back**, because
+each of its other entries removes something.
+
+The scripts stay the path for everything that is not a person at a keyboard — a deploy, a CI job, an
+agent verifying afterwards:
+
+```bash
+bash ./scripts/engine-setup.sh --engine hermes --yes   # or: --engine openclaw
+```
+
+The menu reads its answers from stdin rather than from a terminal, so it can be driven by a piped
+answer script; end of input quits it cleanly with exit `2` and a pointer at the flags, which is why a
+non-interactive caller should use the flags in the first place.
 
 On Windows those two commands run in **Git Bash** (it ships with the Git for Windows the clone needs
 anyway) or inside a **WSL2** shell. The Windows paths are stub-tested only and have not yet been run
@@ -95,17 +115,48 @@ without guessing. Keys that were already there are left on their own values (a d
 `API_SERVER_KEY` is collapsed onto the live one). On OpenClaw it edits no engine config at all: it
 *reads* the existing gateway token, and prints the variables you set on the gateway yourself.
 
+**The engine's `.env` is the one file you may want to keep your hands on**, so what happens to it is a
+choice: `--engine-env apply` (the default, and what every install has done) writes the keys; `ask` — what
+the menu passes — prints the block first and writes it only on a yes; `print` never writes it at all.
+The preview is built where the change is computed, so it shows the real thing: one line per key, `+`
+for a key being added and `~` for one being retargeted with the value it is being moved off, and the
+name but never the value of anything secret. A declined `ask` and a `print` run behave identically —
+the engine's env file is left byte-for-byte as it was, no backup is taken because nothing is being
+changed, the block is printed for you to apply by hand, and the manifest records that this install put
+nothing in that file, so a later uninstall or detach knows there is nothing of ours in there to take
+back out. Both still install the bridge plugin and still bounce the gateway; fronting simply stays off
+until the keys are in place, which is exactly the position an OpenClaw install has always been in.
+
 Flags: `--yes` runs non-interactively (assume every default, never prompt — which is also what a run
 with no terminal on stdin does by itself), `--bridge` / `--no-bridge` choose bridge mode outright,
 `--no-service` skips the user-level service, `--port N` picks the port. **Bridge mode is ON by
 default, including on a run with no terminal**, and what that means differs by engine: on **hermes**
-the installer writes `IRISES_FRONT=*:*` itself, so Irises fronts every chat on every platform out of
-the box and you narrow that list afterwards rather than assuming an opt-in; on **OpenClaw** it
-installs the plugin and then *prints* `IRISES_BRIDGE_TOKEN`, `IRISES_URL` and `IRISES_FRONT` for you
-to set on the gateway process, and nothing is fronted until you do. The engine gateway is restarted
-at the end of every install, with or without bridge mode. `--uninstall` takes the whole install back
-out again (the user service, the plugin, the engine-side keys the installer added), bounces the
-gateway on its way out when it removed something, and keeps your data unless you add `--purge-data`.
+the installer writes `IRISES_FRONT` itself — `*:*` unless you narrowed it with `--front` — so a
+default install fronts every chat on every platform and you narrow that list rather than assuming an
+opt-in; on **OpenClaw** it installs the plugin and then *prints* `IRISES_BRIDGE_TOKEN`, `IRISES_URL`
+and `IRISES_FRONT` for you to set on the gateway process, and nothing is fronted until you do. The
+engine gateway is restarted at the end of every install, with or without bridge mode.
+
+The rest of the surface, each defaulting to what an install has always done: `--front PATTERNS`
+(default `*:*`) and its env form `IRISES_FRONT_PATTERN` choose the fronted chats at install time;
+`--engine-env apply|ask|print` decides what may happen to the engine's own env file; `--model-lane
+anthropic|openrouter|openai` with `--model-slug ID` (and `--model-base-url URL`, required for the
+openai lane and refused on the other two) gives Irises's voice a model of its own instead of the
+engine's, with the key supplied only through `IRISES_MODEL_API_KEY` in the environment; `--web on|off`
+sets whether this clone serves the browser/CLI debug chat (`WEB_ENABLED` — unset leaves the clone's
+`.env` as it stands, which on a fresh install is on) and `--tz ZONE` sets the wall clock Irises reads
+(`IRISES_TZ` — unset is the host's own zone, and a zone you pass is written even when it equals that
+zone, so a box that moves region later keeps the clock its owner chose); and `--detach-engine` undoes
+the engine side while leaving Irises alone (see *Taking it out again* below). The admin dashboard's
+password follows the model key's rule — `IRISES_DASHBOARD_PASSWORD` in the environment, never a flag,
+written into the clone's `.env` (mode 600) as `DASHBOARD_PASSWORD` and never printed; leave it unset
+and the dashboard keeps the password that ships with the code, which is a reason to set one rather
+than a reason to relax.
+
+`--uninstall` takes the whole install back out again (the user service, the plugin, the
+engine-side keys the installer added), bounces the gateway on its way out when it removed something,
+and keeps your data unless you add `--purge-data` — with `--archive-data` to tar `$IRISES_HOME` to
+`~/.irises-backup-<timestamp>.tar.gz` before anything goes.
 
 What it leaves behind: `PORT=3000` pinned in the Irises `.env` — the committed `deploy/app.env`
 baseline of `8080` is the Docker image's port behind Caddy, so pinning 3000 keeps the server, the
@@ -175,6 +226,16 @@ lane (they degrade to lexical recall / disabled voice-memo transcription, with a
 map, if neither key is present). Turn inheritance off with `ENGINE_MODEL_INHERIT=off`; override any
 role with `<ROLE>_MODEL` / `<ROLE>_MODEL_OPENROUTER` / `<ROLE>_MODEL_OPENAI` / `<ROLE>_PROVIDER`, and
 point the openai lane anywhere with `OPENAI_BASE_URL`.
+
+**The install can write that override for you** (`--model-lane` + `--model-slug`, or the model step in
+the menu): it sets the lane's model and provider keys for all three voice roles plus the lane's API key
+in *this clone's* `.env`, and `ENGINE_MODEL_INHERIT=off` alongside them — which is the honest part to
+understand, because turning inheritance off is broader than choosing a model. It also stops Irises
+reusing the engine's key and endpoint for her voice, so from then on her voice runs on the key you
+supplied and nothing else. Deep work is unaffected: that has always run on the engine's own model.
+The key reaches the installer only through `IRISES_MODEL_API_KEY` in the environment — never as a
+flag, because argv is readable by every other process on the box — and is never printed or logged.
+Engine detection and the engine's own API key are outside inheritance and keep working either way.
 
 **Seeing what's live:** the model map (Irises's voice model vs. the engine's deep-work model) shows in
 `/health`, on the `/dashboard` overview, and via `npx tsx scripts/print-model-map.ts`. Irises will
@@ -372,11 +433,21 @@ IRISES_FRONT=telegram:*,whatsapp:+1555*,discord:12345
 Comma-separated glob patterns matched (case-insensitively) against `<platform>:<chat_id>`
 (hermes) / `<channel>:<conversation>` (OpenClaw). **Unset or empty = front nothing** — the plugin
 is inert and the engine behaves exactly as before. On **hermes** the installer does not leave it
-empty: it writes `IRISES_FRONT=*:*` into `~/.hermes/.env`, so a default install fronts everything and
-you narrow from there. On **OpenClaw** it writes nothing — it prints this variable (with
-`IRISES_BRIDGE_TOKEN` and `IRISES_URL`) for you to set on the gateway process, so an OpenClaw install
-fronts nothing until you do. Never pattern your operator/control chats unless you mean it: a fronted
-chat talks to Irises, not to the engine.
+empty: it writes `IRISES_FRONT` into `~/.hermes/.env`, so fronting is live as soon as the gateway
+comes back. On **OpenClaw** it writes nothing — it prints this variable (with `IRISES_BRIDGE_TOKEN`
+and `IRISES_URL`) for you to set on the gateway process, so an OpenClaw install fronts nothing until
+you do. Never pattern your operator/control chats unless you mean it: a fronted chat talks to Irises,
+not to the engine.
+
+**It is now a question the install asks**, rather than a value you discover afterwards: the menu's
+install wizard offers every chat, only the chats you name, or nothing at all, and the flag form is
+`--front 'telegram:*,whatsapp:+1555*'` (`IRISES_FRONT_PATTERN` in the environment). Each
+comma-separated item has to be `<platform>:<glob>`; anything else is a usage error that changes
+nothing. The default is `*:*` — what every install has written since there was an installer — so a run
+that passes no pattern behaves exactly as before, warning included. Choosing nothing at all is
+`--no-bridge`: no plugin, no fronting, deep work only. Whatever you pick is recorded in the manifest,
+and none of this changes the engine-side variable's own rules: it is still one line in the engine's
+environment that you can widen, narrow or blank by hand at any time.
 
 ### Failure policy
 
@@ -484,13 +555,29 @@ Taking it out again, in order of how much you want gone:
   and inert, and no restart is needed.
 - **Disable the plugin:** `hermes plugins disable irises-bridge` /
   `openclaw plugins disable irises-bridge`, then bring the gateway back the way you normally would.
+- **Detach from the engine:** `bash ./scripts/engine-setup.sh --detach-engine` — undo every
+  engine-side change and keep Irises. The plugin directory is removed, every key the manifest records
+  as added is removed, every key it records as retargeted is restored from the recorded backup,
+  `IRISES_FRONT` is unset, and the gateway is bounced: **the engine is left as if Irises had never
+  been installed, except that the `.bak-irises-*` backup files stay.** The Irises service, this clone
+  and `$IRISES_HOME` are untouched — she keeps running, with no engine in front of her, and you can
+  install onto the same engine again later. Afterwards the manifest is rewritten with nothing recorded
+  as added or retargeted, so a later `--uninstall` is a no-op on the engine: it removes no key and
+  bounces no gateway. A detach never touches your data, and the data flags do not apply to it — pass
+  `--archive-data` or `--purge-data` with it and they are ignored. The run ends `RESULT: detached`.
+  An install whose engine-side keys were never written (`--engine-env print`, or a declined `ask`) has
+  nothing in that file to restore, and the detach says so rather than editing it.
 - **Remove Irises entirely:** `bash ./scripts/engine-setup.sh --uninstall` — stops and unregisters
   the user-level service, removes the plugin, removes the engine-side keys the installer added (from
   the manifest, after a backup of the engine's env file), bounces the gateway **only when it actually
   removed something** (so a second run on an already-clean box cycles nothing), and keeps your data
-  under `$IRISES_HOME`. Add `--purge-data` to delete that too.
+  under `$IRISES_HOME`. Add `--purge-data` to delete that too, and `--archive-data` to tar it to
+  `~/.irises-backup-<timestamp>.tar.gz` first — nothing is deleted if that archive cannot be written.
 
-All of these are run from a terminal on the engine's own machine (Git Bash or WSL2 on Windows). The
+The menu (`bash ./scripts/irises.sh` → **Uninstall**) is this same ladder, one rung per entry, plus
+stopping the service and leaving everything else in place; it asks about the archive before the purge
+and requires the deletion to be typed out in words. All of these are run from a terminal on the
+engine's own machine (Git Bash or WSL2 on Windows). The
 installer and the uninstaller both cycle the gateway, which is exactly why neither can be run from a
 gateway-hosted chat: the agent would be killing its own supervisor mid-turn. The two setup skills are
 guides for that reason — they hand the person the commands and verify afterwards, and run nothing
@@ -593,6 +680,10 @@ above) — set one only to override it.
 | `ENGINE_TIMEOUT_MS` | both | per-engine-call budget (default: `OPS_TASK_TIMEOUT_MS` − 15s) |
 | `ENGINE_MAX_CONCURRENT` | both | simultaneous engine agent runs (default 3); a further run queues, then fails honestly. Match it to the engine's own concurrent-run cap |
 | `IRISES_FRONT` | bridge | engine-side glob list choosing fronted chats (e.g. `telegram:*`) — set where the gateway runs |
+| `IRISES_FRONT_PATTERN` | install-time | the env form of the installer's `--front`: which pattern a hermes install writes into `IRISES_FRONT` (default `*:*`). Read by the setup script only; the running server never looks at it |
+| `IRISES_MODEL_API_KEY` | install-time | the key for `--model-lane`, read by the setup script from the environment and nowhere else — never a flag, never printed, never logged. It lands in this clone's `.env` under the lane's own key name |
+| `IRISES_DASHBOARD_PASSWORD` | install-time | same rule, for the admin dashboard: read from the environment only, written into this clone's `.env` (mode 600) as `DASHBOARD_PASSWORD`, never printed. Unset changes nothing about the dashboard |
+| `WEB_ENABLED` · `IRISES_TZ` | — | this clone's own settings, which the install can write for you (`--web on|off`, `--tz ZONE`): the browser/CLI debug chat, and the wall clock Irises reads. Unset, they keep their usual defaults — the chat on, the clock the host's own zone |
 | `ANTHROPIC_API_KEY` / `OPENROUTER_API_KEY` | — | Irises's own voice models (setup reuses the engine's when present) |
 
 ## Security notes (read before exposing anything)

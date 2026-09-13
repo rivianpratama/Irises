@@ -141,6 +141,13 @@ place, from a terminal on the box, in the Irises folder — Git Bash or a WSL2 s
 bash scripts/update.sh        # add --check to preview, --yes to skip the prompt
 ```
 
+**A deploy runs the flag scripts, not the menu.** `bash ./scripts/irises.sh` (`npm run setup`) is the
+interactive entry for a person at a keyboard: it asks, composes these same flags, prints the command
+line it is about to run, and runs it. It adds no lifecycle behaviour of its own, so anything scripted —
+this box's deploy, CI, an agent — keeps calling `update.sh` / `engine-setup.sh` with flags and reading
+the `RESULT:` line. Every flag below defaults to what the scripts did before the menu existed, so an
+existing invocation is unchanged.
+
 The script fast-forward `git pull`s the current branch, runs `npm ci && npm run build` (and the web
 client build when `web/out` exists — or `IRISES_WEB=1` asks for it — and the box has ~1.5 GB of
 memory free; `IRISES_SKIP_WEB_BUILD=1` skips it outright, and a web build that fails warns instead of
@@ -182,12 +189,38 @@ plugin until you restart it yourself, so pass `--no-gateway-restart` too if you 
 clone's disk touched), `--no-gateway-restart` (leave the gateway alone; the refreshed plugin loads on
 its next restart).
 
+**`--rollback-to SHA`** is the manual recovery path and is not part of the update flow. It takes a git
+sha of 7 to 40 hex characters (fewer is ambiguous, and a rollback is not a thing to guess at), and it
+**never fetches**: it asks this clone whether it has that commit, and refuses if it does not. It then
+resets to it, rebuilds, restarts, verifies the target build is the one answering, refreshes the
+engine's plugin copy and bounces the gateway — the same sequence a failed update's automatic rollback
+runs. It moves the **code only**: `$IRISES_HOME` is not rolled back with it, so a schema the newer
+build wrote stays written and the older code has to live with it. It pairs with `--yes`,
+`--no-restart` and `--no-gateway-restart`; with `--check` it is a usage error (`2`), because one
+reports and changes nothing while the other changes everything.
+
+| `--rollback-to` outcome | Code | `RESULT:` |
+|---|---|---|
+| the clone is on the target build, everything verified | `0` | `rolled-back` |
+| HEAD was already that commit, or the confirmation was declined — nothing changed | `0` | `noop` |
+| refused before touching anything: no such commit here, or a foreign process on the port | `1` | `partial` (the guard's line — nothing had been changed; the messages above say why) |
+| bad sha, or `--check` alongside it | `2` | none — a usage error changes nothing and prints no `RESULT` |
+| the reset or the rebuild at the target failed part way — tree, `node_modules` and `dist` may disagree | `3` | `partial` |
+| it built but would not answer `/health` on the target build — nothing left to undo | `4` | `partial` |
+| the clone is on the target build, but the engine gateway could not be verified back up | `5` | `gateway-failed` |
+
 `scripts/engine-setup.sh` uses the same contract on its own side: `0` ok, `1` a step failed, `2` bad
 arguments, `4` Irises never reported the expected build on `/health`, `5` the gateway could not be
-verified back up — ending in `RESULT: ok|adopted|partial|health-failed|gateway-failed` for an install
-and `RESULT: ok|partial|gateway-failed|noop` for an `--uninstall`. On both sides `partial` is the exit
-guard's line: the run stopped before its summary (an unguarded error, or a Ctrl+C), so read the
-messages above it rather than the token.
+verified back up — ending in `RESULT: ok|adopted|partial|health-failed|gateway-failed` for an install,
+`RESULT: ok|partial|gateway-failed|noop` for an `--uninstall`, and
+`RESULT: detached|partial|gateway-failed|noop` for a `--detach-engine`. A **detach** undoes the engine
+side only — plugin, added keys, retargeted values, the gateway bounce — and leaves the Irises service,
+this clone and `$IRISES_HOME` alone; `noop` there is the run that was declined at its confirmation, and
+a detach that finds nothing of ours left in the engine still ends `detached`, having changed nothing
+and bounced no gateway. The data flags (`--purge-data`, `--archive-data`) do not apply to a detach and
+are called out in words rather than silently accepted — it never goes near `$IRISES_HOME`. On every
+side `partial` is the exit guard's line: the run stopped before its summary (an unguarded error, or a
+Ctrl+C), so read the messages above it rather than the token.
 
 **After the gateway restart** hermes posts its own note into the user's home channel — *"♻️ Gateway
 online — Hermes is back and ready."* That is hermes's message, not Irises's; she neither sends it nor

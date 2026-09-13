@@ -190,8 +190,18 @@ Install it in a terminal on the machine the engine runs on (on Windows, that ter
 
 ```bash
 git clone https://github.com/rivianpratama/irises && cd irises
-bash ./scripts/engine-setup.sh --engine hermes     # or: --engine openclaw
+bash ./scripts/irises.sh          # the menu: install or repair, update, uninstall, status, advanced
 ```
+
+That is the front door for a person: a plain terminal menu that asks which engine, which chats Irises fronts, which port, whether she runs as a service, and whether she keeps inheriting your engine's model — then **prints the exact command it is about to run** and runs it. Nothing happens that you have not read first. `npm run setup` is the same thing under a name npm users expect.
+
+The menu composes the two lifecycle scripts; it never re-implements them. Those scripts stay the **scripted path** — a deploy, a CI job or an agent runs them with flags and never sees a prompt:
+
+```bash
+bash ./scripts/engine-setup.sh --engine hermes --yes   # or: --engine openclaw
+```
+
+Piping answers into the menu works too, but it is the flag scripts that are stable for automation: a piped run still walks the menu, and end-of-input quits with exit `2` and a pointer back to the flags.
 
 **The terminal is the only install path**, and that is deliberate: the installer restarts the engine gateway at the end, and an agent that ran it from a gateway-hosted chat would be killing its own supervisor mid-reply. Your engine can still *walk you through it* — the two setup skills are **guides, not installers**. Your agent explains what Irises is, runs the read-only prerequisite checks, hands you the exact commands to run yourself, and verifies the result once you report back:
 
@@ -205,7 +215,9 @@ openclaw skills install git:rivianpratama/irises
 #   then ask OpenClaw to run the  irises-setup-openclaw  skill
 ```
 
-The setup defaults to **bridge mode**: it installs the plugin, and then the two engines part ways. On **hermes** it writes `IRISES_FRONT=*:*` into `~/.hermes/.env` itself, so Irises fronts every chat out of the box. On **OpenClaw** it edits no engine config: it prints the three variables — `IRISES_BRIDGE_TOKEN`, `IRISES_URL`, `IRISES_FRONT` — for you to set on the gateway process yourself, and until you do, nothing is fronted. (`--no-bridge` installs without the plugin or the fronting.) Either way it restarts the engine gateway at the end so the engine picks up its new API-server setting and its plugins. To front only some conversations, narrow the engine-side `IRISES_FRONT` glob list (matched against `<platform>:<chat_id>`) — everything not matched the engine keeps handling itself, and blanking `IRISES_FRONT` turns the plugin inert instantly. If the hook errors, the default `IRISES_BRIDGE_FAIL=open` lets the engine answer rather than go silent — I'd rather you get a boring reply than no reply.
+The setup defaults to **bridge mode**: it installs the plugin, and then the two engines part ways. On **hermes** it writes `IRISES_FRONT=*:*` into `~/.hermes/.env` itself, so Irises fronts every chat out of the box. On **OpenClaw** it edits no engine config: it prints the three variables — `IRISES_BRIDGE_TOKEN`, `IRISES_URL`, `IRISES_FRONT` — for you to set on the gateway process yourself, and until you do, nothing is fronted. (`--no-bridge` installs without the plugin or the fronting.) Either way it restarts the engine gateway at the end so the engine picks up its new API-server setting and its plugins. To front only some conversations, say so **at install**: the menu asks which chats Irises fronts, and `--front 'telegram:*,whatsapp:+1555*'` is the flag form (default `*:*`, every chat on every platform your engine speaks). It is still a plain engine-side setting afterwards — narrow the `IRISES_FRONT` glob list (matched against `<platform>:<chat_id>`) whenever you like, everything not matched the engine keeps handling itself, and blanking `IRISES_FRONT` turns the plugin inert instantly. If the hook errors, the default `IRISES_BRIDGE_FAIL=open` lets the engine answer rather than go silent — I'd rather you get a boring reply than no reply.
+
+Whatever goes into the **engine's own `.env`** is yours to approve: run from the menu, the installer lists the exact lines it wants to add or retarget — key names and non-secret values, never a secret's value — and writes them only on a yes (`--engine-env ask`). Decline, or pass `--engine-env print`, and it writes nothing to that file, prints the block for you to paste, and records in the manifest that there is nothing of ours in there to take back out later. `--engine-env apply` is the default and is what every install has always done.
 
 After each restart hermes posts its own short "gateway online" note in your home channel. That is hermes talking, not Irises; silence it per platform with `<platform>.gateway_restart_notification: false` in hermes's own config if you'd rather not see it (Irises never edits hermes's config). The full story is in [docs/ENGINES.md § Gateway restart notifications](docs/ENGINES.md#gateway-restart-notifications).
 
@@ -217,20 +229,26 @@ Full guide, diagrams, and security notes: **[docs/ENGINES.md](docs/ENGINES.md)**
 
 ## Quick start
 
-Irises is meant to sit on top of the engine you already run, so the install is one script in a terminal on that machine:
+Irises is meant to sit on top of the engine you already run, so the install is one command in a terminal on that machine:
 
 ```bash
 git clone https://github.com/rivianpratama/irises && cd irises
-bash ./scripts/engine-setup.sh --engine hermes     # or: --engine openclaw
+bash ./scripts/irises.sh          # or: npm run setup — same menu
 ```
 
-On Windows those are the same two commands, run in **Git Bash** (bundled with Git for Windows) or inside **WSL2**.
+The menu opens on a status line (engine, whether Irises is installed and on which build, service, port) over five entries — **install or repair**, **update**, **uninstall**, **status**, **advanced** — and every one of them ends in a printed command line you could have typed yourself. The install wizard runs in seven steps and its sixth is **optional extras**, skipped unless you ask for it: the browser chat UI, your timezone, and the dashboard password (typed unseen, and left blank keeps the shipped default rather than changing anything). Going back is a numbered option on the steps that offer it, so every prompt answers to a number. On the uninstall menu the default is **Back** — everything else there takes something away, and an Enter meant for the menu above should not be one of them. Prefer to type it? The scripted path is unchanged and is what deploys and agents use:
 
-That is honestly the whole setup. On boot Irises **auto-detects your engine** (`OPS_BACKEND` is set for you), **reuses the engine's API key**, and makes its own voice **inherit the engine's model** — so the model Irises speaks with is the model your engine uses. **There is no `.env` to write.** (You still can — see [Configuration](#configuration) — anything you set wins.)
+```bash
+bash ./scripts/engine-setup.sh --engine hermes --yes   # or: --engine openclaw
+```
+
+On Windows those are the same commands, run in **Git Bash** (bundled with Git for Windows) or inside **WSL2**.
+
+That is honestly the whole setup. On boot Irises **auto-detects your engine** (`OPS_BACKEND` is set for you), **reuses the engine's API key**, and makes its own voice **inherit the engine's model** — so the model Irises speaks with is the model your engine uses. **There is no `.env` to write.** (You still can — see [Configuration](#configuration) — anything you set wins.) If you would rather she spoke on a model of her own, the install can do that instead of inheriting: pick a lane (Anthropic, OpenRouter, or any OpenAI-compatible endpoint) and a model id, and the installer writes that model for all three voice roles into this clone's `.env` along with `ENGINE_MODEL_INHERIT=off`. Be clear about what that second part means: her voice stops borrowing the engine's model **and its key and endpoint**, so the key you give is the key she speaks on. Deep work still runs on the engine's own model, always. The key is read from `IRISES_MODEL_API_KEY` in the environment and from nowhere else — never a flag, never printed, never logged, because argv is readable by anything else on the box and lands in your shell history.
 
 The script is idempotent and prints every change before making it. In order: it checks node/git/curl, finds your engine (read-only), then checks the port — a **healthy Irises already answering there is adopted** rather than fought over, and only a foreign process holding it is refused. Next it writes your `.env` (mode 600) with `PORT=3000` pinned (the committed `deploy/app.env` baseline `8080` is the Docker image's port), *then* installs deps and builds, registers Irises as a **user-level service** (`systemd --user` on Linux, a LaunchAgent on macOS, a Task Scheduler task named `Irises` on Windows, with a detached `nohup` fallback where none of those exists), waits for her to answer `/health` on the new build — and only then touches the engine: enables its API surface if needed, installs the bridge plugin, records every engine-side key it added in `~/.irises/install-manifest.json` after backing the engine's env file up, and restarts the engine gateway last so all of it goes live. It leaves her running at `http://127.0.0.1:3000` and prints a summary with an honest exit code.
 
-Flags: `--yes` for a fully non-interactive run, `--no-bridge` to install without the plugin or fronting, `--no-service` to skip the service registration, `--port N` to pick another port, `--uninstall` to take it all back out (see [Updating](#updating)). Start/stop/status/logs and the uninstall one-liner are in that same section.
+Flags — every one of them is a question the menu asks, and every default is what an install has always done: `--yes` for a fully non-interactive run, `--no-bridge` to install without the plugin or fronting, `--no-service` to skip the service registration, `--port N` to pick another port, `--front PATTERNS` to front only the chats you name (default `*:*`), `--engine-env ask|print` to preview or refuse the engine-side `.env` edit (default `apply`), `--model-lane` + `--model-slug` (+ `--model-base-url` for an OpenAI-compatible host) to give her voice its own model, `--web on|off` for the browser/CLI debug chat this clone serves (`WEB_ENABLED`; unset leaves your `.env` as it is, which on a fresh install means on), `--tz ZONE` for the wall clock she reads (`IRISES_TZ`; unset means the host's own zone, and a zone you pass is written even when it matches that zone, so moving the box later does not silently move her clock), `--detach-engine` to undo the engine side and keep Irises, and `--uninstall` to take it all back out (see [Updating](#updating)). Two values are environment-only, never flags, because argv is readable by everything else on the box: `IRISES_MODEL_API_KEY` for the model lane's key and `IRISES_DASHBOARD_PASSWORD` for the admin dashboard's (`DASHBOARD_PASSWORD`); neither is ever printed. Start/stop/status/logs and the uninstall one-liner are in that same section; `bash ./scripts/engine-setup.sh --help` is the full list.
 
 A few minutes later Irises makes her [first move](docs/ENGINES.md#first-move-install-introduction) — she pulls what your engine already remembers about you and, where the engine confirms you've really talked there before, sends a short hello; otherwise she simply waits for your first message. Full guide, bridge mode, and security notes: **[docs/ENGINES.md](docs/ENGINES.md)**.
 
@@ -279,6 +297,7 @@ npm run chat
 
 | Script | What it does |
 |--------|--------------|
+| `npm run setup` | The lifecycle menu (`bash ./scripts/irises.sh`) — install or repair, update, uninstall, status |
 | `npm run dev` | Server in watch mode (`tsx`) on `:3000` |
 | `npm run dev:web` | Web debug client (Next dev server) |
 | `npm run chat` | Terminal REPL onto the same web-chat endpoints (`/cancel`, `/quit`) |
@@ -304,9 +323,13 @@ One command, in a terminal on the machine Irises runs on, from the Irises folder
 bash scripts/update.sh
 ```
 
+Or open the menu (`bash ./scripts/irises.sh` → **Update**) and let it ask first. It shows you the pending commits before anything is applied and then offers four ways to take them: apply now; **check only**, which reports and changes nothing; apply to disk and restart Irises yourself later; or apply without bouncing the engine's gateway. Each one is the flag run below, printed before it runs.
+
 It fast-forward `git pull`s the current branch, reinstalls deps and rebuilds (`npm ci && npm run build`, plus the web client when you use it), writes an update receipt — then, in this order, **restarts Irises and verifies the new build is the one answering, refreshes the engine bridge plugin, and bounces the engine gateway**. The plugin comes after the verified restart on purpose: a rollback undoes this clone, not the engine's copy of the plugin, so refreshing it earlier would leave the engine loading new plugin code against the old build. Nothing is left for you to restart, and there is nothing to do in chat. On a small box the build can take minutes and may outlive a dropped SSH session; the run keeps going and logs to `~/.irises/logs/update.log`.
 
 If the new build doesn't compile, or compiles and then fails to come up, the script **rolls back**: the worktree returns to the commit you were on, that build is rebuilt, and it comes back up. A bad build costs you a few minutes, not your assistant. It's careful in the other directions too — fast-forward only (it never auto-merges divergent local commits), it refuses a dirty working tree, it takes a single-updater lock so two runs can't race on git and the build, and it never touches your data under `$IRISES_HOME`.
+
+**Putting a build back by hand** is a separate thing, and deliberately harder to reach than the update itself: `bash scripts/update.sh --rollback-to <sha>` resets this clone to a commit it already has, rebuilds, restarts, verifies, and refreshes the plugin and the gateway exactly as a failed update's automatic rollback does. It never fetches and never looks at origin — it asks the clone one question, is that commit here. In the menu it lives under **Advanced**, offers the build you were on before the last update, and asks you to type the target sha out in full agreement before it moves; a script cannot trip that prompt by passing `--yes`. What it does **not** move is your data: `$IRISES_HOME` stays as the newer build left it, so a schema that build wrote stays written.
 
 Flags: `--check` (report only — exit `10` if an update is available, `0` if not), `--yes` (skip the prompt), `--no-restart` (pull and build, leave the running server alone — but the bridge plugin is still refreshed and the engine gateway still bounced, ~12s, and Irises goes on serving the old build against the new plugin until you restart it, so add `--no-gateway-restart` if you want nothing but the disk touched), `--no-gateway-restart` (leave the engine gateway alone; the refreshed plugin loads on its next restart). Exit codes are listed in [docs/DEPLOY.md](docs/DEPLOY.md#updating-a-git-clone-install).
 
@@ -352,6 +375,13 @@ bash scripts/engine-setup.sh --uninstall
 ```
 
 It stops and unregisters the service, removes the engine bridge plugin and the engine-side keys the installer added (from the manifest it wrote at install, after backing the engine's env file up), puts the keys that were already in that file back to their pre-install values **only where the install changed them** — the two it has to take over (`IRISES_URL`, which must name this install, and `API_SERVER_ENABLED`) go back to what they said before the install ran, even if you repointed them since, and everything else stays exactly as you have it now, including the engine's `API_SERVER_KEY` and `IRISES_PUSH_TOKEN`, which are adopted rather than replaced — bounces the engine gateway **if it actually removed something** — so a second run on an already-clean box does not cycle your engine for nothing — and **keeps your data**. Add `--purge-data` to delete `$IRISES_HOME` (memory, dossier, SQLite) as well; that one asks you to type the word `delete` first (unless you also pass `--yes`) and is not reversible. The clone itself is never deleted; the script prints the `rm -rf` for you.
+
+**"Uninstall" is rarely the rung you want**, so the menu (`bash ./scripts/irises.sh` → **Uninstall**) offers the whole ladder and lets you stop partway down:
+
+1. **Stop the service only** — nothing is removed, and starting it again is one command.
+2. **Detach from the engine** (`--detach-engine`) — undo every engine-side change and keep Irises. The plugin comes out, every key the manifest records as added is removed, every key it records as retargeted goes back to the value in the recorded backup, `IRISES_FRONT` is unset, and the gateway is bounced: **your engine is left as if Irises had never been installed**, except that the `.bak-irises-*` backups stay. The Irises service, this clone, and everything under `$IRISES_HOME` are untouched — she keeps running, with no engine in front of her. A later `--uninstall` then finds nothing of ours in the engine and does nothing to it. The run ends `RESULT: detached`, and the data flags are meaningless there: a detach never archives and never deletes.
+3. **Uninstall and keep your data** (`--uninstall`) — the paragraph above.
+4. **Uninstall and delete your data** (`--uninstall --purge-data`) — and the menu offers to archive first, which is `--archive-data`: a `~/.irises-backup-<timestamp>.tar.gz` of `$IRISES_HOME` written before anything is removed. If that archive cannot be written, nothing is deleted.
 
 Docker/VM installs update by rebuilding the image instead — see [docs/DEPLOY.md](docs/DEPLOY.md) § 5.
 
