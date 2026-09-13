@@ -410,7 +410,8 @@ wiz_summary_apply() { # step 7 — 0 = applied or declined cleanly
   say "  fronts:    $front_desc"
   say "  extras:    $extras_desc"
   say "  engine .env: $env_desc"
-  if ! ask_line "Apply this? [Y/n]" "y"; then eof_quit; fi
+  # ask_line prints the default in brackets itself, so the question does not carry its own [Y/n].
+  if ! ask_line "Apply this?" "y"; then eof_quit; fi
   case "$ANSWER" in
     y|Y|yes|YES) ;;
     *) say "nothing was applied"; return 0 ;;
