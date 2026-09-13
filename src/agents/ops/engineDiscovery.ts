@@ -74,18 +74,6 @@ const OPENAI_COMPATIBLE_PROVIDERS = new Set([
 /** Providers whose auth/protocol neither Irises voice lane can speak directly. */
 const FOREIGN_PROVIDERS = new Set(['bedrock', 'vertex', 'gemini', 'copilot', 'copilot-acp', 'nous', 'moa']);
 
-/** The cheap, fast voice model Irises defaults to per host provider — so the chat voice stays snappy
- *  even when the host runs a big deep-work model. Keyed by the EXACT provider (not the lane class):
- *  a host on some other OpenAI-compatible provider (deepseek-direct, azure, vllm…) has no curated
- *  slug and falls through to the host's own model. Overridable per role via <ROLE>_MODEL* /
- *  <ROLE>_PROVIDER. The slugs are lane-native (`:nitro` is OpenRouter-only; `gpt-5.6-luna` is an
- *  OpenAI-native id; `claude-sonnet-5` is Anthropic-native). */
-const CURATED_VOICE_MODEL: Record<string, string> = {
-  openrouter: 'deepseek/deepseek-v4-flash:nitro',
-  openai: 'gpt-5.6-luna',
-  anthropic: 'claude-sonnet-5',
-};
-
 /** Best-effort default endpoints for common OpenAI-compatible providers whose base URL lives in a
  *  hermes provider PROFILE rather than in config.yaml's model.base_url. Config / ~/.hermes/.env
  *  always win over this; it only spares the user a manual OPENAI_BASE_URL for the common hosts. */
@@ -336,8 +324,10 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
     const p = raw === 'auto' ? '' : raw;
     const apiMode = nullish(opts?.apiMode ?? null) ? '' : (opts!.apiMode as string).trim().toLowerCase();
 
-    // All lane setters override the same three VOICE_ROLES + <ROLE>_PROVIDER. The curated cheap model
-    // is used for the three named providers; other reachable hosts get their own model slug.
+    // All lane setters override the same three VOICE_ROLES + <ROLE>_PROVIDER. Every reachable lane
+    // gets the ENGINE'S OWN model — inheritance means her voice runs on what the engine runs on, so
+    // there is no substitute slug on any lane. The only reshaping is spelling: a lane is handed the
+    // id in the form its API accepts (see the anthropic branch's aggregator-prefix strip).
     const setLane = (lane: 'openrouter' | 'openai' | 'anthropic', model: string): void => {
       for (const r of VOICE_ROLES) {
         if (lane === 'anthropic') override(`${r}_MODEL`, model);
@@ -394,14 +384,21 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
       // Honour a custom Anthropic-compatible gateway (the SDK reads ANTHROPIC_BASE_URL) + reuse key.
       if (opts?.apiKey) fill('ANTHROPIC_API_KEY', opts.apiKey, `reused from ${backend}`);
       if (opts?.baseUrl) fill('ANTHROPIC_BASE_URL', opts.baseUrl, `from ${backend}`);
-      setLane('anthropic', CURATED_VOICE_MODEL.anthropic);
-      deps.log(`engine provider anthropic → voice on ${CURATED_VOICE_MODEL.anthropic} (Anthropic lane)`);
+      // The native Messages API takes a BARE id, so an aggregator-shaped `anthropic/<id>` (hermes
+      // accepts one even on an anthropic host) is spelled back to `<id>` — the same model, in the
+      // form this lane can call, exactly as the slug-shape branch below does it. Not a substitution:
+      // no other slug shape is rewritten, and nothing else is swapped in.
+      const model = s.startsWith('anthropic/') ? s.slice('anthropic/'.length) : s;
+      setLane('anthropic', model);
+      deps.log(`engine provider anthropic → voice on ${model} (Anthropic lane)`);
       if (!has('ANTHROPIC_API_KEY') && !has('ANTHROPIC_AUTH_TOKEN')) deps.warn('voice set to the Anthropic lane but no ANTHROPIC_API_KEY is set — add one');
       return;
     }
     if (openrouterHost) {
-      setLane('openrouter', CURATED_VOICE_MODEL.openrouter);
-      deps.log(`engine provider openrouter → voice on ${CURATED_VOICE_MODEL.openrouter} (OpenRouter lane)`);
+      // The OpenRouter lane consumes the aggregator `vendor/model` slug verbatim — which is exactly
+      // what an openrouter host's own model id is.
+      setLane('openrouter', s);
+      deps.log(`engine provider openrouter → voice on ${s} (OpenRouter lane)`);
       if (!has('OPENROUTER_API_KEY')) deps.warn('voice set to the OpenRouter lane but no OPENROUTER_API_KEY is set — add one');
       return;
     }
@@ -417,10 +414,10 @@ export function applyEngineDiscovery(deps: DiscoveryDeps): void {
       if (key) fill('OPENAI_API_KEY', key, `reused from ${backend}`);
       // Only mark a non-default endpoint (an official-OpenAI host keeps the SDK/env default).
       if (baseUrl !== 'https://api.openai.com/v1') override('OPENAI_BASE_URL', baseUrl);
-      // Official OpenAI → curated cheap model; any other OpenAI-compatible host → its own model slug.
-      const model = p === 'openai' ? CURATED_VOICE_MODEL.openai : s;
-      setLane('openai', model);
-      deps.log(`engine provider ${p || 'openai-compatible'} (${baseUrl}) → voice on ${model} (OpenAI lane)`);
+      // Official OpenAI and every other OpenAI-compatible host alike → the engine's own model slug,
+      // which this lane sends verbatim to whatever `baseUrl` resolved to.
+      setLane('openai', s);
+      deps.log(`engine provider ${p || 'openai-compatible'} (${baseUrl}) → voice on ${s} (OpenAI lane)`);
       if (!has('OPENAI_API_KEY')) deps.warn(`voice set to the OpenAI lane (${baseUrl}) but no OPENAI_API_KEY is set — add one`);
       return;
     }

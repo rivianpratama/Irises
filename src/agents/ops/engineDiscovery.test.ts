@@ -179,7 +179,7 @@ test('Anthropic-only + non-anthropic slug → cannot map, keeps defaults + warns
 // e.g. `claude-sonnet-4-5-20250929` or `gpt-4o` on the OpenRouter lane, which 400s every voice turn —
 // auto-detection breaking an install that worked before it ran.
 
-test('provider openrouter → OpenRouter lane, curated cheap voice model (not the host deep-work slug)', () => {
+test('provider openrouter → OpenRouter lane, on the ENGINE\'S OWN model', () => {
   const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key', ANTHROPIC_API_KEY: 'ak' });
   const { deps } = mkDeps(env, {
     files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
@@ -189,16 +189,33 @@ test('provider openrouter → OpenRouter lane, curated cheap voice model (not th
     },
   });
   applyEngineDiscovery(deps);
-  // The voice keeps a cheap, fast model on the host's provider — NOT the engine's big deep-work slug.
+  // Inheritance means what it says: the voice runs the model the engine runs, on the engine's lane.
   for (const r of ['CONVO', 'CLASSIFY', 'FALLFIRM']) {
-    assert.equal(env[`${r}_MODEL_OPENROUTER`], 'deepseek/deepseek-v4-flash:nitro', `${r} openrouter slot`);
+    assert.equal(env[`${r}_MODEL_OPENROUTER`], 'anthropic/claude-opus-4.6', `${r} openrouter slot`);
     assert.equal(env[`${r}_PROVIDER`], 'openrouter', `${r} provider`);
   }
 });
 
-test('provider anthropic → Anthropic lane, curated cheap voice model (NOT the host deep-work slug, NOT OpenRouter)', () => {
+test('the live bug: an openrouter host\'s exact model reaches the voice, with no stand-in slug', () => {
+  // Observed on a real machine: hermes was set to openai/gpt-5.6-luna via the OpenRouter lane, and
+  // after inheritance ran Irises's voice answered on deepseek/deepseek-v4-flash:nitro — a fixed slug
+  // this module substituted for the three recognised providers. Inheritance is not a recommendation.
+  const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key' });
+  const { deps } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: {
+      'hermes config get model.default': 'openai/gpt-5.6-luna',
+      'hermes config get model.provider': 'openrouter',
+    },
+  });
+  applyEngineDiscovery(deps);
+  assert.equal(env.CONVO_MODEL_OPENROUTER, 'openai/gpt-5.6-luna');
+  assert.notEqual(env.CONVO_MODEL_OPENROUTER, 'deepseek/deepseek-v4-flash:nitro');
+});
+
+test('provider anthropic → Anthropic lane, on the ENGINE\'S OWN model (NOT OpenRouter)', () => {
   // An OPENROUTER_API_KEY is present (hermes's headline aggregator); the voice must still land on the
-  // Anthropic lane (its provider), on the curated cheap model rather than the engine's big slug.
+  // Anthropic lane — its provider — carrying the engine's own id.
   const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key', ANTHROPIC_API_KEY: 'ak' });
   const { deps } = mkDeps(env, {
     files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
@@ -209,13 +226,15 @@ test('provider anthropic → Anthropic lane, curated cheap voice model (NOT the 
   });
   applyEngineDiscovery(deps);
   for (const r of ['CONVO', 'CLASSIFY', 'FALLFIRM']) {
-    assert.equal(env[`${r}_MODEL`], 'claude-sonnet-5', `${r} anthropic slot`);
+    assert.equal(env[`${r}_MODEL`], 'claude-sonnet-4-5-20250929', `${r} anthropic slot`);
     assert.equal(env[`${r}_PROVIDER`], 'anthropic', `${r} provider`);
   }
   assert.equal(env.CONVO_MODEL_OPENROUTER, 'openai/gpt-5.6-luna:nitro'); // OpenRouter slot untouched
 });
 
-test('provider anthropic + an anthropic/-prefixed slug → curated Anthropic voice model', () => {
+test('provider anthropic + an anthropic/-prefixed slug → the SAME model, spelled bare for the Messages API', () => {
+  // The only reshaping inheritance does: the native lane takes a bare id, so the aggregator prefix
+  // comes off — same model, callable spelling. Nothing else is swapped.
   const env = baselineEnv({ ANTHROPIC_API_KEY: 'ak' });
   const { deps } = mkDeps(env, {
     files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
@@ -225,7 +244,7 @@ test('provider anthropic + an anthropic/-prefixed slug → curated Anthropic voi
     },
   });
   applyEngineDiscovery(deps);
-  assert.equal(env.CONVO_MODEL, 'claude-sonnet-5');
+  assert.equal(env.CONVO_MODEL, 'claude-opus-4.6');
   assert.equal(env.CONVO_PROVIDER, 'anthropic');
 });
 
@@ -258,7 +277,7 @@ for (const [provider, model] of [['azure-foundry', 'gpt-4o'], ['moa', 'default']
 
 // ── the generic openai lane: reaching an arbitrary OpenAI-compatible host ────
 
-test('provider openai → OpenAI lane, curated cheap model, host key reused, DEFAULT endpoint (no marker)', () => {
+test('provider openai → OpenAI lane, the engine\'s own model, host key reused, DEFAULT endpoint (no marker)', () => {
   const env = baselineEnv();
   const { deps } = mkDeps(env, {
     files: { [HERMES_ENV]: 'API_SERVER_KEY=k\nOPENAI_API_KEY=sk-openai\n' },
@@ -268,7 +287,8 @@ test('provider openai → OpenAI lane, curated cheap model, host key reused, DEF
   assert.equal(env.OPENAI_API_KEY, 'sk-openai');   // reused from ~/.hermes/.env
   assert.equal(env.OPENAI_BASE_URL, undefined);    // official OpenAI → SDK/default endpoint, no marker
   for (const r of ['CONVO', 'CLASSIFY', 'FALLFIRM']) {
-    assert.equal(env[`${r}_MODEL_OPENAI`], 'gpt-5.6-luna', `${r} openai slot (curated cheap)`);
+    // Official OpenAI is no different from any other host on this lane: the engine's id, verbatim.
+    assert.equal(env[`${r}_MODEL_OPENAI`], 'gpt-5.6-terra', `${r} openai slot`);
     assert.equal(env[`${r}_PROVIDER`], 'openai', `${r} provider`);
   }
 });
@@ -288,7 +308,7 @@ test('OpenAI-compatible host (deepseek) with model.base_url + model.api_key → 
   assert.equal(env.OPENAI_BASE_URL, 'https://api.deepseek.com/v1'); // host endpoint inherited
   assert.equal(env.OPENAI_API_KEY, 'sk-deepseek');                  // host key reused
   for (const r of ['CONVO', 'CLASSIFY', 'FALLFIRM']) {
-    assert.equal(env[`${r}_MODEL_OPENAI`], 'deepseek-chat', `${r} openai slot (host's own model, no curated slug for deepseek)`);
+    assert.equal(env[`${r}_MODEL_OPENAI`], 'deepseek-chat', `${r} openai slot (the host's own model)`);
     assert.equal(env[`${r}_PROVIDER`], 'openai', `${r} provider`);
   }
 });
@@ -315,7 +335,7 @@ test('api_mode anthropic is authoritative → Anthropic lane even without a prov
   });
   applyEngineDiscovery(deps);
   assert.equal(env.CONVO_PROVIDER, 'anthropic');
-  assert.equal(env.CONVO_MODEL, 'claude-sonnet-5'); // curated
+  assert.equal(env.CONVO_MODEL, 'some-messages-api-model'); // the engine's own id
 });
 
 test('getDiscoveredEngine captures the host deep-work model + provider (even for a foreign provider)', () => {
@@ -346,7 +366,7 @@ test('anthropic host with a leftover OPENAI_BASE_URL in ~/.hermes/.env does NOT 
   applyEngineDiscovery(deps);
   assert.equal(env.ANTHROPIC_BASE_URL, undefined);            // the OpenAI leftover must NOT leak here
   assert.equal(env.CONVO_PROVIDER, 'anthropic');
-  assert.equal(env.CONVO_MODEL, 'claude-sonnet-5');
+  assert.equal(env.CONVO_MODEL, 'claude-sonnet-4-5-20250929');
   assert.equal(env.OPENAI_BASE_URL, 'https://api.deepseek.com/v1'); // reused into its OWN var, harmless
 });
 
@@ -377,7 +397,7 @@ test('api_mode anthropic wins over an OpenAI-compatible provider NAME (custom) �
   });
   applyEngineDiscovery(deps);
   assert.equal(env.CONVO_PROVIDER, 'anthropic');
-  assert.equal(env.CONVO_MODEL, 'claude-sonnet-5');
+  assert.equal(env.CONVO_MODEL, 'claude-via-custom-gateway');
   assert.equal(env.CONVO_MODEL_OPENAI, undefined); // NOT misrouted to the openai lane
 });
 
@@ -416,12 +436,14 @@ test('the provider comes from the config.yaml sibling key when the CLI is unavai
   const { deps } = mkDeps(env, {
     files: {
       [HERMES_ENV]: 'API_SERVER_KEY=k\n',
-      [HERMES_YAML]: 'terminal:\n  backend: tmux\nmodel:\n  provider: anthropic\n  default: claude-sonnet-5\n',
+      // A slug distinct from every value in baselineEnv, so the assertion can only pass by way of
+      // the yaml read — not by a coincidence with something already in the env.
+      [HERMES_YAML]: 'terminal:\n  backend: tmux\nmodel:\n  provider: anthropic\n  default: claude-sonnet-4-5-20250929\n',
     },
     cli: {},
   });
   applyEngineDiscovery(deps);
-  assert.equal(env.CONVO_MODEL, 'claude-sonnet-5');
+  assert.equal(env.CONVO_MODEL, 'claude-sonnet-4-5-20250929');
   assert.equal(env.CONVO_PROVIDER, 'anthropic');
   assert.equal(env.CONVO_MODEL_OPENROUTER, 'openai/gpt-5.6-luna:nitro');
 });
@@ -755,4 +777,46 @@ test('the heads-up skips a role whose own <ROLE>_THINKING is armed, and goes sil
   });
   applyEngineDiscovery(every.deps);
   assert.equal(every.logs.filter((l) => l.includes('reasoning-family')).length, 0);
+});
+
+// The heads-up only means anything if it judges the model that will actually RUN. While the three
+// recognised providers substituted a fixed slug, it judged the substitute instead: an OpenRouter
+// host got the line whatever its engine ran (the stand-in was itself reasoning-family), and an
+// Anthropic or official-OpenAI host never got it at all. Both directions, on all three lanes.
+// `mitigation` is the clause only THAT lane's heads-up carries (see REASONING_MITIGATION).
+for (const [provider, model, mitigation] of [
+  ['openrouter', 'deepseek/deepseek-r1', 'reasoning off'],
+  ['anthropic', 'claude-opus-4.8-thinking', 'Anthropic lane'],
+  ['openai', 'o4-mini', 'OpenRouter-only'],
+] as const) {
+  test(`a reasoning-family model inherited from a ${provider} host raises the heads-up`, () => {
+    const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key', ANTHROPIC_API_KEY: 'ak', OPENAI_API_KEY: 'oai' });
+    const { deps, logs } = mkDeps(env, {
+      files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+      cli: { 'hermes config get model.default': model, 'hermes config get model.provider': provider },
+    });
+    applyEngineDiscovery(deps);
+    const line = logs.find((l) => l.includes('reasoning-family'));
+    assert.ok(line, `no heads-up for ${model} on ${provider}: ${JSON.stringify(logs)}`);
+    assert.match(line!, new RegExp(model.replace(/[/.]/g, '\\$&')), 'it names the model that will run');
+    assert.match(line!, /CONVO, CLASSIFY, FALLFIRM/);
+    assert.match(line!, new RegExp(mitigation), 'and the mitigation clause is the inherited lane\'s');
+  });
+}
+
+test('a NON-reasoning model on a recognised provider raises no heads-up', () => {
+  // The old stand-in (deepseek-v4-flash:nitro) is reasoning-family, so this line used to fire on
+  // every openrouter host regardless of what the engine actually ran — a warning about a model
+  // nobody was going to call.
+  const env = baselineEnv({ OPENROUTER_API_KEY: 'or-key' });
+  const { deps, logs, warns } = mkDeps(env, {
+    files: { [HERMES_ENV]: 'API_SERVER_KEY=k\n' },
+    cli: {
+      'hermes config get model.default': 'openai/gpt-5.6-luna',
+      'hermes config get model.provider': 'openrouter',
+    },
+  });
+  applyEngineDiscovery(deps);
+  assert.equal(env.CONVO_MODEL_OPENROUTER, 'openai/gpt-5.6-luna');
+  assert.equal([...logs, ...warns].filter((l) => l.includes('reasoning-family')).length, 0);
 });
