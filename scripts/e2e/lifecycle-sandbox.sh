@@ -56,6 +56,14 @@
 #                    seed also holds a present-but-EMPTY IRISES_BRIDGE_TOKEN, which is not a secret to
 #                    adopt: the install writes its own value there and records the move, and the cmp
 #                    at the end proves the empty line came back
+#   8   the menu    — scripts/irises.sh driven by answers on stdin: the flags it composes are printed
+#                    and compared literally, and the install they produce is the one the answers
+#                    described — a model override on all three voice roles with ENGINE_MODEL_INHERIT
+#                    off, the key passed only through the environment, a narrowed IRISES_FRONT and
+#                    the two optional extras. Then the same menu DETACHES (engine .env back to
+#                    cmp-equal, plugin gone, Irises still serving) and finally uninstalls with an
+#                    archive and a purge, the "type the word delete" gate answered at the menu
+#                    rather than by a flag
 #
 # NOTHING OF YOURS IS TOUCHED. Every stage runs under a throwaway HOME, IRISES_HOME and HERMES_HOME,
 # on two ephemeral ports, against a bare origin made from this clone's own objects. The scratch PATH
@@ -840,6 +848,121 @@ if ! cmp -s "$FULL_SEED" "$HERMES/.env"; then diff -u "$FULL_SEED" "$HERMES/.env
 check "the gateway was bounced — the engine has to forget the plugin and the URL" \
   grep -qE "hermes gateway re?start" "$STUB_LOG"
 check "the manifest is gone" test ! -f "$FULL_MAN"
+
+# ── 8. the menu ───────────────────────────────────────────────────────────────
+# The front door, driven the only way a test can drive a wizard: answers on stdin. It is here at the
+# end because it needs a clean engine and a clean $IRISES_HOME, and because it is the one stage that
+# exercises the THREE scripts together — irises.sh composing flags, engine-setup.sh applying them.
+#
+# WHAT THIS STAGE IS FOR: the translation. Every answer typed below has to come out as the right
+# flag on the command line irises.sh echoes, and that line has to produce the install it describes.
+# The wizard drifting from the flags is the failure mode this whole file exists to catch — the menu
+# can only be wrong in a way nobody notices if nothing compares the two.
+#
+# WHAT IT DELIBERATELY DOES NOT EXERCISE: the install child's own engine-.env consent prompt. The
+# wizard passes --engine-env ask and does NOT pass --yes, exactly as it does for a person; but the
+# child inherits this pipe for stdin, sees no terminal, and takes its documented no-TTY path
+# (ASSUME_YES=1), so it answers its own question with the default and writes. That is the same
+# behaviour every agent-driven and piped install already has, and the assertions below are on the
+# OUTCOME — the keys landed, and they are the ones the answers asked for.
+#
+# The port answered is the sandbox's own, because a wizard that could be talked into binding 3100 on
+# the machine running the battery is not a sandbox any more. The ANSWER is still typed rather than
+# defaulted, so the --port on the echoed line is the one that came out of the prompt.
+step "8/12  the menu — an install driven by answers, then detach, then uninstall with a purge"
+WIZ_MODEL="zzz/e2e-wizard-model"
+WIZ_KEY="e2e-not-a-real-openrouter-key"
+# A clean engine, carrying no IRISES_FRONT of its own: the scope the wizard asks for is only written
+# where the file has none (the rule stage 7 pins from the other side), so this is what makes
+# "the answer became IRISES_FRONT" a real assertion.
+printf 'ANTHROPIC_API_KEY=engine-owned-key\n' > "$HERMES/.env"
+WIZ_SEED="$SANDBOX/engine-env.seed-wizard"
+cp "$HERMES/.env" "$WIZ_SEED"
+mkdir -p "$STATE"
+: > "$STATE/memories-canary.txt"
+WIZ_HEAD="$(git -C "$CLONE" rev-parse HEAD)"
+: > "$STUB_LOG"
+set +e
+WIZ_OUT="$(cd "$CLONE" && printf '%s\n' \
+  1 y y \
+  2 2 "$WIZ_MODEL" "$WIZ_KEY" \
+  2 'telegram:*' \
+  "$SRV_PORT" n \
+  y y '' UTC \
+  y q \
+  | bash scripts/irises.sh 2>&1)"
+WIZ_RC=$?
+set -e
+printf '%s\n' "$WIZ_OUT" | sed 's/^/    | /'
+check_rc "the menu ran to its own quit" 0 "$WIZ_RC"
+# The line, exactly as composed: this is the assertion that keeps the two surfaces together.
+check_out "the wizard printed the command line it composed" \
+  "bash scripts/engine-setup.sh --engine hermes --port $SRV_PORT --engine-env ask --no-service --front 'telegram:*' --model-lane openrouter --model-slug $WIZ_MODEL --web on --tz UTC" \
+  "$WIZ_OUT"
+check_out "and named the key as an environment variable that is set" "IRISES_MODEL_API_KEY=<set>" "$WIZ_OUT"
+check_no_out "while the key itself never reached the screen" "$WIZ_KEY" "$WIZ_OUT"
+check_out "the install it ran reported ok" "RESULT: ok" "$WIZ_OUT"
+expect_sha "/health serves the build the wizard installed" "$WIZ_HEAD"
+# The model override, as src/loadEnv.ts will read it: three roles, one lane, and the inheritance
+# switch that stops applyModel() handing this clone the engine's key and base URL instead.
+check "the clone .env carries the Convo model on the openrouter lane" \
+  present "$CLONE/.env" "^CONVO_MODEL_OPENROUTER=$WIZ_MODEL\$"
+check "and the Classify model" present "$CLONE/.env" "^CLASSIFY_MODEL_OPENROUTER=$WIZ_MODEL\$"
+check "and the Fallfirm model" present "$CLONE/.env" "^FALLFIRM_MODEL_OPENROUTER=$WIZ_MODEL\$"
+check "with ENGINE_MODEL_INHERIT=off, or the engine's model would still win" \
+  present "$CLONE/.env" '^ENGINE_MODEL_INHERIT=off$'
+check "the key reached the .env through the environment, never through argv" \
+  present "$CLONE/.env" "^OPENROUTER_API_KEY=$WIZ_KEY\$"
+check "the extras step wrote the timezone it was given" present "$CLONE/.env" '^IRISES_TZ=UTC$'
+check "and the browser chat it was asked for" present "$CLONE/.env" '^WEB_ENABLED=true$'
+# The narrowed front scope — the answer that has to survive three hops (menu → flag → engine .env).
+check "the engine fronts only the chats the wizard named" present "$HERMES/.env" '^IRISES_FRONT=telegram:\*$'
+check "and not every chat on every platform" absent "$HERMES/.env" '^IRISES_FRONT=\*:\*$'
+check "the manifest records the scope" present "$STATE/install-manifest.json" '"frontPattern": "telegram:\*"'
+check "and the lane Irises's own voice now runs on" present "$STATE/install-manifest.json" '"modelLane": "openrouter"'
+check "the plugin went in" test -f "$HERMES/plugins/irises-bridge/plugin.yaml"
+
+# ── 8b. detach, from the menu ─────────────────────────────────────────────────
+# The de-escalation rung: the engine is given back, and Irises keeps running. --yes IS passed here
+# (the menu asked the question once already), so the child asks nothing.
+step "8b/12  detach from the menu — the engine is given back, Irises keeps serving"
+: > "$STUB_LOG"
+set +e
+DET_OUT="$(cd "$CLONE" && printf '%s\n' 3 2 y q | bash scripts/irises.sh 2>&1)"
+DET_RC=$?
+set -e
+printf '%s\n' "$DET_OUT" | sed 's/^/    | /'
+check_rc "the menu ran to its own quit" 0 "$DET_RC"
+check_out "the detach was composed with --yes, so the child asked nothing twice" \
+  "bash scripts/engine-setup.sh --detach-engine --yes" "$DET_OUT"
+check_out "and reported the detached result token" "RESULT: detached" "$DET_OUT"
+check "the plugin is gone from the engine" test ! -d "$HERMES/plugins/irises-bridge"
+check "the engine .env is byte-identical to the file before the wizard installed" \
+  cmp -s "$WIZ_SEED" "$HERMES/.env"
+if ! cmp -s "$WIZ_SEED" "$HERMES/.env"; then diff -u "$WIZ_SEED" "$HERMES/.env" | sed 's/^/    | /' || true; fi
+check "the manifest stayed, now recording nothing on the engine's side" \
+  present "$STATE/install-manifest.json" '"engineEnvApplied": "false"'
+expect_sha "Irises is still serving — a detach is not an uninstall" "$WIZ_HEAD"
+check "and her data is untouched" test -f "$STATE/memories-canary.txt"
+
+# ── 8c. uninstall with an archive and a purge ─────────────────────────────────
+# The end of the road, and the only path in the whole lifecycle that destroys something
+# irreplaceable: the menu runs the "type the word delete" gate ITSELF and then hands the child
+# --purge-data --yes, so the gate cannot be satisfied by a flag alone.
+step "8c/12  uninstall from the menu — archive first, then delete the data"
+: > "$STUB_LOG"
+set +e
+PURGE_OUT="$(cd "$CLONE" && printf '%s\n' 3 4 y delete q | bash scripts/irises.sh 2>&1)"
+PURGE_RC=$?
+set -e
+printf '%s\n' "$PURGE_OUT" | sed 's/^/    | /'
+check_rc "the menu ran to its own quit" 0 "$PURGE_RC"
+check_out "the archive answer became --archive-data, ahead of the purge" \
+  "bash scripts/engine-setup.sh --uninstall --archive-data --purge-data --yes" "$PURGE_OUT"
+check "the archive was written before anything was deleted" \
+  test -n "$(ls "$HOME_DIR"/.irises-backup-*.tar.gz 2>/dev/null || true)"
+check "the data directory is gone" test ! -d "$STATE"
+check "and nothing answers on the port any more" sh -c "! curl -fsS -m 3 http://127.0.0.1:$SRV_PORT/health >/dev/null 2>&1"
 
 engine_stub_stop
 
