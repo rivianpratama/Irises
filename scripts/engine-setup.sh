@@ -57,6 +57,12 @@ PORT_FLAG=""
 FRONT_PATTERN="${IRISES_FRONT_PATTERN:-*:*}"
 FRONT_EXPLICIT=0
 if [ -n "${IRISES_FRONT_PATTERN:-}" ]; then FRONT_EXPLICIT=1; fi
+# What this run may do to the ENGINE's .env: apply (what every install has always done), ask (show
+# the lines first and write them only on a yes), print (never write; say what to paste). The keys a
+# declined or printed run leaves for the operator, recorded in the manifest so --uninstall knows
+# there is nothing of ours in that file to take back out.
+ENGINE_ENV_MODE="apply"
+ENGINE_ENV_PENDING=""
 
 usage() {
   cat <<'EOF'
@@ -71,6 +77,9 @@ usage: bash ./scripts/engine-setup.sh [options]          # install
   --front PATTERNS           which chats Irises fronts: comma-separated <platform>:<glob> items,
                              written to the engine's IRISES_FRONT when it carries none
                              (default *:*, every chat on every platform the engine speaks)
+  --engine-env MODE          what may happen to the ENGINE's .env: apply (default, write the keys),
+                             ask (show them first, write on a yes), print (never write; say what to
+                             paste). print and a declined ask still install the bridge plugin
   --uninstall                remove Irises: service, plugin, engine keys. Your data is KEPT, and so
                              is this clone (the exact rm for each is printed)
   --purge-data               with --uninstall: also delete $IRISES_HOME (irises.db + memories)
@@ -90,6 +99,8 @@ while [ $# -gt 0 ]; do
     --port=*)      PORT_FLAG="${1#--port=}"; shift ;;
     --front)       FRONT_PATTERN="${2:-}"; FRONT_EXPLICIT=1; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --front=*)     FRONT_PATTERN="${1#--front=}"; FRONT_EXPLICIT=1; shift ;;
+    --engine-env)  ENGINE_ENV_MODE="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --engine-env=*) ENGINE_ENV_MODE="${1#--engine-env=}"; shift ;;
     --uninstall)   MODE="uninstall"; shift ;;
     --purge-data)  PURGE_DATA=1; shift ;;
     --yes|-y)      ASSUME_YES=1; shift ;;
@@ -117,6 +128,10 @@ case "$PORT_FLAG" in
 esac
 # Checked HERE, before anything is built, because the engine fronts NOTHING for an IRISES_FRONT it
 # cannot parse — which on the other end looks exactly like an install that silently did not work.
+case "$ENGINE_ENV_MODE" in
+  apply|ask|print) ;;
+  *) err "unknown --engine-env '$ENGINE_ENV_MODE' — expected apply, ask or print"; exit 2 ;;
+esac
 if ! front_pattern_valid "$FRONT_PATTERN"; then
   err "--front takes comma-separated <platform>:<glob> items, got '$FRONT_PATTERN'"
   err "e.g. --front 'telegram:*'  ·  --front 'telegram:*,whatsapp:+1555*'  ·  the default is '*:*'"
@@ -204,6 +219,87 @@ front_says_kept() { # ENGINE_ENV
   return 0
 }
 
+# What --engine-env ask shows before it writes a byte, and what --engine-env print leaves behind
+# instead of writing. One line per key that would CHANGE: `+` for a key the engine does not carry,
+# `~` for one it carries with another value, and nothing at all for a key already in place — an
+# install that says it is about to write four lines and changes none of them teaches the operator to
+# stop reading the preview.
+#
+# NO SECRET VALUE IS EVER PRINTED, in either direction: the three tokens are named, and the old
+# value beside a `~` is shown only for the two that are not secrets (a URL and a boolean). The
+# operator is told where to read the real value from, out of a 0600 file they already own.
+#
+# Sets ENGINE_ENV_PENDING to the keys it listed, which is what the manifest records when nothing is
+# written — so --uninstall knows there is nothing of ours in that file to take back out.
+engine_env_preview() { # ENGINE_ENV PORT TOKEN
+  local f="${1:-}" port="${2:-}" token="${3:-}" kv key val cur n secret listed=0
+  ENGINE_ENV_PENDING=""
+  say "These lines go into $f (backed up first to .bak-irises-<timestamp>):"
+  for kv in \
+    "API_SERVER_ENABLED=true" \
+    "API_SERVER_KEY=$(env_get "$ENV_FILE" HERMES_API_KEY)" \
+    "IRISES_PUSH_TOKEN=$token" \
+    "IRISES_URL=http://127.0.0.1:$port" \
+    "IRISES_BRIDGE_TOKEN=$token" \
+    "IRISES_FRONT=$FRONT_PATTERN"
+  do
+    key="${kv%%=*}"; val="${kv#*=}"
+    case "$key" in
+      IRISES_BRIDGE_TOKEN|IRISES_FRONT) if [ "$BRIDGE" != "1" ]; then continue; fi ;;
+    esac
+    secret=0
+    case "$key" in API_SERVER_KEY|IRISES_PUSH_TOKEN|IRISES_BRIDGE_TOKEN) secret=1 ;; esac
+    n="$(env_count "$f" "$key")"
+    cur="$(env_get "$f" "$key")"
+    if [ "$n" = "0" ]; then
+      listed=1
+      ENGINE_ENV_PENDING="$ENGINE_ENV_PENDING $key"
+      if [ "$secret" = "1" ]; then
+        say "  + $key=<this install's value, not shown>"
+      else
+        say "  + $key=$val"
+      fi
+      continue
+    fi
+    # IRISES_FRONT is the one key an install never takes over: a scope already in the file stands.
+    if [ "$key" = "IRISES_FRONT" ]; then continue; fi
+    if [ "$cur" = "$val" ] && [ "$n" -le 1 ]; then continue; fi
+    listed=1
+    ENGINE_ENV_PENDING="$ENGINE_ENV_PENDING $key"
+    if [ "$secret" = "1" ]; then
+      say "  ~ $key=<this install's value, not shown>$(if [ "$n" -gt 1 ]; then printf '     (%s copies, collapsed onto one line)' "$n"; elif [ -z "$cur" ]; then printf '     (the line is there and empty)'; fi)"
+    else
+      say "  ~ $key=$val     (was ${cur:-empty})"
+    fi
+  done
+  if [ "$listed" = "0" ]; then
+    say "  (nothing — every key Irises writes is already in that file with this install's value)"
+  fi
+  ENGINE_ENV_PENDING="${ENGINE_ENV_PENDING# }"
+  return 0
+}
+
+# The other half of the same disclosure: what to do by hand when the answer was no. Same key list,
+# same silence about values — the OpenClaw path has always ended this way, and a declined hermes
+# install ends the same way now.
+engine_env_manual() { # ENGINE_ENV PORT
+  local f="${1:-}" port="${2:-}" key
+  warn "nothing was written to $f. Irises is up on :$port, but the engine cannot reach it — and"
+  warn "will not front anything — until these are in that file:"
+  for key in $ENGINE_ENV_PENDING; do
+    case "$key" in
+      API_SERVER_ENABLED)  warn "  API_SERVER_ENABLED=true" ;;
+      API_SERVER_KEY)      warn "  API_SERVER_KEY        — the value is HERMES_API_KEY in $ENV_FILE (0600); copy it across" ;;
+      IRISES_PUSH_TOKEN)   warn "  IRISES_PUSH_TOKEN     — the value is ENGINE_PUSH_TOKEN in $ENV_FILE (0600)" ;;
+      IRISES_BRIDGE_TOKEN) warn "  IRISES_BRIDGE_TOKEN   — the same ENGINE_PUSH_TOKEN value (one secret, two names)" ;;
+      IRISES_URL)          warn "  IRISES_URL=http://127.0.0.1:$port" ;;
+      IRISES_FRONT)        warn "  IRISES_FRONT=$FRONT_PATTERN" ;;
+    esac
+  done
+  warn "then restart the engine's gateway, which is where it reads all of them."
+  return 0
+}
+
 announce_overwrite() { # KEY NEWVALUE [show]
   local key="${1:-}" new="${2:-}" show="${3:-}" cur
   cur="$(env_get "$ENV_FILE" "$key")"
@@ -221,6 +317,9 @@ do_install() {
   local keys_added="" keys_pre="" prev_added="" backup="" restore_from="" token engine_env=""
   local keys_retargeted="" prev_retargeted=""
   local sha="" live_sha="" gateway_ok=1 result="ok" rc=0 mem_mb=""
+  # Did THIS run put anything of ours in the engine's .env? Only a hermes install that wrote can say
+  # true, and only `true` makes --uninstall (and --detach-engine) touch that file at all.
+  local engine_env_write=1 engine_env_applied=false engine_env_pending=""
 
   # ── 1. prerequisites. PATH first: a non-login shell (and every agent-spawned run) can be missing
   #      node entirely — on the production VPS node lives at ~/.local/bin/node and nothing puts it
@@ -446,197 +545,234 @@ do_install() {
   #      SEEN answer. Back the file up first, and record exactly which keys were ours so
   #      --uninstall can put it back without guessing.
   if [ "$engine" = "hermes" ]; then
-    if [ ! -f "$engine_env" ]; then
-      say "creating $engine_env (chmod 600) — hermes only writes this file when it stores a secret,"
-      say "so an empty one is normal on an OAuth/portal install"
-      ( umask 077; : > "$engine_env" )
-      chmod 600 "$engine_env" 2>/dev/null || true
-    fi
-    backup="$(env_backup "$engine_env" pre-install)"
-    # …and the one the manifest keeps is the OLDEST of them. `backup` above is this run's snapshot,
-    # which on a re-install already carries the IRISES_URL the FIRST install wrote — restoring from
-    # it would put back a value of ours and call it the operator's. So a previous manifest's backup
-    # wins, as long as it is still on disk and describes the same engine .env: that file is the only
-    # record of what the engine looked like before Irises ever wrote to it.
-    restore_from="$backup"
-    local prev_backup prev_env
-    prev_backup="$(manifest_read "$(manifest_path)" engineEnvBackup 2>/dev/null || true)"
-    prev_env="$(manifest_read "$(manifest_path)" engineEnvFile 2>/dev/null || true)"
-    if [ -n "$prev_backup" ] && [ -f "$prev_backup" ] && [ "$prev_env" = "$engine_env" ]; then
-      restore_from="$prev_backup"
-      say "--uninstall will restore from the first install's backup ($prev_backup)"
-    fi
-    # …and for the same reason the list of keys to restore FROM it is carried too (unioned at the end
-    # of this block): install 2 finds IRISES_URL already naming this install and changes nothing, so
-    # a list recomputed from this run alone would be empty — and the uninstall after it would leave
-    # install 1's IRISES_URL in the engine's .env for good. Only from a manifest about THIS .env.
-    if [ "$prev_env" = "$engine_env" ]; then
-      prev_retargeted="$(manifest_read "$(manifest_path)" keysRetargeted 2>/dev/null || true)"
-    fi
+    # The push token this install will hand the engine — read before the preview below, which has to
+    # be able to say which keys carry it without printing the value of any of them.
     token="$(env_get "$ENV_FILE" ENGINE_PUSH_TOKEN)"
-    # What the LAST install recorded as ours. "Already in the file" is not the same question as "not
-    # ours": on every re-run every key we added the first time is already there, and classifying by
-    # presence alone made the second install record the whole set as pre-existing — so the manifest
-    # forgot them, and a later --uninstall left API_SERVER_*, IRISES_PUSH_TOKEN, IRISES_URL,
-    # IRISES_BRIDGE_TOKEN and IRISES_FRONT behind in the engine's .env while claiming a clean removal.
-    prev_added="$(manifest_read "$(manifest_path)" keysAdded 2>/dev/null || true)"
-    if [ -n "$prev_added" ]; then
-      say "a previous install recorded these engine keys as ours: $prev_added"
-    fi
-    # One positional argument per pair, accumulated in an array. The old form built a
-    # newline-separated string and word-split it at the call — which meant a value containing
-    # whitespace (an IRISES_URL behind a proxy path, a key someone pasted with a trailing space)
-    # split into bogus half-lines in the engine's .env. bash 3.2 has no `+=`, hence the index.
-    local pairs_n=0 key val kv cur adopt="" was_pre=0
-    local pairs_arr=()
-    for kv in \
-      "API_SERVER_ENABLED=true" \
-      "API_SERVER_KEY=$(env_get "$ENV_FILE" HERMES_API_KEY)" \
-      "IRISES_PUSH_TOKEN=$token" \
-      "IRISES_URL=http://127.0.0.1:$port"
-    do
-      key="${kv%%=*}"; val="${kv#*=}"
-      if [ "$(env_count "$engine_env" "$key")" != "0" ]; then
-        was_pre=0
-        if key_was_ours "$key" "$prev_added"; then
+    # CONSENT, before the first byte. `apply` is what every install has done since there was one, and
+    # is still the default; `ask` shows the lines and writes them on a yes; `print` never writes. A
+    # declined ask and a print take the same path — the one the OpenClaw install has always taken:
+    # say exactly what to put in the file, name the secrets rather than printing them, and record in
+    # the manifest that this engine .env carries nothing of ours, so --uninstall takes nothing out
+    # of it.
+    case "$ENGINE_ENV_MODE" in
+      apply) ;;
+      ask)
+        engine_env_preview "$engine_env" "$port" "$token"
+        if ! ask_yn "Write them now?" y; then
+          engine_env_write=0
+          say "not writing to $engine_env — the lines are yours to apply"
+        fi
+        ;;
+      print)
+        engine_env_preview "$engine_env" "$port" "$token"
+        engine_env_write=0
+        ;;
+    esac
+    if [ "$engine_env_write" = "1" ]; then
+      if [ ! -f "$engine_env" ]; then
+        say "creating $engine_env (chmod 600) — hermes only writes this file when it stores a secret,"
+        say "so an empty one is normal on an OAuth/portal install"
+        ( umask 077; : > "$engine_env" )
+        chmod 600 "$engine_env" 2>/dev/null || true
+      fi
+      backup="$(env_backup "$engine_env" pre-install)"
+      # …and the one the manifest keeps is the OLDEST of them. `backup` above is this run's snapshot,
+      # which on a re-install already carries the IRISES_URL the FIRST install wrote — restoring from
+      # it would put back a value of ours and call it the operator's. So a previous manifest's backup
+      # wins, as long as it is still on disk and describes the same engine .env: that file is the only
+      # record of what the engine looked like before Irises ever wrote to it.
+      restore_from="$backup"
+      local prev_backup prev_env
+      prev_backup="$(manifest_read "$(manifest_path)" engineEnvBackup 2>/dev/null || true)"
+      prev_env="$(manifest_read "$(manifest_path)" engineEnvFile 2>/dev/null || true)"
+      if [ -n "$prev_backup" ] && [ -f "$prev_backup" ] && [ "$prev_env" = "$engine_env" ]; then
+        restore_from="$prev_backup"
+        say "--uninstall will restore from the first install's backup ($prev_backup)"
+      fi
+      # …and for the same reason the list of keys to restore FROM it is carried too (unioned at the end
+      # of this block): install 2 finds IRISES_URL already naming this install and changes nothing, so
+      # a list recomputed from this run alone would be empty — and the uninstall after it would leave
+      # install 1's IRISES_URL in the engine's .env for good. Only from a manifest about THIS .env.
+      if [ "$prev_env" = "$engine_env" ]; then
+        prev_retargeted="$(manifest_read "$(manifest_path)" keysRetargeted 2>/dev/null || true)"
+      fi
+      # What the LAST install recorded as ours. "Already in the file" is not the same question as "not
+      # ours": on every re-run every key we added the first time is already there, and classifying by
+      # presence alone made the second install record the whole set as pre-existing — so the manifest
+      # forgot them, and a later --uninstall left API_SERVER_*, IRISES_PUSH_TOKEN, IRISES_URL,
+      # IRISES_BRIDGE_TOKEN and IRISES_FRONT behind in the engine's .env while claiming a clean removal.
+      prev_added="$(manifest_read "$(manifest_path)" keysAdded 2>/dev/null || true)"
+      if [ -n "$prev_added" ]; then
+        say "a previous install recorded these engine keys as ours: $prev_added"
+      fi
+      # One positional argument per pair, accumulated in an array. The old form built a
+      # newline-separated string and word-split it at the call — which meant a value containing
+      # whitespace (an IRISES_URL behind a proxy path, a key someone pasted with a trailing space)
+      # split into bogus half-lines in the engine's .env. bash 3.2 has no `+=`, hence the index.
+      local pairs_n=0 key val kv cur adopt="" was_pre=0
+      local pairs_arr=()
+      for kv in \
+        "API_SERVER_ENABLED=true" \
+        "API_SERVER_KEY=$(env_get "$ENV_FILE" HERMES_API_KEY)" \
+        "IRISES_PUSH_TOKEN=$token" \
+        "IRISES_URL=http://127.0.0.1:$port"
+      do
+        key="${kv%%=*}"; val="${kv#*=}"
+        if [ "$(env_count "$engine_env" "$key")" != "0" ]; then
+          was_pre=0
+          if key_was_ours "$key" "$prev_added"; then
+            keys_added="$keys_added $key"
+          else
+            keys_pre="$keys_pre $key"
+            was_pre=1
+          fi
+          cur="$(env_get "$engine_env" "$key")"
+          # A key already in the file is not a key to overwrite. Which of the four this is decides
+          # what happens to the value that is there, and every branch is a rule, not a preference:
+          case "$key" in
+            API_SERVER_KEY|IRISES_PUSH_TOKEN)
+              # ADOPTED. Both are one secret shared with this clone, and the clone took its side of
+              # them from here in step 4 — so `cur` is already what we would write. The env_set is
+              # only ever a collapse: production carried two API_SERVER_KEY blocks with different
+              # values, and only the last one was in effect.
+              #
+              # Except when the line is there and EMPTY, which is not a secret to adopt: `API_SERVER_KEY=`
+              # authenticates nothing, and step 4 already generated this side a value when it read that
+              # blank. Writing the blank back would have wired both halves to nothing and called it
+              # adoption. `cur` is left as it was found on purpose — it is what the retarget check below
+              # compares against, so the move is recorded and --uninstall puts the empty line back.
+              adopt="$cur"
+              if [ -z "$cur" ]; then
+                adopt="$val"
+                say "the engine's $key was empty — set it to this install's value (--uninstall puts it back)"
+              elif [ "$(env_count "$engine_env" "$key")" != "1" ]; then
+                say "adopting the engine's existing $key (collapsing $(env_count "$engine_env" "$key") copies)"
+              else
+                say "adopting the engine's existing $key"
+              fi
+              env_set "$engine_env" "$key" "$adopt"
+              ;;
+            IRISES_URL)
+              # TAKEN OVER, out loud. The engine has to reach THIS install, so a value naming another
+              # port or host cannot stand — but it is also the operator's line, so it is named (a URL
+              # is not a secret) and it is restored from the pre-install backup by --uninstall.
+              if [ "$cur" != "$val" ]; then
+                warn "IRISES_URL in $engine_env pointed at $cur; this install ($val) takes over"
+                warn "(--uninstall puts it back from $restore_from)"
+              fi
+              env_set "$engine_env" "$key" "$val"
+              ;;
+            API_SERVER_ENABLED)
+              # TAKEN OVER too: with the engine's API server off there is no deep work, and an install
+              # that silently leaves it off is an install that does not work. Restored on --uninstall.
+              if [ "$cur" != "$val" ]; then
+                warn "API_SERVER_ENABLED in $engine_env was $cur; Irises needs $val to reach the engine's API"
+                warn "(--uninstall puts it back from $restore_from)"
+              fi
+              env_set "$engine_env" "$key" "$val"
+              ;;
+            *)
+              # Anything added to the list above later, reported by NAME only: the shape of a value we
+              # have not thought about is not something to print into a terminal that gets pasted.
+              if [ "$cur" != "$val" ]; then
+                say "$key in $engine_env now carries this install's value (--uninstall puts it back)"
+              fi
+              env_set "$engine_env" "$key" "$val"
+              ;;
+          esac
+          # RETARGETED or not, decided by the FILE rather than by the branch above: an env_set that
+          # wrote back the value already there changed nothing, and --uninstall must not "restore" a key
+          # this install never moved — an API_SERVER_KEY the operator rotated a month later would go
+          # back to a dead value and take every other client of the engine down with it. Adopted keys
+          # and duplicate-collapses therefore compare equal and are never recorded. Only pre-existing
+          # keys are tracked: one of ours is removed whole on uninstall, not restored.
+          if [ "$was_pre" = "1" ] && [ "$(env_get "$engine_env" "$key")" != "$cur" ]; then
+            keys_retargeted="$keys_retargeted $key"
+          fi
+        else
           keys_added="$keys_added $key"
-        else
-          keys_pre="$keys_pre $key"
-          was_pre=1
+          pairs_arr[$pairs_n]="$key=$val"
+          pairs_n=$((pairs_n + 1))
         fi
-        cur="$(env_get "$engine_env" "$key")"
-        # A key already in the file is not a key to overwrite. Which of the four this is decides
-        # what happens to the value that is there, and every branch is a rule, not a preference:
-        case "$key" in
-          API_SERVER_KEY|IRISES_PUSH_TOKEN)
-            # ADOPTED. Both are one secret shared with this clone, and the clone took its side of
-            # them from here in step 4 — so `cur` is already what we would write. The env_set is
-            # only ever a collapse: production carried two API_SERVER_KEY blocks with different
-            # values, and only the last one was in effect.
-            #
-            # Except when the line is there and EMPTY, which is not a secret to adopt: `API_SERVER_KEY=`
-            # authenticates nothing, and step 4 already generated this side a value when it read that
-            # blank. Writing the blank back would have wired both halves to nothing and called it
-            # adoption. `cur` is left as it was found on purpose — it is what the retarget check below
-            # compares against, so the move is recorded and --uninstall puts the empty line back.
-            adopt="$cur"
-            if [ -z "$cur" ]; then
-              adopt="$val"
-              say "the engine's $key was empty — set it to this install's value (--uninstall puts it back)"
-            elif [ "$(env_count "$engine_env" "$key")" != "1" ]; then
-              say "adopting the engine's existing $key (collapsing $(env_count "$engine_env" "$key") copies)"
-            else
-              say "adopting the engine's existing $key"
-            fi
-            env_set "$engine_env" "$key" "$adopt"
-            ;;
-          IRISES_URL)
-            # TAKEN OVER, out loud. The engine has to reach THIS install, so a value naming another
-            # port or host cannot stand — but it is also the operator's line, so it is named (a URL
-            # is not a secret) and it is restored from the pre-install backup by --uninstall.
-            if [ "$cur" != "$val" ]; then
-              warn "IRISES_URL in $engine_env pointed at $cur; this install ($val) takes over"
-              warn "(--uninstall puts it back from $restore_from)"
-            fi
-            env_set "$engine_env" "$key" "$val"
-            ;;
-          API_SERVER_ENABLED)
-            # TAKEN OVER too: with the engine's API server off there is no deep work, and an install
-            # that silently leaves it off is an install that does not work. Restored on --uninstall.
-            if [ "$cur" != "$val" ]; then
-              warn "API_SERVER_ENABLED in $engine_env was $cur; Irises needs $val to reach the engine's API"
-              warn "(--uninstall puts it back from $restore_from)"
-            fi
-            env_set "$engine_env" "$key" "$val"
-            ;;
-          *)
-            # Anything added to the list above later, reported by NAME only: the shape of a value we
-            # have not thought about is not something to print into a terminal that gets pasted.
-            if [ "$cur" != "$val" ]; then
-              say "$key in $engine_env now carries this install's value (--uninstall puts it back)"
-            fi
-            env_set "$engine_env" "$key" "$val"
-            ;;
-        esac
-        # RETARGETED or not, decided by the FILE rather than by the branch above: an env_set that
-        # wrote back the value already there changed nothing, and --uninstall must not "restore" a key
-        # this install never moved — an API_SERVER_KEY the operator rotated a month later would go
-        # back to a dead value and take every other client of the engine down with it. Adopted keys
-        # and duplicate-collapses therefore compare equal and are never recorded. Only pre-existing
-        # keys are tracked: one of ours is removed whole on uninstall, not restored.
-        if [ "$was_pre" = "1" ] && [ "$(env_get "$engine_env" "$key")" != "$cur" ]; then
-          keys_retargeted="$keys_retargeted $key"
-        fi
-      else
-        keys_added="$keys_added $key"
-        pairs_arr[$pairs_n]="$key=$val"
-        pairs_n=$((pairs_n + 1))
+      done
+      if [ "$pairs_n" -gt 0 ]; then
+        env_append_block "$engine_env" "Irises server" "${pairs_arr[@]}"
       fi
-    done
-    if [ "$pairs_n" -gt 0 ]; then
-      env_append_block "$engine_env" "Irises server" "${pairs_arr[@]}"
-    fi
-    if [ "$BRIDGE" = "1" ]; then
-      if [ "$(env_count "$engine_env" IRISES_BRIDGE_TOKEN)" = "0" ]; then
-        keys_added="$keys_added IRISES_BRIDGE_TOKEN"
-        env_append_block "$engine_env" "bridge mode" "IRISES_BRIDGE_TOKEN=$token"
-      else
-        was_pre=0
-        cur="$(env_get "$engine_env" IRISES_BRIDGE_TOKEN)"
-        if key_was_ours IRISES_BRIDGE_TOKEN "$prev_added"; then
+      if [ "$BRIDGE" = "1" ]; then
+        if [ "$(env_count "$engine_env" IRISES_BRIDGE_TOKEN)" = "0" ]; then
           keys_added="$keys_added IRISES_BRIDGE_TOKEN"
+          env_append_block "$engine_env" "bridge mode" "IRISES_BRIDGE_TOKEN=$token"
         else
-          keys_pre="$keys_pre IRISES_BRIDGE_TOKEN"
-          was_pre=1
+          was_pre=0
+          cur="$(env_get "$engine_env" IRISES_BRIDGE_TOKEN)"
+          if key_was_ours IRISES_BRIDGE_TOKEN "$prev_added"; then
+            keys_added="$keys_added IRISES_BRIDGE_TOKEN"
+          else
+            keys_pre="$keys_pre IRISES_BRIDGE_TOKEN"
+            was_pre=1
+          fi
+          # ADOPTED like IRISES_PUSH_TOKEN, and for the same reason: the bridge token IS the push token
+          # in this design (inboundRouter.ts and enginePush.ts both check ENGINE_PUSH_TOKEN), and step 4
+          # already took this clone's copy from whichever of the two the engine had. So this env_set
+          # writes back the value that is there — except in the one case where the engine held a
+          # DIFFERENT value under each name, which no server can satisfy: the push token wins, said out
+          # loud by name, and --uninstall puts the other back.
+          #
+          # A present-but-empty line is the third case, and it is not adoption either: `IRISES_BRIDGE_TOKEN=`
+          # authenticates nothing, so this install's value goes in and is recorded as a move.
+          if [ -z "$cur" ]; then
+            say "the engine's IRISES_BRIDGE_TOKEN was empty — set it to this install's value"
+            say "(--uninstall puts the empty line back from $restore_from)"
+          elif [ "$cur" != "$token" ]; then
+            warn "IRISES_BRIDGE_TOKEN in $engine_env did not match IRISES_PUSH_TOKEN — one secret, two names."
+            warn "Both now carry the push token; --uninstall puts this one back from $restore_from"
+          else
+            say "adopting the engine's existing IRISES_BRIDGE_TOKEN"
+          fi
+          env_set "$engine_env" IRISES_BRIDGE_TOKEN "$token"
+          # The one branch here that CAN move a pre-existing value, tracked the same way as the four
+          # above: adopted (equal) leaves the list alone, the two-names mismatch does not.
+          if [ "$was_pre" = "1" ] && [ "$(env_get "$engine_env" IRISES_BRIDGE_TOKEN)" != "$cur" ]; then
+            keys_retargeted="$keys_retargeted IRISES_BRIDGE_TOKEN"
+          fi
         fi
-        # ADOPTED like IRISES_PUSH_TOKEN, and for the same reason: the bridge token IS the push token
-        # in this design (inboundRouter.ts and enginePush.ts both check ENGINE_PUSH_TOKEN), and step 4
-        # already took this clone's copy from whichever of the two the engine had. So this env_set
-        # writes back the value that is there — except in the one case where the engine held a
-        # DIFFERENT value under each name, which no server can satisfy: the push token wins, said out
-        # loud by name, and --uninstall puts the other back.
-        #
-        # A present-but-empty line is the third case, and it is not adoption either: `IRISES_BRIDGE_TOKEN=`
-        # authenticates nothing, so this install's value goes in and is recorded as a move.
-        if [ -z "$cur" ]; then
-          say "the engine's IRISES_BRIDGE_TOKEN was empty — set it to this install's value"
-          say "(--uninstall puts the empty line back from $restore_from)"
-        elif [ "$cur" != "$token" ]; then
-          warn "IRISES_BRIDGE_TOKEN in $engine_env did not match IRISES_PUSH_TOKEN — one secret, two names."
-          warn "Both now carry the push token; --uninstall puts this one back from $restore_from"
+        if [ "$(env_count "$engine_env" IRISES_FRONT)" = "0" ]; then
+          keys_added="$keys_added IRISES_FRONT"
+          env_append_block "$engine_env" "front scope (edit to narrow, e.g. telegram:*)" "IRISES_FRONT=$FRONT_PATTERN"
+          # The default scope is still the loud one, because it still means what it says. A scope the
+          # operator NAMED is a decision they already made, so it is reported, not warned about.
+          if [ "$FRONT_PATTERN" = "*:*" ]; then
+            warn "IRISES_FRONT=*:*  — Irises now answers EVERY chat on EVERY platform this engine fronts."
+            warn "Narrow it in $engine_env (patterns are fnmatch globs over <platform>:<chat_id>)."
+          else
+            say "IRISES_FRONT=$FRONT_PATTERN — Irises answers only the chats that match; the engine keeps the rest."
+            say "Widen or narrow it in $engine_env (patterns are fnmatch globs over <platform>:<chat_id>)."
+          fi
+        elif key_was_ours IRISES_FRONT "$prev_added"; then
+          # Ours from the last install, and left exactly as it stands — a scope narrowed by hand after
+          # that install is the operator's, even though the line itself came from us.
+          keys_added="$keys_added IRISES_FRONT"
+          say "keeping the IRISES_FRONT this install already set ($(env_get "$engine_env" IRISES_FRONT))"
+          front_says_kept "$engine_env"
         else
-          say "adopting the engine's existing IRISES_BRIDGE_TOKEN"
-        fi
-        env_set "$engine_env" IRISES_BRIDGE_TOKEN "$token"
-        # The one branch here that CAN move a pre-existing value, tracked the same way as the four
-        # above: adopted (equal) leaves the list alone, the two-names mismatch does not.
-        if [ "$was_pre" = "1" ] && [ "$(env_get "$engine_env" IRISES_BRIDGE_TOKEN)" != "$cur" ]; then
-          keys_retargeted="$keys_retargeted IRISES_BRIDGE_TOKEN"
+          keys_pre="$keys_pre IRISES_FRONT"
+          say "keeping your IRISES_FRONT ($(env_get "$engine_env" IRISES_FRONT))"
+          front_says_kept "$engine_env"
         fi
       fi
-      if [ "$(env_count "$engine_env" IRISES_FRONT)" = "0" ]; then
-        keys_added="$keys_added IRISES_FRONT"
-        env_append_block "$engine_env" "front scope (edit to narrow, e.g. telegram:*)" "IRISES_FRONT=$FRONT_PATTERN"
-        # The default scope is still the loud one, because it still means what it says. A scope the
-        # operator NAMED is a decision they already made, so it is reported, not warned about.
-        if [ "$FRONT_PATTERN" = "*:*" ]; then
-          warn "IRISES_FRONT=*:*  — Irises now answers EVERY chat on EVERY platform this engine fronts."
-          warn "Narrow it in $engine_env (patterns are fnmatch globs over <platform>:<chat_id>)."
-        else
-          say "IRISES_FRONT=$FRONT_PATTERN — Irises answers only the chats that match; the engine keeps the rest."
-          say "Widen or narrow it in $engine_env (patterns are fnmatch globs over <platform>:<chat_id>)."
-        fi
-      elif key_was_ours IRISES_FRONT "$prev_added"; then
-        # Ours from the last install, and left exactly as it stands — a scope narrowed by hand after
-        # that install is the operator's, even though the line itself came from us.
-        keys_added="$keys_added IRISES_FRONT"
-        say "keeping the IRISES_FRONT this install already set ($(env_get "$engine_env" IRISES_FRONT))"
-        front_says_kept "$engine_env"
-      else
-        keys_pre="$keys_pre IRISES_FRONT"
-        say "keeping your IRISES_FRONT ($(env_get "$engine_env" IRISES_FRONT))"
-        front_says_kept "$engine_env"
-      fi
+      engine_env_applied=true
+    else
+      engine_env_manual "$engine_env" "$port"
+      engine_env_pending="$ENGINE_ENV_PENDING"
+      # Nothing of ours went into that file, so there is nothing for a later --uninstall to put back
+      # — including anything an EARLIER install moved, whose record this manifest is about to
+      # overwrite. engineEnvApplied=false is what says so, in one place, to both of them.
+      prev_retargeted=""
+      prev_added=""
+    fi
+    # The plugin is a copy into the engine's own plugin dir, not a line in its .env, so it lands
+    # whichever way the question above was answered.
+    if [ "$BRIDGE" = "1" ]; then
       # plugin_dir is set only when the refresh actually put the plugin there — the summary and the
       # manifest both read it, and neither may claim a plugin that is not on disk.
       if plugin_refresh hermes "$ROOT"; then
@@ -698,6 +834,8 @@ do_install() {
     "keysRetargeted=${keys_retargeted# }" \
     "bridge=$BRIDGE" \
     "frontPattern=$FRONT_PATTERN" \
+    "engineEnvApplied=$engine_env_applied" \
+    "engineEnvPending=$engine_env_pending" \
     || warn "could not write the install manifest — --uninstall will have to fall back to the marker comments"
 
   # ── 10. the gateway. ALWAYS, when an engine is configured: the plugin, IRISES_FRONT and
@@ -764,6 +902,23 @@ do_uninstall() {
       say "this manifest predates keysRetargeted, so which pre-existing keys that install actually"
       say "changed is not recorded. Only the two an install HAS to take over are put back${keys_retargeted:+ ($keys_retargeted)};"
       say "everything else it found in place is left exactly as it stands now."
+    fi
+    # An install that wrote nothing to the engine's .env — `--engine-env print`, or an `ask` that was
+    # answered no — recorded engineEnvApplied=false. Nothing of ours is in that file, so nothing of
+    # ours comes out of it: no backup, no removal, no restore. A manifest written before this key
+    # existed says nothing at all, and silence means the install DID write, which is what every
+    # install before it did.
+    if [ "$(manifest_read "$man" engineEnvApplied)" = "false" ]; then
+      say "that install wrote nothing to the engine's .env, so this run takes nothing out of it"
+      local pending
+      pending="$(manifest_read "$man" engineEnvPending)"
+      if [ -n "$pending" ]; then
+        say "it left these for you to apply by hand: $pending"
+        say "if you did apply them, they are yours now — remove them from $engine_env yourself"
+      fi
+      engine_env=""
+      keys_added=""
+      keys_retargeted=""
     fi
   else
     warn "no install manifest at $man — falling back to detection"
