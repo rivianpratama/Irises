@@ -30,6 +30,7 @@
     "copy:context": "cpx \"src/agents/**/*.md\" dist/agents && cpx \"src/**/*.txt\" dist",
     "start": "node dist/index.js",
     "chat": "tsx scripts/irises-chat.ts",
+    "setup": "bash scripts/irises.sh",
     "install:web": "npm --prefix web install",
     "test": "cross-env TZ=UTC DATA_BACKEND=memory tsx --test \"src/**/*.test.ts\" \"scripts/**/*.test.ts\"",
     "e2e:lifecycle": "bash scripts/e2e/lifecycle-sandbox.sh",

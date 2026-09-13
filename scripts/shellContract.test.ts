@@ -64,8 +64,12 @@ for (const file of FILES) {
 }
 
 test('every lifecycle script sources the library the one supported way', () => {
-  const lifecycle = FILES.filter(f => /(engine-setup|update)\.sh$/.test(f));
-  assert.equal(lifecycle.length, 2, `expected engine-setup.sh and update.sh, found ${lifecycle.length}`);
+  // irises.sh joined the two: it is the menu, and it reaches the same helpers — service_stop for
+  // "stop only", the prompt helpers for every question — so the sourcing rule covers it too. A
+  // relative `source scripts/lib/…` works from the clone root and nowhere else, and the front door
+  // is the one file a person is most likely to run by absolute path from their home directory.
+  const lifecycle = FILES.filter(f => /(engine-setup|update|irises)\.sh$/.test(f));
+  assert.equal(lifecycle.length, 3, `expected engine-setup.sh, update.sh and irises.sh, found ${lifecycle.length}`);
   for (const f of lifecycle) {
     const body = readFileSync(f, 'utf8');
     assert.match(
