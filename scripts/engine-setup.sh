@@ -51,6 +51,12 @@ BRIDGE=1
 SERVICE=1
 PURGE_DATA=0
 PORT_FLAG=""
+# The front scope this install writes when the engine carries none. `*:*` is what every install has
+# written since there was an installer, so it stays the default; IRISES_FRONT_PATTERN is the env
+# form of --front, for a wrapper that already has the answer.
+FRONT_PATTERN="${IRISES_FRONT_PATTERN:-*:*}"
+FRONT_EXPLICIT=0
+if [ -n "${IRISES_FRONT_PATTERN:-}" ]; then FRONT_EXPLICIT=1; fi
 
 usage() {
   cat <<'EOF'
@@ -62,6 +68,9 @@ usage: bash ./scripts/engine-setup.sh [options]          # install
   --no-bridge                leave the engine answering its own channels (no plugin, no fronting)
   --no-service               do not install a user service; run Irises detached instead
   --port N                   pin the port Irises listens on (default 3000)
+  --front PATTERNS           which chats Irises fronts: comma-separated <platform>:<glob> items,
+                             written to the engine's IRISES_FRONT when it carries none
+                             (default *:*, every chat on every platform the engine speaks)
   --uninstall                remove Irises: service, plugin, engine keys. Your data is KEPT, and so
                              is this clone (the exact rm for each is printed)
   --purge-data               with --uninstall: also delete $IRISES_HOME (irises.db + memories)
@@ -79,6 +88,8 @@ while [ $# -gt 0 ]; do
     --engine=*)    ENGINE_FLAG="${1#--engine=}"; shift ;;
     --port)        PORT_FLAG="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --port=*)      PORT_FLAG="${1#--port=}"; shift ;;
+    --front)       FRONT_PATTERN="${2:-}"; FRONT_EXPLICIT=1; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --front=*)     FRONT_PATTERN="${1#--front=}"; FRONT_EXPLICIT=1; shift ;;
     --uninstall)   MODE="uninstall"; shift ;;
     --purge-data)  PURGE_DATA=1; shift ;;
     --yes|-y)      ASSUME_YES=1; shift ;;
@@ -104,6 +115,13 @@ case "$PORT_FLAG" in
   '') ;;
   *[!0-9]*) err "--port needs a plain port number, got '$PORT_FLAG'"; exit 2 ;;
 esac
+# Checked HERE, before anything is built, because the engine fronts NOTHING for an IRISES_FRONT it
+# cannot parse — which on the other end looks exactly like an install that silently did not work.
+if ! front_pattern_valid "$FRONT_PATTERN"; then
+  err "--front takes comma-separated <platform>:<glob> items, got '$FRONT_PATTERN'"
+  err "e.g. --front 'telegram:*'  ·  --front 'telegram:*,whatsapp:+1555*'  ·  the default is '*:*'"
+  exit 2
+fi
 
 # No TTY = nobody can answer a question, so don't ask one. An agent-driven run lands here (both
 # engines spawn shell commands with stdin at /dev/null, so any `read` would hit EOF immediately).
@@ -172,6 +190,20 @@ retarget_pending() { # ENGINE_ENV PRE_BACKUP KEY -> 0 = yes
 # A credential is reported by NAME ONLY: this script's output gets pasted into chats and issues.
 # `show` is for the values that are not secrets (OPS_BACKEND is hermes|openclaw|off, and the script
 # prints the engine it chose anyway), where seeing both sides is the whole point of the line.
+# A scope this run was TOLD to use, against one the engine already carries. The file wins — an
+# IRISES_FRONT already in place is either the operator's or a previous install's, and narrowing it
+# from under them on a re-run is how a scope someone widened on purpose quietly snaps back. Said out
+# loud, with the one line that changes it, rather than done silently or not mentioned at all.
+front_says_kept() { # ENGINE_ENV
+  local f="${1:-}" cur
+  if [ "$FRONT_EXPLICIT" != "1" ]; then return 0; fi
+  cur="$(env_get "$f" IRISES_FRONT)"
+  if [ "$cur" = "$FRONT_PATTERN" ]; then return 0; fi
+  say "--front asked for $FRONT_PATTERN, and the scope already in $f is what stands."
+  say "To take it over:  IRISES_FRONT=$FRONT_PATTERN  in that file, then bounce the engine's gateway"
+  return 0
+}
+
 announce_overwrite() { # KEY NEWVALUE [show]
   local key="${1:-}" new="${2:-}" show="${3:-}" cur
   cur="$(env_get "$ENV_FILE" "$key")"
@@ -584,17 +616,26 @@ do_install() {
       fi
       if [ "$(env_count "$engine_env" IRISES_FRONT)" = "0" ]; then
         keys_added="$keys_added IRISES_FRONT"
-        env_append_block "$engine_env" "front scope (edit to narrow, e.g. telegram:*)" "IRISES_FRONT=*:*"
-        warn "IRISES_FRONT=*:*  — Irises now answers EVERY chat on EVERY platform this engine fronts."
-        warn "Narrow it in $engine_env (patterns are fnmatch globs over <platform>:<chat_id>)."
+        env_append_block "$engine_env" "front scope (edit to narrow, e.g. telegram:*)" "IRISES_FRONT=$FRONT_PATTERN"
+        # The default scope is still the loud one, because it still means what it says. A scope the
+        # operator NAMED is a decision they already made, so it is reported, not warned about.
+        if [ "$FRONT_PATTERN" = "*:*" ]; then
+          warn "IRISES_FRONT=*:*  — Irises now answers EVERY chat on EVERY platform this engine fronts."
+          warn "Narrow it in $engine_env (patterns are fnmatch globs over <platform>:<chat_id>)."
+        else
+          say "IRISES_FRONT=$FRONT_PATTERN — Irises answers only the chats that match; the engine keeps the rest."
+          say "Widen or narrow it in $engine_env (patterns are fnmatch globs over <platform>:<chat_id>)."
+        fi
       elif key_was_ours IRISES_FRONT "$prev_added"; then
         # Ours from the last install, and left exactly as it stands — a scope narrowed by hand after
         # that install is the operator's, even though the line itself came from us.
         keys_added="$keys_added IRISES_FRONT"
         say "keeping the IRISES_FRONT this install already set ($(env_get "$engine_env" IRISES_FRONT))"
+        front_says_kept "$engine_env"
       else
         keys_pre="$keys_pre IRISES_FRONT"
         say "keeping your IRISES_FRONT ($(env_get "$engine_env" IRISES_FRONT))"
+        front_says_kept "$engine_env"
       fi
       # plugin_dir is set only when the refresh actually put the plugin there — the summary and the
       # manifest both read it, and neither may claim a plugin that is not on disk.
@@ -656,6 +697,7 @@ do_install() {
     "keysPreExisting=${keys_pre# }" \
     "keysRetargeted=${keys_retargeted# }" \
     "bridge=$BRIDGE" \
+    "frontPattern=$FRONT_PATTERN" \
     || warn "could not write the install manifest — --uninstall will have to fall back to the marker comments"
 
   # ── 10. the gateway. ALWAYS, when an engine is configured: the plugin, IRISES_FRONT and
