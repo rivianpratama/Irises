@@ -35,8 +35,9 @@ Irises rides **on top of** this hermes: on boot it auto-detects it (sets `OPS_BA
 reuses this hermes's API key, and makes its own voice **inherit this hermes's provider, endpoint and
 model** — including when this hermes runs on an OpenAI-compatible or otherwise obscure API (OpenAI,
 Azure, vLLM, deepseek-direct, Groq, a self-hosted gateway…), not just OpenRouter or Anthropic. The
-voice keeps a cheap, fast model on that same API so replies stay snappy; deep work always uses this
-hermes's own model. There is nothing to configure by hand.
+voice runs this hermes's OWN model on every lane it can reach — no stand-in slug is substituted — so
+chat turns cost and pace what this hermes's model does; deep work uses that same model, as always.
+There is nothing to configure by hand.
 
 ## 1. Check the prerequisites (read-only — these you MAY run)
 

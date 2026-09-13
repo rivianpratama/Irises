@@ -197,29 +197,38 @@ no dotenv files) discovery finds nothing and the compose-injected env stands.
 ### Model inheritance
 
 Deep work already runs on the engine's model. On top of that, discovery reads the engine's configured
-**provider + endpoint + key** and points Irises's own voice roles (`convo`, `classify`, `fallfirm`) at
-the *same API the engine uses* — so Irises's voice works no matter what the engine runs on, including
-an "obscure" (non-OpenRouter, non-Anthropic) API.
+**model + provider + endpoint + key** and points Irises's own voice roles (`convo`, `classify`,
+`fallfirm`) at the *same model on the same API* — so Irises's voice works no matter what the engine
+runs on, including an "obscure" (non-OpenRouter, non-Anthropic) API, and answers on the model you
+actually chose.
 
 | Engine | Where it's read | Keys read |
 |---|---|---|
 | hermes | `hermes config get model.default / model.provider / model.base_url / model.api_key / model.api_mode` (env/`~/.hermes/config.yaml` fallbacks) | reuses `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` from `~/.hermes/.env` |
 | OpenClaw | `openclaw config get agents.entries.<agent>.model`, else `agents.defaults.model.primary` | reuses the engine token |
 
-**Which model Irises's voice defaults to** (all three voice roles, overridable):
+**Which model Irises's voice runs** (all three voice roles, overridable):
 
-| Engine provider | Irises voice lane | Default voice model |
+| Engine provider | Irises voice lane | Voice model |
 |---|---|---|
-| `openrouter` | openrouter | `deepseek/deepseek-v4-flash:nitro` (curated cheap) |
-| `openai` | openai (api.openai.com) | `gpt-5.6-luna` (curated cheap) |
-| `anthropic` | anthropic | `claude-sonnet-5` (curated cheap) |
+| `openrouter` | openrouter | the engine's own model |
+| `openai` | openai (api.openai.com) | the engine's own model |
+| `anthropic` | anthropic | the engine's own model (a leading `anthropic/` comes off — the Messages API takes a bare id) |
 | any other OpenAI-compatible (azure, deepseek-direct, vLLM, groq, custom, …) | openai @ the engine's `base_url` | the engine's own model |
 | foreign auth/protocol (bedrock, vertex, gemini-native, codex/nous/xai-OAuth) | *not reachable directly* → keeps a working fallback lane + warns | — |
 
-The chat voice deliberately keeps a **cheap, fast** model even when the engine runs a big deep-work
-model, so replies stay snappy; a curated slug is used for the three named providers, and the engine's
-own model for any other reachable OpenAI-compatible host. Deep work always uses the engine's real
-model regardless.
+There is no stand-in slug on any lane. Inheritance means the voice runs the model the engine runs,
+on the engine's own key — the one reshaping is spelling an id the way its API accepts it. The
+trade-off is the honest one: a big deep-work model answers chat turns too, at its price and its
+latency. Want a smaller, faster voice than the engine's? Name it per role with `<ROLE>_MODEL` /
+`<ROLE>_MODEL_OPENROUTER` / `<ROLE>_MODEL_OPENAI`, or turn inheritance off and keep Irises's own
+shipped models. Deep work always uses the engine's real model regardless.
+
+One heads-up is logged rather than acted on: if the inherited model is a reasoning family that thinks
+by default (`deepseek-v4*`, `deepseek-r*`, `o1/o3/o4`, `*-thinking`) while the voice roles have no
+thinking armed, boot prints which roles run small per-call caps that thinking can spend before an
+answer, and what that lane does about it. Nothing is substituted; the line names
+`ENGINE_MODEL_INHERIT=off` as the way out.
 
 Transcription and embeddings are never inherited as chat models but do follow the OpenRouter→OpenAI
 lane (they degrade to lexical recall / disabled voice-memo transcription, with a note in the model
