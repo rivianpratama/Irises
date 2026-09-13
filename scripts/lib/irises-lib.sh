@@ -1711,3 +1711,196 @@ lifecycle_exit_guard() { # RC
   fi
   exit "$rc"
 }
+
+# ═══ G. terminal prompts ══════════════════════════════════════════════════════
+# The one implementation of "ask a human something" for every lifecycle script. Three rules, and
+# each is load-bearing:
+#
+#  1. NEVER key off `[ -t 0 ]`. Whether a run may ask is a DECISION the script makes (its --yes, its
+#     own no-TTY detection) and publishes as IRISES_ASSUME_YES; a helper that re-derives it from the
+#     terminal cannot be driven by a test, and answers piped in from a heredoc would be thrown away.
+#     Every helper here reads stdin and stdin only.
+#  2. THE PROMPT IS NOT THE VALUE. Helpers whose answer a caller captures — ask_choice, ask_text,
+#     ask_secret — write the question to STDERR and the answer to STDOUT, so `v="$(ask_text …)"` gets
+#     the value and nothing else, and so nothing of a question can ever land in the `RESULT:` line a
+#     wrapper parses. (ask_yn returns a status rather than a value, and keeps its prompt on stdout,
+#     where engine-setup.sh has always printed it.)
+#  3. EOF IS AN ANSWER — the default. A terminal that goes away mid-run (the SSH drop behind
+#     update.sh's log) must not leave a lifecycle script blocked on a `read` forever.
+
+# May this run ask a question? Non-zero when the caller has already said "take every default".
+ui_interactive() {
+  if [ "${IRISES_ASSUME_YES:-}" = "1" ]; then return 1; fi
+  return 0
+}
+
+# ask_yn QUESTION DEFAULT(y|n) -> 0 = yes
+# Moved here from scripts/engine-setup.sh, which had the only copy. Empty input (a bare Enter, or
+# EOF) takes DEFAULT, and the brackets show which one that is.
+ask_yn() {
+  local q="${1:-}" def="${2:-n}" yn="" brackets="[y/N]"
+  if [ "$def" = "y" ]; then brackets="[Y/n]"; fi
+  if [ "${IRISES_ASSUME_YES:-}" = "1" ]; then
+    say "$q — taking '$def' (--yes / non-interactive)"
+    if [ "$def" = "y" ]; then return 0; fi
+    return 1
+  fi
+  printf '\033[33m[%s]\033[0m %s %s ' "${IRISES_LOG_TAG:-irises}" "$q" "$brackets"
+  read -r yn || yn=""
+  case "$yn" in
+    '') if [ "$def" = "y" ]; then return 0; fi; return 1 ;;
+    y|Y|yes|YES) return 0 ;;
+  esac
+  return 1
+}
+
+# ask_choice PROMPT DEFAULT_INDEX LABEL… -> echoes the chosen 1-based index on stdout.
+# Invalid input re-asks (three tries, because a fourth is a stuck pipe rather than a typo), then
+# takes the default. Non-interactive echoes the default and says nothing.
+ask_choice() {
+  local prompt="${1:-choose}" def="${2:-1}" n=0 i tries=0 answer=""
+  shift 2 || true
+  n="$#"
+  if [ "$n" -eq 0 ]; then return 1; fi
+  case "$def" in ''|*[!0-9]*) def=1 ;; esac
+  if [ "$def" -lt 1 ] || [ "$def" -gt "$n" ]; then def=1; fi
+  if [ "${IRISES_ASSUME_YES:-}" = "1" ]; then
+    printf '%s' "$def"
+    return 0
+  fi
+  i=1
+  for answer in "$@"; do
+    printf '  %s) %s\n' "$i" "$answer" >&2
+    i=$((i + 1))
+  done
+  while [ "$tries" -lt 3 ]; do
+    tries=$((tries + 1))
+    printf '\033[33m[%s]\033[0m %s [%s]: ' "${IRISES_LOG_TAG:-irises}" "$prompt" "$def" >&2
+    read -r answer || answer=""
+    case "$answer" in
+      '') printf '%s' "$def"; return 0 ;;
+      *[!0-9]*) ;;
+      *) if [ "$answer" -ge 1 ] && [ "$answer" -le "$n" ]; then printf '%s' "$answer"; return 0; fi ;;
+    esac
+    warn "pick a number from 1 to $n"
+  done
+  warn "taking $def"
+  printf '%s' "$def"
+  return 0
+}
+
+# ask_text PROMPT DEFAULT [VALIDATOR_FN] -> echoes the value on stdout.
+# VALIDATOR_FN is called with the candidate and decides by exit status. Three failed tries echo the
+# DEFAULT and return 1, so a caller can tell "they meant this" from "they never got it right".
+ask_text() {
+  local prompt="${1:-value}" def="${2:-}" validator="${3:-}" tries=0 answer=""
+  if [ "${IRISES_ASSUME_YES:-}" = "1" ]; then
+    printf '%s' "$def"
+    return 0
+  fi
+  while [ "$tries" -lt 3 ]; do
+    tries=$((tries + 1))
+    printf '\033[33m[%s]\033[0m %s [%s]: ' "${IRISES_LOG_TAG:-irises}" "$prompt" "$def" >&2
+    read -r answer || answer=""
+    if [ -z "$answer" ]; then answer="$def"; fi
+    if [ -z "$validator" ]; then
+      printf '%s' "$answer"
+      return 0
+    fi
+    if "$validator" "$answer"; then
+      printf '%s' "$answer"
+      return 0
+    fi
+    warn "that is not a value $validator accepts — try again"
+  done
+  warn "keeping the default instead"
+  printf '%s' "$def"
+  return 1
+}
+
+# ask_secret PROMPT -> echoes the value on stdout, and NEVER anywhere else.
+# Non-interactive returns 1 with an empty stdout: a secret is the one thing a --yes run may not
+# invent for the operator. The terminal's echo is restored even if the read is interrupted.
+ask_secret() {
+  local prompt="${1:-secret}" v="" prev_int=""
+  if [ "${IRISES_ASSUME_YES:-}" = "1" ]; then return 1; fi
+  printf '\033[33m[%s]\033[0m %s ' "${IRISES_LOG_TAG:-irises}" "$prompt" >&2
+  if [ -t 0 ]; then
+    prev_int="$(trap -p INT 2>/dev/null || true)"
+    trap 'stty echo 2>/dev/null || true' INT
+    read -rs v || v=""
+    if [ -n "$prev_int" ]; then eval "$prev_int"; else trap - INT; fi
+    stty echo 2>/dev/null || true
+  else
+    read -r v || v=""
+  fi
+  printf '\n' >&2
+  printf '%s' "$v"
+  return 0
+}
+
+# ask_confirm_token PROMPT TOKEN -> 0 only when the operator typed TOKEN exactly.
+# The gate in front of anything irreversible. It refuses under IRISES_ASSUME_YES on purpose: a
+# --yes that could type the word for them is not a gate, and every caller of this one is a step that
+# has to be chosen by a human at the keyboard.
+ask_confirm_token() {
+  local prompt="${1:-type the word to confirm}" token="${2:-}" answer=""
+  if [ -z "$token" ]; then return 1; fi
+  if [ "${IRISES_ASSUME_YES:-}" = "1" ]; then
+    warn "this step has to be confirmed by hand — a non-interactive run cannot type '$token' for you"
+    return 1
+  fi
+  printf '\033[31m[%s]\033[0m %s ' "${IRISES_LOG_TAG:-irises}" "$prompt" >&2
+  # `IFS= read`, not a bare one: the default IFS strips the spaces off what was typed, and " delete "
+  # would then pass a gate whose whole promise is that nothing but the word itself does.
+  IFS= read -r answer || answer=""
+  if [ "$answer" = "$token" ]; then return 0; fi
+  return 1
+}
+
+# front_pattern_valid PATTERN -> 0 when every comma-separated item is <platform>:<glob>.
+# IRISES_FRONT is fnmatch globs over `<platform>:<chat_id>`, and the engine silently fronts NOTHING
+# for a line it cannot parse — which looks exactly like an install that did not work.
+front_pattern_valid() {
+  local p="${1:-}" item rest
+  if [ -z "$p" ]; then return 1; fi
+  case "$p" in
+    ,*|*,|*,,*) return 1 ;;
+  esac
+  rest="$p"
+  while [ -n "$rest" ]; do
+    case "$rest" in
+      *,*) item="${rest%%,*}"; rest="${rest#*,}" ;;
+      *)   item="$rest"; rest="" ;;
+    esac
+    if [[ ! "$item" =~ ^[A-Za-z0-9_.*-]+:[^,[:space:]]+$ ]]; then return 1; fi
+  done
+  return 0
+}
+
+# archive_home DEST -> a tar.gz of $IRISES_HOME at DEST; echoes the path on stdout.
+# Offered in front of --purge-data, which is the only step in the whole lifecycle that destroys
+# something irreplaceable. An empty DEST picks $HOME/.irises-backup-<timestamp>.tar.gz.
+archive_home() {
+  local dest="${1:-}" home base parent
+  home="$(irises_home)"
+  if [ ! -d "$home" ]; then
+    err "there is no $home to archive"
+    return 1
+  fi
+  if ! command -v tar >/dev/null 2>&1; then
+    err "no tar on this box — copy $home somewhere yourself before deleting it"
+    return 1
+  fi
+  if [ -z "$dest" ]; then dest="$HOME/.irises-backup-$(date +%Y%m%d-%H%M%S).tar.gz"; fi
+  base="$(basename "$home")"
+  parent="$(dirname "$home")"
+  if ! tar -czf "$dest" -C "$parent" "$base" 2>/dev/null; then
+    err "could not write $dest — a full disk, or a directory that is not writable"
+    rm -f "$dest" 2>/dev/null || true
+    return 1
+  fi
+  chmod 600 "$dest" 2>/dev/null || true
+  log "archived $home -> $dest"
+  printf '%s' "$dest"
+}
