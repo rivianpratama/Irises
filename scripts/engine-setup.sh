@@ -63,6 +63,12 @@ if [ -n "${IRISES_FRONT_PATTERN:-}" ]; then FRONT_EXPLICIT=1; fi
 # there is nothing of ours in that file to take back out.
 ENGINE_ENV_MODE="apply"
 ENGINE_ENV_PENDING=""
+# A model for Irises's own voice instead of the engine's. Empty = inherit, which is what every
+# install has done. The API key is NOT here and never will be: it comes from IRISES_MODEL_API_KEY in
+# the environment, because argv is readable by anything else on the box and lands in shell history.
+MODEL_LANE=""
+MODEL_SLUG=""
+MODEL_BASE_URL=""
 
 usage() {
   cat <<'EOF'
@@ -80,6 +86,13 @@ usage: bash ./scripts/engine-setup.sh [options]          # install
   --engine-env MODE          what may happen to the ENGINE's .env: apply (default, write the keys),
                              ask (show them first, write on a yes), print (never write; say what to
                              paste). print and a declined ask still install the bridge plugin
+  --model-lane LANE          give Irises's own voice a model instead of inheriting the engine's:
+                             anthropic | openrouter | openai. Needs --model-slug, and turns
+                             ENGINE_MODEL_INHERIT off (deep work still runs on the engine's model)
+  --model-slug ID            the model id, exactly as that provider spells it
+  --model-base-url URL       required with --model-lane openai; the OpenAI-compatible endpoint
+                             the API key for the chosen lane is read from the environment as
+                             IRISES_MODEL_API_KEY — never from a flag, never printed, never logged
   --uninstall                remove Irises: service, plugin, engine keys. Your data is KEPT, and so
                              is this clone (the exact rm for each is printed)
   --purge-data               with --uninstall: also delete $IRISES_HOME (irises.db + memories)
@@ -101,6 +114,12 @@ while [ $# -gt 0 ]; do
     --front=*)     FRONT_PATTERN="${1#--front=}"; FRONT_EXPLICIT=1; shift ;;
     --engine-env)  ENGINE_ENV_MODE="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --engine-env=*) ENGINE_ENV_MODE="${1#--engine-env=}"; shift ;;
+    --model-lane)  MODEL_LANE="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --model-lane=*) MODEL_LANE="${1#--model-lane=}"; shift ;;
+    --model-slug)  MODEL_SLUG="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --model-slug=*) MODEL_SLUG="${1#--model-slug=}"; shift ;;
+    --model-base-url) MODEL_BASE_URL="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --model-base-url=*) MODEL_BASE_URL="${1#--model-base-url=}"; shift ;;
     --uninstall)   MODE="uninstall"; shift ;;
     --purge-data)  PURGE_DATA=1; shift ;;
     --yes|-y)      ASSUME_YES=1; shift ;;
@@ -128,6 +147,31 @@ case "$PORT_FLAG" in
 esac
 # Checked HERE, before anything is built, because the engine fronts NOTHING for an IRISES_FRONT it
 # cannot parse — which on the other end looks exactly like an install that silently did not work.
+# The model override is all-or-nothing: a lane with no slug names no model, and a slug with no lane
+# cannot be written at all (the three lanes use three different key names). Both are refused here
+# rather than half-applied to this clone's .env.
+case "$MODEL_LANE" in
+  '')
+    if [ -n "$MODEL_SLUG" ] || [ -n "$MODEL_BASE_URL" ]; then
+      err "--model-slug / --model-base-url need --model-lane anthropic|openrouter|openai"
+      exit 2
+    fi ;;
+  anthropic|openrouter|openai)
+    if [ -z "$MODEL_SLUG" ]; then
+      err "--model-lane $MODEL_LANE needs --model-slug (the model id, exactly as that provider spells it)"
+      exit 2
+    fi
+    if [ "$MODEL_LANE" = "openai" ] && [ -z "$MODEL_BASE_URL" ]; then
+      err "--model-lane openai needs --model-base-url — an OpenAI-compatible lane is a URL plus a key,"
+      err "and guessing api.openai.com for a host that is not it fails at the first call"
+      exit 2
+    fi
+    if [ "$MODEL_LANE" != "openai" ] && [ -n "$MODEL_BASE_URL" ]; then
+      err "--model-base-url only applies to --model-lane openai"
+      exit 2
+    fi ;;
+  *) err "unknown --model-lane '$MODEL_LANE' — expected anthropic, openrouter or openai"; exit 2 ;;
+esac
 case "$ENGINE_ENV_MODE" in
   apply|ask|print) ;;
   *) err "unknown --engine-env '$ENGINE_ENV_MODE' — expected apply, ask or print"; exit 2 ;;
@@ -216,6 +260,55 @@ front_says_kept() { # ENGINE_ENV
   if [ "$cur" = "$FRONT_PATTERN" ]; then return 0; fi
   say "--front asked for $FRONT_PATTERN, and the scope already in $f is what stands."
   say "To take it over:  IRISES_FRONT=$FRONT_PATTERN  in that file, then bounce the engine's gateway"
+  return 0
+}
+
+# A model for Irises's OWN VOICE, instead of the engine's. Three keys per voice role, because
+# src/loadEnv.ts layers the engine's discovery UNDER this clone's .env — so what is written here is
+# what wins at boot, whatever the engine is running.
+#
+# ENGINE_MODEL_INHERIT=off is not optional and not cosmetic: applyModel() in
+# src/agents/ops/engineDiscovery.ts returns early when inheritance is off, and that early return is
+# also what suppresses its key and base-URL reuse. Leave inheritance on and the operator's own key
+# can end up pointed at the engine's gateway instead of the provider they chose. It is wider than
+# "pick a model" and the summary says so: engine detection and the HERMES_API_KEY / OPENCLAW_TOKEN
+# this install copies are outside applyModel and go on working, so deep work still runs on the
+# engine's model, through the engine.
+#
+# THE KEY COMES FROM THE ENVIRONMENT AND NOWHERE ELSE. Never a flag: argv is readable by every other
+# process on the box (ps, /proc) and lands in shell history. It is written to this clone's 0600 .env
+# and is never printed, logged or named with a value anywhere.
+model_override_write() {
+  local role key_name=""
+  say "voice model: $MODEL_SLUG on the $MODEL_LANE lane, for all three voice roles"
+  for role in CONVO CLASSIFY FALLFIRM; do
+    case "$MODEL_LANE" in
+      anthropic)  env_set "$ENV_FILE" "${role}_MODEL" "$MODEL_SLUG" ;;
+      openrouter) env_set "$ENV_FILE" "${role}_MODEL_OPENROUTER" "$MODEL_SLUG" ;;
+      openai)     env_set "$ENV_FILE" "${role}_MODEL_OPENAI" "$MODEL_SLUG" ;;
+    esac
+    env_set "$ENV_FILE" "${role}_PROVIDER" "$MODEL_LANE"
+  done
+  case "$MODEL_LANE" in
+    anthropic)  key_name=ANTHROPIC_API_KEY ;;
+    openrouter) key_name=OPENROUTER_API_KEY ;;
+    openai)     key_name=OPENAI_API_KEY ;;
+  esac
+  if [ -n "${IRISES_MODEL_API_KEY:-}" ]; then
+    env_set "$ENV_FILE" "$key_name" "$IRISES_MODEL_API_KEY"
+    say "$key_name was taken from IRISES_MODEL_API_KEY in the environment and written to $ENV_FILE (0600)"
+  else
+    warn "no IRISES_MODEL_API_KEY in the environment, so $key_name stays whatever $ENV_FILE had."
+    warn "Irises's own voice cannot call the $MODEL_LANE lane without one — add it and restart."
+  fi
+  if [ "$MODEL_LANE" = "openai" ]; then
+    env_set "$ENV_FILE" OPENAI_BASE_URL "$MODEL_BASE_URL"
+    say "OPENAI_BASE_URL=$MODEL_BASE_URL"
+  fi
+  env_set "$ENV_FILE" ENGINE_MODEL_INHERIT off
+  say "ENGINE_MODEL_INHERIT=off — Irises stops inheriting the engine's model, and its keys and base"
+  say "URL with it, for her own voice. Deep work still runs on the engine's model, through the engine."
+  chmod 600 "$ENV_FILE" 2>/dev/null || true
   return 0
 }
 
@@ -431,6 +524,12 @@ do_install() {
   else
     announce_overwrite OPS_BACKEND off show
     env_set "$ENV_FILE" OPS_BACKEND off
+  fi
+
+  # ── 4b. the voice model, when the operator picked one. AFTER the engine-key block above, because
+  #      this overrides what that block adopted: env_set, not env_set_default.
+  if [ -n "$MODEL_LANE" ]; then
+    model_override_write
   fi
 
   if [ -z "$(env_get "$ENV_FILE" ANTHROPIC_API_KEY)" ] \
@@ -835,6 +934,7 @@ do_install() {
     "bridge=$BRIDGE" \
     "frontPattern=$FRONT_PATTERN" \
     "engineEnvApplied=$engine_env_applied" \
+    "modelLane=${MODEL_LANE:-inherit}" \
     "engineEnvPending=$engine_env_pending" \
     || warn "could not write the install manifest — --uninstall will have to fall back to the marker comments"
 
