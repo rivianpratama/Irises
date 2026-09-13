@@ -7,6 +7,9 @@
 #   bash ./scripts/engine-setup.sh --no-service          # do not install a service; run detached
 #   bash ./scripts/engine-setup.sh --no-bridge           # leave the engine answering its own channels
 #   bash ./scripts/engine-setup.sh --port 3001           # pin a different port
+#   bash ./scripts/engine-setup.sh --front 'telegram:*'  # front only the chats you name
+#   bash ./scripts/engine-setup.sh --engine-env ask      # show the engine .env lines before writing
+#   bash ./scripts/engine-setup.sh --detach-engine       # undo the engine side, keep Irises + data
 #   bash ./scripts/engine-setup.sh --uninstall           # remove Irises, keep your data
 #   bash ./scripts/engine-setup.sh --uninstall --purge-data   # …and delete $IRISES_HOME too
 #
@@ -21,7 +24,7 @@
 # IRISES_FRONT and API_SERVER_* are only read when it starts.
 #
 # EXIT CODES
-#   0  installed (or uninstalled) and verified
+#   0  installed, uninstalled or detached, and verified
 #   1  a step failed — read the message; nothing is left half-started that we can tell you about
 #   2  wrong usage (unknown flag, unknown engine, bad port)
 #   4  Irises did not report the expected build on /health within the budget
@@ -46,6 +49,7 @@ IRISES_LOG_TAG="irises-setup"
 
 MODE="install"
 ENGINE_FLAG=""
+ARCHIVE_DATA=0
 ASSUME_YES=0
 BRIDGE=1
 SERVICE=1
@@ -74,6 +78,7 @@ usage() {
   cat <<'EOF'
 usage: bash ./scripts/engine-setup.sh [options]          # install
        bash ./scripts/engine-setup.sh --uninstall [options]
+       bash ./scripts/engine-setup.sh --detach-engine     # undo the engine side only
 
   --engine hermes|openclaw   which engine this clone talks to (default: auto-detect)
   --yes, -y                  non-interactive: take every default, never prompt
@@ -91,12 +96,21 @@ usage: bash ./scripts/engine-setup.sh [options]          # install
                              ENGINE_MODEL_INHERIT off (deep work still runs on the engine's model)
   --model-slug ID            the model id, exactly as that provider spells it
   --model-base-url URL       required with --model-lane openai; the OpenAI-compatible endpoint
-                             the API key for the chosen lane is read from the environment as
-                             IRISES_MODEL_API_KEY — never from a flag, never printed, never logged
   --uninstall                remove Irises: service, plugin, engine keys. Your data is KEPT, and so
                              is this clone (the exact rm for each is printed)
   --purge-data               with --uninstall: also delete $IRISES_HOME (irises.db + memories)
+  --archive-data             with --uninstall: tar $IRISES_HOME to ~/.irises-backup-<ts>.tar.gz
+                             first. With --purge-data it is the copy you keep; nothing is deleted
+                             if the archive cannot be written
+  --detach-engine            undo every engine-side change — the plugin, the keys Irises added, the
+                             values it moved — and leave Irises, its service and your data alone.
+                             The .bak-irises-* files stay. RESULT: detached
   -h, --help                 this text
+
+environment:
+  IRISES_MODEL_API_KEY       the API key for --model-lane. Read from the environment and nowhere
+                             else — never a flag, never printed, never logged
+  IRISES_FRONT_PATTERN       the env form of --front
 
 exit codes: 0 ok · 1 a step failed · 2 usage · 4 health not verified · 5 gateway not verified
 every run that gets past argument parsing ends its stdout with: RESULT: <token>
@@ -121,7 +135,9 @@ while [ $# -gt 0 ]; do
     --model-base-url) MODEL_BASE_URL="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --model-base-url=*) MODEL_BASE_URL="${1#--model-base-url=}"; shift ;;
     --uninstall)   MODE="uninstall"; shift ;;
+    --detach-engine) MODE="detach"; shift ;;
     --purge-data)  PURGE_DATA=1; shift ;;
+    --archive-data) ARCHIVE_DATA=1; shift ;;
     --yes|-y)      ASSUME_YES=1; shift ;;
     --bridge)      BRIDGE=1; shift ;;
     --no-bridge)   BRIDGE=0; shift ;;
@@ -963,6 +979,268 @@ do_install() {
   exit "$rc"
 }
 
+# ── uninstall, step by step ───────────────────────────────────────────────────
+# The five things an uninstall does, each one its own function so that --detach-engine can run the
+# three that are about the ENGINE and leave the two that are about IRISES alone. The bodies are the
+# ones do_uninstall carried before there was a second caller: they read and write do_uninstall's
+# own locals (bash scopes those dynamically, so a step sees the caller's frame), and the two `local`
+# lines that used to sit mid-body — `present`/`restored` and `size` — moved up into that frame,
+# because the summary reads them after the step that sets them has returned.
+
+# After a detach there is still an Irises here — a service, a clone, a database — and still a
+# manifest describing it. What that manifest may no longer claim is anything on the engine's side:
+# the keys are back, the plugin is gone, and a later --uninstall reading those lists would "restore"
+# values that are already restored and bounce a gateway for nothing.
+detach_manifest_step() {
+  local root_v home_v port_v kind_v unit_v node_v front_v model_v
+  if [ ! -f "$man" ]; then
+    say "there was no install manifest, so there is none to rewrite"
+    return 0
+  fi
+  root_v="$(manifest_read "$man" root)"
+  home_v="$(manifest_read "$man" irisesHome)"
+  port_v="$(manifest_read "$man" port)"
+  kind_v="$(manifest_read "$man" serviceKind)"
+  unit_v="$(manifest_read "$man" serviceUnit)"
+  node_v="$(manifest_read "$man" nodeBin)"
+  front_v="$(manifest_read "$man" frontPattern)"
+  model_v="$(manifest_read "$man" modelLane)"
+  if manifest_write "$man" \
+    "root=${root_v:-$ROOT}" \
+    "irisesHome=${home_v:-$home}" \
+    "port=${port_v:-$port}" \
+    "engine=$engine" \
+    "engineEnvFile=${engine_env:-}" \
+    "engineEnvBackup=" \
+    "pluginDir=" \
+    "serviceKind=${kind_v:-}" \
+    "serviceUnit=${unit_v:-}" \
+    "nodeBin=${node_v:-}" \
+    "keysAdded=" \
+    "keysPreExisting=" \
+    "keysRetargeted=" \
+    "bridge=0" \
+    "frontPattern=${front_v:-}" \
+    "engineEnvApplied=false" \
+    "engineEnvPending=" \
+    "modelLane=${model_v:-inherit}"; then
+    man_state="rewritten at $man — it records no engine-side change any more"
+    say "the manifest now records nothing on the engine's side: an --uninstall after this one"
+    say "removes the service and leaves $engine exactly as it stands"
+  else
+    man_state="STILL at $man, describing an attachment that is gone — remove it yourself"
+    warn "could not rewrite $man"
+    failed=1
+  fi
+  return 0
+}
+
+stop_service_step() {
+  # ── 1. stop and remove the service (or the detached server). service_installed knows all three
+  #      backends — a bare unit/plist check reports "not installed" on Windows, where the install is
+  #      a Task Scheduler entry and no file of ours at all.
+  kind="$(service_kind)"
+  if service_installed; then
+    did_something=1
+    svc_found=1
+    say "stopping and removing the $kind service"
+    service_stop || true
+    service_uninstall || { err "could not fully remove the service"; failed=1; }
+  else
+    say "no service installed (no unit, no plist, no scheduled task)"
+  fi
+  local pid
+  pid="$(server_pid)"
+  if [ -n "$pid" ]; then
+    did_something=1
+    server_stop 20
+  fi
+  # The old setup script left a second pidfile in the clone root; clear both so nothing later
+  # mistakes a dead pid for a live server.
+  for f in "$home/irises.pid" "$ROOT/irises.pid"; do
+    if [ -f "$f" ]; then rm -f "$f"; say "removed $f"; fi
+  done
+  return 0
+}
+
+remove_plugin_step() {
+  # ── 2. the bridge plugin. Run on the strength of the plugin_dir we KNOW about, not on the dir
+  #      still being there: plugin_remove also DISABLES the plugin in the engine's own config, and
+  #      that is the half that matters. Someone who deleted the directory by hand and then ran
+  #      --uninstall was left with a gateway still configured to load a plugin that is gone.
+  #      did_something, though, still tracks the DIRECTORY: a disable we cannot observe the result of
+  #      is not evidence of a change, and treating it as one would make every repeat --uninstall
+  #      bounce the gateway again (see the engine keys below for the same rule).
+  if [ -n "$plugin_dir" ]; then
+    if [ -d "$plugin_dir" ]; then
+      did_something=1
+      plugin_found=1
+    else
+      say "$plugin_dir is already gone — still disabling the plugin in the engine's config"
+    fi
+    plugin_remove "$engine" || failed=1
+  else
+    if [ "$engine" != "off" ]; then say "no bridge plugin to remove (nothing names one)"; fi
+  fi
+  return 0
+}
+
+restore_engine_env_step() {
+  # ── 3. the engine's keys. LOOK BEFORE TOUCHING: the second --uninstall in a row used to take a
+  #      fresh backup of an already-clean .env and bounce the gateway for it, because did_something
+  #      was set on the strength of the manifest listing keys rather than the file still holding any.
+  #      So count first, and let `removed`/`restored` be the only things that say a change happened.
+  #
+  #      BOTH lists are counted, and that is the fix for the install that had nothing to add: an
+  #      engine already carrying a full Irises wiring leaves keysAdded EMPTY and keysRetargeted
+  #      naming IRISES_URL, and a `present` computed from keysAdded alone skipped the restore with
+  #      it — so the engine went on pointing at a clone that no longer existed, and the summary said
+  #      ok. A manifest-less run has no keysRetargeted at all, so the repeat --uninstall above stays
+  #      the no-op it has to be.
+  if [ -n "${engine_env:-}" ] && [ -f "$engine_env" ]; then
+    # shellcheck disable=SC2086  # keys_added is a space-separated key list by construction
+    for k in $keys_added; do
+      if [ "$(env_count "$engine_env" "$k")" != "0" ]; then present=1; fi
+    done
+    # shellcheck disable=SC2086  # keys_retargeted is a space-separated key list by construction
+    for k in $keys_retargeted; do
+      if retarget_pending "$engine_env" "$pre_backup" "$k"; then present=1; fi
+    done
+  fi
+  if [ "$present" = "1" ]; then
+    backup="$(env_backup "$engine_env" pre-uninstall)"
+    if [ -n "$keys_added" ]; then
+      # shellcheck disable=SC2086  # keys_added is a space-separated key list by construction
+      removed="$(env_remove_irises_block "$engine_env" $keys_added)"
+      case "$removed" in ''|*[!0-9]*) removed=0 ;; esac
+      say "removed $removed Irises key(s) from $engine_env (backup: ${backup:-none})"
+      if [ "$removed" -gt 0 ]; then did_something=1; fi
+    else
+      say "this install added no key of its own to $engine_env — it found every one of them already"
+      say "in place, so there is nothing to remove, only values to put back (backup: ${backup:-none})"
+    fi
+    # The pre-existing keys the install CHANGED — keysRetargeted, not keysPreExisting. Removing them
+    # is not the question: the install overwrote them (IRISES_URL has to name this install,
+    # API_SERVER_ENABLED has to be true), and leaving those values behind is how a throwaway install
+    # outlives itself. The pre-install backup is the only record of what they said, so each one goes
+    # back to what it said there, by name.
+    #
+    # And ONLY those. Restoring every pre-existing key would revert an operator's later edit — an
+    # API_SERVER_KEY rotated last week, a push token changed by hand — to whatever the file said on
+    # install day, silently breaking every other client of the engine. A key this install adopted or
+    # never touched is the operator's, at whatever value they now have it, including a duplicate they
+    # put there themselves.
+    # shellcheck disable=SC2086  # keys_retargeted is a space-separated key list by construction
+    for k in $keys_retargeted; do
+      n="$(env_count "$engine_env" "$k")"
+      if [ -n "$pre_backup" ] && [ -f "$pre_backup" ] && [ "$(env_count "$pre_backup" "$k")" != "0" ]; then
+        old="$(env_get "$pre_backup" "$k")"
+        cur="$(env_get "$engine_env" "$k")"
+        if [ "$old" != "$cur" ] || [ "$n" -gt 1 ]; then
+          if [ "$n" -gt 1 ]; then
+            say "collapsing $n copies of $k onto one line (dotenv reads the last one)"
+          fi
+          if env_set "$engine_env" "$k" "$old"; then
+            say "restored $k to its pre-install value"
+            restored=$((restored + 1))
+            did_something=1
+          else
+            err "could not restore $k in $engine_env — its pre-install value is in $pre_backup"
+            failed=1
+          fi
+        fi
+      else
+        if [ "$n" -gt 1 ]; then
+          say "collapsing $n copies of $k onto its live value (dotenv reads the last one)"
+          env_set "$engine_env" "$k" "$(env_get "$engine_env" "$k")"
+        fi
+        if [ -n "$pre_backup" ]; then
+          warn "$k left exactly as it stands — $pre_backup would have restored it, and it is gone"
+        else
+          warn "$k left exactly as it stands — this install recorded no pre-install backup to restore from"
+        fi
+      fi
+    done
+    if [ -n "$keys_pre" ]; then
+      say "keys that were there before Irises: $keys_pre"
+      if [ -n "$keys_retargeted" ]; then
+        say "of those, this install changed: $keys_retargeted ($restored put back from the backup)."
+        say "The rest are left exactly as you have them now — a value you changed after the install"
+        say "stays changed."
+      else
+        say "this install changed none of them, so all of them are left exactly as you have them now"
+      fi
+    fi
+  elif [ -n "${engine_env:-}" ]; then
+    say "nothing of ours to remove from ${engine_env}"
+  fi
+  return 0
+}
+
+bounce_gateway_step() {
+  # ── 4. the gateway, so the engine actually forgets the plugin (it loads plugins only at start).
+  if [ "$engine" != "off" ] && [ "$did_something" = "1" ]; then
+    if ! gateway_restart "$engine" 90; then
+      gateway_ok=0
+      result="gateway-failed"
+      rc=5
+    fi
+  fi
+  return 0
+}
+
+data_step() {
+  # ── 5. the data. KEPT by default: irises.db and memories/ are the only irreplaceable things here.
+  if [ -d "$home" ]; then size="$(du -sh "$home" 2>/dev/null | cut -f1 || printf unknown)"; fi
+  # The copy you keep, taken BEFORE the gate below and not after it: an archive offered after the
+  # rm has already run is a sentence, not an option. A failed archive cancels the purge outright —
+  # deleting the only copy of something because the backup of it could not be written is the one
+  # outcome this flag exists to prevent.
+  if [ "$ARCHIVE_DATA" = "1" ]; then
+    local tarball=""
+    if [ -d "$home" ]; then
+      tarball="$(archive_home "")" || tarball=""
+      if [ -n "$tarball" ]; then
+        say "archived $home ($size) to $tarball"
+      else
+        err "could not archive $home — so nothing here is deleted"
+        failed=1
+        PURGE_DATA=0
+      fi
+    else
+      say "no $home to archive"
+    fi
+  fi
+  if [ "$PURGE_DATA" = "1" ]; then
+    local answer=""
+    if [ "$ASSUME_YES" = "1" ]; then
+      warn "--purge-data with --yes: deleting $home ($size) without asking"
+      answer="delete"
+    else
+      warn "this deletes $home ($size) — irises.db and every memory file, with no backup."
+      printf '\033[31m[%s]\033[0m type the word delete to confirm: ' "$IRISES_LOG_TAG"
+      read -r answer || answer=""
+    fi
+    if [ "$answer" = "delete" ]; then
+      rm -rf "$home"
+      say "removed $home"
+    else
+      # Not a failure: --purge-data is a request to be ASKED, and declining is the answer. The
+      # uninstall itself succeeded; exiting 1 here made "your data was kept" read as "something
+      # broke", which is the one message an operator must not get wrong about their own database.
+      say "your data was KEPT: $home ($size) — you did not type 'delete'"
+      say "remove it yourself when you are sure:  rm -rf $home"
+    fi
+  else
+    if [ -d "$home" ]; then
+      say "your data is KEPT: $home ($size)"
+      say "remove it yourself when you are sure:  rm -rf $home"
+      say "(or re-run with --purge-data)"
+    fi
+  fi
+  return 0
+}
+
 # ══ uninstall ════════════════════════════════════════════════════════════════
 # No node gate here on purpose: this path needs bash, git and curl only, so it still works on a box
 # whose node has since been upgraded away or removed.
@@ -972,6 +1250,9 @@ do_uninstall() {
   local keys_added keys_pre backup pre_backup="" man_state="none was found"
   local keys_retargeted="" has_retargeted=0 k=""
   local removed=0 svc_found=0 plugin_found=0
+  # Set inside the step functions below, read by the summary after they return. bash scopes locals
+  # dynamically, so this frame is the one they write into — but only if the names live HERE.
+  local n old cur present=0 restored=0 size="unknown"
 
   augment_path
   require_tools curl || failed=1
@@ -1009,7 +1290,7 @@ do_uninstall() {
     # existed says nothing at all, and silence means the install DID write, which is what every
     # install before it did.
     if [ "$(manifest_read "$man" engineEnvApplied)" = "false" ]; then
-      say "that install wrote nothing to the engine's .env, so this run takes nothing out of it"
+      say "the manifest records nothing of ours in the engine's .env — so nothing comes out of it"
       local pending
       pending="$(manifest_read "$man" engineEnvPending)"
       if [ -n "$pending" ]; then
@@ -1091,6 +1372,48 @@ do_uninstall() {
   if [ -z "$engine" ]; then engine="off"; fi
   if [ -z "$port" ]; then port="$(irises_port)"; fi
 
+  # ── detach: the engine's three steps, and none of Irises's own. "As if Irises had never been
+  #    installed" is scoped to the ENGINE — the plugin dir, every key the manifest records as added,
+  #    every value it records as moved, and the gateway bounce that makes the engine forget all of
+  #    it. The .bak-irises-* files stay, deliberately: they are the only record of what that file
+  #    said before, and they cost nothing. Irises itself — the service, this clone, your data — is
+  #    not touched, which is the whole difference between this and --uninstall.
+  if [ "$MODE" = "detach" ]; then
+    if [ "$ASSUME_YES" != "1" ]; then
+      say "about to undo every engine-side change: the bridge plugin, the keys Irises added to"
+      say "${engine_env:-that engine .env}, and the values it moved. The .bak-irises-* backups stay."
+      say "Irises keeps running, its service stays installed, and your data ($home) is untouched."
+      if ! ask_yn "go ahead?" n; then
+        say "aborted — nothing changed"
+        summary noop "nothing was detached"
+        exit 0
+      fi
+    fi
+
+    lock_acquire || exit 1
+
+    remove_plugin_step
+    restore_engine_env_step
+    bounce_gateway_step
+    detach_manifest_step
+
+    if [ "$failed" = "1" ] && [ "$result" = "ok" ]; then result="partial"; rc=1; fi
+    if [ "$result" = "ok" ]; then result="detached"; fi
+    if [ "$did_something" = "0" ] && [ "$failed" = "0" ]; then
+      say "nothing to detach — no plugin of ours, no engine key of ours"
+    fi
+
+    summary "$result" \
+      "engine:   $engine — $removed key(s) removed, $restored put back${backup:+, backup at $backup}" \
+      "plugin:   $(if [ -n "$plugin_dir" ] && [ -d "$plugin_dir" ]; then printf 'STILL PRESENT at %s' "$plugin_dir"; elif [ "$plugin_found" = "1" ]; then printf 'removed'; else printf 'none was installed'; fi)" \
+      "gateway:  $(if [ "$engine" = "off" ]; then printf 'n/a'; elif [ "$did_something" = "0" ]; then printf 'not bounced (nothing changed)'; elif [ "$gateway_ok" = "1" ]; then printf 'bounced and verified'; else printf 'NOT verified — bounce it yourself'; fi)" \
+      "manifest: $man_state" \
+      "Irises:   still installed and still running — this detached it from the engine, nothing more" \
+      "data:     $home — untouched" \
+      "attach it again: bash ./scripts/engine-setup.sh        remove it: bash ./scripts/engine-setup.sh --uninstall"
+    exit "$rc"
+  fi
+
   if [ "$ASSUME_YES" != "1" ]; then
     say "about to remove: the Irises service, the bridge plugin, and the keys Irises added to the engine"
     say "your data ($home) is KEPT unless --purge-data is passed"
@@ -1103,179 +1426,11 @@ do_uninstall() {
 
   lock_acquire || exit 1
 
-  # ── 1. stop and remove the service (or the detached server). service_installed knows all three
-  #      backends — a bare unit/plist check reports "not installed" on Windows, where the install is
-  #      a Task Scheduler entry and no file of ours at all.
-  kind="$(service_kind)"
-  if service_installed; then
-    did_something=1
-    svc_found=1
-    say "stopping and removing the $kind service"
-    service_stop || true
-    service_uninstall || { err "could not fully remove the service"; failed=1; }
-  else
-    say "no service installed (no unit, no plist, no scheduled task)"
-  fi
-  local pid
-  pid="$(server_pid)"
-  if [ -n "$pid" ]; then
-    did_something=1
-    server_stop 20
-  fi
-  # The old setup script left a second pidfile in the clone root; clear both so nothing later
-  # mistakes a dead pid for a live server.
-  for f in "$home/irises.pid" "$ROOT/irises.pid"; do
-    if [ -f "$f" ]; then rm -f "$f"; say "removed $f"; fi
-  done
-
-  # ── 2. the bridge plugin. Run on the strength of the plugin_dir we KNOW about, not on the dir
-  #      still being there: plugin_remove also DISABLES the plugin in the engine's own config, and
-  #      that is the half that matters. Someone who deleted the directory by hand and then ran
-  #      --uninstall was left with a gateway still configured to load a plugin that is gone.
-  #      did_something, though, still tracks the DIRECTORY: a disable we cannot observe the result of
-  #      is not evidence of a change, and treating it as one would make every repeat --uninstall
-  #      bounce the gateway again (see the engine keys below for the same rule).
-  if [ -n "$plugin_dir" ]; then
-    if [ -d "$plugin_dir" ]; then
-      did_something=1
-      plugin_found=1
-    else
-      say "$plugin_dir is already gone — still disabling the plugin in the engine's config"
-    fi
-    plugin_remove "$engine" || failed=1
-  else
-    if [ "$engine" != "off" ]; then say "no bridge plugin to remove (nothing names one)"; fi
-  fi
-
-  # ── 3. the engine's keys. LOOK BEFORE TOUCHING: the second --uninstall in a row used to take a
-  #      fresh backup of an already-clean .env and bounce the gateway for it, because did_something
-  #      was set on the strength of the manifest listing keys rather than the file still holding any.
-  #      So count first, and let `removed`/`restored` be the only things that say a change happened.
-  #
-  #      BOTH lists are counted, and that is the fix for the install that had nothing to add: an
-  #      engine already carrying a full Irises wiring leaves keysAdded EMPTY and keysRetargeted
-  #      naming IRISES_URL, and a `present` computed from keysAdded alone skipped the restore with
-  #      it — so the engine went on pointing at a clone that no longer existed, and the summary said
-  #      ok. A manifest-less run has no keysRetargeted at all, so the repeat --uninstall above stays
-  #      the no-op it has to be.
-  local k n old cur present=0 restored=0
-  if [ -n "${engine_env:-}" ] && [ -f "$engine_env" ]; then
-    # shellcheck disable=SC2086  # keys_added is a space-separated key list by construction
-    for k in $keys_added; do
-      if [ "$(env_count "$engine_env" "$k")" != "0" ]; then present=1; fi
-    done
-    # shellcheck disable=SC2086  # keys_retargeted is a space-separated key list by construction
-    for k in $keys_retargeted; do
-      if retarget_pending "$engine_env" "$pre_backup" "$k"; then present=1; fi
-    done
-  fi
-  if [ "$present" = "1" ]; then
-    backup="$(env_backup "$engine_env" pre-uninstall)"
-    if [ -n "$keys_added" ]; then
-      # shellcheck disable=SC2086  # keys_added is a space-separated key list by construction
-      removed="$(env_remove_irises_block "$engine_env" $keys_added)"
-      case "$removed" in ''|*[!0-9]*) removed=0 ;; esac
-      say "removed $removed Irises key(s) from $engine_env (backup: ${backup:-none})"
-      if [ "$removed" -gt 0 ]; then did_something=1; fi
-    else
-      say "this install added no key of its own to $engine_env — it found every one of them already"
-      say "in place, so there is nothing to remove, only values to put back (backup: ${backup:-none})"
-    fi
-    # The pre-existing keys the install CHANGED — keysRetargeted, not keysPreExisting. Removing them
-    # is not the question: the install overwrote them (IRISES_URL has to name this install,
-    # API_SERVER_ENABLED has to be true), and leaving those values behind is how a throwaway install
-    # outlives itself. The pre-install backup is the only record of what they said, so each one goes
-    # back to what it said there, by name.
-    #
-    # And ONLY those. Restoring every pre-existing key would revert an operator's later edit — an
-    # API_SERVER_KEY rotated last week, a push token changed by hand — to whatever the file said on
-    # install day, silently breaking every other client of the engine. A key this install adopted or
-    # never touched is the operator's, at whatever value they now have it, including a duplicate they
-    # put there themselves.
-    # shellcheck disable=SC2086  # keys_retargeted is a space-separated key list by construction
-    for k in $keys_retargeted; do
-      n="$(env_count "$engine_env" "$k")"
-      if [ -n "$pre_backup" ] && [ -f "$pre_backup" ] && [ "$(env_count "$pre_backup" "$k")" != "0" ]; then
-        old="$(env_get "$pre_backup" "$k")"
-        cur="$(env_get "$engine_env" "$k")"
-        if [ "$old" != "$cur" ] || [ "$n" -gt 1 ]; then
-          if [ "$n" -gt 1 ]; then
-            say "collapsing $n copies of $k onto one line (dotenv reads the last one)"
-          fi
-          if env_set "$engine_env" "$k" "$old"; then
-            say "restored $k to its pre-install value"
-            restored=$((restored + 1))
-            did_something=1
-          else
-            err "could not restore $k in $engine_env — its pre-install value is in $pre_backup"
-            failed=1
-          fi
-        fi
-      else
-        if [ "$n" -gt 1 ]; then
-          say "collapsing $n copies of $k onto its live value (dotenv reads the last one)"
-          env_set "$engine_env" "$k" "$(env_get "$engine_env" "$k")"
-        fi
-        if [ -n "$pre_backup" ]; then
-          warn "$k left exactly as it stands — $pre_backup would have restored it, and it is gone"
-        else
-          warn "$k left exactly as it stands — this install recorded no pre-install backup to restore from"
-        fi
-      fi
-    done
-    if [ -n "$keys_pre" ]; then
-      say "keys that were there before Irises: $keys_pre"
-      if [ -n "$keys_retargeted" ]; then
-        say "of those, this install changed: $keys_retargeted ($restored put back from the backup)."
-        say "The rest are left exactly as you have them now — a value you changed after the install"
-        say "stays changed."
-      else
-        say "this install changed none of them, so all of them are left exactly as you have them now"
-      fi
-    fi
-  elif [ -n "${engine_env:-}" ]; then
-    say "nothing of ours to remove from ${engine_env}"
-  fi
-
-  # ── 4. the gateway, so the engine actually forgets the plugin (it loads plugins only at start).
-  if [ "$engine" != "off" ] && [ "$did_something" = "1" ]; then
-    if ! gateway_restart "$engine" 90; then
-      gateway_ok=0
-      result="gateway-failed"
-      rc=5
-    fi
-  fi
-
-  # ── 5. the data. KEPT by default: irises.db and memories/ are the only irreplaceable things here.
-  local size="unknown"
-  if [ -d "$home" ]; then size="$(du -sh "$home" 2>/dev/null | cut -f1 || printf unknown)"; fi
-  if [ "$PURGE_DATA" = "1" ]; then
-    local answer=""
-    if [ "$ASSUME_YES" = "1" ]; then
-      warn "--purge-data with --yes: deleting $home ($size) without asking"
-      answer="delete"
-    else
-      warn "this deletes $home ($size) — irises.db and every memory file, with no backup."
-      printf '\033[31m[%s]\033[0m type the word delete to confirm: ' "$IRISES_LOG_TAG"
-      read -r answer || answer=""
-    fi
-    if [ "$answer" = "delete" ]; then
-      rm -rf "$home"
-      say "removed $home"
-    else
-      # Not a failure: --purge-data is a request to be ASKED, and declining is the answer. The
-      # uninstall itself succeeded; exiting 1 here made "your data was kept" read as "something
-      # broke", which is the one message an operator must not get wrong about their own database.
-      say "your data was KEPT: $home ($size) — you did not type 'delete'"
-      say "remove it yourself when you are sure:  rm -rf $home"
-    fi
-  else
-    if [ -d "$home" ]; then
-      say "your data is KEPT: $home ($size)"
-      say "remove it yourself when you are sure:  rm -rf $home"
-      say "(or re-run with --purge-data)"
-    fi
-  fi
+  stop_service_step
+  remove_plugin_step
+  restore_engine_env_step
+  bounce_gateway_step
+  data_step
 
   # ── 6. the manifest. It describes an install that is not here any more: its keysAdded name keys
   #      that have just been removed and its engineEnvBackup restores values already restored, so a
@@ -1336,4 +1491,5 @@ do_uninstall() {
 case "$MODE" in
   install)   do_install ;;
   uninstall) do_uninstall ;;
+  detach)    do_uninstall ;;
 esac
