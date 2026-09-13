@@ -8,6 +8,7 @@
 #   bash scripts/update.sh --check              # report only (0 up to date, 10 update available)
 #   bash scripts/update.sh --no-restart         # apply to disk, leave the running server alone
 #   bash scripts/update.sh --no-gateway-restart # skip the engine gateway bounce
+#   bash scripts/update.sh --rollback-to SHA    # go back to a build this clone already has
 #
 # --no-restart skips the IRISES restart and nothing else: the bridge plugin is still refreshed and
 # the engine's gateway is still bounced (~12s of engine downtime), and Irises goes on serving the
@@ -16,6 +17,12 @@
 #
 # IRISES_SKIP_WEB_BUILD=1 skips the web client rebuild outright (a small box, or no web UI in use).
 # The web build is optional and never blocks an update either way — see web_build() in the library.
+#
+# --rollback-to is the recovery path, and it is not part of the update flow: it never fetches, never
+# looks at origin, and asks the clone one question — is that commit here. It then resets to it,
+# rebuilds, restarts, verifies, refreshes the engine's plugin copy and bounces the gateway, exactly
+# as a failed update's automatic rollback does. It moves the CODE only: $IRISES_HOME is not rolled
+# back with it, so a schema the newer build wrote stays written.
 #
 # Docker installs update by rebuilding the image, not with this script — see docs/DEPLOY.md § 5.
 #
@@ -37,6 +44,8 @@
 #   4   the built code did not answer /health — rolled back to the old build and restarted
 #   5   Irises IS updated and live, but its engine's gateway could not be verified back up
 #   10  --check only: an update is available
+#   --rollback-to reuses 3 (the rebuild at the target failed), 4 (it built but would not serve) and
+#       5 (Irises is on the target build, but its engine's gateway could not be verified back up)
 #   130/143  stopped mid-run by a signal (Ctrl+C / SIGTERM); RESULT: partial, read the messages above
 # Every run that gets past the flags ends with `RESULT: <token>` as its last line of stdout:
 #   ok | noop | up-to-date | update-available | rolled-back | gateway-failed — or `partial` for a
@@ -51,6 +60,7 @@ IRISES_LOG_TAG="irises-update"
 
 CHECK=0
 ASSUME_YES=0
+ROLLBACK_TO=""
 DO_RESTART=1
 DO_GATEWAY=1
 
@@ -60,7 +70,9 @@ while [ $# -gt 0 ]; do
     --yes|-y)              ASSUME_YES=1; shift ;;
     --no-restart)          DO_RESTART=0; shift ;;
     --no-gateway-restart)  DO_GATEWAY=0; shift ;;
-    -h|--help)             sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --rollback-to)         ROLLBACK_TO="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --rollback-to=*)       ROLLBACK_TO="${1#--rollback-to=}"; shift ;;
+    -h|--help)             sed -n '2,55p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --restart)
       err "--restart is gone: an update restarts Irises and verifies the new build every time."
       err "If you want the old behaviour — apply to disk and leave the process alone — use --no-restart."
@@ -68,6 +80,28 @@ while [ $# -gt 0 ]; do
     *) err "unknown arg: $1 (try --help)"; exit 2 ;;
   esac
 done
+
+# A sha, and a sha this clone can be at: 7 to 40 hex characters. Checked with the flags rather than
+# down where it is used, so a typo is a usage error that changes nothing and prints no RESULT line.
+if [ -n "$ROLLBACK_TO" ]; then
+  case "$ROLLBACK_TO" in
+    *[!0-9a-fA-F]*) err "--rollback-to takes a git sha (7-40 hex characters), got '$ROLLBACK_TO'"; exit 2 ;;
+  esac
+  if [ "${#ROLLBACK_TO}" -lt 7 ] || [ "${#ROLLBACK_TO}" -gt 40 ]; then
+    err "--rollback-to takes a git sha of 7 to 40 hex characters, got '$ROLLBACK_TO'"
+    err "(fewer than 7 is ambiguous, and a rollback is not a thing to guess at)"
+    exit 2
+  fi
+  if [ "$CHECK" = "1" ]; then
+    err "--check and --rollback-to ask for opposite things: one reports and changes nothing, the"
+    err "other changes everything. Run them separately."
+    exit 2
+  fi
+fi
+
+# The library's prompt helpers read this, never the terminal — the decision is --yes, and it is made
+# up there in the flags.
+IRISES_ASSUME_YES="$ASSUME_YES"
 
 # Armed HERE, past every usage exit and before the first byte of real work: the guard releases the
 # lock and leaves ONE machine-readable line on stdout (`RESULT: partial`) for the paths that never
@@ -168,32 +202,37 @@ if [ "$CHECK" != "1" ]; then
   fi
 fi
 
-# The named branch FIRST: a single-branch clone (`git clone --single-branch`, which is what a small
-# box or a CI image often has) fetches only its own branch's refspec, so the wide form would never
-# bring anything down for any other branch — and it silently reports success while doing it. The
-# wide fetch is the fallback, because the narrow form fails with "couldn't find remote ref" for a
-# branch that exists only here (a worktree, a local experiment), which is indistinguishable from a
-# network that is down. Only BOTH failing is treated as "origin unreachable".
-say "fetching from origin …"
-git fetch --quiet origin "$BRANCH" 2>/dev/null || git fetch --quiet origin \
-  || die 1 "could not fetch from origin — check the network, then re-run"
+# None of this is a rollback's business: --rollback-to asks the clone for a commit it already
+# has, and origin has no say in it. A box whose network is down is exactly where a rollback
+# gets typed, so the fetch — and the origin-branch comparison that needs it — is skipped there.
+if [ -z "$ROLLBACK_TO" ]; then
+  # The named branch FIRST: a single-branch clone (`git clone --single-branch`, which is what a small
+  # box or a CI image often has) fetches only its own branch's refspec, so the wide form would never
+  # bring anything down for any other branch — and it silently reports success while doing it. The
+  # wide fetch is the fallback, because the narrow form fails with "couldn't find remote ref" for a
+  # branch that exists only here (a worktree, a local experiment), which is indistinguishable from a
+  # network that is down. Only BOTH failing is treated as "origin unreachable".
+  say "fetching from origin …"
+  git fetch --quiet origin "$BRANCH" 2>/dev/null || git fetch --quiet origin \
+    || die 1 "could not fetch from origin — check the network, then re-run"
 
-if ! git rev-parse --verify --quiet "refs/remotes/origin/$BRANCH" >/dev/null; then
-  say "branch $BRANCH does not exist on origin — there is nothing upstream to pull"
-  if [ "$CHECK" = "1" ]; then
-    summary up-to-date "branch $BRANCH has no counterpart on origin — no upstream commits to apply"
+  if ! git rev-parse --verify --quiet "refs/remotes/origin/$BRANCH" >/dev/null; then
+    say "branch $BRANCH does not exist on origin — there is nothing upstream to pull"
+    if [ "$CHECK" = "1" ]; then
+      summary up-to-date "branch $BRANCH has no counterpart on origin — no upstream commits to apply"
+      exit 0
+    fi
+    summary noop "branch $BRANCH has no counterpart on origin — no upstream commits to apply"
     exit 0
   fi
-  summary noop "branch $BRANCH has no counterpart on origin — no upstream commits to apply"
-  exit 0
-fi
 
-OLD="$(git rev-parse HEAD)"
-NEW="$(git rev-parse "refs/remotes/origin/$BRANCH")"
-# Both are full 40-char shas: scripts/stamp-version.js writes `git rev-parse HEAD` verbatim, so a
-# plain string comparison below is sound. (/health may shorten it — wait_health_sha does the prefix
-# matching for that case.)
-BUILT="$(built_sha "$ROOT")"
+  OLD="$(git rev-parse HEAD)"
+  NEW="$(git rev-parse "refs/remotes/origin/$BRANCH")"
+  # Both are full 40-char shas: scripts/stamp-version.js writes `git rev-parse HEAD` verbatim, so a
+  # plain string comparison below is sound. (/health may shorten it — wait_health_sha does the prefix
+  # matching for that case.)
+  BUILT="$(built_sha "$ROOT")"
+fi
 
 write_receipt() { # OLD NEW  (equal shas → an empty changelog, which still fires the boot announce)
   # KEEP the argument list identical to the pre-rewrite call: scripts/write-update-receipt.js reads
@@ -341,6 +380,104 @@ web_state() { # -> a line that is true whatever web_build() decided to do
     printf 'web/out is from an earlier build — see the web lines above'
   fi
 }
+
+# ── roll back to a build this clone already has ──────────────────────────────
+# The recovery path, and deliberately a separate one: it is typed by hand with a sha in it, it does
+# not look at origin, and it does not care whether an update is waiting. What it does after the
+# reset is what a failed update's own rollback does — rebuild, restart, verify, refresh the engine's
+# plugin copy, bounce the gateway — because the engine's copy of the plugin has to match the code
+# that is now on disk, and a gateway only reads it at start.
+if [ -n "$ROLLBACK_TO" ]; then
+  if ! git cat-file -e "${ROLLBACK_TO}^{commit}" 2>/dev/null; then
+    err "there is no commit ${ROLLBACK_TO} in this clone."
+    err "a rollback goes to a build this clone already has — see what it has:"
+    err "  git --no-pager log --oneline -20"
+    exit 1
+  fi
+  TARGET="$(git rev-parse --verify "${ROLLBACK_TO}^{commit}")"
+  CURRENT="$(git rev-parse HEAD)"
+  if [ "$TARGET" = "$CURRENT" ]; then
+    say "HEAD is already ${TARGET:0:7} — there is nothing to roll back"
+    summary noop "HEAD is already at ${TARGET:0:7}"
+    exit 0
+  fi
+  say "rolling back ${CURRENT:0:7} -> ${TARGET:0:7} on $BRANCH"
+  git --no-pager log -1 --format='    %h %s' "$TARGET" || true
+  warn "this moves the CODE. $STATE_DIR — irises.db, the memories — is NOT rolled back with it, so"
+  warn "anything the newer build wrote there stays written, and the older code has to live with it."
+  if [ "$ASSUME_YES" != "1" ]; then
+    if ! ask_yn "roll back to ${TARGET:0:7}?" n; then
+      say "aborted — nothing changed"
+      summary noop "aborted at the confirmation prompt"
+      exit 0
+    fi
+  fi
+  # The same question the apply path asks one line before it changes anything, for the same reason:
+  # if something that is not the managed Irises holds the port, the restart at the end of this run
+  # cannot succeed, and finding that out after the reset would mean rolling the rollback back.
+  if [ "$DO_RESTART" = "1" ] \
+     && tcp_open 127.0.0.1 "$PORT" && [ -z "$(server_pid)" ] && ! service_installed; then
+    err "a process that is not the managed Irises is listening on :$PORT:"
+    err "  there is no live pid in $STATE_DIR/irises.pid, and no Irises service is installed"
+    err "the usual cause is a dev server (npm run dev) in another terminal."
+    err "stop it and re-run. Nothing has been changed — this refusal is before the reset."
+    exit 1
+  fi
+  trap 'lifecycle_exit_guard 130' INT
+  trap 'lifecycle_exit_guard 143' TERM
+  warn_if_low_memory
+  if ! rollback_to "$TARGET"; then
+    summary partial \
+      "the move to ${TARGET:0:7} FAILED part way — see the commands above" \
+      "the tree, node_modules and dist may all disagree; the running server was not restarted" \
+      "data:     $STATE_DIR — untouched, as always"
+    exit 3
+  fi
+  # Nothing may announce an upgrade that has just been taken away again.
+  withdraw_receipt
+  ROLLBACK_RESTART="skipped (--no-restart) — ${TARGET:0:7} is on disk, not running"
+  if [ "$DO_RESTART" = "1" ]; then
+    if ! restart_and_verify "$TARGET" 45; then
+      summary partial \
+        "the clone is at ${TARGET:0:7}, but it did not come back up" \
+        "there is nothing left to undo — going forward again is: bash scripts/update.sh" \
+        "read $STATE_DIR/logs/server.log, then: cd $ROOT && npm start"
+      exit 4
+    fi
+    ROLLBACK_RESTART="restarted, build ${TARGET:0:7} verified live"
+  fi
+  ENGINE="$(engine_kind)"
+  PLUGIN_STATE="n/a (standalone install — no engine)"
+  if [ "$ENGINE" != "off" ]; then
+    if plugin_refresh "$ENGINE" "$ROOT"; then
+      PLUGIN_STATE="refreshed — the engine now has the plugin that matches ${TARGET:0:7}"
+    else
+      PLUGIN_STATE="NOT refreshed — see the warning above"
+    fi
+  fi
+  GATEWAY_STATE="skipped (--no-gateway-restart)"
+  RC=0
+  RESULT=rolled-back
+  if [ "$ENGINE" = "off" ]; then
+    GATEWAY_STATE="n/a (standalone install)"
+  elif [ "$DO_GATEWAY" = "1" ]; then
+    if gateway_restart "$ENGINE" 90; then
+      GATEWAY_STATE="bounced and verified"
+    else
+      GATEWAY_STATE="NOT verified — bounce it yourself once you know why"
+      RESULT=gateway-failed
+      RC=5
+    fi
+  fi
+  summary "$RESULT" \
+    "rolled back: ${CURRENT:0:7} -> ${TARGET:0:7} on $BRANCH" \
+    "plugin:   $PLUGIN_STATE" \
+    "Irises:   $ROLLBACK_RESTART" \
+    "gateway:  $GATEWAY_STATE" \
+    "data:     $STATE_DIR — untouched, and NOT rolled back with the code" \
+    "forward again whenever you want it: bash scripts/update.sh"
+  exit "$RC"
+fi
 
 # ── compare ──────────────────────────────────────────────────────────────────
 if [ "$OLD" = "$NEW" ]; then
