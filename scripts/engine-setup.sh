@@ -111,19 +111,10 @@ if [ ! -t 0 ] && [ "$ASSUME_YES" != "1" ]; then
   ASSUME_YES=1
   say "stdin is not a terminal — running non-interactive (same as --yes)"
 fi
-
-ask_yn() { # QUESTION DEFAULT(y|n) -> 0 = yes
-  local q="${1:-}" def="${2:-n}" yn=""
-  if [ "$ASSUME_YES" = "1" ]; then
-    say "$q — taking '$def' (--yes / non-interactive)"
-    if [ "$def" = "y" ]; then return 0; fi
-    return 1
-  fi
-  printf '\033[33m[%s]\033[0m %s [y/N] ' "$IRISES_LOG_TAG" "$q"
-  read -r yn || yn=""
-  case "$yn" in y|Y|yes|YES) return 0 ;; esac
-  return 1
-}
+# The library's prompt helpers read THIS, never the terminal: whether a run may ask a question is a
+# decision this script has already made, above, out of --yes and the no-TTY case. Published once,
+# here, so every ask_* below agrees with the two `[ "$ASSUME_YES" = "1" ]` branches further down.
+IRISES_ASSUME_YES="$ASSUME_YES"
 
 ROOT="$(irises_root)"
 ENV_FILE="$ROOT/.env"
