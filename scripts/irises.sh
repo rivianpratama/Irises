@@ -568,12 +568,23 @@ menu_uninstall() {
     ui "  3) Uninstall Irises, KEEP my data ($home)"
     ui "  4) Uninstall Irises and DELETE my data"
     ui "  b) Back"
-    if ! ask_line "choose" "3"; then eof_quit; fi
+    # The default here is Back, and deliberately: every other entry on this menu takes something
+    # away, and an Enter meant for the menu above must not be one of them.
+    if ! ask_line "choose" "b"; then eof_quit; fi
     case "$ANSWER" in
       b|B) return 0 ;;
       1) stop_service_only; return 0 ;;
       2) do_detach; return 0 ;;
-      3) run_child "$SETUP_SH" "$SETUP_NAME" --uninstall --yes; next_steps; return 0 ;;
+      3)
+        # The one confirmation. The child is handed --yes, so this is the question, not a rehearsal
+        # for the child's own.
+        say "this removes the service, the bridge plugin and the keys Irises added to the engine."
+        say "Your data stays where it is: $home"
+        if ! ask_yn "Uninstall Irises and keep your data?" n; then
+          say "nothing was removed"
+          return 0
+        fi
+        run_child "$SETUP_SH" "$SETUP_NAME" --uninstall --yes; next_steps; return 0 ;;
       4)
         archive=0
         if ask_yn "Archive $home to ~/.irises-backup-<timestamp>.tar.gz first?" y; then archive=1; fi
