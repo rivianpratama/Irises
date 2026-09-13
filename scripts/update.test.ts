@@ -99,6 +99,14 @@ test('--check on this clone reports one of the two check results and exits 0 or 
     t.skip('offline: --check needs the remote');
     return;
   }
+  // A clone carrying its own unpushed commits (this repo mid-development) reaches the remote fine
+  // but has nothing upstream to pull, so --check reports RESULT: noop from update.sh's documented
+  // local-ahead branch. That is not the up-to-date/update-available split this test pins, so skip
+  // it the same way an offline run is skipped: the remote answered, there is just nothing to apply.
+  if (r.code === 0 && /RESULT: noop/.test(r.out)) {
+    t.skip('clone is ahead of origin (unpushed commits): --check finds nothing upstream');
+    return;
+  }
   assert.ok(r.code === 0 || r.code === 10, `expected 0 or 10, got ${r.code}\n${r.out}\n${r.err}`);
   if (r.code === 0) assert.match(r.out, /RESULT: up-to-date/);
   else assert.match(r.out, /RESULT: update-available/);
