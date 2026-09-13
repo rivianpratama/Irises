@@ -1379,6 +1379,13 @@ do_uninstall() {
   #    said before, and they cost nothing. Irises itself — the service, this clone, your data — is
   #    not touched, which is the whole difference between this and --uninstall.
   if [ "$MODE" = "detach" ]; then
+    # Said rather than refused: both flags are about the data directory, and a detach does not go
+    # near it. Silently accepting a --purge-data that deletes nothing is the version of this that
+    # sends someone looking for their database.
+    if [ "$PURGE_DATA" = "1" ] || [ "$ARCHIVE_DATA" = "1" ]; then
+      warn "--purge-data / --archive-data do nothing here: a detach never touches $home."
+      warn "They belong to --uninstall, which is the mode that can remove your data."
+    fi
     if [ "$ASSUME_YES" != "1" ]; then
       say "about to undo every engine-side change: the bridge plugin, the keys Irises added to"
       say "${engine_env:-that engine .env}, and the values it moved. The .bak-irises-* backups stay."
