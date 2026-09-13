@@ -73,6 +73,12 @@ ENGINE_ENV_PENDING=""
 MODEL_LANE=""
 MODEL_SLUG=""
 MODEL_BASE_URL=""
+# The two optional extras the wizard offers and a scripted install can pass. Both are EMPTY by
+# default and empty means "leave this clone's .env alone": WEB_ENABLED keeps the env_set_default it
+# has always had, and an unset IRISES_TZ keeps the host's own zone. The dashboard password is a
+# secret and follows the model key's rule — environment only, never argv.
+WEB_FLAG=""
+TZ_FLAG=""
 
 usage() {
   cat <<'EOF'
@@ -96,6 +102,10 @@ usage: bash ./scripts/engine-setup.sh [options]          # install
                              ENGINE_MODEL_INHERIT off (deep work still runs on the engine's model)
   --model-slug ID            the model id, exactly as that provider spells it
   --model-base-url URL       required with --model-lane openai; the OpenAI-compatible endpoint
+  --web on|off               the browser/CLI debug chat this clone serves (WEB_ENABLED). Unset
+                             leaves it as this clone's .env has it (a fresh install: on)
+  --tz ZONE                  the IANA zone Irises reads the wall clock in (IRISES_TZ). Unset leaves
+                             it unset, which is the host's own zone
   --uninstall                remove Irises: service, plugin, engine keys. Your data is KEPT, and so
                              is this clone (the exact rm for each is printed)
   --purge-data               with --uninstall: also delete $IRISES_HOME (irises.db + memories)
@@ -111,6 +121,8 @@ environment:
   IRISES_MODEL_API_KEY       the API key for --model-lane. Read from the environment and nowhere
                              else — never a flag, never printed, never logged
   IRISES_FRONT_PATTERN       the env form of --front
+  IRISES_DASHBOARD_PASSWORD  the admin dashboard's password (DASHBOARD_PASSWORD). Read from the
+                             environment for the same reason as the model key, and never printed
 
 exit codes: 0 ok · 1 a step failed · 2 usage · 4 health not verified · 5 gateway not verified
 every run that gets past argument parsing ends its stdout with: RESULT: <token>
@@ -134,6 +146,10 @@ while [ $# -gt 0 ]; do
     --model-slug=*) MODEL_SLUG="${1#--model-slug=}"; shift ;;
     --model-base-url) MODEL_BASE_URL="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --model-base-url=*) MODEL_BASE_URL="${1#--model-base-url=}"; shift ;;
+    --web)         WEB_FLAG="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --web=*)       WEB_FLAG="${1#--web=}"; shift ;;
+    --tz)          TZ_FLAG="${2:-}"; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --tz=*)        TZ_FLAG="${1#--tz=}"; shift ;;
     --uninstall)   MODE="uninstall"; shift ;;
     --detach-engine) MODE="detach"; shift ;;
     --purge-data)  PURGE_DATA=1; shift ;;
@@ -187,6 +203,17 @@ case "$MODEL_LANE" in
       exit 2
     fi ;;
   *) err "unknown --model-lane '$MODEL_LANE' — expected anthropic, openrouter or openai"; exit 2 ;;
+esac
+case "$WEB_FLAG" in
+  ''|on|off) ;;
+  *) err "--web takes on or off, got '$WEB_FLAG'"; exit 2 ;;
+esac
+# A zone is checked for SHAPE only. Whether the name is one this box's tzdata knows is the server's
+# question (src/pipeline/zonedTime.ts warns and falls back to the host zone), and a script that
+# refused a zone a newer tzdata does know would be the worse failure of the two.
+case "$TZ_FLAG" in
+  '') ;;
+  *[[:space:]]*) err "--tz takes one IANA zone name, got '$TZ_FLAG'"; exit 2 ;;
 esac
 case "$ENGINE_ENV_MODE" in
   apply|ask|print) ;;
@@ -491,6 +518,27 @@ do_install() {
   env_set "$ENV_FILE" PORT "$port"
   env_set_default "$ENV_FILE" WEB_ENABLED "true"
   say "Irises will listen on :$port (deploy/app.env's 8080 is for the Docker image behind Caddy)"
+  # The optional extras, each written only when it was ASKED for. env_set, not env_set_default: a
+  # flag that was passed is an answer, and an answer that loses to the value already in the file is
+  # a switch the operator flipped and watched do nothing.
+  if [ -n "$WEB_FLAG" ]; then
+    if [ "$WEB_FLAG" = "on" ]; then
+      env_set "$ENV_FILE" WEB_ENABLED "true"
+      say "WEB_ENABLED=true — the browser chat and \`npm run chat\` are on"
+    else
+      env_set "$ENV_FILE" WEB_ENABLED "false"
+      say "WEB_ENABLED=false — no browser chat on :$port; the engine's own channels are unaffected"
+    fi
+  fi
+  if [ -n "$TZ_FLAG" ]; then
+    env_set "$ENV_FILE" IRISES_TZ "$TZ_FLAG"
+    say "IRISES_TZ=$TZ_FLAG — the wall clock Irises reads, and the one quiet hours are counted in"
+  fi
+  if [ -n "${IRISES_DASHBOARD_PASSWORD:-}" ]; then
+    env_set "$ENV_FILE" DASHBOARD_PASSWORD "$IRISES_DASHBOARD_PASSWORD"
+    say "DASHBOARD_PASSWORD was taken from IRISES_DASHBOARD_PASSWORD in the environment and written"
+    say "to $ENV_FILE (0600) — the value is not printed here or anywhere else"
+  fi
 
   if [ "$engine" = "hermes" ]; then
     # Reuse the engine's own API key when it has one. env_get is last-wins, exactly like dotenv, so
