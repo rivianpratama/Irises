@@ -40,7 +40,7 @@ import { hooksEnabled, momentsEnabled, shareTurnsEnabled, thesisEnabled } from '
 import { compileAffect, type CarriedIntent } from '../../persona/affectCompiler.js';
 import { AFFECT_FRESH_MS } from '../../persona/threads.js';
 import { classifyConsent } from '../ops/consent.js';
-import { defaultClimate } from '../../persona/climate.js';
+import { bandForDial, defaultClimate } from '../../persona/climate.js';
 import { computeCycle } from '../../persona/cycle.js';
 import { computeCircadian } from '../../persona/circadian.js';
 import { cycleAnchorMs } from '../../persona/config.js';
@@ -524,6 +524,8 @@ export async function chat(
         question: affectDirective.question,
         heavy: affectDirective.heavy,
         lateNight: affectDirective.lateNight,
+        playfulnessBand: bandForDial(climate, 'playfulness'),
+        lastOutcome: last?.thread_outcome ?? null,
       },
       isGroupChat, nowMs,
     );

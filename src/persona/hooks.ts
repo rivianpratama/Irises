@@ -171,7 +171,18 @@ export interface HookAffectInput {
    *  to the kinds that are company rather than analysis. */
   heavy: boolean;
   lateNight: boolean;
+  /** The climate's playfulness band, passed through as a plain string because this file is a leaf.
+   *  'below' | 'none' | 'raised' | 'high'. Defaults to 'none' when absent. */
+  playfulnessBand?: string;
+  /** The thread_outcome emitted on the previous turn: 'took' | 'passed' | 'pushed_back', or null
+   *  when there is no prior turn or the model did not emit one. */
+  lastOutcome?: string | null;
 }
+
+/** 0 = no comedy, 1 = dry, 2 = normal, 3 = hot. The dial the jester reads before deciding
+ *  how far to reach. Computed from the turn kind, the affect, the climate's playfulness, and
+ *  whether the last joke landed. */
+export type PlayLevel = 0 | 1 | 2 | 3;
 
 /** The decision, as the prompt renderer and the thread engine consume it. */
 export interface HookDirective {
@@ -200,6 +211,9 @@ export interface HookDirective {
   /** Whether the thread engine may make an OFFER this turn. The engine keeps running either way:
    *  the outcome ask and the pending machine are bookkeeping and must not skip a beat. */
   offerAllowed: boolean;
+  /** How hard the jester may reach this turn. 0 = no comedy (task, quiet, heavy). 1 = dry
+   *  (light touch). 2 = normal. 3 = hot (reach further, the bridge can be longer). */
+  playLevel: PlayLevel;
 }
 
 /**
@@ -256,6 +270,35 @@ export interface HookSelectReport {
   lastKinds: HookKind[];
 }
 
+/**
+ * How hard the jester may reach this turn.
+ *
+ * The dial reads four signals: the turn kind (task and quiet are always 0), the affect's hook
+ * allowance (a floor on bad days), the climate's playfulness band (the weeks-scale register),
+ * and whether the last joke landed (thread_outcome from the previous turn).
+ *
+ * 0 = no comedy. 1 = dry, light touch. 2 = normal reach. 3 = hot, reach further.
+ */
+function computePlayLevel(
+  mode: HookMode,
+  affect: HookAffectInput,
+): PlayLevel {
+  if (mode === 'task' || mode === 'quiet') return 0;
+  if (affect.heavy) return 0;
+  if (affect.hooks === 'none') return 0;
+
+  let level = 1;
+  const band = affect.playfulnessBand ?? 'none';
+  if (band === 'raised') level += 1;
+  else if (band === 'high') level += 2;
+  else if (band === 'below') level -= 1;
+
+  if (affect.lastOutcome === 'took') level += 1;
+  else if (affect.lastOutcome === 'pushed_back') level -= 1;
+
+  return Math.max(0, Math.min(3, level)) as PlayLevel;
+}
+
 /** The kind repeated at the tail of the ledger, if any. Two of the same kind in a row is the point
  *  at which a bot has a tic rather than a read, so the third is forbidden — and `none` is exempt,
  *  because two flat replies in a row is just a conversation. */
@@ -309,7 +352,7 @@ export function selectHook(
 
   if (shape === 'task') {
     return {
-      directive: { idle: false, mode: 'task', forbidden: [], lateNight: affect.lateNight, moments: false, offerAllowed: false },
+      directive: { idle: false, mode: 'task', forbidden: [], lateNight: affect.lateNight, moments: false, offerAllowed: false, playLevel: 0 },
       report: report('not_idle', []),
     };
   }
@@ -361,13 +404,14 @@ export function selectHook(
         // and it needs the sampler to be handed the share text before it can pick one).
         moments: false,
         offerAllowed: true,
+        playLevel: computePlayLevel('share', affect),
       },
       report: report('share', forbidden),
     };
   }
 
   const quiet = (reason: HookSelectReason) => ({
-    directive: { idle: true, mode: 'quiet' as const, forbidden: [], lateNight: affect.lateNight, moments: false, offerAllowed: false },
+    directive: { idle: true, mode: 'quiet' as const, forbidden: [], lateNight: affect.lateNight, moments: false, offerAllowed: false, playLevel: 0 as PlayLevel },
     report: report(reason, []),
   });
 
@@ -402,6 +446,7 @@ export function selectHook(
       // than in the renderer.
       moments: !forbidden.includes('callback') && state.idleSinceMoment >= MOMENT_IDLE_INTERVAL && !isGroup,
       offerAllowed: true,
+      playLevel: computePlayLevel('hook', affect),
     },
     report: report('hook', forbidden),
   };
@@ -510,6 +555,13 @@ export const HOOK_LATE_LINE = 'It is late where they are: one short bubble, or a
 
 export const MOMENTS_LEAD = 'Kept about them, in case a callback fits. Retell one in fresh words, never read it out, never its date, never more than one.';
 
+const PLAY_LEVEL_LINES: Record<0 | 1 | 2 | 3, string> = {
+  0: '',
+  1: 'Play level: dry. Light touch only, close to literal, no long bridges.',
+  2: 'Play level: normal. One bend, moderate reach. The half-second gap is yours.',
+  3: 'Play level: hot. Reach further, the bridge can be longer, they are here for it.',
+};
+
 export const QUIET_HEADING = '## This turn is quiet (INTERNAL)';
 export const QUIET_LAW = 'Three sharp things in a row already, or your weather says so. One plain short bubble, or a tapback, or nothing — no hook, no question, no offer. Do not explain the quiet.';
 
@@ -609,6 +661,8 @@ export function renderHooksSection(directive: HookDirective, momentLines: string
       if (moments.length > 0) lines.push(MOMENTS_LEAD, ...moments);
     }
   }
+  const playLine = PLAY_LEVEL_LINES[directive.playLevel];
+  if (playLine) lines.push(playLine);
   lines.push(HOOK_CLAMP);
   return lines.join('\n');
 }

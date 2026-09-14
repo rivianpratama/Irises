@@ -319,7 +319,7 @@ test('a band line that names a hook rides only a hook turn', () => {
   const hook = climateLines(moved, true).join('\n');
   const task = climateLines(moved, false).join('\n');
 
-  assert.match(hook, /A tangent or a callback is expected of you here\./);
+  assert.match(hook, /A tangent, a callback, or a bend is expected of you here\./);
   assert.doesNotMatch(task, /judgment|callback|tangent/,
     'a task turn is never handed a sentence about a beat it may not carry');
   // What survives is everything about HOW she says a thing, as opposed to what extra beat she gets.

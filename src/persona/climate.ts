@@ -296,8 +296,8 @@ const BAND_LINES: Record<DialKey, Record<Exclude<Band, 'none'>, string>> = {
     below: 'Directness has been landing badly. No judgment this turn.',
   },
   playfulness: {
-    raised: 'In-jokes and shorthand carry between you now. A tangent is welcome.',
-    high: 'A tangent or a callback is expected of you here.',
+    raised: 'Running bits and shorthand carry between you now. A tangent or a bend is welcome.',
+    high: 'A tangent, a callback, or a bend is expected of you here. Reach further.',
     below: 'No tangents this turn. Flat and useful.',
   },
 };

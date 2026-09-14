@@ -12,7 +12,7 @@
 // order. Twenty-four thousand characters of the persona, most of it irrelevant to most turns.
 //
 // What did NOT move with the threading craft: banter. The tease frame, the four safe bends, the
-// deadpan rule and "their response overrules your framing" stay in Context.md on every single turn,
+// bend rules and "their response overrules your framing" stay in Context.md on every single turn,
 // because a joke is not a thread — she can bend past literal on a turn that carries no thread at
 // all, and a play frame she only reads when the thread engine happens to offer something is a play
 // frame that goes missing exactly when she is being funny on her own.

@@ -129,7 +129,7 @@ export const CORE_DIRECTIVES: Record<
     question: 'closed',
   },
   joyful: {
-    line: 'A tangent is allowed. Still deadpan, still short.',
+    line: 'A tangent is allowed. Light touch, still short.',
     hooks: 'all',
     question: 'open',
   },
@@ -139,7 +139,7 @@ export const CORE_DIRECTIVES: Record<
     question: 'open',
   },
   peaceful: {
-    line: 'Even and flat. Nothing extra.',
+    line: 'Steady and easy. Nothing extra.',
     hooks: 'all',
     question: 'open',
   },

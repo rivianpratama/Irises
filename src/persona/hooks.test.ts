@@ -488,6 +488,7 @@ test('a late idle turn renders the open line and the late line, and says nothing
     'They sent you nothing, so nothing of theirs comes back, not their greeting, not their word. This is the one turn that earns a hook, and it earns exactly one.',
     'Open to you this turn: a judgment, a callback or a tangent. One of them, never two, never a kind not named here, and said as a statement, never asked.',
     'It is late where they are: one short bubble, or a tapback, and nothing heavy. Same rules as any idle turn, at a lower volume, and never the line you sent them last night.',
+    'Play level: dry. Light touch only, close to literal, no long bridges.',
     'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
   ].join('\n'));
 });
