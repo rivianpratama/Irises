@@ -9,7 +9,7 @@
 //     response to a truncated reply is to throw it away. On the VPS that happened 37 times in a
 //     week: LONG.md froze at 581 words / 3,608 chars against a 900-token reply budget, and every
 //     pass after 2026-09-04 17:59 was discarded.
-//   • Nothing could RESOLVE a contradiction. "Comfortable switching between English and Indonesian"
+//   • Nothing could RESOLVE a contradiction. "Comfortable switching between English and Spanish"
 //     and "Prefers English conversation" sat one under the other, both undated, under a heading the
 //     prompt authorises as style guidance — and "more recent wins" cannot be applied to lines that
 //     never recorded when they were written.

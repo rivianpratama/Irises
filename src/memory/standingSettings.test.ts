@@ -49,7 +49,7 @@ test('detectEnglishAsk refuses a translation question, a negation, a third party
     'did you talk to him in english?',
     'did you speak to them in english',
     // No cue at all.
-    "i'm indonesian",
+    "i'm spanish",
     'english muffins are underrated',
     // Quoted text is data the user is talking ABOUT, exactly as the side-effect lexicon reads it.
     'he said "switch to english" and left',
@@ -70,9 +70,9 @@ test('detectEnglishAsk is safe on nothing at all', () => {
 // recognize one so it can be folded into the slot and retired instead of standing forever.
 
 test('parseLanguageDirective reads the language out of a model-written rule', () => {
-  assert.equal(parseLanguageDirective('always reply in Indonesian'), 'Indonesian');
+  assert.equal(parseLanguageDirective('always reply in Spanish'), 'Spanish');
   assert.equal(parseLanguageDirective('reply in Spanish'), 'Spanish');
-  assert.equal(parseLanguageDirective('Always reply in Bahasa Indonesia.'), 'Bahasa Indonesia');
+  assert.equal(parseLanguageDirective('Always reply in Brazilian Portuguese.'), 'Brazilian Portuguese');
   assert.equal(parseLanguageDirective('please always respond in french'), 'French');
   assert.equal(parseLanguageDirective('always reply to me only in Tagalog'), 'Tagalog');
 });
@@ -121,13 +121,13 @@ test('applyLanguageRequest: a tool write ends the turn, then the fast path, then
 
 test('renderReplyLanguageLine dates the setting in the reader-facing zone', () => {
   assert.equal(
-    renderReplyLanguageLine('English', Date.UTC(2026, 8, 4, 14, 52), Date.UTC(2026, 8, 5), 'Asia/Jakarta'),
+    renderReplyLanguageLine('English', Date.UTC(2026, 8, 4, 14, 52), Date.UTC(2026, 8, 5), 'Indian/Christmas'),
     'Reply language: English (they asked on Sep 4)',
   );
   // An older year is spelled out, so "Aug 30" can never read as this August.
   assert.equal(
-    renderReplyLanguageLine('Indonesian', Date.UTC(2025, 7, 30), Date.UTC(2026, 8, 5), 'UTC'),
-    'Reply language: Indonesian (they asked on Aug 30, 2025)',
+    renderReplyLanguageLine('Spanish', Date.UTC(2025, 7, 30), Date.UTC(2026, 8, 5), 'UTC'),
+    'Reply language: Spanish (they asked on Aug 30, 2025)',
   );
   // No date on the row (a legacy write) — the setting still renders; only the receipt is missing.
   assert.equal(renderReplyLanguageLine('English', undefined, Date.UTC(2026, 8, 5), 'UTC'), 'Reply language: English');
@@ -141,7 +141,7 @@ test('renderReplyLanguageLine renders nothing at all when the slot is empty', ()
 });
 
 test('shortDateLabel keeps the year off a same-year date and degrades to empty on junk', () => {
-  assert.equal(shortDateLabel(Date.UTC(2026, 8, 4, 23, 30), 'Asia/Jakarta', Date.UTC(2026, 8, 5)), 'Sep 5');
+  assert.equal(shortDateLabel(Date.UTC(2026, 8, 4, 23, 30), 'Indian/Christmas', Date.UTC(2026, 8, 5)), 'Sep 5');
   assert.equal(shortDateLabel(Date.UTC(2026, 8, 4, 23, 30), 'UTC', Date.UTC(2026, 8, 5)), 'Sep 4');
   assert.equal(shortDateLabel(Date.UTC(2025, 11, 31), 'UTC', Date.UTC(2026, 8, 5)), 'Dec 31, 2025');
   assert.equal(shortDateLabel(Number.NaN, 'UTC', Date.UTC(2026, 8, 5)), '');

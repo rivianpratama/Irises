@@ -50,8 +50,8 @@ test('steerPrompt: the wrapper is the exact text the engine is meant to read', (
   // clauses are load-bearing — "the work you are doing now" is what stops a restart, the contract
   // restatement is what keeps an ANSWER/SOURCE/ACTIONS/FLAGS block for the composer to read, and
   // the FLAGS clause is what turns a steer that missed its window into something the user hears.
-  assert.equal(steerPrompt('  also check jakarta  '), [
-    'The user just added to this task mid-run: "also check jakarta"',
+  assert.equal(steerPrompt('  also check lisbon  '), [
+    'The user just added to this task mid-run: "also check lisbon"',
     'Fold it into the work you are doing now. Keep the same output contract (ANSWER / SOURCE / ACTIONS / FLAGS). If it arrived too late to act on, say so in FLAGS in one line rather than restarting.',
   ].join('\n'));
 });
@@ -60,13 +60,13 @@ test('steerWithRetry: accepted on the first attempt, with a receipt saying so', 
   clearTraces();
   const calls: Array<{ handle: EngineRunHandle; text: string }> = [];
   const slept: number[] = [];
-  const out = await steerWithRetry(engineWith(['accepted'], calls), HANDLE, 'also check jakarta', WHERE, {
+  const out = await steerWithRetry(engineWith(['accepted'], calls), HANDLE, 'also check lisbon', WHERE, {
     sleep: async ms => { slept.push(ms); },
   });
   assert.equal(out, 'accepted');
   assert.equal(calls.length, 1);
   assert.deepEqual(slept, [], 'no backoff on a first-try accept');
-  assert.equal(calls[0].text, steerPrompt('also check jakarta'), 'the engine gets the wrapped text, not the raw words');
+  assert.equal(calls[0].text, steerPrompt('also check lisbon'), 'the engine gets the wrapped text, not the raw words');
   const detail = steerTrace();
   assert.equal(detail?.accepted, true);
   assert.equal(detail?.runId, 'run_1');

@@ -385,7 +385,7 @@ test('f2: a research hit on a moved-on turn is an off-topic leak', () => {
 
 test('f2: the reply saying the delivered look back again is RE_DELIVERY', () => {
   const r = score(item('f2'), {
-    seedTokens: ['visa', 'japan', 'indonesians'],
+    seedTokens: ['visa', 'japan', 'brazilians'],
     bubbles: ['the japan visa thing needs 30 days', 'anyway how is your knee'],
   });
   assert.equal(r.verdict, 'RE_DELIVERY');
@@ -393,7 +393,7 @@ test('f2: the reply saying the delivered look back again is RE_DELIVERY', () => 
 });
 
 test('f2: one incidental shared word is not a re-delivery', () => {
-  const r = score(item('f2'), { seedTokens: ['visa', 'japan', 'indonesians'], bubbles: ['japan is lovely in autumn'] });
+  const r = score(item('f2'), { seedTokens: ['visa', 'japan', 'brazilians'], bubbles: ['japan is lovely in autumn'] });
   assert.equal(r.verdict, 'PASS');
 });
 

@@ -213,7 +213,7 @@ export const CANCEL_RESEARCH_TOOL: LlmToolDef = {
 export const STEER_RESEARCH_TOOL: LlmToolDef = {
   name: 'steer_research',
   description: [
-    "Add to, narrow, or correct a lookup you're ALREADY running for the user — without dropping it. Use when they extend or fix the live ask mid-run: \"also check X\", \"actually jakarta, not bekasi\", \"under 100k only\", \"skip the ones without parking\".",
+    "Add to, narrow, or correct a lookup you're ALREADY running for the user — without dropping it. Use when they extend or fix the live ask mid-run: \"also check X\", \"actually lisbon, not bekasi\", \"under 100k only\", \"skip the ones without parking\".",
     "NOT for a wholly different ask (that's a fresh delegate_to_ops — and if it replaces the running one, cancel_research first, same turn). NOT for a stop (that's cancel_research). A bare \"ok\"/\"thanks\" is never a steer.",
     'If exactly one lookup is running, call it with match empty. If SEVERAL are running and they didn\'t say which, do NOT call this yet — ask which one in one short bubble first (the "already pulling" section names them), then call it with `match`.',
     'Pass `guidance` as the user\'s addition in plain words (what to add/narrow/fix), not a rewrite of the whole ask.',

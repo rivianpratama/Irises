@@ -1,7 +1,7 @@
 // Run with: npm test   (TZ=UTC tsx --test — runner pins DATA_BACKEND=memory)
 // The ONE dual-store write path for the reply-language slot: the fact row and the pref copy move
 // together, the language RULES the old design left standing are superseded pointing at the slot,
-// and the legacy fold turns the stale `always reply in Indonesian` on the live instance into a
+// and the legacy fold turns the stale `always reply in Spanish` on the live instance into a
 // dated setting without anyone hand-editing a memory file.
 process.env.DATA_BACKEND = 'memory';
 process.env.TZ = 'UTC';
@@ -46,7 +46,7 @@ async function slot(handle: string): Promise<{ value?: string; at?: number; id?:
 
 test('setReplyLanguage writes both stores and retires only the language rules', async () => {
   const h = freshHandle();
-  const indo = await addDirectiveAt(h, 'always reply in Indonesian', AUG30);
+  const indo = await addDirectiveAt(h, 'always reply in Spanish', AUG30);
   const sarcasm = await addDirective(h, 'full sarcasm mode always');
 
   const out = await setReplyLanguage(h, 'English', { source: 'convo', via: 'tool' });
@@ -73,7 +73,7 @@ test('setReplyLanguage writes both stores and retires only the language rules', 
 
 test('the same language twice is not a change (and retires nothing the second time)', async () => {
   const h = freshHandle();
-  await addDirectiveAt(h, 'always reply in Indonesian', AUG30);
+  await addDirectiveAt(h, 'always reply in Spanish', AUG30);
   assert.equal((await setReplyLanguage(h, 'English', { source: 'convo', via: 'fast_path' })).changed, true);
 
   const again = await setReplyLanguage(h, 'English', { source: 'convo', via: 'fast_path' });
@@ -84,15 +84,15 @@ test('the same language twice is not a change (and retires nothing the second ti
 
 test('the legacy fold carries the old directive into the slot with the directive OWN date', async () => {
   const h = freshHandle();
-  const indo = await addDirectiveAt(h, 'always reply in Indonesian', AUG30);
+  const indo = await addDirectiveAt(h, 'always reply in Spanish', AUG30);
   await addDirective(h, 'always reply in short sentences'); // a style rule, never a language
 
   await foldLanguageDirectives(h);
 
   const fact = await slot(h);
-  assert.equal(fact.value, 'Indonesian');
+  assert.equal(fact.value, 'Spanish');
   assert.equal(fact.at, AUG30, 'dated when they asked, not when the fold ran');
-  assert.equal((await getMemory(h))?.prefs[REPLY_LANGUAGE_KEY], 'Indonesian');
+  assert.equal((await getMemory(h))?.prefs[REPLY_LANGUAGE_KEY], 'Spanish');
   assert.equal((await listMediumAll(h)).find(e => e.id === indo!.id)!.status, 'superseded');
   assert.deepEqual(
     (await listMediumActive(h, ['directive'])).map(e => e.body),
@@ -110,7 +110,7 @@ test('the legacy fold carries the old directive into the slot with the directive
 test('the fold never walks a newer setting backwards — it only retires the old rule', async () => {
   const h = freshHandle();
   await setReplyLanguage(h, 'English', { source: 'convo', via: 'tool', at: SEP4 });
-  const indo = await addDirectiveAt(h, 'always reply in Indonesian', AUG30);
+  const indo = await addDirectiveAt(h, 'always reply in Spanish', AUG30);
 
   __resetLanguageFoldForTests();
   await foldLanguageDirectives(h);
@@ -123,11 +123,11 @@ test('the fold never walks a newer setting backwards — it only retires the old
 
 test('loadMediumBundle folds a legacy language rule on the way past, once', async () => {
   const h = freshHandle();
-  await addDirectiveAt(h, 'always reply in Indonesian', AUG30);
+  await addDirectiveAt(h, 'always reply in Spanish', AUG30);
   __resetLanguageFoldForTests();
 
   const bundle = await loadMediumBundle(h);
-  assert.equal(bundle.facts[REPLY_LANGUAGE_KEY], 'Indonesian');
+  assert.equal(bundle.facts[REPLY_LANGUAGE_KEY], 'Spanish');
   assert.equal(bundle.factAt?.[REPLY_LANGUAGE_KEY], AUG30);
   assert.deepEqual(bundle.directives.map(d => d.text), [], 'the rule is gone from the same read');
 });

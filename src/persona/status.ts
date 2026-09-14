@@ -319,7 +319,7 @@ export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
     // and the tool call catches a model that reaches for one, but a Spanish "háblame en español"
     // reaches code only here. `applyLanguageRequest` is what weighs it against the other two.
     key: 'language_request', type: ['string', 'null'], required: true,
-    description: 'null unless they explicitly asked you, THIS turn, to reply in a language from now on — then that language named in English (e.g. "English", "Indonesian"). A message merely written in a language is never an ask.',
+    description: 'null unless they explicitly asked you, THIS turn, to reply in a language from now on — then that language named in English (e.g. "English", "Spanish"). A message merely written in a language is never an ask.',
     consumers: ['applyLanguageRequest'],
   },
   {

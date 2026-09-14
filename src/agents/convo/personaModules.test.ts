@@ -210,8 +210,8 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  *     they left out). The block and every page: untouched, which is once more why exactly one addend
  *     moved.
  */
-const CORPUS_CHARS = 154_154;
-const CORPUS_SHA256 = 'c505798546b7edb57257b04ba40b247b5a417c1fa31abcbe969467f34dbeb9be';
+const CORPUS_CHARS = 154_361;
+const CORPUS_SHA256 = 'a97744f45b7fd1225449c7606a8949b92402a9a51420c43d68d64b61585f300f';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 

@@ -27,10 +27,10 @@ test('slot boundaries in UTC', () => {
 });
 
 test('the slot follows the PASSED timezone, not the host', () => {
-  // 14:30 UTC is simultaneously afternoon in UTC, evening in Jakarta (+7), morning in Chicago (-6 in Jan).
+  // 14:30 UTC is simultaneously afternoon in UTC, evening in Lisbon (+7), morning in Chicago (-6 in Jan).
   const instant = Date.UTC(2026, 0, 5, 14, 30, 0);
   assert.equal(computeCircadian(instant, 'UTC').slot, 'afternoon_dip');
-  assert.equal(computeCircadian(instant, 'Asia/Jakarta').slot, 'evening');       // 21:30
+  assert.equal(computeCircadian(instant, 'Indian/Christmas').slot, 'evening');       // 21:30
   assert.equal(computeCircadian(instant, 'America/Chicago').slot, 'early_morning'); // 08:30
 });
 

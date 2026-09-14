@@ -78,7 +78,7 @@ test('the tool asks for the addition in their words, and only guidance is requir
 
 test('nothing running → honest nothing_found, and it reads as a fresh ask', () => {
   __resetOpsCoordination();
-  const note = handleSteerResearch('', 'also check jakarta', 'chatA', HANDLE, null);
+  const note = handleSteerResearch('', 'also check lisbon', 'chatA', HANDLE, null);
   assert.equal(note?.kind, 'nothing_found');
   assert.match(note?.nextStep ?? '', /fresh ask/);
 });
@@ -97,7 +97,7 @@ test('several running + empty match → failed outcome that lists them, and adds
   __resetOpsCoordination();
   markOpsStart('chatA', 't1', { kind: 'general', request: 'full inbox scan' });
   markOpsStart('chatA', 't2', { kind: 'web_research', request: 'comps on 412 maple' });
-  const note = handleSteerResearch('', 'actually jakarta', 'chatA', HANDLE, null);
+  const note = handleSteerResearch('', 'actually lisbon', 'chatA', HANDLE, null);
   assert.equal(note?.kind, 'failed');
   assert.match(note?.facts ?? '', /full inbox scan/);
   assert.match(note?.facts ?? '', /comps on 412 maple/);
@@ -129,7 +129,7 @@ test('the leg finished while she was reading the turn → the correction says so
   // answers 409 to a steer at a finished run, so an "adding that in" ack here would be a lie.
   endOpsEngineLeg('chatA', 't1');
   const calls: Array<{ handle: EngineRunHandle; text: string }> = [];
-  const note = handleSteerResearch('', 'also check jakarta', 'chatA', HANDLE, steerableEngine(calls));
+  const note = handleSteerResearch('', 'also check lisbon', 'chatA', HANDLE, steerableEngine(calls));
   assert.equal(note?.kind, 'failed');
   assert.match(note?.summary ?? '', /just finished/);
   assert.equal(calls.length, 0, 'nothing was aimed at a run that is over');
@@ -144,22 +144,22 @@ test('a transport with no run id → the unsupported note, even from an engine t
   // "adding that in" about nothing.
   noteOpsSteerUnreachable('chatA', 't1');
   const calls: Array<{ handle: EngineRunHandle; text: string }> = [];
-  const note = handleSteerResearch('', 'also check jakarta', 'chatA', HANDLE, steerableEngine(calls));
+  const note = handleSteerResearch('', 'also check lisbon', 'chatA', HANDLE, steerableEngine(calls));
   assert.equal(note?.kind, 'failed');
   assert.match(note?.nextStep ?? '', /work it into the answer when it lands/);
   assert.equal(calls.length, 0);
-  assert.deepEqual(getActiveOps('chatA')[0].steers, ['also check jakarta'], 'their words stay with the task');
+  assert.deepEqual(getActiveOps('chatA')[0].steers, ['also check lisbon'], 'their words stay with the task');
 });
 
 test('an engine with no steer route → the honest failed note, and the addition is still kept', () => {
   __resetOpsCoordination();
   markOpsStart('chatA', 't1', { kind: 'general', request: 'full inbox scan' });
   noteOpsEngineRun('chatA', 't1', { engine: 'openclaw', runId: 'run_x' });
-  const note = handleSteerResearch('', 'also check jakarta', 'chatA', HANDLE, unsteerableEngine());
+  const note = handleSteerResearch('', 'also check lisbon', 'chatA', HANDLE, unsteerableEngine());
   assert.equal(note?.kind, 'failed');
   assert.match(note?.nextStep ?? '', /work it into the answer when it lands/);
   // The promise that note makes: their words stay with the task, for the status line and the leg.
-  assert.deepEqual(getActiveOps('chatA')[0].steers, ['also check jakarta']);
+  assert.deepEqual(getActiveOps('chatA')[0].steers, ['also check lisbon']);
 });
 
 test('a handle in hand → null (her own ack stands) and the wrapped addition goes to the engine', async () => {
@@ -167,12 +167,12 @@ test('a handle in hand → null (her own ack stands) and the wrapped addition go
   markOpsStart('chatA', 't1', { kind: 'general', request: 'full inbox scan' });
   noteOpsEngineRun('chatA', 't1', { engine: 'hermes', runId: 'run_7' });
   const calls: Array<{ handle: EngineRunHandle; text: string }> = [];
-  assert.equal(handleSteerResearch('', 'also check jakarta', 'chatA', HANDLE, steerableEngine(calls)), null);
+  assert.equal(handleSteerResearch('', 'also check lisbon', 'chatA', HANDLE, steerableEngine(calls)), null);
   await new Promise(r => setImmediate(r)); // the POST is dispatched, not awaited
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0].handle, { engine: 'hermes', runId: 'run_7' });
-  assert.match(calls[0].text, /The user just added to this task mid-run: "also check jakarta"/);
-  assert.deepEqual(getActiveOps('chatA')[0].steers, ['also check jakarta']);
+  assert.match(calls[0].text, /The user just added to this task mid-run: "also check lisbon"/);
+  assert.deepEqual(getActiveOps('chatA')[0].steers, ['also check lisbon']);
 });
 
 test('the Outcome never waits on the network — a POST that never answers still returns at once', () => {
@@ -180,7 +180,7 @@ test('the Outcome never waits on the network — a POST that never answers still
   markOpsStart('chatA', 't1', { kind: 'general', request: 'full inbox scan' });
   noteOpsEngineRun('chatA', 't1', { engine: 'hermes', runId: 'run_7' });
   const calls: Array<{ handle: EngineRunHandle; text: string }> = [];
-  const note = handleSteerResearch('', 'also check jakarta', 'chatA', HANDLE, steerableEngine(calls, { hold: true }));
+  const note = handleSteerResearch('', 'also check lisbon', 'chatA', HANDLE, steerableEngine(calls, { hold: true }));
   assert.equal(note, null);
   assert.equal(calls.length, 1, 'the ladder started');
 });
@@ -189,9 +189,9 @@ test('no engine handle yet → null, and the addition waits in the queue for the
   __resetOpsCoordination();
   markOpsStart('chatA', 't1', { kind: 'general', request: 'full inbox scan' });
   const calls: Array<{ handle: EngineRunHandle; text: string }> = [];
-  assert.equal(handleSteerResearch('', 'also check jakarta', 'chatA', HANDLE, steerableEngine(calls)), null);
+  assert.equal(handleSteerResearch('', 'also check lisbon', 'chatA', HANDLE, steerableEngine(calls)), null);
   assert.equal(calls.length, 0, 'nothing to aim at, so nothing was POSTed');
-  assert.deepEqual(takePendingSteers('chatA', 't1'), ['also check jakarta']);
+  assert.deepEqual(takePendingSteers('chatA', 't1'), ['also check lisbon']);
 });
 
 test('a match steers only the lookup it names', async () => {
@@ -212,7 +212,7 @@ test('a match steers only the lookup it names', async () => {
 test('steering is chat-scoped: another chat\'s lookup is untouchable', () => {
   __resetOpsCoordination();
   markOpsStart('chatB', 't1', { kind: 'general', request: 'full inbox scan' });
-  const note = handleSteerResearch('', 'also check jakarta', 'chatA', HANDLE, null);
+  const note = handleSteerResearch('', 'also check lisbon', 'chatA', HANDLE, null);
   assert.equal(note?.kind, 'nothing_found');
   assert.equal(getActiveOps('chatB')[0].steers, undefined);
 });
@@ -255,10 +255,10 @@ test('a bare restatement or a "keep going" nudge is a steer or a status read, ne
 });
 
 test('what they added rides on the status line — running and queued alike', () => {
-  const one = renderActiveOps([running({ steers: ['also check jakarta'] })]);
-  assert.match(one, /— you added: "also check jakarta"/);
-  const two = renderActiveOps([running({ steers: ['also check jakarta', 'under 100k'] })]);
-  assert.match(two, /— you added: "also check jakarta"; "under 100k"/);
+  const one = renderActiveOps([running({ steers: ['also check lisbon'] })]);
+  assert.match(one, /— you added: "also check lisbon"/);
+  const two = renderActiveOps([running({ steers: ['also check lisbon', 'under 100k'] })]);
+  assert.match(two, /— you added: "also check lisbon"; "under 100k"/);
   const queued = renderActiveOps([running({ lastMilestone: 'queued', steers: ['under 100k'] })]);
   assert.match(queued, /hasn't started yet \(waiting for a free slot\) — you added: "under 100k"/);
   // An ordinary run says nothing about additions at all.

@@ -7,7 +7,7 @@
 //
 // Why it exists: the dossier used to be rewritten whole by a cheap model, which meant (a) a reply
 // that stopped mid-document deleted the tail, and (b) nothing could ever RESOLVE a contradiction —
-// "Comfortable switching between English and Indonesian" and "Prefers English conversation" sat one
+// "Comfortable switching between English and Spanish" and "Prefers English conversation" sat one
 // under the other with no dates, so "more recent wins" had nothing to sort on.
 process.env.TZ = 'UTC';
 

@@ -263,14 +263,14 @@ test('retryTaskFor: a brief-less task gets the directive as its whole brief', ()
 
 test('steerReplayTaskFor: the addition rides into the brief, and the replay is the last leg', () => {
   const task = mkTask({ request: 'flights to bekasi next week' });
-  const replay = steerReplayTaskFor(task, '  also check jakarta  ');
+  const replay = steerReplayTaskFor(task, '  also check lisbon  ');
 
-  assert.equal(replay.request, 'flights to bekasi next week\nThe user added mid-run: also check jakarta');
+  assert.equal(replay.request, 'flights to bekasi next week\nThe user added mid-run: also check lisbon');
   assert.equal(replay.id, task.id, 'same id — cancel, dedupe, trace continuity and markOpsDone all key on it');
   assert.equal(replay.retryOf, task.id);
   // The bound that matters: this leg follows one that already ANSWERED, so there is no third leg.
   assert.equal(canRetry(replay), false);
   // And it really is a different prompt — a byte-identical re-send would just spend an engine run.
   assert.notEqual(buildTaskPrompt(replay, {}), buildTaskPrompt(task, {}));
-  assert.match(buildTaskPrompt(replay, {}), /The user added mid-run: also check jakarta/);
+  assert.match(buildTaskPrompt(replay, {}), /The user added mid-run: also check lisbon/);
 });

@@ -2,7 +2,7 @@
 // them an idle turn is allowed to see.
 //
 // A moment is not a fact. Facts are what the medium tier holds and every prompt carries — "lives in
-// Jakarta", "hates calls before ten" — and nobody ever made a joke out of a fact. A moment is an
+// Lisbon", "hates calls before ten" — and nobody ever made a joke out of a fact. A moment is an
 // episode with a time, a shape and a small absurdity: the twenty minutes at midnight spent making
 // her identify a girl in an ad, then asking how she knew. That is what a callback is made of, which
 // is why this store exists beside the fact tiers rather than inside them.

@@ -12,7 +12,7 @@
 // This used to be the literal 'America/Chicago'. Irises is single-user software the owner runs on
 // their own box, so a hardcoded city is wrong for everyone who doesn't live in it — and it is not a
 // quiet kind of wrong: DEFAULT_TZ is what stamps the wall clock into Convo's prompt and drives the
-// circadian slot, so a user in Asia/Jakarta at 22:28 was told it was 10:37 in the morning. The model
+// circadian slot, so a user in Indian/Christmas at 22:28 was told it was 10:37 in the morning. The model
 // then reasoned correctly from a false clock: it talked about "before noon energy" and refused a
 // "22:40, three minutes from now" reminder as impossible. Same resolution ladder hermesBackend's
 // engineZone() already uses for cron, so the two halves of a reminder agree on what time it is:

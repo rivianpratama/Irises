@@ -448,7 +448,7 @@ test('runViaEngine: a queued run flips queued → engine once a slot frees, and 
 // The seam's job here is small and load-bearing: publish the engine's run id the moment the adapter
 // has one, so a steer arriving mid-run has something to aim at — and hand over anything the user
 // added BEFORE that moment, because hermes needs a second or two to build the agent and a user
-// typing "also check jakarta" right after "on it" lands inside that window.
+// typing "also check lisbon" right after "on it" lands inside that window.
 
 test('runViaEngine: the run handle reaches the in-flight map, and steers queued before it drain in order', async () => {
   clearTraces();
@@ -520,7 +520,7 @@ test('runViaEngine: the leg is opened and closed, so a steer after it is not ans
   // and a steer at a finished run is a 409. 'ready' in this window had Convo ack "adding that in"
   // for a POST that could not land.
   assert.equal(getOpsEngineRun(task.chatId, task.id), undefined);
-  assert.equal(requestOpsSteer(task.chatId, task.id, 'actually jakarta'), 'already_done');
+  assert.equal(requestOpsSteer(task.chatId, task.id, 'actually lisbon'), 'already_done');
   __resetOpsCoordination();
 });
 
@@ -573,7 +573,7 @@ test('runViaEngine: an image-bearing hermes task is marked steer-unreachable bef
     const engine: EngineBackend = { ...stub(async () => 'answer'), async steerRun() { return 'accepted'; } };
     const p = runViaEngine(engine, 'prompt', task, {}, mkDebrief());
     await settle();
-    assert.equal(requestOpsSteer(task.chatId, task.id, 'also check jakarta'), 'unsupported',
+    assert.equal(requestOpsSteer(task.chatId, task.id, 'also check lisbon'), 'unsupported',
       'known unreachable from the moment the leg opened, not just once it routes');
     assert.deepEqual(takePendingSteers(task.chatId, task.id), [], 'nothing sits in a queue nobody will drain');
     await pins.freeAll();
@@ -590,13 +590,13 @@ test('runViaEngine: a pending steer rides back on the OpsResult instead of being
   const engine = stub(async (_p, _t, ctx) => {
     // hermes accepted the addition after its final model response, so the answer below does NOT
     // reflect it. Silently delivering that answer is the failure this field exists to stop.
-    ctx.onPendingSteer?.('also check jakarta');
+    ctx.onPendingSteer?.('also check lisbon');
     return 'ANSWER: bekasi flights';
   });
   const res = await runViaEngine(engine, 'p', task, {}, mkDebrief());
   assert.equal(res.status, 'ok');
   assert.equal(res.summary, 'ANSWER: bekasi flights');
-  assert.equal(res.steerUnapplied, 'also check jakarta');
+  assert.equal(res.steerUnapplied, 'also check lisbon');
 
   // …and an ordinary run carries no such field, so nothing downstream has to test for absence twice.
   const plain = await runViaEngine(stub(async () => 'ANSWER: ok'), 'p', task, {}, mkDebrief());

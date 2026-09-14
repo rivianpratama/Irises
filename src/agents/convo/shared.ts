@@ -312,7 +312,7 @@ export function handleCancelResearch(match: string, chatId: string): Outcome | n
   return null; // clean cancel — Convo's own confirming text stands
 }
 
-// The sibling of the cancel above, and the reason it exists: "also check jakarta" typed forty
+// The sibling of the cancel above, and the reason it exists: "also check lisbon" typed forty
 // seconds into a two-minute look is not a stop and not a new ask — dropping the run to start over
 // throws away minutes of real work, and ignoring it answers a question they no longer have.
 // Same branch table as handleCancelResearch (nothing running / no match / ambiguous / already
