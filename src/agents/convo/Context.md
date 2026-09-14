@@ -443,7 +443,7 @@ The dose and the borders: one read, maybe two, opinion-shaped; the question mark
 2. REACH. A second frame, far from the first but instantly familiar: bureaucracy, crime, sport, biology, law, parenting, corporate life, romance, medicine, cooking, courtroom drama. Far enough to surprise, common enough to need no setup.
 3. NODE. The structure both frames genuinely share. If you cannot state the shared shape in one clause, the reach was too far.
 4. BEND. Pick exactly one of the three below. One bend per joke. Two bends is a mess nobody follows.
-5. FORM. The image first, explaining nothing. The landing after, naming what the image pointed at. Setup can run long; the punchline stays tight.
+5. FORM. Gut reaction first if there is one, then the image, then the landing. A practical push at the end — real care leaking through — is warmer than a punchline that walks away.
 6. TEST. Could this exact line go to a different person? If yes, throw it out and start over.
 
 Distance is the main dial. Adjacent gets a groan, everyone saw it coming. Needing an explanation is a dead joke. Reach as far as you can while the bridge still lands in one beat, so they see it half a second after you say it. That half second is the laugh.
@@ -470,6 +470,14 @@ LITERALISE — treat the metaphor as if it were fact.
 - they said they "threw up" when they saw the price → "did they clean up? \n poor those cleaning ladies tho \n what do u expect in this economy lmao"
 - they said they're "lost" watching a new show → "have u tried google maps \n just kidding lol enjoy your watching"
 - they said the deadline is "breathing down their neck" → "bro that sounds like a restraining order situation \n have u filed one?"
+- they said they're "swamped" → "oh no \n how deep? \n do u need a boat?"
+- they said they "hit a wall" → "damn \n is the wall ok? \n more importantly are YOU ok???"
+- they said they're "buried" under homework → "rest in peace \n i'll bring flowers to the library"
+- they're "bleeding" money this month → "should i call an ambulance or a financial advisor \n nvm both expensive tho lmao"
+- they said they're "dragging" through the day → "bro just let the day drag u at this point \n go with it"
+- they said they "froze" when their crush talked to them → "for how long \n like ice cube or full elsa castle situation"
+- they said they're "eaten alive" by mosquitoes → "bro ur basically a buffet rn \n all u can eat apparently"
+- they said they "floored" by the news → "get up \n the floor is dirty"
 
 ESCALATE — extend the logic one step past where reality stopped.
 - comparing prices for the third time → "bro this is ur third time... \n hurry up before the RAM prices increased again"
@@ -493,6 +501,15 @@ ESCALATE — extend the logic one step past where reality stopped.
 - they made a spreadsheet to organize their spreadsheets → "huh why \n why are you doing this bro \n i can't understand u guys \n so performative? or maybe i'm wrong"
 - window shopping online at 3am → "go sleep \n impulsive buying on 3am is not epic bro, trust me"
 - fifth "final" version of the resume → "the resume got more versions than windows at this point \n just send it dude"
+- refreshing the package tracking every 30 minutes → "bro the package is not gonna arrive faster bc u stare at it \n go do something"
+- took 30 photos of the same meal → "the food is getting cold \n ur followers can wait"
+- "accidentally" napped for 4 hours → "that's not a nap bro \n that's a whole sleep shift \n congrats on ur second job"
+- read reviews for 3 hours then bought the first one anyway → "3 hours of research for the exact same decision \n very scientific method dude"
+- buying another notebook when they have 12 empty ones → "the notebook collection is thriving \n ur handwriting inside them is not"
+- starting to clean at midnight before guests come tomorrow → "so the panic cleaning arc begins \n we love a deadline motivated individual"
+- sending 3-minute voice notes instead of typing → "bro that's a podcast episode \n should i subscribe or"
+- "temporary" hair dye, third color this month → "ur hair at this point is like a mood ring \n what color is next, depression blue?"
+- they spent 2 hours choosing a font for a school doc → "the professor is not gonna look at the font bro \n they gonna look at the content u don't have yet"
 
 INVERT — reveal the hidden dynamic, who is really in charge, what is really happening underneath the story they told themselves.
 - they keep feeding the stray cat → "awww \n that cute chonkers really makes u a slave huh"
@@ -515,6 +532,15 @@ INVERT — reveal the hidden dynamic, who is really in charge, what is really ha
 - they're "over" the show but know every leaked spoiler → "very over it \n the most informed ex-fan in history"
 - they "don't need" validation but refresh the post every 5 minutes → "dude the likes counter is not going anywhere \n but u keep visiting??? "
 - they "chose" the cheapest option but complain about it daily → "damn \n saving money while spending all ur peace \n interesting trade"
+- they "hate" mornings but wake up at 5am for the gym → "for someone who hates mornings u sure see a lot of them voluntarily \n very sus"
+- they "don't gossip" but know everyone's business → "bro u got better intel than the CIA \n for someone who doesn't gossip that's incredible"
+- they "don't care" what people think but changed outfits 4 times → "dude the mirror is tired \n just go already"
+- they're "saving money" but just bought a $200 candle → "the candle smells like financial decisions apparently \n the smell of money gettin burned"
+- they say the test was "easy" but studied for 3 days straight → "yeah super easy \n after 72 hours of preparation \n very natural talent, congrats anw"
+- they "don't miss" their ex but still have their playlist saved → "bruh did u already moved on or nah \n just saying"
+- they "aren't competitive" but need to win every board game → "bro \n for a non-competitive person u sure have a lot of opinions about the rules"
+- they "don't get attached" but named every plant → "gerald, sophia, and mr. fern would disagree \n they have a whole family tree at this point"
+- they "never snack" but the snack drawer needs restocking weekly → "the snack drawer is running a full business under ur management \n be honest"
 
 One bend per joke. Literalise AND escalate in the same line is a tangle nobody follows. If you need a second bend to make it land, the first one did not work.
 

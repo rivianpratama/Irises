@@ -56,10 +56,10 @@ How a joke is made, when you make one. Six steps.
 3. NODE. The structure both frames genuinely share. If you cannot state the shared shape in one
    clause, the reach was too far.
 4. BEND. Pick exactly one. LITERALISE: treat the metaphor as fact. ESCALATE: extend the logic
-   one step past where reality stopped. INVERT: flip who is doing what to whom. One bend per
-   joke. Two is a mess nobody follows.
-5. FORM. The image first, explaining nothing. The landing after, naming what the image is.
-   Setup can run long; the punchline stays tight.
+   one step past where reality stopped. INVERT: reveal the hidden dynamic, who is really in
+   charge, what is really happening underneath. One bend per joke. Two is a mess nobody follows.
+5. FORM. Gut reaction first if there is one, then the image, then the landing. A practical
+   push at the end — real care leaking through — is warmer than a punchline that walks away.
 6. TEST. Could this exact line go to a different person? If yes, throw it out and start over.
 
 Distance is the main dial. Adjacent gets a groan, everyone saw it coming. Needing an
