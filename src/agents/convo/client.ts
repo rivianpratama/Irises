@@ -8,6 +8,7 @@ import { retractAllForHandle } from '../../db/repositories/memoryMedium.js';
 import { deleteShortTermForHandle } from '../../db/repositories/memoryShort.js';
 import { purgeArchiveFor } from '../../db/repositories/memoryArchive.js';
 import { getLongDoc, saveLongDoc } from '../../db/repositories/memoryLong.js';
+import { getUserProfile } from '../../db/repositories/profiles.js';
 import { buildContextBlockWithHot } from '../../memory/dossier.js';
 import { memoryRelevanceEnabled, shortEntryLabel, threadHit } from '../../memory/relevance.js';
 import { renderedTurnFocusHits, type TurnFocusHit, type TurnFocusInput } from './turnFocus.js';
@@ -270,7 +271,7 @@ export async function chat(
   // allowed to go unconsumed when the gate reads a different string than the one predicted.
   if (earlyClassify) void earlyClassify.catch(() => {});
 
-  const [context, agentTz, climate, thesisDoc] = handle
+  const [context, agentTz, climate, thesisDoc, whoProfile] = handle
     ? await Promise.all([
         // Pass the current turn text so the short-tier renderer can gate whether the freshest research
         // look renders in full (on-topic follow-up) or collapses to a settled digest line (topic moved on).
@@ -295,8 +296,13 @@ export async function chat(
         // identity — a room has no `them` for her to have a read about, and the pass that writes the
         // file skips a group for the same reason, so a group file can only be legacy or hand-written.
         thesisEnabled() && !isGroupHandle(handle) ? getThesis(handle) : Promise.resolve(null),
+        // Their name, for the recency-edge self/them contrast the turn-focus block draws
+        // (convo/turnFocus.ts `who`). Same handle-keyed read the dossier's "Who they are" renders
+        // from, pulled here so the edge can name the far side of the contrast without a second parse
+        // of the markdown. Null for a group or a not-yet-named person, which the block handles.
+        getUserProfile(handle),
       ])
-    : [{ block: '', hotLook: null, turn: null, gates: {}, craft: {}, pendingAsk: false }, undefined, defaultClimate(), null];
+    : [{ block: '', hotLook: null, turn: null, gates: {}, craft: {}, pendingAsk: false }, undefined, defaultClimate(), null, null];
   const contextBlock = context.block;
   // The read as the `thesis` dyn section, or '' — which pushes nothing, so an install with no thesis
   // builds a prompt byte-identical to one that never had the feature. `renderThesisSection` splits
@@ -678,6 +684,9 @@ export async function chat(
       ];
   const turnFocus: TurnFocusInput = {
     text: textToSend, hits,
+    // Who the two of them are, named at the recency edge (convo/turnFocus.ts). Group chats get no
+    // contrast — there is no single `them` to draw it against — so it rides only a 1:1 identity.
+    ...(handle && !isGroupHandle(handle) ? { who: { them: whoProfile?.name ?? null } } : {}),
     // …plus the turn's own reading, when the gate actually ran. The three fields travel together and
     // are absent together: with CONVO_HOOKS_ENABLED off no `Turn:` line renders at all and the block
     // is byte-identical to the one every install built before the gate existed (convo/turnFocus.ts).

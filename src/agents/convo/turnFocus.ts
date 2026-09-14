@@ -86,6 +86,16 @@ export interface TurnFocusInput {
    *  idle and are not the same turn. It is a fact about a SHARE turn too, and a truer one there —
    *  the dose rule the share section states turns on whether they wrote more than a line. */
   messageChars?: number;
+  /**
+   * WHO the two of you are, named at the recency edge so a long thread cannot blur them. Her persona
+   * bio ("You are Irises. Twenty-one, from Jakarta…") opens the prompt; the user's own picture ("Who
+   * they are") lands ~150k characters later, and across that gap a small model asked "what do you
+   * know about me" hands back HER bio as if it were theirs. `them` is the name on their profile, or
+   * null when none is stored yet — the line still draws the self/them line without it. Rendered as
+   * one grounding sentence directly above the restated message, in the plain punctuation set she is
+   * held to (no dashes, no colons), so the counterweight never models the punctuation it forbids.
+   */
+  who?: { them: string | null };
 }
 
 /** How much of their message is restated. The block is a RESTATEMENT, not the message itself — the
@@ -113,6 +123,12 @@ const TURN_SHARE = 'Turn: share';
 const HITS_LABEL = 'What you hold that touches it: ';
 const NO_HITS = 'nothing here touches it; answer from the thread above.';
 const CLOSER = 'Answer THIS. Everything above is background — it may shape HOW you answer, never WHAT.';
+
+/** The half of the who-line that is always true: the opening bio is HERS, never the person she is
+ *  texting. Its own const because it is the anchor the null-name branch and the named branch share.
+ *  Plain punctuation only (see the `who` field note) — no dash, no colon, so the recency-edge line
+ *  she reads last does not teach the register the persona bans. */
+const WHO_SELF = 'You are Irises, and that bio at the very top of this prompt, Jakarta and the olympiad and the SaaS, is YOURS.';
 
 /**
  * Clip to at most `max` characters, marking the cut so a clipped restatement never reads as the
@@ -325,6 +341,27 @@ function renderTurnLine(input: TurnFocusInput): string {
 }
 
 /**
+ * The identity contrast, one plain sentence, or '' when the caller passed no `who` (every non-Convo
+ * caller, and any turn built before this field existed — those stay byte-identical). It names both
+ * people so "me/my/I" in the message below can only resolve to THEM: the fix for the long-context
+ * bleed where the persona bio at char 0 gets handed back as the user's own.
+ *
+ * The name is DEFUSED like every other user-sourced string that lands in this block (a stored
+ * `</prompt>` in a display name must not close the wrapper) and clipped, so one grounding line stays
+ * one line. When no name is stored the sentence still draws the line, it just cannot name the far
+ * side. No dash and no colon in either branch — the line is the last thing she reads, and it models
+ * the punctuation set she is held to.
+ */
+function renderWhoLine(who: TurnFocusInput['who']): string {
+  if (!who) return '';
+  const them = clip(neutralizeTagBreakouts((who.them ?? '').replace(/\s+/g, ' ').trim()), TURN_FOCUS_LABEL_CHARS);
+  if (!them) {
+    return `${WHO_SELF} The one texting you is a different person, whose picture is the "Who they are" note above. When their message says "me", "my" or "I", that means them, never you, and you never hand your own bio back as if it were theirs.`;
+  }
+  return `${WHO_SELF} The one texting you is ${them}, a different person, whose picture is the "Who they are" note above. When their message says "me", "my" or "I", that means ${them}, never you, and you never hand your own bio back as if it were theirs.`;
+}
+
+/**
  * Render the block. Returns '' when there is no message to restate — a turn with no text at all has
  * nothing to point at, and an empty block would be a header promising something it does not carry.
  *
@@ -335,6 +372,7 @@ export function renderTurnFocus(input: TurnFocusInput): string {
   const message = input.text.trim();
   if (!message) return '';
 
+  const whoLine = renderWhoLine(input.who);
   const hits = renderedTurnFocusHits(input.hits);
   // Between the shape and the hits: the shape says what the message IS, this says what the turn is
   // FOR, and the hits say what touches it. One line, or none at all on a caller that never ran the
@@ -349,6 +387,9 @@ export function renderTurnFocus(input: TurnFocusInput): string {
 
   return [
     HEADER,
+    // The self/them contrast, directly above their words so "me/my/I" below can only be them. '' when
+    // the caller passed no `who`, which keeps every prompt built before this existed byte-identical.
+    ...(whoLine ? [whoLine] : []),
     // Their own words, restated inside the system prompt — the one place a user's text lands there.
     // Defused for the same reason the labels are: a typed `</prompt>` must not close the wrapper.
     dataTag('their_message', clip(neutralizeTagBreakouts(message), TURN_FOCUS_TEXT_CHARS)),
