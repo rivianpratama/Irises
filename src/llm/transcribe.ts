@@ -20,7 +20,7 @@ const TRANSCRIBE_MODEL = process.env.TRANSCRIBE_MODEL || 'google/gemini-2.5-flas
 const TRANSCRIBE_MAX_TOKENS = Number(process.env.TRANSCRIBE_MAX_TOKENS) || 4096;
 /** Appended to a transcript the model didn't finish — the reader (and the agents downstream) must
  *  know the memo continues past this point. A marked partial beats a dropped memo. */
-const CUTOFF_NOTE = '\n[voice memo transcript cut off — memo longer than the transcription limit]';
+const CUTOFF_NOTE = '\n[voice memo transcript cut off. Memo longer than the transcription limit]';
 
 // The transcription lane: OpenRouter preferred (its aggregator serves the audio-capable flash
 // model), else the generic OpenAI lane (a compatible endpoint with an audio model, at

@@ -188,7 +188,7 @@ test('a QUIET turn renders the quiet block, and a HOOK turn the open-kinds one',
     if (w === 'question') continue;
     assert.ok(!quietBlock.includes(w), w);
   }
-  assert.ok(quietBlock.includes('no hook, no question, no offer'), 'the one naming is the prohibition');
+  assert.ok(quietBlock.includes('No hook, no question, no offer'), 'the one naming is the prohibition');
   assert.equal(quietBlock.split('question').length - 1, 1, 'and it appears there and nowhere else');
 
   const hook = buildSystemPromptSections(...build({ hooks: HOOK, moments: [], thesis: '' }));

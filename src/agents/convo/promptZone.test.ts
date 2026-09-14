@@ -101,7 +101,7 @@ test('the conversation_timing block reads the daypart off the user\'s clock', ()
   const jakartaClock = lineStartingWith(jakarta, "It's Tuesday");
   const utcClock = lineStartingWith(utc, "It's Tuesday");
   assert.equal(jakartaClock, "It's Tuesday morning for them.");
-  assert.equal(utcClock, "It's Tuesday late night for them. Late night — keep it softer and lower-stakes.");
+  assert.equal(utcClock, "It's Tuesday late night for them. Late night. Keep it softer and lower-stakes.");
 });
 
 test('the timing regime itself is read in the user\'s zone, not the host\'s', () => {

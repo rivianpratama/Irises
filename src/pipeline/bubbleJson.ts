@@ -93,7 +93,7 @@ export const MAX_BUBBLES = BUBBLE_HARD_CAP;
 // The one sentence both envelope schemas use to describe a bubble's text, built from the word law
 // in bubbles.ts (the module that ENFORCES the ceiling) rather than restating it. It used to be two
 // identical literals, one per schema — the exact shape a number drifts out of.
-const BUBBLE_TEXT_DESCRIPTION = `one short thought — one sentence or question, ideally ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, never past ${MAX_BUBBLE_WORDS}`;
+const BUBBLE_TEXT_DESCRIPTION = `one short thought. One sentence or question, ideally ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, never past ${MAX_BUBBLE_WORDS}`;
 
 // The exact envelope shape, as a JSON Schema for OpenRouter structured outputs (response_format:
 // json_schema). This ENFORCES valid JSON at the API — the fix for weaker tool-calling models
@@ -139,8 +139,8 @@ export const MM_ENVELOPE_SCHEMA: Record<string, unknown> = {
   additionalProperties: false,
   required: ['could_not_open', 'analysis', 'bubbles'],
   properties: {
-    could_not_open: { type: 'boolean', description: 'true ONLY when the file itself could not be read at all (corrupt/blank/unopenable) — false otherwise, including when the content is merely hard to read' },
-    analysis: { type: 'string', description: 'your full private read of the file — what it is, every name, number, date, amount, deadline and commitment in it, read-quality issues, research-worthy follow-ups. The user never sees this.' },
+    could_not_open: { type: 'boolean', description: 'true ONLY when the file itself could not be read at all (corrupt/blank/unopenable). False otherwise, including when the content is merely hard to read' },
+    analysis: { type: 'string', description: 'your full private read of the file: what it is, every name, number, date, amount, deadline and commitment in it, read-quality issues, research-worthy follow-ups. The user never sees this.' },
     bubbles: {
       type: 'array',
       description: 'the texts you send the user, in order (empty only when could_not_open is true)',
@@ -208,7 +208,7 @@ export function buildEnvelopeSchema(tools?: LlmToolDef[]): Record<string, unknow
       // Non-nullable here (unlike the base schema): the tool-carrying roles run the confidence
       // gate on EVERY turn (<60 clarify, 60+ delegate), so "not applicable" doesn't exist — live
       // smoke showed a provider happily emitting null when the schema leaves the door open.
-      confidence_level: { type: 'integer', description: '0-100, how sure you are of what they mean and what the answer is — set it every reply' },
+      confidence_level: { type: 'integer', description: '0-100, how sure you are of what they mean and what the answer is. Set it every reply' },
       tool_calls: {
         type: ['array', 'null'],
         description: 'the actions you take this turn (see the tools list in your instructions); null when this reply is words only',
@@ -223,7 +223,7 @@ export function buildEnvelopeSchema(tools?: LlmToolDef[]): Record<string, unknow
               additionalProperties: false,
               required: Object.keys(argProps),
               properties: argProps,
-              description: "that tool's arguments — fill only the fields it needs, set every other field to null",
+              description: "that tool's arguments. Fill only the fields it needs, set every other field to null",
             },
           },
         },

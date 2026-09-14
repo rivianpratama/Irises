@@ -43,7 +43,7 @@ export function fromAnthropicContent(content: unknown): string {
       for (const r of block.content as Array<Record<string, unknown>>) {
         const title = typeof r?.title === 'string' ? r.title : '';
         const url = typeof r?.url === 'string' ? r.url : '';
-        const line = [title, url].filter(Boolean).join(' — ');
+        const line = [title, url].filter(Boolean).join(' | ');
         if (line) lines.push(line);
       }
     } else if (block.type === 'text' && Array.isArray(block.citations)) {
@@ -51,7 +51,7 @@ export function fromAnthropicContent(content: unknown): string {
         const cited = typeof c?.cited_text === 'string' ? c.cited_text : '';
         const title = typeof c?.title === 'string' ? c.title : '';
         const url = typeof c?.url === 'string' ? c.url : '';
-        const line = [cited, title, url].filter(Boolean).join(' — ');
+        const line = [cited, title, url].filter(Boolean).join(' | ');
         if (line) lines.push(line);
       }
     }
@@ -74,7 +74,7 @@ export function fromOpenRouterMessage(message: unknown): string {
     const content = typeof uc.content === 'string' ? uc.content : '';
     const title = typeof uc.title === 'string' ? uc.title : '';
     const url = typeof uc.url === 'string' ? uc.url : '';
-    const line = [content, title, url].filter(Boolean).join(' — ');
+    const line = [content, title, url].filter(Boolean).join(' | ');
     if (line) lines.push(line);
   }
   return dedupeLines(lines);

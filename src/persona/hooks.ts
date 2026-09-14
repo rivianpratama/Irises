@@ -563,7 +563,7 @@ const PLAY_LEVEL_LINES: Record<0 | 1 | 2 | 3, string> = {
 };
 
 export const QUIET_HEADING = '## This turn is quiet (INTERNAL)';
-export const QUIET_LAW = 'Three sharp things in a row already, or your weather says so. One plain short bubble, or a tapback, or nothing — no hook, no question, no offer. Do not explain the quiet.';
+export const QUIET_LAW = 'Three sharp things in a row already, or your weather says so. One plain short bubble, or a tapback, or nothing. No hook, no question, no offer. Do not explain the quiet.';
 
 // ── The share block ─────────────────────────────────────────────────────────────────────────────
 //

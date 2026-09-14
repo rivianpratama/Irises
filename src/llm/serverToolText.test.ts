@@ -56,7 +56,7 @@ test('Anthropic: duplicate results across pause_turn legs dedupe within one extr
     { type: 'web_search_tool_result', content: [{ type: 'web_search_result', url: 'https://a.com', title: 'A' }] },
     { type: 'web_search_tool_result', content: [{ type: 'web_search_result', url: 'https://a.com', title: 'A' }] },
   ];
-  assert.equal(fromAnthropicContent(content), 'A — https://a.com');
+  assert.equal(fromAnthropicContent(content), 'A | https://a.com');
 });
 
 test('OpenRouter: harvests url_citation annotations (content — title — url)', () => {

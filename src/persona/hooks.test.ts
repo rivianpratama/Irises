@@ -699,7 +699,7 @@ test('the late line rides along on a hook turn, and the quiet block never needs 
 test('the quiet block renders char-for-char', () => {
   assert.equal(renderHooksSection({ ...HOOK_DIRECTIVE, mode: 'quiet', offerAllowed: false }), [
     '## This turn is quiet (INTERNAL)',
-    'Three sharp things in a row already, or your weather says so. One plain short bubble, or a tapback, or nothing — no hook, no question, no offer. Do not explain the quiet.',
+    'Three sharp things in a row already, or your weather says so. One plain short bubble, or a tapback, or nothing. No hook, no question, no offer. Do not explain the quiet.',
     'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
   ].join('\n'));
 });

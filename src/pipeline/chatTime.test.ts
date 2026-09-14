@@ -119,7 +119,7 @@ test('a short unanswered user message is an unremarkable pause (<3h: no apology)
 
 test('a long-unanswered user message makes the wait Irises\'s — no apology, no measurement', () => {
   const block = renderConversationTiming([{ role: 'user', at: NOW - 6 * HOUR }], NOW);
-  assert.match(block, /the wait is YOURS/);
+  assert.match(block, /The wait is YOURS/);
   assert.match(block, /Do not apologise for it and do not measure it/);
   assert.match(block, /one flat clause \("just seeing this"\), once/);
   // The gap is still handed to her in words, so the ceiling has to say what she may do with it.

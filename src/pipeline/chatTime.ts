@@ -169,8 +169,8 @@ function clockPhrase(nowMs: number, tz: string): { phrase: string; lateNight: bo
 function clockSentences(nowMs: number, tz: string): string {
   const { phrase, lateNight, weekend } = clockPhrase(nowMs, tz);
   let s = `It's ${phrase} for them.`;
-  if (lateNight) s += ' Late night — keep it softer and lower-stakes.';
-  if (weekend) s += " It's the weekend — looser is fine.";
+  if (lateNight) s += ' Late night. Keep it softer and lower-stakes.';
+  if (weekend) s += " It's the weekend. Looser is fine.";
   return s;
 }
 
@@ -196,7 +196,7 @@ export function renderConversationTiming(
   tz = DEFAULT_TZ,
   mode: 'reply' | 'outreach' = 'reply',
 ): string {
-  const header = `## Conversation timing (precomputed — trust this, don't do date math)`;
+  const header = `## Conversation timing (precomputed; trust this, don't do date math)`;
   const clock = clockSentences(nowMs, tz);
   if (!history.length) {
     return `${header}\nThis is your first exchange with them. ${clock}`;
@@ -212,34 +212,34 @@ export function renderConversationTiming(
 
   if (mode === 'outreach') {
     if (regime === 'live') {
-      lines.push(`The thread is live right now — the last message is moments old. Weave in, don't open cold.`);
+      lines.push(`The thread is live right now. The last message is moments old. Weave in, don't open cold.`);
     } else {
       const lastWord = last.role === 'assistant' ? 'the last word was yours' : 'their last message went unanswered';
-      lines.push(`You're the one opening this exchange — the thread was last alive ${gap} ago (${lastWord}). Land like a person who knows what time it is: match their clock in your opener, and if it's been a day or more, open fresh rather than resuming an old topic mid-sentence.`);
+      lines.push(`You're the one opening this exchange. The thread was last alive ${gap} ago (${lastWord}). Land like a person who knows what time it is: match their clock in your opener, and if it's been a day or more, open fresh rather than resuming an old topic mid-sentence.`);
     }
     lines.push(clock);
     return lines.join('\n');
   }
 
   if (regime === 'live') {
-    lines.push(`They're in a live back-and-forth with you — the last message is moments old. Keep the energy; no greeting, no recap.`);
+    lines.push(`They're in a live back-and-forth with you. The last message is moments old. Keep the energy; no greeting, no recap.`);
   } else if (last.role === 'user') {
     // Their text sat unanswered until now — the wait is Irises's. The <3h threshold is decided HERE
     // so the model never has to apply it.
     if (gapMs < 3 * HOUR) {
-      lines.push(`Their last message came in ${gap} ago and you're answering now. An unremarkable pause — no acknowledgment needed, just reply.`);
+      lines.push(`Their last message came in ${gap} ago and you're answering now. An unremarkable pause. No acknowledgment needed, just reply.`);
     } else {
-      lines.push(`Their last message sat ${gap} before this reply — the wait is YOURS. Do not apologise for it and do not measure it; if you name it at all it is one flat clause ("just seeing this"), once — and if your recent turns already named this gap, not again.`);
+      lines.push(`Their last message sat ${gap} before this reply. The wait is YOURS. Do not apologise for it and do not measure it. If you name it at all it is one flat clause ("just seeing this"), once. And if your recent turns already named this gap, not again.`);
     }
   } else {
     // Irises spoke last; the user is coming back after a while. Their silence is never measured or
     // mentioned — it only shapes how fresh the reopening reads.
     if (regime === 'same-day') {
-      lines.push(`The thread was last alive ${gap} ago, earlier today. Pick up naturally — no big greeting, no recap needed.`);
+      lines.push(`The thread was last alive ${gap} ago, earlier today. Pick up naturally. No big greeting, no recap needed.`);
     } else if (regime === 'overnight') {
-      lines.push(`The last exchange was ${gap} ago, before their night. They're coming back fresh: greet to match their clock, and don't resume the old topic mid-sentence — a tiny callback if it still matters, or just meet what they open with. The wait was theirs and needs no mention, ever.`);
+      lines.push(`The last exchange was ${gap} ago, before their night. They're coming back fresh: greet to match their clock, and don't resume the old topic mid-sentence. A tiny callback if it still matters, or just meet what they open with. The wait was theirs and needs no mention, ever.`);
     } else {
-      lines.push(`The thread has been quiet for ${gap}. They're coming back fresh: greet to match their clock, and never pick an old topic back up mid-sentence — a tiny callback if it still matters, otherwise meet whatever they open with. How long THEY took is never mentioned or measured, ever.`);
+      lines.push(`The thread has been quiet for ${gap}. They're coming back fresh: greet to match their clock, and never pick an old topic back up mid-sentence. A tiny callback if it still matters, otherwise meet whatever they open with. How long THEY took is never mentioned or measured, ever.`);
     }
   }
   lines.push(clock);
@@ -256,5 +256,5 @@ export function conversationTimingLine(history: TimedTurn[], nowMs = Date.now(),
   const regime = classifyGap(last.at, nowMs, tz);
   if (regime === 'live' || regime === 'same-day') return '';
   const { phrase } = clockPhrase(nowMs, tz);
-  return `Timing: the thread was last alive ${describeGap(nowMs - (last.at as number))} ago and it's ${phrase} for them now — don't voice this like no time passed; a half-beat of orientation first.`;
+  return `Timing: the thread was last alive ${describeGap(nowMs - (last.at as number))} ago and it's ${phrase} for them now. Don't voice this like no time passed; a half-beat of orientation first.`;
 }

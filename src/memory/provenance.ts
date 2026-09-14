@@ -59,7 +59,7 @@ export const SEED_FACT_KEY = 'engine_seed_details';
 /** The note that keeps a seeded picture honest, and the sentence the "imported" render group is
  *  wrapped in. Byte-pinned by seedFromEngine.test.ts: this is what stops her citing a seeded
  *  detail as something they said to her. */
-export const SEED_NOTE = 'your first picture of them came from the engine you front, at install — hold it lightly, verify it naturally in conversation, and never cite it as something they told you';
+export const SEED_NOTE = 'your first picture of them came from the engine you front, at install. Hold it lightly, verify it naturally in conversation, and never cite it as something they told you';
 
 /** How a seeded dossier says where it came from: italic, first-person-to-Irises, and living inside
  *  "## Who they are" where she cannot miss it while reading who they are.
@@ -67,7 +67,7 @@ export const SEED_NOTE = 'your first picture of them came from the engine you fr
  *  Here rather than in seedFromEngine.ts (re-exported there under its historical name) because the
  *  DOSSIER GUARD re-injects it after an LLM rewrite drops it (memory/dossier.ts), and dossier.ts
  *  cannot import seedFromEngine.ts — seedFromEngine imports `persistDossierMerge` from it. */
-export const PROVENANCE_LINE = '*This first picture came from the engine you front, handed over at install — it is second-hand, not something they told you. Hold it lightly and let them confirm it naturally.*';
+export const PROVENANCE_LINE = '*This first picture came from the engine you front, handed over at install. It is second-hand, not something they told you. Hold it lightly and let them confirm it naturally.*';
 
 /** What an unprefixed `user_profiles.facts_json` row means. That column only ever held facts
  *  written by `remember_user` off something the user said, so reading the whole legacy backlog as

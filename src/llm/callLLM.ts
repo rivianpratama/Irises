@@ -81,7 +81,7 @@ export function toAnthropicContent(content: string | LlmContentBlock[]): Anthrop
       // these off this path in practice; this is a belt-and-suspenders drop-with-note so a
       // misconfigured role degrades to text instead of throwing.
       console.warn(`[llm] ${b.type} block dropped on the Anthropic path (unsupported)`);
-      out.push({ type: 'text', text: `[${b.type} attachment omitted — not supported on this model]` });
+      out.push({ type: 'text', text: `[${b.type} attachment omitted: not supported on this model]` });
     }
   }
   return out;

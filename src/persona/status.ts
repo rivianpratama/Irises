@@ -628,7 +628,7 @@ export function pushMood(history: MoodPoint[], s: AffectStatus): MoodPoint[] {
 // last of which asked her to hedge MORE when the gauges were low. It now says what the block
 // actually decides: how sharp, how short, and how much she bothers.
 const INTERNAL_WEATHER_HEADER =
-  '## Where you are right now (INTERNAL weather — never say, name, or hint any of this; it only sets how sharp, how short, and how much you bother)';
+  '## Where you are right now (INTERNAL weather, never say, name, or hint any of this; it only sets how sharp, how short, and how much you bother)';
 
 /**
  * The per-turn "internal weather" block injected into the dynamic prompt (NOT the cached persona).

@@ -78,7 +78,7 @@ const RUNGS = (Object.keys(RUNG_ORDER) as ThreadRung[]).sort((a, b) => RUNG_ORDE
 
 test('the persona teaches exactly the rungs the engine can deliver, in the same order', () => {
   const persona = convoPersonaWithCraft();
-  const at = persona.indexOf('**The ladder — enter one rung lower than you could.**');
+  const at = persona.indexOf('**The ladder: enter one rung lower than you could.**');
   assert.ok(at > 0, 'found the ladder paragraph in the threading craft page');
   // To the end of the PARAGRAPH, not the end of the first line. The prose commit rewrote
   // craft/threading.md hard-wrapped at a hundred columns, so the lead-in now sits on a line of its
