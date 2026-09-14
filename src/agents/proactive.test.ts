@@ -104,7 +104,7 @@ test('the reminder and email instructions are untouched by the new kind', () => 
   );
   assert.match(
     _internal.buildProactiveInstruction({ kind: 'email', text: 'karen sent the lease back' }),
-    /^\(no one texted you — this one starts with you\)\n\nsomething just landed in their email/,
+    /^\(no one texted you, this one starts with you\)\n\nsomething just landed in their email/,
   );
 });
 

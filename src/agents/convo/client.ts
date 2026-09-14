@@ -532,6 +532,7 @@ export async function chat(
         lateNight: affectDirective.lateNight,
         playfulnessBand: bandForDial(climate, 'playfulness'),
         lastOutcome: last?.thread_outcome ?? null,
+        englishLooseness: affectDirective.englishLooseness,
       },
       isGroupChat, nowMs,
     );

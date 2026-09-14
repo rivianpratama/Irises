@@ -883,7 +883,7 @@ test('the descriptive prose is gone from the block entirely — clock, level, tr
   // asking her to set her mood from a description that no longer exists.
   const cold = renderStatusForPrompt(undefined, COMPUTED);
   assert.doesNotMatch(cold, /First read of this person/);
-  assert.match(cold, /- You are content \(peaceful\)\. Even and flat\. Nothing extra\./);
+  assert.match(cold, /- You are content \(peaceful\)\. Steady and easy\. Nothing extra\./);
 });
 
 // The momentum sentence described what applyAffectDrift now DOES (persona/affectDrift.ts): the
@@ -1019,11 +1019,11 @@ test('the turn mode gates the hook-naming climate lines, and nothing else in the
   const hook = renderStatusForPrompt(state, COMPUTED, movedClimate(), true);
 
   assert.equal(renderStatusForPrompt(state, COMPUTED, movedClimate()), task, 'the default is the task turn');
-  assert.match(hook, /- A tangent or a callback is expected of you here\./);
+  assert.match(hook, /- A tangent, a callback, or a bend is expected of you here\. Reach further\./);
   assert.doesNotMatch(withoutMoodLine(task), /judgment|callback|tangent/);
 
   // The rest of the block is byte-identical: this is a filter on one span, not a second mode.
-  assert.equal(hook.replace('\n- A tangent or a callback is expected of you here.', ''), task);
+  assert.equal(hook.replace('\n- A tangent, a callback, or a bend is expected of you here. Reach further.', ''), task);
 
   // And it is the CLIMATE span it filters. With no climate at all the mode changes nothing, which is
   // what keeps every non-climate assertion in this file free of it.
@@ -1034,7 +1034,7 @@ test('the turn mode gates the hook-naming climate lines, and nothing else in the
 // THE CLOSED-KINDS TURN, at this seam. It is hook MODE with every kind forbidden — a room forbids
 // judgment, a flattened mood forbids the tangent, a callback she just used twice forbids the third —
 // and the section it renders says "No kind is open this turn". Gate this span on the MODE and that
-// same prompt also carries "A tangent or a callback is expected of you here", which is the register
+// same prompt also carries "A tangent, a callback, or a bend is expected of you here. Reach further.", which is the register
 // door left open one function away. The reading is composed here out of the real directive rather
 // than a hand-set boolean, so the pin is about what the assembler actually passes down
 // (agents/convo/shared.ts `kindOpen`). The CLOCK never produces this shape: a late turn is an
@@ -1063,7 +1063,7 @@ test('a closed-kinds hook turn reads as NO hook here — the mode is not the que
   // And the open turn is still the open turn — this filter must not have swallowed the feature.
   assert.match(
     renderStatusForPrompt(state, COMPUTED, movedClimate(), hookKindOpen(open)),
-    /- A tangent or a callback is expected of you here\./,
+    /- A tangent, a callback, or a bend is expected of you here\. Reach further\./,
   );
 });
 

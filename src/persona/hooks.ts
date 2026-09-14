@@ -177,6 +177,10 @@ export interface HookAffectInput {
   /** The thread_outcome emitted on the previous turn: 'took' | 'passed' | 'pushed_back', or null
    *  when there is no prior turn or the model did not emit one. */
   lastOutcome?: string | null;
+  /** The compiled English looseness for this turn. Absent or one means normal baseline (no line
+   *  rendered). Passed through so the renderer can write the instruction without seeing the
+   *  affect compiler. */
+  englishLooseness?: number;
 }
 
 /** 0 = no comedy, 1 = dry, 2 = normal, 3 = hot. The dial the jester reads before deciding
@@ -214,6 +218,9 @@ export interface HookDirective {
   /** How hard the jester may reach this turn. 0 = no comedy (task, quiet, heavy). 1 = dry
    *  (light touch). 2 = normal. 3 = hot (reach further, the bridge can be longer). */
   playLevel: PlayLevel;
+  /** How loose her English runs this turn. Absent or one means normal baseline (no line rendered).
+   *  Zero is careful (serious moment or numbers), two is loose, three is messy. */
+  englishLooseness?: 0 | 1 | 2 | 3;
 }
 
 /**
@@ -352,7 +359,7 @@ export function selectHook(
 
   if (shape === 'task') {
     return {
-      directive: { idle: false, mode: 'task', forbidden: [], lateNight: affect.lateNight, moments: false, offerAllowed: false, playLevel: 0 },
+      directive: { idle: false, mode: 'task', forbidden: [], lateNight: affect.lateNight, moments: false, offerAllowed: false, playLevel: 0, englishLooseness: affect.englishLooseness as 0 | 1 | 2 | 3 | undefined },
       report: report('not_idle', []),
     };
   }
@@ -405,13 +412,14 @@ export function selectHook(
         moments: false,
         offerAllowed: true,
         playLevel: computePlayLevel('share', affect),
+        englishLooseness: affect.englishLooseness as 0 | 1 | 2 | 3 | undefined,
       },
       report: report('share', forbidden),
     };
   }
 
   const quiet = (reason: HookSelectReason) => ({
-    directive: { idle: true, mode: 'quiet' as const, forbidden: [], lateNight: affect.lateNight, moments: false, offerAllowed: false, playLevel: 0 as PlayLevel },
+    directive: { idle: true, mode: 'quiet' as const, forbidden: [], lateNight: affect.lateNight, moments: false, offerAllowed: false, playLevel: 0 as PlayLevel, englishLooseness: affect.englishLooseness as 0 | 1 | 2 | 3 | undefined },
     report: report(reason, []),
   });
 
@@ -447,6 +455,7 @@ export function selectHook(
       moments: !forbidden.includes('callback') && state.idleSinceMoment >= MOMENT_IDLE_INTERVAL && !isGroup,
       offerAllowed: true,
       playLevel: computePlayLevel('hook', affect),
+      englishLooseness: affect.englishLooseness as 0 | 1 | 2 | 3 | undefined,
     },
     report: report('hook', forbidden),
   };
@@ -562,6 +571,20 @@ const PLAY_LEVEL_LINES: Record<0 | 1 | 2 | 3, string> = {
   3: 'Play level: hot. Reach further, the bridge can be longer, they are here for it.',
 };
 
+/** The per-turn English looseness signal: one instruction line handed to the model alongside the
+ *  rhythm contract. Level one is the normal baseline and renders nothing — the default costs the
+ *  prompt nothing, the same bargain the brevity deadzone makes. Level zero is a special case that
+ *  DOES render a line, because careful is a directive rather than a default.
+ *
+ *  NOT ONE DIGIT anywhere in this record: a number the model reads inside the section it grades
+ *  itself on is a number to optimize. "Two slips" is a phrase, not a count. */
+export const LOOSE_LEVEL_LINES: Record<0 | 1 | 2 | 3, string> = {
+  0: 'English careful this turn. Slips near zero, no typos, no elongation. Any bubble with a number, date, price or bad news stays at this level even when the rest is looser.',
+  1: '',
+  2: 'English loose this turn. Two slips per bubble, occasional typo left in, elongation when funny or annoyed.',
+  3: 'English messy this turn. Slips everywhere, subjects drop, typos stay uncorrected, letters stretch, particles on most bubbles, punctuation mostly gone.',
+};
+
 export const QUIET_HEADING = '## This turn is quiet (INTERNAL)';
 export const QUIET_LAW = 'Three sharp things in a row already, or your weather says so. One plain short bubble, or a tapback, or nothing. No hook, no question, no offer. Do not explain the quiet.';
 
@@ -661,6 +684,8 @@ export function renderHooksSection(directive: HookDirective, momentLines: string
       if (moments.length > 0) lines.push(MOMENTS_LEAD, ...moments);
     }
   }
+  const looseLine = LOOSE_LEVEL_LINES[directive.englishLooseness ?? 1];
+  if (looseLine) lines.push(looseLine);
   const playLine = PLAY_LEVEL_LINES[directive.playLevel];
   if (playLine) lines.push(playLine);
   lines.push(HOOK_CLAMP);

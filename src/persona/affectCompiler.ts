@@ -86,6 +86,10 @@ export interface AffectDirective {
   /** It is late where they are. A register flag: smaller and quieter, nothing more. It closes no
    *  hook kind, shuts no sampler and forces no mode — see hooks.ts `selectHook`. */
   lateNight: boolean;
+  /** How loose her English runs this turn. Handed to the hooks renderer alongside the rhythm
+   *  contract: zero is careful (serious moment or numbers), one is the normal baseline (no line
+   *  rendered), two is loose (late or amused), three is messy (very late or laughing hard). */
+  englishLooseness: 0 | 1 | 2 | 3;
 }
 
 /**
@@ -321,6 +325,14 @@ export function compileAffect(
   if (bandForDial(climate, 'playfulness') === 'below') hooks = tightenHooks(hooks, 'no_tangent');
   if (last && level(last.mood_level) < HOOK_MOOD_FLOOR) hooks = tightenHooks(hooks, 'none');
 
+  const lateNight = LATE_SLOTS.includes(computed.circadian.slot);
+
+  let loose: number = 1;
+  if (lateNight) loose += 1;
+  if (mood.core === 'joyful') loose += 1;
+  if (mood.core === 'sad' || mood.core === 'scared') loose -= 1;
+  const englishLooseness = Math.max(0, Math.min(3, loose)) as 0 | 1 | 2 | 3;
+
   return {
     mood,
     bubbleCap: capFor(brevity),
@@ -328,7 +340,8 @@ export function compileAffect(
     hooks,
     question: compileQuestionGate(last, mood.core, carried),
     heavy: compileHeavy(carried),
-    lateNight: LATE_SLOTS.includes(computed.circadian.slot),
+    lateNight,
+    englishLooseness,
   };
 }
 

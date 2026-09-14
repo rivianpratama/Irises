@@ -30,6 +30,7 @@ import {
   HOOK_CLAMP, HOOK_HEADING, HOOK_LEAD, HOOK_OPEN_LINE, HOOK_NONE_OPEN, HOOK_LATE_LINE,
   MOMENTS_LEAD, QUIET_HEADING, QUIET_LAW,
   SHARE_HEADING, SHARE_LEAD, SHARE_OPEN_LINE, SHARE_QUESTION_LINE, SHARE_NONE_OPEN, SHARE_LATE_LINE,
+  LOOSE_LEVEL_LINES,
   type HookAffectInput, type HookDirective, type HookKind, type HookState, type HookWord,
   type TurnKind,
 } from './hooks.js';
@@ -832,6 +833,7 @@ test('not one digit anywhere in the prose consts', () => {
     HOOK_CLAMP, HOOK_HEADING, HOOK_LEAD, HOOK_OPEN_LINE, HOOK_NONE_OPEN, HOOK_LATE_LINE,
     MOMENTS_LEAD, QUIET_HEADING, QUIET_LAW,
     SHARE_HEADING, SHARE_LEAD, SHARE_OPEN_LINE, SHARE_QUESTION_LINE, SHARE_NONE_OPEN, SHARE_LATE_LINE,
+    ...Object.fromEntries(Object.entries(LOOSE_LEVEL_LINES).map(([k, v]) => [`LOOSE_${k}`, v])),
   };
   for (const [name, line] of Object.entries(consts)) {
     assert.doesNotMatch(line, /\d/, `${name} leaked a number into the prompt`);
@@ -854,7 +856,42 @@ test('not one digit anywhere in the prose consts', () => {
   assert.match(withDigits, /the 3am deploy/);
 });
 
-// ══ 8. Purity ════════════════════════════════════════════════════════════════
+// ══ 8. Looseness rendering ═══════════════════════════════════════════════════
+
+// The per-turn English looseness signal: rendered before the play level, absent at level one (the
+// normal baseline costs nothing), present at all other levels. Undefined also renders nothing, so
+// test constants that omit the field keep their char-for-char pinned sections unchanged.
+test('looseness level one and undefined render no line', () => {
+  const block = renderHooksSection({ ...HOOK_DIRECTIVE, englishLooseness: 1 });
+  assert.equal(block.includes('English'), false, 'level one is the baseline: no line');
+  const blockUndef = renderHooksSection({ ...HOOK_DIRECTIVE });
+  assert.equal(blockUndef.includes('English'), false, 'absent also renders nothing');
+  assert.deepEqual(block, blockUndef, 'undefined and one are the same output');
+});
+
+test('looseness levels zero, two, three each render their line before the play level', () => {
+  for (const [looseness, frag] of [
+    [0, 'careful'] as const,
+    [2, 'loose'] as const,
+    [3, 'messy'] as const,
+  ]) {
+    const block = renderHooksSection({ ...HOOK_DIRECTIVE, englishLooseness: looseness });
+    assert.ok(block.includes(LOOSE_LEVEL_LINES[looseness]), `level ${looseness} renders its line`);
+    // Looseness line precedes the clamp (which is always last).
+    const looseIdx = block.indexOf('English');
+    const clampIdx = block.indexOf(HOOK_CLAMP);
+    assert.ok(looseIdx < clampIdx, `level ${looseness}: looseness line before clamp`);
+  }
+});
+
+test('looseness line renders on quiet and share turns too', () => {
+  const quiet = renderHooksSection({ ...HOOK_DIRECTIVE, mode: 'quiet', offerAllowed: false, englishLooseness: 2 });
+  assert.ok(quiet.includes(LOOSE_LEVEL_LINES[2]), 'quiet turn also gets the looseness signal');
+  const share = renderHooksSection({ ...SHARE_DIRECTIVE, englishLooseness: 3 });
+  assert.ok(share.includes(LOOSE_LEVEL_LINES[3]), 'share turn also gets the looseness signal');
+});
+
+// ══ 9. Purity ════════════════════════════════════════════════════════════════
 
 test('selectHook and recordHook are pure: frozen inputs survive, same in same out', () => {
   const before = deepFreeze(state({ lastKinds: ['none', 'judgment', 'judgment'], idleStreak: 3, idleSinceMoment: 9 }));

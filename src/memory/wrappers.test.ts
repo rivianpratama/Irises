@@ -1079,12 +1079,12 @@ test('the flag-off stack is byte-for-byte the one P2 inherited', () => {
   // one block every lane receives whatever its tier matrix says.
   assert.equal(
     stackPrint(renderUserMemory('convo', richCardData(), NOW)),
-    '9056:9dabeceba90a1f16',
+    '9054:23da184cc5997a25',
     'the pre-router convo stack changed bytes — CONVO_MEMORY_RELEVANCE off must render what it always did',
   );
   assert.equal(
     stackPrint(renderUserMemory('composer', richCardData(), NOW)),
-    '3850:6f3e27707236d2c0',
+    '3848:96b4192bba2731af',
     'the composer stack changed bytes — the relay lanes render the pre-card path on every turn',
   );
 });

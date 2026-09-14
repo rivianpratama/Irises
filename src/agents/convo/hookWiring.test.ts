@@ -254,7 +254,7 @@ test('a HEAVY share turn never reads a band line naming a kind its section close
   // heavy turn is the whole span: with no bullet left, the lead-in and the clamp go too
   // (persona/climate.ts `renderBands`), and the assertion is an absence with nothing to hide in.
   const climate = { ...defaultClimate(), dials: { ease: 35, candor: 45, playfulness: 40 }, evalCount: 30 };
-  const TANGENT_LINE = '- In-jokes and shorthand carry between you now. A tangent is welcome.';
+  const TANGENT_LINE = '- Running bits and shorthand carry between you now. A tangent or a bend is welcome.';
   const withClimate = (hooks: HookDirective): string => {
     const args = build({ hooks, moments: [], thesis: '' });
     args[9] = COMPUTED;
@@ -863,7 +863,7 @@ test('an IDLE message through the front door renders the hooks block, the Turn l
     'the climate span really rendered on this turn');
   assert.ok(weather.includes('- Directness has been landing badly. No judgment this turn.'),
     'the band line that closed judgment says so, on a turn that has a beat to spend');
-  assert.ok(weather.includes('- A tangent or a callback is expected of you here.'),
+  assert.ok(weather.includes('- A tangent, a callback, or a bend is expected of you here. Reach further.'),
     '…and the register names exactly the kinds the section left open');
 
   // The SAME reading also gates the hook craft page (convo/personaModules.ts `idle_turn`), which is

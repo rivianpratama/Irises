@@ -52,7 +52,7 @@ test('the internal-weather block is injected when computed state is present', ()
   assert.match(prompt, /never say/i);
   // Cold start (no prior status): the default mood compiles to one imperative, where it used to be
   // a line asking her to set her mood from a body-clock paragraph that no longer exists.
-  assert.match(prompt, /- You are content \(peaceful\)\. Even and flat\. Nothing extra\./);
+  assert.match(prompt, /- You are content \(peaceful\)\. Steady and easy\. Nothing extra\./);
   assert.doesNotMatch(prompt, /First read of this person/);
 });
 

@@ -37,12 +37,12 @@ export interface ProactivePayload {
 // composer/Context.md — the persona keys off the surface form, and the wording is deliberately
 // harmless if it ever slips into a bubble (same contract as BEAT_FIRST/BEAT_SECOND in
 // orchestrator.ts).
-export const PROACTIVE_MARK = '(no one texted you — this one starts with you)';
+export const PROACTIVE_MARK = '(no one texted you, this one starts with you)';
 
 // The second mark, stacked under the first for the one text that has no thread beneath it at all.
 // Must stay BYTE-IDENTICAL to the "when it's the very first text ever" phrase in composer/Context.md
 // — change both or neither. Harmless in a bubble, like the mark above it.
-export const INTRODUCTION_MARK = '(this is the very first text between you — no thread exists yet)';
+export const INTRODUCTION_MARK = '(this is the very first text between you, no thread exists yet)';
 
 /** How the Composer is pointed at each kind. Never "a job fired" — always the user's own setup
  *  coming due, in words that could be spoken out loud without cracking the seam. */

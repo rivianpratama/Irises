@@ -543,6 +543,7 @@ const HOOK_TURN: PersonaTurn = {
  *  into 'quiet'), and the hook law is the longest of the three. */
 const OPEN_HOOK: HookDirective = {
   idle: true, mode: 'hook', forbidden: [], lateNight: true, moments: true, offerAllowed: true,
+  playLevel: 3, englishLooseness: 3,
 };
 
 /** The share turn's directive, and the widest shape that mode has: every one of its FOUR kinds open,
@@ -561,6 +562,7 @@ const OPEN_HOOK: HookDirective = {
  *  (persona/hooks.ts) and would measure a narrower section than production's widest. */
 const OPEN_SHARE: HookDirective = {
   idle: false, mode: 'share', forbidden: [], lateNight: true, moments: false, offerAllowed: true,
+  playLevel: 3, englishLooseness: 3,
 };
 
 /**

@@ -199,6 +199,28 @@ test('the mood floor closes every kind, from both sides, and mirrors the thread 
   assert.equal(HOOK_MOOD_FLOOR, THREAD_MOOD_FLOOR);
 });
 
+test('englishLooseness: baseline is one, late adds one, joyful adds one, sad/scared subtracts one', () => {
+  const looseness = (word: string, hour = 12) => compileAffect(carried(word), at(hour)).englishLooseness;
+  // Baseline: peaceful/powerful/mad all start at one.
+  assert.equal(looseness('content'), 1, 'peaceful baseline');
+  assert.equal(looseness('proud'), 1, 'powerful baseline');
+  assert.equal(looseness('angry'), 1, 'mad baseline');
+  // Late night adds one.
+  assert.equal(looseness('content', 2), 2, 'late night: one plus one');
+  // Joyful adds one.
+  assert.equal(looseness('excited'), 2, 'joyful: one plus one');
+  // Joyful and late night: capped at three.
+  assert.equal(looseness('excited', 2), 3, 'joyful and late: one plus two, capped at three');
+  // Sad subtracts one.
+  assert.equal(looseness('guilty'), 0, 'sad: one minus one, clamped to zero');
+  // Scared subtracts one.
+  assert.equal(looseness('rejected'), 0, 'scared: one minus one, clamped to zero');
+  // Sad and late night cancel out: back to one.
+  assert.equal(looseness('guilty', 2), 1, 'sad and late: one minus one plus one');
+  // Cold start: default mood (peaceful), no late night.
+  assert.equal(compileAffect(undefined, COMPUTED).englishLooseness, 1, 'cold start baseline');
+});
+
 test('the late slots are the two late ones, and nothing else', () => {
   const quiet = (hour: number) => compileAffect(carried(), at(hour)).lateNight;
   for (const hour of [0, 3, 4, 22, 23]) assert.equal(quiet(hour), true, `hour ${hour} is late`);
@@ -373,7 +395,7 @@ test('no carried row compiles to the loosest reading, and the clock still applie
   const d = compileAffect(undefined, COMPUTED);
   assert.deepEqual(d, {
     mood: DEFAULT_MOOD, bubbleCap: 3, brevity: 'normal', hooks: 'all',
-    question: 'open', heavy: false, lateNight: false,
+    question: 'open', heavy: false, lateNight: false, englishLooseness: 1,
   } satisfies AffectDirective);
   // A first message is not a tired one — but it can still be a late one, and it can still land in a
   // relationship that has moved. Neither of those is about HER.
@@ -443,6 +465,6 @@ test('the compile is pure: frozen inputs survive it and the same inputs give the
   assert.deepEqual(a, b);
   assert.deepEqual(a, {
     mood: { core: 'sad', word: 'drained' }, bubbleCap: 1, brevity: 'minimal', hooks: 'none',
-    question: 'closed', heavy: true, lateNight: true,
+    question: 'closed', heavy: true, lateNight: true, englishLooseness: 1,
   } satisfies AffectDirective);
 });
