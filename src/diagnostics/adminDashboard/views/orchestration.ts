@@ -457,13 +457,21 @@ export const ORCH_JS = `
         + '<span>time <b>'+M.esc(M.fmtTime(ev.ts))+'</b></span>'
         + (ev.taskId?'<span>task <b>'+M.esc(String(ev.taskId).slice(0,12))+'</b></span>':'')
         + '</div>';
-      var rawNote = (ev.raw==null && S.rawStripped)
-        ? '<div class="kv"><span>raw wire payload not persisted for historical turns</span></div>' : '';
+      // Historical turns drop BOTH wire payloads (the sent request and the received response) unless
+      // DIAGNOSTICS_PERSIST_RAW is on (see stripRawForHistory) — on an llm event that means "not
+      // stored", not "never sent". messages/system/response survive, so the note explains only the
+      // two absent RAW sections.
+      var rawNote = (ev.type==='llm' && S.rawStripped && ev.raw==null && ev.rawRequest==null)
+        ? '<div class="kv"><span>raw wire payloads (request + response) not persisted for historical turns \\u2014 set DIAGNOSTICS_PERSIST_RAW=true to keep them</span></div>' : '';
+      // Request first, then response — the order the call actually happened in. RAW request is the
+      // serialized wire body (the "sent prompt"); "messages (sent)" is Irises' internal req.messages.
       var body = kv
-        + (ev.raw!=null?section('RAW response (wire, unparsed)', ev.raw, true):rawNote)
-        + section(ev.raw!=null?'response text (extracted from raw)':'response (received)', ev.response, ev.raw==null)
+        + (ev.rawRequest!=null?section('RAW request (wire, sent)', ev.rawRequest, true):'')
         + section('messages (sent)', ev.messages, false)
         + section('system prompt', ev.system, false)
+        + (ev.raw!=null?section('RAW response (wire, unparsed)', ev.raw, true):'')
+        + section(ev.raw!=null?'response text (extracted from raw)':'response (received)', ev.response, ev.raw==null)
+        + rawNote
         + (ev.toolCalls&&ev.toolCalls.length?section('tool calls (parsed)', ev.toolCalls, false):'')
         + (ev.detail?section('detail', ev.detail, true):'');
       document.getElementById('dbody').innerHTML = body || '<div class="kv">no payload</div>';

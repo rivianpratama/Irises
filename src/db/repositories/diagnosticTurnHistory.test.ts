@@ -12,18 +12,24 @@ function turnWith(events: Array<Partial<TraceEvent>>): Turn {
   };
 }
 
-test('stripRawForHistory removes per-event raw payloads without touching the rest', () => {
+test('stripRawForHistory removes per-event raw payloads (request AND response) without touching the rest', () => {
   const turn = turnWith([
-    { response: 'hi', raw: { huge: 'wire body' } },
+    { response: 'hi', raw: { huge: 'wire response' }, rawRequest: { huge: 'wire request' } },
     { response: 'no raw here' },
+    // an event with only the request payload (e.g. a future record path) is still stripped
+    { response: 'req only', rawRequest: { huge: 'wire request' } },
   ]);
   const stripped = stripRawForHistory(turn);
   assert.equal(stripped.events[0].raw, undefined);
+  assert.equal(stripped.events[0].rawRequest, undefined, 'the RAW sent prompt is bulk too — dropped from history');
   assert.equal(stripped.events[0].response, 'hi');
   assert.equal(stripped.events[1].response, 'no raw here');
-  // original untouched (the live store keeps serving raw)
-  assert.deepEqual(turn.events[0].raw, { huge: 'wire body' });
-  // second event had no raw — same object is fine, content unchanged
+  assert.equal(stripped.events[2].rawRequest, undefined);
+  assert.equal(stripped.events[2].response, 'req only');
+  // original untouched (the live store keeps serving both wire payloads)
+  assert.deepEqual(turn.events[0].raw, { huge: 'wire response' });
+  assert.deepEqual(turn.events[0].rawRequest, { huge: 'wire request' });
+  // second event had neither — same object is fine, content unchanged
   assert.equal(stripped.id, turn.id);
 });
 

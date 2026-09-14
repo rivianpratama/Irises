@@ -65,10 +65,15 @@ export function countTurnErrors(turn: Turn): number {
   return n;
 }
 
-/** Clone a turn with the per-event raw wire payloads removed (the MB-scale bulk). */
+/** Clone a turn with the per-event raw wire payloads removed (the MB-scale bulk) — both the wire
+ *  RESPONSE (`raw`) and the wire REQUEST (`rawRequest`), gated together on DIAGNOSTICS_PERSIST_RAW. */
 export function stripRawForHistory(turn: Turn): Turn {
   if (PERSIST_RAW) return turn;
-  return { ...turn, events: turn.events.map(ev => (ev.raw === undefined ? ev : { ...ev, raw: undefined })) };
+  return {
+    ...turn,
+    events: turn.events.map(ev =>
+      ev.raw === undefined && ev.rawRequest === undefined ? ev : { ...ev, raw: undefined, rawRequest: undefined }),
+  };
 }
 
 export async function saveTurnToHistory(turn: Turn): Promise<void> {

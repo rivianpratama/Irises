@@ -155,4 +155,11 @@ export interface LlmResult {
    *  Anthropic: the Message object (an array of them when pause_turn continuations occurred).
    *  OpenRouter: the full chat.completion object. */
   raw?: unknown;
+  /** The serialized wire REQUEST body handed to the provider — the "RAW sent prompt" the dashboard
+   *  shows next to `raw`. This is the actual body (model, system, tools, params and the fully
+   *  rendered messages), NOT Irises' internal req.messages. Diagnostics only, never read by agents.
+   *  Anthropic: the params bag (an array of legs when pause_turn continuations occurred).
+   *  OpenAI-compatible: the served body — the retry's body when a starved retry landed, so it pairs
+   *  with the `raw` response leg that actually answered. */
+  rawRequest?: unknown;
 }

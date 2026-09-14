@@ -226,8 +226,13 @@ async function callAnthropic(req: LlmRequest): Promise<LlmResult> {
   // 'tool_use', so a server_tool_use block (web_search) would come back with an empty input — and
   // the pause_turn echo must be verbatim. We accumulate the raw deltas ourselves and patch the
   // final message.
+  // Every wire request leg, captured for diagnostics (the /dashboard "RAW request (wire, sent)"
+  // view), symmetric with rawLegs (the response legs) below. Snapshot the messages ARRAY per leg —
+  // shallow, since the content objects are never mutated, only appended to across a pause_turn
+  // continuation — so a later messages.push does not retroactively rewrite an earlier leg's body.
+  const requestLegs: unknown[] = [];
   const create = async (outputConfig: Record<string, unknown> | undefined = buildOutputConfig(true)) => {
-    const stream = client.messages.stream({
+    const body = {
       model,
       max_tokens: maxTokensSent,
       ...(sendTemp ? { temperature: temp } : {}),
@@ -236,9 +241,14 @@ async function callAnthropic(req: LlmRequest): Promise<LlmResult> {
       ...(outputConfig ? { output_config: outputConfig } : {}),
       ...(tools.length ? { tools } : {}),
       messages,
-      // Document requests: one retry, not the SDK default two — each retry re-uploads the full
-      // base64 payload (megabytes) and re-bills the parse.
-    } as unknown as Anthropic.MessageStreamParams, { signal: req.signal, ...(hasDocument(req) ? { maxRetries: 1 } : {}) });
+    };
+    requestLegs.push({ ...body, messages: [...messages] });
+    // Document requests: one retry, not the SDK default two — each retry re-uploads the full
+    // base64 payload (megabytes) and re-bills the parse.
+    const stream = client.messages.stream(
+      body as unknown as Anthropic.MessageStreamParams,
+      { signal: req.signal, ...(hasDocument(req) ? { maxRetries: 1 } : {}) },
+    );
     const inputBufs = new Map<number, string>();
     stream.on('streamEvent', (event: unknown) => {
       const e = event as { type?: string; index?: number; delta?: { type?: string; partial_json?: string } };
@@ -342,6 +352,7 @@ async function callAnthropic(req: LlmRequest): Promise<LlmResult> {
     usage,
     serverToolText: serverTextParts.length ? serverTextParts.join('\n') : undefined,
     raw: rawLegs.length === 1 ? rawLegs[0] : rawLegs,
+    rawRequest: requestLegs.length === 1 ? requestLegs[0] : requestLegs,
   };
 }
 
@@ -496,6 +507,9 @@ export async function callOpenAICompatible(
     ...(servedMaxTokens !== undefined ? { servedMaxTokens } : {}),
     serverToolText: serverToolText || undefined,
     raw: resp,
+    // `params` is the body that produced `resp`: build() makes fresh objects and the starved retry
+    // reassigns params = retryParams, so this always pairs with the `raw` response leg above.
+    rawRequest: params,
   };
 }
 
@@ -781,7 +795,7 @@ export async function callLLM(req: LlmRequest, run: LaneRunner = runOn): Promise
     provider: result.provider, model: result.model,
     system: req.system, messages: req.messages,
     response: result.text, toolCalls: result.toolCalls.map(t => ({ name: t.name, input: t.input })),
-    raw: result.raw,
+    raw: result.raw, rawRequest: result.rawRequest,
     latencyMs: Date.now() - start,
   });
   // The ONE seam where truncation-with-content is visible: the starvation guards above only catch

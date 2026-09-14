@@ -75,8 +75,10 @@ function evHtml(e){
   return '<div class="ev"><div class="top"><span class="tag '+e.type+'">'+esc(e.type)+'</span>'
     +(e.label?'<span class="tag">'+esc(e.label)+'</span>':'')
     +'<span class="muted">'+t+(meta?' · '+esc(meta):'')+'</span></div>'
-    + pre('system prompt', e.system)
+    + pre('RAW request (wire, sent)', e.rawRequest)
     + pre('messages sent', e.messages)
+    + pre('system prompt', e.system)
+    + pre('RAW response (wire, unparsed)', e.raw)
     + pre('response', e.response)
     + (e.toolCalls&&e.toolCalls.length?pre('tool calls', e.toolCalls):'')
     + (e.detail?pre('detail', e.detail):'')

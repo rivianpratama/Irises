@@ -42,6 +42,10 @@ export interface TraceEvent {
   /** The provider's UNPARSED wire response (Anthropic Message / OpenRouter completion object),
    *  before any text extraction or bubble parsing. Strings inside are capped like everything else. */
   raw?: unknown;
+  /** The serialized wire REQUEST body sent to the provider — the "RAW sent prompt". Distinct from
+   *  `messages` (Irises' internal req.messages): this is the actual body with model/system/tools/
+   *  params and the fully rendered messages. Strings inside are capped like everything else. */
+  rawRequest?: unknown;
 }
 
 let seq = 0;
@@ -80,6 +84,7 @@ export function record(ev: Omit<TraceEvent, 'id' | 'ts'>): void {
     response: ev.response != null ? (trunc(ev.response) as string) : ev.response,
     detail: ev.detail ? (trunc(ev.detail) as Record<string, unknown>) : undefined,
     raw: safeRaw(ev.raw),
+    rawRequest: safeRaw(ev.rawRequest),
   };
   buffer.push(event);
   if (buffer.length > CAP) buffer.splice(0, buffer.length - CAP);
