@@ -176,7 +176,7 @@ test('the band is inclusive at its edge, and the same arguments always give the 
  * writes out by hand.
  */
 const MODE_LAWS: Record<DriftMode, string> = {
-  task: 'answer it flat, with the real numbers, and nothing else',
+  task: 'answer it flat, with the real numbers, and deliver first',
   hook: 'one hook, of a kind the hooks section above still allows, and only one',
   quiet: 'one plain short bubble, a tapback, or nothing',
   share: 'they handed you something and asked for nothing',
@@ -235,11 +235,10 @@ test('the share law reads true whether four kinds are open or none', () => {
   }
 });
 
-test('share is the only mode whose law leaves her a question', () => {
-  // The fourth kind is the share turn's own (persona/hooks.ts HOOK_MODE_KINDS keeps it out of the
-  // idle set), and the recency edge is where that has to hold hardest: an idle turn whose anchor
-  // went quiet about questions is the interrogation the 2026-09-08 ban was written against.
-  assert.ok(renderDriftAnchor('hook', SHORT_WINDOW).includes('A hook is a statement, never a question.'));
+test('the hook anchor names the question-as-probe ban, and share names ask-only-what-they-know', () => {
+  // Hook turns allow the question kind now, but the anchor distinguishes an aimed question from a
+  // probe: "specific and aimed" is the standard, not a blanket ban.
+  assert.ok(renderDriftAnchor('hook', SHORT_WINDOW).includes('A question hook is specific and aimed'));
   assert.ok(renderDriftAnchor('quiet', SHORT_WINDOW).includes('No hook, no callback, no question.'));
   assert.ok(
     !renderDriftAnchor('task', SHORT_WINDOW).includes('ask only for what only they know'),
