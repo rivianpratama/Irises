@@ -88,7 +88,7 @@ export interface TurnFocusInput {
   messageChars?: number;
   /**
    * WHO the two of you are, named at the recency edge so a long thread cannot blur them. Her persona
-   * bio ("You are Irises. Twenty-one, from Jakarta…") opens the prompt; the user's own picture ("Who
+   * bio ("You are Irises. Twenty-one, from a country a long way south…") opens the prompt; the user's own picture ("Who
    * they are") lands ~150k characters later, and across that gap a small model asked "what do you
    * know about me" hands back HER bio as if it were theirs. `them` is the name on their profile, or
    * null when none is stored yet — the line still draws the self/them line without it. Rendered as
