@@ -42,7 +42,7 @@ function state(over: Partial<HookState> = {}): HookState {
 }
 
 /** Nothing closed by her weather: every kind allowed, the question ceiling open, no weight, daylight.
- *  The question being OPEN here is what allows every idle case below to show the MODE's own rules —
+ *  The question being OPEN here is what allows every idle case below to show the MODE's own rules;
  *  a closed ceiling adds its own ban on top, and these cases isolate the mode's arithmetic. */
 const OPEN: HookAffectInput = { hooks: 'all', question: 'open', heavy: false, lateNight: false };
 
