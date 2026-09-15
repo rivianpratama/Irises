@@ -3143,22 +3143,20 @@ export async function processConvoResult(args: {
     //
     //   task + ANY word — the answer that was supposed to go out flat carried a beat instead. The
     //     original case, and the one that made the idle gate necessary.
-    //   hook + `question` — the idle law's one ban, broken. Idle mode forbids the question outright
-    //     (persona/hooks.ts) because nothing was handed to her for a follow-up to be about, and a
-    //     question of hers on a stall costs more than the beat: their next stall becomes the answer
-    //     to it, the gate's pending veto routes that to work, and the kill switch it would have
-    //     fired never gets the turn. The gate reads the slip back off the ledger tail too
-    //     (persona/idle.ts `followUpOutstanding`), so this receipt is where a reader learns why the
-    //     next short message came up a share.
+    //   hook + `question` when the directive forbade it — the ceiling was closed (affect) or the
+    //     room closes it (group), so the question was in the directive's `forbidden` list and the
+    //     model shipped it anyway. When the ceiling is open and the room allows it, question is a
+    //     valid hook kind and the same slip into this branch would be a false positive.
     //
     // Neither of the other two modes reaches it, for different reasons. A loud word on a QUIET turn
     // is the guard's business one line above — that one IS re-asked. And on a SHARE turn every kind
     // including the question is shape-legal; what closes the question there is the affect ceiling or
-    // the no-two-running rule, which live INSIDE the shape, and a slip against those is scored off
-    // the trace and the ledger rather than filed as a turn that carried the wrong sort of move.
+    // the group rule, which live INSIDE the shape, and a slip against those is scored off the trace
+    // and the ledger rather than filed as a turn that carried the wrong sort of move.
     const offTurnMode = hookTurn.directive.mode;
     if (emitted?.hook_kind
-      && (offTurnMode === 'task' || (offTurnMode === 'hook' && emitted.hook_kind === 'question'))) {
+      && (offTurnMode === 'task'
+        || (offTurnMode === 'hook' && emitted.hook_kind === 'question' && hookTurn.directive.forbidden.includes('question')))) {
       record({
         type: 'event', label: HOOK_OFF_TURN_LABEL, chatId, handle,
         // `idle` is now derivable from `mode` (task is never idle, hook always is) and is kept

@@ -54,15 +54,12 @@ export const HOOK_WORDS = ['judgment', 'callback', 'tangent', 'question'] as con
 /** What the model may emit. */
 export type HookWord = typeof HOOK_WORDS[number];
 
-/** The kinds an idle HOOK turn may actually carry — HOOK_WORDS without the question. Two readers,
- *  and they must agree or the prompt contradicts itself in one screen: `hookKindOpen` (is there a
- *  beat left to spend) and `renderHooksSection` (which beats to name). Both reach this list through
- *  `namableKinds` below rather than naming it, and neither reads HOOK_WORDS, so a hook turn whose
- *  three kinds are all spoken for reads as closed to every consumer instead of being "open" on the
- *  strength of a word the section is forbidden to print. The selector forbids the question on every
- *  hook turn as well, which is the same rule enforced a second time: a directive is read by things
- *  that never met this list. */
-const HOOK_MODE_KINDS: readonly HookWord[] = HOOK_WORDS.filter(w => w !== 'question');
+/** The kinds an idle HOOK turn may carry. All four — judgment, callback, tangent, and question —
+ *  are open, with the question gated by the affect ceiling and the group rule (the same gates the
+ *  share branch uses). Two readers must agree on the available set: `hookKindOpen` (is there a beat
+ *  left) and `renderHooksSection` (which beats to name). Both reach this list through `namableKinds`
+ *  rather than naming it directly. */
+const HOOK_MODE_KINDS: readonly HookWord[] = HOOK_WORDS;
 
 /**
  * Which kinds a MODE is allowed to name at all — four on a share turn, three on a hook turn.
@@ -384,13 +381,10 @@ export function selectHook(
       // front of an audience, and a follow-up puts one member on the spot to answer in front of
       // everyone. A callback and a tangent are about the thing, so they survive.
       || (isGroup && (w === 'judgment' || w === 'question'))
-      // The question's own two closers, and they are different in kind. The compiled CEILING is her
-      // weather saying the reply stays statement-shaped (affectCompiler.ts `compileQuestionGate`).
-      // The ledger tail is the dose: she asked last turn, so this turn is what she makes of the
-      // answer — the rule that keeps interest from curdling into an interview, and the reason it is
-      // read here rather than left to the repeat rule above (a question two turns running is barred
-      // even when the intervening reply was flat).
-      || (w === 'question' && (affect.question === 'closed' || lastKinds[lastKinds.length - 1] === 'question'))
+      // The compiled ceiling is the one closer for a question: her weather says the reply stays
+      // statement-shaped (affectCompiler.ts `compileQuestionGate`). Back-to-back questions are
+      // permitted; the repeat rule above still fires on three in a row.
+      || (w === 'question' && affect.question === 'closed')
       // WEIGHT narrows the turn to the two moves that stay with them. A judgment on a heavy share is
       // analysis, and analysis is not company; a tangent walks away from the thing they just put
       // down. A callback and — when the ceiling left it open — a question about what happened or how
@@ -430,18 +424,14 @@ export function selectHook(
   if (affect.hooks === 'none') return quiet('affect_floor');
 
   const forbidden = HOOK_WORDS.filter(w =>
-    // ALWAYS, and it is the one ban with no condition on it anywhere in this function: nothing was
-    // shared on an idle turn, so there is nothing to follow up on, and a question into that silence
-    // is the probe the whole ban was written against. The ceiling the compiler produced is not even
-    // consulted here — an open question on a flat idle turn would still be a probe.
-    w === 'question'
-    || w === repeated
+    w === repeated
     || (affect.hooks === 'no_judgment' && w === 'judgment')
     || (affect.hooks === 'no_tangent' && w === 'tangent')
-    // A judgment in a room is a verdict delivered in front of an audience: a read is between the two
-    // of them, and a group has no `them` to be about. Every per-person read/write is group-fenced
-    // the same way.
-    || (isGroup && w === 'judgment'));
+    // A group closes both the per-person judgment (a verdict in front of an audience) and the
+    // follow-up question (puts one member on the spot to answer in front of everyone).
+    || (isGroup && (w === 'judgment' || w === 'question'))
+    // The affect ceiling: her weather says the question stays closed this turn.
+    || (w === 'question' && affect.question === 'closed'));
 
   return {
     directive: {
@@ -549,7 +539,7 @@ export const HOOK_LEAD = 'They sent you nothing, so nothing of theirs comes back
 
 /** `{kinds}` is filled from the ALLOWED set, never the forbidden one. What is off the table is not
  *  named: naming it is an instruction to think about it. */
-export const HOOK_OPEN_LINE = 'Open to you this turn: {kinds}. One of them, never two, never a kind not named here, and said as a statement, never asked.';
+export const HOOK_OPEN_LINE = 'Open to you this turn: {kinds}. One of them, never two, never a kind not named here.';
 
 /** Rare, and it takes three pressures at once: a room (no judgment) plus a flattened mood (no
  *  tangent) plus a callback she just used twice. The clock is NOT one of them — an hour never closes

@@ -42,8 +42,8 @@ function state(over: Partial<HookState> = {}): HookState {
 }
 
 /** Nothing closed by her weather: every kind allowed, the question ceiling open, no weight, daylight.
- *  The question being OPEN here is what makes every idle case below a statement about the MODE — an
- *  idle turn forbids the fourth kind with the ceiling wide open, which is the ban with no condition. */
+ *  The question being OPEN here is what allows every idle case below to show the MODE's own rules —
+ *  a closed ceiling adds its own ban on top, and these cases isolate the mode's arithmetic. */
 const OPEN: HookAffectInput = { hooks: 'all', question: 'open', heavy: false, lateNight: false };
 
 /** Selection with the boring arguments filled in: an idle turn, a wide-open mood, a one-to-one chat.
@@ -84,17 +84,15 @@ test('a task turn carries no hook, no offer and no moment, and says why', () => 
   assert.equal(report.idleLayer, 'veto', 'the layer that decided rides through untouched');
 });
 
-// An idle turn opens the three CARRYING kinds and closes the fourth, with an empty ledger, a
-// wide-open mood and the compiled question ceiling saying `open`. That last clause is the pin: the
-// question is not closed here by her weather, it is closed by the SHAPE of the turn. They sent
-// nothing, so there is nothing to follow up on, and a question into that silence is the probe the
-// ban was written against.
-test('an idle turn with an empty ledger opens all three carrying kinds and never the question', () => {
+// An idle turn opens all four kinds with an empty ledger and a wide-open mood. The question is
+// now a valid hook kind, gated only by the affect ceiling and the group rule — not by the shape
+// of the turn itself.
+test('an idle turn with an empty ledger opens all four carrying kinds', () => {
   const { directive, report } = pick(state());
   assert.equal(directive.mode, 'hook');
   assert.equal(directive.idle, true);
   assert.equal(directive.offerAllowed, true);
-  assert.deepEqual(directive.forbidden, ['question']);
+  assert.deepEqual(directive.forbidden, []);
   assert.equal(report.reason, 'hook');
   assert.deepEqual(report.lastKinds, []);
   assert.equal(directive.heavy, undefined, 'weight is a property of a thing handed over, and nothing was');
@@ -159,42 +157,35 @@ test('the kill switch outranks the affect floor, the room and a spent moment int
 
 // ══ 2. Forbidden kinds ═══════════════════════════════════════════════════════
 
-// Every list below ends on `question` and none of them earned it: the idle mode closes that kind
-// before any of these rules are read, so each case is "the rule's own kind, plus the one the shape
-// always closes".
 test('the same kind twice in a row forbids the third', () => {
   for (const w of ['judgment', 'callback', 'tangent'] as HookWord[]) {
     const { directive, report } = pick(state({ lastKinds: ['none', w, w] }));
     assert.equal(directive.mode, 'hook', 'a repeat is a forbidden kind, never a quiet turn');
-    assert.deepEqual(directive.forbidden, [w, 'question']);
-    assert.deepEqual(report.forbidden, [w, 'question'], 'the receipt carries the same list');
+    assert.deepEqual(directive.forbidden, [w]);
+    assert.deepEqual(report.forbidden, [w], 'the receipt carries the same list');
   }
-  // The fourth word cannot be repeated INTO anything here: it is already closed, so a ledger whose
-  // tail is two questions (a pair of share turns, then a stall) adds nothing to the list.
+  // The fourth word obeys the same repeat rule: two questions in a row closes the next one.
   assert.deepEqual(pick(state({ lastKinds: ['none', 'question', 'question'] })).directive.forbidden, ['question']);
   // Two of the same kind NOT adjacent is not a tic.
-  assert.deepEqual(pick(state({ lastKinds: ['judgment', 'none', 'judgment'] })).directive.forbidden, ['question']);
+  assert.deepEqual(pick(state({ lastKinds: ['judgment', 'none', 'judgment'] })).directive.forbidden, []);
   // And two flat replies in a row is just a conversation, not a repeated kind.
-  assert.deepEqual(pick(state({ lastKinds: ['tangent', 'none', 'none'] })).directive.forbidden, ['question']);
+  assert.deepEqual(pick(state({ lastKinds: ['tangent', 'none', 'none'] })).directive.forbidden, []);
 });
 
 test('the compiled mood forbids its own kind', () => {
-  assert.deepEqual(pick(state(), { affect: { ...OPEN, hooks: 'no_judgment' } }).directive.forbidden, ['judgment', 'question']);
-  assert.deepEqual(pick(state(), { affect: { ...OPEN, hooks: 'no_tangent' } }).directive.forbidden, ['tangent', 'question']);
-  assert.deepEqual(pick(state(), { affect: OPEN }).directive.forbidden, ['question']);
+  assert.deepEqual(pick(state(), { affect: { ...OPEN, hooks: 'no_judgment' } }).directive.forbidden, ['judgment']);
+  assert.deepEqual(pick(state(), { affect: { ...OPEN, hooks: 'no_tangent' } }).directive.forbidden, ['tangent']);
+  assert.deepEqual(pick(state(), { affect: OPEN }).directive.forbidden, []);
 });
 
-// The one ban on an idle turn with no condition attached anywhere: her weather says the question is
-// open, the ledger is empty, the room is a one-to-one, and the kind is closed anyway. The ceiling is
-// not even consulted on this branch — a question on an idle turn is a probe whatever the mood.
-test('an idle turn closes the question whatever the compiled ceiling says', () => {
-  for (const question of ['open', 'closed'] as const) {
-    const { directive } = pick(state(), { affect: { ...OPEN, question } });
-    assert.deepEqual(directive.forbidden, ['question'], question);
-  }
+// The ceiling DOES matter on idle turns: an open ceiling permits the question kind, and a closed
+// one forbids it — the same gate as the share branch, nothing unconditional about the shape.
+test('the compiled ceiling gates the question on idle turns', () => {
+  assert.deepEqual(pick(state(), { affect: { ...OPEN, question: 'open' } }).directive.forbidden, []);
+  assert.deepEqual(pick(state(), { affect: { ...OPEN, question: 'closed' } }).directive.forbidden, ['question']);
   // …and the weight flag is a share-turn read: it neither closes a kind here nor rides the directive.
   const heavy = pick(state(), { affect: { ...OPEN, heavy: true } });
-  assert.deepEqual(heavy.directive.forbidden, ['question']);
+  assert.deepEqual(heavy.directive.forbidden, []);
   assert.equal(heavy.directive.heavy, undefined);
 });
 
@@ -225,7 +216,7 @@ test('overlapping reasons name a kind once, in HOOK_WORDS order', () => {
     state({ lastKinds: ['none', 'tangent', 'tangent'] }),
     { affect: { ...OPEN, hooks: 'no_judgment' } },
   );
-  assert.deepEqual(two.forbidden, ['judgment', 'tangent', 'question'],
+  assert.deepEqual(two.forbidden, ['judgment', 'tangent'],
     'always the array order, never the discovery order');
 });
 
@@ -304,15 +295,15 @@ test('the compiled ceiling closes the question and leaves the rest', () => {
   assert.deepEqual(pick(state(), { shape: 'share', affect: { ...OPEN, question: 'open' } }).directive.forbidden, []);
 });
 
-// THE DOSE, and it is not the repeat rule. Two of a kind in a row is a tic; a question on two turns
-// running is an interview, which is a stricter rule — so a single `question` at the tail closes the
-// next one even though nothing was repeated, and one reply later it is hers again.
-test('a question at the ledger tail closes the next one, with no repeat needed', () => {
+// Back-to-back questions on share turns are allowed — only the compiled ceiling and the group gate
+// close the question, not the ledger tail. The repeat rule (two-in-a-row) still applies as with
+// any kind, but a single question at the tail is not a ban.
+test('a question at the ledger tail does not close the next share turn', () => {
   const after = pick(state({ lastKinds: ['none', 'judgment', 'question'] }), { shape: 'share' });
-  assert.deepEqual(after.directive.forbidden, ['question'],
-    'she asked last turn, so this turn is what she makes of the answer');
+  assert.deepEqual(after.directive.forbidden, [],
+    'the tail question is the last kind, not a ban — the ceiling decides');
   const later = pick(state({ lastKinds: ['question', 'none', 'judgment'] }), { shape: 'share' });
-  assert.deepEqual(later.directive.forbidden, [], 'one reply on, and the question is available again');
+  assert.deepEqual(later.directive.forbidden, [], 'one reply on: still open');
 });
 
 // A room closes the two moves that need one person to be aimed at: a verdict in front of an audience,
@@ -389,12 +380,12 @@ test('a late-night idle turn is an ordinary hook turn at a lower volume', () => 
   const late: HookAffectInput = { ...OPEN, lateNight: true };
   const { directive, report } = pick(state({ idleSinceMoment: MOMENT_IDLE_INTERVAL + 5 }), { affect: late });
   assert.equal(directive.mode, 'hook');
-  assert.deepEqual(directive.forbidden, ['question'], 'the clock closes no kind — the SHAPE closes that one');
+  assert.deepEqual(directive.forbidden, [], 'the clock closes no kind, and neither does the shape — the ceiling does');
   assert.equal(directive.lateNight, true);
   assert.equal(directive.moments, true, 'the interval was spent, and the hour does not shut the sampler');
   assert.equal(directive.offerAllowed, true, 'nor the thread offer');
   assert.equal(report.reason, 'hook', 'the clock has no bucket of its own — there is nothing to explain');
-  assert.deepEqual(report.forbidden, ['question']);
+  assert.deepEqual(report.forbidden, []);
   assert.equal(hookKindOpen(directive), true, 'so the beat is open and the anchor gets the HOOK law');
   // Byte-identical to the same state in daylight, apart from the flag itself: proof the hour is a
   // register and not a branch.
@@ -412,15 +403,13 @@ test('hookKindOpen answers whether a beat is OPEN, never what the mode says', ()
   const hook: HookDirective = {
     idle: true, mode: 'hook', forbidden: [], lateNight: false, moments: true, offerAllowed: true,
   };
-  assert.equal(hookKindOpen(hook), true, 'all three open');
+  assert.equal(hookKindOpen(hook), true, 'all four open');
   // Any ONE carrying kind left is still a beat she may spend, so the boundary is the whole set and
   // not a count: a room forbids judgment and a flat mood forbids a tangent, and a callback is still
-  // a hook. The question is the one word the predicate reads past — a hook turn cannot spend it
-  // (nothing was shared, so there is nothing to follow up on) and the section it ships is forbidden
-  // to name it, so a turn whose only "open" kind is the question has to read closed HERE too, or the
-  // climate span offers a beat the prompt never named.
+  // a hook. The question is now a valid hook kind too, so a turn where only the question is left
+  // reads open — the ceiling or the group rule may have closed the other three.
   for (const w of HOOK_WORDS) {
-    assert.equal(hookKindOpen({ ...hook, forbidden: HOOK_WORDS.filter(k => k !== w) }), w !== 'question', w);
+    assert.equal(hookKindOpen({ ...hook, forbidden: HOOK_WORDS.filter(k => k !== w) }), true, w);
   }
   assert.equal(hookKindOpen({ ...hook, forbidden: [...HOOK_WORDS] }), false, 'the closed-kinds shape');
   // Which is why the reading is taken over the SET and not off `forbidden.length`: a list that
@@ -438,14 +427,13 @@ test('hookKindOpen answers whether a beat is OPEN, never what the mode says', ()
     renderHooksSection({ ...hook, forbidden: ['judgment', 'callback'] }),
     'and the renderer agrees — the same section as the deduped directive, naming tangent',
   );
-  // A SHARE turn answers this question too, and over FOUR kinds: the question is a move there, so
-  // the one word the two modes disagree about has to be read against the mode that shipped. The same
-  // directive shape, the same forbidden list, two different answers.
+  // A SHARE turn answers this question too, and both modes now agree: question is a valid kind in
+  // both modes, so when only question remains the beat is open in either.
   const share: HookDirective = { ...hook, idle: false, mode: 'share', heavy: false, moments: false };
   assert.equal(hookKindOpen({ ...share, forbidden: [...carrying] }), true,
-    'the question alone is still a move to make');
-  assert.equal(hookKindOpen({ ...hook, forbidden: [...carrying] }), false,
-    '…and on a hook turn the same list is the closed-kinds shape');
+    'the question alone is still a move to make on a share turn');
+  assert.equal(hookKindOpen({ ...hook, forbidden: [...carrying] }), true,
+    '…and on a hook turn too: question is now a valid hook kind');
   assert.equal(hookKindOpen({ ...share, forbidden: [...HOOK_WORDS] }), false,
     'the presence case: nothing open, and the share section still forbids silence');
   // The other two modes never populate `forbidden` — the MODE forbade every kind already — so the
@@ -487,7 +475,7 @@ test('a late idle turn renders the open line and the late line, and says nothing
   assert.equal(renderHooksSection(directive), [
     '## This turn may carry one hook (INTERNAL)',
     'They sent you nothing, so nothing of theirs comes back, not their greeting, not their word. This is the one turn that earns a hook, and it earns exactly one.',
-    'Open to you this turn: a judgment, a callback or a tangent. One of them, never two, never a kind not named here, and said as a statement, never asked.',
+    'Open to you this turn: a judgment, a callback, a tangent or a question. One of them, never two, never a kind not named here.',
     'It is late where they are: one short bubble, or a tapback, and nothing heavy. Same rules as any idle turn, at a lower volume, and never the line you sent them last night.',
     'Play level: dry. Light touch only, close to literal, no long bridges.',
     'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
@@ -539,14 +527,13 @@ test('an absent kind reads as none', () => {
 });
 
 // THE ROW TWO OTHER ENGINES READ. A question emitted on a share turn is written down like any other
-// kind, and the tail is then the whole of the dose rule (the next share turn closes the question)
-// and the whole of the gate's follow-up read (persona/idle.ts `followUpOutstanding`). So the shape
-// of the turn changes the two clocks and never what is recorded.
+// kind, and the tail is what the gate's follow-up read (persona/idle.ts `followUpOutstanding`) uses.
+// The shape of the turn changes the two clocks and never what is recorded.
 test('a question is a ledger entry like any other kind, whatever the shape recorded it', () => {
   const asked = recordHook(defaultHookState(), 'question', 'share', false, T0);
   assert.deepEqual(asked.lastKinds, ['question']);
-  // …and the selector reads it straight back as the closer on the next share turn.
-  assert.deepEqual(pick(state({ lastKinds: asked.lastKinds }), { shape: 'share' }).directive.forbidden, ['question']);
+  // Back-to-back questions are no longer banned — only the ceiling and the group gate close the kind.
+  assert.deepEqual(pick(state({ lastKinds: asked.lastKinds }), { shape: 'share' }).directive.forbidden, []);
 });
 
 test('the idle streak counts consecutive idle turns, and an ask or a share resets it', () => {
@@ -636,7 +623,7 @@ test('the hook block renders char-for-char', () => {
   assert.equal(renderHooksSection(HOOK_DIRECTIVE), [
     '## This turn may carry one hook (INTERNAL)',
     'They sent you nothing, so nothing of theirs comes back, not their greeting, not their word. This is the one turn that earns a hook, and it earns exactly one.',
-    'Open to you this turn: a judgment, a callback or a tangent. One of them, never two, never a kind not named here, and said as a statement, never asked.',
+    'Open to you this turn: a judgment, a callback, a tangent or a question. One of them, never two, never a kind not named here.',
     'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
   ].join('\n'));
 });
@@ -660,7 +647,7 @@ test('the moments block renders char-for-char', () => {
   assert.equal(renderHooksSection({ ...HOOK_DIRECTIVE, moments: true }, ['the volcano week']), [
     '## This turn may carry one hook (INTERNAL)',
     'They sent you nothing, so nothing of theirs comes back, not their greeting, not their word. This is the one turn that earns a hook, and it earns exactly one.',
-    'Open to you this turn: a judgment, a callback or a tangent. One of them, never two, never a kind not named here, and said as a statement, never asked.',
+    'Open to you this turn: a judgment, a callback, a tangent or a question. One of them, never two, never a kind not named here.',
     'Kept about them, in case a callback fits. Retell one in fresh words, never read it out, never its date, never more than one.',
     'the volcano week',
     'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
@@ -668,10 +655,10 @@ test('the moments block renders char-for-char', () => {
 });
 
 test('only the ALLOWED kinds are named — what is off the table is never spoken', () => {
-  const one = renderHooksSection({ ...HOOK_DIRECTIVE, forbidden: ['judgment', 'tangent'] });
+  const one = renderHooksSection({ ...HOOK_DIRECTIVE, forbidden: ['judgment', 'tangent', 'question'] });
   assert.match(one, /^Open to you this turn: a callback\. /m);
   const two = renderHooksSection({ ...HOOK_DIRECTIVE, forbidden: ['judgment'] });
-  assert.match(two, /^Open to you this turn: a callback or a tangent\. /m);
+  assert.match(two, /^Open to you this turn: a callback, a tangent or a question\. /m);
   assert.doesNotMatch(two, /judgment/, 'naming what is forbidden is an instruction to think about it');
   const none = renderHooksSection({ ...HOOK_DIRECTIVE, forbidden: [...HOOK_WORDS] });
   assert.ok(none.includes(HOOK_NONE_OPEN), 'every kind spoken for still renders a block');
@@ -681,7 +668,7 @@ test('only the ALLOWED kinds are named — what is off the table is never spoken
 test('the late line rides along on a hook turn, and the quiet block never needs it', () => {
   const late = renderHooksSection({ ...HOOK_DIRECTIVE, lateNight: true });
   assert.ok(late.includes(HOOK_LATE_LINE));
-  assert.ok(late.includes(HOOK_OPEN_LINE.replace('{kinds}', 'a judgment, a callback or a tangent')),
+  assert.ok(late.includes(HOOK_OPEN_LINE.replace('{kinds}', 'a judgment, a callback, a tangent or a question')),
     'the register line rides UNDER the open line — it does not replace it');
   assert.ok(late.endsWith(HOOK_CLAMP), 'the clamp stays last');
   const quiet = renderHooksSection({ ...HOOK_DIRECTIVE, mode: 'quiet', lateNight: true, offerAllowed: false });
