@@ -5,7 +5,7 @@
 // Why a retry ladder rather than one POST: hermes only accepts a steer while the run's status is
 // exactly `running` (api_server.py `_handle_steer_run` — the status gate, not the mere presence of
 // an agent ref). A freshly dispatched run spends a second or two `queued` and then constructing its
-// agent, and a user who types "also check lisbon" one second after Irises said "on it" lands
+// agent, and a user who types "also check jakarta" one second after Irises said "on it" lands
 // squarely inside that window. A 409 there is not a failure; it is "not yet".
 //
 // Everything here is best-effort by construction: it runs inside a live Convo turn, beside a leg

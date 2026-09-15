@@ -162,7 +162,7 @@ test('upsertFact opts.at dates the new row when the value comes from an older so
   // "they asked on Sep 5" about a sentence spoken on Aug 30.
   const h = freshHandle();
   const aug30 = Date.UTC(2026, 7, 30, 11, 9, 27);
-  await upsertFact(h, 'reply_language', 'Spanish', 'fold', undefined, { at: aug30 });
+  await upsertFact(h, 'reply_language', 'Indonesian', 'fold', undefined, { at: aug30 });
   const row = (await listMediumActive(h, ['fact']))[0];
   assert.equal(row.createdAt, aug30);
   assert.equal(row.updatedAt, aug30);
@@ -172,7 +172,7 @@ test('supersedeEntries retires a batch pointing at one replacement, in one rewri
   // The lineage shape a code-owned standing setting needs: the slot that now holds the answer is
   // what the retired rules point AT, so "why is this rule gone" reads off the row itself.
   const h = freshHandle();
-  const indo = await addDirective(h, 'always reply in Spanish');
+  const indo = await addDirective(h, 'always reply in Indonesian');
   const jav = await addDirective(h, 'always reply in Javanese');
   await addDirective(h, 'full sarcasm mode always');
   await upsertFact(h, 'reply_language', 'English');
@@ -193,7 +193,7 @@ test('supersedeEntries retires a batch pointing at one replacement, in one rewri
   }
   const archived = await listArchiveFor(h);
   const bySource = new Map(archived.map(a => [a.content, a.source]));
-  assert.equal(bySource.get('always reply in Spanish'), 'medium_superseded');
+  assert.equal(bySource.get('always reply in Indonesian'), 'medium_superseded');
   assert.equal(bySource.get('always reply in Javanese'), 'medium_superseded');
   const ledger = fs.readFileSync(path.join(memoriesDir(h), 'MEDIUM.archive.md'), 'utf8');
   assert.ok(ledger.includes(`superseded_by=${factId}`), 'the file ledger agrees with the table');

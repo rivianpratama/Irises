@@ -1118,14 +1118,14 @@ test('runs transport: a steer accepted after the final response comes back as pe
     fetchFn: routedFetch([
       submitted('run_ps'),
       { match: /\/run_ps\/events$/, respond: () => eventStream(
-        { event: 'run.completed', output: 'the answer', pending_steer: 'also check lisbon' },
+        { event: 'run.completed', output: 'the answer', pending_steer: 'also check jakarta' },
       ) },
     ]),
   });
   const pending: string[] = [];
   const out = await be.runTask('p', mkTask(), { onPendingSteer: t => { pending.push(t); } });
   assert.equal(out, 'the answer');
-  assert.deepEqual(pending, ['also check lisbon'], 'the caller gets to replay it as its own leg');
+  assert.deepEqual(pending, ['also check jakarta'], 'the caller gets to replay it as its own leg');
 });
 
 test('runs transport: run.failed is an llm_error and run.cancelled is a cancel, never a hang', async () => {
@@ -1409,9 +1409,9 @@ test('steerRun: 200 is accepted, 409/404 is not_running, and auth still fails ho
   const ok = new HermesBackend({
     fetchFn: routedFetch([{ match: /\/run_s\/steer$/, respond: () => json200({ object: 'hermes.run.steer', run_id: 'run_s', accepted: true }) }], captured),
   });
-  assert.equal(await ok.steerRun({ engine: 'hermes', runId: 'run_s' }, 'also check lisbon'), 'accepted');
+  assert.equal(await ok.steerRun({ engine: 'hermes', runId: 'run_s' }, 'also check jakarta'), 'accepted');
   assert.equal(String(captured[0].init.method), 'POST');
-  assert.deepEqual(JSON.parse(String(captured[0].init.body)), { input: 'also check lisbon' });
+  assert.deepEqual(JSON.parse(String(captured[0].init.body)), { input: 'also check jakarta' });
 
   // 409 is hermes's own gate: only a run whose status is exactly `running` is steerable, so a run
   // still constructing its agent (or already finalizing) answers 409 — "not running", not an error.

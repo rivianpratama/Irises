@@ -245,7 +245,7 @@ test('a flat task answer persists none of the four droppable fields', () => {
 test('sanitizeLanguageName takes a language name and refuses everything else', () => {
   assert.equal(sanitizeLanguageName('english'), 'English');       // one setting, not three spellings
   assert.equal(sanitizeLanguageName('ENGLISH'), 'English');
-  assert.equal(sanitizeLanguageName('Brazilian Portuguese '), 'Brazilian Portuguese');
+  assert.equal(sanitizeLanguageName('Bahasa Indonesia '), 'Bahasa Indonesia');
   assert.equal(sanitizeLanguageName('  brazilian  portuguese '), 'Brazilian Portuguese');
   assert.equal(sanitizeLanguageName('Spanish.'), 'Spanish');      // a trailing stop is not a name
   // The stringified nothing a weak model writes in place of JSON null (the theme labeled "null"
@@ -266,7 +266,7 @@ test('sanitizeLanguageName takes a language name and refuses everything else', (
 
 test('coerceStatus carries language_request through the same door, and drops it absent', () => {
   const lang = (v: unknown) => coerceStatus({ ...RAW_V2, language_request: v })!.language_request;
-  assert.equal(lang('spanish'), 'Spanish');
+  assert.equal(lang('indonesian'), 'Indonesian');
   assert.equal(lang('Spanish'), 'Spanish');
   assert.equal(lang(null), undefined);
   assert.equal(lang('null'), undefined);
@@ -559,7 +559,7 @@ const SCHEMA_V2 = {
     epistemic_trigger: { type: "string", description: "one of: none | knowledge_gap | logic_valid | emotional_pressure — did new INFORMATION move you (logic_valid/knowledge_gap) or just PRESSURE (emotional_pressure)" },
     meta_prompt: { type: "string", description: "private note to yourself for next turn: what they will likely do and how to meet it, ~40 words" },
     hook_kind: { type: ["string", "null"], description: "null on a flat task answer or a quiet reply; otherwise the one move this reply carried — one of: judgment | callback | tangent | question. A question outranks the others when the reply carried one. Only a share turn opens a question; a question on any other turn is a slip you still report." },
-    language_request: { type: ["string", "null"], description: "null unless they explicitly asked you, THIS turn, to reply in a language from now on — then that language named in English (e.g. \"English\", \"Spanish\"). A message merely written in a language is never an ask." },
+    language_request: { type: ["string", "null"], description: "null unless they explicitly asked you, THIS turn, to reply in a language from now on — then that language named in English (e.g. \"English\", \"Indonesian\"). A message merely written in a language is never an ask." },
     thread_note: { type: ["string", "null"], description: "null most turns. Three uses, one per turn, prefixed: (1) \"loop: <thing>\" — something pending in their life with a how-did-it-go attached (an interview, a surgery, a launch, a dreaded talk), in their own word for it; one mention is enough. Catch a loop even on a venting or overwhelmed turn — a loop is asked about later, never in the moment. (2) \"resolved: <thing>\" — a pending thing you were tracking just got its outcome, whatever it was. (3) a recurring theme of theirs as \"kind: theme\", kind one of value | tension | goal | phrase (e.g. \"tension: speed vs craft\"); only for things likely to recur, never something they merely CLAIM is a pattern. A loop is an unanswered outcome and a theme is a because — neither is ever a bare fact (\"has a meeting friday\" belongs to your memory tools, not here). Precedence when more than one fits: \"resolved:\" > \"loop:\" > theme — a resolution outranks a pending loop, a pending loop outranks a fresh theme, one note per turn." },
     thread_outcome: { type: ["string", "null"], description: "only when your LAST reply tagged a standing thread, asked about something pending of theirs, or asked them a follow-up question: how they just took it — one of: took (they picked it up) | passed (they let it lie, fine) | pushed_back (they corrected it or bristled). Read it from their message alone, never from hope — a pass reported as a take poisons the thread. Otherwise null, including when you were offered a thread and chose not to use it." },
   },

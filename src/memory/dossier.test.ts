@@ -747,7 +747,7 @@ test('a replace RESOLVES a contradiction instead of stacking a third line beside
   const h = await seeded([
     '## How to text them',
     '- prefers english conversation',
-    '- comfortable switching between english and spanish casually',
+    '- comfortable switching between english and indonesian casually',
   ].join('\n'));
   const { llm } = fakeDossierLlm(() => JSON.stringify({
     ops: [

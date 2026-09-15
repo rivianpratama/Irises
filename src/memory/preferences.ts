@@ -111,7 +111,7 @@ export function sanitizeDirectives(directives: Directive[], opts: { quiet?: bool
 const REAL_INSTANT_MS = 1e12;
 
 /**
- * ONE standing rule as a prompt bullet, dated: `- always reply in Spanish (since Aug 30)`. Pure.
+ * ONE standing rule as a prompt bullet, dated: `- always reply in Indonesian (since Aug 30)`. Pure.
  *
  * The date is the whole point and it is CODE's, never the model's. "Trust the newer entry when one
  * supersedes an older one" is an instruction the medium tier has always carried and no lane could

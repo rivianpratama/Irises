@@ -650,7 +650,7 @@ export const BATTERY: readonly FocusItem[] = [
   },
   {
     id: 'f2',
-    seeds: ['can you look up what the current visa rules are for brazilians visiting japan?'],
+    seeds: ['can you look up what the current visa rules are for indonesians visiting japan?'],
     seedNeedsDelivery: true,
     ask: 'different thing — my knee has been aching since this morning, any idea why that happens in the cold?',
     expect: 'no_leak',

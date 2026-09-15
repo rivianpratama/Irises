@@ -329,7 +329,7 @@ test('requestOpsSteer: queued before the handle exists, ready after, and drained
   assert.deepEqual(takePendingSteers('chatA', 'task1'), ['under 100k'], 'the queued text comes back for delivery');
   assert.deepEqual(takePendingSteers('chatA', 'task1'), [], 'and only once — a drain is a hand-off');
 
-  assert.equal(requestOpsSteer('chatA', 'task1', 'actually lisbon'), 'ready', 'the handle exists now');
+  assert.equal(requestOpsSteer('chatA', 'task1', 'actually jakarta'), 'ready', 'the handle exists now');
   assert.deepEqual(takePendingSteers('chatA', 'task1'), [], 'a ready steer is the caller\'s to send, not the queue\'s');
 });
 
@@ -349,16 +349,16 @@ test('requestOpsSteer: every addition stays on the entry so the follow-up leg st
 
 test('requestOpsSteer: a finished or cancelled lookup is already_done, and never resurrects', () => {
   __resetOpsCoordination();
-  assert.equal(requestOpsSteer('chatA', 'gone', 'also check lisbon'), 'already_done', 'no entry at all');
+  assert.equal(requestOpsSteer('chatA', 'gone', 'also check jakarta'), 'already_done', 'no entry at all');
 
   markOpsStart('chatA', 'task1', { kind: 'web_research', request: 'flights' });
   markOpsDone('chatA', 'task1');
-  assert.equal(requestOpsSteer('chatA', 'task1', 'also check lisbon'), 'already_done');
+  assert.equal(requestOpsSteer('chatA', 'task1', 'also check jakarta'), 'already_done');
 
   markOpsStart('chatA', 'task2', { kind: 'web_research', request: 'trains' });
   requestOpsCancel('chatA', 'task2');
   // The user killed it a beat ago; adding to it would be a promise about work that is stopping.
-  assert.equal(requestOpsSteer('chatA', 'task2', 'also check lisbon'), 'already_done');
+  assert.equal(requestOpsSteer('chatA', 'task2', 'also check jakarta'), 'already_done');
   assert.deepEqual(takePendingSteers('chatA', 'task2'), []);
 });
 
@@ -393,9 +393,9 @@ test('requestOpsSteer: once the leg ends the handle is gone, and a steer is alre
   // The window this closes: triage + compose, during which the task is still "running" for every
   // other reader. 'ready' here had Convo ack "adding that in" for a POST that then 409'd.
   assert.equal(getOpsEngineRun('chatA', 'task1'), undefined);
-  assert.equal(requestOpsSteer('chatA', 'task1', 'actually lisbon'), 'already_done');
+  assert.equal(requestOpsSteer('chatA', 'task1', 'actually jakarta'), 'already_done');
   // …and it is still an addition the user made about this ask, so it stays on the entry.
-  assert.deepEqual(getActiveOps('chatA')[0].steers, ['under 100k', 'actually lisbon']);
+  assert.deepEqual(getActiveOps('chatA')[0].steers, ['under 100k', 'actually jakarta']);
 });
 
 test('requestOpsSteer: unsupported when no handle can EVER land for this leg', () => {
@@ -428,7 +428,7 @@ test('endOpsEngineLeg: hands back what nobody could deliver, and a second leg st
 
   // A retry or a steer replay is a NEW leg on the same task — it can be steered again.
   beginOpsEngineLeg('chatA', 'task1', true);
-  assert.equal(requestOpsSteer('chatA', 'task1', 'actually lisbon'), 'queued');
+  assert.equal(requestOpsSteer('chatA', 'task1', 'actually jakarta'), 'queued');
   noteOpsEngineRun('chatA', 'task1', { engine: 'hermes', runId: 'run_2' });
   assert.equal(requestOpsSteer('chatA', 'task1', 'and mornings'), 'ready');
 });

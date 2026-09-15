@@ -29,12 +29,12 @@ test('a real timestamp dates the bullet, on both renderers, in the zone it is ha
   // "More recent wins" cannot be applied to undated lines — the whole 2026-09-04 failure. The date
   // is code's; `createdAt: 1` is a legacy row with no real instant and stays bare.
   const directives = [
-    { id: '1', text: 'always reply in Spanish', createdAt: Date.UTC(2026, 7, 30, 12) },
+    { id: '1', text: 'always reply in Indonesian', createdAt: Date.UTC(2026, 7, 30, 12) },
     { id: '2', text: 'keep replies to two bubbles', createdAt: 1 },
   ];
   const at = Date.UTC(2026, 8, 5, 12);
   const rendered = renderDirectiveBlock(directives, at, 'UTC');
-  assert.ok(rendered.includes('- always reply in Spanish (since Aug 30)'), rendered);
+  assert.ok(rendered.includes('- always reply in Indonesian (since Aug 30)'), rendered);
   assert.ok(rendered.endsWith('- keep replies to two bubbles'), `a legacy row stays bare: ${rendered}`);
   assert.equal(rendered, renderPreferenceBlock({ directives }, at, 'UTC'));
 });
@@ -94,7 +94,7 @@ test('partitionMediumRows records when each fact was written (factAt)', () => {
     source: 'convo', createdAt: 1, updatedAt: 1, ...over,
   });
   const bundle = partitionMediumRows([
-    row({ id: 'f1', key: 'reply_language', body: 'Spanish', createdAt: aug30 }),
+    row({ id: 'f1', key: 'reply_language', body: 'Indonesian', createdAt: aug30 }),
     row({ id: 'f2', key: 'comms_style', body: 'brief', createdAt: 42 }),
     row({ id: 'd1', kind: 'directive', body: 'no emojis', createdAt: 7 }),
   ]);

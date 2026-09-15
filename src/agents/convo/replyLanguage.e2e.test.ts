@@ -2,7 +2,7 @@
 // and the one that clears it.
 //
 // This is the file that would have caught the 2026-09-04 failure: the user asked for English twice,
-// was told "switching now" both times, and `always reply in Spanish` stayed active because the
+// was told "switching now" both times, and `always reply in Indonesian` stayed active because the
 // only mechanism was an optional tool call the model never made. Now the turn writes the slot from
 // whichever input it has — the model's own `set_preference`, the English fast path over the user's
 // text, or the hidden `language_request` tag — and retires the old language rule with it.
@@ -73,7 +73,7 @@ function languageReceipts() {
 
 test("set_preference key='reply_language' sets the slot and retires the old language rule", async () => {
   const a = baseArgs();
-  await addDirective(a.handle, 'always reply in Spanish');
+  await addDirective(a.handle, 'always reply in Indonesian');
   await addDirective(a.handle, 'full sarcasm mode always');
   clearTraces();
 
@@ -83,7 +83,7 @@ test("set_preference key='reply_language' sets the slot and retires the old lang
   assert.deepEqual(await slot(a.handle), { fact: 'English', pref: 'English' });
   const active = await listMediumActive(a.handle, ['directive']);
   assert.deepEqual(active.map(d => d.body), ['full sarcasm mode always'], 'only the language rule is retired');
-  const retired = (await listMediumAll(a.handle)).find(e => e.body === 'always reply in Spanish');
+  const retired = (await listMediumAll(a.handle)).find(e => e.body === 'always reply in Indonesian');
   assert.equal(retired?.status, 'superseded');
 
   // The hook must NOT write again on top of the tool: one ask, one write, one receipt.
@@ -120,15 +120,15 @@ test('a NON-language directive still saves as a rule and never touches the slot'
 
 test('removing a language rule CLEARS the slot — the setting cannot outlive its rule', async () => {
   const a = baseArgs();
-  await addDirective(a.handle, 'always reply in Spanish');
-  await setReplyLanguage(a.handle, 'Spanish', { source: 'convo', via: 'fold' });
+  await addDirective(a.handle, 'always reply in Indonesian');
+  await setReplyLanguage(a.handle, 'Indonesian', { source: 'convo', via: 'fold' });
   // The fold-shaped seed retires the rule it came from; put it back so `remove` has a target.
-  await addDirective(a.handle, 'always reply in Spanish');
-  assert.equal((await slot(a.handle)).fact, 'Spanish');
+  await addDirective(a.handle, 'always reply in Indonesian');
+  assert.equal((await slot(a.handle)).fact, 'Indonesian');
   clearTraces();
 
-  const res = makeResult(['back to english then'], [directives('remove', { match: 'spanish' })]);
-  await processConvoResult({ ...a, res, textToSend: 'drop the spanish rule' });
+  const res = makeResult(['back to english then'], [directives('remove', { match: 'indonesian' })]);
+  await processConvoResult({ ...a, res, textToSend: 'drop the indonesian rule' });
 
   assert.deepEqual(await listMediumActive(a.handle, ['directive']), []);
   assert.deepEqual(await slot(a.handle), { fact: undefined, pref: undefined });
@@ -138,7 +138,7 @@ test('removing a language rule CLEARS the slot — the setting cannot outlive it
 
 test('an English ask with NO tool call is captured by code anyway (the 2026-09-04 bug)', async () => {
   const a = baseArgs();
-  await addDirective(a.handle, 'always reply in Spanish');
+  await addDirective(a.handle, 'always reply in Indonesian');
   clearTraces();
 
   const res = makeResult(['switching now'], [], { language_request: null });

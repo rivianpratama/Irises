@@ -29,7 +29,7 @@
 //      message it can READ WHOLE — see `fastPathCanRead`, and the paragraph under it — and never for
 //      one a signal already marked as no stall.
 //   3. THE CLASSIFY FALLBACK — everything veto-free the fast path could not read or was barred from:
-//      a Spanish "nada", an Spanish "bosan", a Japanese stall with no Latin tokens at all, and
+//      a Spanish "nada", an Indonesian "bosan", a Japanese stall with no Latin tokens at all, and
 //      every message long enough to be a share. The caller injects it (convo/idleClassify.ts wires
 //      it); this module only knows it returns one of four words. `stall` and `share` are the two
 //      that are not work. Anything else — `ask`, `unclear`, a garbled answer, a thrown call, a lane
@@ -142,7 +142,7 @@ export interface IdleOptions {
  * with no call at all, which is the commonest idle turn and the cheapest.
  *
  * READ THE NAME. This is not the definition of an idle turn and it is not allowed to become one:
- * the same message in Spanish, Spanish, Tagalog or Japanese is exactly as idle and reaches the
+ * the same message in Spanish, Indonesian, Tagalog or Japanese is exactly as idle and reaches the
  * same answer through the classify layer below. Nothing here is a veto either — a token missing
  * from this list costs one small call, never a wrong reading. That is what makes it safe to keep
  * SHORT: a longer list buys speed on messages nobody sends and risks swallowing a real ask.

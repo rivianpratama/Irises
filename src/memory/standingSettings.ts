@@ -4,7 +4,7 @@
 // live conversation SETS. `reply_language` is the first of them, and it exists because the model's
 // optional tool call was the only mechanism keeping it honest: on 2026-09-04 the user asked for
 // English twice, was answered "switching now" in English both times, and the medium-tier directive
-// `always reply in Spanish` from August was never touched — so every relay lane (composer
+// `always reply in Indonesian` from August was never touched — so every relay lane (composer
 // proactive, fallfirm holding text, composer delivery), which sees eight to ten messages and never
 // the reversal, kept obeying a rule the user had already withdrawn.
 //
@@ -101,7 +101,7 @@ function titleCase(s: string): string {
 
 /**
  * The language a medium-tier directive names, Title-Cased, or null when the text is not a language
- * rule at all. PURE. This is what lets code recognize the stale `always reply in Spanish` on the
+ * rule at all. PURE. This is what lets code recognize the stale `always reply in Indonesian` on the
  * live instance, fold it into the slot with its own date, and supersede it.
  */
 export function parseLanguageDirective(text: string): string | null {

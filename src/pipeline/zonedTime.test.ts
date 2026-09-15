@@ -49,7 +49,7 @@ test('malformed or non-existent dates return NaN (so callers skip them)', () => 
 });
 
 // ── The default zone is the HOST's, never a city ────────────────────────────────────────────────
-// It used to be the literal 'America/Chicago'. Live in Indian/Christmas, that stamped a Chicago wall
+// It used to be the literal 'America/Chicago'. Live in Asia/Jakarta, that stamped a Chicago wall
 // clock into Convo's prompt: at 22:28 local Irises talked about "before noon energy" and refused a
 // reminder for "22:40, 3 minutes from now" as impossible (Chicago really was 10:37 AM — right
 // reasoning, wrong clock). Ladder: IRISES_TZ → the host's own zone → UTC.
@@ -77,8 +77,8 @@ test('with no override, the resolver reports the HOST zone (UTC under the test h
 test('IRISES_TZ overrides the host zone; a typo in it is ignored, never poisons the clock', () => {
   const saved = process.env.IRISES_TZ;
   try {
-    process.env.IRISES_TZ = 'Indian/Christmas';
-    assert.equal(resolveDefaultTz(), 'Indian/Christmas');
+    process.env.IRISES_TZ = 'Asia/Jakarta';
+    assert.equal(resolveDefaultTz(), 'Asia/Jakarta');
     // …and it really is used as a zone, not just echoed back (WIB is UTC+7, no DST).
     assert.equal(iso(dateTimeInZone('2026-08-22', { hour: 22, minute: 40 }, resolveDefaultTz())), '2026-08-22T15:40:00.000Z');
 

@@ -10,7 +10,7 @@
 //      stale forever;
 //   3. the old language RULES — the medium-tier directives from the era when a language was a
 //      directive. Leaving one standing is the whole 2026-09-04 failure: Convo answered "switching
-//      now" in English while `always reply in Spanish` stayed active, and the relay lanes, which
+//      now" in English while `always reply in Indonesian` stayed active, and the relay lanes, which
 //      see eight to ten messages and never the reversal, obeyed the rule four times out of four.
 //
 // So there is exactly one function that writes the slot, and it does all three, in order, and
@@ -158,7 +158,7 @@ export async function clearReplyLanguage(handle: string): Promise<void> {
 // Migration, done by Irises' own code rather than by hand (per Rivian: no hand edits to the VPS
 // memory files). A language directive written before the slot existed is folded INTO the slot with
 // its own date and superseded, so nothing is lost and nothing is invented: after deploy the live
-// instance reads `Reply language: Spanish (they asked on Aug 30)`, and one "english" ask flips
+// instance reads `Reply language: Indonesian (they asked on Aug 30)`, and one "english" ask flips
 // it deterministically for every lane.
 
 /** Per-process, per-handle: the fold is a write-on-read, and a read happens on every turn. */
