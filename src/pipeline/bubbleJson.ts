@@ -211,7 +211,7 @@ export function buildEnvelopeSchema(tools?: LlmToolDef[]): Record<string, unknow
       confidence_level: { type: 'integer', description: '0-100, how sure you are of what they mean and what the answer is. Set it every reply' },
       tool_calls: {
         type: ['array', 'null'],
-        description: 'the actions you take this turn (see the tools list in your instructions); null when this reply is words only',
+        description: 'one entry per action you actually take this turn, and nothing else: a tool you are not using gets no entry at all. null when this reply is words only',
         items: {
           type: 'object',
           additionalProperties: false,
