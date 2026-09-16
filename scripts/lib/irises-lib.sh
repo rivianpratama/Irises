@@ -338,6 +338,30 @@ env_remove_irises_block() { # FILE KEY…
   printf '%s' "$removed"
 }
 
+# The ONE definition of "a value that is never printed", for every lifecycle script. A key that
+# answers 0 here may not travel on argv (configure.sh's --set refuses it: argv is readable by every
+# other process on the box and lands in shell history), and a preview prints `<set>` / `<unset>` for
+# it instead of the value. Pure `case` globs so it stays callable in a loop over a whole .env
+# without forking anything.
+#
+# API_SERVER_KEY is already caught by *_KEY; it is spelled out because it is the one key the rule is
+# written around by name, and a future rename of it must not quietly drop it out of the pattern.
+is_secret_key() { # KEY -> 0 when its VALUE must never be printed
+  case "${1:-}" in
+    *_KEY|*_TOKEN|*_PASSWORD|*_SECRET|API_SERVER_KEY) return 0 ;;
+  esac
+  return 1
+}
+
+# Remove the named keys from a file that has no Irises marker blocks in it. Same work as
+# env_remove_irises_block, under the name that describes what a caller on the CLONE's .env is
+# actually doing: env_append_block is only ever called on the ENGINE's .env, so $ROOT/.env never
+# carries a `# — added by Irises setup` marker, and a caller dropping plain keys from it should not
+# have to reason about marker handling it can never hit.
+env_unset() { # FILE KEY… -> count of assignments removed (missing file -> 0)
+  env_remove_irises_block "$@"
+}
+
 # ═══ D. environment preflight ═════════════════════════════════════════════════
 
 # Which OS this is, in the four flavours that change what the lifecycle scripts may call:
@@ -1582,6 +1606,96 @@ built_sha() { # [ROOT]
   f="$root/dist/version.json"
   if [ ! -f "$f" ]; then return 0; fi
   printf '%s' "$(grep -o '"sha"[[:space:]]*:[[:space:]]*"[0-9a-f]\{7,40\}"' "$f" | head -1 | cut -d'"' -f4 || true)"
+}
+
+# ── the voice model override ──────────────────────────────────────────────────
+# A model for Irises's OWN VOICE, instead of the engine's. Three keys per voice role, because
+# src/loadEnv.ts layers the engine's discovery UNDER this clone's .env — so what is written here is
+# what wins at boot, whatever the engine is running.
+#
+# ENGINE_MODEL_INHERIT=off is not optional and not cosmetic: applyModel() in
+# src/agents/ops/engineDiscovery.ts returns early when inheritance is off, and that early return is
+# also what suppresses its key and base-URL reuse. Leave inheritance on and the operator's own key
+# can end up pointed at the engine's gateway instead of the provider they chose. It is wider than
+# "pick a model" and the summary says so: engine detection and the HERMES_API_KEY / OPENCLAW_TOKEN
+# this install copies are outside applyModel and go on working, so deep work still runs on the
+# engine's model, through the engine.
+#
+# It lives in the lib rather than in the installer because install and configure must write the SAME
+# bytes: a second copy of this would drift, and a half-matching override is the failure mode above.
+
+# Which key each lane's provider is billed through.
+model_lane_key() { # LANE -> ANTHROPIC_API_KEY | OPENROUTER_API_KEY | OPENAI_API_KEY (unknown -> 1)
+  case "${1:-}" in
+    anthropic)  printf 'ANTHROPIC_API_KEY' ;;
+    openrouter) printf 'OPENROUTER_API_KEY' ;;
+    openai)     printf 'OPENAI_API_KEY' ;;
+    *)          return 1 ;;
+  esac
+  return 0
+}
+
+# THE KEY COMES FROM THE ENVIRONMENT AND NOWHERE ELSE. Never a flag: argv is readable by every other
+# process on the box (ps, /proc) and lands in shell history. It is written to this clone's 0600 .env
+# and is never printed, logged or named with a value anywhere.
+model_override_write() { # FILE LANE SLUG BASE_URL
+  local f="${1:-}" lane="${2:-}" slug="${3:-}" base_url="${4:-}" role key_name=""
+  say "voice model: $slug on the $lane lane, for all three voice roles"
+  for role in CONVO CLASSIFY FALLFIRM; do
+    case "$lane" in
+      anthropic)  env_set "$f" "${role}_MODEL" "$slug" ;;
+      openrouter) env_set "$f" "${role}_MODEL_OPENROUTER" "$slug" ;;
+      openai)     env_set "$f" "${role}_MODEL_OPENAI" "$slug" ;;
+    esac
+    env_set "$f" "${role}_PROVIDER" "$lane"
+  done
+  key_name="$(model_lane_key "$lane" || true)"
+  if [ -n "${IRISES_MODEL_API_KEY:-}" ]; then
+    env_set "$f" "$key_name" "$IRISES_MODEL_API_KEY"
+    say "$key_name was taken from IRISES_MODEL_API_KEY in the environment and written to $f (0600)"
+  else
+    warn "no IRISES_MODEL_API_KEY in the environment, so $key_name stays whatever $f had."
+    warn "Irises's own voice cannot call the $lane lane without one — add it and restart."
+  fi
+  if [ "$lane" = "openai" ]; then
+    env_set "$f" OPENAI_BASE_URL "$base_url"
+    say "OPENAI_BASE_URL=$base_url"
+  fi
+  env_set "$f" ENGINE_MODEL_INHERIT off
+  say "ENGINE_MODEL_INHERIT=off — Irises stops inheriting the engine's model, and its keys and base"
+  say "URL with it, for her own voice. Deep work still runs on the engine's model, through the engine."
+  chmod 600 "$f" 2>/dev/null || true
+  return 0
+}
+
+# The keys the override OWNS, space-separated on one line. With no LANE this is the whole removable
+# set — what handing the voice back to the engine takes out, whichever lane it was last written on.
+#
+# The lane API keys are NEVER on this list, and neither is OPENAI_BASE_URL in the no-lane form: the
+# operator pays for those and they may already have been in the file before Irises touched it.
+# Undoing our choice of model must not cost them a credential they still need.
+model_override_keys() { # [LANE] -> the keys the override writes and may remove
+  local role out=""
+  if [ -n "${1:-}" ]; then
+    for role in CONVO CLASSIFY FALLFIRM; do
+      case "$1" in
+        anthropic)  out="$out ${role}_MODEL" ;;
+        openrouter) out="$out ${role}_MODEL_OPENROUTER" ;;
+        openai)     out="$out ${role}_MODEL_OPENAI" ;;
+        *)          return 1 ;;
+      esac
+    done
+    for role in CONVO CLASSIFY FALLFIRM; do out="$out ${role}_PROVIDER"; done
+    out="$out ENGINE_MODEL_INHERIT"
+    if [ "$1" = "openai" ]; then out="$out OPENAI_BASE_URL"; fi
+  else
+    for role in CONVO CLASSIFY FALLFIRM; do
+      out="$out ${role}_MODEL ${role}_MODEL_OPENROUTER ${role}_MODEL_OPENAI ${role}_PROVIDER"
+    done
+    out="$out ENGINE_MODEL_INHERIT"
+  fi
+  printf '%s\n' "${out# }"
+  return 0
 }
 
 # ── install manifest ──────────────────────────────────────────────────────────

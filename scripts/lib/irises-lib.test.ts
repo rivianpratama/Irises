@@ -303,6 +303,44 @@ test('env_remove_irises_block takes the empty line env_append_block added with t
   assert.equal(readFileSync(g, 'utf8'), 'A=1\n\nB=2\n', 'a blank line of the operator\'s stays put');
 });
 
+test('env_unset removes every assignment of each key and nothing else', () => {
+  const f = join(mkdtempSync(join(tmpdir(), 'irises-env-')), '.env');
+  writeFileSync(f, ['A=1', '', 'B=2', 'export B=3', '# a comment', 'C=4', '', ''].join('\n'));
+  const r = runLib(`printf 'REMOVED=%s\\n' "$(env_unset ${JSON.stringify(f)} B C)"`);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /REMOVED=3/, 'the duplicate `export B=3` counts as its own assignment');
+  assert.equal(
+    readFileSync(f, 'utf8'),
+    'A=1\n\n# a comment\n\n',
+    'only the named assignments go — the comment, the operator\'s blank line and the trailing blank stay',
+  );
+});
+
+test('env_unset on a missing file prints 0 and succeeds', () => {
+  // Sourced under `set -euo pipefail`: a non-zero return here would abort the whole caller, which
+  // is the class of bug this harness exists to catch.
+  const r = runLib([
+    'rc=0',
+    'out="$(env_unset /nonexistent/.env B)" || rc=$?',
+    'printf \'REMOVED=%s RC=%s\\n\' "$out" "$rc"',
+  ].join('\n'));
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /REMOVED=0 RC=0/);
+});
+
+test('is_secret_key names keys, tokens, passwords, secrets and API_SERVER_KEY, and nothing else', () => {
+  const probes = [
+    'OPENROUTER_API_KEY', 'ENGINE_PUSH_TOKEN', 'DASHBOARD_PASSWORD', 'X_SECRET', 'API_SERVER_KEY',
+    'PORT', 'WEB_ENABLED', 'KEYBOARD', 'TOKENIZER', 'IRISES_FRONT',
+  ];
+  const r = runLib(probes
+    .map((k) => `if is_secret_key ${k}; then printf '${k}=secret\\n'; else printf '${k}=plain\\n'; fi`)
+    .join('\n'));
+  assert.equal(r.code, 0, r.err);
+  for (const k of probes.slice(0, 5)) assert.match(r.out, new RegExp(`^${k}=secret$`, 'm'), k);
+  for (const k of probes.slice(5)) assert.match(r.out, new RegExp(`^${k}=plain$`, 'm'), k);
+});
+
 test('env_backup copies to a 0600 sibling and prints ONLY its path on stdout', () => {
   const f = join(mkdtempSync(join(tmpdir(), 'irises-env-')), '.env');
   writeFileSync(f, 'SECRET=shhh\n', { mode: 0o644 });
@@ -947,6 +985,72 @@ test('wait_health fails within its budget when nothing is listening', () => {
   assert.equal(r.code, 0, r.err);
   assert.match(r.out, /RC=1/);
   assert.ok(Date.now() - started < 20000);
+});
+
+test('model_lane_key maps the three lanes and refuses a fourth', () => {
+  const r = runLib([
+    `printf 'ANTHROPIC=[%s]\\n' "$(model_lane_key anthropic)"`,
+    `printf 'OPENROUTER=[%s]\\n' "$(model_lane_key openrouter)"`,
+    `printf 'OPENAI=[%s]\\n' "$(model_lane_key openai)"`,
+    'rc=0',
+    'out="$(model_lane_key azure)" || rc=$?',
+    `printf 'AZURE=[%s] RC=%s\\n' "$out" "$rc"`,
+  ].join('\n'));
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /ANTHROPIC=\[ANTHROPIC_API_KEY\]/);
+  assert.match(r.out, /OPENROUTER=\[OPENROUTER_API_KEY\]/);
+  assert.match(r.out, /OPENAI=\[OPENAI_API_KEY\]/);
+  assert.match(r.out, /AZURE=\[\] RC=1/, 'an unknown lane prints nothing and says so in its exit code');
+});
+
+test('model_override_write writes the three roles, the provider, the lane key from the environment, and ENGINE_MODEL_INHERIT=off', () => {
+  const f = join(mkdtempSync(join(tmpdir(), 'irises-model-')), '.env');
+  writeFileSync(f, 'PORT=3000\n', { mode: 0o644 });
+  const r = runLib(`model_override_write ${JSON.stringify(f)} openrouter m ''`, {
+    env: { IRISES_MODEL_API_KEY: 'zzz-not-a-key' },
+  });
+  assert.equal(r.code, 0, r.err);
+  const body = readFileSync(f, 'utf8');
+  for (const role of ['CONVO', 'CLASSIFY', 'FALLFIRM']) {
+    assert.match(body, new RegExp(`^${role}_MODEL_OPENROUTER=m$`, 'm'), body);
+    assert.match(body, new RegExp(`^${role}_PROVIDER=openrouter$`, 'm'), body);
+  }
+  assert.match(body, /^OPENROUTER_API_KEY=zzz-not-a-key$/m, 'the key travels by environment and lands in the file');
+  assert.match(body, /^ENGINE_MODEL_INHERIT=off$/m, 'applyModel() only stops inheriting keys and base URL when this is off');
+  assert.match(body, /^PORT=3000$/m, 'the operator\'s own keys are untouched');
+  assert.ok(!r.out.includes('zzz-not-a-key'), 'a secret must never reach stdout');
+  assert.ok(!r.err.includes('zzz-not-a-key'), 'a secret must never reach stderr');
+  assert.equal(statSync(f).mode & 0o777, 0o600, 'the file holds a key now, so it ends 0600');
+});
+
+test('model_override_write on the openai lane writes OPENAI_BASE_URL and warns when no key is in the environment', () => {
+  const f = join(mkdtempSync(join(tmpdir(), 'irises-model-')), '.env');
+  writeFileSync(f, '');
+  const r = runLib(`model_override_write ${JSON.stringify(f)} openai m https://x.example/v1`);
+  assert.equal(r.code, 0, r.err);
+  const body = readFileSync(f, 'utf8');
+  assert.match(body, /^OPENAI_BASE_URL=https:\/\/x\.example\/v1$/m);
+  assert.match(body, /^CONVO_MODEL_OPENAI=m$/m);
+  assert.ok(!/^OPENAI_API_KEY=/m.test(body), 'with nothing in the environment the lane key is left alone');
+  assert.match(r.err, /no IRISES_MODEL_API_KEY/, 'the operator is told the voice cannot call the lane yet');
+});
+
+test('model_override_keys lists what --model-inherit may remove and keeps the lane keys out of it', () => {
+  const r = runLib([
+    `printf 'ALL=[%s]\\n' "$(model_override_keys)"`,
+    `printf 'OPENAI=[%s]\\n' "$(model_override_keys openai)"`,
+  ].join('\n'));
+  assert.equal(r.code, 0, r.err);
+  const all = (/ALL=\[(.*)\]/.exec(r.out)?.[1] ?? '').split(/\s+/).filter(Boolean);
+  assert.equal(all.length, 13, `every removable key, once: ${all.join(' ')}`);
+  assert.ok(all.includes('ENGINE_MODEL_INHERIT'), all.join(' '));
+  assert.ok(!all.includes('OPENROUTER_API_KEY'), 'a key the operator paid for is never on the removal list');
+  assert.ok(!all.includes('OPENAI_BASE_URL'), 'the no-lane form leaves the base URL where it is');
+  const openai = (/OPENAI=\[(.*)\]/.exec(r.out)?.[1] ?? '').split(/\s+/).filter(Boolean);
+  assert.ok(openai.includes('OPENAI_BASE_URL'), openai.join(' '));
+  assert.ok(openai.includes('CONVO_MODEL_OPENAI'), openai.join(' '));
+  assert.ok(!openai.includes('CONVO_MODEL_OPENROUTER'), 'a lane owns only its own model keys');
+  assert.ok(!openai.includes('OPENAI_API_KEY'), openai.join(' '));
 });
 
 test('manifest_write and manifest_read round-trip without node, and survive a reformat', () => {
