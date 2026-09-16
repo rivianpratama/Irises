@@ -119,6 +119,17 @@ test('a name the tool list does not carry is kept — dispatch ignores it anyway
   assert.deepEqual(r.dropped, []);
 });
 
+test('an invented empty name does not turn the lone real argless call beside it into a dump', () => {
+  // R2 counts the envelope's empties to read its SHAPE, and a name the tool list does not carry is
+  // not part of that shape: the guard keeps it (dispatch ignores it) and so must not count it
+  // either. Counted, one hallucinated entry beside a legitimate `list_automations{}` would flip R2
+  // and silently drop the only thing the turn actually asked for.
+  const calls = [empty('invented_tool'), empty(LIST_AUTOMATIONS_TOOL.name)];
+  const r = dropSchemaEcho(calls, TOOLS);
+  assert.deepEqual(r.kept, calls, 'the real argless request survives the invented name');
+  assert.deepEqual(r.dropped, []);
+});
+
 test('the kept list keeps the envelope order', () => {
   const a: LlmToolCall = { name: 'set_preference', input: { key: 'agent_tz', value: 'Asia/Jakarta' } };
   const b: LlmToolCall = { name: 'send_reaction', input: { type: 'like' } };

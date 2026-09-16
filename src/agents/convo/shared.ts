@@ -1513,6 +1513,54 @@ function buildForcedTask(opts: {
   };
 }
 
+// ── The schema-echo guard, as a turn carries it ─────────────────────────────────────────────────
+/** One turn's schema-echo lookup, bound to its tool list and its chat: hand it a model result, get
+ *  back the same result with the recited calls dropped. */
+export type ToolCallGuard = (r: LlmResult) => LlmResult;
+
+/**
+ * Build that lookup. The two rules and the live 2026-09-15 incident are in convo/toolCallGuard.ts,
+ * which stays pure; this is the dispatch-side half — the warning line and the single
+ * `convo:tool_call_dropped` receipt that say a turn's envelope carried a recitation.
+ *
+ * A FACTORY, because the places that must not read an unguarded list sit in three different scopes:
+ * the first draft at the top of `processConvoResult`, the corrective retry INSIDE each backstop
+ * (whose accept test asks how many calls the retry carried, a question an echo answers as loudly as
+ * real work does), and the adoption site where whatever stood becomes the turn's own result. One
+ * guard built at the top of the turn and passed down is how all three read the same tool list and
+ * file one receipt per envelope instead of one per reader.
+ *
+ * IDENTITY IS PART OF THE CONTRACT: a result with nothing to drop comes back as the very same
+ * object, because `res === args.res` inside `processConvoResult` is how that function knows whether
+ * a re-ask replaced the reply, and a defensive copy here would answer "replaced" on every clean
+ * turn. A replacement WITH drops is a new object, which fails that test — correctly, since a
+ * replacement is exactly what it is. The lookup is idempotent (re-reading a kept list drops
+ * nothing), so a clean draft read at the top and again at the adoption site is never receipted
+ * twice.
+ */
+export function makeToolCallGuard(
+  tools: LlmToolDef[],
+  chatId: string,
+  handle: string | undefined,
+): ToolCallGuard {
+  return (r: LlmResult): LlmResult => {
+    const guarded = dropSchemaEcho(r.toolCalls, tools);
+    if (!guarded.dropped.length) return r;
+    // chatId in the line, not only in the trace event: a live round attributes the turn from the
+    // instance log when the trace buffer isn't reachable.
+    console.warn(`[convo] dropped ${guarded.dropped.length} of ${r.toolCalls.length} tool call(s) as a schema echo (chat ${chatId}): ${guarded.dropped.map(d => d.name).join(', ')}`);
+    record({
+      type: 'event', label: 'convo:tool_call_dropped', chatId, handle,
+      detail: {
+        dropped: guarded.dropped.map(d => d.name),
+        reasons: guarded.dropped.map(d => `${d.name}:${d.reason}`),
+        total: r.toolCalls.length,
+      },
+    });
+    return { ...r, toolCalls: guarded.kept };
+  };
+}
+
 // ── The unkept-promise guard ────────────────────────────────────────────────────────────────────
 /**
  * The bubble texts of a parsed reply, for the promise scan: the legacy `\n---\n` wire form split
@@ -1535,6 +1583,11 @@ function replyBubbles(reply: { legacyText: string | null }): string[] {
  * Anything else keeps the ORIGINAL reply: a fabricated in-flight claim is bad, an empty screen is
  * worse, and this must never turn one into the other.
  *
+ * The retry is read through the turn's schema-echo `guard` BEFORE either accept test, because "it
+ * carries a tool call" is exactly the question a recitation answers falsely: eleven argless entries
+ * pass that test, the guard strips all eleven downstream, and what ships is the promise again with
+ * nothing behind it and a receipt claiming a tool call kept it.
+ *
  * Runs BEFORE dispatch and before any history write, so a discarded draft has no effects to undo.
  * It sits ahead of the routing gate and the false-refusal floor deliberately: those read the USER's
  * message and the draft's refusals, and neither fires on this shape (the live failure passed both).
@@ -1547,6 +1600,7 @@ function replyBubbles(reply: { legacyText: string | null }): string[] {
 async function enforcePromiseKept(
   args: { res: LlmResult; chatId: string; handle: string | undefined; turn?: ConvoTurnContext },
   bubbles: string[],
+  guard: ToolCallGuard,
 ): Promise<{ res: LlmResult; fired: boolean }> {
   if (!unkeptPromiseGuardEnabled()) return { res: args.res, fired: false };
   const { res, chatId, handle, turn } = args;
@@ -1563,7 +1617,9 @@ async function enforcePromiseKept(
   let resolved: 'tool_call' | 'honest' | 'kept_original' = 'kept_original';
   if (turn) {
     try {
-      const retry = await (turn.call ?? callConvoLLM)({
+      // Guarded on the way in, so `retry.toolCalls` below is the KEPT list — what the accept test
+      // reads and what the receipt describes are then the calls this turn will actually run.
+      const retry = guard(await (turn.call ?? callConvoLLM)({
         role: 'convo',
         system: turn.system,
         systemCacheBreakpoints: turn.cacheBreakpoints ?? [convoPersonaChars()],
@@ -1580,7 +1636,7 @@ async function enforcePromiseKept(
         // match by label alone, so one label for both would hide the decision behind the call and
         // double every trigger in a label count. Same split as `convo:silent_retry`/`silent_turn`.
         trace: { chatId, handle, label: 'convo:unkept_retry' },
-      });
+      }));
       const retryBubbles = replyBubbles(parseReply(retry.text));
       if (retry.toolCalls.length) {
         out = retry;
@@ -1679,6 +1735,11 @@ export function quietStoodDownReceipt(bubbles: string[], emitted: HookWord | und
  * itself quiet. Anything else keeps the ORIGINAL: a reply that is one bubble too long is a small
  * failure and an empty screen is a large one, and this must never turn one into the other.
  *
+ * And the retry is read through the turn's schema-echo guard BEFORE that test, for the same reason
+ * the promise guard does it: the one shape allowed to arrive with no bubbles is a tapback, which is
+ * legal because it carries a real `send_reaction`, and a recitation carries argless entries that
+ * look exactly like one until the guard reads them.
+ *
  * NEVER DROPS A TURN AND NEVER EDITS TEXT. The two obvious cheaper fixes — ship the first bubble
  * alone, or send nothing — are both a machine speaking in her voice, and the plan rules both out.
  *
@@ -1698,15 +1759,21 @@ export function quietStoodDownReceipt(bubbles: string[], emitted: HookWord | und
  *   • `opts.file` receives the row instead of the ring. The default files it immediately, which is
  *     what every direct caller wants; `processConvoResult` holds it until the pass that actually
  *     returns, so a discarded draft leaves no receipt behind it.
+ *
+ * `opts.guard` is the turn's schema-echo lookup, which `processConvoResult` passes so the whole turn
+ * shares one guard and one receipt per envelope. OPTIONAL, and defaulted rather than required,
+ * because a direct caller must not be able to get an UNGUARDED accept test by leaving it out: with
+ * nothing passed this builds the same lookup from the caller's own tool list.
  */
 export async function enforceQuiet(
   args: { res: LlmResult; chatId: string; handle: string | undefined; turn?: ConvoTurnContext },
   bubbles: string[],
   emitted: HookWord | undefined,
-  opts: { retry?: boolean; file?: (detail: QuietGuardDetail) => void } = {},
+  opts: { retry?: boolean; file?: (detail: QuietGuardDetail) => void; guard?: ToolCallGuard } = {},
 ): Promise<{ res: LlmResult; fired: boolean }> {
   const { res, chatId, handle } = args;
   const turn = opts.retry === false ? undefined : args.turn;
+  const guard = opts.guard ?? makeToolCallGuard(args.turn?.tools ?? fallbackConvoTools(), chatId, handle);
   const violated = quietViolation(emitted, bubbles);
   const sink = opts.file
     ?? ((detail: QuietGuardDetail) => record({ type: 'event', label: QUIET_GUARD_LABEL, chatId, handle, detail }));
@@ -1724,7 +1791,9 @@ export async function enforceQuiet(
   let resolved: 'quiet' | 'kept_original' = 'kept_original';
   if (turn) {
     try {
-      const retry = await (turn.call ?? callConvoLLM)({
+      // Guarded on the way in: the accept test below reads `retry.toolCalls`, so it has to be the
+      // KEPT list or a recitation passes as the tapback that makes a bubble-less reply legal.
+      const retry = guard(await (turn.call ?? callConvoLLM)({
         role: 'convo',
         system: turn.system,
         systemCacheBreakpoints: turn.cacheBreakpoints ?? [convoPersonaChars()],
@@ -1739,7 +1808,7 @@ export async function enforceQuiet(
         // The CALL's own label, distinct from the decision receipt above — the same split as
         // `convo:unkept_retry`/`convo:unkept_promise`, and for the same reason.
         trace: { chatId, handle, label: 'convo:quiet_retry' },
-      });
+      }));
       const retryReply = parseReply(retry.text);
       const retryBubbles = replyBubbles(retryReply);
       // STRICT: the retry has to be quiet, and it has to have SAID something. A retry with no
@@ -1783,12 +1852,17 @@ export async function enforceQuiet(
  * instead, because the one thing that must never happen here is silence: the action is parked and
  * only their answer can move it.
  *
+ * Guarded on the way in like both backstops, and here the echo costs the opposite thing: a recited
+ * schema beside a perfectly good question reads as "she tried to do it again" and throws her words
+ * away for the hardcoded line.
+ *
  * Runs after the tool loop, so the row and the pref are already written when the question goes out;
  * if this call fails the park still stands and the section keeps it live for the next turn.
  */
 async function askForApproval(
   args: { res: LlmResult; chatId: string; handle: string | undefined; turn?: ConvoTurnContext },
   request: string,
+  guard: ToolCallGuard,
   variant: 'park' | 'reconfirm' = 'park',
 ): Promise<string> {
   const { res, chatId, handle, turn } = args;
@@ -1800,7 +1874,7 @@ async function askForApproval(
   let asked: string | null = null;
   if (turn) {
     try {
-      const retry = await (turn.call ?? callConvoLLM)({
+      const retry = guard(await (turn.call ?? callConvoLLM)({
         role: 'convo',
         system: turn.system,
         systemCacheBreakpoints: turn.cacheBreakpoints ?? [convoPersonaChars()],
@@ -1815,7 +1889,7 @@ async function askForApproval(
         // The CALL's own label, distinct from the decision receipt below — same split as
         // convo:unkept_retry / convo:unkept_promise, for the same reason.
         trace: { chatId, handle, label: 'convo:approval_retry' },
-      });
+      }));
       const parsed = parseReply(retry.text);
       if (replyBubbles(parsed).length && !retry.toolCalls.length) asked = parsed.legacyText;
       else console.warn(`[convo] the approval re-ask came back ${retry.toolCalls.length ? 'with a tool call' : 'empty'} — asking in one line instead (chat ${chatId})`);
@@ -2039,9 +2113,11 @@ async function declineParkedApprovals(chatId: string, sender: string | undefined
 
 /** The tool list a schema-echo lookup is done against when the caller passed no turn context of
  *  its own: the widest live list, which is safe because the `required` arrays the guard reads are
- *  identical across the engine variants. Built lazily rather than at import, since convoToolList
- *  reads the provenance flag at call time and freezing that at module load would answer a question
- *  nobody had asked yet. */
+ *  identical across the engine variants. CACHED on first use — the module holds the first list it
+ *  built for the rest of the process, so a provenance flag flipped afterwards is not reflected here.
+ *  Safe for exactly this reader: the guard looks at `name` and `required`, and neither varies with
+ *  that flag — it adds one OPTIONAL `basis` property to two write tools and touches nothing else.
+ *  Any caller that needs a list which tracks the flag has to build its own. */
 let cachedFallbackTools: LlmToolDef[] | undefined;
 function fallbackConvoTools(): LlmToolDef[] {
   return (cachedFallbackTools ??= convoToolList({ engineName: 'hermes', isGroupChat: true }));
@@ -2126,43 +2202,27 @@ export async function processConvoResult(args: {
   // is what put eight phantom bubbles on the user's screen in place of the reply they were actually
   // waiting on. The incident and the two rules live in convo/toolCallGuard.ts.
   //
-  // It reads the first draft here, ahead of everything that reads the list, so the kept list is what
-  // the whole turn then sees: the honesty guard's verdict (an echo must not pass as the work behind a
-  // promised look), the routing gate's reading of whether this turn acted at all, the dispatch loop
-  // below, and the silent-turn floor — for which a dump with no bubbles is precisely what it looks
-  // like, a turn that did nothing. The recursive re-entries (the recall second pass, the silent-turn
-  // retry) come back through this same block, and an already-clean list records nothing, so they cost
-  // a lookup and no more.
+  // One guard for the turn (makeToolCallGuard, above), read at every point a model envelope becomes
+  // something this function acts on — because there are three of those, not one:
   //
-  // And it reads EVERY OTHER result this turn might adopt, which is why it is a helper rather than a
-  // straight line of code: when either backstop below spends its corrective re-ask, the reply that
-  // ships is a FRESH model envelope that never passed through here, and a weak model is at least as
-  // likely to recite the schema on the second ask as on the first. Guarding only the draft left that
-  // path dispatching an echo exactly as it did before this guard existed.
+  //   • THE FIRST DRAFT, here, ahead of everything that reads the list, so the kept list is what the
+  //     whole turn then sees: the honesty guard's verdict (an echo must not pass as the work behind a
+  //     promised look), the routing gate's reading of whether this turn acted at all, the dispatch
+  //     loop below, and the silent-turn floor — for which a dump with no bubbles is precisely what it
+  //     looks like, a turn that did nothing.
+  //   • EACH BACKSTOP'S RETRY, inside the backstop that asked for it, because that is where the
+  //     retry is JUDGED: both accept tests read how many calls it carried, the approval re-ask reads
+  //     the same thing to decide whether she tried to act instead of asking, and a recitation
+  //     answers all three falsely. Guarding a retry out here — after the accept test had already
+  //     read the raw list — left an echo standing in for real work and the receipt saying so.
+  //   • THE ADOPTION SITE below, `guardToolCalls(quiet.res)`, now purely the idempotent last line:
+  //     whatever stood came through a guard already, and a second read of a kept list drops nothing.
+  //     It stays because it is cheap and because it is the belt under those braces.
   //
-  // IDENTITY IS PART OF THE CONTRACT: a result with nothing to drop comes back as the very same
-  // object, because `res === args.res` further down is how this function knows whether a re-ask
-  // replaced the reply, and a defensive copy here would answer "replaced" on every clean turn. A
-  // replacement WITH drops is a new object, which fails that test — correctly, since a replacement
-  // is exactly what it is. The guard is idempotent (re-reading a kept list drops nothing), so a
-  // clean first draft carried through by both backstops is never receipted twice.
-  const guardTools = args.turn?.tools ?? fallbackConvoTools();
-  const guardToolCalls = (r: LlmResult): LlmResult => {
-    const guarded = dropSchemaEcho(r.toolCalls, guardTools);
-    if (!guarded.dropped.length) return r;
-    // chatId in the line, not only in the trace event: a live round attributes the turn from the
-    // instance log when the trace buffer isn't reachable.
-    console.warn(`[convo] dropped ${guarded.dropped.length} of ${r.toolCalls.length} tool call(s) as a schema echo (chat ${chatId}): ${guarded.dropped.map(d => d.name).join(', ')}`);
-    record({
-      type: 'event', label: 'convo:tool_call_dropped', chatId, handle,
-      detail: {
-        dropped: guarded.dropped.map(d => d.name),
-        reasons: guarded.dropped.map(d => `${d.name}:${d.reason}`),
-        total: r.toolCalls.length,
-      },
-    });
-    return { ...r, toolCalls: guarded.kept };
-  };
+  // The recursive re-entries (the recall second pass, the silent-turn retry) come back through this
+  // same block with their own guard, and an already-clean list records nothing, so they cost a lookup
+  // and no more.
+  const guardToolCalls = makeToolCallGuard(args.turn?.tools ?? fallbackConvoTools(), chatId, handle);
   // The first draft's pass is rebound on `args` rather than on a local, because two things read it:
   // enforcePromiseKept takes `args` and reaches for `args.res` itself, and the identity test named
   // above compares against `args.res`. One object has to carry the guarded list for both, or those
@@ -2220,7 +2280,7 @@ export async function processConvoResult(args: {
   // shipped its "honest" retry ("i can't send that from here") over an action that was starting.
   const guard = (settledTask || settledReconfirm)
     ? { res: args.res, fired: false }
-    : await enforcePromiseKept(args, replyBubbles(firstReply));
+    : await enforcePromiseKept(args, replyBubbles(firstReply), guardToolCalls);
 
   // …and the rhythm backstop beside it, on the turns the selector forced quiet. ONE corrective
   // re-ask per turn, TOTAL: the promise guard goes first and this one stands down whenever it fired,
@@ -2259,7 +2319,7 @@ export async function processConvoResult(args: {
   const quiet = (forcedQuiet && !quietStoodDown)
     ? await enforceQuiet(
       args, replyBubbles(firstReply), coerceStatus(firstReply.statusRaw)?.hook_kind,
-      { retry: !args.quietSpent, file: d => { quietReceipt = d; } },
+      { retry: !args.quietSpent, file: d => { quietReceipt = d; }, guard: guardToolCalls },
     )
     : { res: guard.res, fired: false };
   // The stand-down still leaves its receipt, and this is the half that makes the kill switch
@@ -2276,10 +2336,10 @@ export async function processConvoResult(args: {
   // Whether this user-visible turn's ONE corrective re-ask is gone, for any pass that follows this
   // one. Both guards count: the rule is one re-ask per turn TOTAL, honesty first.
   const quietSpent = !!args.quietSpent || guard.fired || quiet.fired;
-  // The result this turn actually processes, guarded on its way in: whatever either backstop left
-  // standing is a fresh envelope when one of them fired, and it reaches dispatch from here. A draft
-  // that came through untouched is the same object it was at the top, so the identity test below
-  // still reads "nothing replaced the reply".
+  // The result this turn actually processes. Whatever either backstop left standing was guarded
+  // where it was judged, so this read is the idempotent last line described at the top: a kept list
+  // re-read drops nothing, and a draft that came through untouched is the same object it was at the
+  // top, so the identity test below still reads "nothing replaced the reply".
   const res = guardToolCalls(quiet.res);
   // Re-parsed only when the re-ask actually replaced the reply — parseReply logs a line for a
   // non-envelope reply, and parsing the same one twice would double it.
@@ -2697,7 +2757,7 @@ export async function processConvoResult(args: {
   // must all see the question rather than the holding line it replaced.
   if (parkedApproval) {
     textParts.length = 0;
-    textParts.push(await askForApproval(args, parkedApproval.request, parkedApproval.variant));
+    textParts.push(await askForApproval(args, parkedApproval.request, guardToolCalls, parkedApproval.variant));
     // The shipped text is no longer this parse's text, so this parse's bubble cap is not the cap to
     // report (same rule as every other branch that replaces the reply).
     hardCapped = false;

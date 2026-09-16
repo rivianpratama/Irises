@@ -557,6 +557,31 @@ test('the promise guard goes first, and its firing stands the quiet re-ask down'
   });
 });
 
+test('a re-ask that comes back an empty envelope plus a schema dump is not a quiet reply', async () => {
+  // The dump walks straight through the accept test's one exception: no bubbles is legal ONLY next
+  // to a real send_reaction, and one argless entry per offered tool says "there is a call behind it"
+  // while carrying nothing at all. Accepted, the schema-echo guard downstream empties the list and
+  // the turn reaches the silent-turn floor with no text, no reaction and no call — a machine line
+  // traded for a reply that was one bubble too long, which is the exact swap this guard exists to
+  // refuse. So the retry is judged on its KEPT calls, and here it reads as the empty envelope it is.
+  const dump: LlmToolCall[] = [{ name: 'send_reaction', input: {} }, { name: 'delegate_to_ops', input: {} }];
+  const out = await processConvoResult({
+    ...turnArgs(),
+    res: envelope(LOUD, 'judgment'),
+    hooks: hookArgs(QUIET),
+    turn: turnCtx(async () => envelope([], undefined, dump)),
+  });
+  assert.equal(out.text, LOUD.join('\n---\n'), 'the loud reply stands, unedited');
+  assert.equal(out.reaction, null, 'the argless send_reaction was never a tapback');
+  assert.deepEqual(quietReceipt(), {
+    forced: true, emitted: 'judgment', bubbles: 2, retried: true, resolved: 'kept_original',
+  });
+  assert.deepEqual(
+    getTraces().filter(e => e.label === 'convo:silent_turn'), [],
+    'and no silent-turn floor engages, because nothing empty was ever adopted',
+  );
+});
+
 // The row itself, at its own seam. PURE — it returns the receipt rather than filing it, because the
 // pass that builds it may be a pass that discards its draft, and a receipt about text nobody reads
 // is worse than no receipt at all.

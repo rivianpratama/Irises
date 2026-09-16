@@ -156,6 +156,30 @@ test('a corrective re-ask that comes back a dump is guarded too', async () => {
   assert.equal(detail.total, 12, 'measured against what the retry wrote');
 });
 
+test('a re-ask that comes back a dump with NO real call has not kept the promise', async () => {
+  // The honesty backstop's accept test asks whether the retry carries a tool call, and eleven
+  // argless entries answer that question as loudly as a real delegation does — so the retry was
+  // adopted as "the work is real now", the outer guard then stripped all eleven, and the reply that
+  // shipped promised a look with nothing whatever behind it while the receipt said a tool call had
+  // kept the promise. The retry has to be judged on its KEPT list, which here is empty.
+  const a = args();
+  delete process.env.CONVO_UNKEPT_PROMISE_GUARD;
+  const draft = 'hang tight, pulling the rest of that list';
+  const out = await processConvoResult({
+    ...a,
+    res: makeResult([draft], []),
+    // The retry promises the same look again, and every call it wrote is an echo — so it fixed
+    // neither half of the failure, which is the case that keeps the original.
+    turn: turnCtx(async () => makeResult(['on it, pulling the rest of that scan'], ECHO)),
+  });
+
+  assert.equal(out.delegatedTask, null, 'nothing was dispatched, so nothing stands behind either line');
+  assert.equal(out.text, draft, 'the ORIGINAL ships — a retry that fixed nothing is not an improvement');
+  const receipt = getTraces().find(e => e.type === 'event' && e.label === 'convo:unkept_promise')?.detail as
+    { resolved?: string } | undefined;
+  assert.equal(receipt?.resolved, 'kept_original', 'and the receipt never claims a tool call the turn dropped');
+});
+
 test('a dump with no bubbles and no real call IS a silent turn: the retry ladder runs', async () => {
   // Nothing the user or the thread can see: every call is an echo, so after the guard this turn did
   // literally nothing — which is the shape the silent-turn floor exists for. Before the guard the

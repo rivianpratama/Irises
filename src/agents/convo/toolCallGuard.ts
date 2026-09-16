@@ -49,10 +49,11 @@ function requiredArgs(tool: LlmToolDef): unknown[] {
  *   R1 (per call) — empty input against a tool that REQUIRES args. Without them the handler can
  *      only produce an error or a nothing-found bubble, so the call cannot be intent whatever else
  *      the envelope holds. This is why it needs no second call to fire.
- *   R2 (the envelope) — two or more empty-input calls riding together. No real turn needs two
- *      argless tools at once, so the run itself is the signal, and every empty-input call in it goes.
- *      This is the half that catches `list_automations{}` and `cancel_research{}` inside a dump while
- *      leaving a LONE one of either standing as the real request it is.
+ *   R2 (the envelope) — two or more empty-input calls on OFFERED tools riding together. No real
+ *      turn needs two argless tools at once, so the run itself is the signal, and every
+ *      empty-input call in it goes. This is the half that catches `list_automations{}` and
+ *      `cancel_research{}` inside a dump while leaving a LONE one of either standing as the real
+ *      request it is.
  *
  * PRECEDENCE: R1 wins a call that matches both. Its reason is true of the call on its own, with no
  * reference to what else the model wrote, which makes the reported reason stable no matter what the
@@ -69,8 +70,13 @@ export function dropSchemaEcho(
 ): { kept: LlmToolCall[]; dropped: DroppedCall[] } {
   const kept: LlmToolCall[] = [];
   const dropped: DroppedCall[] = [];
-  // R2 reads the whole envelope, so the count has to be in hand before any call is judged.
-  const emptyCount = calls.reduce((n, call) => (isEmpty(call) ? n + 1 : n), 0);
+  // R2 reads the whole envelope, so the count has to be in hand before any call is judged. It
+  // counts only the empties this guard would otherwise judge — an OFFERED name — because an
+  // invented name is kept whatever the envelope looks like, and counting one would let a single
+  // hallucinated entry flip R2 and drop the legitimate lone `list_automations{}` beside it.
+  const emptyCount = calls.reduce(
+    (n, call) => (isEmpty(call) && tools.some(t => t.name === call.name) ? n + 1 : n), 0,
+  );
 
   for (const call of calls) {
     const tool = tools.find(t => t.name === call.name);
