@@ -27,7 +27,7 @@ import { latestShortTerm } from '../../db/repositories/memoryShort.js';
 import {
   searchArchive, archiveSearchBackend, archiveScopeHasVectors, type ArchiveHit,
 } from '../../db/repositories/memoryArchive.js';
-import { STANDARD_REACTION_TYPES } from './tools.js';
+import { convoToolList, STANDARD_REACTION_TYPES } from './tools.js';
 import { validateDirective } from '../../memory/preferences.js';
 import { FACT_KEYS } from '../../memory/mediumTerm.js';
 // The reply-language slot: the pure core decides WHAT this turn asked for, the glue writes it to
@@ -91,6 +91,7 @@ import {
 } from './personaModules.js';
 import { renderTurnFocus, turnFocusBlockEnabled, type TurnFocusInput } from './turnFocus.js';
 import { detectUnkeptPromise, renderPromiseCorrection, unkeptPromiseGuardEnabled } from './unkeptPromise.js';
+import { dropSchemaEcho } from './toolCallGuard.js';
 import { callLLM } from '../../llm/callLLM.js';
 import { record } from '../../diagnostics/trace.js';
 import { HOOK_OFF_TURN_LABEL, QUIET_GUARD_LABEL } from '../../diagnostics/traceLabels.js';
@@ -2036,6 +2037,16 @@ async function declineParkedApprovals(chatId: string, sender: string | undefined
   return parked.length;
 }
 
+/** The tool list a schema-echo lookup is done against when the caller passed no turn context of
+ *  its own: the widest live list, which is safe because the `required` arrays the guard reads are
+ *  identical across the engine variants. Built lazily rather than at import, since convoToolList
+ *  reads the provenance flag at call time and freezing that at module load would answer a question
+ *  nobody had asked yet. */
+let cachedFallbackTools: LlmToolDef[] | undefined;
+function fallbackConvoTools(): LlmToolDef[] {
+  return (cachedFallbackTools ??= convoToolList({ engineName: 'hermes', isGroupChat: true }));
+}
+
 /**
  * Process an LLM result into a ChatResponse: fold text, run every tool call (reactions,
  * remember_user, delegate_to_ops, scheduling, directives), apply the never-go-silent fallbacks,
@@ -2107,6 +2118,45 @@ export async function processConvoResult(args: {
   } | null;
 }): Promise<ChatResponse> {
   const { chatId, handle, chatContext, textToSend, history, media } = args;
+
+  // ── The schema-echo guard ─────────────────────────────────────────────────────────────────────
+  // A weak model on the toolsViaJson envelope can answer by reciting the schema it was just shown:
+  // one `tool_calls` entry per offered tool, every arg null. The nulls are stripped at the parse
+  // boundary, so those reach this function as real-looking calls with empty input, and running them
+  // is what put eight phantom bubbles on the user's screen in place of the reply they were actually
+  // waiting on. The incident and the two rules live in convo/toolCallGuard.ts.
+  //
+  // It runs ONCE, here, ahead of everything that reads the list, and the kept list is what the whole
+  // turn then sees: the honesty guard's verdict (an echo must not pass as the work behind a promised
+  // look), the routing gate's reading of whether this turn acted at all, the dispatch loop below,
+  // and the silent-turn floor — for which a dump with no bubbles is precisely what it looks like, a
+  // turn that did nothing. The recursive re-entries (the recall second pass, the silent-turn retry)
+  // come back through this same block, and an already-clean list records nothing, so they cost a
+  // lookup and no more.
+  //
+  // What the MODEL WROTE is captured first, because that is what the turn receipt reports; the event
+  // below is the half that says which of it never ran.
+  const writtenToolCalls = args.res.toolCalls.map(c => c.name);
+  const guarded = dropSchemaEcho(args.res.toolCalls, args.turn?.tools ?? fallbackConvoTools());
+  if (guarded.dropped.length) {
+    // chatId in the line, not only in the trace event: a live round attributes the turn from the
+    // instance log when the trace buffer isn't reachable.
+    console.warn(`[convo] dropped ${guarded.dropped.length} of ${writtenToolCalls.length} tool call(s) as a schema echo (chat ${chatId}): ${guarded.dropped.map(d => d.name).join(', ')}`);
+    record({
+      type: 'event', label: 'convo:tool_call_dropped', chatId, handle,
+      detail: {
+        dropped: guarded.dropped.map(d => d.name),
+        reasons: guarded.dropped.map(d => `${d.name}:${d.reason}`),
+        total: writtenToolCalls.length,
+      },
+    });
+    // Rebound on `args` rather than on a local, because two things read it: enforcePromiseKept takes
+    // `args` and reaches for `args.res` itself, and the `res === args.res` identity test further down
+    // is how this function knows whether a corrective re-ask replaced the reply. One object has to
+    // carry the guarded list for both, or those two disagree about what the turn is processing.
+    args = { ...args, res: { ...args.res, toolCalls: guarded.kept } };
+  }
+
   // Read ONCE for the turn: the routing gate and the delegation brief must not be able to disagree
   // because someone flipped the env between the two reads.
   const memoryAwareGate = routingGateMemoryAwareEnabled();
@@ -3355,7 +3405,10 @@ export async function processConvoResult(args: {
           // predicate the silent-turn tripwire above fires on, not a second copy of it. The
           // boundary re-checks it against what shipped.
           silent: producedNothingVisible,
-          toolCalls: res.toolCalls.map(c => c.name),
+          // What the model WROTE, echo and all — a receipt that reported only the calls that
+          // survived the schema-echo guard would describe a turn the model never produced. What was
+          // discarded rides its own `convo:tool_call_dropped` event.
+          toolCalls: writtenToolCalls,
           // Only when the honesty backstop actually fired — see the field's note in turnTrace.ts.
           ...(guard.fired ? { unkeptPromise: true } : {}),
           // …and only on a turn the rhythm selector ran on. Four settled facts, spread rather than
