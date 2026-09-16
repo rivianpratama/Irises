@@ -1795,7 +1795,13 @@ manifest_read() { # PATH KEY
     v="${v#"${v%%[![:space:]]*}"}"
     v="${v%,}"
     case "$v" in '"'*) v="${v#\"}"; v="${v%\"}" ;; esac
+    # BOTH of manifest_write's escapes, undone in the reverse order it applied them: it does `\`
+    # first and `"` second, so `\"` comes off before `\\`, and a value holding a literal `\"`
+    # survives the round trip. Reversing only the quotes was enough while nothing re-wrote the file,
+    # but manifest_update reads every field and writes it back — so a Windows root (C:\Irises\clone)
+    # grew a backslash on every single update until it named a path that does not exist.
     v="${v//\\\"/\"}"
+    v="${v//\\\\/\\}"
     printf '%s' "$v"
     return 0
   fi
@@ -1818,7 +1824,7 @@ IRISES_MANIFEST_KEYS="root irisesHome port engine engineEnvFile engineEnvBackup 
 # disagree the first time the format moved. configure.sh comes through here for port, frontPattern,
 # modelLane, serviceKind, serviceUnit and keysRetargeted.
 manifest_update() { # PATH KEY=VALUE…
-  local p="${1:-}" pair key known ok
+  local p="${1:-}" pair key known have ok
   local args
   args=()
   if [ -z "$p" ] || [ ! -f "$p" ]; then
@@ -1829,6 +1835,13 @@ manifest_update() { # PATH KEY=VALUE…
   # Validate EVERY key before writing anything: a typo in the second pair must not leave the first
   # one applied and the run reporting a failure over a manifest that was already changed.
   for pair in "$@"; do
+    # A bare word first: `${pair%%=*}` of `port` is `port`, which passes the known-key check below
+    # and then never matches the `KEY=` overlay — so without this the caller's change is accepted
+    # and silently dropped.
+    case "$pair" in
+      *=*) ;;
+      *) err "manifest_update: not a KEY=VALUE argument: $pair"; return 1 ;;
+    esac
     key="${pair%%=*}"
     ok=0
     for known in $IRISES_MANIFEST_KEYS; do
@@ -1844,8 +1857,8 @@ manifest_update() { # PATH KEY=VALUE…
   for known in $IRISES_MANIFEST_KEYS; do
     pair="$known=$(manifest_read "$p" "$known")"
     if [ "${#args[@]}" -gt 0 ]; then
-      for key in "${args[@]}"; do
-        case "$key" in "$known="*) pair="$key" ;; esac
+      for have in "${args[@]}"; do
+        case "$have" in "$known="*) pair="$have" ;; esac
       done
     fi
     set -- "$@" "$pair"

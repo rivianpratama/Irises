@@ -1187,6 +1187,38 @@ test('manifest_update rewrites the named fields and carries every other field fo
   assert.match(raw, /"writtenAt": "/, 'manifest_write refreshes it — the update must go through it');
 });
 
+test('manifest_read reverses both of manifest_write escapes, so manifest_update never doubles a backslash', () => {
+  const state = mkdtempSync(join(tmpdir(), 'irises-manb-'));
+  const p = join(state, 'install-manifest.json');
+  // A Windows clone root and an engine .env path with a quote in it: manifest_write escapes `\` and
+  // then `"`, and a reader that only reverses the second one grows the value every rewrite.
+  const backslashed = 'C:\\Irises\\clone';
+  const both = 'C:\\Users\\R&D\\a "quoted" \\"pair\\"';
+  const read = (k: string, label: string) => `printf '${label}=[%s]\\n' "$(manifest_read ${JSON.stringify(p)} ${k})"`;
+  const r = runLib([
+    `manifest_write ${JSON.stringify(p)} 'root=${backslashed}' 'engineEnvFile=${both}' port=3000`,
+    read('root', 'ONE'),
+    read('engineEnvFile', 'ONEB'),
+    `manifest_update ${JSON.stringify(p)} port=4001`,
+    read('root', 'TWO'),
+    read('engineEnvFile', 'TWOB'),
+    `manifest_update ${JSON.stringify(p)} port=4002`,
+    read('root', 'THREE'),
+    read('engineEnvFile', 'THREEB'),
+  ].join('\n'), { env: { IRISES_HOME: state } });
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  for (const label of ['ONE', 'TWO', 'THREE']) {
+    assert.ok(r.out.includes(`${label}=[${backslashed}]`),
+      `${label} is not the value that was written — a rewrite grew it:\n${r.out}`);
+    assert.ok(r.out.includes(`${label}B=[${both}]`),
+      `${label}B is not the value that was written — a rewrite grew it:\n${r.out}`);
+  }
+  const parsed = JSON.parse(readFileSync(p, 'utf8')) as Record<string, string>;
+  assert.equal(parsed.root, backslashed, 'and the file on disk still says what the installer meant');
+  assert.equal(parsed.engineEnvFile, both);
+  assert.equal(parsed.port, '4002');
+});
+
 test('manifest_update refuses an unknown key and a missing manifest without writing', () => {
   const state = mkdtempSync(join(tmpdir(), 'irises-manu-'));
   const p = join(state, 'install-manifest.json');
@@ -1205,6 +1237,17 @@ test('manifest_update refuses an unknown key and a missing manifest without writ
   assert.match(unknown.err, /manifest_update: unknown key prot/);
   assert.equal(readFileSync(p, 'utf8'), before,
     'a typo in one key must not half-apply the others');
+
+  // A bare word passes the known-key test (KEY=VALUE's key half of `port` IS `port`) but carries no
+  // value to overlay, so accepting it would silently do nothing the caller asked for.
+  const bare = runLib(
+    `rc=0; manifest_update ${JSON.stringify(p)} port || rc=$?; printf "RC=%s\\n" "$rc"`,
+    { env: { IRISES_HOME: state } },
+  );
+  assert.equal(bare.code, 0, bare.err);
+  assert.match(bare.out, /RC=1/);
+  assert.match(bare.err, /manifest_update: not a KEY=VALUE argument: port/);
+  assert.equal(readFileSync(p, 'utf8'), before, 'and it must not rewrite the manifest either');
 
   const gone = join(state, 'no-such-manifest.json');
   const missing = runLib(
