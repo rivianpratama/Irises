@@ -987,6 +987,89 @@ test('wait_health fails within its budget when nothing is listening', () => {
   assert.ok(Date.now() - started < 20000);
 });
 
+test('irises_restart_verify restarts through the service and proves the expected sha answers', () => {
+  const oldSha = 'a'.repeat(40);
+  const newSha = 'b'.repeat(40);
+  const dir = mkdtempSync(join(tmpdir(), 'irises-rv-'));
+  const home = join(dir, 'home');
+  const root = join(dir, 'clone');
+  mkdirSync(join(home, '.config', 'systemd', 'user'), { recursive: true });
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(home, '.config', 'systemd', 'user', 'irises.service'), '[Service]\n');
+  const shaFile = join(dir, 'live-sha');
+  writeFileSync(shaFile, oldSha);
+  const { base, stop } = startHealthServer(shaFile);
+  const port = base.slice(base.lastIndexOf(':') + 1);
+  try {
+    const r = runLib(
+      `rc=0; irises_restart_verify ${JSON.stringify(root)} ${port} ${newSha} 20 || rc=$?; printf "RC=%s\\n" "$rc"`,
+      {
+        stubs: {
+          // The service restart is the ONLY thing that flips which sha /health reports here. Before
+          // it the old build is still answering on that port — the exact shape of a restart that
+          // never took, which is what this function exists to tell apart from a real one.
+          systemctl: [
+            'printf "systemctl argv:%s\\n" "$*" >> "$STUB_LOG"',
+            'case "$*" in *"restart irises") printf "%s" "$WANT_SHA" > "$SHA_FILE" ;; esac',
+            'exit 0',
+          ].join('\n'),
+          uname: 'echo Linux',
+        },
+        env: {
+          HOME: home,
+          XDG_RUNTIME_DIR: dir,
+          DBUS_SESSION_BUS_ADDRESS: 'unix:path=/dev/null',
+          WANT_SHA: newSha,
+          SHA_FILE: shaFile,
+        },
+      },
+    );
+    assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+    assert.match(r.out, /RC=0/);
+    assert.ok(r.log.includes('systemctl argv:--user restart irises'), r.log.join('\n'));
+    assert.match(r.out, new RegExp(`restarted — build ${newSha.slice(0, 7)} is live on :${port}`));
+  } finally {
+    stop();
+  }
+});
+
+test('irises_restart_verify refuses when the port is held and there is no server of ours to cycle', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'irises-rv-'));
+  const shaFile = join(dir, 'live-sha');
+  writeFileSync(shaFile, 'a'.repeat(40));
+  const { base, stop } = startHealthServer(shaFile);
+  const port = base.slice(base.lastIndexOf(':') + 1);
+  try {
+    // No unit and no plist under this run's HOME, no pidfile in its IRISES_HOME: nothing of ours to
+    // cycle, and something is plainly answering on that port. Starting a second server there would
+    // fail to bind and then "verify" against whatever is already listening.
+    const r = runLib(
+      `rc=0; irises_restart_verify ${JSON.stringify(dir)} ${port} ${'a'.repeat(40)} 5 || rc=$?; printf "RC=%s\\n" "$rc"`,
+    );
+    assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+    assert.match(r.out, /RC=1/);
+    assert.match(r.err, new RegExp(`something took :${port}`));
+  } finally {
+    stop();
+  }
+});
+
+test('irises_restart_verify fails within its budget when nothing answers', () => {
+  const root = mkdtempSync(join(tmpdir(), 'irises-rv-'));
+  const started = Date.now();
+  // nohup/setsid stubbed to a bare success: server_start_detached must report "started" without a
+  // node process ever existing, so what is under test is the verification, not the launch.
+  const r = runLib(
+    `rc=0; irises_restart_verify ${JSON.stringify(root)} 1 ${'b'.repeat(40)} 2 || rc=$?; printf "RC=%s\\n" "$rc"`,
+    { stubs: { nohup: 'exit 0', setsid: 'exit 0' } },
+  );
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(r.out, /RC=1/);
+  assert.match(r.out, /starting the detached server/);
+  assert.match(r.err, /no \/health answer reporting bbbbbbb on :1 within 2s/);
+  assert.ok(Date.now() - started < 20000);
+});
+
 test('model_lane_key maps the three lanes and refuses a fourth', () => {
   const r = runLib([
     `printf 'ANTHROPIC=[%s]\\n' "$(model_lane_key anthropic)"`,
@@ -1074,6 +1157,63 @@ test('manifest_write and manifest_read round-trip without node, and survive a re
   writeFileSync(p, JSON.stringify(parsed));    // one line: the grep reader misses, node must catch it
   const reformatted = runLib(`printf 'ENGINE=%s\\n' "$(manifest_read ${JSON.stringify(p)} engine)"`, { env: { IRISES_HOME: state } });
   assert.match(reformatted.out, /ENGINE=hermes/);
+});
+
+/** Every key engine-setup.sh writes — the same list IRISES_MANIFEST_KEYS names, in that order. */
+const MANIFEST_KEYS = [
+  'root', 'irisesHome', 'port', 'engine', 'engineEnvFile', 'engineEnvBackup', 'pluginDir',
+  'serviceKind', 'serviceUnit', 'nodeBin', 'keysAdded', 'keysPreExisting', 'keysRetargeted',
+  'bridge', 'frontPattern', 'engineEnvApplied', 'modelLane', 'engineEnvPending',
+];
+
+test('manifest_update rewrites the named fields and carries every other field forward', () => {
+  const state = mkdtempSync(join(tmpdir(), 'irises-manu-'));
+  const p = join(state, 'install-manifest.json');
+  const r = runLib([
+    `manifest_write ${JSON.stringify(p)} ${MANIFEST_KEYS.map(k => `${k}=v-${k}`).join(' ')}`,
+    `manifest_update ${JSON.stringify(p)} port=4001 frontPattern=telegram:1`,
+    ...MANIFEST_KEYS.map(k => `printf '%s=[%s]\\n' ${k} "$(manifest_read ${JSON.stringify(p)} ${k})"`),
+  ].join('\n'), { env: { IRISES_HOME: state } });
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(r.out, /^port=\[4001\]$/m);
+  assert.match(r.out, /^frontPattern=\[telegram:1\]$/m);
+  for (const k of MANIFEST_KEYS) {
+    if (k === 'port' || k === 'frontPattern') continue;
+    assert.match(r.out, new RegExp(`^${k}=\\[v-${k}\\]$`, 'm'),
+      `${k} was dropped by the rewrite — --uninstall reads it:\n${r.out}`);
+  }
+  const raw = readFileSync(p, 'utf8');
+  assert.match(raw, /"schema": "1"/);
+  assert.match(raw, /"writtenAt": "/, 'manifest_write refreshes it — the update must go through it');
+});
+
+test('manifest_update refuses an unknown key and a missing manifest without writing', () => {
+  const state = mkdtempSync(join(tmpdir(), 'irises-manu-'));
+  const p = join(state, 'install-manifest.json');
+  const seed = runLib(
+    `manifest_write ${JSON.stringify(p)} ${MANIFEST_KEYS.map(k => `${k}=v-${k}`).join(' ')}`,
+    { env: { IRISES_HOME: state } },
+  );
+  assert.equal(seed.code, 0, seed.err);
+  const before = readFileSync(p, 'utf8');
+  const unknown = runLib(
+    `rc=0; manifest_update ${JSON.stringify(p)} port=4001 prot=4002 || rc=$?; printf "RC=%s\\n" "$rc"`,
+    { env: { IRISES_HOME: state } },
+  );
+  assert.equal(unknown.code, 0, unknown.err);
+  assert.match(unknown.out, /RC=1/);
+  assert.match(unknown.err, /manifest_update: unknown key prot/);
+  assert.equal(readFileSync(p, 'utf8'), before,
+    'a typo in one key must not half-apply the others');
+
+  const gone = join(state, 'no-such-manifest.json');
+  const missing = runLib(
+    `rc=0; manifest_update ${JSON.stringify(gone)} port=4001 || rc=$?; printf "RC=%s\\n" "$rc"`,
+    { env: { IRISES_HOME: state } },
+  );
+  assert.equal(missing.code, 0, missing.err);
+  assert.match(missing.out, /RC=1/);
+  assert.ok(!existsSync(gone), 'a manifest that was never written must not be invented here');
 });
 
 test('lock_acquire keeps a second run out and reclaims a lock whose holder is gone', () => {

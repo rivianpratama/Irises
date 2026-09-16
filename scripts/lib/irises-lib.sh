@@ -1599,6 +1599,61 @@ wait_health_sha() { # URL SHA SECS
   return 1
 }
 
+# Restart Irises through whatever owns it, and prove the sha we expect is what answers. Verifying
+# only that "something answers /health" is satisfied by the OLD process still holding the port —
+# which is exactly how a restart that never took could look like a success. That is why the caller
+# hands in the sha it expects rather than asking this for a yes/no.
+#
+# It is in the lib because both callers need the identical sequence: update.sh after a build, and
+# configure.sh after writing a setting the server only reads at boot. A second copy would drift, and
+# the half that drifted would be the one reporting success without verifying anything.
+irises_restart_verify() { # ROOT PORT EXPECTED_SHA SECS
+  local root="${1:-}" port="${2:-}" want="${3:-}" secs="${4:-45}" kind live pid verb=restarted
+  # service_installed(), not a look at the unit and the plist: on Windows the install is a Task
+  # Scheduler entry and there is no file to find.
+  if service_installed; then
+    kind="$(service_kind)"
+    say "restarting Irises through its $kind service"
+    if ! service_restart; then
+      err "the $kind service would not restart"
+      return 1
+    fi
+  else
+    # No pidfile'd server of ours, but the port is taken: something else is holding it — almost
+    # always `npm run dev` in another terminal. Preflight refuses that case before anything is
+    # applied, so reaching it HERE means the port was taken while this run was working; this is the
+    # safety net, kept because starting a second server on a taken port would lose the bind and then
+    # fail verification against whatever is still answering. It says what is true — someone else has
+    # the port — and never that Irises is down, because something on :$port plainly is not.
+    pid="$(server_pid)"
+    if [ -z "$pid" ] && tcp_open 127.0.0.1 "$port"; then
+      err "something took :$port during this run, and it is not a server this updater can cycle:"
+      err "  there is no live pid in $(irises_home)/irises.pid"
+      err "whatever holds it is answering there — a dev server (npm run dev), most likely."
+      err "stop it and re-run; a second server on that port could not bind at all."
+      return 1
+    fi
+    if [ -z "$pid" ]; then
+      say "no service installed and nothing running — starting the detached server"
+      verb=started
+    else
+      say "no service installed — cycling the detached server"
+    fi
+    server_stop 20
+    if ! server_start_detached "$root"; then
+      err "could not start the server detached"
+      return 1
+    fi
+  fi
+  if ! live="$(wait_health_sha "http://127.0.0.1:$port" "$want" "$secs")"; then
+    err "no /health answer reporting ${want:0:7} on :$port within ${secs}s"
+    err "read the log:  tail -n 40 $(irises_home)/logs/server.log"
+    return 1
+  fi
+  say "$verb — build ${live:0:7} is live on :$port"
+  return 0
+}
+
 # The sha dist/ was stamped from (scripts/stamp-version.js). Empty when this clone was never built.
 built_sha() { # [ROOT]
   local root="${1:-}" f
@@ -1749,6 +1804,53 @@ manifest_read() { # PATH KEY
     node -e 'try{const o=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const v=o[process.argv[2]];if(v!==undefined)process.stdout.write(String(v))}catch(e){}' "$p" "$key" 2>/dev/null || true
   fi
   return 0
+}
+
+# Every field the manifest carries — the same list, in the same order, that engine-setup.sh writes at
+# the end of an install. It is spelled out here so manifest_update can carry forward the fields it is
+# not changing WITHOUT having to parse the file's key order: the reader is line-anchored, and a key
+# that never got read is a key --uninstall cannot put back.
+IRISES_MANIFEST_KEYS="root irisesHome port engine engineEnvFile engineEnvBackup pluginDir serviceKind serviceUnit nodeBin keysAdded keysPreExisting keysRetargeted bridge frontPattern engineEnvApplied modelLane engineEnvPending"
+
+# Change some fields of an existing manifest and leave the rest exactly as they were. This is a full
+# rewrite on purpose: manifest_write is the ONE writer of this file and it writes the whole thing, so
+# editing a line in place would make a second JSON writer to keep in sync — and the two would
+# disagree the first time the format moved. configure.sh comes through here for port, frontPattern,
+# modelLane, serviceKind, serviceUnit and keysRetargeted.
+manifest_update() { # PATH KEY=VALUE…
+  local p="${1:-}" pair key known ok
+  local args
+  args=()
+  if [ -z "$p" ] || [ ! -f "$p" ]; then
+    err "no install manifest at ${p:-(no path given)} — nothing to update; re-run the installer"
+    return 1
+  fi
+  shift || true
+  # Validate EVERY key before writing anything: a typo in the second pair must not leave the first
+  # one applied and the run reporting a failure over a manifest that was already changed.
+  for pair in "$@"; do
+    key="${pair%%=*}"
+    ok=0
+    for known in $IRISES_MANIFEST_KEYS; do
+      if [ "$known" = "$key" ]; then ok=1; break; fi
+    done
+    if [ "$ok" -eq 0 ]; then
+      err "manifest_update: unknown key $key"
+      return 1
+    fi
+    args[${#args[@]}]="$pair"
+  done
+  set --
+  for known in $IRISES_MANIFEST_KEYS; do
+    pair="$known=$(manifest_read "$p" "$known")"
+    if [ "${#args[@]}" -gt 0 ]; then
+      for key in "${args[@]}"; do
+        case "$key" in "$known="*) pair="$key" ;; esac
+      done
+    fi
+    set -- "$@" "$pair"
+  done
+  manifest_write "$p" "$@"
 }
 
 # ── single-lifecycle lock ─────────────────────────────────────────────────────
