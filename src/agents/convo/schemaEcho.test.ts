@@ -129,6 +129,33 @@ test('a clean envelope leaves no receipt at all', async () => {
   assert.equal(getTraces().filter(e => e.label === 'convo:tool_call_dropped').length, 0);
 });
 
+test('a corrective re-ask that comes back a dump is guarded too', async () => {
+  // The other way a schema echo reaches dispatch: not in the model's first draft but in the
+  // REPLACEMENT a backstop asked for. The first draft here promises a look with no call and nothing
+  // running, so the honesty guard spends its one re-ask, and the retry is the live dump shape — one
+  // real `delegate_to_ops` and eleven empties. That result is adopted as the turn's own further
+  // down, so the guard has to read it there as well as at the top, or the eleven dispatch exactly as
+  // they did before the fix.
+  const a = args();
+  delete process.env.CONVO_UNKEPT_PROMISE_GUARD;
+  const out = await processConvoResult({
+    ...a,
+    res: makeResult(['hang tight, pulling the rest of that list'], []),
+    turn: turnCtx(async () => makeResult([HOLDING], [DELEGATE, ...ECHO])),
+  });
+
+  assert.equal(out.text, HOLDING, 'the retry\'s own bubble ships');
+  assert.ok(!out.text?.includes('\n---\n'), 'with no voiced outcome appended beside it');
+  assert.equal(out.delegatedTask?.request, REQUEST, 'the retry\'s one real action still happened');
+  assert.deepEqual(fallfirmTraces(), [], 'no outcome was voiced, so Fallfirm never ran');
+
+  const events = getTraces().filter(e => e.label === 'convo:tool_call_dropped');
+  assert.equal(events.length, 1, 'one receipt, for the envelope that actually carried the echo');
+  const detail = (events[0].detail ?? {}) as { dropped?: string[]; total?: number };
+  assert.deepEqual(detail.dropped, ECHO_NAMES, 'every discarded name, in the order the model wrote them');
+  assert.equal(detail.total, 12, 'measured against what the retry wrote');
+});
+
 test('a dump with no bubbles and no real call IS a silent turn: the retry ladder runs', async () => {
   // Nothing the user or the thread can see: every call is an echo, so after the guard this turn did
   // literally nothing — which is the shape the silent-turn floor exists for. Before the guard the

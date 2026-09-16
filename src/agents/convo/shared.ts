@@ -2126,36 +2126,49 @@ export async function processConvoResult(args: {
   // is what put eight phantom bubbles on the user's screen in place of the reply they were actually
   // waiting on. The incident and the two rules live in convo/toolCallGuard.ts.
   //
-  // It runs ONCE, here, ahead of everything that reads the list, and the kept list is what the whole
-  // turn then sees: the honesty guard's verdict (an echo must not pass as the work behind a promised
-  // look), the routing gate's reading of whether this turn acted at all, the dispatch loop below,
-  // and the silent-turn floor — for which a dump with no bubbles is precisely what it looks like, a
-  // turn that did nothing. The recursive re-entries (the recall second pass, the silent-turn retry)
-  // come back through this same block, and an already-clean list records nothing, so they cost a
-  // lookup and no more.
+  // It reads the first draft here, ahead of everything that reads the list, so the kept list is what
+  // the whole turn then sees: the honesty guard's verdict (an echo must not pass as the work behind a
+  // promised look), the routing gate's reading of whether this turn acted at all, the dispatch loop
+  // below, and the silent-turn floor — for which a dump with no bubbles is precisely what it looks
+  // like, a turn that did nothing. The recursive re-entries (the recall second pass, the silent-turn
+  // retry) come back through this same block, and an already-clean list records nothing, so they cost
+  // a lookup and no more.
   //
-  // What the MODEL WROTE is captured first, because that is what the turn receipt reports; the event
-  // below is the half that says which of it never ran.
-  const writtenToolCalls = args.res.toolCalls.map(c => c.name);
-  const guarded = dropSchemaEcho(args.res.toolCalls, args.turn?.tools ?? fallbackConvoTools());
-  if (guarded.dropped.length) {
+  // And it reads EVERY OTHER result this turn might adopt, which is why it is a helper rather than a
+  // straight line of code: when either backstop below spends its corrective re-ask, the reply that
+  // ships is a FRESH model envelope that never passed through here, and a weak model is at least as
+  // likely to recite the schema on the second ask as on the first. Guarding only the draft left that
+  // path dispatching an echo exactly as it did before this guard existed.
+  //
+  // IDENTITY IS PART OF THE CONTRACT: a result with nothing to drop comes back as the very same
+  // object, because `res === args.res` further down is how this function knows whether a re-ask
+  // replaced the reply, and a defensive copy here would answer "replaced" on every clean turn. A
+  // replacement WITH drops is a new object, which fails that test — correctly, since a replacement
+  // is exactly what it is. The guard is idempotent (re-reading a kept list drops nothing), so a
+  // clean first draft carried through by both backstops is never receipted twice.
+  const guardTools = args.turn?.tools ?? fallbackConvoTools();
+  const guardToolCalls = (r: LlmResult): LlmResult => {
+    const guarded = dropSchemaEcho(r.toolCalls, guardTools);
+    if (!guarded.dropped.length) return r;
     // chatId in the line, not only in the trace event: a live round attributes the turn from the
     // instance log when the trace buffer isn't reachable.
-    console.warn(`[convo] dropped ${guarded.dropped.length} of ${writtenToolCalls.length} tool call(s) as a schema echo (chat ${chatId}): ${guarded.dropped.map(d => d.name).join(', ')}`);
+    console.warn(`[convo] dropped ${guarded.dropped.length} of ${r.toolCalls.length} tool call(s) as a schema echo (chat ${chatId}): ${guarded.dropped.map(d => d.name).join(', ')}`);
     record({
       type: 'event', label: 'convo:tool_call_dropped', chatId, handle,
       detail: {
         dropped: guarded.dropped.map(d => d.name),
         reasons: guarded.dropped.map(d => `${d.name}:${d.reason}`),
-        total: writtenToolCalls.length,
+        total: r.toolCalls.length,
       },
     });
-    // Rebound on `args` rather than on a local, because two things read it: enforcePromiseKept takes
-    // `args` and reaches for `args.res` itself, and the `res === args.res` identity test further down
-    // is how this function knows whether a corrective re-ask replaced the reply. One object has to
-    // carry the guarded list for both, or those two disagree about what the turn is processing.
-    args = { ...args, res: { ...args.res, toolCalls: guarded.kept } };
-  }
+    return { ...r, toolCalls: guarded.kept };
+  };
+  // The first draft's pass is rebound on `args` rather than on a local, because two things read it:
+  // enforcePromiseKept takes `args` and reaches for `args.res` itself, and the identity test named
+  // above compares against `args.res`. One object has to carry the guarded list for both, or those
+  // two disagree about what the turn is processing.
+  const guardedFirst = guardToolCalls(args.res);
+  if (guardedFirst !== args.res) args = { ...args, res: guardedFirst };
 
   // Read ONCE for the turn: the routing gate and the delegation brief must not be able to disagree
   // because someone flipped the env between the two reads.
@@ -2263,7 +2276,11 @@ export async function processConvoResult(args: {
   // Whether this user-visible turn's ONE corrective re-ask is gone, for any pass that follows this
   // one. Both guards count: the rule is one re-ask per turn TOTAL, honesty first.
   const quietSpent = !!args.quietSpent || guard.fired || quiet.fired;
-  const res = quiet.res;
+  // The result this turn actually processes, guarded on its way in: whatever either backstop left
+  // standing is a fresh envelope when one of them fired, and it reaches dispatch from here. A draft
+  // that came through untouched is the same object it was at the top, so the identity test below
+  // still reads "nothing replaced the reply".
+  const res = guardToolCalls(quiet.res);
   // Re-parsed only when the re-ask actually replaced the reply — parseReply logs a line for a
   // non-envelope reply, and parsing the same one twice would double it.
   const reply = res === args.res ? firstReply : parseReply(res.text);
@@ -3405,10 +3422,7 @@ export async function processConvoResult(args: {
           // predicate the silent-turn tripwire above fires on, not a second copy of it. The
           // boundary re-checks it against what shipped.
           silent: producedNothingVisible,
-          // What the model WROTE, echo and all — a receipt that reported only the calls that
-          // survived the schema-echo guard would describe a turn the model never produced. What was
-          // discarded rides its own `convo:tool_call_dropped` event.
-          toolCalls: writtenToolCalls,
+          toolCalls: res.toolCalls.map(c => c.name),
           // Only when the honesty backstop actually fired — see the field's note in turnTrace.ts.
           ...(guard.fired ? { unkeptPromise: true } : {}),
           // …and only on a turn the rhythm selector ran on. Four settled facts, spread rather than
