@@ -480,8 +480,18 @@ show_report() {
     ui "  manifest:           $man  (none)"
   fi
 
+  # The source is worked out the way the port line's is, and for a sharper reason: engine_kind falls
+  # back to PROBING this box when no file says, so a line that always named OPS_BACKEND sent the
+  # operator to a key — on a clone with no .env, to a file — that never carried the answer it shows.
   engine="$(engine_kind 2>/dev/null || printf off)"
-  ui "  engine:             $engine  (.env OPS_BACKEND)"
+  if [ -n "$(env_get "$ENV_FILE" OPS_BACKEND)" ]; then
+    src=".env OPS_BACKEND"
+  elif [ -n "$(env_get "$ROOT/deploy/app.env" OPS_BACKEND)" ]; then
+    src="deploy/app.env OPS_BACKEND"
+  else
+    src="detected on this box"
+  fi
+  ui "  engine:             $engine  ($src)"
 
   # IRISES_FRONT is the ENGINE's key, so it is only readable when this install actually put it
   # there: a bridge plugin, and an engine .env we were allowed to write.

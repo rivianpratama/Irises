@@ -397,6 +397,9 @@ test('--show in a sandbox prints every setting, masks a lane key and never print
   }
   assert.ok(!r.out.includes('zzz-not-a-key'), `a secret VALUE is never printed:\n${r.out}`);
   assert.ok(!r.err.includes('zzz-not-a-key'), `not on stderr either:\n${r.err}`);
+  // This fixture's .env DOES carry OPS_BACKEND, so the line names the key it was read from.
+  const engineLine = r.out.split('\n').find((l) => l.includes('engine:')) ?? '';
+  assert.match(engineLine, /\(\.env OPS_BACKEND\)/, engineLine);
 });
 
 test('--show on a clone with no .env and no manifest still prints and exits 0', SKIP_ON_WINDOWS, () => {
@@ -407,6 +410,11 @@ test('--show on a clone with no .env and no manifest still prints and exits 0', 
   assert.match(r.out, /manifest:/);
   assert.match(r.out, /none/);
   assert.match(r.out, /RESULT: ok/);
+  // …and the engine's SOURCE is honest about where the answer came from. With no .env there is no
+  // OPS_BACKEND to have read, so naming that key would send the operator to a file that does not
+  // exist — engine_kind fell back to probing this box.
+  const engineLine = r.out.split('\n').find((l) => l.includes('engine:')) ?? '';
+  assert.match(engineLine, /detected/, `no .env, so no OPS_BACKEND to have read it from: ${engineLine}`);
 });
 
 test('--show does not head its report with the non-interactive notice', SKIP_ON_WINDOWS, () => {
