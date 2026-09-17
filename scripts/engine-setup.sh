@@ -94,6 +94,7 @@ usage: bash ./scripts/engine-setup.sh [options]          # install
   --front PATTERNS           which chats Irises fronts: comma-separated <platform>:<glob> items,
                              written to the engine's IRISES_FRONT when it carries none
                              (default *:*, every chat on every platform the engine speaks)
+                             — change it later with scripts/configure.sh --front
   --engine-env MODE          what may happen to the ENGINE's .env: apply (default, write the keys),
                              ask (show them first, write on a yes), print (never write; say what to
                              paste). print and a declined ask still install the bridge plugin
@@ -302,56 +303,7 @@ front_says_kept() { # ENGINE_ENV
   cur="$(env_get "$f" IRISES_FRONT)"
   if [ "$cur" = "$FRONT_PATTERN" ]; then return 0; fi
   say "--front asked for $FRONT_PATTERN, and the scope already in $f is what stands."
-  say "To take it over:  IRISES_FRONT=$FRONT_PATTERN  in that file, then bounce the engine's gateway"
-  return 0
-}
-
-# A model for Irises's OWN VOICE, instead of the engine's. Three keys per voice role, because
-# src/loadEnv.ts layers the engine's discovery UNDER this clone's .env — so what is written here is
-# what wins at boot, whatever the engine is running.
-#
-# ENGINE_MODEL_INHERIT=off is not optional and not cosmetic: applyModel() in
-# src/agents/ops/engineDiscovery.ts returns early when inheritance is off, and that early return is
-# also what suppresses its key and base-URL reuse. Leave inheritance on and the operator's own key
-# can end up pointed at the engine's gateway instead of the provider they chose. It is wider than
-# "pick a model" and the summary says so: engine detection and the HERMES_API_KEY / OPENCLAW_TOKEN
-# this install copies are outside applyModel and go on working, so deep work still runs on the
-# engine's model, through the engine.
-#
-# THE KEY COMES FROM THE ENVIRONMENT AND NOWHERE ELSE. Never a flag: argv is readable by every other
-# process on the box (ps, /proc) and lands in shell history. It is written to this clone's 0600 .env
-# and is never printed, logged or named with a value anywhere.
-model_override_write() {
-  local role key_name=""
-  say "voice model: $MODEL_SLUG on the $MODEL_LANE lane, for all three voice roles"
-  for role in CONVO CLASSIFY FALLFIRM; do
-    case "$MODEL_LANE" in
-      anthropic)  env_set "$ENV_FILE" "${role}_MODEL" "$MODEL_SLUG" ;;
-      openrouter) env_set "$ENV_FILE" "${role}_MODEL_OPENROUTER" "$MODEL_SLUG" ;;
-      openai)     env_set "$ENV_FILE" "${role}_MODEL_OPENAI" "$MODEL_SLUG" ;;
-    esac
-    env_set "$ENV_FILE" "${role}_PROVIDER" "$MODEL_LANE"
-  done
-  case "$MODEL_LANE" in
-    anthropic)  key_name=ANTHROPIC_API_KEY ;;
-    openrouter) key_name=OPENROUTER_API_KEY ;;
-    openai)     key_name=OPENAI_API_KEY ;;
-  esac
-  if [ -n "${IRISES_MODEL_API_KEY:-}" ]; then
-    env_set "$ENV_FILE" "$key_name" "$IRISES_MODEL_API_KEY"
-    say "$key_name was taken from IRISES_MODEL_API_KEY in the environment and written to $ENV_FILE (0600)"
-  else
-    warn "no IRISES_MODEL_API_KEY in the environment, so $key_name stays whatever $ENV_FILE had."
-    warn "Irises's own voice cannot call the $MODEL_LANE lane without one — add it and restart."
-  fi
-  if [ "$MODEL_LANE" = "openai" ]; then
-    env_set "$ENV_FILE" OPENAI_BASE_URL "$MODEL_BASE_URL"
-    say "OPENAI_BASE_URL=$MODEL_BASE_URL"
-  fi
-  env_set "$ENV_FILE" ENGINE_MODEL_INHERIT off
-  say "ENGINE_MODEL_INHERIT=off — Irises stops inheriting the engine's model, and its keys and base"
-  say "URL with it, for her own voice. Deep work still runs on the engine's model, through the engine."
-  chmod 600 "$ENV_FILE" 2>/dev/null || true
+  say "To take it over:  bash ./scripts/configure.sh --front $FRONT_PATTERN"
   return 0
 }
 
@@ -593,7 +545,7 @@ do_install() {
   # ── 4b. the voice model, when the operator picked one. AFTER the engine-key block above, because
   #      this overrides what that block adopted: env_set, not env_set_default.
   if [ -n "$MODEL_LANE" ]; then
-    model_override_write
+    model_override_write "$ENV_FILE" "$MODEL_LANE" "$MODEL_SLUG" "$MODEL_BASE_URL"
   fi
 
   if [ -z "$(env_get "$ENV_FILE" ANTHROPIC_API_KEY)" ] \

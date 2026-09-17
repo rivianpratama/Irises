@@ -1695,6 +1695,10 @@ model_lane_key() { # LANE -> ANTHROPIC_API_KEY | OPENROUTER_API_KEY | OPENAI_API
 # and is never printed, logged or named with a value anywhere.
 model_override_write() { # FILE LANE SLUG BASE_URL
   local f="${1:-}" lane="${2:-}" slug="${3:-}" base_url="${4:-}" role key_name=""
+  # The lane decides which key each of the three roles gets, so a lane nothing dispatches used to be
+  # written HALFWAY — the _PROVIDER keys and ENGINE_MODEL_INHERIT=off landed, the model keys did not,
+  # and the clone came up voiceless with nothing in the output saying why. Refused whole, up front.
+  model_lane_key "$lane" >/dev/null 2>&1 || { err "model_override_write: unknown lane '$lane' — expected anthropic, openrouter or openai"; return 1; }
   say "voice model: $slug on the $lane lane, for all three voice roles"
   for role in CONVO CLASSIFY FALLFIRM; do
     case "$lane" in

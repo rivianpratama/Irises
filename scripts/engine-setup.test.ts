@@ -8,11 +8,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const SCRIPT = join(process.cwd(), 'scripts', 'engine-setup.sh');
+const SOURCE = readFileSync(SCRIPT, 'utf8');
 
 function run(args: string[]): { out: string; err: string; code: number } {
   const r = spawnSync('/bin/bash', [SCRIPT, ...args], { encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' } });
@@ -147,4 +148,24 @@ test('--uninstall never deletes data without --purge-data, and prints the exact 
 test('--uninstall documents that the clone is never deleted', () => {
   const r = run(['--help']);
   assert.match(r.out, /clone/i);
+});
+
+test('front_says_kept points at configure.sh instead of a hand edit', () => {
+  // The line used to hand the operator a key to paste and a gateway to bounce themselves, which is
+  // two steps to get wrong. There is a verb for it now, and it does the bounce.
+  assert.match(SOURCE, /configure\.sh --front/, 'the kept-scope line names the verb that changes it');
+  assert.ok(
+    !SOURCE.includes('then bounce the engine’s gateway') && !SOURCE.includes("then bounce the engine's gateway"),
+    'the hand-edit instructions are gone: configure.sh owns the restart',
+  );
+});
+
+test('the voice-model override is the library\'s, not a second copy in this script', () => {
+  // A local definition SHADOWS the one sourced from the lib, so install and configure would write
+  // different bytes into the same .env and only one of them would be the tested one.
+  assert.ok(
+    !/^model_override_write\(\)/m.test(SOURCE),
+    'scripts/lib/irises-lib.sh owns model_override_write; this script only calls it',
+  );
+  assert.match(SOURCE, /model_override_write "\$ENV_FILE" "\$MODEL_LANE" "\$MODEL_SLUG" "\$MODEL_BASE_URL"/);
 });

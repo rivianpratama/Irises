@@ -1136,6 +1136,26 @@ test('model_override_keys lists what --model-inherit may remove and keeps the la
   assert.ok(!openai.includes('OPENAI_API_KEY'), openai.join(' '));
 });
 
+test('model_override_write refuses an unknown lane before writing anything', () => {
+  // The write is a loop of env_set calls, so a lane the case arms do not cover used to get halfway
+  // through — the three _PROVIDER keys and ENGINE_MODEL_INHERIT=off written against a lane nothing
+  // can dispatch, leaving the clone unable to speak in its own voice and no line saying why. The
+  // lane is checked once, up front, and the file is left exactly as it was found.
+  const f = join(mkdtempSync(join(tmpdir(), 'irises-model-')), '.env');
+  writeFileSync(f, 'PORT=3000\n');
+  const before = readFileSync(f, 'utf8');
+  const r = runLib([
+    'rc=0',
+    `model_override_write ${JSON.stringify(f)} azure m '' || rc=$?`,
+    `printf 'RC=%s\\n' "$rc"`,
+  ].join('\n'));
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /RC=1/, 'an unknown lane is a refusal, not a partial write');
+  assert.match(r.err, /unknown lane 'azure'/, 'and it names the lane it was handed');
+  assert.match(r.err, /anthropic, openrouter or openai/, 'plus the three it does know');
+  assert.equal(readFileSync(f, 'utf8'), before, 'not one byte of the .env moved');
+});
+
 test('manifest_write and manifest_read round-trip without node, and survive a reformat', () => {
   const state = mkdtempSync(join(tmpdir(), 'irises-man-'));
   const p = join(state, 'install-manifest.json');
