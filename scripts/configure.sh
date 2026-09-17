@@ -371,8 +371,8 @@ refuse_lane_key() { # KEY
   local key="${1:-}" k
   for k in $(model_override_keys "$MODEL_LANE"); do
     if [ "$k" = "$key" ]; then
-      err "$key is written by --model-lane $MODEL_LANE — set the lane's model with the model flags,"
-      err "or drop --model-lane and set the key alone"
+      # One line, not two: a refusal an operator greps for has to be findable as the sentence it is.
+      err "$key is written by --model-lane $MODEL_LANE — set the lane's model with the model flags, or drop --model-lane and set the key alone"
       exit 2
     fi
   done
@@ -1031,7 +1031,9 @@ if [ "$#" -gt 0 ]; then manifest_record "$@"; fi
 if [ "$PLAN_HAS_CLONE" = "1" ]; then
   BACKUP_SHOWN="${BACKUP:-none (new file)}"
 else
-  BACKUP_SHOWN="none — this run did not touch $ENV_FILE"
+  # Named by what happened, not by the path: an engine-only run must not print this clone's .env
+  # anywhere, or the operator goes and reads a file that has nothing of this run in it.
+  BACKUP_SHOWN="none — this run changed nothing of this clone's own"
 fi
 if [ -n "$ENGINE_BACKUP" ]; then BACKUP_SHOWN="$BACKUP_SHOWN · engine: $ENGINE_BACKUP"; fi
 
@@ -1086,14 +1088,18 @@ if [ -n "$SERVICE_PLAN" ]; then
     exit 4
   fi
   RESTART_STATE="$RESTART_STATE — build $(printf '%.7s' "${SHA:-unknown}") verified live on :$PORT_NOW"
+elif [ "$CLONE_CHANGED" = "0" ]; then
+  # BEFORE the --no-restart arm, because there is nothing here for --no-restart to be skipping: an
+  # engine-only run changed the ENGINE's file and nothing of hers. Tested the other way round, the
+  # run announced a new value in a .env it never opened, and told the operator to go restart Irises
+  # for a change she does not read.
+  # It does not name this clone's .env either: that file was never opened, and a path in this
+  # sentence is a path the operator goes and looks at for a change that is not in it.
+  RESTART_STATE="not restarted — only the engine's side changed"
+  say "not restarting: only the engine's side changed, and Irises reads none of it at boot"
 elif [ "$DO_RESTART" = "0" ]; then
   RESTART_STATE="skipped (--no-restart) — the change is on disk; restart Irises yourself"
   say "not restarting: --no-restart. The new value is in $ENV_FILE and takes at her next start"
-elif [ "$CLONE_CHANGED" = "0" ]; then
-  # A front-only run changed the ENGINE's file and nothing of hers. Bouncing her for it would be a
-  # restart nobody asked for, and the gateway step below is the one that makes the change live.
-  RESTART_STATE="not restarted — nothing in $ENV_FILE moved"
-  say "$RESTART_STATE; only the engine's side changed"
 elif ! service_installed && [ -z "$(server_pid)" ]; then
   # Not a failure, and it must not read like one: there is nothing to restart, and the value will
   # be read the first time she does start.

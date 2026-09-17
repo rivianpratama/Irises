@@ -110,7 +110,7 @@ const SCRATCH_TOOLS = [
   'awk', 'sort', 'stat', 'env', 'sh', 'pgrep', 'mktemp', 'kill', 'touch', 'ln', 'bash',
 ];
 
-function scratchPath(stubs: Record<string, string> = {}): { bin: string; log: string } {
+function scratchPath(stubs: Record<string, string> = {}): { dir: string; bin: string; log: string } {
   const dir = mkdtempSync(join(tmpdir(), 'irises-configure-bin-'));
   const bin = join(dir, 'bin');
   mkdirSync(bin, { recursive: true });
@@ -125,7 +125,7 @@ function scratchPath(stubs: Record<string, string> = {}): { bin: string; log: st
     rmSync(join(bin, name), { force: true });
     writeFileSync(join(bin, name), `#!/usr/bin/env bash\n${body}\n`, { mode: 0o755 });
   }
-  return { bin, log: join(dir, 'stub.log') };
+  return { dir, bin, log: join(dir, 'stub.log') };
 }
 
 /** A stub that appends `<name> argv:<args>` to $STUB_LOG and succeeds. */
@@ -568,7 +568,7 @@ test('a model-lane run still reaches the restart decision, though the walk wrote
   const r = run(['--model-lane', 'anthropic', '--model-slug', 'm', '--yes'], box.env);
   assert.equal(r.code, 0, `${r.out}\n${r.err}`);
   assert.ok(r.out.includes('not running'), `the restart decision was taken, not skipped:\n${r.out}`);
-  assert.ok(!r.out.includes('nothing in'), `and not skipped as an engine-only run:\n${r.out}`);
+  assert.ok(!r.out.includes("only the engine's side changed"), `and not skipped as an engine-only run:\n${r.out}`);
 });
 
 test('--model-lane with a --set of a key that lane writes exits 2', SKIP_ON_WINDOWS, () => {
@@ -580,8 +580,11 @@ test('--model-lane with a --set of a key that lane writes exits 2', SKIP_ON_WIND
     box.env,
   );
   assert.equal(r.code, 2, `${r.out}\n${r.err}`);
-  assert.match(r.err, /CONVO_PROVIDER/);
-  assert.match(r.err, /--model-lane openrouter/);
+  // One line, whole: a refusal split over two of them is a sentence nobody can grep for.
+  assert.match(
+    r.err,
+    /CONVO_PROVIDER is written by --model-lane openrouter — set the lane's model with the model flags, or drop --model-lane and set the key alone/,
+  );
   assert.ok(!r.out.includes('RESULT:'), `a usage error changed nothing and reports nothing:\n${r.out}`);
   const unset = run(['--model-lane', 'openrouter', '--model-slug', 'm', '--unset', 'ENGINE_MODEL_INHERIT', '--yes'], box.env);
   assert.equal(unset.code, 2, `${unset.out}\n${unset.err}`);
@@ -750,6 +753,10 @@ test('--port moves IRISES_URL when the manifest says the engine .env is ours', S
   assert.match(man, /"keysRetargeted": "IRISES_URL"/);
   assert.ok(r.out.includes('skipped (--no-gateway-restart)'), `the summary says the engine has not read it yet:\n${r.out}`);
   assert.ok(r.out.includes(`changes to ${box.engineEnv}`), `the engine's file announces itself:\n${r.out}`);
+  // An engine key in `changed:` is prefixed — IRISES_URL alone says nothing about which file moved.
+  const changed = r.out.split('\n').find((l) => l.includes('changed:')) ?? '';
+  assert.match(changed, /\bPORT\b/, changed);
+  assert.match(changed, /engine:IRISES_URL/, changed);
 });
 
 test('--service on where no service manager exists exits 1', SKIP_ON_WINDOWS, () => {
@@ -757,15 +764,19 @@ test('--service on where no service manager exists exits 1', SKIP_ON_WINDOWS, ()
   // the fresh-SSH box, where Irises can only ever run detached.
   const box = sandbox();
   const bin = scratchPath({ uname: 'echo Linux' });
-  const r = run(['--service', 'on', '--yes'], {
-    ...box.env,
-    PATH: bin.bin,
-    XDG_RUNTIME_DIR: bin.bin,
-    DBUS_SESSION_BUS_ADDRESS: '',
-  });
-  assert.equal(r.code, 1, `${r.out}\n${r.err}`);
-  assert.match(r.err, /no user service manager/);
-  assert.equal(backups(box.root).length, 0, 'it refused before the first write');
+  try {
+    const r = run(['--service', 'on', '--yes'], {
+      ...box.env,
+      PATH: bin.bin,
+      XDG_RUNTIME_DIR: bin.bin,
+      DBUS_SESSION_BUS_ADDRESS: '',
+    });
+    assert.equal(r.code, 1, `${r.out}\n${r.err}`);
+    assert.match(r.err, /no user service manager/);
+    assert.equal(backups(box.root).length, 0, 'it refused before the first write');
+  } finally {
+    rmSync(bin.dir, { recursive: true, force: true });
+  }
 });
 
 test('--service off with none installed is a noop', SKIP_ON_WINDOWS, () => {
@@ -776,10 +787,11 @@ test('--service off with none installed is a noop', SKIP_ON_WINDOWS, () => {
 });
 
 test('--service on installs through the manager and records it', SKIP_ON_WINDOWS, () => {
-  // The transition IS the restart, and this proves its ORDER: unit written, daemon reloaded, service
-  // started — and only then the verification, which in a sandbox where nothing really listens is
-  // expected to fail. `curl` refuses and `sleep` returns at once, so the 60s budget costs no time.
-  const box = sandbox();
+  // The transition IS the restart, and this proves its ORDER: unit written, daemon reloaded, and
+  // only THEN started — a start before the reload starts whatever the manager still has cached.
+  // The verification, in a sandbox where nothing really listens, is expected to fail; `curl`
+  // refuses and `sleep` returns at once, so the 60s budget costs no wall time.
+  const box = hermesBox('IRISES_URL=http://127.0.0.1:3999\n', { serviceKind: 'none' });
   mkdirSync(join(box.root, 'dist'), { recursive: true });
   writeFileSync(join(box.root, 'dist', 'index.js'), '// not a real server\n');
   const bin = scratchPath({
@@ -789,21 +801,32 @@ test('--service on installs through the manager and records it', SKIP_ON_WINDOWS
     curl: 'exit 1',
     sleep: 'exit 0',
   });
-  const r = run(['--service', 'on', '--yes'], {
-    ...box.env,
-    PATH: bin.bin,
-    STUB_LOG: bin.log,
-    XDG_RUNTIME_DIR: bin.bin,
-    DBUS_SESSION_BUS_ADDRESS: 'unix:path=/dev/null',
-  });
-  assert.equal(r.code, 4, `${r.out}\n${r.err}`);
-  assert.equal(resultLine(r.out), 'RESULT: health-failed', r.out);
-  const unit = join(box.env.HOME, '.config', 'systemd', 'user', 'irises.service');
-  assert.ok(existsSync(unit), `the unit must be written under the sandbox HOME: ${unit}`);
-  const log = stubLog(bin.log);
-  assert.ok(log.some((l) => l === 'systemctl argv:--user daemon-reload'), log.join('\n'));
-  assert.ok(log.some((l) => l === 'systemctl argv:--user restart irises'), log.join('\n'));
-  assert.ok(r.out.includes('~ service: detached → systemd'), `the transition is previewed:\n${r.out}`);
+  try {
+    const r = run(['--service', 'on', '--yes'], {
+      ...box.env,
+      PATH: bin.bin,
+      STUB_LOG: bin.log,
+      XDG_RUNTIME_DIR: bin.bin,
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/dev/null',
+    });
+    assert.equal(r.code, 4, `${r.out}\n${r.err}`);
+    assert.equal(resultLine(r.out), 'RESULT: health-failed', r.out);
+    const unit = join(box.env.HOME, '.config', 'systemd', 'user', 'irises.service');
+    assert.ok(existsSync(unit), `the unit must be written under the sandbox HOME: ${unit}`);
+    const log = stubLog(bin.log);
+    const reload = log.indexOf('systemctl argv:--user daemon-reload');
+    const start = log.indexOf('systemctl argv:--user restart irises');
+    assert.notEqual(reload, -1, log.join('\n'));
+    assert.notEqual(start, -1, log.join('\n'));
+    assert.ok(reload < start, `the daemon is reloaded BEFORE the service is started:\n${log.join('\n')}`);
+    // …and the manifest learns what it will have to take out again: --uninstall reads these two.
+    const man = readFileSync(box.manifestPath, 'utf8');
+    assert.match(man, /"serviceKind": "systemd"/);
+    assert.match(man, new RegExp(`"serviceUnit": "${unit}"`));
+    assert.ok(r.out.includes('~ service: detached → systemd'), `the transition is previewed:\n${r.out}`);
+  } finally {
+    rmSync(bin.dir, { recursive: true, force: true });
+  }
 });
 
 test('--front with no engine exits 1', SKIP_ON_WINDOWS, () => {
@@ -840,8 +863,24 @@ test('--front rewrites IRISES_FRONT in the engine .env, records it, and skips th
   assert.equal(envText(box.root), before, "a front is the ENGINE's key — this clone's .env never moves");
   assert.equal(backups(box.root).length, 0, 'and a file that did not move is not backed up');
   assert.ok(r.out.includes('~ IRISES_FRONT=telegram:1     (was *:*)'), `${r.out}`);
-  assert.ok(r.out.includes('skipped (--no-gateway-restart)'), `${r.out}`);
+  const gateway = r.out.split('\n').find((l) => l.includes('gateway:')) ?? '';
+  assert.match(gateway, /skipped \(--no-gateway-restart\)/, `the summary says the engine has not read it yet: ${gateway}`);
   assert.equal(resultLine(r.out), 'RESULT: ok', r.out);
+});
+
+test('a front-only run never names this clone\'s .env, --no-restart or not', SKIP_ON_WINDOWS, () => {
+  // --no-restart has nothing to skip on a run that changed nothing of hers, and said otherwise the
+  // run announces a new value in a file it never opened and asks for a restart that reads none.
+  const box = hermesBox('IRISES_URL=http://127.0.0.1:3999\nIRISES_FRONT=*:*\n');
+  for (const args of [
+    ['--front', 'telegram:2', '--no-gateway-restart', '--yes'],
+    ['--front', 'telegram:3', '--no-restart', '--no-gateway-restart', '--yes'],
+  ]) {
+    const r = run(args, box.env);
+    assert.equal(r.code, 0, `${args.join(' ')}\n${r.out}\n${r.err}`);
+    assert.ok(r.out.includes("only the engine's side changed"), `${args.join(' ')}:\n${r.out}`);
+    assert.ok(!r.out.includes(join(box.root, '.env')), `the clone .env is never named:\n${r.out}`);
+  }
 });
 
 test('--front none blanks IRISES_FRONT', SKIP_ON_WINDOWS, () => {
