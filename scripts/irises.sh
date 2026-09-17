@@ -218,7 +218,10 @@ show_report() {
   out="$(bash "$CONFIGURE_SH" --show 2>&1)"
   rc=$?
   set -e
-  printf '%s\n' "$out" | sed 's/^/  /'
+  # Verbatim, exactly as menu_update prints `update.sh --check`: --show already indents its own
+  # report lines, and a second indent here would push them off a narrow terminal. The blank line is
+  # what keeps the report's `RESULT: ok` tail from reading as the first entry of the list below it.
+  printf '%s\n\n' "$out"
   return "$rc"
 }
 
@@ -582,8 +585,13 @@ cfg_model() {
 }
 
 cfg_web() {
+  local web_def
   say "the browser chat UI this clone serves (WEB_ENABLED)"
-  if ask_yn "Enable the browser chat UI (and npm run chat)?" y; then
+  # The default offered is the state the box is IN, on the same rule cfg_port_service states: an
+  # Enter through this question has to leave the setting exactly as it was. Anything but an explicit
+  # `false` is on — that is how src/ reads the key, and an unset .env is a clone that serves the UI.
+  if [ "$(env_get "$ROOT/.env" WEB_ENABLED)" = "false" ]; then web_def="n"; else web_def="y"; fi
+  if ask_yn "Enable the browser chat UI (and npm run chat)?" "$web_def"; then
     set -- --web on
   else
     set -- --web off
@@ -643,6 +651,13 @@ cfg_any_key() {
     # A key whose NAME says it holds a secret may not carry its value on argv — configure.sh refuses
     # that shape outright, and reads the value out of IRISES_SET_VALUE instead.
     v="$(ask_secret "value (not shown):")" || v=""
+    # Blank is nothing changed, never an empty write: `--set KEY` with an empty IRISES_SET_VALUE
+    # would blank a credential the operator only meant to look at. cfg_dashboard answers the same
+    # way for the same reason — a secret prompt someone backs out of must cost them nothing.
+    if [ -z "$v" ]; then
+      say "nothing changed"
+      return 0
+    fi
     export IRISES_SET_VALUE="$v"
     set -- --set "$key"
   else
@@ -654,7 +669,12 @@ cfg_any_key() {
   # question is asked AFTER the run rather than guessed before it: the child streams to this same
   # terminal, so its reason is on screen above the question, and some real keys are only described
   # in prose in those files — which is what --allow-unknown exists for.
-  if [ "$LAST_RC" = "2" ] && ask_yn "The key is not one the docs know. Re-run with --allow-unknown?" n; then
+  #
+  # Only on the SET branch: an --unset never reaches the documented-key check, so a 2 there is some
+  # other usage error and offering --allow-unknown would send the operator to re-run a shape that
+  # fails identically.
+  if [ "$pick" = "1" ] && [ "$LAST_RC" = "2" ] &&
+     ask_yn "The key is not one the docs know. Re-run with --allow-unknown?" n; then
     run_child "$CONFIGURE_SH" "$CONFIGURE_NAME" "$@" --allow-unknown
   fi
   unset IRISES_SET_VALUE || true
