@@ -64,6 +64,14 @@
 #                    cmp-equal, plugin gone, Irises still serving) and finally uninstalls with an
 #                    archive and a purge, the "type the word delete" gate answered at the menu
 #                    rather than by a flag
+#   8a  configure    the same menu changing what 8 chose, one setting at a time and without an
+#                    `npm ci` anywhere: a timezone, the browser chat, the front scope, the model
+#                    handed back to the engine, one generic key, and last a PORT MOVE. Each answer
+#                    has to come out as the right flag, land in the right file (this clone's .env,
+#                    the engine's, the manifest) and cost exactly the restart it is worth — Irises
+#                    is cycled and re-verified on the same build for a change she reads at boot,
+#                    left alone for one only the engine reads, and the gateway is bounced for the
+#                    engine's two. The key from stage 8 never reaches the screen again
 #
 # NOTHING OF YOURS IS TOUCHED. Every stage runs under a throwaway HOME, IRISES_HOME and HERMES_HOME,
 # on two ephemeral ports, against a bare origin made from this clone's own objects. The scratch PATH
@@ -135,18 +143,23 @@ STUB_LOG="$SANDBOX/stub.log"
 mkdir -p "$HOME_DIR" "$BIN" "$STATE" "$HERMES/plugins"
 : > "$STUB_LOG"
 
-# Two free high ports, taken in ONE process so they cannot come back equal: a developer's own Irises
-# on :3000 and their own engine on :8642 are never disturbed.
+# Three free high ports, taken in ONE process so they cannot come back equal: a developer's own
+# Irises on :3000 and their own engine on :8642 are never disturbed. The third is where stage 8a
+# MOVES Irises to, and it has to be free for the same reason the first two do — configure.sh
+# refuses a port something already listens on, in preflight, before it writes a byte.
+# "Free, not reserved": the kernel handed these out and they were closed again, so a stranger could
+# in principle take one between here and the bind. Nothing in this sandbox binds them but us.
 PORTS="$(node -e '
 const net = require("net");
-const a = net.createServer(), b = net.createServer();
-a.listen(0, "127.0.0.1", () => b.listen(0, "127.0.0.1", () => {
-  process.stdout.write(a.address().port + " " + b.address().port);
-  a.close(); b.close();
-}));
+const a = net.createServer(), b = net.createServer(), c = net.createServer();
+a.listen(0, "127.0.0.1", () => b.listen(0, "127.0.0.1", () => c.listen(0, "127.0.0.1", () => {
+  process.stdout.write(a.address().port + " " + b.address().port + " " + c.address().port);
+  a.close(); b.close(); c.close();
+})));
 ')"
-SRV_PORT="${PORTS%% *}"
-ENGINE_PORT="${PORTS##* }"
+SRV_PORT="$(printf '%s' "$PORTS" | cut -d' ' -f1)"
+ENGINE_PORT="$(printf '%s' "$PORTS" | cut -d' ' -f2)"
+SRV_PORT2="$(printf '%s' "$PORTS" | cut -d' ' -f3)"
 
 # The stub engine's health surface, so the library's gateway probe has something real to verify a
 # bounce against. Started and stopped by name, because stage 3c takes it away on purpose.
@@ -192,7 +205,7 @@ foreign_listener_stop() {
 }
 trap cleanup EXIT
 
-step "sandbox at $SANDBOX (Irises :$SRV_PORT, stub engine :$ENGINE_PORT)"
+step "sandbox at $SANDBOX (Irises :$SRV_PORT, stub engine :$ENGINE_PORT, 8a moves her to :$SRV_PORT2)"
 
 # ── the scratch PATH ──────────────────────────────────────────────────────────
 # nohup and setsid are what server_start_detached needs (setsid is absent on macOS and skipped by
@@ -922,13 +935,170 @@ check "the manifest records the scope" present "$STATE/install-manifest.json" '"
 check "and the lane Irises's own voice now runs on" present "$STATE/install-manifest.json" '"modelLane": "openrouter"'
 check "the plugin went in" test -f "$HERMES/plugins/irises-bridge/plugin.yaml"
 
+# ── 8a. configure, from the menu ──────────────────────────────────────────────
+# The verb that did not exist before this branch: changing what stage 8 chose, on the box stage 8
+# left running, without an `npm ci`, a rebuild or a plugin copy. It sits here because it needs
+# exactly what stage 8 produced — a live server, a manifest, an engine .env carrying our keys — and
+# because 8b/8c then have to survive everything it moved.
+#
+# WHAT THIS STAGE IS FOR, beyond the translation stage 8 pins: the SIDE EFFECTS. A setting is not
+# configured when its line is in a file. .env is parsed once at boot, so a change Irises reads costs
+# a restart and a re-verified /health; the engine reads IRISES_FRONT and IRISES_URL only when its
+# gateway starts, so those cost a bounce — and cost Irises NOTHING, which is the half that is easy
+# to get wrong in the direction nobody notices. Each action below therefore checks three things:
+# the flag the answer composed, the value where it actually lives, and who was made to restart.
+#
+# The port move is LAST and it is load-bearing for the rest of the file: it reassigns $SRV_PORT, so
+# every later reader (expect_sha, 8c's "nothing answers") follows Irises to where she now is.
+step "8a/12  configure from the menu — six settings, each landing where it lives"
+
+CFG_OUT=""
+CFG_RC=0
+# One shape for every configure action, because they are the same walk: clear the stub log, answer
+# the menu, quit, show what the operator would have seen. The three assertions each one owes are
+# here; what makes an action itself is asserted at the call site.
+cfg_menu() { # ANSWER…
+  : > "$STUB_LOG"
+  set +e
+  CFG_OUT="$(cd "$CLONE" && printf '%s\n' "$@" q | bash scripts/irises.sh 2>&1)"
+  CFG_RC=$?
+  set -e
+  printf '%s\n' "$CFG_OUT" | sed 's/^/    | /'
+  check_rc "the menu ran to its own quit" 0 "$CFG_RC"
+  check_out "the child reported its result token" "RESULT: ok" "$CFG_OUT"
+  # And the line above cannot be the whole story: the Configure menu prints `configure.sh --show`
+  # over its own entries, and that report ends `RESULT: ok` too. So the tokens a run FAILS with are
+  # named here, where nothing else can supply them.
+  check "and nothing in it ended on a failure token" no_bad_result "$CFG_OUT"
+  # Stage 8 typed this key once, into a prompt that does not echo. Every screen after it — the
+  # report the Configure menu prints above its own entries included — has to stay clean of it.
+  check_no_out "and the key never reached the screen" "$WIZ_KEY" "$CFG_OUT"
+  return 0
+}
+no_bad_result() { # OUTPUT — configure.sh's own tokens for a run that did not get all the way
+  case "${1:-}" in
+    *"RESULT: health-failed"*|*"RESULT: gateway-failed"*|*"RESULT: partial"*) return 1 ;;
+  esac
+  return 0
+}
+pid_changed() { [ -n "${2:-}" ] && [ "${1:-}" != "${2:-}" ]; }   # BEFORE AFTER
+pid_same()    { [ -n "${2:-}" ] && [ "${1:-}" = "${2:-}" ]; }    # BEFORE AFTER
+grew()        { [ "${2:-0}" -gt "${1:-0}" ]; }                   # BEFORE AFTER
+
+# 1. the timezone — a value only Irises reads, so she is the only thing that has to be restarted.
+CFG_PID="$(srv_pid)"
+cfg_menu 2 5 Europe/Paris
+check_out "the zone typed became --tz" "bash scripts/configure.sh --tz Europe/Paris" "$CFG_OUT"
+check_out "the preview showed the change and what it replaced" "~ IRISES_TZ=Europe/Paris" "$CFG_OUT"
+check "the clone .env carries the new zone" present "$CLONE/.env" '^IRISES_TZ=Europe/Paris$'
+check "and not the one the wizard installed" absent "$CLONE/.env" '^IRISES_TZ=UTC$'
+expect_sha "Irises was restarted and still serves the build she was on" "$WIZ_HEAD"
+# The proof that the restart was real and not a health check against the process that never died:
+# .env is read at boot, so a server with the old pid is a server on the old timezone.
+check "the restart cycled the detached server — a new pid" pid_changed "$CFG_PID" "$(srv_pid)"
+
+# 2. the browser chat — the same rung, answered `n` where the prompt defaults to yes.
+cfg_menu 2 4 n
+check_out "the answer became --web off" "bash scripts/configure.sh --web off" "$CFG_OUT"
+check "the clone .env turns the browser chat off" present "$CLONE/.env" '^WEB_ENABLED=false$'
+expect_sha "Irises came back on the same build" "$WIZ_HEAD"
+
+# 3. the front scope — the ENGINE's key. Nothing of this clone's moves, so Irises must NOT be
+# restarted, and the gateway must be, or the engine goes on fronting what it was told last boot.
+CFG_PID="$(srv_pid)"
+CFG_BAKS="$(backups | wc -l | tr -d ' ')"
+cfg_menu 2 2 2 telegram:1
+check_out "the scope became --front, bare because it carries no glob to quote" \
+  "bash scripts/configure.sh --front telegram:1" "$CFG_OUT"
+check_out "the preview named the engine's file, not this clone's" "changes to $HERMES/.env" "$CFG_OUT"
+check "the engine fronts only the chat that was named" present "$HERMES/.env" '^IRISES_FRONT=telegram:1$'
+# Anchored on the ASSIGNMENT: the installer's own section header in this file offers `telegram:*` as
+# an example of narrowing, so a bare search for the glob matches a comment and proves nothing.
+check "and no longer every chat on the platform" absent "$HERMES/.env" '^IRISES_FRONT=telegram:\*$'
+check "the manifest followed the scope" present "$STATE/install-manifest.json" '"frontPattern": "telegram:1"'
+# --uninstall restores retargeted keys FROM a backup, so a write to the engine's file with none
+# behind it is a change nothing can undo. There is one from the install already: this one is NEW.
+check "the engine .env was backed up again before it was written" grew "$CFG_BAKS" "$(backups | wc -l | tr -d ' ')"
+check "the gateway was bounced — it reads IRISES_FRONT only when it starts" \
+  grep -qE "hermes gateway re?start" "$STUB_LOG"
+check "and Irises was not restarted for a file she never reads" pid_same "$CFG_PID" "$(srv_pid)"
+
+# 4. the model, handed back to the engine. The override goes out key by key; the KEY the operator
+# paid for stays, because undoing our choice of model must not cost them a credential.
+cfg_menu 2 3 1
+check_out "the answer became --model-inherit" "bash scripts/configure.sh --model-inherit" "$CFG_OUT"
+check_out "and it said out loud that the lane key stays" "keeping OPENROUTER_API_KEY" "$CFG_OUT"
+check "the Convo override is gone" absent "$CLONE/.env" '^CONVO_MODEL_OPENROUTER='
+check "and the Classify override" absent "$CLONE/.env" '^CLASSIFY_MODEL_OPENROUTER='
+check "and the Fallfirm override" absent "$CLONE/.env" '^FALLFIRM_MODEL_OPENROUTER='
+check "and the lane that carried them" absent "$CLONE/.env" '^CONVO_PROVIDER='
+check "and the inheritance switch is not pinned off any more" absent "$CLONE/.env" '^ENGINE_MODEL_INHERIT='
+check "while the key the operator pays for is still in the file" \
+  present "$CLONE/.env" "^OPENROUTER_API_KEY=$WIZ_KEY\$"
+# Nothing is asserted about the manifest's modelLane on purpose: configure.sh records `port` and
+# `frontPattern` and nothing else, so it still names the lane the INSTALL chose. Asserting either
+# value here would pin a behaviour nobody has decided on yet.
+expect_sha "Irises was restarted onto the inherited model" "$WIZ_HEAD"
+
+# 5. the generic editor — any documented key, with the value on the line because this one is not a
+# secret by name (the ones that are travel in IRISES_SET_VALUE and print as <set>).
+cfg_menu 2 7 1 CONVO_EFFORT low
+check_out "the key and value became one --set argument" \
+  "bash scripts/configure.sh --set CONVO_EFFORT=low" "$CFG_OUT"
+check "the key landed in this clone's .env" present "$CLONE/.env" '^CONVO_EFFORT=low$'
+
+# 6. LAST: the port. It moves in three places at once — this clone's PORT, the IRISES_URL the engine
+# calls back on, and the manifest --uninstall reads — and the whole rest of this file now has to
+# follow her there.
+CFG_PID="$(srv_pid)"
+cfg_menu 2 1 "$SRV_PORT2" n
+check_out "the port and the service answer became one line" \
+  "bash scripts/configure.sh --port $SRV_PORT2 --service off" "$CFG_OUT"
+check_out "the preview moved the engine's callback URL with it" \
+  "~ IRISES_URL=http://127.0.0.1:$SRV_PORT2" "$CFG_OUT"
+# From here $SRV_PORT is where Irises actually is: health_sha, expect_sha and 8c's "nothing answers"
+# all read it at call time, so this one line is what keeps the rest of the battery pointed at her.
+OLD_PORT="$SRV_PORT"
+SRV_PORT="$SRV_PORT2"
+expect_sha "Irises answers on the new port, on the same build" "$WIZ_HEAD"
+check "the restart cycled her onto it" pid_changed "$CFG_PID" "$(srv_pid)"
+check "and nothing is left listening on the old one" \
+  sh -c "! curl -fsS -m 3 http://127.0.0.1:$OLD_PORT/health >/dev/null 2>&1"
+check "the engine calls her back on the new port" \
+  present "$HERMES/.env" "^IRISES_URL=http://127.0.0.1:$SRV_PORT2\$"
+check "the manifest records the move, so --uninstall stops the right server" \
+  present "$STATE/install-manifest.json" "\"port\": \"$SRV_PORT2\""
+check "the gateway was bounced — IRISES_URL is read only at its start" \
+  grep -qE "hermes gateway re?start" "$STUB_LOG"
+
+# 7. the report, read back off the box rather than out of this harness's own variables: six answers
+# ago this was a UTC install on :$OLD_PORT fronting every telegram chat on a model of its own.
+set +e
+SHOW_OUT="$(cd "$CLONE" && bash scripts/configure.sh --show 2>&1)"
+set -e
+check_out "--show names the lane key as set" "OPENROUTER_API_KEY <set>" "$SHOW_OUT"
+check_no_out "and never its value" "$WIZ_KEY" "$SHOW_OUT"
+check_out "--show reports the new port" "$SRV_PORT2" "$SHOW_OUT"
+check_out "--show reports the timezone" "Europe/Paris" "$SHOW_OUT"
+check_out "--show reports the narrowed front" "telegram:1" "$SHOW_OUT"
+# And the menu's own Status is that same report — one place to be right about a live box.
+set +e
+STAT_OUT="$(cd "$CLONE" && printf '%s\n' 5 q | bash scripts/irises.sh 2>&1)"
+set -e
+check_out "the menu's Status prints the report too" "timezone" "$STAT_OUT"
+check_no_out "without leaking the key into it" "$WIZ_KEY" "$STAT_OUT"
+
 # ── 8b. detach, from the menu ─────────────────────────────────────────────────
 # The de-escalation rung: the engine is given back, and Irises keeps running. --yes IS passed here
 # (the menu asked the question once already), so the child asks nothing.
+#
+# The first answer is `4`, not `3`: Configure took entry 2 on the top menu and pushed Update,
+# Uninstall, Status and Advanced down one each. A menu key is a fact about the screen, so this
+# number and the one in 8c are the two places this file has to be told when that screen changes.
 step "8b/12  detach from the menu — the engine is given back, Irises keeps serving"
 : > "$STUB_LOG"
 set +e
-DET_OUT="$(cd "$CLONE" && printf '%s\n' 3 2 y q | bash scripts/irises.sh 2>&1)"
+DET_OUT="$(cd "$CLONE" && printf '%s\n' 4 2 y q | bash scripts/irises.sh 2>&1)"
 DET_RC=$?
 set -e
 printf '%s\n' "$DET_OUT" | sed 's/^/    | /'
@@ -952,7 +1122,7 @@ check "and her data is untouched" test -f "$STATE/memories-canary.txt"
 step "8c/12  uninstall from the menu — archive first, then delete the data"
 : > "$STUB_LOG"
 set +e
-PURGE_OUT="$(cd "$CLONE" && printf '%s\n' 3 4 y delete q | bash scripts/irises.sh 2>&1)"
+PURGE_OUT="$(cd "$CLONE" && printf '%s\n' 4 4 y delete q | bash scripts/irises.sh 2>&1)"
 PURGE_RC=$?
 set -e
 printf '%s\n' "$PURGE_OUT" | sed 's/^/    | /'
