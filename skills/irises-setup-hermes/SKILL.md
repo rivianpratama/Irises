@@ -137,8 +137,10 @@ it first):
   (`hermes`), still transparently answers anything `IRISES_FRONT` does not cover — and answers
   everything whenever Irises is down (fail-open, so a broken front never drops messages). Narrow the
   scope by editing the `IRISES_FRONT` line in hermes's env to fnmatch patterns over
-  `<platform>:<chat_id>`; blanking it makes the plugin inert instantly. Tell them their operator and
-  control chats are inside `*:*` too.
+  `<platform>:<chat_id>`, or with `bash ./scripts/configure.sh --front '<patterns>'`; blanking it
+  (`--front none`) makes the plugin inert from the gateway's next start, which is when that value is
+  read — so the edit and the gateway restart go together. Tell them their operator and control chats
+  are inside `*:*` too.
 
 Also worth saying once: **shortly after that restart, Irises usually texts first** — a one-time
 introduction, sent only on a chat this hermes has genuinely exchanged messages in before (the "first
@@ -185,10 +187,12 @@ bash ./scripts/configure.sh --front 'telegram:*'  # narrow which chats she front
 bash ./scripts/configure.sh --model-inherit     # hand her voice back to this hermes's model
 ```
 
-Each run previews what it would change, asks once, backs the file up, writes, and restarts Irises to
-prove the setting took. Hand these over and read back what they report — never run them yourself: a
-`--front` or `--port` change rewrites this hermes's own `.env` and bounces the gateway, so a run from
-a gateway-hosted chat would kill the supervisor mid-reply, the same reason the install is theirs.
+Each run previews what it would change, asks once, backs the file up, and writes. A change to one of
+Irises's own settings then restarts her and checks the build back off `/health`; a `--front` change
+is this hermes's `.env`, so it bounces the gateway instead and leaves her running untouched. Hand
+these over and read back what they report — never run them yourself: a `--front` or `--port` change
+edits this hermes's own `.env` and bounces the gateway, so a run from a gateway-hosted chat would
+kill the supervisor mid-reply, the same reason the install is theirs.
 
 **Update** (from the Irises folder, in their terminal):
 

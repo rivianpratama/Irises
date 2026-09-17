@@ -221,11 +221,15 @@ bash scripts/configure.sh --front 'telegram:*' --yes   # or --front none, to fro
 ```
 
 It previews the `+` / `~` / `-` lines it would write (a secret prints as `<set>`, never its value),
-backs each file up to `.bak-irises-<timestamp>`, writes, then restarts Irises and verifies this
-clone's build is what answers `/health` — `.env` is parsed once at boot, so an unrestarted change is
-a change that silently did not take. `--yes` is the non-interactive form, `--no-restart` leaves the
-running server on the old settings, and `--no-gateway-restart` skips the gateway bounce a `--front`
-or `--port` change does. It takes the **same single lifecycle lock** as `engine-setup.sh` and
+backs each file up to `.bak-irises-<timestamp>`, and writes. A run that changed something in **this
+clone's `.env`** then restarts Irises and verifies this clone's build is what answers `/health` —
+that file is parsed once at boot, so an unrestarted change is a change that silently did not take. A
+run that changed the **engine's `.env`** (`--front`, and the `IRISES_URL` a `--port` move carries
+with it) bounces the engine gateway, which reads those keys only at its start. A `--front`-only run
+is therefore engine-side only: it takes no backup of this clone, does not restart Irises, and says
+`not restarting: only the engine's side changed`. `--yes` is the non-interactive form,
+`--no-restart` leaves the running server on the old settings, and `--no-gateway-restart` skips the
+gateway bounce. It takes the **same single lifecycle lock** as `engine-setup.sh` and
 `update.sh`, so a configure cannot race a deploy rewriting the same `.env` (a `--show` takes none).
 Exit codes are the house contract: `0` applied, nothing needed changing, or `--show` · `1` a step
 failed or was refused · `2` bad usage · `4` restarted but `/health` did not report this build · `5`

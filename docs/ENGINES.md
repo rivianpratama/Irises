@@ -563,13 +563,14 @@ the engine picks up its API-server setting.
 
 Taking it out again, in order of how much you want gone:
 
-- **Pause fronting, instantly:** blank `IRISES_FRONT` on the engine side. The plugin stays installed
-  and inert, and no restart is needed. From the Irises clone,
-  `bash ./scripts/configure.sh --front none` does it for you — it writes the empty value into the
-  engine's `.env` (after a backup) and bounces the gateway so the change survives the next start;
-  `--front '<patterns>'` narrows it to the chats you name instead. The hand edit remains the
-  fallback, and on OpenClaw — where the gateway reads its own process environment rather than a file
-  this script can edit — it prints the line for you to set there yourself.
+- **Pause fronting:** blank `IRISES_FRONT` on the engine side and bring the gateway back. The plugin
+  stays installed and goes inert, but not before that restart: the value is read out of the gateway
+  process's environment when it starts, and nothing reloads it underneath a running gateway. From
+  the Irises clone, `bash ./scripts/configure.sh --front none` does both halves for you — it writes
+  the empty value into the engine's `.env` (after a backup) and bounces the gateway; `--front
+  '<patterns>'` narrows it to the chats you name instead. The hand edit plus your own restart
+  remains the fallback, and on OpenClaw — where the gateway reads its own process environment rather
+  than a file this script can edit — it prints the line for you to set there yourself.
 - **Disable the plugin:** `hermes plugins disable irises-bridge` /
   `openclaw plugins disable irises-bridge`, then bring the gateway back the way you normally would.
 - **Detach from the engine:** `bash ./scripts/engine-setup.sh --detach-engine` — undo every

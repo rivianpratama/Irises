@@ -121,8 +121,9 @@ What the script does, so you can answer questions about it:
     chats Irises answers. **Empty or unset fronts nothing**: the plugin sits inert. `*:*` fronts
     **everything** — a person texting any channel this OpenClaw owns (WhatsApp, Discord, …) reaches
     Irises, who answers in her own voice and uses OpenClaw as her engine. Tell them their operator
-    and control chats are inside `*:*` too, and that blanking it makes the plugin inert again
-    instantly.
+    and control chats are inside `*:*` too, and that blanking it makes the plugin inert again from
+    the gateway's next start — that environment is read when the gateway comes up and at no other
+    moment, so the change and the restart go together.
 
   Whatever they set, OpenClaw is unchanged and still reachable directly, still transparently answers
   anything `IRISES_FRONT` does not cover — and answers everything whenever Irises is down (fail-open,
@@ -170,12 +171,15 @@ bash ./scripts/configure.sh --front 'telegram:*'  # which chats she fronts (or -
 bash ./scripts/configure.sh --model-inherit     # hand her voice back to this OpenClaw's model
 ```
 
-Each run previews what it would change, asks once, backs the file up, writes, and restarts Irises to
-prove the setting took. On this engine `--front` is the one that cannot apply itself: the gateway
-reads its own process environment, so the script prints the `IRISES_FRONT=…` line for them to set
-there and restart the gateway themselves. Hand these over and read back what they report — never run
-them yourself: a `--port` change bounces the gateway, so a run from a gateway-hosted chat would kill
-the supervisor mid-reply, the same reason the install is theirs.
+Each run previews what it would change, asks once, backs the file up, and writes; a change to one of
+Irises's own settings then restarts her and checks the build back off `/health`. This engine keeps
+its own wiring, and the script says so rather than pretending otherwise: `--front` cannot apply
+itself, because the gateway reads its environment and not a file — it prints the `IRISES_FRONT=…`
+line for them to set there and restart the gateway themselves. `--port` likewise moves Irises only,
+and warns that `IRISES_URL` was not ours to move: they update it on the gateway process themselves,
+or the plugin keeps POSTing at the old port. Hand these commands over and read back what they
+report — they are the person's to run, like everything else in this section, and the gateway
+restart that follows is theirs too.
 
 **Update** (from the Irises folder, in their terminal):
 
