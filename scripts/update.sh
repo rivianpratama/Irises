@@ -271,56 +271,6 @@ withdraw_receipt() {
   return 0
 }
 
-# Restart Irises through whatever owns it, and prove the sha we expect is what answers. Verifying
-# only that "something answers /health" is satisfied by the OLD process still holding the port —
-# which is exactly how a restart that never took could look like a success.
-restart_and_verify() { # EXPECTED_SHA SECS
-  local want="${1:-}" secs="${2:-45}" kind live pid verb=restarted
-  # service_installed(), not a look at the unit and the plist: on Windows the install is a Task
-  # Scheduler entry and there is no file to find.
-  if service_installed; then
-    kind="$(service_kind)"
-    say "restarting Irises through its $kind service"
-    if ! service_restart; then
-      err "the $kind service would not restart"
-      return 1
-    fi
-  else
-    # No pidfile'd server of ours, but the port is taken: something else is holding it — almost
-    # always `npm run dev` in another terminal. Preflight refuses that case before anything is
-    # applied, so reaching it HERE means the port was taken while this run was building; this is the
-    # safety net, kept because starting a second server on a taken port would lose the bind and then
-    # fail verification against whatever is still answering. It says what is true — someone else has
-    # the port — and never that Irises is down, because something on :$PORT plainly is not.
-    pid="$(server_pid)"
-    if [ -z "$pid" ] && tcp_open 127.0.0.1 "$PORT"; then
-      err "something took :$PORT during this run, and it is not a server this updater can cycle:"
-      err "  there is no live pid in $STATE_DIR/irises.pid"
-      err "whatever holds it is answering there — a dev server (npm run dev), most likely."
-      err "stop it and re-run; a second server on that port could not bind at all."
-      return 1
-    fi
-    if [ -z "$pid" ]; then
-      say "no service installed and nothing running — starting the detached server"
-      verb=started
-    else
-      say "no service installed — cycling the detached server"
-    fi
-    server_stop 20
-    if ! server_start_detached "$ROOT"; then
-      err "could not start the server detached"
-      return 1
-    fi
-  fi
-  if ! live="$(wait_health_sha "$BASE" "$want" "$secs")"; then
-    err "no /health answer reporting ${want:0:7} on :$PORT within ${secs}s"
-    err "read the log:  tail -n 40 $STATE_DIR/logs/server.log"
-    return 1
-  fi
-  say "$verb — build ${live:0:7} is live on :$PORT"
-  return 0
-}
-
 # Put everything back: the tree, the dependencies, and the build. The old updater had no rollback at
 # all, so a failed `npm ci` after the merge left HEAD new, node_modules wiped and dist old — a state
 # nobody could get out of without knowing the sha to reset to.
@@ -437,7 +387,7 @@ if [ -n "$ROLLBACK_TO" ]; then
   withdraw_receipt
   ROLLBACK_RESTART="skipped (--no-restart) — ${TARGET:0:7} is on disk, not running"
   if [ "$DO_RESTART" = "1" ]; then
-    if ! restart_and_verify "$TARGET" 45; then
+    if ! irises_restart_verify "$ROOT" "$PORT" "$TARGET" 45; then
       summary partial \
         "the clone is at ${TARGET:0:7}, but it did not come back up" \
         "there is nothing left to undo — going forward again is: bash scripts/update.sh" \
@@ -507,7 +457,7 @@ if [ "$OLD" = "$NEW" ]; then
     write_receipt "$NEW" "$NEW"
     REPAIR_RESTART="skipped (--no-restart) — the repaired build is on disk; restart Irises yourself"
     if [ "$DO_RESTART" = "1" ]; then
-      if ! restart_and_verify "$NEW" 45; then
+      if ! irises_restart_verify "$ROOT" "$PORT" "$NEW" 45; then
         withdraw_receipt
         summary partial \
           "nothing was undone, because nothing had changed: the repaired build ${NEW:0:7} did not answer /health" \
@@ -559,7 +509,7 @@ fi
 # Who holds the port — the last thing checked before the first thing changes. If :$PORT answers but
 # there is no live pid of ours and no service to cycle, then the restart at the end of this run
 # cannot succeed: something else (almost always `npm run dev` in another terminal) owns that bind.
-# The check used to live inside restart_and_verify, which is far too late to be useful — by then a
+# The check used to live inside irises_restart_verify, which is far too late to be useful — by then a
 # perfectly good update had been merged, built and receipted, and refusing there rolled all of it
 # back and signed off telling the reader Irises was down, while the dev server went on answering.
 # It then lived in preflight, ABOVE the fetch and the compare, which is too early: a box that had
@@ -630,7 +580,7 @@ write_receipt "$OLD" "$NEW"
 
 RESTART_STATE="skipped (--no-restart) — the new build is on disk, not running"
 if [ "$DO_RESTART" = "1" ]; then
-  if restart_and_verify "$NEW_BUILT" 45; then
+  if irises_restart_verify "$ROOT" "$PORT" "$NEW_BUILT" 45; then
     RESTART_STATE="restarted, build ${NEW_BUILT:0:7} verified live"
   else
     # The new build compiles but will not serve. Take the receipt back, restore the old build, and
@@ -638,7 +588,7 @@ if [ "$DO_RESTART" = "1" ]; then
     withdraw_receipt
     err "the new build did not come up — rolling back"
     if rollback_to "$OLD"; then
-      if restart_and_verify "$OLD" 45; then
+      if irises_restart_verify "$ROOT" "$PORT" "$OLD" 45; then
         summary rolled-back \
           "${NEW:0:7} would not serve; rolled back to ${OLD:0:7}" \
           "Irises is back up on the OLD build — nothing was announced in chat" \

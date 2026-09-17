@@ -76,6 +76,17 @@ test('every npm and web command goes through the library, not through this scrip
   assert.deepEqual(direct, [], `the web build belongs to web_build() in the library:\n${direct.join('\n')}`);
 });
 
+test('the restart goes through the library\'s irises_restart_verify', () => {
+  // update.sh and configure.sh both have to restart and then prove the sha they expect is what
+  // answers /health. A second copy here would drift from the lib's, and the half that drifted would
+  // be the one reporting success without having verified anything.
+  assert.match(SOURCE, /irises_restart_verify "\$ROOT" "\$PORT"/, 'the restart is the library call');
+  assert.ok(
+    !/^restart_and_verify\(\)/m.test(SOURCE),
+    'scripts/lib/irises-lib.sh owns the restart-and-verify sequence; this script only calls it',
+  );
+});
+
 test('the apply path is guarded by a rollback that restores BOTH the tree and the build', () => {
   // The old script had none: a failed `npm ci` after the merge left HEAD new, node_modules wiped
   // and dist old, with no way back but by hand.
