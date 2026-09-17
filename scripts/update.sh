@@ -113,7 +113,6 @@ ROOT="$(irises_root)"
 ENV_FILE="$ROOT/.env"
 cd "$ROOT"
 PORT="$(irises_port)"
-BASE="http://127.0.0.1:$PORT"
 STATE_DIR="$(irises_home)"
 UPDATE_LOG="$STATE_DIR/logs/update.log"
 UPDATE_LOG_ON=0

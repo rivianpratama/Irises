@@ -1627,7 +1627,7 @@ irises_restart_verify() { # ROOT PORT EXPECTED_SHA SECS
     # the port — and never that Irises is down, because something on :$port plainly is not.
     pid="$(server_pid)"
     if [ -z "$pid" ] && tcp_open 127.0.0.1 "$port"; then
-      err "something took :$port during this run, and it is not a server this updater can cycle:"
+      err "something took :$port during this run, and it is not a server this script can cycle:"
       err "  there is no live pid in $(irises_home)/irises.pid"
       err "whatever holds it is answering there — a dev server (npm run dev), most likely."
       err "stop it and re-run; a second server on that port could not bind at all."

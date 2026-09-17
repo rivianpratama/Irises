@@ -153,7 +153,13 @@ test('--uninstall documents that the clone is never deleted', () => {
 test('front_says_kept points at configure.sh instead of a hand edit', () => {
   // The line used to hand the operator a key to paste and a gateway to bounce themselves, which is
   // two steps to get wrong. There is a verb for it now, and it does the bounce.
-  assert.match(SOURCE, /configure\.sh --front/, 'the kept-scope line names the verb that changes it');
+  // Quoted, and pinned quoted: the scope this prints is routinely a glob (`*:*`), and an
+  // unquoted pointer is a line that expands against the operator's cwd the moment they paste it.
+  assert.match(
+    SOURCE,
+    /configure\.sh --front '\$FRONT_PATTERN'/,
+    'the kept-scope line names the verb that changes it, with the pattern quoted',
+  );
   assert.ok(
     !SOURCE.includes('then bounce the engine’s gateway') && !SOURCE.includes("then bounce the engine's gateway"),
     'the hand-edit instructions are gone: configure.sh owns the restart',

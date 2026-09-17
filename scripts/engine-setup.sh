@@ -303,7 +303,9 @@ front_says_kept() { # ENGINE_ENV
   cur="$(env_get "$f" IRISES_FRONT)"
   if [ "$cur" = "$FRONT_PATTERN" ]; then return 0; fi
   say "--front asked for $FRONT_PATTERN, and the scope already in $f is what stands."
-  say "To take it over:  bash ./scripts/configure.sh --front $FRONT_PATTERN"
+  # Quoted exactly as configure.sh's own help spells it: a pattern like *:* is a glob the operator's
+  # shell would expand against the clone's files before configure.sh ever saw it.
+  say "To take it over:  bash ./scripts/configure.sh --front '$FRONT_PATTERN'"
   return 0
 }
 
@@ -544,8 +546,12 @@ do_install() {
 
   # ── 4b. the voice model, when the operator picked one. AFTER the engine-key block above, because
   #      this overrides what that block adopted: env_set, not env_set_default.
+  # Guarded, because a half-written override is worse than none: the _PROVIDER keys and
+  # ENGINE_MODEL_INHERIT=off can land while the model keys do not, and Irises then boots pointed at
+  # a lane with no model. configure.sh:958 stops on the same failure for the same reason.
   if [ -n "$MODEL_LANE" ]; then
-    model_override_write "$ENV_FILE" "$MODEL_LANE" "$MODEL_SLUG" "$MODEL_BASE_URL"
+    model_override_write "$ENV_FILE" "$MODEL_LANE" "$MODEL_SLUG" "$MODEL_BASE_URL" ||
+      die 1 "could not write the voice model override to $ENV_FILE"
   fi
 
   if [ -z "$(env_get "$ENV_FILE" ANTHROPIC_API_KEY)" ] \
