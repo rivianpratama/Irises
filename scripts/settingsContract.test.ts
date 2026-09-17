@@ -22,6 +22,11 @@
 // Secrets are in the table by NAME only (IRISES_MODEL_API_KEY, IRISES_DASHBOARD_PASSWORD). They are
 // settings like any other and have to be re-settable, but they travel in the environment rather
 // than on argv, so what both helps and both menu sections have to carry is the VARIABLE name.
+//
+// What is deliberately NOT in the table: configure.sh's own flags that no install ever takes.
+// --model-inherit undoes a model override, which is a thing only an already-configured box can have
+// — the installer has nothing to hand back — so it is configure-only by design, not a missing row,
+// and assertion (d)'s reverse diff reads the INSTALLER's parser and so never asks about it.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -102,6 +107,11 @@ const SETTINGS: readonly Setting[] = [
  * runs to the next numbered marker, so the unnumbered ones (`# ── asking ──`, `# ── the top menu ──`)
  * belong to whichever section they follow. The map is by NAME, not by number, because the numbers
  * move every time an entry is inserted and the sections do not.
+ *
+ * Comment lines are cut out of the body. The claim this file makes is that the menu COMPOSES the
+ * flag, and this script's house style is to explain in prose which flag a block is about — so a
+ * section whose only `--tz` is the comment above a deleted question would satisfy an unstripped
+ * match while asking the operator nothing.
  */
 function menuSections(src: string): Map<string, { n: number; body: string }> {
   const re = /^# ── (\d+)\) (\w+)/gm;
@@ -111,7 +121,8 @@ function menuSections(src: string): Map<string, { n: number; body: string }> {
   const out = new Map<string, { n: number; body: string }>();
   marks.forEach((mark, i) => {
     const end = i + 1 < marks.length ? marks[i + 1].at : src.length;
-    out.set(mark.name, { n: mark.n, body: src.slice(mark.at, end) });
+    const code = src.slice(mark.at, end).split('\n').filter(l => !/^\s*#/.test(l)).join('\n');
+    out.set(mark.name, { n: mark.n, body: code });
   });
   return out;
 }
