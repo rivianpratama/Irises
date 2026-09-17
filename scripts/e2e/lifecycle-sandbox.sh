@@ -64,7 +64,7 @@
 #                    cmp-equal, plugin gone, Irises still serving) and finally uninstalls with an
 #                    archive and a purge, the "type the word delete" gate answered at the menu
 #                    rather than by a flag
-#   8a  configure    the same menu changing what 8 chose, one setting at a time and without an
+#   8a  configure   — the same menu changing what 8 chose, one setting at a time and without an
 #                    `npm ci` anywhere: a timezone, the browser chat, the front scope, the model
 #                    handed back to the engine, one generic key, and last a PORT MOVE. Each answer
 #                    has to come out as the right flag, land in the right file (this clone's .env,
@@ -965,11 +965,18 @@ cfg_menu() { # ANSWER…
   set -e
   printf '%s\n' "$CFG_OUT" | sed 's/^/    | /'
   check_rc "the menu ran to its own quit" 0 "$CFG_RC"
-  check_out "the child reported its result token" "RESULT: ok" "$CFG_OUT"
-  # And the line above cannot be the whole story: the Configure menu prints `configure.sh --show`
-  # over its own entries, and that report ends `RESULT: ok` too. So the tokens a run FAILS with are
-  # named here, where nothing else can supply them.
+  # TWO of them, not one: the Configure menu prints `configure.sh --show` over its own entries and
+  # that report ends `RESULT: ok` too, so a single occurrence is a check the embedded report satisfies
+  # on its own — it would pass for an action that never ran. The second one is the action's.
+  check "the child reported its result token, over the report's own" \
+    test "$(printf '%s\n' "$CFG_OUT" | grep -c 'RESULT: ok')" -ge 2
+  # And the count cannot be the whole story either: the tokens a run FAILS with are named here, where
+  # nothing else can supply them.
   check "and nothing in it ended on a failure token" no_bad_result "$CFG_OUT"
+  # This verb changes settings on a box that is already built. An `npm ci` in the stub log is a
+  # configure that reinstalled — minutes of rebuild for a timezone, and a rebuild is how a live box
+  # ends up on code nobody asked it to move to.
+  check "configure never reinstalls" absent "$STUB_LOG" '^npm ci'
   # Stage 8 typed this key once, into a prompt that does not echo. Every screen after it — the
   # report the Configure menu prints above its own entries included — has to stay clean of it.
   check_no_out "and the key never reached the screen" "$WIZ_KEY" "$CFG_OUT"
@@ -989,7 +996,11 @@ grew()        { [ "${2:-0}" -gt "${1:-0}" ]; }                   # BEFORE AFTER
 CFG_PID="$(srv_pid)"
 cfg_menu 2 5 Europe/Paris
 check_out "the zone typed became --tz" "bash scripts/configure.sh --tz Europe/Paris" "$CFG_OUT"
-check_out "the preview showed the change and what it replaced" "~ IRISES_TZ=Europe/Paris" "$CFG_OUT"
+# The whole line configure.sh prints, column padding included: "what it replaced" is the half an
+# operator reads to decide, and a needle that stopped at the new value would pass on a preview that
+# had quietly dropped the `(was …)`.
+check_out "the preview showed the change and what it replaced" \
+  "~ IRISES_TZ=Europe/Paris     (was UTC)" "$CFG_OUT"
 check "the clone .env carries the new zone" present "$CLONE/.env" '^IRISES_TZ=Europe/Paris$'
 check "and not the one the wizard installed" absent "$CLONE/.env" '^IRISES_TZ=UTC$'
 expect_sha "Irises was restarted and still serves the build she was on" "$WIZ_HEAD"
@@ -997,11 +1008,17 @@ expect_sha "Irises was restarted and still serves the build she was on" "$WIZ_HE
 # .env is read at boot, so a server with the old pid is a server on the old timezone.
 check "the restart cycled the detached server — a new pid" pid_changed "$CFG_PID" "$(srv_pid)"
 
-# 2. the browser chat — the same rung, answered `n` where the prompt defaults to yes.
+# 2. the browser chat — the same rung, answered `n` where the prompt defaults to the state the box
+# is in (the wizard turned it on, so the default here is `y` and the `n` is a real answer).
+CFG_PID="$(srv_pid)"
 cfg_menu 2 4 n
 check_out "the answer became --web off" "bash scripts/configure.sh --web off" "$CFG_OUT"
 check "the clone .env turns the browser chat off" present "$CLONE/.env" '^WEB_ENABLED=false$'
 expect_sha "Irises came back on the same build" "$WIZ_HEAD"
+# src/index.ts mounts the browser chat at boot and nowhere else, so a run that wrote the line and
+# left the old process holding the port is a UI that is still being served. The sha alone cannot
+# tell those apart — the process that never died answers /health with exactly the same one.
+check "the restart cycled her onto it — a new pid" pid_changed "$CFG_PID" "$(srv_pid)"
 
 # 3. the front scope — the ENGINE's key. Nothing of this clone's moves, so Irises must NOT be
 # restarted, and the gateway must be, or the engine goes on fronting what it was told last boot.
@@ -1025,20 +1042,27 @@ check "and Irises was not restarted for a file she never reads" pid_same "$CFG_P
 
 # 4. the model, handed back to the engine. The override goes out key by key; the KEY the operator
 # paid for stays, because undoing our choice of model must not cost them a credential.
+CFG_PID="$(srv_pid)"
 cfg_menu 2 3 1
 check_out "the answer became --model-inherit" "bash scripts/configure.sh --model-inherit" "$CFG_OUT"
 check_out "and it said out loud that the lane key stays" "keeping OPENROUTER_API_KEY" "$CFG_OUT"
 check "the Convo override is gone" absent "$CLONE/.env" '^CONVO_MODEL_OPENROUTER='
 check "and the Classify override" absent "$CLONE/.env" '^CLASSIFY_MODEL_OPENROUTER='
 check "and the Fallfirm override" absent "$CLONE/.env" '^FALLFIRM_MODEL_OPENROUTER='
-check "and the lane that carried them" absent "$CLONE/.env" '^CONVO_PROVIDER='
+# All three lanes, not just Convo: applyModel() reads them per role, so one left behind is one role
+# still pinned to a provider the operator just handed back.
+check "and the lane that carried Convo" absent "$CLONE/.env" '^CONVO_PROVIDER='
+check "and the lane that carried Classify" absent "$CLONE/.env" '^CLASSIFY_PROVIDER='
+check "and the lane that carried Fallfirm" absent "$CLONE/.env" '^FALLFIRM_PROVIDER='
 check "and the inheritance switch is not pinned off any more" absent "$CLONE/.env" '^ENGINE_MODEL_INHERIT='
 check "while the key the operator pays for is still in the file" \
   present "$CLONE/.env" "^OPENROUTER_API_KEY=$WIZ_KEY\$"
-# Nothing is asserted about the manifest's modelLane on purpose: configure.sh records `port` and
-# `frontPattern` and nothing else, so it still names the lane the INSTALL chose. Asserting either
-# value here would pin a behaviour nobody has decided on yet.
+# The manifest carries modelLane for --uninstall and the detach rewrite, so a run that handed the
+# model back and left it naming openrouter hands the next script a lane this box is not on.
+check "the manifest stopped naming the lane the override was on" \
+  present "$STATE/install-manifest.json" '"modelLane": "inherit"'
 expect_sha "Irises was restarted onto the inherited model" "$WIZ_HEAD"
+check "and the restart was real — a new pid" pid_changed "$CFG_PID" "$(srv_pid)"
 
 # 5. the generic editor — any documented key, with the value on the line because this one is not a
 # secret by name (the ones that are travel in IRISES_SET_VALUE and print as <set>).
@@ -1084,8 +1108,12 @@ check_out "--show reports the narrowed front" "telegram:1" "$SHOW_OUT"
 # And the menu's own Status is that same report — one place to be right about a live box.
 set +e
 STAT_OUT="$(cd "$CLONE" && printf '%s\n' 5 q | bash scripts/irises.sh 2>&1)"
+STAT_RC=$?
 set -e
-check_out "the menu's Status prints the report too" "timezone" "$STAT_OUT"
+check_rc "the menu ran Status and reached its own quit" 0 "$STAT_RC"
+# Tied to what THIS box was configured to six answers ago, not to a label the report would print on
+# any machine: `timezone` alone passes for a Status that rendered the word and no value behind it.
+check_out "the menu's Status prints the report too" "Europe/Paris" "$STAT_OUT"
 check_no_out "without leaking the key into it" "$WIZ_KEY" "$STAT_OUT"
 
 # ── 8b. detach, from the menu ─────────────────────────────────────────────────
