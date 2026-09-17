@@ -9,11 +9,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import {
+  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const SCRIPT = join(process.cwd(), 'scripts', 'configure.sh');
+const LIB = join(process.cwd(), 'scripts', 'lib', 'irises-lib.sh');
 
 function run(
   args: string[],
@@ -90,6 +93,95 @@ const SKIP_ON_WINDOWS = {
       ? 'the service probe reaches Task Scheduler, which the sandbox cannot scope'
       : false,
 };
+
+/**
+ * A PATH holding nothing but the tools the script may reach for, plus stubs that log their argv.
+ * Lifted from `runLib` in scripts/lib/irises-lib.test.ts, and here for the same reason: a service
+ * manager is DETECTED by looking for systemctl / launchctl / schtasks, so the only way to test a box
+ * that has one — or has none — is to build the box.
+ *
+ * The script calls `augment_path`, which APPENDS /usr/bin and /bin, so a real systemctl on the host
+ * is still reachable from here. What makes these tests deterministic is therefore the `uname` stub
+ * (which platform) plus the bus variables (what systemd --user additionally needs), not the bin dir.
+ */
+const SCRATCH_TOOLS = [
+  'cat', 'rm', 'mkdir', 'cp', 'mv', 'chmod', 'find', 'grep', 'sed', 'head', 'tail', 'cut', 'tr',
+  'sleep', 'date', 'printf', 'ps', 'uname', 'id', 'dirname', 'basename', 'curl', 'node', 'git',
+  'awk', 'sort', 'stat', 'env', 'sh', 'pgrep', 'mktemp', 'kill', 'touch', 'ln', 'bash',
+];
+
+function scratchPath(stubs: Record<string, string> = {}): { bin: string; log: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'irises-configure-bin-'));
+  const bin = join(dir, 'bin');
+  mkdirSync(bin, { recursive: true });
+  for (const tool of SCRATCH_TOOLS) {
+    const p = spawnSync('/bin/bash', ['-c', `command -v ${tool}`], { encoding: 'utf8' });
+    const real = (p.stdout ?? '').trim();
+    if (p.status === 0 && real.length > 0 && !existsSync(join(bin, tool))) symlinkSync(real, join(bin, tool));
+  }
+  for (const [name, body] of Object.entries(stubs)) {
+    // Unlink first: a stub for a tool that is also a symlink here would otherwise be written
+    // THROUGH the link, into the host's own copy of that tool.
+    rmSync(join(bin, name), { force: true });
+    writeFileSync(join(bin, name), `#!/usr/bin/env bash\n${body}\n`, { mode: 0o755 });
+  }
+  return { bin, log: join(dir, 'stub.log') };
+}
+
+/** A stub that appends `<name> argv:<args>` to $STUB_LOG and succeeds. */
+function recordingStub(name: string): string {
+  return `printf "${name} argv:%s\\n" "$*" >> "$STUB_LOG"; exit 0`;
+}
+
+function stubLog(log: string): string[] {
+  return existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : [];
+}
+
+/** Every field engine-setup.sh records, so manifest_update can carry the untouched ones forward. */
+const MANIFEST_FIELDS = [
+  'root', 'irisesHome', 'port', 'engine', 'engineEnvFile', 'engineEnvBackup', 'pluginDir',
+  'serviceKind', 'serviceUnit', 'nodeBin', 'keysAdded', 'keysPreExisting', 'keysRetargeted',
+  'bridge', 'frontPattern', 'engineEnvApplied', 'modelLane', 'engineEnvPending',
+];
+
+/**
+ * An install manifest written by the LIB, never by hand: manifest_read is line-anchored and
+ * manifest_update rewrites every field, so a fixture the library did not produce would be testing a
+ * format nothing in the product writes.
+ */
+function writeManifest(env: Record<string, string>, fields: Record<string, string>): void {
+  const pairs = MANIFEST_FIELDS.map((k) => `${k}=${fields[k] ?? ''}`);
+  const r = spawnSync(
+    '/bin/bash',
+    ['-c', `source ${JSON.stringify(LIB)}; manifest_write "$(manifest_path)" "$@"`, 'fixture', ...pairs],
+    { encoding: 'utf8', env: { ...process.env, NO_COLOR: '1', ...env } },
+  );
+  assert.equal(r.status, 0, `the manifest fixture must write: ${r.stderr}`);
+}
+
+/**
+ * A sandbox wired to a hermes install that HAS an engine .env of ours: the shape --front and a
+ * port move both need before they will write a byte on the engine's side.
+ */
+function hermesBox(engineEnvBody: string, manifest: Record<string, string> = {}) {
+  const box = sandbox('OPS_BACKEND=hermes\nPORT=3999\n');
+  const hermesHome = box.env.HERMES_HOME;
+  mkdirSync(hermesHome, { recursive: true });
+  const engineEnv = join(hermesHome, '.env');
+  writeFileSync(engineEnv, engineEnvBody);
+  writeManifest(box.env, {
+    root: box.root,
+    irisesHome: box.state,
+    port: '3999',
+    engine: 'hermes',
+    engineEnvFile: engineEnv,
+    bridge: '1',
+    engineEnvApplied: 'true',
+    keysPreExisting: 'IRISES_URL',
+    ...manifest,
+  });
+  return { ...box, engineEnv, manifestPath: join(box.state, 'install-manifest.json') };
+}
 
 /** Every flag the parser accepts. --help is the only documentation an operator gets for them. */
 const FLAGS = [
@@ -443,23 +535,57 @@ test('a --set of a key the override also writes beats the override, as the previ
   // The apply skips the override's OWN plan entries, by index — never every entry that happens to
   // name one of its keys. Skipping by name would preview the operator's line and then let
   // model_override_write silently win, which is a preview promising a write that never happens.
+  //
+  // The lane API KEY is the case that can still reach here: the guard below refuses a --set of a
+  // key the lane OWNS, and the lane keys are deliberately not on that list — the operator pays for
+  // them, and the override only ever writes one when IRISES_MODEL_API_KEY says to.
+  const box = sandbox();
+  const r = run(['--model-lane', 'openrouter', '--model-slug', 'm', '--set', 'OPENROUTER_API_KEY', '--no-restart', '--yes'], {
+    ...box.env,
+    IRISES_MODEL_API_KEY: 'zzz-lane-not-a-key',
+    IRISES_SET_VALUE: 'zzz-operator-not-a-key',
+  });
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  const body = envText(box.root);
+  assert.match(body, /^OPENROUTER_API_KEY=zzz-operator-not-a-key$/m, "the operator's line is the last word");
+  assert.match(body, /^CONVO_PROVIDER=openrouter$/m, 'the rest of the override still lands');
+  assert.match(body, /^CONVO_MODEL_OPENROUTER=m$/m);
+  assert.match(body, /^ENGINE_MODEL_INHERIT=off$/m);
+  for (const secret of ['zzz-lane-not-a-key', 'zzz-operator-not-a-key']) {
+    assert.ok(!r.out.includes(secret), `by name only:\n${r.out}`);
+    assert.ok(!r.err.includes(secret), `by name only:\n${r.err}`);
+  }
+  // Both entries are written, so both are previewed — but the summary names the key once.
+  const changed = r.out.split('\n').find((l) => l.includes('changed:')) ?? '';
+  assert.equal(changed.split('OPENROUTER_API_KEY').length - 1, 1, `named once: ${changed}`);
+});
+
+test('a model-lane run still reaches the restart decision, though the walk wrote none of its entries', SKIP_ON_WINDOWS, () => {
+  // Every entry the override owns is skipped in the apply walk (the lib writes them in one call),
+  // so a run carrying nothing else would look as if this clone's .env never moved — and .env is
+  // parsed once at boot, which makes "nothing moved, nothing to restart" the wrong answer.
+  const box = sandbox();
+  const r = run(['--model-lane', 'anthropic', '--model-slug', 'm', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.ok(r.out.includes('not running'), `the restart decision was taken, not skipped:\n${r.out}`);
+  assert.ok(!r.out.includes('nothing in'), `and not skipped as an engine-only run:\n${r.out}`);
+});
+
+test('--model-lane with a --set of a key that lane writes exits 2', SKIP_ON_WINDOWS, () => {
+  // Two answers to one question, and the preview cannot show which wins: every line in it is
+  // measured against the file ON DISK, not against the other entries of the same plan.
   const box = sandbox();
   const r = run(
     ['--model-lane', 'openrouter', '--model-slug', 'm', '--set', 'CONVO_PROVIDER=anthropic', '--no-restart', '--yes'],
     box.env,
   );
-  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
-  const body = envText(box.root);
-  assert.match(body, /^CONVO_PROVIDER=anthropic$/m, "the operator's line is the last word");
-  assert.match(body, /^CLASSIFY_PROVIDER=openrouter$/m, 'the rest of the override still lands');
-  assert.match(body, /^FALLFIRM_PROVIDER=openrouter$/m);
-  assert.match(body, /^CONVO_MODEL_OPENROUTER=m$/m);
-  assert.match(body, /^ENGINE_MODEL_INHERIT=off$/m);
-  assert.ok(r.out.includes('+ CONVO_PROVIDER=openrouter'), `the preview shows the override:\n${r.out}`);
-  assert.ok(r.out.includes('+ CONVO_PROVIDER=anthropic'), `and the line that beats it:\n${r.out}`);
-  // Both entries are written, so both are previewed — but the summary names the key once.
-  const changed = r.out.split('\n').find((l) => l.includes('changed:')) ?? '';
-  assert.equal(changed.split('CONVO_PROVIDER').length - 1, 1, `named once: ${changed}`);
+  assert.equal(r.code, 2, `${r.out}\n${r.err}`);
+  assert.match(r.err, /CONVO_PROVIDER/);
+  assert.match(r.err, /--model-lane openrouter/);
+  assert.ok(!r.out.includes('RESULT:'), `a usage error changed nothing and reports nothing:\n${r.out}`);
+  const unset = run(['--model-lane', 'openrouter', '--model-slug', 'm', '--unset', 'ENGINE_MODEL_INHERIT', '--yes'], box.env);
+  assert.equal(unset.code, 2, `${unset.out}\n${unset.err}`);
+  assert.match(unset.err, /ENGINE_MODEL_INHERIT/);
 });
 
 test('a non-secret change previews its old value', SKIP_ON_WINDOWS, () => {
@@ -536,16 +662,18 @@ test("a piped run auto-confirms, as the menu's child must", SKIP_ON_WINDOWS, () 
   assert.equal(resultLine(r.out), 'RESULT: ok', r.out);
 });
 
-test('a run mixing --tz with --port changes nothing and reports partial', SKIP_ON_WINDOWS, () => {
-  // Port, service and front are not built yet. A run that quietly applied the half it CAN do would
-  // leave the operator believing both landed.
+test('a run mixing --tz with --port applies both in one preview', SKIP_ON_WINDOWS, () => {
+  // One preview, one question, one backup, whatever mix of settings a run carries.
   const box = sandbox();
-  const before = envText(box.root);
-  const r = run(['--tz', 'Europe/Paris', '--port', '3001', '--yes'], box.env);
-  assert.equal(r.code, 1, `${r.out}\n${r.err}`);
-  assert.equal(resultLine(r.out), 'RESULT: partial', r.out);
-  assert.equal(envText(box.root), before, 'not one byte of .env moved');
-  assert.equal(backups(box.root).length, 0, 'and nothing was backed up');
+  const r = run(['--tz', 'Europe/Paris', '--port', '4002', '--no-restart', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  const body = envText(box.root);
+  assert.match(body, /^IRISES_TZ=Europe\/Paris$/m);
+  assert.match(body, /^PORT=4002$/m);
+  assert.equal(backups(box.root).length, 1, 'one backup, taken once');
+  const headers = r.out.split('\n').filter((l) => l.startsWith('changes to '));
+  assert.equal(headers.length, 1, `one file moved, so one heading:\n${r.out}`);
+  assert.equal(resultLine(r.out), 'RESULT: ok', r.out);
 });
 
 test('a changed secret previews as not shown', SKIP_ON_WINDOWS, () => {
@@ -562,4 +690,178 @@ test('a changed secret previews as not shown', SKIP_ON_WINDOWS, () => {
     assert.ok(!r.err.includes(secret), `${secret} must not reach stderr:\n${r.err}`);
   }
   assert.match(envText(box.root), /^OPENROUTER_API_KEY=zzz-new-not-a-key$/m);
+});
+
+// ── the port, the service and the front: the settings with side effects ──────
+
+test('--port refuses a port something already listens on, before any write', SKIP_ON_WINDOWS, async () => {
+  // Finding this out AFTER the write leaves .env naming a port Irises can never bind — and the
+  // restart that follows verifies against whatever is already answering there.
+  const net = await import('node:net');
+  const srv = net.createServer(() => {});
+  await new Promise<void>((res) => srv.listen(0, '127.0.0.1', res));
+  const taken = (srv.address() as { port: number }).port;
+  try {
+    const box = sandbox();
+    const before = envText(box.root);
+    const r = run(['--port', String(taken), '--yes'], box.env);
+    assert.equal(r.code, 1, `${r.out}\n${r.err}`);
+    assert.match(r.err, /already listens on/);
+    assert.equal(envText(box.root), before, 'not one byte of .env moved');
+    assert.equal(backups(box.root).length, 0, 'and nothing was backed up');
+    assert.equal(resultLine(r.out), 'RESULT: partial', r.out);
+  } finally {
+    srv.close();
+  }
+});
+
+test('--port writes PORT, says the manifest is absent, and previews the change', SKIP_ON_WINDOWS, () => {
+  const box = sandbox();
+  const r = run(['--port', '4001', '--no-restart', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(envText(box.root), /^PORT=4001$/m);
+  assert.ok(r.out.includes('~ PORT=4001     (was 3999)'), `the preview names the move:\n${r.out}`);
+  assert.ok(r.out.includes('no install manifest'), `a clone with no manifest is still configurable:\n${r.out}`);
+  assert.equal(resultLine(r.out), 'RESULT: ok', r.out);
+});
+
+test('--port equal to the current port is a noop', SKIP_ON_WINDOWS, () => {
+  const box = sandbox();
+  const r = run(['--port', '3999', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.equal(resultLine(r.out), 'RESULT: noop', r.out);
+  assert.equal(backups(box.root).length, 0, 'a noop backs nothing up and restarts nothing');
+});
+
+test('--port moves IRISES_URL when the manifest says the engine .env is ours', SKIP_ON_WINDOWS, () => {
+  // The engine calls Irises back on IRISES_URL, so a port move that leaves it behind silently stops
+  // every inbound message — and the uninstaller has to learn that the key is now one it retargeted.
+  const box = hermesBox('IRISES_URL=http://127.0.0.1:3999\nIRISES_FRONT=*:*\n');
+  const r = run(['--port', '4001', '--no-restart', '--no-gateway-restart', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(envText(box.root), /^PORT=4001$/m);
+  const engine = readFileSync(box.engineEnv, 'utf8');
+  assert.match(engine, /^IRISES_URL=http:\/\/127\.0\.0\.1:4001$/m);
+  assert.match(engine, /^IRISES_FRONT=\*:\*$/m, 'nothing else in the engine .env moved');
+  const engineBackups = readdirSync(box.env.HERMES_HOME).filter((f) => f.startsWith('.env.bak-irises-'));
+  assert.equal(engineBackups.length, 1, `the engine .env is backed up first: ${engineBackups.join(', ')}`);
+  const man = readFileSync(box.manifestPath, 'utf8');
+  assert.match(man, /"port": "4001"/);
+  assert.match(man, /"keysRetargeted": "IRISES_URL"/);
+  assert.ok(r.out.includes('skipped (--no-gateway-restart)'), `the summary says the engine has not read it yet:\n${r.out}`);
+  assert.ok(r.out.includes(`changes to ${box.engineEnv}`), `the engine's file announces itself:\n${r.out}`);
+});
+
+test('--service on where no service manager exists exits 1', SKIP_ON_WINDOWS, () => {
+  // Linux by the uname stub, no systemctl on the scratch PATH and no user bus in the environment:
+  // the fresh-SSH box, where Irises can only ever run detached.
+  const box = sandbox();
+  const bin = scratchPath({ uname: 'echo Linux' });
+  const r = run(['--service', 'on', '--yes'], {
+    ...box.env,
+    PATH: bin.bin,
+    XDG_RUNTIME_DIR: bin.bin,
+    DBUS_SESSION_BUS_ADDRESS: '',
+  });
+  assert.equal(r.code, 1, `${r.out}\n${r.err}`);
+  assert.match(r.err, /no user service manager/);
+  assert.equal(backups(box.root).length, 0, 'it refused before the first write');
+});
+
+test('--service off with none installed is a noop', SKIP_ON_WINDOWS, () => {
+  const box = sandbox();
+  const r = run(['--service', 'off', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.equal(resultLine(r.out), 'RESULT: noop', r.out);
+});
+
+test('--service on installs through the manager and records it', SKIP_ON_WINDOWS, () => {
+  // The transition IS the restart, and this proves its ORDER: unit written, daemon reloaded, service
+  // started — and only then the verification, which in a sandbox where nothing really listens is
+  // expected to fail. `curl` refuses and `sleep` returns at once, so the 60s budget costs no time.
+  const box = sandbox();
+  mkdirSync(join(box.root, 'dist'), { recursive: true });
+  writeFileSync(join(box.root, 'dist', 'index.js'), '// not a real server\n');
+  const bin = scratchPath({
+    uname: 'echo Linux',
+    systemctl: recordingStub('systemctl'),
+    loginctl: recordingStub('loginctl'),
+    curl: 'exit 1',
+    sleep: 'exit 0',
+  });
+  const r = run(['--service', 'on', '--yes'], {
+    ...box.env,
+    PATH: bin.bin,
+    STUB_LOG: bin.log,
+    XDG_RUNTIME_DIR: bin.bin,
+    DBUS_SESSION_BUS_ADDRESS: 'unix:path=/dev/null',
+  });
+  assert.equal(r.code, 4, `${r.out}\n${r.err}`);
+  assert.equal(resultLine(r.out), 'RESULT: health-failed', r.out);
+  const unit = join(box.env.HOME, '.config', 'systemd', 'user', 'irises.service');
+  assert.ok(existsSync(unit), `the unit must be written under the sandbox HOME: ${unit}`);
+  const log = stubLog(bin.log);
+  assert.ok(log.some((l) => l === 'systemctl argv:--user daemon-reload'), log.join('\n'));
+  assert.ok(log.some((l) => l === 'systemctl argv:--user restart irises'), log.join('\n'));
+  assert.ok(r.out.includes('~ service: detached → systemd'), `the transition is previewed:\n${r.out}`);
+});
+
+test('--front with no engine exits 1', SKIP_ON_WINDOWS, () => {
+  const box = sandbox();
+  const r = run(['--front', 'telegram:1', '--yes'], box.env);
+  assert.equal(r.code, 1, `${r.out}\n${r.err}`);
+  assert.match(r.err, /OPS_BACKEND=off/);
+});
+
+test('--front on a --no-bridge install exits 1', SKIP_ON_WINDOWS, () => {
+  // Without the bridge plugin the gateway has nothing to hand a fronted chat to.
+  const box = hermesBox('IRISES_URL=http://127.0.0.1:3999\n', { bridge: '0' });
+  const r = run(['--front', 'telegram:1', '--yes'], box.env);
+  assert.equal(r.code, 1, `${r.out}\n${r.err}`);
+  assert.match(r.err, /--no-bridge/);
+});
+
+test('--front when the engine .env carries nothing of ours exits 1', SKIP_ON_WINDOWS, () => {
+  // The install was declined or printed, so that file is the operator's alone — writing to it now
+  // would put a key there that --uninstall does not know to take out.
+  const box = hermesBox('IRISES_URL=http://127.0.0.1:3999\n', { engineEnvApplied: 'false' });
+  const r = run(['--front', 'telegram:1', '--yes'], box.env);
+  assert.equal(r.code, 1, `${r.out}\n${r.err}`);
+  assert.match(r.err, /carries nothing of ours/);
+});
+
+test('--front rewrites IRISES_FRONT in the engine .env, records it, and skips the bounce when told', SKIP_ON_WINDOWS, () => {
+  const box = hermesBox('IRISES_URL=http://127.0.0.1:3999\nIRISES_FRONT=*:*\n');
+  const before = envText(box.root);
+  const r = run(['--front', 'telegram:1', '--no-gateway-restart', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(readFileSync(box.engineEnv, 'utf8'), /^IRISES_FRONT=telegram:1$/m);
+  assert.match(readFileSync(box.manifestPath, 'utf8'), /"frontPattern": "telegram:1"/);
+  assert.equal(envText(box.root), before, "a front is the ENGINE's key — this clone's .env never moves");
+  assert.equal(backups(box.root).length, 0, 'and a file that did not move is not backed up');
+  assert.ok(r.out.includes('~ IRISES_FRONT=telegram:1     (was *:*)'), `${r.out}`);
+  assert.ok(r.out.includes('skipped (--no-gateway-restart)'), `${r.out}`);
+  assert.equal(resultLine(r.out), 'RESULT: ok', r.out);
+});
+
+test('--front none blanks IRISES_FRONT', SKIP_ON_WINDOWS, () => {
+  // `none` is an EMPTY IRISES_FRONT, not a missing one: the gateway fronts nothing for an empty
+  // value, and a removed key would fall back to whatever its own default is.
+  const box = hermesBox('IRISES_URL=http://127.0.0.1:3999\nIRISES_FRONT=*:*\n');
+  const r = run(['--front', 'none', '--no-gateway-restart', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(readFileSync(box.engineEnv, 'utf8'), /^IRISES_FRONT=$/m);
+  assert.equal(resultLine(r.out), 'RESULT: ok', r.out);
+});
+
+test('--front on OpenClaw prints the line and applies nothing', SKIP_ON_WINDOWS, () => {
+  // OpenClaw's gateway reads its own process environment, not a file this script can edit.
+  const box = sandbox('OPS_BACKEND=openclaw\nPORT=3999\n');
+  const before = envText(box.root);
+  const r = run(['--front', 'telegram:1', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(r.err, /IRISES_FRONT=telegram:1/);
+  assert.equal(envText(box.root), before, 'nothing was applied');
+  assert.equal(backups(box.root).length, 0);
+  assert.equal(resultLine(r.out), 'RESULT: ok', r.out);
 });

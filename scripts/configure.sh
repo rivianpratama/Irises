@@ -362,6 +362,36 @@ while [ "$i" -lt "${#UNSET_KEYS[@]}" ]; do
   i=$((i + 1))
 done
 
+# A --set or --unset of a key --model-lane itself writes is two answers to one question, and the
+# preview cannot show which of them wins: every line in it is measured against the file ON DISK, not
+# against the other entries of the same plan, so both would be listed as if both were the outcome.
+# The lane API keys are deliberately NOT on this list — the override only writes one when
+# IRISES_MODEL_API_KEY says to, and the operator's own --set of it is a different request.
+refuse_lane_key() { # KEY
+  local key="${1:-}" k
+  for k in $(model_override_keys "$MODEL_LANE"); do
+    if [ "$k" = "$key" ]; then
+      err "$key is written by --model-lane $MODEL_LANE — set the lane's model with the model flags,"
+      err "or drop --model-lane and set the key alone"
+      exit 2
+    fi
+  done
+  return 0
+}
+if [ -n "$MODEL_LANE" ]; then
+  i=0
+  while [ "$i" -lt "${#SET_KEYS[@]}" ]; do
+    refuse_lane_key "${SET_KEYS[$i]}"
+    i=$((i + 1))
+  done
+  if [ -n "$SET_BARE" ]; then refuse_lane_key "$SET_BARE"; fi
+  i=0
+  while [ "$i" -lt "${#UNSET_KEYS[@]}" ]; do
+    refuse_lane_key "${UNSET_KEYS[$i]}"
+    i=$((i + 1))
+  done
+fi
+
 # IRISES_DASHBOARD_PASSWORD counts as a setting here, exactly like a flag: it carries no flag
 # because a password on argv is readable by every other process on the box, so its PRESENCE in the
 # environment is the request. Counting it in both directions is what makes `--show` with it set a
@@ -657,12 +687,135 @@ while [ "$i" -lt "${#UNSET_KEYS[@]}" ]; do
   i=$((i + 1))
 done
 
-# Port, service and front are not built yet, and a run carrying one of them stops HERE — after the
-# plan, before the first write. Applying the half that does work and reporting the other half as
-# missing would leave the operator believing both landed; `partial` says nothing has been changed.
-if [ -n "$PORT_FLAG" ] || [ -n "$SERVICE_FLAG" ] || [ "$FRONT_SET" = "1" ]; then
-  summary partial "configure: port, service and front are not built yet"
-  exit 1
+# ── the engine side of this run ──────────────────────────────────────────────
+# Read ONCE, here: the plan, the preview, the apply and the gateway step all have to agree about
+# which file the engine's keys live in and whether this install was ever allowed to write to it.
+MAN="$(manifest_path)"
+ENGINE="$(engine_kind 2>/dev/null || printf off)"
+ENGINE_ENV="$(manifest_read "$MAN" engineEnvFile)"
+# A hermes install whose manifest is gone still has exactly one engine .env, and it is where hermes
+# keeps its own. The guess only ever serves the LOOKUP: every write below also needs
+# engineEnvApplied=true, which no missing manifest can report.
+if [ -z "$ENGINE_ENV" ] && [ "$ENGINE" = "hermes" ]; then ENGINE_ENV="$(hermes_home)/.env"; fi
+ENGINE_ENV_APPLIED="$(manifest_read "$MAN" engineEnvApplied)"
+BRIDGE="$(manifest_read "$MAN" bridge)"
+
+# Recording what moved is best-effort, always: a clone installed before the manifest existed, or one
+# whose $IRISES_HOME was wiped, must still be configurable. manifest_update refuses a file that is
+# not there, so the absence is said out loud here and the run carries on.
+manifest_record() { # KEY=VALUE…
+  if [ ! -f "$MAN" ]; then
+    say "no install manifest at $MAN — nothing to record"
+    return 0
+  fi
+  manifest_update "$MAN" "$@" ||
+    warn "could not update $MAN — --uninstall may have to guess what this run changed"
+  return 0
+}
+
+# ── the port ─────────────────────────────────────────────────────────────────
+# Three places, not one: this clone's PORT, the IRISES_URL the engine calls back on, and the manifest
+# --uninstall reads. That is the whole reason reserved_key refuses `--set PORT`.
+CUR_PORT="$(irises_port)"
+NEW_PORT=""
+PORT_URL_MOVED=0
+if [ -n "$PORT_FLAG" ] && [ "$PORT_FLAG" != "$CUR_PORT" ]; then
+  NEW_PORT="$PORT_FLAG"
+  # PREFLIGHT, before the preview and before the lock. Learning this AFTER the write leaves .env
+  # naming a port Irises can never bind, and the restart then verifies against whatever is already
+  # answering there — update.sh:571-579 refuses the same way, for the same reason.
+  if tcp_open 127.0.0.1 "$NEW_PORT"; then
+    err "something already listens on :$NEW_PORT — pick another port, or stop it first"
+    exit 1
+  fi
+  plan_add "$ENV_FILE" set PORT "$NEW_PORT"
+  # The engine calls Irises back on IRISES_URL, so a port move that leaves it behind stops every
+  # inbound message without an error anywhere. It is ours to move only where the install actually
+  # wrote it AND it still names the port we are moving off; anything else is the operator's own.
+  PORT_URL_STRAY=0
+  if [ "$ENGINE_ENV_APPLIED" = "true" ] && [ -n "$ENGINE_ENV" ]; then
+    case "$(env_get "$ENGINE_ENV" IRISES_URL)" in
+      "http://127.0.0.1:$CUR_PORT"|"http://localhost:$CUR_PORT")
+        plan_add "$ENGINE_ENV" set IRISES_URL "http://127.0.0.1:$NEW_PORT"
+        PORT_URL_MOVED=1 ;;
+      *) PORT_URL_STRAY=1 ;;
+    esac
+  elif [ "$ENGINE" != "off" ]; then
+    # Only when there IS an engine: on a standalone clone no IRISES_URL exists anywhere, and a
+    # warning about one would send the operator looking for a file that was never written.
+    PORT_URL_STRAY=1
+  fi
+  if [ "$PORT_URL_STRAY" = "1" ]; then
+    warn "IRISES_URL in ${ENGINE_ENV:-the engine .env} does not name :$CUR_PORT — it was not ours to move; set it yourself if the engine should follow"
+  fi
+fi
+
+# ── what Irises fronts ───────────────────────────────────────────────────────
+# IRISES_FRONT is the ENGINE's key: it decides which chats the gateway hands over at all, and it is
+# read only when that gateway starts. `none` is an EMPTY value, never a removed key.
+FRONT_VALUE=""
+FRONT_PLANNED=0
+FRONT_PRINTED=0
+if [ "$FRONT_SET" = "1" ]; then
+  if [ "$FRONT_FLAG" != "none" ]; then FRONT_VALUE="$FRONT_FLAG"; fi
+  case "$ENGINE" in
+    off)
+      err "no engine is configured (OPS_BACKEND=off) — nothing fronts anything; install against an engine first"
+      exit 1 ;;
+    openclaw)
+      # OpenClaw's gateway reads its own process environment, not a file this script can edit, so
+      # saying the line exactly is the only honest thing to do (engine-setup.sh:972-975 does the
+      # same for the same reason).
+      warn "OpenClaw is wired from its own side — set this on the gateway process, then restart it:"
+      warn "  IRISES_FRONT=$FRONT_VALUE"
+      FRONT_PRINTED=1 ;;
+    *)
+      if [ "$BRIDGE" != "1" ]; then
+        err "this install carries no bridge plugin (--no-bridge) — re-run the install with the bridge to front chats"
+        exit 1
+      fi
+      if [ "$ENGINE_ENV_APPLIED" != "true" ]; then
+        err "the engine .env carries nothing of ours (the install was declined or printed) — add IRISES_FRONT there yourself, then bounce the gateway"
+        exit 1
+      fi
+      plan_add "$ENGINE_ENV" set IRISES_FRONT "$FRONT_VALUE"
+      FRONT_PLANNED=1 ;;
+  esac
+fi
+
+# ── the service ──────────────────────────────────────────────────────────────
+# Planned LAST on purpose: it is not a line in any file, so it prints under no file heading, and a
+# preview reads wrong if it lands in the middle of one.
+#
+# All three backends go through the lib, and two of them are exercised for real by the tests on the
+# machines that have them. The Windows (schtasks) arm is STUB-TESTED ONLY — no Windows box runs
+# these tests — so treat a change to it as unproven until someone runs it on Git Bash.
+SERVICE_PLAN=""
+SERVICE_KIND=""
+if [ -n "$SERVICE_FLAG" ]; then
+  SERVICE_KIND="$(service_kind)"
+  if [ "$SERVICE_FLAG" = "on" ]; then
+    if [ "$SERVICE_KIND" = "none" ]; then
+      err "no user service manager on this box (systemd --user, launchd or Task Scheduler) — Irises can only run detached here"
+      exit 1
+    fi
+    if ! service_installed; then
+      SERVICE_PLAN=on
+      plan_add service service on "$SERVICE_KIND"
+    fi
+  else
+    if service_installed; then
+      SERVICE_PLAN=off
+      plan_add service service off "$SERVICE_KIND"
+    fi
+  fi
+fi
+
+# A --front an engine reads from its own environment changes nothing on this box, so a run that
+# asked for only that has nothing left to preview, lock, write or restart.
+if [ "$FRONT_PRINTED" = "1" ] && [ "${#P_KEY[@]}" -eq 0 ]; then
+  summary ok "front: printed, not applied (OpenClaw is wired from its own side)"
+  exit 0
 fi
 
 # ── the preview ──────────────────────────────────────────────────────────────
@@ -675,33 +828,55 @@ fi
 # the same shape engine-setup.sh's own preview uses).
 LISTED=0
 CHANGED_KEYS=""
+# Two files can move in one run — this clone's .env and the ENGINE's — and each announces itself
+# once, above its own first line. The heading waits for that line: a run whose every value is
+# already in place says "nothing to change" and must not first announce changes to anything.
+PREVIEW_CLONE_HEADER=0
+PREVIEW_ENGINE_HEADER=0
+preview_header() { # FILE
+  if [ "${1:-}" = "$ENV_FILE" ]; then
+    if [ "$PREVIEW_CLONE_HEADER" = "1" ]; then return 0; fi
+    PREVIEW_CLONE_HEADER=1
+  else
+    if [ "$PREVIEW_ENGINE_HEADER" = "1" ]; then return 0; fi
+    PREVIEW_ENGINE_HEADER=1
+  fi
+  ui "changes to ${1:-} (backed up first to .bak-irises-<timestamp>):"
+  return 0
+}
 preview_plan() {
-  local i=0 f op key val n cur note
-  # The header waits for the first line under it: a run whose every value is already in the file
-  # says "nothing to change" and should not first announce changes to anything.
-  local header=0
+  local i=0 f op key val n cur note name
   while [ "$i" -lt "${#P_KEY[@]}" ]; do
     f="${P_FILE[$i]}"
     op="${P_OP[$i]}"
     key="${P_KEY[$i]}"
     val="${P_VAL[$i]}"
     i=$((i + 1))
+    # The service is not a line in a file but a transition, so it prints as one — under no heading,
+    # and named `service` in the summary, where it also has a line of its own.
+    if [ "$op" = "service" ]; then
+      if [ "$key" = "on" ]; then
+        ui "  ~ service: detached → $val"
+      else
+        ui "  ~ service: $val → detached"
+      fi
+      LISTED=$((LISTED + 1))
+      case " $CHANGED_KEYS " in
+        *" service "*) ;;
+        *) CHANGED_KEYS="$CHANGED_KEYS service" ;;
+      esac
+      continue
+    fi
     n="$(env_count "$f" "$key")"
     cur="$(env_get "$f" "$key")"
     if [ "$op" = "unset" ]; then
       # Nothing to take out is nothing to say.
       if [ "$n" = "0" ]; then continue; fi
-      if [ "$header" = "0" ]; then
-        header=1
-        ui "changes to $ENV_FILE (backed up first to .bak-irises-<timestamp>):"
-      fi
+      preview_header "$f"
       ui "  - $key"
     else
       if [ "$n" != "0" ] && [ "$n" -le 1 ] && [ "$cur" = "$val" ]; then continue; fi
-      if [ "$header" = "0" ]; then
-        header=1
-        ui "changes to $ENV_FILE (backed up first to .bak-irises-<timestamp>):"
-      fi
+      preview_header "$f"
       # Duplicated keys are collapsed onto one line by env_set, and that is a change in its own
       # right even when the live (last) value already matches — so it is said out loud.
       note=""
@@ -723,10 +898,12 @@ preview_plan() {
     LISTED=$((LISTED + 1))
     # Named once, in the order the plan first reaches it. Two entries CAN name one key — an override
     # and the operator's own line overruling it — and both are previewed, because both are written;
-    # but a summary that says CONVO_PROVIDER twice reads like a bug rather than like a precedence.
+    # but a summary that says OPENROUTER_API_KEY twice reads like a bug rather than a precedence.
+    # An engine key is prefixed, because IRISES_URL in that summary means nothing without the file.
+    if [ "$f" = "$ENV_FILE" ]; then name="$key"; else name="engine:$key"; fi
     case " $CHANGED_KEYS " in
-      *" $key "*) ;;
-      *) CHANGED_KEYS="$CHANGED_KEYS $key" ;;
+      *" $name "*) ;;
+      *) CHANGED_KEYS="$CHANGED_KEYS $name" ;;
     esac
   done
   CHANGED_KEYS="${CHANGED_KEYS# }"
@@ -752,65 +929,185 @@ fi
 # path out, including a Ctrl+C in the middle of the restart.
 lock_acquire || exit 1
 
+# Does this run move this clone's .env at all? A front-only run does not, and a file that did not
+# move must not be backed up, must not be chmodded, and must not cost Irises a restart.
+PLAN_HAS_CLONE=0
+i=0
+while [ "$i" -lt "${#P_FILE[@]}" ]; do
+  if [ "${P_FILE[$i]}" = "$ENV_FILE" ]; then PLAN_HAS_CLONE=1; fi
+  i=$((i + 1))
+done
+
 # Once, before the first write, and the path is what the summary hands the operator to go back to.
-BACKUP="$(env_backup "$ENV_FILE" configure)"
-# A clone that never had a .env gets one at 0600 from the start — engine-setup.sh:516 makes it the
-# same way, and a `touch` would leave secrets world-readable.
-if [ ! -e "$ENV_FILE" ]; then ( umask 077; : > "$ENV_FILE" ); fi
+BACKUP=""
+if [ "$PLAN_HAS_CLONE" = "1" ]; then
+  BACKUP="$(env_backup "$ENV_FILE" configure)"
+  # A clone that never had a .env gets one at 0600 from the start — engine-setup.sh:516 makes it the
+  # same way, and a `touch` would leave secrets world-readable.
+  if [ ! -e "$ENV_FILE" ]; then ( umask 077; : > "$ENV_FILE" ); fi
+fi
+
+# Which of the two files this run actually wrote to. CLONE_CHANGED is what decides the restart
+# below — .env is parsed once at boot — and the override counts, because every one of ITS plan
+# entries is skipped in the walk and a run carrying nothing else would otherwise look untouched.
+CLONE_CHANGED=0
+ENGINE_CHANGED=0
+ENGINE_BACKUP=""
 
 if [ -n "$MODEL_LANE" ]; then
   model_override_write "$ENV_FILE" "$MODEL_LANE" "$MODEL_SLUG" "$MODEL_BASE_URL" || exit 1
+  CLONE_CHANGED=1
 fi
 
 i=0
 while [ "$i" -lt "${#P_KEY[@]}" ]; do
   key="${P_KEY[$i]}"
+  f="${P_FILE[$i]}"
+  # The service transition is not a file write. It happens below, once both .env files are settled.
+  if [ "${P_OP[$i]}" = "service" ]; then i=$((i + 1)); continue; fi
   # These entries — and only these — are the ones the call above already wrote, in the shape the
   # installer writes them. Anything else naming the same key is the operator's and still applies.
   case " $MODEL_IDX " in
     *" $i "*) i=$((i + 1)); continue ;;
   esac
-  if [ "${P_OP[$i]}" = "unset" ]; then
-    env_unset "${P_FILE[$i]}" "$key" >/dev/null
+  if [ "$f" = "$ENV_FILE" ]; then
+    CLONE_CHANGED=1
   else
-    env_set "${P_FILE[$i]}" "$key" "${P_VAL[$i]}" || exit 1
+    # Once, before the first byte of the ENGINE's file, and the install backs it up the same way:
+    # --uninstall restores the keys it retargeted FROM a backup, so a write with none behind it is
+    # a removal nothing can undo.
+    if [ "$ENGINE_CHANGED" = "0" ]; then ENGINE_BACKUP="$(env_backup "$f" configure)"; fi
+    ENGINE_CHANGED=1
+  fi
+  if [ "${P_OP[$i]}" = "unset" ]; then
+    env_unset "$f" "$key" >/dev/null
+  else
+    env_set "$f" "$key" "${P_VAL[$i]}" || exit 1
   fi
   i=$((i + 1))
 done
 # Said out loud, not swallowed: this file carries API keys and the dashboard password, and a mode a
 # chmod could not set is the difference between a 0600 file and one every user on the box can read.
-chmod 600 "$ENV_FILE" 2>/dev/null ||
-  warn "could not chmod 600 $ENV_FILE — it may be readable by other users on this box"
-# This clone's .env moved, which is what makes the restart below worth doing. It is always 1 here —
-# the apply only runs when the preview listed a clone-setting change — and it is set anyway because
-# the port/service/front half reaches this same restart decision with an engine-side change that
-# leaves .env alone, and the two must be told apart there rather than assumed.
-CLONE_CHANGED=1
+if [ "$CLONE_CHANGED" = "1" ]; then
+  chmod 600 "$ENV_FILE" 2>/dev/null ||
+    warn "could not chmod 600 $ENV_FILE — it may be readable by other users on this box"
+fi
+
+# ── what the manifest has to learn ───────────────────────────────────────────
+# --uninstall reads this file to put the engine's .env back and to take the right service out, so a
+# setting that moved and a manifest still naming the old one is an uninstall that guesses wrong.
+#
+# Collected into ONE call: manifest_update rewrites the whole file every time, so a run that moved
+# the port and the front would otherwise write it twice and say so twice. The positional list is
+# free here — the argument loop consumed it long ago. (The service transition below records itself,
+# after it has actually happened.)
+set --
+if [ -n "$NEW_PORT" ]; then
+  set -- "$@" "port=$NEW_PORT"
+  if [ "$PORT_URL_MOVED" = "1" ]; then
+    # A key that was in the engine's .env before Irises ever touched it and now points at us is
+    # RETARGETED: that list, and only that list, is what --uninstall restores from the backup.
+    RETARGETED="$(manifest_read "$MAN" keysRetargeted)"
+    case " $(manifest_read "$MAN" keysPreExisting) " in
+      *" IRISES_URL "*)
+        case " $RETARGETED " in
+          *" IRISES_URL "*) ;;
+          *) RETARGETED="$RETARGETED IRISES_URL" ;;
+        esac ;;
+    esac
+    set -- "$@" "keysRetargeted=${RETARGETED# }"
+  fi
+fi
+if [ "$FRONT_PLANNED" = "1" ]; then set -- "$@" "frontPattern=$FRONT_VALUE"; fi
+if [ "$#" -gt 0 ]; then manifest_record "$@"; fi
 
 # ── the restart, and the proof ───────────────────────────────────────────────
 # .env is parsed once at boot (src/loadEnv.ts has no reload path), so a setting nobody restarted
 # into is a setting that silently did not take. Verifying that SOMETHING answers /health is not
 # enough either — the old process still holding the port answers exactly the same way — so the sha
 # this clone is built from goes in and has to come back.
+#
+# What the summary hands back about the backups: an engine-only run took none of this clone's.
+if [ "$PLAN_HAS_CLONE" = "1" ]; then
+  BACKUP_SHOWN="${BACKUP:-none (new file)}"
+else
+  BACKUP_SHOWN="none — this run did not touch $ENV_FILE"
+fi
+if [ -n "$ENGINE_BACKUP" ]; then BACKUP_SHOWN="$BACKUP_SHOWN · engine: $ENGINE_BACKUP"; fi
+
 RESTART_STATE=""
-if [ "$DO_RESTART" = "0" ]; then
+SERVICE_STATE="unchanged"
+SHA="$(built_sha "$ROOT")"
+# The port the proof has to target is the one this run ASKED for. .env already carries it, so
+# irises_port would agree — but a verification that reads back its own write proves nothing.
+PORT_NOW="${NEW_PORT:-$CUR_PORT}"
+
+if [ -n "$SERVICE_PLAN" ]; then
+  # The transition IS the restart — installing the unit starts Irises, removing it starts her
+  # detached — so it REPLACES the generic step below rather than running before it, and it runs
+  # whatever --no-restart says: a service installed and left stopped is neither state anyone asked
+  # for. The health check is wait_health_sha directly, because irises_restart_verify would cycle
+  # her a second time to prove what the transition just did.
+  if [ -z "$SHA" ]; then warn "no dist/version.json — verifying liveness only"; fi
+  if [ "$SERVICE_PLAN" = "on" ]; then
+    PID="$(server_pid)"
+    if [ -n "$PID" ]; then server_stop 20; fi
+    # Absolute, because a unit, a plist and a Task Scheduler action all inherit essentially no PATH
+    # and a bare `node` there resolves to nothing at boot. augment_path ran above, so this is the
+    # same node every other lifecycle step picked.
+    NODE_BIN="$(command -v node 2>/dev/null || true)"
+    if [ -z "$NODE_BIN" ]; then
+      err "no node on PATH — a $SERVICE_KIND service cannot resolve one at boot; install node and re-run"
+      exit 1
+    fi
+    UNIT="$(service_install "$ROOT" "$NODE_BIN")" || { err "could not install the $SERVICE_KIND service"; exit 1; }
+    service_restart || { err "the $SERVICE_KIND service would not start — check $(irises_home)/logs/server.log"; exit 1; }
+    manifest_record "serviceKind=$SERVICE_KIND" "serviceUnit=$UNIT"
+    SERVICE_STATE="installed ($SERVICE_KIND, $UNIT)"
+    RESTART_STATE="started by the $SERVICE_KIND service"
+  else
+    # The pid is read BEFORE the removal: every backend stops the service on its way out, launchd's
+    # bootout can return before the process is actually gone, and once the unit is removed there is
+    # nothing left to ask which pid was its.
+    PID="$(server_pid)"
+    service_uninstall
+    if [ -n "$PID" ]; then server_stop_pid "$PID" 20; fi
+    server_start_detached "$ROOT" || { err "could not start Irises detached — see $(irises_home)/logs/server.log"; exit 1; }
+    manifest_record "serviceKind=none" "serviceUnit="
+    SERVICE_STATE="removed — Irises runs detached; nothing restarts it after a reboot"
+    RESTART_STATE="started detached"
+  fi
+  if ! wait_health_sha "http://127.0.0.1:$PORT_NOW" "$SHA" 60 >/dev/null; then
+    summary health-failed \
+      "changed:   $CHANGED_KEYS" \
+      "backup:    $BACKUP_SHOWN" \
+      "service:   $SERVICE_STATE" \
+      "Irises:    $RESTART_STATE, but /health did not report build $(printf '%.7s' "${SHA:-unknown}") on :$PORT_NOW within 60s — read $(irises_home)/logs/server.log"
+    exit 4
+  fi
+  RESTART_STATE="$RESTART_STATE — build $(printf '%.7s' "${SHA:-unknown}") verified live on :$PORT_NOW"
+elif [ "$DO_RESTART" = "0" ]; then
   RESTART_STATE="skipped (--no-restart) — the change is on disk; restart Irises yourself"
   say "not restarting: --no-restart. The new value is in $ENV_FILE and takes at her next start"
+elif [ "$CLONE_CHANGED" = "0" ]; then
+  # A front-only run changed the ENGINE's file and nothing of hers. Bouncing her for it would be a
+  # restart nobody asked for, and the gateway step below is the one that makes the change live.
+  RESTART_STATE="not restarted — nothing in $ENV_FILE moved"
+  say "$RESTART_STATE; only the engine's side changed"
 elif ! service_installed && [ -z "$(server_pid)" ]; then
   # Not a failure, and it must not read like one: there is nothing to restart, and the value will
   # be read the first time she does start.
   RESTART_STATE="not running — the change takes effect at her next start"
   say "no service installed and nothing running — $RESTART_STATE"
 else
-  SHA="$(built_sha "$ROOT")"
   if [ -z "$SHA" ]; then
     warn "no dist/version.json — verifying liveness only"
   fi
-  PORT_NOW="$(irises_port)"
   if ! irises_restart_verify "$ROOT" "$PORT_NOW" "$SHA" 60; then
     summary health-failed \
       "changed:   $CHANGED_KEYS" \
-      "backup:    ${BACKUP:-none (new file)}" \
+      "backup:    $BACKUP_SHOWN" \
+      "service:   $SERVICE_STATE" \
       "Irises:    restarted, but /health did not report build $(printf '%.7s' "${SHA:-unknown}") within 60s — read $(irises_home)/logs/server.log"
     exit 4
   fi
@@ -821,10 +1118,35 @@ else
   fi
 fi
 
+# ── the engine's gateway ─────────────────────────────────────────────────────
+# IRISES_URL and IRISES_FRONT are read when the gateway STARTS and at no other moment, so an engine
+# write nobody bounced is a setting that changed a file and nothing else.
+GATEWAY_STATE="n/a (no engine-side change)"
+if [ "$ENGINE_CHANGED" = "1" ] && [ "$ENGINE" != "off" ]; then
+  if [ "$DO_GATEWAY" = "0" ]; then
+    GATEWAY_STATE="skipped (--no-gateway-restart) — the engine reads IRISES_URL / IRISES_FRONT only when its gateway starts"
+  elif gateway_restart "$ENGINE" 90; then
+    GATEWAY_STATE="bounced and verified"
+  else
+    # Nothing is rolled back, and the summary says so: Irises herself is configured and answering,
+    # and undoing that over an engine we could not verify would break the half that works.
+    # engine-setup.sh:1005-1014 reports its own install the same way.
+    summary gateway-failed \
+      "changed:   $CHANGED_KEYS" \
+      "backup:    $BACKUP_SHOWN" \
+      "Irises:    $RESTART_STATE" \
+      "service:   $SERVICE_STATE" \
+      "gateway:   NOT verified back up — nothing of this run was undone, and Irises is on the new settings" \
+      "next:      find out why, then bounce it by hand; the engine reads the change only at its next start"
+    exit 5
+  fi
+fi
+
 summary ok \
   "changed:   $CHANGED_KEYS" \
-  "backup:    ${BACKUP:-none (new file)}" \
+  "backup:    $BACKUP_SHOWN" \
   "Irises:    $RESTART_STATE" \
-  "gateway:   n/a (no engine-side change)" \
+  "service:   $SERVICE_STATE" \
+  "gateway:   $GATEWAY_STATE" \
   "show:      bash scripts/configure.sh --show"
 exit 0
