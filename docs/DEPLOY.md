@@ -143,10 +143,11 @@ bash scripts/update.sh        # add --check to preview, --yes to skip the prompt
 
 **A deploy runs the flag scripts, not the menu.** `bash ./scripts/irises.sh` (`npm run setup`) is the
 interactive entry for a person at a keyboard: it asks, composes these same flags, prints the command
-line it is about to run, and runs it. It adds no lifecycle behaviour of its own, so anything scripted —
-this box's deploy, CI, an agent — keeps calling `update.sh` / `engine-setup.sh` with flags and reading
-the `RESULT:` line. Every flag below defaults to what the scripts did before the menu existed, so an
-existing invocation is unchanged.
+line it is about to run, and runs it. It adds no lifecycle behaviour of its own: it composes the three
+lifecycle scripts, `engine-setup.sh`, `configure.sh` and `update.sh`. So anything scripted — this
+box's deploy, CI, an agent — keeps calling those with flags and reading the `RESULT:` line. Every
+flag below defaults to what the scripts did before the menu existed, so an existing invocation is
+unchanged.
 
 The script fast-forward `git pull`s the current branch, runs `npm ci && npm run build` (and the web
 client build when `web/out` exists — or `IRISES_WEB=1` asks for it — and the box has ~1.5 GB of
@@ -208,6 +209,30 @@ reports and changes nothing while the other changes everything.
 | the reset or the rebuild at the target failed part way — tree, `node_modules` and `dist` may disagree | `3` | `partial` |
 | it built but would not answer `/health` on the target build — nothing left to undo | `4` | `partial` |
 | the clone is on the target build, but the engine gateway could not be verified back up | `5` | `gateway-failed` |
+
+**Changing a setting** on a box that is already installed is `scripts/configure.sh` — no wizard, no
+`npm ci`, no rebuild, and no re-run of the installer over a live clone for a one-line `.env` change:
+
+```bash
+bash scripts/configure.sh --show                  # report only: no lock, no write, no restart
+bash scripts/configure.sh --tz Europe/Paris --yes
+bash scripts/configure.sh --port 3001 --yes       # moves the engine's IRISES_URL with it
+bash scripts/configure.sh --front 'telegram:*' --yes   # or --front none, to front nothing
+```
+
+It previews the `+` / `~` / `-` lines it would write (a secret prints as `<set>`, never its value),
+backs each file up to `.bak-irises-<timestamp>`, writes, then restarts Irises and verifies this
+clone's build is what answers `/health` — `.env` is parsed once at boot, so an unrestarted change is
+a change that silently did not take. `--yes` is the non-interactive form, `--no-restart` leaves the
+running server on the old settings, and `--no-gateway-restart` skips the gateway bounce a `--front`
+or `--port` change does. It takes the **same single lifecycle lock** as `engine-setup.sh` and
+`update.sh`, so a configure cannot race a deploy rewriting the same `.env` (a `--show` takes none).
+Exit codes are the house contract: `0` applied, nothing needed changing, or `--show` · `1` a step
+failed or was refused · `2` bad usage · `4` restarted but `/health` did not report this build · `5`
+configured and live, but the engine gateway could not be verified back up. Every run past the flags
+ends its stdout with `RESULT: ok|noop|health-failed|gateway-failed|partial`. Secrets never travel on
+argv: `IRISES_MODEL_API_KEY`, `IRISES_DASHBOARD_PASSWORD` and `IRISES_SET_VALUE` (for a bare
+`--set KEY`) are read from the environment. `bash scripts/configure.sh --help` is the full list.
 
 `scripts/engine-setup.sh` uses the same contract on its own side: `0` ok, `1` a step failed, `2` bad
 arguments, `4` Irises never reported the expected build on `/health`, `5` the gateway could not be

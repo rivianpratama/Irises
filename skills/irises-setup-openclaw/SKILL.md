@@ -55,10 +55,10 @@ git clone https://github.com/rivianpratama/irises ~/irises && cd ~/irises
 bash ./scripts/irises.sh
 ```
 
-The second command opens a menu — install or repair, update, uninstall, status, advanced — that asks
-which engine, which chats Irises fronts, which port, whether she runs as a service, and whether her
-own voice keeps inheriting this OpenClaw's model, then prints the exact command it is about to run
-before running it. `npm run setup` is the same menu.
+The second command opens a menu — install or repair, configure, update, uninstall, status, advanced —
+that asks which engine, which chats Irises fronts, which port, whether she runs as a service, and
+whether her own voice keeps inheriting this OpenClaw's model, then prints the exact command it is
+about to run before running it. `npm run setup` is the same menu.
 
 If they would rather not be asked anything, the one-shot form does the same install with every
 default:
@@ -158,6 +158,24 @@ healthy install. Then tell them where to talk to her: any fronted engine channel
 
 All of them are in the same menu (`bash ./scripts/irises.sh`, from the Irises folder), and all of them
 are theirs to run, never yours.
+
+**Change a setting** (from the Irises folder, in their terminal) — the port, the service, which chats
+she fronts, the model her voice runs on, the browser chat, the timezone, the dashboard password, or
+any documented `.env` key, without re-running the installer:
+
+```bash
+bash ./scripts/configure.sh --show              # report only: every setting and where it came from
+bash ./scripts/configure.sh --tz Europe/Paris   # the wall clock she reads
+bash ./scripts/configure.sh --front 'telegram:*'  # which chats she fronts (or --front none)
+bash ./scripts/configure.sh --model-inherit     # hand her voice back to this OpenClaw's model
+```
+
+Each run previews what it would change, asks once, backs the file up, writes, and restarts Irises to
+prove the setting took. On this engine `--front` is the one that cannot apply itself: the gateway
+reads its own process environment, so the script prints the `IRISES_FRONT=…` line for them to set
+there and restart the gateway themselves. Hand these over and read back what they report — never run
+them yourself: a `--port` change bounces the gateway, so a run from a gateway-hosted chat would kill
+the supervisor mid-reply, the same reason the install is theirs.
 
 **Update** (from the Irises folder, in their terminal):
 

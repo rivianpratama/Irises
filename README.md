@@ -190,7 +190,7 @@ Install it in a terminal on the machine the engine runs on (on Windows, that ter
 
 ```bash
 git clone https://github.com/rivianpratama/irises && cd irises
-bash ./scripts/irises.sh          # the menu: install or repair, update, uninstall, status, advanced
+bash ./scripts/irises.sh          # the menu: install or repair, configure, update, uninstall, status, advanced
 ```
 
 That is the front door for a person: a plain terminal menu that asks which engine, which chats Irises fronts, which port, whether she runs as a service, and whether she keeps inheriting your engine's model — then **prints the exact command it is about to run** and runs it. Nothing happens that you have not read first. `npm run setup` is the same thing under a name npm users expect.
@@ -215,7 +215,7 @@ openclaw skills install git:rivianpratama/irises
 #   then ask OpenClaw to run the  irises-setup-openclaw  skill
 ```
 
-The setup defaults to **bridge mode**: it installs the plugin, and then the two engines part ways. On **hermes** it writes `IRISES_FRONT=*:*` into `~/.hermes/.env` itself, so Irises fronts every chat out of the box. On **OpenClaw** it edits no engine config: it prints the three variables — `IRISES_BRIDGE_TOKEN`, `IRISES_URL`, `IRISES_FRONT` — for you to set on the gateway process yourself, and until you do, nothing is fronted. (`--no-bridge` installs without the plugin or the fronting.) Either way it restarts the engine gateway at the end so the engine picks up its new API-server setting and its plugins. To front only some conversations, say so **at install**: the menu asks which chats Irises fronts, and `--front 'telegram:*,whatsapp:+1555*'` is the flag form (default `*:*`, every chat on every platform your engine speaks). It is still a plain engine-side setting afterwards — narrow the `IRISES_FRONT` glob list (matched against `<platform>:<chat_id>`) whenever you like, everything not matched the engine keeps handling itself, and blanking `IRISES_FRONT` turns the plugin inert instantly. If the hook errors, the default `IRISES_BRIDGE_FAIL=open` lets the engine answer rather than go silent — I'd rather you get a boring reply than no reply.
+The setup defaults to **bridge mode**: it installs the plugin, and then the two engines part ways. On **hermes** it writes `IRISES_FRONT=*:*` into `~/.hermes/.env` itself, so Irises fronts every chat out of the box. On **OpenClaw** it edits no engine config: it prints the three variables — `IRISES_BRIDGE_TOKEN`, `IRISES_URL`, `IRISES_FRONT` — for you to set on the gateway process yourself, and until you do, nothing is fronted. (`--no-bridge` installs without the plugin or the fronting.) Either way it restarts the engine gateway at the end so the engine picks up its new API-server setting and its plugins. To front only some conversations, say so **at install**: the menu asks which chats Irises fronts, and `--front 'telegram:*,whatsapp:+1555*'` is the flag form (default `*:*`, every chat on every platform your engine speaks). It is still a plain engine-side setting afterwards, and changing it later is one command from the Irises folder: `bash ./scripts/configure.sh --front 'telegram:*'` (or `--front none` to front nothing and leave the plugin installed and inert) rewrites `IRISES_FRONT` in the engine's own `.env` and bounces the gateway so it takes. Patterns are matched against `<platform>:<chat_id>`, and everything not matched the engine keeps handling itself. Editing that file by hand and restarting the gateway yourself still works, and is the fallback when the clone cannot reach it. If the hook errors, the default `IRISES_BRIDGE_FAIL=open` lets the engine answer rather than go silent — I'd rather you get a boring reply than no reply.
 
 Whatever goes into the **engine's own `.env`** is yours to approve: run from the menu, the installer lists the exact lines it wants to add or retarget — key names and non-secret values, never a secret's value — and writes them only on a yes (`--engine-env ask`). Decline, or pass `--engine-env print`, and it writes nothing to that file, prints the block for you to paste, and records in the manifest that there is nothing of ours in there to take back out later. `--engine-env apply` is the default and is what every install has always done.
 
@@ -236,7 +236,7 @@ git clone https://github.com/rivianpratama/irises && cd irises
 bash ./scripts/irises.sh          # or: npm run setup — same menu
 ```
 
-The menu opens on a status line (engine, whether Irises is installed and on which build, service, port) over five entries — **install or repair**, **update**, **uninstall**, **status**, **advanced** — and every one of them ends in a printed command line you could have typed yourself. The install wizard runs in seven steps and its sixth is **optional extras**, skipped unless you ask for it: the browser chat UI, your timezone, and the dashboard password (typed unseen, and left blank keeps the shipped default rather than changing anything). Going back is a numbered option on the steps that offer it, so every prompt answers to a number. On the uninstall menu the default is **Back** — everything else there takes something away, and an Enter meant for the menu above should not be one of them. Prefer to type it? The scripted path is unchanged and is what deploys and agents use:
+The menu opens on a status line (engine, whether Irises is installed and on which build, service, port) over six entries — **install or repair**, **configure**, **update**, **uninstall**, **status**, **advanced** — and every one of them ends in a printed command line you could have typed yourself. **Configure** re-asks the install's own questions on a box that is already installed — port, service, fronted chats, voice model, browser chat, timezone, dashboard password, any documented `.env` key — with no wizard, no `npm ci` and no rebuild (see [Changing settings after the install](#changing-settings-after-the-install)). The install wizard runs in seven steps and its sixth is **optional extras**, skipped unless you ask for it: the browser chat UI, your timezone, and the dashboard password (typed unseen, and left blank keeps the shipped default rather than changing anything). Going back is a numbered option on the steps that offer it, so every prompt answers to a number. On the uninstall menu the default is **Back** — everything else there takes something away, and an Enter meant for the menu above should not be one of them. Prefer to type it? The scripted path is unchanged and is what deploys and agents use:
 
 ```bash
 bash ./scripts/engine-setup.sh --engine hermes --yes   # or: --engine openclaw
@@ -297,7 +297,8 @@ npm run chat
 
 | Script | What it does |
 |--------|--------------|
-| `npm run setup` | The lifecycle menu (`bash ./scripts/irises.sh`) — install or repair, update, uninstall, status |
+| `npm run setup` | The lifecycle menu (`bash ./scripts/irises.sh`) — install or repair, configure, update, uninstall, status |
+| `bash ./scripts/configure.sh --show` | Live settings report (read-only); its flags change one setting at a time — see [Changing settings after the install](#changing-settings-after-the-install) |
 | `npm run dev` | Server in watch mode (`tsx`) on `:3000` |
 | `npm run dev:web` | Web debug client (Next dev server) |
 | `npm run chat` | Terminal REPL onto the same web-chat endpoints (`/cancel`, `/quit`) |
@@ -336,6 +337,33 @@ Flags: `--check` (report only — exit `10` if an update is available, `0` if no
 After the gateway comes back, hermes posts its own short "gateway online" note in your home channel — hermes's message, not Irises's, silenced per platform with `<platform>.gateway_restart_notification: false` in hermes's config ([details](docs/ENGINES.md#gateway-restart-notifications)).
 
 **Irises notices on its own, too.** The running server periodically checks the remote for a newer build and surfaces it — on `/health` (`version` + `update` fields), on the `/dashboard` overview card, and in chat: she mentions a waiting upgrade once to recently-active chats, woven naturally into the conversation, hands you the same `bash scripts/update.sh` line verbatim, and says a short "back on the new build" once she's on it. Ask her what version she is and she'll tell you; ask her to apply it and she'll tell you she can't and give you the command once — there is no chat command for an update, by design. Tune or silence all of it with the `UPDATE_*` env vars (see [Configuration](#configuration)): `UPDATE_ANNOUNCE_ENABLED=false` keeps her quiet about it, `UPDATE_CHECK_ENABLED=false` stops the checking (and then she says plainly that she can't tell).
+
+### Changing settings after the install
+
+The questions the wizard asked are all re-askable on a box that is already installed, with no wizard, no `npm ci` and no rebuild. In the menu (`bash ./scripts/irises.sh` → **2) Configure Irises**) the entry opens on the live settings report and offers the port and whether she runs as a service, which chats she fronts, the model her voice runs on (or handing it back to the engine), the browser chat UI, the timezone, the dashboard password, and setting or unsetting any documented `.env` key. Each entry prints the flag command it is about to run, the same as everywhere else in the menu.
+
+The flag form is `scripts/configure.sh`. `--show` is read-only — no lock, no write, no restart — and names secrets rather than printing them (`<set>` / `<unset>`):
+
+```bash
+bash scripts/configure.sh --show                        # every setting, and where its value came from
+bash scripts/configure.sh --tz Europe/Paris             # or --tz host to follow this machine
+bash scripts/configure.sh --web off                     # the browser/CLI debug chat (WEB_ENABLED)
+bash scripts/configure.sh --front 'telegram:*'          # which chats she fronts (engine-side)
+bash scripts/configure.sh --front none                  # front nothing; the plugin stays, inert
+bash scripts/configure.sh --port 3001                   # moves the engine's IRISES_URL with it
+bash scripts/configure.sh --service on                  # or: --service off, to run detached
+IRISES_MODEL_API_KEY=… bash scripts/configure.sh --model-lane openrouter --model-slug <id>
+bash scripts/configure.sh --model-inherit               # back to inheriting the engine's model
+bash scripts/configure.sh --set CONVO_EFFORT=low        # any documented key; repeatable
+IRISES_SET_VALUE=… bash scripts/configure.sh --set OPENROUTER_API_KEY   # a secret, off argv
+bash scripts/configure.sh --unset IRISES_TZ
+```
+
+A run previews every change first as `+` / `~` / `-` lines against the file it would touch (a secret's value is never in there — it prints as `<set>`, and the old one as `not shown`), asks once, backs the file up to `.env.bak-irises-<timestamp>`, writes, and then **restarts Irises and checks that the same build answers `/health`** — because `.env` is read once at boot, so a change nobody restarted into is a change that silently did not take. `--no-restart` writes and leaves the running server alone. A `--front` or `--port` change also rewrites the engine's `.env` (backed up the same way) and bounces the engine gateway, which reads those keys only when it starts; `--no-gateway-restart` skips that. `--yes` is the non-interactive form for scripts. Exit codes: `0` applied, nothing to change, or `--show` · `1` a step failed or was refused · `2` bad usage · `4` restarted but `/health` did not report this build · `5` configured and live, but the gateway could not be verified back up. Every run past the flags ends its stdout with `RESULT: ok|noop|health-failed|gateway-failed|partial`.
+
+The generic editor has two rules worth knowing before you reach for it. A `--set` key has to be one `.env.example` or `deploy/app.env` documents, so a typo cannot sit in the file doing nothing — `--allow-unknown` is the override for the handful of real keys those files only describe in prose. And a key whose name ends in `_KEY`, `_TOKEN`, `_PASSWORD` or `_SECRET` may not carry its value on the command line: pass the name alone and put the value in `IRISES_SET_VALUE` (the dashboard password is `IRISES_DASHBOARD_PASSWORD`, whose presence is itself the request and needs no flag). `PORT`, `IRISES_FRONT`, `OPS_BACKEND`, the engine credentials and `IRISES_HOME` are refused there and point you at the flag instead — each of them is written in more places than this clone's `.env`, and only a flag or a re-install moves them all together.
+
+Every setting the installer asks about is also a Configure entry and a `configure.sh` flag, and `scripts/settingsContract.test.ts` fails `npm test` when one of the three is missing.
 
 ### Start, stop, status, logs
 
@@ -396,7 +424,7 @@ Outbound routes by `chatId` prefix — `web:` → web / CLI, `eng:<platform>:<ch
 
 ## Configuration
 
-**On top of an engine you normally set none of this** — Irises auto-detects the backend, reuses the engine's key, and inherits its model (see [Models](#models)). Everything here is optional override. Config is environment variables, layered lowest → highest: `deploy/app.env` (committed, non-secret baseline) loads first, then **engine auto-discovery** fills in / updates what it can from your engine, then your local `.env` layers on top and wins over both. The knobs you're most likely to touch:
+**On top of an engine you normally set none of this** — Irises auto-detects the backend, reuses the engine's key, and inherits its model (see [Models](#models)). Everything here is optional override. The supported way to change any of it on an installed box is the menu's **Configure** entry or `bash scripts/configure.sh` ([Changing settings after the install](#changing-settings-after-the-install)), which previews the edit, backs the file up and restarts into it; editing `.env` by hand and restarting her yourself is still perfectly fine. Config is environment variables, layered lowest → highest: `deploy/app.env` (committed, non-secret baseline) loads first, then **engine auto-discovery** fills in / updates what it can from your engine, then your local `.env` layers on top and wins over both. The knobs you're most likely to touch:
 
 | Variable | Purpose |
 |----------|---------|

@@ -58,9 +58,12 @@ bash ./scripts/irises.sh                           # the menu; `npm run setup` i
 ```
 
 The menu is the front door for a person: a status header (engine, installed build, service, port) over
-**install or repair**, **update**, **uninstall**, **status** and **advanced**. It owns no lifecycle
-logic of its own — every entry translates your answers into flags on the two scripts below, prints the
-exact command line, and runs it. The install wizard is seven steps, and the sixth — **optional
+**install or repair**, **configure**, **update**, **uninstall**, **status** and **advanced**. It owns
+no lifecycle logic of its own — every entry translates your answers into flags on the lifecycle
+scripts, prints the exact command line, and runs it. **Configure** re-asks the install's questions on
+a box that is already installed — port and service, fronted chats, voice model, browser chat,
+timezone, dashboard password, any documented `.env` key — through `bash ./scripts/configure.sh`, with
+no wizard, no `npm ci` and no rebuild. The install wizard is seven steps, and the sixth — **optional
 extras** — is skipped unless asked for: the browser chat UI, the timezone, and the dashboard password,
 which is typed unseen and, left blank, keeps the shipped default rather than setting anything. Every
 prompt answers to a number, going back included, and the uninstall menu defaults to **Back**, because
@@ -474,7 +477,7 @@ can still be lost (it is logged at ERROR), and everything after it goes to herme
 
 | Key | Default | Meaning |
 |---|---|---|
-| `IRISES_FRONT` | `*:*` on a hermes install (the installer writes it); on OpenClaw it is *printed for you to set* — and *unset or empty = front nothing*, wherever you set it by hand | comma-separated glob patterns choosing fronted chats |
+| `IRISES_FRONT` | `*:*` on a hermes install (the installer writes it); on OpenClaw it is *printed for you to set* — and *unset or empty = front nothing*, wherever you set it by hand | comma-separated glob patterns choosing fronted chats. Change it later from the Irises clone with `bash ./scripts/configure.sh --front '<patterns>'` (or `--front none`), which rewrites this key in the engine's `.env` and bounces the gateway; editing the file yourself and restarting the gateway is the fallback |
 | `IRISES_BRIDGE_TOKEN` | — | shared secret; must equal Irises's `ENGINE_PUSH_TOKEN`. Required: unset, the hermes listener still binds but refuses every send with a 403 naming the missing variable (a misconfiguration you can read, instead of anonymous sends on loopback) |
 | `IRISES_URL` | `http://127.0.0.1:3000` | where the plugin POSTs inbound messages |
 | `IRISES_BRIDGE_FAIL` | `open` | `open` = engine answers on bridge failure; `closed` = silence |
@@ -561,7 +564,12 @@ the engine picks up its API-server setting.
 Taking it out again, in order of how much you want gone:
 
 - **Pause fronting, instantly:** blank `IRISES_FRONT` on the engine side. The plugin stays installed
-  and inert, and no restart is needed.
+  and inert, and no restart is needed. From the Irises clone,
+  `bash ./scripts/configure.sh --front none` does it for you — it writes the empty value into the
+  engine's `.env` (after a backup) and bounces the gateway so the change survives the next start;
+  `--front '<patterns>'` narrows it to the chats you name instead. The hand edit remains the
+  fallback, and on OpenClaw — where the gateway reads its own process environment rather than a file
+  this script can edit — it prints the line for you to set there yourself.
 - **Disable the plugin:** `hermes plugins disable irises-bridge` /
   `openclaw plugins disable irises-bridge`, then bring the gateway back the way you normally would.
 - **Detach from the engine:** `bash ./scripts/engine-setup.sh --detach-engine` — undo every
