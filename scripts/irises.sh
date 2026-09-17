@@ -3,28 +3,33 @@
 #
 #   bash ./scripts/irises.sh        # or: npm run setup
 #
-# IT IMPLEMENTS NOTHING. Every action here ends in a call to scripts/engine-setup.sh or
-# scripts/update.sh with flags, and the exact command line is PRINTED before it runs — so a run that
-# went well can be repeated from a script, and a run that did not can be reported in one line. The
-# flags stay the supported path for deploys and for agents; this file is for the human at the
-# keyboard, who should not have to know them to be in control of what happens to their engine.
+# IT IMPLEMENTS NOTHING. Every action here ends in a call to scripts/engine-setup.sh,
+# scripts/configure.sh or scripts/update.sh with flags, and the exact command line is PRINTED before
+# it runs — so a run that went well can be repeated from a script, and a run that did not can be
+# reported in one line. The flags stay the supported path for deploys and for agents; this file is
+# for the human at the keyboard, who should not have to know them to be in control of what happens
+# to their engine.
 #
 # WHAT IT ADDS over the flags: the questions. Which engine, which chats Irises fronts, which model
-# her own voice runs on, what may be written to the engine's .env, and — on the way out — whether to
-# stop, detach, uninstall or delete. Everything it learns becomes flags, which is why the composed
-# command line is printed rather than described.
+# her own voice runs on, what may be written to the engine's .env, what to change AFTERWARDS without
+# re-installing, and — on the way out — whether to stop, detach, uninstall or delete. Everything it
+# learns becomes flags, which is why the composed command line is printed rather than described.
 #
 # THE PROMPTS READ STDIN, and stdin only (see the helper block in lib/irises-lib.sh). This script
 # never sets IRISES_ASSUME_YES, so a piped heredoc walks the same menu a person does; EOF at a menu
 # is an answer too — it quits with exit 2 and points at the flag scripts, because a wizard that
 # silently took every default for a terminal that went away is how an install nobody asked for
-# happens.
+# happens. A CHILD INHERITS THAT STDIN: under a pipe it sees no TTY and auto-yeses from its own
+# no-TTY block, which is what lets a heredoc walk install and configure the whole way through.
 #
 # THE DOUBLE-PROMPT RULE. The wizard confirms once. Update, uninstall, detach and stop pass --yes to
-# the child, whose own y/N would be the same question twice. Install does NOT: the engine-.env
-# consent preview has to run inside engine-setup.sh, where the diff is computed, so the install
-# child is invoked with --engine-env ask instead. The one gate this script keeps for itself is the
-# "type the word delete" one in front of a purge, and the sha gate in front of a rollback.
+# the child, whose own y/N would be the same question twice. Two actions do NOT. Install: the
+# engine-.env consent preview has to run inside engine-setup.sh, where the diff is computed, so the
+# install child is invoked with --engine-env ask instead. Configure: scripts/configure.sh computes
+# the +/~/- diff of what a setting would change and asks its own Apply? over it — a question this
+# script cannot ask, because it does not know the old values or how the child would read them. So
+# NO configure action passes --yes. The one gate this script keeps for itself is the "type the word
+# delete" one in front of a purge, and the sha gate in front of a rollback.
 #
 # EXIT CODES
 #   0  the menu was quit (each action reports its own child's exit code on screen)
@@ -37,10 +42,12 @@ IRISES_LOG_TAG="irises"
 SCRIPTS_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 SETUP_SH="$SCRIPTS_DIR/engine-setup.sh"
 UPDATE_SH="$SCRIPTS_DIR/update.sh"
-# How the two children are NAMED on screen: the relative form, from the clone root, which is where
+CONFIGURE_SH="$SCRIPTS_DIR/configure.sh"
+# How the three children are NAMED on screen: the relative form, from the clone root, which is where
 # this script cds to and where a person reading the line will be standing.
 SETUP_NAME="scripts/engine-setup.sh"
 UPDATE_NAME="scripts/update.sh"
+CONFIGURE_NAME="scripts/configure.sh"
 
 ROOT="$(irises_root)"
 cd "$ROOT"
@@ -81,6 +88,7 @@ eof_quit() {
   warn "stdin ran out with a question still open — nothing was changed."
   warn "the scripted path needs no terminal, and takes the same decisions as flags:"
   warn "  bash $SETUP_NAME --help"
+  warn "  bash $CONFIGURE_NAME --help"
   warn "  bash $UPDATE_NAME --help"
   exit 2
 }
@@ -114,14 +122,17 @@ tilde() { # PATH
 # one guarantee that this menu and the flags cannot drift apart without somebody seeing it, and it
 # is what an operator pastes into an issue when the run goes wrong.
 #
-# A SECRET IS NEVER ON THAT LINE, because it is never in argv: the two this wizard can collect go to
-# the child in the environment, and the line says `<set>` where the value would be.
+# A SECRET IS NEVER ON THAT LINE, because it is never in argv: the three this menu can collect go to
+# the child in the environment, and the line says `<set>` where the value would be. IRISES_SET_VALUE
+# is the third — Configure's generic editor uses it for every key whose name says it holds a secret,
+# and a value that reached the printed line through it would be the same leak by another door.
 run_child() { # SCRIPT DISPLAY_NAME ARG…
   local script="${1:-}" display="${2:-}" line="" prefix="" a
   shift 2 || true
   for a in "$@"; do line="$line $(q_arg "$a")"; done
   if [ -n "${IRISES_MODEL_API_KEY:-}" ]; then prefix="IRISES_MODEL_API_KEY=<set> "; fi
   if [ -n "${IRISES_DASHBOARD_PASSWORD:-}" ]; then prefix="${prefix}IRISES_DASHBOARD_PASSWORD=<set> "; fi
+  if [ -n "${IRISES_SET_VALUE:-}" ]; then prefix="${prefix}IRISES_SET_VALUE=<set> "; fi
   printf '\n'
   say "running, from $ROOT — copy this line to repeat it without the menu:"
   say "  ${prefix}bash ${display}${line}"
@@ -196,22 +207,26 @@ health_line() {
   return 0
 }
 
-# ── 4) status ─────────────────────────────────────────────────────────────────
+# What `configure.sh --show` already prints, shown verbatim — the same deal menu_update strikes with
+# `update.sh --check`. The manifest this used to read is only what the INSTALL chose; --show reads
+# every setting back from where it actually lives now (this clone's .env, the engine's .env, the
+# service manager, a default), and says which of those each value came from. Reprinting a subset of
+# that in this script's own words would be a second place to be wrong about a live box.
+show_report() {
+  local out rc
+  set +e
+  out="$(bash "$CONFIGURE_SH" --show 2>&1)"
+  rc=$?
+  set -e
+  printf '%s\n' "$out" | sed 's/^/  /'
+  return "$rc"
+}
+
+# ── 5) status ─────────────────────────────────────────────────────────────────
 
 do_status() {
-  local man
   status_header
-  man="$(manifest_path)"
-  if [ -f "$man" ]; then
-    ui "  manifest: $man"
-    ui "  front:    $(manifest_read "$man" frontPattern)    model lane: $(manifest_read "$man" modelLane)"
-    if [ "$(manifest_read "$man" engineEnvApplied)" = "false" ]; then
-      ui "  the engine's own .env carries nothing of ours — these keys were left to apply by hand:"
-      ui "  $(manifest_read "$man" engineEnvPending)"
-    fi
-  else
-    ui "  no install manifest at $man — nothing here has been installed by this script"
-  fi
+  show_report || true
   health_line || true
   printf '\n'
 }
@@ -463,7 +478,224 @@ menu_install() {
   done
 }
 
-# ── 2) update ─────────────────────────────────────────────────────────────────
+# ── 2) configure ──────────────────────────────────────────────────────────────
+
+# The wizard's questions, asked again on a box that is already installed. Before this section the
+# only way to move a port or a timezone was to re-run the installer over a live clone — an `npm ci`,
+# a rebuild and a plugin copy, for a one-line .env change.
+#
+# NOTHING HERE PASSES --yes. scripts/configure.sh reads the values off disk, prints the +/~/- lines
+# of what would change and asks its own Apply? over them. This menu knows neither the old values nor
+# what the child would make of them, so the confirmation has to be the child's (see THE DOUBLE-PROMPT
+# RULE at the top). Each entry asks, composes flags, runs one child, and comes back to the top menu.
+
+# A .env key as a person types it: first character A-Z, the rest A-Z, 0-9 or _. It mirrors
+# configure.sh's own key_valid rather than calling it — the child is a separate process, and a typo
+# caught here is a question re-asked instead of a spawned run that exits 2.
+key_valid() { # KEY
+  case "${1:-}" in
+    ''|*[!A-Z0-9_]*) return 1 ;;
+    [A-Z]*)          return 0 ;;
+  esac
+  return 1
+}
+
+cfg_port_service() {
+  local port svc_def
+  say "the port Irises listens on, and whether it comes back after a reboot"
+  port="$(ask_text "Port" "$(irises_port)" port_valid)" || port="$(irises_port)"
+  # The default offered is the state the box is IN, not the state an install would choose. Someone
+  # reaching this menu came to change ONE thing, and an Enter through the other question has to
+  # leave it exactly as it was — a default of `y` here would install a service on every port move.
+  if service_installed; then svc_def="y"; else svc_def="n"; fi
+  if ask_yn "Run Irises as a service so it starts with your machine?" "$svc_def"; then
+    set -- --port "$port" --service on
+  else
+    set -- --port "$port" --service off
+  fi
+  run_child "$CONFIGURE_SH" "$CONFIGURE_NAME" "$@"
+  next_steps
+  return 0
+}
+
+cfg_front() {
+  local pick patterns
+  say "which chats Irises answers in front of the engine (this lives in the ENGINE's .env)"
+  pick="$(ask_choice "chat front" 1 \
+    "Front every chat on every platform the engine speaks (*:*)" \
+    "Front only chats I name" \
+    "Front nothing (the plugin stays, inert)" \
+    "back")"
+  case "$pick" in
+    1) set -- --front '*:*' ;;
+    2) patterns="$(ask_text "patterns, comma-separated (<platform>:<glob>)" "" front_pattern_valid)" || {
+         warn "that is not a scope the engine can parse, so nothing was narrowed — nothing changed"
+         return 0
+       }
+       set -- --front "$patterns" ;;
+    3) set -- --front none ;;
+    *) return 0 ;;
+  esac
+  run_child "$CONFIGURE_SH" "$CONFIGURE_NAME" "$@"
+  next_steps
+  return 0
+}
+
+cfg_model() {
+  local pick lane_pick lane slug key url
+  say "the model Irises's own voice runs on — deep work still runs on the engine's model"
+  pick="$(ask_choice "model" 1 \
+    "Go back to inheriting the engine's model" \
+    "Pick a model for Irises's own voice" \
+    "back")"
+  case "$pick" in
+    1) set -- --model-inherit ;;
+    2)
+      lane_pick="$(ask_choice "lane" 1 "Anthropic" "OpenRouter" "OpenAI-compatible")"
+      case "$lane_pick" in
+        1) lane="anthropic" ;;
+        2) lane="openrouter" ;;
+        *) lane="openai" ;;
+      esac
+      slug="$(ask_text "model slug" "" slug_valid)" || {
+        warn "no model id — nothing changed"
+        return 0
+      }
+      # Blank is a real answer here, and a different one from the installer's: the lane's key may
+      # already be in this clone's .env from an earlier run, and re-typing a secret to change a
+      # model id is how people end up pasting one into the wrong window.
+      key="$(ask_secret "API key (not shown, not logged; blank keeps the key already in .env):")" || key=""
+      set -- --model-lane "$lane" --model-slug "$slug"
+      if [ "$lane" = "openai" ]; then
+        url="$(ask_text "base URL" "https://api.openai.com/v1" url_valid)" || url="https://api.openai.com/v1"
+        set -- "$@" --model-base-url "$url"
+      fi
+      if [ -n "$key" ]; then export IRISES_MODEL_API_KEY="$key"; fi ;;
+    *) return 0 ;;
+  esac
+  run_child "$CONFIGURE_SH" "$CONFIGURE_NAME" "$@"
+  # Gone from this process the moment the child has it, so nothing later in the session can print it.
+  unset IRISES_MODEL_API_KEY || true
+  key=""
+  next_steps
+  return 0
+}
+
+cfg_web() {
+  say "the browser chat UI this clone serves (WEB_ENABLED)"
+  if ask_yn "Enable the browser chat UI (and npm run chat)?" y; then
+    set -- --web on
+  else
+    set -- --web off
+  fi
+  run_child "$CONFIGURE_SH" "$CONFIGURE_NAME" "$@"
+  next_steps
+  return 0
+}
+
+cfg_tz() {
+  local tz
+  say "the wall clock Irises reads — it is what she calls late, not a formatting preference"
+  tz="$(ask_text "Your timezone (type host to follow this machine)" "$(system_tz)")" || tz="$(system_tz)"
+  if [ -z "$tz" ]; then
+    # system_tz is empty when node is not on PATH, and `--tz ''` is a usage error, not a reset. The
+    # word the child takes for "follow this machine" is `host`.
+    warn "no zone given — type a zone name, or the word host to follow this machine"
+    return 0
+  fi
+  set -- --tz "$tz"
+  run_child "$CONFIGURE_SH" "$CONFIGURE_NAME" "$@"
+  next_steps
+  return 0
+}
+
+cfg_dashboard() {
+  local pw
+  say "the /dashboard admin password"
+  pw="$(ask_secret "New dashboard password (not shown; blank = nothing changes):")" || pw=""
+  if [ -z "$pw" ]; then
+    say "nothing changed"
+    return 0
+  fi
+  # No flag, and there is none to pass: the variable's PRESENCE is the request (configure.sh --help,
+  # ENVIRONMENT). A password on argv is readable by every other process on the box and lands in
+  # shell history, so this is the one setting whose whole interface is an environment variable.
+  export IRISES_DASHBOARD_PASSWORD="$pw"
+  run_child "$CONFIGURE_SH" "$CONFIGURE_NAME"
+  unset IRISES_DASHBOARD_PASSWORD || true
+  pw=""
+  next_steps
+  return 0
+}
+
+cfg_any_key() {
+  local pick key v
+  say "any documented key in this clone's .env — the flags above are the ones with side effects"
+  pick="$(ask_choice "set or unset" 1 "set a key" "unset a key" "back")"
+  if [ "$pick" = "3" ]; then return 0; fi
+  key="$(ask_text "KEY (UPPER_SNAKE)" "" key_valid)" || {
+    warn "that is not a key name — nothing changed"
+    return 0
+  }
+  if [ "$pick" = "2" ]; then
+    set -- --unset "$key"
+  elif is_secret_key "$key"; then
+    # A key whose NAME says it holds a secret may not carry its value on argv — configure.sh refuses
+    # that shape outright, and reads the value out of IRISES_SET_VALUE instead.
+    v="$(ask_secret "value (not shown):")" || v=""
+    export IRISES_SET_VALUE="$v"
+    set -- --set "$key"
+  else
+    v="$(ask_text "value" "")" || v=""
+    set -- --set "$key=$v"
+  fi
+  run_child "$CONFIGURE_SH" "$CONFIGURE_NAME" "$@"
+  # Exit 2 is the child's answer to a key neither .env.example nor deploy/app.env documents. The
+  # question is asked AFTER the run rather than guessed before it: the child streams to this same
+  # terminal, so its reason is on screen above the question, and some real keys are only described
+  # in prose in those files — which is what --allow-unknown exists for.
+  if [ "$LAST_RC" = "2" ] && ask_yn "The key is not one the docs know. Re-run with --allow-unknown?" n; then
+    run_child "$CONFIGURE_SH" "$CONFIGURE_NAME" "$@" --allow-unknown
+  fi
+  unset IRISES_SET_VALUE || true
+  v=""
+  next_steps
+  return 0
+}
+
+menu_configure() {
+  while :; do
+    printf '\n'
+    ui "Configure Irises"
+    # The same report Status prints, here as well: an entry is chosen against what the box is set to
+    # NOW, and a menu that made someone go back a screen to check would be a menu they guess at.
+    show_report || true
+    ui "  1) Port and service"
+    ui "  2) Which chats Irises fronts"
+    ui "  3) The model her voice runs on"
+    ui "  4) Browser chat UI"
+    ui "  5) Timezone"
+    ui "  6) Dashboard password"
+    ui "  7) Set or unset any .env key (advanced)"
+    ui "  b) Back"
+    # Back is the default, on the same rule as Uninstall: every other entry on this menu changes
+    # something, and an Enter meant for the menu above must not be one of them.
+    if ! ask_line "choose" "b"; then eof_quit; fi
+    case "$ANSWER" in
+      b|B) return 0 ;;
+      1) cfg_port_service; return 0 ;;
+      2) cfg_front; return 0 ;;
+      3) cfg_model; return 0 ;;
+      4) cfg_web; return 0 ;;
+      5) cfg_tz; return 0 ;;
+      6) cfg_dashboard; return 0 ;;
+      7) cfg_any_key; return 0 ;;
+      *) warn "1, 2, 3, 4, 5, 6, 7 or b" ;;
+    esac
+  done
+}
+
+# ── 3) update ─────────────────────────────────────────────────────────────────
 
 # What --check already prints, shown verbatim — it ends in `git log --oneline OLD..NEW`, which is
 # the changelog, and reprinting it in this script's own words would be a second place to be wrong.
@@ -520,7 +752,7 @@ menu_update() {
   done
 }
 
-# ── 3) uninstall ──────────────────────────────────────────────────────────────
+# ── 4) uninstall ──────────────────────────────────────────────────────────────
 
 # Stop, and nothing else. The library's own service_stop, not a child script: there is no flag on
 # either lifecycle script that stops the service and leaves everything else standing, and inventing
@@ -607,7 +839,7 @@ menu_uninstall() {
   done
 }
 
-# ── 5) advanced ───────────────────────────────────────────────────────────────
+# ── 6) advanced ───────────────────────────────────────────────────────────────
 
 # The newest archived receipt names the build that was on this box before the last update — the one
 # fact a rollback needs and the one a person cannot be expected to remember. src/update/receipt.ts
@@ -708,20 +940,25 @@ main_menu() {
     status_header
     printf '\n'
     ui "  1) Install or repair Irises"
-    ui "  2) Update Irises"
-    ui "  3) Uninstall Irises"
-    ui "  4) Status"
-    ui "  5) Advanced"
+    ui "  2) Configure Irises"
+    ui "  3) Update Irises"
+    ui "  4) Uninstall Irises"
+    ui "  5) Status"
+    ui "  6) Advanced"
     ui "  q) Quit"
     if ! ask_line "choose" "1"; then eof_quit; fi
     case "$ANSWER" in
       1) menu_install ;;
-      2) menu_update ;;
-      3) menu_uninstall ;;
-      4) do_status ;;
-      5) menu_advanced ;;
-      q|Q|quit) say "nothing else was changed. The flags are always there: bash $SETUP_NAME --help"; exit 0 ;;
-      *) warn "1, 2, 3, 4, 5 or q" ;;
+      2) menu_configure ;;
+      3) menu_update ;;
+      4) menu_uninstall ;;
+      5) do_status ;;
+      6) menu_advanced ;;
+      q|Q|quit)
+        say "nothing else was changed. The flags are always there:"
+        say "  bash $SETUP_NAME --help   ·   bash $CONFIGURE_NAME --show"
+        exit 0 ;;
+      *) warn "1, 2, 3, 4, 5, 6 or q" ;;
     esac
   done
 }
