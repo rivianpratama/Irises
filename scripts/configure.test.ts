@@ -777,6 +777,34 @@ test('--port moves IRISES_URL when the manifest says the engine .env is ours', S
   assert.match(changed, /engine:IRISES_URL/, changed);
 });
 
+test('--front at the value the engine already carries plans nothing and records nothing', SKIP_ON_WINDOWS, () => {
+  // --port only plans IRISES_URL where the file still names the old port; --front planned
+  // unconditionally, and FRONT_PLANNED is what the manifest step reads. So a front asked for at the
+  // value it already has wrote frontPattern and keysRetargeted for a byte that never moved — the
+  // manifest claiming a scope this run took over, which is what --uninstall then restores.
+  const box = hermesBox('IRISES_URL=http://127.0.0.1:3999\nIRISES_FRONT=telegram:1\n', {
+    keysPreExisting: 'IRISES_FRONT',
+    keysRetargeted: '',
+    frontPattern: '*:*',
+  });
+  const engineBefore = readFileSync(box.engineEnv, 'utf8');
+  const r = run(['--front', 'telegram:1', '--tz', 'Europe/Paris', '--no-restart', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(envText(box.root), /^IRISES_TZ=Europe\/Paris$/m, 'the setting that DID change applies');
+  const man = readFileSync(box.manifestPath, 'utf8');
+  assert.match(man, /"keysRetargeted": ""/, 'a front that did not move retargets nothing');
+  assert.match(man, /"frontPattern": "\*:\*"/, 'and does not rewrite the pattern either');
+  assert.equal(readFileSync(box.engineEnv, 'utf8'), engineBefore, "the engine's .env is byte-identical");
+  const engineBackups = readdirSync(box.env.HERMES_HOME).filter((f) => f.startsWith('.env.bak-irises-'));
+  assert.deepEqual(engineBackups, [], `nothing to back up: ${engineBackups.join(', ')}`);
+  assert.ok(!r.out.includes('IRISES_FRONT'), `and the preview never offers the line:\n${r.out}`);
+
+  // …and on its own there is nothing left for the run to do at all.
+  const alone = run(['--front', 'telegram:1', '--yes'], box.env);
+  assert.equal(alone.code, 0, `${alone.out}\n${alone.err}`);
+  assert.equal(resultLine(alone.out), 'RESULT: noop', alone.out);
+});
+
 test('a --port whose engine IRISES_URL already names the new port retargets nothing', SKIP_ON_WINDOWS, () => {
   // The bookkeeping and the warning both have to mean "this run wrote it". Here the key already
   // points where the move is going, so it is not one this run moved: the plan never gains an entry

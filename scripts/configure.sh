@@ -801,8 +801,20 @@ if [ "$FRONT_SET" = "1" ]; then
         err "the engine .env carries nothing of ours (the install was declined or printed) — add IRISES_FRONT there yourself, then bounce the gateway"
         exit 1
       fi
-      plan_add "$ENGINE_ENV" set IRISES_FRONT "$FRONT_VALUE"
-      FRONT_PLANNED=1 ;;
+      # Only where it would actually move, the way --port only plans IRISES_URL where the file still
+      # names the old port. FRONT_PLANNED is what the manifest step below reads, so a front planned
+      # at the value it already carries recorded a frontPattern and a keysRetargeted for a byte that
+      # never moved — the manifest claiming a scope this run took over, which is the list
+      # --uninstall then puts back.
+      #
+      # The test is the preview's own: an ABSENT key still plans (absent is not empty, and
+      # `--front none` has to be able to write the empty value the gateway reads as "front
+      # nothing"), and so does a duplicated one, because collapsing it onto one line is a change.
+      if [ "$(env_count "$ENGINE_ENV" IRISES_FRONT)" != "1" ] ||
+         [ "$(env_get "$ENGINE_ENV" IRISES_FRONT)" != "$FRONT_VALUE" ]; then
+        plan_add "$ENGINE_ENV" set IRISES_FRONT "$FRONT_VALUE"
+        FRONT_PLANNED=1
+      fi ;;
   esac
 fi
 
