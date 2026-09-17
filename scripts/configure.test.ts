@@ -477,7 +477,7 @@ test('--web off --yes with nothing running says so and still ends RESULT: ok', S
   assert.equal(resultLine(r.out), 'RESULT: ok', r.out);
 });
 
-test('--model-inherit removes the override and keeps the lane key', SKIP_ON_WINDOWS, () => {
+test('--model-inherit removes the override, keeps the lane key and records the lane', SKIP_ON_WINDOWS, () => {
   // Undoing OUR choice of model must not cost the operator a credential they paid for and still
   // need — so the key stays, and is named on stdout so nobody has to guess that it did.
   const box = sandbox(
@@ -486,6 +486,11 @@ test('--model-inherit removes the override and keeps the lane key', SKIP_ON_WIND
       'CONVO_PROVIDER=openrouter\nCLASSIFY_PROVIDER=openrouter\nFALLFIRM_PROVIDER=openrouter\n' +
       'ENGINE_MODEL_INHERIT=off\nOPENROUTER_API_KEY=zzz-not-a-key\n',
   );
+  // The manifest this run has to correct: it still names the lane the override was written on, and
+  // --uninstall / the detach rewrite carry that field forward to whatever runs next.
+  writeManifest(box.env, {
+    root: box.root, irisesHome: box.state, port: '3999', engine: 'off', modelLane: 'openrouter',
+  });
   const r = run(['--model-inherit', '--no-restart', '--yes'], box.env);
   assert.equal(r.code, 0, `${r.out}\n${r.err}`);
   const body = envText(box.root);
@@ -504,10 +509,18 @@ test('--model-inherit removes the override and keeps the lane key', SKIP_ON_WIND
   assert.ok(r.out.includes('keeping OPENROUTER_API_KEY'), `${r.out}`);
   assert.ok(!r.out.includes('zzz-not-a-key'), `by name only:\n${r.out}`);
   assert.ok(!r.err.includes('zzz-not-a-key'), `by name only:\n${r.err}`);
+  assert.match(
+    readFileSync(join(box.state, 'install-manifest.json'), 'utf8'),
+    /"modelLane": "inherit"/,
+    'the manifest stops naming the lane the override was written on',
+  );
 });
 
 test('--model-lane openrouter --model-slug m --no-restart --yes with IRISES_MODEL_API_KEY writes the override through the lib and never prints the key', SKIP_ON_WINDOWS, () => {
   const box = sandbox();
+  writeManifest(box.env, {
+    root: box.root, irisesHome: box.state, port: '3999', engine: 'off', modelLane: 'inherit',
+  });
   const r = run(['--model-lane', 'openrouter', '--model-slug', 'm', '--no-restart', '--yes'], {
     ...box.env,
     IRISES_MODEL_API_KEY: 'zzz-not-a-key',
@@ -529,6 +542,11 @@ test('--model-lane openrouter --model-slug m --no-restart --yes with IRISES_MODE
   assert.ok(r.out.includes('+ OPENROUTER_API_KEY=<set>'), `the key is previewed by name:\n${r.out}`);
   assert.ok(!r.out.includes('zzz-not-a-key'), `never the value:\n${r.out}`);
   assert.ok(!r.err.includes('zzz-not-a-key'), `never the value:\n${r.err}`);
+  assert.match(
+    readFileSync(join(box.state, 'install-manifest.json'), 'utf8'),
+    /"modelLane": "openrouter"/,
+    'the manifest learns the lane the voice is on now',
+  );
 });
 
 test('a --set of a key the override also writes beats the override, as the preview showed', SKIP_ON_WINDOWS, () => {

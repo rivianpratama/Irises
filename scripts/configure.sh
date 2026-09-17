@@ -1019,6 +1019,12 @@ if [ -n "$NEW_PORT" ]; then
   fi
 fi
 if [ "$FRONT_PLANNED" = "1" ]; then set -- "$@" "frontPattern=$FRONT_VALUE"; fi
+# The lane the voice is on is recorded the same way the install records it (engine-setup.sh:953), and
+# for the same readers: --uninstall and the detach rewrite carry modelLane forward, so a run that
+# moved the model and left the manifest naming the old lane hands the next script a stale answer.
+# The two are mutually exclusive — the parser refuses --model-inherit with --model-lane.
+if [ "$MODEL_INHERIT" = "1" ]; then set -- "$@" "modelLane=inherit"; fi
+if [ -n "$MODEL_LANE" ]; then set -- "$@" "modelLane=$MODEL_LANE"; fi
 if [ "$#" -gt 0 ]; then manifest_record "$@"; fi
 
 # ── the restart, and the proof ───────────────────────────────────────────────
