@@ -149,8 +149,12 @@ const MANIFEST_FIELDS = [
  * manifest_update rewrites every field, so a fixture the library did not produce would be testing a
  * format nothing in the product writes.
  */
-function writeManifest(env: Record<string, string>, fields: Record<string, string>): void {
-  const pairs = MANIFEST_FIELDS.map((k) => `${k}=${fields[k] ?? ''}`);
+function writeManifest(
+  env: Record<string, string>,
+  fields: Record<string, string>,
+  omit: string[] = [],
+): void {
+  const pairs = MANIFEST_FIELDS.filter((k) => !omit.includes(k)).map((k) => `${k}=${fields[k] ?? ''}`);
   const r = spawnSync(
     '/bin/bash',
     ['-c', `source ${JSON.stringify(LIB)}; manifest_write "$(manifest_path)" "$@"`, 'fixture', ...pairs],
@@ -163,7 +167,11 @@ function writeManifest(env: Record<string, string>, fields: Record<string, strin
  * A sandbox wired to a hermes install that HAS an engine .env of ours: the shape --front and a
  * port move both need before they will write a byte on the engine's side.
  */
-function hermesBox(engineEnvBody: string, manifest: Record<string, string> = {}) {
+function hermesBox(
+  engineEnvBody: string,
+  manifest: Record<string, string> = {},
+  omit: string[] = [],
+) {
   const box = sandbox('OPS_BACKEND=hermes\nPORT=3999\n');
   const hermesHome = box.env.HERMES_HOME;
   mkdirSync(hermesHome, { recursive: true });
@@ -179,7 +187,7 @@ function hermesBox(engineEnvBody: string, manifest: Record<string, string> = {})
     engineEnvApplied: 'true',
     keysPreExisting: 'IRISES_URL',
     ...manifest,
-  });
+  }, omit);
   return { ...box, engineEnv, manifestPath: join(box.state, 'install-manifest.json') };
 }
 
@@ -811,6 +819,55 @@ test('--front at the value the engine already carries plans nothing and records 
   const alone = run(['--front', 'telegram:1', '--yes'], box.env);
   assert.equal(alone.code, 0, `${alone.out}\n${alone.err}`);
   assert.equal(resultLine(alone.out), 'RESULT: noop', alone.out);
+});
+
+test('a manifest written before --engine-env existed still counts as applied', SKIP_ON_WINDOWS, () => {
+  // The production shape. `engineEnvApplied` only exists in manifests written since --engine-env
+  // shipped; every installer older than that flag wrote the engine's keys unconditionally, so the
+  // field is ABSENT rather than false. Read as a "no", it told the VPS its engine .env carried
+  // nothing of ours while that box was fronting *:* through a plugin the same install had put
+  // there — and it would have refused every --front and every IRISES_URL move afterwards.
+  const box = hermesBox(
+    'IRISES_URL=http://127.0.0.1:3999\nIRISES_FRONT=*:*\n',
+    { keysPreExisting: 'API_SERVER_KEY IRISES_URL IRISES_FRONT', frontPattern: '*:*' },
+    ['engineEnvApplied'],
+  );
+  assert.ok(
+    !readFileSync(box.manifestPath, 'utf8').includes('engineEnvApplied'),
+    'the fixture must omit the field, not blank it',
+  );
+
+  const shown = run(['--show'], box.env);
+  assert.equal(shown.code, 0, `${shown.out}\n${shown.err}`);
+  assert.match(shown.out, /fronts:\s+\*:\*/, `the scope is readable:\n${shown.out}`);
+  assert.ok(!shown.out.includes('carries nothing of ours'), `and not disowned:\n${shown.out}`);
+
+  const r = run(['--front', 'telegram:1', '--no-gateway-restart', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.equal(resultLine(r.out), 'RESULT: ok', r.out);
+  assert.match(readFileSync(box.engineEnv, 'utf8'), /^IRISES_FRONT=telegram:1$/m);
+
+  // manifest_update rewrites all 18 keys, so that first run turns the absence into an empty
+  // string. A box that was configurable a moment ago must not refuse the next run.
+  const again = run(['--front', 'telegram:2', '--no-gateway-restart', '--yes'], box.env);
+  assert.equal(again.code, 0, `${again.out}\n${again.err}`);
+  assert.match(readFileSync(box.engineEnv, 'utf8'), /^IRISES_FRONT=telegram:2$/m);
+});
+
+test('a manifest that records a DECLINED engine .env still refuses to write to it', SKIP_ON_WINDOWS, () => {
+  // The other side of the same read: `false` is a real answer from a real installer (--engine-env
+  // print, or an ask answered no), and it has to keep meaning no.
+  const box = hermesBox('ANTHROPIC_API_KEY=engine-owned\n', {
+    engineEnvApplied: 'false',
+    engineEnvPending: 'API_SERVER_ENABLED IRISES_URL IRISES_FRONT',
+  });
+  const r = run(['--front', 'telegram:1', '--yes'], box.env);
+  assert.equal(r.code, 1, `${r.out}\n${r.err}`);
+  assert.match(r.err, /carries nothing of ours/, r.err);
+  assert.ok(!readFileSync(box.engineEnv, 'utf8').includes('IRISES_FRONT'), 'and writes nothing');
+
+  const shown = run(['--show'], box.env);
+  assert.match(shown.out, /left for you to add: API_SERVER_ENABLED IRISES_URL IRISES_FRONT/, shown.out);
 });
 
 test('a --port whose engine IRISES_URL already names the new port retargets nothing', SKIP_ON_WINDOWS, () => {

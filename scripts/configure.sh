@@ -433,6 +433,30 @@ augment_path
 # changes the exit code, and it is harmless on a --show run, which takes no lock.
 trap 'lifecycle_exit_guard $?' EXIT
 
+# Did the install that wrote this manifest put our keys in the ENGINE's .env? Three writes hang off
+# the answer: the report's front line, the `--front` rewrite and the `--port` move of IRISES_URL.
+#
+# `engineEnvApplied` only exists in manifests written since --engine-env shipped (Sept 2026). Every
+# installer older than that flag wrote the engine's keys unconditionally — there was no way to
+# decline — so on an older manifest the field is ABSENT, and absent is not a "no".
+#
+# Production is why this function exists. The VPS manifest predates the flag, so `--show` reported
+# `fronts: n/a (the engine .env carries nothing of ours)` while that box was fronting `*:*` through
+# a plugin the same install had put there, and both --front and --port would have refused to touch
+# the file they wrote themselves. An empty value is read the same way as an absent one on purpose:
+# manifest_update rewrites all 18 keys, so the first configure run on an old manifest turns the
+# absence into `engineEnvApplied: ""`, and that must not flip a working box into refusing.
+#
+# The manifest itself is still the proof: no manifest, or one that names no engine .env, is a "no".
+engine_env_applied() { # MANIFEST -> 0 = our keys are in the engine's .env
+  local man="${1:-}" v
+  v="$(manifest_read "$man" engineEnvApplied)"
+  if [ "$v" = "true" ]; then return 0; fi
+  if [ -n "$v" ]; then return 1; fi
+  if [ -f "$man" ] && [ -n "$(manifest_read "$man" engineEnvFile)" ]; then return 0; fi
+  return 1
+}
+
 # ── --show ───────────────────────────────────────────────────────────────────
 # One line per setting, `label: value (source)`, and never a secret VALUE — a key is disclosed by
 # NAME plus <set>/<unset>, which is the whole house rule in one place.
@@ -497,7 +521,7 @@ show_report() {
   # there: a bridge plugin, and an engine .env we were allowed to write.
   ef="$(manifest_read "$man" engineEnvFile)"
   if [ "$engine" = "hermes" ] && [ "$(manifest_read "$man" bridge)" = "1" ] &&
-     [ "$(manifest_read "$man" engineEnvApplied)" = "true" ]; then
+     engine_env_applied "$man"; then
     if [ "$(env_count "$ef" IRISES_FRONT)" = "0" ]; then
       ui "  fronts:             not set  (engine .env)"
     else
@@ -730,7 +754,7 @@ ENGINE_ENV="$(manifest_read "$MAN" engineEnvFile)"
 # keeps its own. The guess only ever serves the LOOKUP: every write below also needs
 # engineEnvApplied=true, which no missing manifest can report.
 if [ -z "$ENGINE_ENV" ] && [ "$ENGINE" = "hermes" ]; then ENGINE_ENV="$(hermes_home)/.env"; fi
-ENGINE_ENV_APPLIED="$(manifest_read "$MAN" engineEnvApplied)"
+if engine_env_applied "$MAN"; then ENGINE_ENV_APPLIED=true; else ENGINE_ENV_APPLIED=false; fi
 BRIDGE="$(manifest_read "$MAN" bridge)"
 
 # Recording what moved is best-effort, always: a clone installed before the manifest existed, or one
