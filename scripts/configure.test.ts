@@ -777,6 +777,27 @@ test('--port moves IRISES_URL when the manifest says the engine .env is ours', S
   assert.match(changed, /engine:IRISES_URL/, changed);
 });
 
+test('a --port whose engine IRISES_URL already names the new port retargets nothing', SKIP_ON_WINDOWS, () => {
+  // The bookkeeping and the warning both have to mean "this run wrote it". Here the key already
+  // points where the move is going, so it is not one this run moved: the plan never gains an entry
+  // for it (the value does not name the port being moved OFF, so it was not ours to move), nothing
+  // is written to the engine's file, and keysRetargeted must stay exactly as the install left it.
+  const box = hermesBox('IRISES_URL=http://127.0.0.1:4001\n', { keysRetargeted: '' });
+  const r = run(['--port', '4001', '--no-restart', '--no-gateway-restart', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(envText(box.root), /^PORT=4001$/m, "this clone's own move still applies");
+  assert.match(readFileSync(box.manifestPath, 'utf8'), /"keysRetargeted": ""/, 'nothing was retargeted');
+  const engineBackups = readdirSync(box.env.HERMES_HOME).filter((f) => f.startsWith('.env.bak-irises-'));
+  assert.deepEqual(engineBackups, [], `the engine's file was never opened: ${engineBackups.join(', ')}`);
+  assert.ok(!r.err.includes('still listens on'), `and nothing warns about a move that did not happen:\n${r.err}`);
+  // WHY it is safe, stated where it can fail: the entry is never planned at all. A URL that does
+  // not name the port being moved off takes the "not ours to move" arm, so there is no plan entry
+  // for the preview to drop — which is also why the planned-then-dropped case cannot exist: the
+  // planned value is always http://127.0.0.1:<new port> and the entry is only planned when the file
+  // still says <old port>, so the two can never already be equal.
+  assert.match(r.err, /was not ours to move/, `the stray arm, not a dropped plan entry:\n${r.err}`);
+});
+
 test('--service on where no service manager exists exits 1', SKIP_ON_WINDOWS, () => {
   // Linux by the uname stub, no systemctl on the scratch PATH and no user bus in the environment:
   // the fresh-SSH box, where Irises can only ever run detached.
