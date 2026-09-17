@@ -32,7 +32,9 @@
 #   --unset KEY            remove a key from this clone's .env (repeatable)
 #   --allow-unknown        allow a --set of a key neither .env.example nor deploy/app.env documents
 #   --yes, -y              non-interactive: no questions, take the obvious answer
-#   --no-restart           write the settings, leave the running server on the old ones
+#   --no-restart           write the settings, leave the running server on the old ones. A
+#                          --service on|off transition starts or stops Irises anyway — installing a
+#                          unit and leaving it stopped is a state nobody asked for
 #   --no-gateway-restart   skip the engine gateway bounce a --front or --port change would do
 #   -h, --help             this text
 #
@@ -163,7 +165,7 @@ while [ $# -gt 0 ]; do
     --yes|-y)              ASSUME_YES=1; shift ;;
     --no-restart)          DO_RESTART=0; shift ;;
     --no-gateway-restart)  DO_GATEWAY=0; shift ;;
-    -h|--help)             sed -n '2,77p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)             sed -n '2,79p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) err "unknown arg: $1 (try --help)"; exit 2 ;;
   esac
 done
@@ -239,12 +241,16 @@ check_key() { # KEY MODE(set|unset) WITH_VALUE(1|0)
     err "--$mode takes a KEY of A-Z, 0-9 and _ starting with a letter, got '$key'"
     exit 2
   fi
+  # Reserved BEFORE the secret rule, and that order is the whole point of this function: a key this
+  # editor will not touch at all must not first send the operator away to re-run the same refused
+  # command through IRISES_SET_VALUE. `--set HERMES_API_KEY=x` is both, and "engine wiring" is the
+  # answer that ends it in one step.
+  if reserved_key "$key"; then exit 2; fi
   if [ "$with_value" = "1" ] && is_secret_key "$key"; then
     err "--set $key=VALUE puts a secret on the command line (visible to every process on the box,"
     err "kept in shell history) — use:  IRISES_SET_VALUE=… bash scripts/configure.sh --set $key"
     exit 2
   fi
-  if reserved_key "$key"; then exit 2; fi
   if [ "$mode" = "set" ] && [ "$ALLOW_UNKNOWN" != "1" ] && ! documented_key "$key"; then
     err "$key is not a key .env.example or deploy/app.env documents — a typo here is silent at boot."
     err "Pass --allow-unknown if you mean it"
@@ -436,7 +442,7 @@ trap 'lifecycle_exit_guard $?' EXIT
 # built_sha all return empty on one, and an extra `[ -f ]` per line would only fork more.
 show_report() {
   local man v w src kind installed running sha engine reason
-  local ef front lane slug role out key
+  local ef front lane slug role out key pending
 
   man="$(manifest_path)"
 
@@ -501,6 +507,17 @@ show_report() {
       reason="the engine .env carries nothing of ours"
     fi
     ui "  fronts:             n/a ($reason)"
+  fi
+
+  # An install run with `--engine-env print`, or whose `ask` was answered no, wrote nothing to the
+  # engine's .env and recorded what it would have written. Naming those keys here is the difference
+  # between a report that says "n/a" and one that says what is missing — --uninstall says the same
+  # thing at the other end of the install's life (engine-setup.sh:1298-1306).
+  if [ "$(manifest_read "$man" engineEnvApplied)" = "false" ]; then
+    pending="$(manifest_read "$man" engineEnvPending)"
+    if [ -n "$pending" ]; then
+      ui "  engine .env:        nothing of ours applied — left for you to add: $pending"
+    fi
   fi
 
   # Inheritance is the default and it is wide: with it on, boot-time engine discovery supplies the
@@ -593,6 +610,12 @@ trap 'lifecycle_exit_guard 143' TERM
 # "nothing to change" decision and the apply all have to read the SAME list. Three separate walks
 # over the flags would be three chances to disagree, and the one that disagreed silently would be
 # the preview — the one thing the operator answers a question about.
+#
+# The list they share is not this plan but LISTED_IDX, the indices preview_plan actually PRINTED: an
+# entry whose key already carries the value asked for is dropped there, and the apply walks the same
+# set so it cannot write one the operator was never shown. Written anyway, `--front <what it already
+# is> --tz Europe/Paris` backed up and rewrote the ENGINE's .env and bounced its gateway over a
+# single previewed line, and the mirror case restarted Irises for a value that never moved.
 #
 # Four parallel indexed arrays, because bash 3.2 (what macOS ships) has no associative ones.
 P_FILE=()
@@ -827,6 +850,11 @@ fi
 # secret is disclosed by NAME plus `<set>`, and what it replaces is `not shown` (the house rule, and
 # the same shape engine-setup.sh's own preview uses).
 LISTED=0
+# The plan INDICES this preview printed, in the shape MODEL_IDX uses, and the only list the apply
+# below walks. By index rather than by key, for MODEL_IDX's reason: two entries can name one key —
+# an override's and the operator's own line overruling it — and only one of them may be the skipped
+# one.
+LISTED_IDX=""
 CHANGED_KEYS=""
 # Two files can move in one run — this clone's .env and the ENGINE's — and each announces itself
 # once, above its own first line. The heading waits for that line: a run whose every value is
@@ -845,8 +873,9 @@ preview_header() { # FILE
   return 0
 }
 preview_plan() {
-  local i=0 f op key val n cur note name
+  local i=0 idx f op key val n cur note name
   while [ "$i" -lt "${#P_KEY[@]}" ]; do
+    idx="$i"
     f="${P_FILE[$i]}"
     op="${P_OP[$i]}"
     key="${P_KEY[$i]}"
@@ -861,6 +890,7 @@ preview_plan() {
         ui "  ~ service: $val → detached"
       fi
       LISTED=$((LISTED + 1))
+      LISTED_IDX="$LISTED_IDX $idx"
       case " $CHANGED_KEYS " in
         *" service "*) ;;
         *) CHANGED_KEYS="$CHANGED_KEYS service" ;;
@@ -896,6 +926,7 @@ preview_plan() {
       fi
     fi
     LISTED=$((LISTED + 1))
+    LISTED_IDX="$LISTED_IDX $idx"
     # Named once, in the order the plan first reaches it. Two entries CAN name one key — an override
     # and the operator's own line overruling it — and both are previewed, because both are written;
     # but a summary that says OPENROUTER_API_KEY twice reads like a bug rather than a precedence.
@@ -907,7 +938,18 @@ preview_plan() {
     esac
   done
   CHANGED_KEYS="${CHANGED_KEYS# }"
+  LISTED_IDX="${LISTED_IDX# }"
   return 0
+}
+
+# Was this plan entry one the preview printed? The apply, the backups and the restart decision all
+# ask this and nothing else — the preview is the contract, and an entry outside it is a write the
+# operator never agreed to.
+listed_idx() { # INDEX
+  case " $LISTED_IDX " in
+    *" ${1:-} "*) return 0 ;;
+  esac
+  return 1
 }
 
 preview_plan
@@ -930,11 +972,13 @@ fi
 lock_acquire || exit 1
 
 # Does this run move this clone's .env at all? A front-only run does not, and a file that did not
-# move must not be backed up, must not be chmodded, and must not cost Irises a restart.
+# move must not be backed up, must not be chmodded, and must not cost Irises a restart. Read off the
+# LISTED set, not off the plan: an entry already carrying its value was dropped by the preview and
+# moves nothing, so a plan that holds only those moves nothing either.
 PLAN_HAS_CLONE=0
 i=0
 while [ "$i" -lt "${#P_FILE[@]}" ]; do
-  if [ "${P_FILE[$i]}" = "$ENV_FILE" ]; then PLAN_HAS_CLONE=1; fi
+  if listed_idx "$i" && [ "${P_FILE[$i]}" = "$ENV_FILE" ]; then PLAN_HAS_CLONE=1; fi
   i=$((i + 1))
 done
 
@@ -954,15 +998,27 @@ CLONE_CHANGED=0
 ENGINE_CHANGED=0
 ENGINE_BACKUP=""
 
+# The override is ONE lib call covering several plan entries, so it cannot be skipped entry by
+# entry: it goes when the preview listed at least one of them, and stays out — with nothing marked
+# changed — when it listed none, which is a lane already written exactly as asked for.
 if [ -n "$MODEL_LANE" ]; then
-  model_override_write "$ENV_FILE" "$MODEL_LANE" "$MODEL_SLUG" "$MODEL_BASE_URL" || exit 1
-  CLONE_CHANGED=1
+  MODEL_LISTED=0
+  for mi in $MODEL_IDX; do
+    if listed_idx "$mi"; then MODEL_LISTED=1; fi
+  done
+  if [ "$MODEL_LISTED" = "1" ]; then
+    model_override_write "$ENV_FILE" "$MODEL_LANE" "$MODEL_SLUG" "$MODEL_BASE_URL" || exit 1
+    CLONE_CHANGED=1
+  fi
 fi
 
 i=0
 while [ "$i" -lt "${#P_KEY[@]}" ]; do
   key="${P_KEY[$i]}"
   f="${P_FILE[$i]}"
+  # Not in the preview, not written: a key already carrying the value asked for is a line nobody was
+  # shown, and writing it costs a backup, a rewrite and whichever of the two restarts below it marks.
+  if ! listed_idx "$i"; then i=$((i + 1)); continue; fi
   # The service transition is not a file write. It happens below, once both .env files are settled.
   if [ "${P_OP[$i]}" = "service" ]; then i=$((i + 1)); continue; fi
   # These entries — and only these — are the ones the call above already wrote, in the shape the
@@ -1001,24 +1057,41 @@ fi
 # the port and the front would otherwise write it twice and say so twice. The positional list is
 # free here — the argument loop consumed it long ago. (The service transition below records itself,
 # after it has actually happened.)
+#
+# A key that was in the engine's .env before Irises ever touched it and now points at us is
+# RETARGETED: that list, and only that list, is what --uninstall and the detach restore from the
+# pre-install backup. Accumulated in ONE variable across both keys that can move — a second
+# `keysRetargeted=` computed from the manifest would have been read before the first was written,
+# and would drop it.
+RETARGETED="$(manifest_read "$MAN" keysRetargeted)"
+RETARGETED_MOVED=0
+retarget() { # KEY — record a PRE-EXISTING engine key this run pointed at us
+  case " $(manifest_read "$MAN" keysPreExisting) " in
+    *" ${1:-} "*) ;;
+    # Ours to begin with: --uninstall takes it OUT rather than putting a value back, so it must
+    # never land here.
+    *) return 0 ;;
+  esac
+  case " $RETARGETED " in
+    *" ${1:-} "*) return 0 ;;
+  esac
+  RETARGETED="$RETARGETED ${1:-}"
+  RETARGETED_MOVED=1
+  return 0
+}
+
 set --
 if [ -n "$NEW_PORT" ]; then
   set -- "$@" "port=$NEW_PORT"
-  if [ "$PORT_URL_MOVED" = "1" ]; then
-    # A key that was in the engine's .env before Irises ever touched it and now points at us is
-    # RETARGETED: that list, and only that list, is what --uninstall restores from the backup.
-    RETARGETED="$(manifest_read "$MAN" keysRetargeted)"
-    case " $(manifest_read "$MAN" keysPreExisting) " in
-      *" IRISES_URL "*)
-        case " $RETARGETED " in
-          *" IRISES_URL "*) ;;
-          *) RETARGETED="$RETARGETED IRISES_URL" ;;
-        esac ;;
-    esac
-    set -- "$@" "keysRetargeted=${RETARGETED# }"
-  fi
+  if [ "$PORT_URL_MOVED" = "1" ]; then retarget IRISES_URL; fi
 fi
-if [ "$FRONT_PLANNED" = "1" ]; then set -- "$@" "frontPattern=$FRONT_VALUE"; fi
+# The same bookkeeping IRISES_URL gets, for the same reader: an operator's own IRISES_FRONT that
+# this run narrowed is a scope --uninstall has to put back, and an unrecorded one is left on ours.
+if [ "$FRONT_PLANNED" = "1" ]; then
+  set -- "$@" "frontPattern=$FRONT_VALUE"
+  retarget IRISES_FRONT
+fi
+if [ "$RETARGETED_MOVED" = "1" ]; then set -- "$@" "keysRetargeted=${RETARGETED# }"; fi
 # The lane the voice is on is recorded the same way the install records it (engine-setup.sh:953), and
 # for the same readers: --uninstall and the detach rewrite carry modelLane forward, so a run that
 # moved the model and left the manifest naming the old lane hands the next script a stale answer.
@@ -1085,6 +1158,12 @@ if [ -n "$SERVICE_PLAN" ]; then
     SERVICE_STATE="removed — Irises runs detached; nothing restarts it after a reboot"
     RESTART_STATE="started detached"
   fi
+  # Said in the summary rather than left to be worked out: the operator passed --no-restart and the
+  # server moved anyway, and a run that does not name the one flag it did not honour reads like a
+  # bug in the flag.
+  if [ "$DO_RESTART" = "0" ]; then
+    RESTART_STATE="$RESTART_STATE — a --service transition is the start/stop itself, so --no-restart does not apply"
+  fi
   if ! wait_health_sha "http://127.0.0.1:$PORT_NOW" "$SHA" 60 >/dev/null; then
     summary health-failed \
       "changed:   $CHANGED_KEYS" \
@@ -1106,6 +1185,11 @@ elif [ "$CLONE_CHANGED" = "0" ]; then
 elif [ "$DO_RESTART" = "0" ]; then
   RESTART_STATE="skipped (--no-restart) — the change is on disk; restart Irises yourself"
   say "not restarting: --no-restart. The new value is in $ENV_FILE and takes at her next start"
+  # The engine was moved to the new port and she was not, so every inbound message is POSTed at a
+  # port nothing is listening on — no error on either side, just silence until someone restarts her.
+  if [ "$PORT_URL_MOVED" = "1" ]; then
+    warn "the engine now calls Irises on :$NEW_PORT while she still listens on :$CUR_PORT — inbound messages land nowhere until you restart her"
+  fi
 elif ! service_installed && [ -z "$(server_pid)" ]; then
   # Not a failure, and it must not read like one: there is nothing to restart, and the value will
   # be read the first time she does start.

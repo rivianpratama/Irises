@@ -1352,6 +1352,42 @@ test('plugin_refresh reports a read-only plugins dir instead of silently claimin
   }
 });
 
+test('model_override_write returns 1 and stops at the first write it cannot make', {
+  // chmod does not bind root, so every write would just succeed and there would be nothing to see.
+  skip: IS_ROOT ? 'running as root: a 0444 file in a 0555 directory is still writable' : false,
+}, () => {
+  // Both callers guard this call — engine-setup.sh with `|| die 1`, configure.sh with `|| exit 1` —
+  // and neither guard can fire while the function returns 0 for writes that never happened. A
+  // half-written override is the failure it exists to prevent: the clone boots on a lane with no
+  // model, in nobody's voice, with nothing in the output saying why.
+  const dir = mkdtempSync(join(tmpdir(), 'irises-model-ro-'));
+  const f = join(dir, '.env');
+  writeFileSync(f, 'PORT=3000\n');
+  const before = readFileSync(f, 'utf8');
+  // Both, because env_set writes a sibling temp file first: a read-only .env alone still leaves the
+  // directory writable, and the write would get as far as the copy-back.
+  chmodSync(f, 0o444);
+  chmodSync(dir, 0o555);
+  try {
+    const r = runLib([
+      'rc=0',
+      `model_override_write ${JSON.stringify(f)} openrouter m '' || rc=$?`,
+      'printf "RC=%s\\n" "$rc"',
+      'printf "SURVIVED\\n"',
+    ].join('\n'), { env: { IRISES_MODEL_API_KEY: 'zzz-not-a-key' } });
+    assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+    assert.match(r.out, /RC=1/, 'a write it could not make is a refusal the caller can see');
+    assert.match(r.out, /SURVIVED/, 'and the calling script still reaches its own guard');
+    assert.equal(readFileSync(f, 'utf8'), before, 'the file is exactly as it was found');
+    assert.ok(!r.out.includes('zzz-not-a-key'), `a secret never reaches stdout:\n${r.out}`);
+    assert.ok(!r.err.includes('zzz-not-a-key'), `a secret never reaches stderr:\n${r.err}`);
+  } finally {
+    chmodSync(dir, 0o755);
+    chmodSync(f, 0o644);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('lifecycle_exit_guard prints RESULT: partial when a script dies before its summary', () => {
   const aborted = runLib([
     "trap 'lifecycle_exit_guard $?' EXIT",

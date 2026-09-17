@@ -1700,27 +1700,31 @@ model_override_write() { # FILE LANE SLUG BASE_URL
   # and the clone came up voiceless with nothing in the output saying why. Refused whole, up front.
   model_lane_key "$lane" >/dev/null 2>&1 || { err "model_override_write: unknown lane '$lane' — expected anthropic, openrouter or openai"; return 1; }
   say "voice model: $slug on the $lane lane, for all three voice roles"
+  # EVERY write is guarded. A read-only .env, a full disk or a mount gone read-only makes env_set
+  # return 1, and a function that walked past that would go on to SAY it wrote the model and return
+  # 0 — leaving both callers' guards (engine-setup.sh's `|| die 1`, configure.sh's `|| exit 1`) with
+  # nothing to fire on, and the operator with a clone that boots in nobody's voice.
   for role in CONVO CLASSIFY FALLFIRM; do
     case "$lane" in
-      anthropic)  env_set "$f" "${role}_MODEL" "$slug" ;;
-      openrouter) env_set "$f" "${role}_MODEL_OPENROUTER" "$slug" ;;
-      openai)     env_set "$f" "${role}_MODEL_OPENAI" "$slug" ;;
+      anthropic)  env_set "$f" "${role}_MODEL" "$slug" || return 1 ;;
+      openrouter) env_set "$f" "${role}_MODEL_OPENROUTER" "$slug" || return 1 ;;
+      openai)     env_set "$f" "${role}_MODEL_OPENAI" "$slug" || return 1 ;;
     esac
-    env_set "$f" "${role}_PROVIDER" "$lane"
+    env_set "$f" "${role}_PROVIDER" "$lane" || return 1
   done
   key_name="$(model_lane_key "$lane" || true)"
   if [ -n "${IRISES_MODEL_API_KEY:-}" ]; then
-    env_set "$f" "$key_name" "$IRISES_MODEL_API_KEY"
+    env_set "$f" "$key_name" "$IRISES_MODEL_API_KEY" || return 1
     say "$key_name was taken from IRISES_MODEL_API_KEY in the environment and written to $f (0600)"
   else
     warn "no IRISES_MODEL_API_KEY in the environment, so $key_name stays whatever $f had."
     warn "Irises's own voice cannot call the $lane lane without one — add it and restart."
   fi
   if [ "$lane" = "openai" ]; then
-    env_set "$f" OPENAI_BASE_URL "$base_url"
+    env_set "$f" OPENAI_BASE_URL "$base_url" || return 1
     say "OPENAI_BASE_URL=$base_url"
   fi
-  env_set "$f" ENGINE_MODEL_INHERIT off
+  env_set "$f" ENGINE_MODEL_INHERIT off || return 1
   say "ENGINE_MODEL_INHERIT=off — Irises stops inheriting the engine's model, and its keys and base"
   say "URL with it, for her own voice. Deep work still runs on the engine's model, through the engine."
   chmod 600 "$f" 2>/dev/null || true

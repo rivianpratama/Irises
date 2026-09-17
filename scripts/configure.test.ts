@@ -809,6 +809,10 @@ test('--service on installs through the manager and records it', SKIP_ON_WINDOWS
   // only THEN started — a start before the reload starts whatever the manager still has cached.
   // The verification, in a sandbox where nothing really listens, is expected to fail; `curl`
   // refuses and `sleep` returns at once, so the 60s budget costs no wall time.
+  //
+  // `--no-restart` is carried on purpose: a unit installed and left stopped is neither state anyone
+  // asked for, so the transition runs anyway — and the summary says that, rather than leaving the
+  // operator to reconcile a flag they passed with a server that moved.
   const box = hermesBox('IRISES_URL=http://127.0.0.1:3999\n', { serviceKind: 'none' });
   mkdirSync(join(box.root, 'dist'), { recursive: true });
   writeFileSync(join(box.root, 'dist', 'index.js'), '// not a real server\n');
@@ -820,7 +824,7 @@ test('--service on installs through the manager and records it', SKIP_ON_WINDOWS
     sleep: 'exit 0',
   });
   try {
-    const r = run(['--service', 'on', '--yes'], {
+    const r = run(['--service', 'on', '--no-restart', '--yes'], {
       ...box.env,
       PATH: bin.bin,
       STUB_LOG: bin.log,
@@ -842,6 +846,9 @@ test('--service on installs through the manager and records it', SKIP_ON_WINDOWS
     assert.match(man, /"serviceKind": "systemd"/);
     assert.match(man, new RegExp(`"serviceUnit": "${unit}"`));
     assert.ok(r.out.includes('~ service: detached → systemd'), `the transition is previewed:\n${r.out}`);
+    // The LAST one: the summary's own line, under the banner that also carries the word.
+    const irises = r.out.split('\n').filter((l) => l.includes('Irises:')).pop() ?? '';
+    assert.match(irises, /--no-restart/, `the summary says the flag did not apply here: ${irises}`);
   } finally {
     rmSync(bin.dir, { recursive: true, force: true });
   }
@@ -909,6 +916,115 @@ test('--front none blanks IRISES_FRONT', SKIP_ON_WINDOWS, () => {
   assert.equal(r.code, 0, `${r.out}\n${r.err}`);
   assert.match(readFileSync(box.engineEnv, 'utf8'), /^IRISES_FRONT=$/m);
   assert.equal(resultLine(r.out), 'RESULT: ok', r.out);
+});
+
+test('an entry the preview skipped is not written: --front (unchanged) --tz Europe/Paris rewrites only the clone .env', SKIP_ON_WINDOWS, () => {
+  // The preview does not list a key already carrying the value asked for, and what it did not list
+  // is exactly what the apply must not write. Written anyway, a front that did not move still backs
+  // up and rewrites the ENGINE's .env and bounces its gateway — a run that announced one line and
+  // cycled the engine for a byte nobody changed.
+  const box = hermesBox('IRISES_URL=http://127.0.0.1:3999\nIRISES_FRONT=telegram:1\n');
+  const engineBefore = readFileSync(box.engineEnv, 'utf8');
+  const r = run(
+    ['--front', 'telegram:1', '--tz', 'Europe/Paris', '--no-restart', '--no-gateway-restart', '--yes'],
+    box.env,
+  );
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(envText(box.root), /^IRISES_TZ=Europe\/Paris$/m, 'the entry the preview DID list still applies');
+  assert.equal(readFileSync(box.engineEnv, 'utf8'), engineBefore, "not one byte of the engine's .env moved");
+  const engineBackups = readdirSync(box.env.HERMES_HOME).filter((f) => f.startsWith('.env.bak-irises-'));
+  assert.deepEqual(engineBackups, [], `a file that did not move is not backed up: ${engineBackups.join(', ')}`);
+  assert.ok(!r.out.includes('IRISES_FRONT'), `the unchanged front is in neither the preview nor the summary:\n${r.out}`);
+  const gateway = r.out.split('\n').find((l) => l.includes('gateway:')) ?? '';
+  assert.match(gateway, /n\/a/, `nothing engine-side changed, so there is nothing to bounce: ${gateway}`);
+  assert.equal(resultLine(r.out), 'RESULT: ok', r.out);
+});
+
+test('--tz UTC (unchanged) --front telegram:2 touches only the engine .env', SKIP_ON_WINDOWS, () => {
+  // The mirror image, and the costlier half: a clone .env rewritten for a value already in it takes
+  // a backup nobody needs and restarts Irises unannounced, in the middle of whatever she was saying.
+  const box = hermesBox('IRISES_URL=http://127.0.0.1:3999\nIRISES_FRONT=telegram:1\n');
+  writeFileSync(join(box.root, '.env'), 'OPS_BACKEND=hermes\nPORT=3999\nIRISES_TZ=UTC\n');
+  const cloneBefore = envText(box.root);
+  const r = run(['--tz', 'UTC', '--front', 'telegram:2', '--no-gateway-restart', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(readFileSync(box.engineEnv, 'utf8'), /^IRISES_FRONT=telegram:2$/m, 'the listed entry applies');
+  assert.equal(envText(box.root), cloneBefore, "not one byte of this clone's .env moved");
+  assert.equal(backups(box.root).length, 0, 'and a file that did not move is not backed up');
+  assert.ok(r.out.includes("not restarting: only the engine's side changed"), `nothing of hers changed:\n${r.out}`);
+  assert.ok(!r.out.includes(join(box.root, '.env')), `and her .env is never named:\n${r.out}`);
+  assert.equal(resultLine(r.out), 'RESULT: ok', r.out);
+});
+
+test('--front over a pre-existing IRISES_FRONT records the retarget, and over one we added does not', SKIP_ON_WINDOWS, () => {
+  // keysRetargeted is the list --uninstall and the detach put back FROM the pre-install backup. A
+  // front this run pointed somewhere else, on a key the operator already had, is exactly that — and
+  // unrecorded it is a scope the uninstall leaves on ours instead of restoring to theirs.
+  const theirs = hermesBox('IRISES_URL=http://127.0.0.1:3999\nIRISES_FRONT=*:*\n', {
+    keysPreExisting: 'IRISES_FRONT',
+    keysRetargeted: '',
+  });
+  const r = run(['--front', 'telegram:2', '--no-gateway-restart', '--yes'], theirs.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(readFileSync(theirs.manifestPath, 'utf8'), /"keysRetargeted": "IRISES_FRONT"/);
+
+  // A key the install ADDED comes out on uninstall rather than going back to a value it never had,
+  // so it must not land on the retargeted list at all.
+  const ours = hermesBox('IRISES_URL=http://127.0.0.1:3999\nIRISES_FRONT=*:*\n', {
+    keysAdded: 'IRISES_FRONT',
+    keysPreExisting: '',
+    keysRetargeted: '',
+  });
+  const r2 = run(['--front', 'telegram:2', '--no-gateway-restart', '--yes'], ours.env);
+  assert.equal(r2.code, 0, `${r2.out}\n${r2.err}`);
+  assert.match(readFileSync(ours.manifestPath, 'utf8'), /"keysRetargeted": ""/);
+});
+
+test('--show names the engine keys an install left for the operator to add', SKIP_ON_WINDOWS, () => {
+  // `--engine-env print`, or an `ask` answered no: the install wrote nothing to the engine's .env
+  // and recorded what it would have written. Without that line the report says "n/a" about the
+  // fronts and stops, and the operator has to read the manifest by hand to find out what is missing.
+  const box = hermesBox("# the operator's own file\n", {
+    engineEnvApplied: 'false',
+    engineEnvPending: 'API_SERVER_ENABLED IRISES_URL',
+  });
+  const r = run(['--show'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.ok(
+    r.out.includes('left for you to add: API_SERVER_ENABLED IRISES_URL'),
+    `the report names what is still missing from the engine's .env:\n${r.out}`,
+  );
+});
+
+test('--set HERMES_API_KEY=x is refused as engine wiring, in one step', () => {
+  // Reserved is checked BEFORE the secret-on-argv rule: a key that may not be set here at all must
+  // not first send the operator off to re-run the same refused command through IRISES_SET_VALUE.
+  const r = run(['--set', 'HERMES_API_KEY=x', '--yes']);
+  assert.equal(r.code, 2);
+  assert.match(r.err, /engine wiring/);
+  assert.match(r.err, /engine-setup\.sh/);
+  assert.ok(!r.err.includes('IRISES_SET_VALUE'), `not the two-step detour:\n${r.err}`);
+});
+
+test('--port --no-restart warns that the engine now calls the new port while Irises is still on the old', SKIP_ON_WINDOWS, () => {
+  // The engine's IRISES_URL moved and Irises did not: every inbound message goes to a port nothing
+  // is listening on, with no error on either side, until someone restarts her.
+  const box = hermesBox('IRISES_URL=http://127.0.0.1:3999\n');
+  const r = run(['--port', '4001', '--no-restart', '--no-gateway-restart', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(r.err, /:4001/, `the port the engine now calls:\n${r.err}`);
+  assert.match(r.err, /still listens on :3999/, `and the one she is still on:\n${r.err}`);
+});
+
+test('--help says a --service transition starts or stops Irises whatever --no-restart says', () => {
+  const r = run(['--help']);
+  assert.equal(r.code, 0, r.err);
+  const help = r.out;
+  assert.match(
+    help,
+    /--no-restart[\s\S]{0,200}--service on\|off/,
+    `--no-restart is absolute everywhere except here, and the help has to say so:\n${help}`,
+  );
 });
 
 test('--front on OpenClaw prints the line and applies nothing', SKIP_ON_WINDOWS, () => {
