@@ -189,10 +189,12 @@ bash ./scripts/configure.sh --model-inherit     # hand her voice back to this he
 
 Each run previews what it would change, asks once, backs the file up, and writes. A change to one of
 Irises's own settings then restarts her and checks the build back off `/health`; a `--front` change
-is this hermes's `.env`, so it bounces the gateway instead and leaves her running untouched. Hand
-these over and read back what they report — never run them yourself: a `--front` or `--port` change
-edits this hermes's own `.env` and bounces the gateway, so a run from a gateway-hosted chat would
-kill the supervisor mid-reply, the same reason the install is theirs.
+is this hermes's `.env`, so it bounces the gateway instead and leaves her running untouched. A
+`--port` always restarts her, and takes `IRISES_URL` in this hermes's `.env` with it — and bounces
+the gateway — only where the install wrote that key and it still names the port being moved off.
+Hand these over and read back what they report — never run them yourself: a `--front` or `--port`
+change can edit this hermes's own `.env` and bounce the gateway, so a run from a gateway-hosted chat
+would kill the supervisor mid-reply, the same reason the install is theirs.
 
 **Update** (from the Irises folder, in their terminal):
 

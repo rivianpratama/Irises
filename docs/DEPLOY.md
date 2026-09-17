@@ -216,7 +216,7 @@ reports and changes nothing while the other changes everything.
 ```bash
 bash scripts/configure.sh --show                  # report only: no lock, no write, no restart
 bash scripts/configure.sh --tz Europe/Paris --yes
-bash scripts/configure.sh --port 3001 --yes       # moves the engine's IRISES_URL with it
+bash scripts/configure.sh --port 3001 --yes       # takes the engine's IRISES_URL with it, when that key is ours
 bash scripts/configure.sh --front 'telegram:*' --yes   # or --front none, to front nothing
 ```
 
@@ -225,12 +225,19 @@ backs each file up to `.bak-irises-<timestamp>`, and writes. A run that changed 
 clone's `.env`** then restarts Irises and verifies this clone's build is what answers `/health` —
 that file is parsed once at boot, so an unrestarted change is a change that silently did not take. A
 run that changed the **engine's `.env`** (`--front`, and the `IRISES_URL` a `--port` move carries
-with it) bounces the engine gateway, which reads those keys only at its start. A `--front`-only run
-is therefore engine-side only: it takes no backup of this clone, does not restart Irises, and says
-`not restarting: only the engine's side changed`. `--yes` is the non-interactive form,
-`--no-restart` leaves the running server on the old settings, and `--no-gateway-restart` skips the
-gateway bounce. It takes the **same single lifecycle lock** as `engine-setup.sh` and
-`update.sh`, so a configure cannot race a deploy rewriting the same `.env` (a `--show` takes none).
+with it — only where the install wrote that key and it still names the port being moved off; a
+`--port` always restarts Irises either way) bounces the engine gateway, which reads those keys only
+at its start. A `--front`-only run is therefore engine-side only: it takes no backup of this clone,
+does not restart Irises, and says `not restarting: only the engine's side changed, and Irises reads
+none of it at boot`. `--yes` is the non-interactive form, `--no-restart` leaves the running server
+on the old settings — except under `--service on|off`, where installing or removing the unit IS the
+start or the stop and happens regardless (the summary names the flag it did not honour; the Windows
+Task Scheduler arm of that transition is stub-tested only, like the rest of the Windows path) — and
+`--no-gateway-restart` skips the gateway bounce. It takes the **same single lifecycle lock** as
+`engine-setup.sh` and `update.sh`, so a configure cannot race a deploy rewriting the same `.env`.
+The lock is taken **after** the preview is confirmed, so two runs serialize their WRITES, not their
+plans: a preview is measured against the file as it stood when it was printed (a `--show` takes no
+lock at all).
 Exit codes are the house contract: `0` applied, nothing needed changing, or `--show` · `1` a step
 failed or was refused · `2` bad usage · `4` restarted but `/health` did not report this build · `5`
 configured and live, but the engine gateway could not be verified back up. Every run past the flags

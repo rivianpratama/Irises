@@ -297,8 +297,8 @@ npm run chat
 
 | Script | What it does |
 |--------|--------------|
-| `npm run setup` | The lifecycle menu (`bash ./scripts/irises.sh`) — install or repair, configure, update, uninstall, status |
-| `bash ./scripts/configure.sh --show` | Live settings report (read-only); its flags change one setting at a time — see [Changing settings after the install](#changing-settings-after-the-install) |
+| `npm run setup` | The lifecycle menu (`bash ./scripts/irises.sh`) — install or repair, configure, update, uninstall, status, advanced |
+| `bash ./scripts/configure.sh --show` | Live settings report (read-only); its flags change one or several settings in one previewed run — see [Changing settings after the install](#changing-settings-after-the-install) |
 | `npm run dev` | Server in watch mode (`tsx`) on `:3000` |
 | `npm run dev:web` | Web debug client (Next dev server) |
 | `npm run chat` | Terminal REPL onto the same web-chat endpoints (`/cancel`, `/quit`) |
@@ -350,7 +350,7 @@ bash scripts/configure.sh --tz Europe/Paris             # or --tz host to follow
 bash scripts/configure.sh --web off                     # the browser/CLI debug chat (WEB_ENABLED)
 bash scripts/configure.sh --front 'telegram:*'          # which chats she fronts (engine-side)
 bash scripts/configure.sh --front none                  # front nothing; the plugin stays, inert
-bash scripts/configure.sh --port 3001                   # moves the engine's IRISES_URL with it
+bash scripts/configure.sh --port 3001                   # takes the engine's IRISES_URL with it, when that key is ours
 bash scripts/configure.sh --service on                  # or: --service off, to run detached
 IRISES_MODEL_API_KEY=… bash scripts/configure.sh --model-lane openrouter --model-slug <id>
 bash scripts/configure.sh --model-inherit               # back to inheriting the engine's model
@@ -359,11 +359,11 @@ IRISES_SET_VALUE=… bash scripts/configure.sh --set OPENROUTER_API_KEY   # a se
 bash scripts/configure.sh --unset IRISES_TZ
 ```
 
-A run previews every change first as `+` / `~` / `-` lines against the file it would touch (a secret's value is never in there — it prints as `<set>`, and the old one as `not shown`), asks once, backs each file up next to itself (`.env.bak-irises-<timestamp>`), and writes. What happens next depends on whose file changed. A change in **this clone's `.env`** ends with Irises **restarted and the same build checked back off `/health`** — that file is read once at boot, so a change nobody restarted into is a change that silently did not take; `--no-restart` leaves the running server on the old values. A change in the **engine's `.env`** — `--front`, and the `IRISES_URL` a `--port` move takes with it — ends with the engine's **gateway bounced**, because it reads those keys only when it starts; `--no-gateway-restart` skips that. A `--front`-only run touches nothing of hers, so it takes no backup here and does not restart her, and says so. `--yes` is the non-interactive form for scripts. Exit codes: `0` applied, nothing to change, or `--show` · `1` a step failed or was refused · `2` bad usage · `4` restarted but `/health` did not report this build · `5` configured and live, but the gateway could not be verified back up. Every run past the flags ends its stdout with `RESULT: ok|noop|health-failed|gateway-failed|partial`.
+A run previews every change first as `+` / `~` / `-` lines against the file it would touch (a secret's value is never in there — it prints as `<set>`, and the old one as `not shown`), asks once, backs each file up next to itself (`.env.bak-irises-<timestamp>`), and writes. What happens next depends on whose file changed. A change in **this clone's `.env`** ends with Irises **restarted and the same build checked back off `/health`** — that file is read once at boot, so a change nobody restarted into is a change that silently did not take; `--no-restart` leaves the running server on the old values — with one exception, `--service on|off`, where installing or removing the unit *is* the start or the stop, so it happens whatever that flag says (and the summary says so). A change in the **engine's `.env`** — `--front`, and the `IRISES_URL` a `--port` move takes with it *when the install wrote that key and it still names the old port* — ends with the engine's **gateway bounced**, because it reads those keys only when it starts; `--no-gateway-restart` skips that. A `--port` always restarts Irises; whether it touches the engine at all depends on that key. A `--front`-only run touches nothing of hers, so it takes no backup here and does not restart her, and says so. `--yes` is the non-interactive form for scripts. On Windows the `--service on|off` arm drives Task Scheduler, which — like the rest of the Windows path — is stub-tested only, so treat it as unproven until you have run it on Git Bash. Exit codes: `0` applied, nothing to change, or `--show` · `1` a step failed or was refused · `2` bad usage · `4` restarted but `/health` did not report this build · `5` configured and live, but the gateway could not be verified back up. Every run past the flags ends its stdout with `RESULT: ok|noop|health-failed|gateway-failed|partial`.
 
 The generic editor has two rules worth knowing before you reach for it. A `--set` key has to be one `.env.example` or `deploy/app.env` documents, so a typo cannot sit in the file doing nothing — `--allow-unknown` is the override for the handful of real keys those files only describe in prose. And a key whose name ends in `_KEY`, `_TOKEN`, `_PASSWORD` or `_SECRET` may not carry its value on the command line: pass the name alone and put the value in `IRISES_SET_VALUE` (the dashboard password is `IRISES_DASHBOARD_PASSWORD`, whose presence is itself the request and needs no flag). `PORT`, `IRISES_FRONT`, `OPS_BACKEND`, the engine credentials and `IRISES_HOME` are refused there and point you at the flag instead — each of them is written in more places than this clone's `.env`, and only a flag or a re-install moves them all together.
 
-Every setting the installer asks about is also a Configure entry and a `configure.sh` flag, and `scripts/settingsContract.test.ts` fails `npm test` when one of the three is missing.
+Every setting the installer asks about has to be reachable from all four places `scripts/settingsContract.test.ts` checks — `engine-setup.sh --help`, `configure.sh --help`, the menu's Install section and the menu's Configure section — and `npm test` fails when one of them is missing it.
 
 ### Start, stop, status, logs
 
