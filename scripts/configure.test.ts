@@ -2,24 +2,46 @@
 // on this machine: every run either stops in the argument parser (exit 2, before the script has
 // opened a single file) or runs inside a throwaway HOME / IRISES_ROOT / IRISES_HOME / HERMES_HOME
 // (see `sandbox()`, lifted from engine-setup.test.ts). What is covered here is the ARGUMENT and
-// EXIT-CODE contract plus the read-only `--show` report — the parts an operator, the menu and a
-// wrapping script depend on, and that a rewrite silently changes. Applying settings is covered by
-// its own tests and by scripts/e2e/lifecycle-sandbox.sh.
+// EXIT-CODE contract, the read-only `--show` report, and the plan/preview/confirm/apply pass over
+// this clone's .env — the parts an operator, the menu and a wrapping script depend on, and that a
+// rewrite silently changes. The restart itself only reaches its "nothing is running" branch here;
+// a live cycle is scripts/e2e/lifecycle-sandbox.sh's job.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const SCRIPT = join(process.cwd(), 'scripts', 'configure.sh');
 
-function run(args: string[], extraEnv: Record<string, string> = {}): { out: string; err: string; code: number } {
+function run(
+  args: string[],
+  extraEnv: Record<string, string> = {},
+  input?: string,
+): { out: string; err: string; code: number } {
   const r = spawnSync('/bin/bash', [SCRIPT, ...args], {
     encoding: 'utf8',
     env: { ...process.env, NO_COLOR: '1', ...extraEnv },
+    ...(input === undefined ? {} : { input }),
   });
   return { out: r.stdout ?? '', err: r.stderr ?? '', code: r.status ?? -1 };
+}
+
+/** What is in the sandbox clone's .env right now. */
+function envText(root: string): string {
+  return readFileSync(join(root, '.env'), 'utf8');
+}
+
+/** The `.env.bak-irises-<timestamp>` siblings a run left behind. */
+function backups(root: string): string[] {
+  return readdirSync(root).filter((f) => f.startsWith('.env.bak-irises-'));
+}
+
+/** The last line of stdout is the machine-readable one, and callers read only it. */
+function resultLine(out: string): string {
+  const lines = out.trimEnd().split('\n');
+  return lines[lines.length - 1];
 }
 
 /**
@@ -293,4 +315,208 @@ test('--show on a clone with no .env and no manifest still prints and exits 0', 
   assert.match(r.out, /manifest:/);
   assert.match(r.out, /none/);
   assert.match(r.out, /RESULT: ok/);
+});
+
+test('--show does not head its report with the non-interactive notice', SKIP_ON_WINDOWS, () => {
+  // The menu renders this report inline under "Status", and a line about stdin is noise on top of a
+  // read-only report that asks nothing.
+  const box = sandbox();
+  const r = run(['--show'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.ok(!r.out.includes('stdin is not a terminal'), `--show asks nothing:\n${r.out}`);
+});
+
+test('--show with IRISES_DASHBOARD_PASSWORD in the environment exits 2', SKIP_ON_WINDOWS, () => {
+  // The variable's presence IS the request to set the password, so it is a setting flag in every
+  // way that matters — and a report of the old values plus a write of new ones is neither request.
+  const box = sandbox();
+  const r = run(['--show'], { ...box.env, IRISES_DASHBOARD_PASSWORD: 'hunter2-not-a-password' });
+  assert.equal(r.code, 2, `${r.out}\n${r.err}`);
+  assert.match(r.err, /--show/);
+  assert.ok(!r.out.includes('hunter2-not-a-password'), `${r.out}`);
+  assert.ok(!r.err.includes('hunter2-not-a-password'), `${r.err}`);
+});
+
+// ── the plan / preview / confirm / apply pass ────────────────────────────────
+
+test('--tz Europe/Paris --no-restart --yes writes IRISES_TZ, backs the file up and ends RESULT: ok', SKIP_ON_WINDOWS, () => {
+  const box = sandbox();
+  const before = envText(box.root);
+  const r = run(['--tz', 'Europe/Paris', '--no-restart', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(envText(box.root), /^IRISES_TZ=Europe\/Paris$/m);
+  const b = backups(box.root);
+  assert.equal(b.length, 1, `one backup, taken once: ${b.join(', ')}`);
+  assert.equal(readFileSync(join(box.root, b[0]), 'utf8'), before, 'the backup holds the PRE-change file');
+  assert.ok(r.out.includes('+ IRISES_TZ=Europe/Paris'), `the preview names the addition:\n${r.out}`);
+  assert.match(r.out, /changed:.*IRISES_TZ/);
+  assert.equal(resultLine(r.out), 'RESULT: ok', r.out);
+});
+
+test('the same run again ends RESULT: noop and takes no second backup', SKIP_ON_WINDOWS, () => {
+  // A configure that rewrites and restarts for a value already in the file teaches the operator
+  // that running it twice is free. It is not: the second run bounces the server for nothing.
+  const box = sandbox();
+  const first = run(['--tz', 'Europe/Paris', '--no-restart', '--yes'], box.env);
+  assert.equal(first.code, 0, `${first.out}\n${first.err}`);
+  const again = run(['--tz', 'Europe/Paris', '--no-restart', '--yes'], box.env);
+  assert.equal(again.code, 0, `${again.out}\n${again.err}`);
+  assert.equal(resultLine(again.out), 'RESULT: noop', again.out);
+  assert.match(again.out, /nothing to change/);
+  assert.equal(backups(box.root).length, 1, 'the second run backs nothing up');
+});
+
+test('--tz host removes IRISES_TZ and previews it as a removal', SKIP_ON_WINDOWS, () => {
+  const box = sandbox('OPS_BACKEND=off\nPORT=3999\nIRISES_TZ=UTC\n');
+  const r = run(['--tz', 'host', '--no-restart', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.ok(r.out.includes('- IRISES_TZ'), `a removal previews as a removal:\n${r.out}`);
+  assert.ok(!/^IRISES_TZ=/m.test(envText(box.root)), `the line is gone:\n${envText(box.root)}`);
+  assert.equal(resultLine(r.out), 'RESULT: ok', r.out);
+});
+
+test('--web off --yes with nothing running says so and still ends RESULT: ok', SKIP_ON_WINDOWS, () => {
+  // No service and no live pid is not a failed restart: the change is on disk and takes at boot.
+  const box = sandbox();
+  const r = run(['--web', 'off', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(envText(box.root), /^WEB_ENABLED=false$/m);
+  assert.ok(r.out.includes('not running'), `the report says why nothing was restarted:\n${r.out}`);
+  assert.equal(resultLine(r.out), 'RESULT: ok', r.out);
+});
+
+test('--model-inherit removes the override and keeps the lane key', SKIP_ON_WINDOWS, () => {
+  // Undoing OUR choice of model must not cost the operator a credential they paid for and still
+  // need — so the key stays, and is named on stdout so nobody has to guess that it did.
+  const box = sandbox(
+    'OPS_BACKEND=off\nPORT=3999\n' +
+      'CONVO_MODEL_OPENROUTER=m\nCLASSIFY_MODEL_OPENROUTER=m\nFALLFIRM_MODEL_OPENROUTER=m\n' +
+      'CONVO_PROVIDER=openrouter\nCLASSIFY_PROVIDER=openrouter\nFALLFIRM_PROVIDER=openrouter\n' +
+      'ENGINE_MODEL_INHERIT=off\nOPENROUTER_API_KEY=zzz-not-a-key\n',
+  );
+  const r = run(['--model-inherit', '--no-restart', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  const body = envText(box.root);
+  for (const key of [
+    'CONVO_MODEL_OPENROUTER',
+    'CLASSIFY_MODEL_OPENROUTER',
+    'FALLFIRM_MODEL_OPENROUTER',
+    'CONVO_PROVIDER',
+    'CLASSIFY_PROVIDER',
+    'FALLFIRM_PROVIDER',
+    'ENGINE_MODEL_INHERIT',
+  ]) {
+    assert.ok(!new RegExp(`^${key}=`, 'm').test(body), `${key} must be gone:\n${body}`);
+  }
+  assert.match(body, /^OPENROUTER_API_KEY=zzz-not-a-key$/m, 'the key the operator gave stays');
+  assert.ok(r.out.includes('keeping OPENROUTER_API_KEY'), `${r.out}`);
+  assert.ok(!r.out.includes('zzz-not-a-key'), `by name only:\n${r.out}`);
+  assert.ok(!r.err.includes('zzz-not-a-key'), `by name only:\n${r.err}`);
+});
+
+test('--model-lane openrouter --model-slug m --no-restart --yes with IRISES_MODEL_API_KEY writes the override through the lib and never prints the key', SKIP_ON_WINDOWS, () => {
+  const box = sandbox();
+  const r = run(['--model-lane', 'openrouter', '--model-slug', 'm', '--no-restart', '--yes'], {
+    ...box.env,
+    IRISES_MODEL_API_KEY: 'zzz-not-a-key',
+  });
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  const body = envText(box.root);
+  for (const line of [
+    'CONVO_MODEL_OPENROUTER=m',
+    'CLASSIFY_MODEL_OPENROUTER=m',
+    'FALLFIRM_MODEL_OPENROUTER=m',
+    'CONVO_PROVIDER=openrouter',
+    'CLASSIFY_PROVIDER=openrouter',
+    'FALLFIRM_PROVIDER=openrouter',
+    'ENGINE_MODEL_INHERIT=off',
+    'OPENROUTER_API_KEY=zzz-not-a-key',
+  ]) {
+    assert.ok(new RegExp(`^${line}$`, 'm').test(body), `${line} must be in .env:\n${body}`);
+  }
+  assert.ok(r.out.includes('+ OPENROUTER_API_KEY=<set>'), `the key is previewed by name:\n${r.out}`);
+  assert.ok(!r.out.includes('zzz-not-a-key'), `never the value:\n${r.out}`);
+  assert.ok(!r.err.includes('zzz-not-a-key'), `never the value:\n${r.err}`);
+});
+
+test('--set CONVO_EFFORT=low --no-restart --yes writes a documented key', SKIP_ON_WINDOWS, () => {
+  const box = sandbox();
+  const r = run(['--set', 'CONVO_EFFORT=low', '--no-restart', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(envText(box.root), /^CONVO_EFFORT=low$/m);
+  assert.ok(r.out.includes('+ CONVO_EFFORT=low'), r.out);
+  assert.equal(resultLine(r.out), 'RESULT: ok', r.out);
+});
+
+test('--unset CONVO_EFFORT removes it', SKIP_ON_WINDOWS, () => {
+  const box = sandbox('OPS_BACKEND=off\nPORT=3999\nCONVO_EFFORT=low\n');
+  const r = run(['--unset', 'CONVO_EFFORT', '--no-restart', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.ok(!/^CONVO_EFFORT=/m.test(envText(box.root)), envText(box.root));
+  assert.ok(r.out.includes('- CONVO_EFFORT'), r.out);
+  assert.match(envText(box.root), /^PORT=3999$/m, 'the rest of the file is untouched');
+});
+
+test('--set OPENROUTER_API_KEY with IRISES_SET_VALUE writes the value and never prints it', SKIP_ON_WINDOWS, () => {
+  const box = sandbox();
+  const r = run(['--set', 'OPENROUTER_API_KEY', '--no-restart', '--yes'], {
+    ...box.env,
+    IRISES_SET_VALUE: 'zzz-not-a-key',
+  });
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(envText(box.root), /^OPENROUTER_API_KEY=zzz-not-a-key$/m);
+  assert.ok(r.out.includes('+ OPENROUTER_API_KEY=<set>'), `${r.out}`);
+  assert.ok(!r.out.includes('zzz-not-a-key'), `${r.out}`);
+  assert.ok(!r.err.includes('zzz-not-a-key'), `${r.err}`);
+});
+
+test('IRISES_DASHBOARD_PASSWORD alone is a setting: DASHBOARD_PASSWORD is written and never printed', SKIP_ON_WINDOWS, () => {
+  // No flag carries it: a password on argv is readable by every other process on the box.
+  const box = sandbox();
+  const r = run(['--no-restart', '--yes'], { ...box.env, IRISES_DASHBOARD_PASSWORD: 'hunter2-not-a-password' });
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.match(envText(box.root), /^DASHBOARD_PASSWORD=hunter2-not-a-password$/m);
+  assert.ok(r.out.includes('+ DASHBOARD_PASSWORD=<set>'), `${r.out}`);
+  assert.ok(!r.out.includes('hunter2-not-a-password'), `${r.out}`);
+  assert.ok(!r.err.includes('hunter2-not-a-password'), `${r.err}`);
+});
+
+test("a piped run auto-confirms, as the menu's child must", SKIP_ON_WINDOWS, () => {
+  // The menu runs this script with ITS stdin, and eating one line would cost the menu its next
+  // answer — so a pipe is treated as "nobody can answer", and the obvious answer is taken. The `n`
+  // below is never read, which is the whole point of the assertion.
+  const box = sandbox();
+  const r = run(['--tz', 'Europe/Paris'], box.env, 'n\n');
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.ok(r.out.includes('stdin is not a terminal'), `${r.out}`);
+  assert.match(envText(box.root), /^IRISES_TZ=Europe\/Paris$/m);
+  assert.equal(resultLine(r.out), 'RESULT: ok', r.out);
+});
+
+test('a run mixing --tz with --port changes nothing and reports partial', SKIP_ON_WINDOWS, () => {
+  // Port, service and front are not built yet. A run that quietly applied the half it CAN do would
+  // leave the operator believing both landed.
+  const box = sandbox();
+  const before = envText(box.root);
+  const r = run(['--tz', 'Europe/Paris', '--port', '3001', '--yes'], box.env);
+  assert.equal(r.code, 1, `${r.out}\n${r.err}`);
+  assert.equal(resultLine(r.out), 'RESULT: partial', r.out);
+  assert.equal(envText(box.root), before, 'not one byte of .env moved');
+  assert.equal(backups(box.root).length, 0, 'and nothing was backed up');
+});
+
+test('a changed secret previews as not shown', SKIP_ON_WINDOWS, () => {
+  // Neither half of a `~` line may carry a secret: not the new value, and not the old one.
+  const box = sandbox('OPS_BACKEND=off\nPORT=3999\nOPENROUTER_API_KEY=zzz-old-not-a-key\n');
+  const r = run(['--set', 'OPENROUTER_API_KEY', '--no-restart', '--yes'], {
+    ...box.env,
+    IRISES_SET_VALUE: 'zzz-new-not-a-key',
+  });
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.ok(r.out.includes('~ OPENROUTER_API_KEY=<set>     (was not shown)'), `${r.out}`);
+  for (const secret of ['zzz-old-not-a-key', 'zzz-new-not-a-key']) {
+    assert.ok(!r.out.includes(secret), `${secret} must not reach stdout:\n${r.out}`);
+    assert.ok(!r.err.includes(secret), `${secret} must not reach stderr:\n${r.err}`);
+  }
+  assert.match(envText(box.root), /^OPENROUTER_API_KEY=zzz-new-not-a-key$/m);
 });

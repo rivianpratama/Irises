@@ -362,34 +362,29 @@ while [ "$i" -lt "${#UNSET_KEYS[@]}" ]; do
   i=$((i + 1))
 done
 
+# IRISES_DASHBOARD_PASSWORD counts as a setting here, exactly like a flag: it carries no flag
+# because a password on argv is readable by every other process on the box, so its PRESENCE in the
+# environment is the request. Counting it in both directions is what makes `--show` with it set a
+# usage error rather than a silently dropped password, and a run carrying only it not "nothing".
 HAVE_SETTING=0
 if [ -n "$PORT_FLAG" ] || [ -n "$SERVICE_FLAG" ] || [ "$FRONT_SET" = "1" ] ||
    [ -n "$MODEL_LANE" ] || [ "$MODEL_INHERIT" = "1" ] || [ -n "$WEB_FLAG" ] || [ -n "$TZ_FLAG" ] ||
-   [ "${#SET_KEYS[@]}" -gt 0 ] || [ -n "$SET_BARE" ] || [ "${#UNSET_KEYS[@]}" -gt 0 ]; then
+   [ "${#SET_KEYS[@]}" -gt 0 ] || [ -n "$SET_BARE" ] || [ "${#UNSET_KEYS[@]}" -gt 0 ] ||
+   [ -n "${IRISES_DASHBOARD_PASSWORD:-}" ]; then
   HAVE_SETTING=1
 fi
 
 # A report of the OLD values followed by a write of new ones is not what anybody asking for both
 # wanted, and there is no ordering of the two that is.
 if [ "$SHOW" = "1" ] && [ "$HAVE_SETTING" = "1" ]; then
-  err "--show reports and changes nothing; a setting flag changes something. Run them separately:"
+  err "--show reports and changes nothing; a setting changes something. Run them separately:"
   err "  bash scripts/configure.sh --show"
   exit 2
 fi
-if [ "$SHOW" = "0" ] && [ "$HAVE_SETTING" = "0" ] && [ -z "${IRISES_DASHBOARD_PASSWORD:-}" ]; then
+if [ "$SHOW" = "0" ] && [ "$HAVE_SETTING" = "0" ]; then
   err "nothing to configure — see what is set with:  bash scripts/configure.sh --show   (or --help)"
   exit 2
 fi
-
-# No TTY = nobody can answer a question, so don't ask one. An agent-driven run lands here (both
-# engines spawn shell commands with stdin at /dev/null, so any `read` would hit EOF immediately).
-if [ ! -t 0 ] && [ "$ASSUME_YES" != "1" ]; then
-  ASSUME_YES=1
-  say "stdin is not a terminal — running non-interactive (same as --yes)"
-fi
-# The library's prompt helpers read THIS, never the terminal: whether a run may ask a question is a
-# decision this script has already made, above, out of --yes and the no-TTY case.
-IRISES_ASSUME_YES="$ASSUME_YES"
 
 ROOT="$(irises_root)"
 ENV_FILE="$ROOT/.env"
@@ -543,15 +538,277 @@ if [ "$SHOW" = "1" ]; then
   exit 0
 fi
 
+# Below the --show dispatch on purpose: the menu prints this report inline under Status, and --show
+# asks nothing, so a line about stdin has no business heading it.
+#
+# No TTY = nobody can answer a question, so don't ask one. An agent-driven run lands here (both
+# engines spawn shell commands with stdin at /dev/null, so any `read` would hit EOF immediately).
+if [ ! -t 0 ] && [ "$ASSUME_YES" != "1" ]; then
+  ASSUME_YES=1
+  say "stdin is not a terminal — running non-interactive (same as --yes)"
+fi
+# The library's prompt helpers read THIS, never the terminal: whether a run may ask a question is a
+# decision this script has already made, above, out of --yes and the no-TTY case. Published before
+# the first prompt below, which is the only rule about where it goes.
+IRISES_ASSUME_YES="$ASSUME_YES"
+
 # A signal trap's `exit` fires the EXIT trap as well, and the RESULT line is latched there, so the
 # two overlap by design: exactly one line, whichever got to it first. 130/143 are the codes a shell
 # reports for Ctrl+C and SIGTERM, and a caller reading them must not see a different number here.
 trap 'lifecycle_exit_guard 130' INT
 trap 'lifecycle_exit_guard 143' TERM
 
-# Every flag above is validated and every setting is known; what is missing is the part that plans
-# the writes, previews them, takes the lock and restarts Irises into them. It exits 1 on purpose:
-# a script that accepted the flags and quietly did nothing is the failure this whole verb exists to
-# stop, and `partial` says exactly that — nothing has been changed yet.
-summary partial "configure: applying settings is not built yet"
-exit 1
+# ── the plan ─────────────────────────────────────────────────────────────────
+# Every write this run would make, collected BEFORE a byte is touched, because the preview, the
+# "nothing to change" decision and the apply all have to read the SAME list. Three separate walks
+# over the flags would be three chances to disagree, and the one that disagreed silently would be
+# the preview — the one thing the operator answers a question about.
+#
+# Four parallel indexed arrays, because bash 3.2 (what macOS ships) has no associative ones.
+P_FILE=()
+P_OP=()
+P_KEY=()
+P_VAL=()
+
+plan_add() { # FILE OP(set|unset) KEY [VALUE]
+  P_FILE[${#P_FILE[@]}]="${1:-}"
+  P_OP[${#P_OP[@]}]="${2:-set}"
+  P_KEY[${#P_KEY[@]}]="${3:-}"
+  P_VAL[${#P_VAL[@]}]="${4:-}"
+}
+
+if [ -n "$WEB_FLAG" ]; then
+  if [ "$WEB_FLAG" = "on" ]; then
+    plan_add "$ENV_FILE" set WEB_ENABLED true
+  else
+    plan_add "$ENV_FILE" set WEB_ENABLED false
+  fi
+fi
+
+# `host` is the ABSENCE of the key, not a zone by that name: with IRISES_TZ unset
+# src/pipeline/zonedTime.ts reads this machine's own zone, which is what "host" means.
+if [ -n "$TZ_FLAG" ]; then
+  if [ "$TZ_FLAG" = "host" ]; then
+    plan_add "$ENV_FILE" unset IRISES_TZ
+  else
+    plan_add "$ENV_FILE" set IRISES_TZ "$TZ_FLAG"
+  fi
+fi
+
+# No flag carries this one: a password on argv is readable by every other process on the box, so
+# the variable's presence in the environment is the whole request.
+if [ -n "${IRISES_DASHBOARD_PASSWORD:-}" ]; then
+  plan_add "$ENV_FILE" set DASHBOARD_PASSWORD "$IRISES_DASHBOARD_PASSWORD"
+fi
+
+# The override goes into the plan key by key so the PREVIEW and the noop decision can see each line
+# — but the WRITE below is one call to the lib's model_override_write, so install and configure put
+# the same bytes in the file and print the same explanation. MODEL_OWNED is how the apply walk knows
+# which keys that one call has already covered.
+MODEL_OWNED=""
+if [ -n "$MODEL_LANE" ]; then
+  MODEL_OWNED="$(model_override_keys "$MODEL_LANE")"
+  for key in $MODEL_OWNED; do
+    case "$key" in
+      *_PROVIDER)           plan_add "$ENV_FILE" set "$key" "$MODEL_LANE" ;;
+      ENGINE_MODEL_INHERIT) plan_add "$ENV_FILE" set "$key" off ;;
+      OPENAI_BASE_URL)      plan_add "$ENV_FILE" set "$key" "$MODEL_BASE_URL" ;;
+      *)                    plan_add "$ENV_FILE" set "$key" "$MODEL_SLUG" ;;
+    esac
+  done
+  if [ -n "${IRISES_MODEL_API_KEY:-}" ]; then
+    LANE_KEY="$(model_lane_key "$MODEL_LANE")"
+    plan_add "$ENV_FILE" set "$LANE_KEY" "$IRISES_MODEL_API_KEY"
+    MODEL_OWNED="$MODEL_OWNED $LANE_KEY"
+  fi
+fi
+
+if [ "$MODEL_INHERIT" = "1" ]; then
+  # No lane: take out the whole removable set, whichever lane the override was last written on.
+  for key in $(model_override_keys); do
+    plan_add "$ENV_FILE" unset "$key"
+  done
+  # Named, never removed. The operator pays for these and may have had them in the file long before
+  # Irises wrote a model line; undoing OUR choice of model must not cost them a credential.
+  for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY OPENAI_BASE_URL; do
+    if [ -n "$(env_get "$ENV_FILE" "$key")" ]; then
+      say "keeping $key — the value you gave stays in $ENV_FILE; remove it with --unset $key if you mean to"
+    fi
+  done
+fi
+
+i=0
+while [ "$i" -lt "${#SET_KEYS[@]}" ]; do
+  plan_add "$ENV_FILE" set "${SET_KEYS[$i]}" "${SET_VALS[$i]}"
+  i=$((i + 1))
+done
+if [ -n "$SET_BARE" ]; then
+  plan_add "$ENV_FILE" set "$SET_BARE" "${IRISES_SET_VALUE:-}"
+fi
+i=0
+while [ "$i" -lt "${#UNSET_KEYS[@]}" ]; do
+  plan_add "$ENV_FILE" unset "${UNSET_KEYS[$i]}"
+  i=$((i + 1))
+done
+
+# Port, service and front are not built yet, and a run carrying one of them stops HERE — after the
+# plan, before the first write. Applying the half that does work and reporting the other half as
+# missing would leave the operator believing both landed; `partial` says nothing has been changed.
+if [ -n "$PORT_FLAG" ] || [ -n "$SERVICE_FLAG" ] || [ "$FRONT_SET" = "1" ]; then
+  summary partial "configure: port, service and front are not built yet"
+  exit 1
+fi
+
+# ── the preview ──────────────────────────────────────────────────────────────
+# What the apply will do, line by line, before the one question. A key already carrying the value
+# asked for is NOT listed: a preview that announces four lines and moves none teaches the operator
+# to stop reading it, and the count of what it did list is also what decides there is nothing to do.
+#
+# NO SECRET VALUE IS EVER PRINTED, in either position — not the new value and not the old one. A
+# secret is disclosed by NAME plus `<set>`, and what it replaces is `not shown` (the house rule, and
+# the same shape engine-setup.sh's own preview uses).
+LISTED=0
+CHANGED_KEYS=""
+preview_plan() {
+  local i=0 f op key val n cur note
+  # The header waits for the first line under it: a run whose every value is already in the file
+  # says "nothing to change" and should not first announce changes to anything.
+  local header=0
+  while [ "$i" -lt "${#P_KEY[@]}" ]; do
+    f="${P_FILE[$i]}"
+    op="${P_OP[$i]}"
+    key="${P_KEY[$i]}"
+    val="${P_VAL[$i]}"
+    i=$((i + 1))
+    n="$(env_count "$f" "$key")"
+    cur="$(env_get "$f" "$key")"
+    if [ "$op" = "unset" ]; then
+      # Nothing to take out is nothing to say.
+      if [ "$n" = "0" ]; then continue; fi
+      if [ "$header" = "0" ]; then
+        header=1
+        ui "changes to $ENV_FILE (backed up first to .bak-irises-<timestamp>):"
+      fi
+      ui "  - $key"
+    else
+      if [ "$n" != "0" ] && [ "$n" -le 1 ] && [ "$cur" = "$val" ]; then continue; fi
+      if [ "$header" = "0" ]; then
+        header=1
+        ui "changes to $ENV_FILE (backed up first to .bak-irises-<timestamp>):"
+      fi
+      # Duplicated keys are collapsed onto one line by env_set, and that is a change in its own
+      # right even when the live (last) value already matches — so it is said out loud.
+      note=""
+      if [ "$n" -gt 1 ]; then note="     ($n copies, collapsed onto one line)"; fi
+      if is_secret_key "$key"; then
+        if [ "$n" = "0" ]; then
+          ui "  + $key=<set>$note"
+        else
+          ui "  ~ $key=<set>     (was not shown)$note"
+        fi
+      else
+        if [ "$n" = "0" ]; then
+          ui "  + $key=$val$note"
+        else
+          ui "  ~ $key=$val     (was ${cur:-empty})$note"
+        fi
+      fi
+    fi
+    LISTED=$((LISTED + 1))
+    CHANGED_KEYS="$CHANGED_KEYS $key"
+  done
+  CHANGED_KEYS="${CHANGED_KEYS# }"
+  return 0
+}
+
+preview_plan
+if [ "$LISTED" = "0" ]; then
+  # No lock, no backup, no restart: a run that bounced the server to write nothing is the reason
+  # people stop trusting a configure verb they ran twice.
+  summary noop "nothing to change — every value asked for is already in $ENV_FILE"
+  exit 0
+fi
+
+if ! ask_yn "Apply?" y; then
+  summary noop "nothing was applied"
+  exit 0
+fi
+
+# ── apply ────────────────────────────────────────────────────────────────────
+# The lock from here, and the same one install and update take: two lifecycle runs rewriting .env at
+# once is the same corruption whichever pair they are. The EXIT guard above releases it on every
+# path out, including a Ctrl+C in the middle of the restart.
+lock_acquire || exit 1
+
+# Once, before the first write, and the path is what the summary hands the operator to go back to.
+BACKUP="$(env_backup "$ENV_FILE" configure)"
+# A clone that never had a .env gets one at 0600 from the start — engine-setup.sh:516 makes it the
+# same way, and a `touch` would leave secrets world-readable.
+if [ ! -e "$ENV_FILE" ]; then ( umask 077; : > "$ENV_FILE" ); fi
+
+if [ -n "$MODEL_LANE" ]; then
+  model_override_write "$ENV_FILE" "$MODEL_LANE" "$MODEL_SLUG" "$MODEL_BASE_URL" || exit 1
+fi
+
+i=0
+while [ "$i" -lt "${#P_KEY[@]}" ]; do
+  key="${P_KEY[$i]}"
+  # The one call above already wrote every key it owns, in the shape the installer writes them.
+  case " $MODEL_OWNED " in
+    *" $key "*) i=$((i + 1)); continue ;;
+  esac
+  if [ "${P_OP[$i]}" = "unset" ]; then
+    env_unset "${P_FILE[$i]}" "$key" >/dev/null
+  else
+    env_set "${P_FILE[$i]}" "$key" "${P_VAL[$i]}" || exit 1
+  fi
+  i=$((i + 1))
+done
+chmod 600 "$ENV_FILE" 2>/dev/null || true
+# This clone's .env moved, which is what makes the restart below worth doing. It is always 1 here —
+# the apply only runs when the preview listed a clone-setting change — and it is set anyway because
+# the port/service/front half reaches this same restart decision with an engine-side change that
+# leaves .env alone, and the two must be told apart there rather than assumed.
+CLONE_CHANGED=1
+
+# ── the restart, and the proof ───────────────────────────────────────────────
+# .env is parsed once at boot (src/loadEnv.ts has no reload path), so a setting nobody restarted
+# into is a setting that silently did not take. Verifying that SOMETHING answers /health is not
+# enough either — the old process still holding the port answers exactly the same way — so the sha
+# this clone is built from goes in and has to come back.
+RESTART_STATE=""
+if [ "$DO_RESTART" = "0" ]; then
+  RESTART_STATE="skipped (--no-restart) — the change is on disk; restart Irises yourself"
+  say "not restarting: --no-restart. The new value is in $ENV_FILE and takes at her next start"
+elif ! service_installed && [ -z "$(server_pid)" ]; then
+  # Not a failure, and it must not read like one: there is nothing to restart, and the value will
+  # be read the first time she does start.
+  RESTART_STATE="not running — the change takes effect at her next start"
+  say "no service installed and nothing running — $RESTART_STATE"
+else
+  SHA="$(built_sha "$ROOT")"
+  if [ -z "$SHA" ]; then
+    warn "no dist/version.json — verifying liveness only"
+  fi
+  PORT_NOW="$(irises_port)"
+  if ! irises_restart_verify "$ROOT" "$PORT_NOW" "$SHA" 60; then
+    summary health-failed \
+      "changed:   $CHANGED_KEYS" \
+      "backup:    ${BACKUP:-none (new file)}" \
+      "Irises:    restarted, but /health did not report build $(printf '%.7s' "${SHA:-unknown}") within 60s — read $(irises_home)/logs/server.log"
+    exit 4
+  fi
+  if [ -n "$SHA" ]; then
+    RESTART_STATE="restarted — build $(printf '%.7s' "$SHA") verified live on :$PORT_NOW"
+  else
+    RESTART_STATE="restarted — live on :$PORT_NOW (no dist/version.json to check the build against)"
+  fi
+fi
+
+summary ok \
+  "changed:   $CHANGED_KEYS" \
+  "backup:    ${BACKUP:-none (new file)}" \
+  "Irises:    $RESTART_STATE" \
+  "gateway:   n/a (no engine-side change)" \
+  "show:      bash scripts/configure.sh --show"
+exit 0
