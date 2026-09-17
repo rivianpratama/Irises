@@ -603,23 +603,29 @@ fi
 
 # The override goes into the plan key by key so the PREVIEW and the noop decision can see each line
 # — but the WRITE below is one call to the lib's model_override_write, so install and configure put
-# the same bytes in the file and print the same explanation. MODEL_OWNED is how the apply walk knows
-# which keys that one call has already covered.
-MODEL_OWNED=""
+# the same bytes in the file and print the same explanation.
+#
+# MODEL_IDX records the plan INDICES that call covers, not the key names. By name, an operator's own
+# `--set CONVO_PROVIDER=anthropic` alongside a lane would be previewed and then thrown away, because
+# its key is one the override also writes — a preview that promises a line and an apply that
+# discards it. By index, only the override's own entries are skipped, and the operator's entry for
+# the same key applies AFTER the override call, in plan order: the last word is theirs, which is
+# exactly what the preview showed them.
+MODEL_IDX=""
 if [ -n "$MODEL_LANE" ]; then
-  MODEL_OWNED="$(model_override_keys "$MODEL_LANE")"
-  for key in $MODEL_OWNED; do
+  for key in $(model_override_keys "$MODEL_LANE"); do
     case "$key" in
       *_PROVIDER)           plan_add "$ENV_FILE" set "$key" "$MODEL_LANE" ;;
       ENGINE_MODEL_INHERIT) plan_add "$ENV_FILE" set "$key" off ;;
       OPENAI_BASE_URL)      plan_add "$ENV_FILE" set "$key" "$MODEL_BASE_URL" ;;
       *)                    plan_add "$ENV_FILE" set "$key" "$MODEL_SLUG" ;;
     esac
+    MODEL_IDX="$MODEL_IDX $((${#P_KEY[@]} - 1))"
   done
   if [ -n "${IRISES_MODEL_API_KEY:-}" ]; then
     LANE_KEY="$(model_lane_key "$MODEL_LANE")"
     plan_add "$ENV_FILE" set "$LANE_KEY" "$IRISES_MODEL_API_KEY"
-    MODEL_OWNED="$MODEL_OWNED $LANE_KEY"
+    MODEL_IDX="$MODEL_IDX $((${#P_KEY[@]} - 1))"
   fi
 fi
 
@@ -715,7 +721,13 @@ preview_plan() {
       fi
     fi
     LISTED=$((LISTED + 1))
-    CHANGED_KEYS="$CHANGED_KEYS $key"
+    # Named once, in the order the plan first reaches it. Two entries CAN name one key — an override
+    # and the operator's own line overruling it — and both are previewed, because both are written;
+    # but a summary that says CONVO_PROVIDER twice reads like a bug rather than like a precedence.
+    case " $CHANGED_KEYS " in
+      *" $key "*) ;;
+      *) CHANGED_KEYS="$CHANGED_KEYS $key" ;;
+    esac
   done
   CHANGED_KEYS="${CHANGED_KEYS# }"
   return 0
@@ -753,9 +765,10 @@ fi
 i=0
 while [ "$i" -lt "${#P_KEY[@]}" ]; do
   key="${P_KEY[$i]}"
-  # The one call above already wrote every key it owns, in the shape the installer writes them.
-  case " $MODEL_OWNED " in
-    *" $key "*) i=$((i + 1)); continue ;;
+  # These entries — and only these — are the ones the call above already wrote, in the shape the
+  # installer writes them. Anything else naming the same key is the operator's and still applies.
+  case " $MODEL_IDX " in
+    *" $i "*) i=$((i + 1)); continue ;;
   esac
   if [ "${P_OP[$i]}" = "unset" ]; then
     env_unset "${P_FILE[$i]}" "$key" >/dev/null
@@ -764,7 +777,10 @@ while [ "$i" -lt "${#P_KEY[@]}" ]; do
   fi
   i=$((i + 1))
 done
-chmod 600 "$ENV_FILE" 2>/dev/null || true
+# Said out loud, not swallowed: this file carries API keys and the dashboard password, and a mode a
+# chmod could not set is the difference between a 0600 file and one every user on the box can read.
+chmod 600 "$ENV_FILE" 2>/dev/null ||
+  warn "could not chmod 600 $ENV_FILE — it may be readable by other users on this box"
 # This clone's .env moved, which is what makes the restart below worth doing. It is always 1 here —
 # the apply only runs when the preview listed a clone-setting change — and it is set anyway because
 # the port/service/front half reaches this same restart decision with an engine-side change that

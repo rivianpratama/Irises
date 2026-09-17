@@ -439,6 +439,49 @@ test('--model-lane openrouter --model-slug m --no-restart --yes with IRISES_MODE
   assert.ok(!r.err.includes('zzz-not-a-key'), `never the value:\n${r.err}`);
 });
 
+test('a --set of a key the override also writes beats the override, as the preview showed', SKIP_ON_WINDOWS, () => {
+  // The apply skips the override's OWN plan entries, by index — never every entry that happens to
+  // name one of its keys. Skipping by name would preview the operator's line and then let
+  // model_override_write silently win, which is a preview promising a write that never happens.
+  const box = sandbox();
+  const r = run(
+    ['--model-lane', 'openrouter', '--model-slug', 'm', '--set', 'CONVO_PROVIDER=anthropic', '--no-restart', '--yes'],
+    box.env,
+  );
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  const body = envText(box.root);
+  assert.match(body, /^CONVO_PROVIDER=anthropic$/m, "the operator's line is the last word");
+  assert.match(body, /^CLASSIFY_PROVIDER=openrouter$/m, 'the rest of the override still lands');
+  assert.match(body, /^FALLFIRM_PROVIDER=openrouter$/m);
+  assert.match(body, /^CONVO_MODEL_OPENROUTER=m$/m);
+  assert.match(body, /^ENGINE_MODEL_INHERIT=off$/m);
+  assert.ok(r.out.includes('+ CONVO_PROVIDER=openrouter'), `the preview shows the override:\n${r.out}`);
+  assert.ok(r.out.includes('+ CONVO_PROVIDER=anthropic'), `and the line that beats it:\n${r.out}`);
+  // Both entries are written, so both are previewed — but the summary names the key once.
+  const changed = r.out.split('\n').find((l) => l.includes('changed:')) ?? '';
+  assert.equal(changed.split('CONVO_PROVIDER').length - 1, 1, `named once: ${changed}`);
+});
+
+test('a non-secret change previews its old value', SKIP_ON_WINDOWS, () => {
+  const box = sandbox('OPS_BACKEND=off\nPORT=3999\nWEB_ENABLED=true\n');
+  const r = run(['--web', 'off', '--no-restart', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.ok(r.out.includes('~ WEB_ENABLED=false     (was true)'), `${r.out}`);
+});
+
+test('a duplicated key previews the collapse and leaves one line', SKIP_ON_WINDOWS, () => {
+  // dotenv takes the LAST assignment, so two lines are a value plus a decoy. Collapsing them is a
+  // change in its own right and the preview says so.
+  const box = sandbox('OPS_BACKEND=off\nPORT=3999\nCONVO_EFFORT=low\nCONVO_EFFORT=low\n');
+  const r = run(['--set', 'CONVO_EFFORT=high', '--no-restart', '--yes'], box.env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.ok(r.out.includes('(2 copies, collapsed onto one line)'), `${r.out}`);
+  const lines = envText(box.root)
+    .split('\n')
+    .filter((l) => l.startsWith('CONVO_EFFORT='));
+  assert.deepEqual(lines, ['CONVO_EFFORT=high'], `exactly one line survives:\n${envText(box.root)}`);
+});
+
 test('--set CONVO_EFFORT=low --no-restart --yes writes a documented key', SKIP_ON_WINDOWS, () => {
   const box = sandbox();
   const r = run(['--set', 'CONVO_EFFORT=low', '--no-restart', '--yes'], box.env);
