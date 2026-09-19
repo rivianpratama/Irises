@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 170" width="1200" height="170" role="img" aria-labelledby="t">
+  <title id="t">The life of a turn</title>
+  <defs>
+    <style>
+      .bg   { fill: #0b0b0d; stroke: #202026; stroke-width: 1.5; }
+      .chip { fill: #111114; stroke: #2e2e36; stroke-width: 1.2; }
+      .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif; }
+      .n    { font-size: 11px; font-weight: 700; fill: #b9a7ff; letter-spacing: 1.5px; }
+      .t    { font-size: 17px; font-weight: 700; fill: #f1f1f4; }
+      .s    { font-size: 12px; fill: #8b8b94; }
+      .arrow{ stroke: #3a3a44; stroke-width: 1.6; fill: none; }
+    </style>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3a3a44"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0.75" y="0.75" width="1198.5" height="168.5" rx="20"/>
+
+  <!-- 6 chips, width 168, gap 26 -->
+  <g>
+    <rect class="chip" x="30" y="30" width="168" height="110" rx="14"/>
+    <text class="sans n" x="48" y="56">STEP 1</text>
+    <text class="sans t" x="48" y="82">In</text>
+    <text class="sans s" x="48" y="104">a channel hands over</text>
+    <text class="sans s" x="48" y="121">the route is in the chat id</text>
+  </g>
+  <line class="arrow" x1="200" y1="85" x2="222" y2="85" marker-end="url(#a)"/>
+
+  <g>
+    <rect class="chip" x="224" y="30" width="168" height="110" rx="14"/>
+    <text class="sans n" x="242" y="56">STEP 2</text>
+    <text class="sans t" x="242" y="82">Settle</text>
+    <text class="sans s" x="242" y="104">texts that arrive together</text>
+    <text class="sans s" x="242" y="121">merge into one burst</text>
+  </g>
+  <line class="arrow" x1="394" y1="85" x2="416" y2="85" marker-end="url(#a)"/>
+
+  <g>
+    <rect class="chip" x="418" y="30" width="168" height="110" rx="14"/>
+    <text class="sans n" x="436" y="56">STEP 3</text>
+    <text class="sans t" x="436" y="82">Gate</text>
+    <text class="sans s" x="436" y="104">in a group, Classify picks</text>
+    <text class="sans s" x="436" y="121">respond · react · ignore</text>
+  </g>
+  <line class="arrow" x1="588" y1="85" x2="610" y2="85" marker-end="url(#a)"/>
+
+  <g>
+    <rect class="chip" x="612" y="30" width="168" height="110" rx="14"/>
+    <text class="sans n" x="630" y="56">STEP 4</text>
+    <text class="sans t" x="630" y="82">Lock</text>
+    <text class="sans s" x="630" y="104">one reply per chat at a time</text>
+    <text class="sans s" x="630" y="121">a stale reply is dropped</text>
+  </g>
+  <line class="arrow" x1="782" y1="85" x2="804" y2="85" marker-end="url(#a)"/>
+
+  <g>
+    <rect class="chip" x="806" y="30" width="168" height="110" rx="14"/>
+    <text class="sans n" x="824" y="56">STEP 5</text>
+    <text class="sans t" x="824" y="82">Assemble</text>
+    <text class="sans s" x="824" y="104">persona · memory · affect</text>
+    <text class="sans s" x="824" y="121">transcript · contract last</text>
+  </g>
+  <line class="arrow" x1="976" y1="85" x2="998" y2="85" marker-end="url(#a)"/>
+
+  <g>
+    <rect class="chip" x="1000" y="30" width="168" height="110" rx="14"/>
+    <text class="sans n" x="1018" y="56">STEP 6</text>
+    <text class="sans t" x="1018" y="82">Speak</text>
+    <text class="sans s" x="1018" y="104">split · cap · pace</text>
+    <text class="sans s" x="1018" y="121">hidden status swallowed</text>
+  </g>
+</svg>
