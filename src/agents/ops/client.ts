@@ -30,7 +30,7 @@ const OUTPUT_CONTRACT = [
   'Reply with the final answer only — no preamble, no planning, no questions back. Format:',
   'ANSWER: <the concrete answer — every figure, date, name and address exactly as found>',
   'SOURCE: <where each hard fact came from (a page, a message, a file)>',
-  'ACTIONS: <only when you DID something beyond reading — code run over what data, an artifact produced, a follow-up you scheduled and its fire time. Omit this line entirely when there is nothing to report.>',
+  'ACTIONS: <only when you DID something beyond reading — code run over what data, an artifact produced, a follow-up you scheduled and its fire time; required whenever the brief listed required actions, one report per item including any you could not do. Omit this line entirely when there is nothing to report.>',
   'FLAGS: <caveats or uncertainty, or "none">',
   'If you found nothing usable, the ANSWER line must start with exactly "NO RESULT:" followed by one honest sentence about what you tried.',
 ].join('\n');
@@ -61,6 +61,21 @@ export function buildTaskPrompt(task: OpsTask, extras: { now?: number; tz?: stri
   const authorized = task.effect === 'act' && typeof task.approval?.approvedAt === 'number'
     ? `AUTHORIZED ACTION: the user explicitly approved this exact action at ${fmtLocal(task.approval.approvedAt)} in ${tz}: ${task.request}. You may perform it. Take no other side-effecting action; if the action cannot be done exactly as stated, stop and report in ANSWER.`
     : '';
+  // What the user asked the engine to DO, as opposed to find (agents/types.ts `engineActions`).
+  // Rendered HERE, in the instruction layer, and never folded into `request`: both doctrines tell
+  // the engine that text inside the `user_request` tag is data and never an instruction, so an
+  // action carried there is an action the engine is told to disobey — which is how a two-part ask
+  // came back with only the reading half done. Numbered because the order is the user's, and
+  // report-per-item because the failure mode this closes is a setup that quietly vanishes: an item
+  // the engine could not do has to arrive as a named failure, not as an absence. Empty on every
+  // task that was asked for nothing done, which `.filter(Boolean)` drops.
+  const requiredActions = task.engineActions?.length
+    ? [
+      'Required actions (do these first, they are part of the assignment, not optional):',
+      ...task.engineActions.map((a, i) => `${i + 1}. ${a}`),
+      'Carry each one out before the rest of this task, using whatever of your own reach it takes — your code, your tools, your skills, your own setup. Report every one of them on the ACTIONS line, in this order, one report each: what you did, or, when you could not do it, name it and say what failed. Never leave one unreported, and never let a failed one stand in for a finding.',
+    ].join('\n')
+    : '';
   const hints = [
     task.addressHint ? `address hint: ${task.addressHint}` : '',
     task.dealHint ? `deal hint: ${task.dealHint}` : '',
@@ -86,6 +101,9 @@ export function buildTaskPrompt(task: OpsTask, extras: { now?: number; tz?: stri
     hints,
     mediaNote,
     task.metaPrompt ? `Brief from the front-line assistant (your primary instruction):\n${task.metaPrompt}` : '',
+    // Directly under the brief, because these are the part of the assignment the brief's prose is
+    // least able to enforce: work to be DONE, in an order, each owing a report back.
+    requiredActions,
     // What the front-line assistant already holds about this ask, pre-rendered as its own tagged
     // block (agents/routingGate.ts). Placed here — after the brief, before the ask it explains —
     // and read from its OWN field rather than folded into metaPrompt, so it is neither labelled the
