@@ -43,11 +43,18 @@ const REQUEST_QUOTE_CHARS = 120;
  * back up": the honest state is that the work stopped and nobody knows what it would have said. The
  * offer to run it again is a statement of what is in reach, because running it again is the
  * user's call to make and a question would hand them the decision as homework.
+ *
+ * `engineActions` is the same honesty one clause further: a run can carry work as well as a
+ * question, and quoting the request alone told them their lookup had stopped while leaving the
+ * setup sounding like it had gone through. The actions are NOT quoted back — the apology claims
+ * nothing about what any of them reached — only that they did not happen. Empty for every run that
+ * was asked for none, which is the line exactly as it was.
  */
-export function opsLostText(request: string): string {
+export function opsLostText(request: string, engineActions: string[] = []): string {
   const flat = request.trim().replace(/\s+/g, ' ');
   const quoted = flat.length > REQUEST_QUOTE_CHARS ? `${flat.slice(0, REQUEST_QUOTE_CHARS).trimEnd()}…` : flat;
-  return `that thing i was looking into for you — "${quoted}" — got cut off when i restarted. nothing came back from it. say the word and i run it again.`;
+  const setup = engineActions.length ? " the setting up you asked for didn't happen either." : '';
+  return `that thing i was looking into for you — "${quoted}" — got cut off when i restarted. nothing came back from it.${setup} say the word and i run it again.`;
 }
 
 export interface OpsTaskRecoveryDeps {
@@ -119,7 +126,9 @@ export function createOpsTaskRecovery(deps: OpsTaskRecoveryDeps): OpsTaskRecover
           const outcome = await deps.deliver({
             chatId: row.chatId,
             kind: 'memo',
-            text: opsLostText(row.request),
+            // The row's meta is the only record left of what this run was asked to DO — the
+            // in-memory registry died with the process that held it.
+            text: opsLostText(row.request, Array.isArray(row.meta?.engineActions) ? row.meta.engineActions as string[] : []),
             dedupeKey: `ops-lost:${row.id}`,
           });
           // Recorded on the no-op path too: the proactive layer dedupes, and a receipt that only

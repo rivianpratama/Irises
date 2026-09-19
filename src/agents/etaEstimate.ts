@@ -42,14 +42,18 @@ const DEEP: EtaEstimate = { bucketMs: 210_000, phrase: 'a few minutes' };
  *   not a new promise. Only ever widens — a budget narrower than the ask's own bucket is ignored,
  *   so an absent one is byte-identical to before.
  */
-export function estimateOpsEta(input: { kind: TaskKind; request: string; forceGrounding?: boolean; budgetMs?: number }): EtaEstimate {
+export function estimateOpsEta(input: { kind: TaskKind; request: string; forceGrounding?: boolean; budgetMs?: number; engineActions?: string[] }): EtaEstimate {
   const est = baseEstimate(input);
   const budget = input.budgetMs;
   return budget && Number.isFinite(budget) && budget > est.bucketMs ? { bucketMs: budget, phrase: DEEP.phrase } : est;
 }
 
-function baseEstimate(input: { kind: TaskKind; request: string; forceGrounding?: boolean }): EtaEstimate {
-  if (CROSS_ENTITY_RE.test(input.request) || INBOX_FILES_RE.test(input.request) || (input.kind === 'general' && input.forceGrounding) || input.kind === 'compute') {
+function baseEstimate(input: { kind: TaskKind; request: string; forceGrounding?: boolean; engineActions?: string[] }): EtaEstimate {
+  // The actions are read with the ask, not instead of it: work the engine was told to DO is part of
+  // what the user is waiting through, and half of it is routinely named only there. Empty on every
+  // run that was asked for none, which is the same text the regexes have always seen.
+  const scanned = [input.request, ...(input.engineActions ?? [])].join('\n');
+  if (CROSS_ENTITY_RE.test(scanned) || INBOX_FILES_RE.test(scanned) || (input.kind === 'general' && input.forceGrounding) || input.kind === 'compute') {
     return DEEP;
   }
   if (QUICK_KINDS.includes(input.kind)) {

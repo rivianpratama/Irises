@@ -292,6 +292,10 @@ test('refusedCapabilities: a setup refusal resolves to the class that can actual
   assert.deepEqual(refusedCapabilities('no can do', 'can you set up that tool for yourself?'), ['code']);
   // Still nothing for a social decline that happens to sit near the word.
   assert.deepEqual(refusedCapabilities("no can do, i'm slammed today", 'wanna help me set up the garage'), []);
+  // And nothing for the everyday senses of the same nouns: a determiner in front of "tool" or "cli"
+  // is not an engine-side setup, and treating it as one force-delegates ordinary conversation.
+  assert.deepEqual(refusedCapabilities('no can do', 'set up a tool shed quote for me'), []);
+  assert.deepEqual(refusedCapabilities('no can do', 'whats the best tool for cutting tile'), []);
 });
 
 test('refusedCapabilities: a NAMED path in the refusal is files on its own, with no file noun', () => {

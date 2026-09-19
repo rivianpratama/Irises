@@ -180,7 +180,10 @@ const ACCESS_VERB = String.raw`(?:get (?:to|at|into)|see|view|reach(?: into)?|ac
 // thing: preparing the deep look's own side for a job rather than reaching something that already
 // exists. Live 2026-09-19, a refusal built on exactly these verbs ("can't install a skill on my
 // side") scored zero on the access shapes and shipped as written. Closed for the same reason the
-// access list is — "can't add" alone would swallow every ordinary inability.
+// access list is: an open "can't <verb>" would swallow every ordinary inability. The loosest member
+// is `add`, which on its own reaches a fair number of harmless sentences — it is affordable only
+// because this list is half of a two-part screen: a shape matched here still has to name a subject
+// the class map recognises, and the floor still has to find that class on the live engine.
 // The split particle ("set that up", "hook it up") is the common spoken form and gets one word.
 const SETUP_VERB = String.raw`(?:install|set ?up|set [\w']+ up|add|configure|enable|hook ?up|hook [\w']+ up|wire ?up)`;
 
@@ -242,10 +245,15 @@ const SUBJECT_VOCAB: ReadonlyArray<readonly [CapabilityClass, RegExp]> = [
   ['inbox', /\b(?:inbox|e-?mails?|mailbox|gmail|outlook|mail account|your mail)\b/i],
   ['files', /\b(?:files?|filenames?|folders?|subfolders?|directory|directories|dirs?|disk|filesystem|file system|drive|downloads|desktop|documents|paths?|repo|repository|codebase|machine|computer|laptop|locally|local)\b/i],
   // Setting something up on the deep look's own side is work it does with its own code, so the
-  // subject words for it belong here — a skill or a tool it installs for itself, and the setup verbs
-  // aimed at itself. "a host action" is the justification the live refusal reached for, and it is as
-  // false as "local to your machine": the deep look IS that host.
-  ['code', /\b(?:run (?:code|a script|commands?)|execute|scripts?|the terminal|a terminal|shell|bash|command line|host action|(?:a|an|the|your|my|its|another|new|own) (?:skill|plugin|package|dependency|cli|tool|mcp server)s?|(?:install|set|add|configure|enable)(?:\s+[\w']+){0,2}\s+(?:skills?|plugins?|packages?|dependenc(?:y|ies)|clis?|tools?))\b/i],
+  // subject words for it belong here — a skill or a plugin it installs for itself, and the setup
+  // verbs aimed at one. "a host action" is the justification the live refusal reached for, and it is
+  // as false as "local to your machine": the deep look IS that host.
+  //
+  // "tool" is deliberately absent from both the determiner branch and the setup-verb branch: its
+  // everyday senses survive either anchor ("set up a tool shed quote", "the best tool for cutting
+  // tile"), and a class named here that the engine HAS force-delegates the turn. It counts only
+  // when the sentence says the tool is the engine's OWN, which is the shape this class is about.
+  ['code', /\b(?:run (?:code|a script|commands?)|execute|scripts?|the terminal|a terminal|shell|bash|command line|host action|(?:a|an|the|your|my|its|another|new|own) (?:skill|plugin|package|dependency|mcp server)s?|(?:install|set ?up|set [\w']+ up|add|configure|enable)(?:\s+[\w']+){0,2}\s+(?:skills?|plugins?|packages?|dependenc(?:y|ies)|clis?)|tools?\s+(?:for|on)\s+(?:yourself|itself))\b/i],
   ['media', /\b(?:photos?|pictures?|images?|videos?|audio|voice ?memos?|recordings?|screenshots?|pdfs?|attachments?)\b/i],
   ['scheduling', /\b(?:reminders?|remind you|an alarm|schedule (?:that|it|a)|automations?)\b/i],
 ];

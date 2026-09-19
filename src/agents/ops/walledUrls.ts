@@ -107,18 +107,21 @@ export function findWalledUrls(text: string): WalledUrl[] {
   return out;
 }
 
-/** The text a walled URL can appear in: the user's ask PLUS the front-line brief — Convo routinely
- *  restates the link there ("akses URL IG reel itu"), and sometimes only there.
+/** The text a walled URL can appear in: the user's ask, the front-line brief — Convo routinely
+ *  restates the link there ("akses URL IG reel itu"), and sometimes only there — and the required
+ *  actions, which name the page a setup is to be fetched from.
  *
- *  Those two and nothing else, deliberately. Both are THIS turn's ask as somebody wrote it, and
+ *  Those three and nothing else, deliberately. All are THIS turn's ask as somebody wrote it, and
  *  everything downstream of the hint treats a walled link as the thing the user wants opened: the
  *  `tooling:` line, the wider leg budget (which is also the ETA the user is promised) and the retry
  *  directive that orders `browser_navigate` to it. Text that arrived some other way — what she
  *  already HOLDS about the ask (`task.heldMemory`, agents/routingGate.ts) — is context, not a
  *  request, so a reddit link in a note that merely shares a token with the ask never reaches here.
- *  Anything added to this scan must be able to answer "did the user ask for this to be opened?". */
-export function walledScanText(task: { request: string; metaPrompt?: string }): string {
-  return `${task.request}\n${task.metaPrompt ?? ''}`;
+ *  Anything added to this scan must be able to answer "did the user ask for this to be opened?" —
+ *  which an action naming a page to install something from does: an engine that curls it gets a
+ *  login shell rather than the thing it was told to set up. */
+export function walledScanText(task: { request: string; metaPrompt?: string; engineActions?: string[] }): string {
+  return `${task.request}\n${task.metaPrompt ?? ''}\n${(task.engineActions ?? []).join('\n')}`;
 }
 
 /** The `tooling:` line for a set of walled hosts. One line — the task prompt joins its fields with

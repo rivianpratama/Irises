@@ -104,7 +104,15 @@ test('findWalledUrls: an open host and an empty ask find nothing', () => {
 test('walledScanText: scans the ask AND the front-line brief (Convo restates the URL there)', () => {
   const text = walledScanText({ request: 'who is the girl', metaPrompt: 'akses https://www.instagram.com/reel/DcJg4VkgMT0/ itu' });
   assert.deepEqual(findWalledUrls(text).map(f => f.host), ['instagram.com']);
-  assert.equal(walledScanText({ request: 'a' }), 'a\n', 'no brief → the ask plus an empty line, never "undefined"');
+  assert.equal(walledScanText({ request: 'a' }), 'a\n\n', 'no brief and no actions → the ask plus empty lines, never "undefined"');
+});
+
+// The required actions are the third field, and they answer the scan's own admission test: an
+// action that names a page to install something FROM is a request to open that page, and an engine
+// that curls a walled one gets a login shell instead of the thing it was told to set up.
+test('walledScanText: the required actions are scanned too', () => {
+  const text = walledScanText({ request: 'what it costs', engineActions: ['install the skill at https://www.instagram.com/reel/DcJg4VkgMT0/'] });
+  assert.deepEqual(findWalledUrls(text).map(f => f.host), ['instagram.com']);
 });
 
 // ── the browser signal itself (review r1 / Important #2) ──────────────────────

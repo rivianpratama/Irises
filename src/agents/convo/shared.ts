@@ -584,7 +584,11 @@ export function renderActiveOps(activeOps: ActiveOps[]): string {
   // what those lines DO and DON'T authorize her to say. The failure it closes is a claim made from
   // memory of her own holding line rather than from the task — she said she had asked for something
   // that no task carried, and nothing in the prompt made the difference visible.
-  blocks.push('Those lines are the whole of what was handed over for them — the ask itself, anything they added, and anything the look was asked to do as well as find. Read them as the record: never say a part of what they asked is being taken care of unless it is listed there. If they ask whether some part of it went out and the lines do not carry it, the honest answer is that it did not, and the fix is to send it now.');
+  //
+  // Gated on the same `requested.length` the lines are: a chat whose only live run is a scheduled
+  // check renders no "you're mid-research" list at all, and a rule about lines that are not there
+  // is a rule about nothing.
+  if (requested.length) blocks.push('Those lines are the whole of what was handed over for them — the ask itself, anything they added, and anything the look was asked to do as well as find. Read them as the record: never say a part of what they asked is being taken care of unless it is listed there. If they ask whether some part of it went out and the lines do not carry it, the honest answer is that it did not, and the fix is to send it now.');
   blocks.push('If their new message is just an ack ("ok"/"thanks"/"cool"/"sounds good") or asks about THAT same thing: do NOT delegate_to_ops again, and do NOT repeat a holding line like "pulling that up". Check the thread and the timestamps first — if the answer already landed in a recent bubble of yours, their ack is just closing the loop: close it flat (a tiny ack or a reaction) and say nothing about still working. Only if the result genuinely has NOT gone out yet does one short "still on it" beat fit. Either way, only delegate if they\'ve clearly asked for something genuinely different.');
   blocks.push('If they ask how it\'s going, answer from the status above in your own words — one short bubble naming what it\'s doing and roughly how long it\'s been ("still digging through the emails, couple minutes in"). When the status shows time left, you may pass it on loosely; when it shows "running past that", own it lightly ("taking longer than i thought") — never invent a fresh number, never a countdown, never invent progress beyond what the status shows. If a run shows "queued … hasn\'t started yet", it\'s behind another look of theirs — say it\'s next in line and starting shortly, and don\'t pretend it\'s already digging.');
   if (scheduled.length) {
@@ -1943,6 +1947,10 @@ interface PendingApprovalPref {
   /** True on the marker the re-confirm wrote: a yes to THIS one is a fresh approval, and it never
    *  re-asks a second time. */
   reconfirm?: boolean;
+  /** What the engine was asked to DO as part of this ask (agents/types.ts `engineActions`). On the
+   *  marker as well as in the row, so the thin fallback task below is still the brief she asked
+   *  about rather than its reading half. */
+  engineActions?: string[];
   /** When the ask ran out of clock. The row is already settled 'expired' by then; the marker lives
    *  one more TTL so a yes that arrives a couple of turns late still gets its one re-ask rather than
    *  landing on nothing (user decision 2026-09-04). */
@@ -1977,6 +1985,7 @@ function approvedTask(pa: PendingApprovalPref, chatId: string, sender: string, n
     : {
         id: String(pa.taskId), chatId, agentHandle: sender, kind,
         request: String(pa.request), effect: 'act', createdAt: now, media: emptyMedia(),
+        ...(pa.engineActions?.length ? { engineActions: pa.engineActions } : {}),
       };
   return {
     // approvedAt is what the brief's AUTHORIZED ACTION line is keyed to (agents/ops/client.ts), and
@@ -2707,7 +2716,11 @@ export async function processConvoResult(args: {
             record({ type: 'event', chatId, taskId: built.id, label: 'ops:durable-write-lost', detail: { taskId: built.id, kind: built.kind, at: 'approval' } });
           }
           await setPreference(chatContext.senderHandle, 'pending_approval', {
+            // The actions ride the marker as well as the row: the marker is the fallback the resume
+            // builds from when the row is gone, and a yes that dropped the work half would authorize
+            // a different brief than the one she asked about.
             taskId: built.id, request: built.request, kind: built.kind, askedAt,
+            ...(built.engineActions?.length ? { engineActions: built.engineActions } : {}),
           }).catch(err => console.error('[convo] failed to persist pending_approval', err));
           record({ type: 'event', label: 'ops:approval', chatId, handle, detail: { decision: 'requested', trigger: sideEffect.trigger, taskId: built.id } });
           // chatId in the line: the park is invisible otherwise — nothing starts, nothing is marked.

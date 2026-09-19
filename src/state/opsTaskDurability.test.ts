@@ -161,6 +161,19 @@ test('the follow-up claims no result and never offers to re-run by itself', () =
   assert.ok(opsLostText('x'.repeat(500)).length < 300);
 });
 
+// A run can carry work as well as a question (agents/types.ts `engineActions`, written into the
+// row's meta). The apology quoted the request alone, so a restart that killed a setup told them
+// their lookup stopped and left the setup sounding like it had gone through.
+test('a killed run that carried a setup says the setup did not happen either', () => {
+  const text = opsLostText('what those apis charge', ['install the skill they sent']);
+  assert.match(text, /got cut off/);
+  assert.match(text, /the setting up you asked for didn't happen either/);
+  assert.equal(text, text.toLowerCase(), 'her register is lowercase');
+  assert.ok(!text.includes('?'), 'still no question shape');
+  // And a run that carried none is exactly the line it always was.
+  assert.equal(opsLostText('what those apis charge', []), opsLostText('what those apis charge'));
+});
+
 test('the ops:lost receipt fires even when the proactive layer swallows the send', async () => {
   const fake = fakeDeliver('duplicate');
   const recovery = createOpsTaskRecovery({ deliver: fake.deliver });
