@@ -94,7 +94,7 @@ Once, after install, she introduces herself. Engine cron jobs and mail alerts co
 Irises has two parts and one connection between them. The voice part holds the persona, the memory and the pacing. Only the voice part writes to you. The deep part is your engine. Irises reaches it through one function.
 
 <p align="center">
-  <img src="docs/assets/how-it-works.svg" alt="How a text becomes an answer. You text Irises. Irises replies at once, writes a meta-prompt for hermes, and re-voices the engine's answer in the same chat." width="100%">
+  <img src="docs/assets/how-it-works.png" alt="How a text becomes an answer. You text Irises. Irises replies at once, writes a meta-prompt for hermes, and re-voices the engine's answer in the same chat." width="100%">
 </p>
 
 ### Four prompts, one person
