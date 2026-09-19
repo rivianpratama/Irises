@@ -126,13 +126,23 @@ const BEAT_SECOND = "(couldn't get that one)";
  * through. Returns '' for a task that carried none — the overwhelming majority — so the instruction
  * those compose from stays exactly what it was. Pure; exported for unit tests.
  */
-export function engineActionRelay(task: OpsTask, moment: ComposeMoment): string {
+export function engineActionRelay(task: OpsTask, moment: ComposeMoment, summary = ''): string {
   const n = task.engineActions?.length ?? 0;
   if (!n) return '';
+  const count = n === 1 ? '1 thing' : `${n} things`;
   if (moment !== 'answer') {
-    return `\n\nthey also asked you to get ${n === 1 ? 'one thing' : `${n} things`} set up as part of this, and nothing came back saying they were done — so never word this as if they were. say nothing about that part at all, or say flatly that it isn't done yet; never both, and never a guess about why.`;
+    // Silence is what this whole branch exists to stop: she promised a setup and the promise simply
+    // went missing. So the only two options are both spoken ones.
+    return `\n\nthey also asked you to get ${count} set up as part of this, and nothing came back saying they were done — so never word this as if they were. give it one flat clause that it hasn't landed, no guess about why, and don't dwell on it.`;
   }
-  return `\n\nbeyond the question, they asked you to get ${n === 1 ? '1 thing' : `${n} things`} done as part of this. whether each one landed is part of their answer, not back-office you drop: work it in as one short plain clause, in their words not the machinery's. if one of them did NOT land, say so plainly and say what stopped it, before you hand over the rest. never let one go unmentioned, and never claim more than what came back says happened.`;
+  // The engine owes a report per item on the ACTIONS line, and an answer without one has reported
+  // nothing about the setup. Telling the composer to work every action into the answer from that
+  // would be asking it to invent an outcome — the same failure as the claim this branch started on,
+  // one layer further out.
+  if (!/^\s*ACTIONS\s*:/m.test(summary)) {
+    return `\n\nthey also asked you to get ${count} done as part of this, and what came back carries no report on them at all — so you do not know whether any of it happened. give it one flat clause: say plainly that you don't have confirmation on that part yet and you'll say when you do. never imply it landed, and never guess.`;
+  }
+  return `\n\nbeyond the question, they asked you to get ${count} done as part of this. whether each one landed is part of their answer, not back-office you drop: work it in as one short plain clause, in their words not the machinery's. if one of them did NOT land, say so plainly and say what stopped it, before you hand over the rest. never let one go unmentioned, and never claim more than what came back says happened.`;
 }
 
 async function composeFollowUp(
@@ -181,7 +191,7 @@ async function composeFollowUp(
   // What they asked to have DONE as well as found. Appended for every moment, because the moments
   // that hand the composer no result content are exactly the ones where a reply could read as if the
   // setup had gone through. Empty for a task that carried none.
-  instruction += engineActionRelay(task, moment);
+  instruction += engineActionRelay(task, moment, result.summary ?? '');
 
   // Continue straight from the exact holding line Irises last sent, so the late reply reads as one
   // seamless thread, not a fresh delivery. This is a continuity anchor only — never a fact source.

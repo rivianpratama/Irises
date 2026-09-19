@@ -107,7 +107,7 @@ test('a replay given no actions is exactly the task it always was', () => {
 // ── what the composer is told when the answer comes back ─────────────────────
 
 test('on an answer, the outcome of each action is part of the answer and a failure is said plainly', () => {
-  const clause = engineActionRelay(task({ engineActions: [SETUP, SECOND] }), 'answer');
+  const clause = engineActionRelay(task({ engineActions: [SETUP, SECOND] }), 'answer', 'ANSWER: $4.\nACTIONS: installed both.\nFLAGS: none');
   assert.match(clause, /2 things/);
   assert.match(clause, /part of their answer, not back-office/);
   assert.match(clause, /say so plainly and say what stopped it/);
@@ -116,12 +116,31 @@ test('on an answer, the outcome of each action is part of the answer and a failu
   assert.match(clause, /never claim more than what came back says happened/);
 });
 
-test('on a miss or a snag, the clause forbids implying the actions were done', () => {
+test('on a miss or a snag, the clause forbids implying the actions were done — and forbids silence', () => {
   for (const moment of ['miss', 'transient', 'needs_info'] as const) {
     const clause = engineActionRelay(task({ engineActions: [SETUP] }), moment);
     assert.match(clause, /nothing came back saying they were done/);
     assert.match(clause, /never word this as if they were/);
+    // Saying nothing was the original harm: she promised a setup and the promise simply vanished.
+    assert.match(clause, /one flat clause that it hasn't landed/);
+    assert.doesNotMatch(clause, /say nothing about that part/);
   }
+});
+
+// An engine that returns ANSWER with no ACTIONS line has reported nothing about the setup. The
+// relay used to be built from the task alone, so the composer was told to work every action into
+// the answer with no evidence that any of them happened — an invented outcome dressed as a relay.
+test('an answer with no ACTIONS line is relayed as unconfirmed, not as done', () => {
+  const clause = engineActionRelay(task({ engineActions: [SETUP] }), 'answer', 'ANSWER: $4 per 1,000.\nFLAGS: none');
+  assert.match(clause, /carries no report on them at all/);
+  assert.match(clause, /say plainly that you don't have confirmation/);
+  assert.doesNotMatch(clause, /part of their answer, not back-office/, 'the confident relay is not the one used');
+});
+
+test('an answer that DOES report gets the ordinary relay', () => {
+  const clause = engineActionRelay(task({ engineActions: [SETUP] }), 'answer', 'ANSWER: $4.\nACTIONS: installed the skill.\nFLAGS: none');
+  assert.match(clause, /part of their answer, not back-office/);
+  assert.doesNotMatch(clause, /carries no report on them at all/);
 });
 
 test('a task that carried no actions adds nothing to any moment', () => {
