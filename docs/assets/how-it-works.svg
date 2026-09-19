@@ -3,40 +3,41 @@
   <desc id="d">You text Irises. Irises replies at once, writes a meta-prompt for hermes, and re-voices the engine's answer in the same chat.</desc>
   <defs>
     <style>
-      .bg   { fill: #0b0b0d; stroke: #202026; stroke-width: 1.5; }
-      .panel{ fill: #111114; stroke: #26262d; stroke-width: 1.2; }
-      .chip { fill: #18181c; stroke: #2e2e36; stroke-width: 1; }
-      .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif; }
-      .serif{ font-family: Didot, "Bodoni MT", "Playfair Display", Georgia, "Times New Roman", serif; }
-      .h1   { font-size: 30px; fill: #ffffff; }
-      .h2   { font-size: 14px; fill: #8b8b94; }
-      .col  { font-size: 12px; font-weight: 700; letter-spacing: 2.2px; }
-      .colsub{ font-size: 12.5px; fill: #8b8b94; }
-      .you  { fill: #c9c9d1; }
-      .iris { fill: #b9a7ff; }
-      .herm { fill: #f2c168; }
-      .chipT{ font-size: 15px; font-weight: 700; fill: #f1f1f4; }
-      .chipS{ font-size: 12px; fill: #8b8b94; }
-      .tiny { font-size: 12px; fill: #8b8b94; }
-      .tinyW{ font-size: 12px; fill: #d7d7dd; }
-      .bub  { font-size: 13px; fill: #f1f1f4; }
-      .line { stroke-width: 1.8; fill: none; }
-      .lineYou  { stroke: #8f8f99; }
-      .lineIris { stroke: #b9a7ff; }
-      .lineHerm { stroke: #f2c168; }
-      .dash { stroke-dasharray: 6 5; }
-      .num  { font-size: 12px; font-weight: 700; }
-      .legend{ font-size: 13px; fill: #c9c9d1; }
+      .bg    { fill: #ffffff; stroke: #e5e7eb; stroke-width: 1.5; }
+      .panel { fill: #f7f7f9; stroke: #e5e7eb; stroke-width: 1.2; }
+      .chip  { fill: #ffffff; stroke: #e2e4e8; stroke-width: 1; }
+      .sans  { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif; }
+      .serif { font-family: Didot, "Bodoni MT", "Playfair Display", Georgia, "Times New Roman", serif; }
+      .h1    { font-size: 30px; fill: #111827; }
+      .h2    { font-size: 14px; fill: #6b7280; }
+      .col   { font-size: 12px; font-weight: 700; letter-spacing: 2.2px; }
+      .colsub{ font-size: 12.5px; fill: #6b7280; }
+      .you   { fill: #374151; }
+      .iris  { fill: #6d5bd0; }
+      .herm  { fill: #b45309; }
+      .chipT { font-size: 15px; font-weight: 700; fill: #111827; }
+      .chipS { font-size: 12px; fill: #6b7280; }
+      .tiny  { font-size: 12px; fill: #6b7280; }
+      .lbl   { font-size: 11px; font-weight: 700; letter-spacing: 1.8px; fill: #9ca3af; }
+      .bubU  { font-size: 13px; fill: #ffffff; }
+      .bubI  { font-size: 13px; fill: #111827; }
+      .line  { stroke-width: 1.8; fill: none; }
+      .lineYou  { stroke: #6b7280; }
+      .lineIris { stroke: #6d5bd0; }
+      .lineHerm { stroke: #b45309; }
+      .dash  { stroke-dasharray: 6 5; }
+      .num   { font-size: 12px; font-weight: 700; }
+      .legend{ font-size: 13px; fill: #374151; }
       .legendK{ font-size: 13px; font-weight: 700; }
     </style>
     <marker id="aYou" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" fill="#8f8f99"/>
+      <path d="M0,0 L10,5 L0,10 z" fill="#6b7280"/>
     </marker>
     <marker id="aIris" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" fill="#b9a7ff"/>
+      <path d="M0,0 L10,5 L0,10 z" fill="#6d5bd0"/>
     </marker>
     <marker id="aHerm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" fill="#f2c168"/>
+      <path d="M0,0 L10,5 L0,10 z" fill="#b45309"/>
     </marker>
   </defs>
 
@@ -51,32 +52,33 @@
   <text class="sans col you" x="60" y="122">YOU</text>
   <text class="sans colsub" x="60" y="140">any channel your engine already speaks</text>
 
-  <!-- phone -->
-  <rect class="panel" x="60" y="154" width="220" height="392" rx="28"/>
-  <rect x="140" y="166" width="60" height="6" rx="3" fill="#26262d"/>
+  <!-- phone, iMessage style -->
+  <rect x="60" y="154" width="220" height="392" rx="34" fill="#ffffff" stroke="#111827" stroke-width="3"/>
+  <rect x="138" y="166" width="64" height="16" rx="8" fill="#111827"/>
 
-  <!-- user bubble -->
-  <rect x="104" y="190" width="160" height="50" rx="14" fill="#27272e"/>
-  <text class="sans bub" x="184" y="211" text-anchor="middle">did the electric</text>
-  <text class="sans bub" x="184" y="229" text-anchor="middle">bill come in yet</text>
+  <!-- contact header -->
+  <circle cx="170" cy="204" r="13" fill="#e5e7eb"/>
+  <text class="sans" x="170" y="209" text-anchor="middle" font-size="12" font-weight="700" fill="#374151">I</text>
+  <text class="sans" x="170" y="232" text-anchor="middle" font-size="11.5" fill="#111827">Irises</text>
+  <line x1="62" y1="240" x2="278" y2="240" stroke="#e5e7eb" stroke-width="1"/>
 
-  <!-- irises bubbles -->
-  <rect x="76" y="254" width="84" height="30" rx="14" fill="#211a35" stroke="#5c4b9e" stroke-width="1"/>
-  <text class="sans bub" x="118" y="274" text-anchor="middle">one sec</text>
+  <!-- sent bubble, blue, right -->
+  <rect x="112" y="254" width="154" height="48" rx="16" fill="#0a84ff"/>
+  <text class="sans bubU" x="189" y="274" text-anchor="middle">did the electric bill</text>
+  <text class="sans bubU" x="189" y="292" text-anchor="middle">come in yet</text>
+  <text class="sans" x="264" y="316" text-anchor="end" font-size="10" fill="#8e8e93">Delivered</text>
 
-  <text class="sans tiny" x="170" y="312" text-anchor="middle" font-style="italic">two minutes</text>
+  <!-- received, grey, left -->
+  <rect x="74" y="328" width="72" height="30" rx="15" fill="#e9e9eb"/>
+  <text class="sans bubI" x="110" y="348" text-anchor="middle">one sec</text>
 
-  <rect x="76" y="326" width="170" height="30" rx="14" fill="#211a35" stroke="#5c4b9e" stroke-width="1"/>
-  <text class="sans bub" x="161" y="346" text-anchor="middle">yep, came in on the 16th</text>
+  <rect x="74" y="370" width="168" height="48" rx="16" fill="#e9e9eb"/>
+  <text class="sans bubI" x="158" y="390" text-anchor="middle">yep, came in on the 16th</text>
+  <text class="sans bubI" x="158" y="408" text-anchor="middle">84.50, due by the 30th</text>
 
-  <rect x="76" y="366" width="158" height="30" rx="14" fill="#211a35" stroke="#5c4b9e" stroke-width="1"/>
-  <text class="sans bub" x="155" y="386" text-anchor="middle">84.50, due by the 30th</text>
-
-  <rect x="76" y="406" width="184" height="30" rx="14" fill="#211a35" stroke="#5c4b9e" stroke-width="1"/>
-  <text class="sans bub" x="168" y="426" text-anchor="middle">same account, 4471-2201</text>
-
-  <text class="sans tiny" x="170" y="512" text-anchor="middle">short bubbles · paced like typing</text>
-  <text class="sans tiny" x="170" y="530" text-anchor="middle">always back on the same channel</text>
+  <!-- input bar -->
+  <rect x="74" y="500" width="192" height="30" rx="15" fill="#ffffff" stroke="#d1d5db" stroke-width="1"/>
+  <text class="sans" x="90" y="520" font-size="12" fill="#8e8e93">iMessage</text>
 
   <text class="sans tiny" x="170" y="572" text-anchor="middle">Telegram · WhatsApp · Signal · Discord · web</text>
 
@@ -86,7 +88,6 @@
 
   <rect class="panel" x="380" y="154" width="420" height="392" rx="20"/>
 
-  <!-- four surfaces -->
   <rect class="chip" x="400" y="174" width="184" height="60" rx="12"/>
   <text class="sans chipT" x="416" y="199">Convo</text>
   <text class="sans chipS" x="416" y="218">front line · answers now</text>
@@ -104,26 +105,25 @@
   <text class="sans chipS" x="612" y="288">decides · never speaks</text>
 
   <!-- shared persona bar -->
-  <rect x="400" y="318" width="380" height="28" rx="8" fill="#1a1530" stroke="#5c4b9e" stroke-width="1"/>
-  <text class="sans tinyW iris" x="590" y="337" text-anchor="middle">one personality text · shared by all four · never paraphrased</text>
+  <rect x="400" y="318" width="380" height="28" rx="8" fill="#efeaff" stroke="#6d5bd0" stroke-width="1"/>
+  <text class="sans" x="590" y="337" text-anchor="middle" font-size="12" fill="#4c3d99">one personality text, shared by all four</text>
 
   <!-- memory -->
-  <text class="sans col" x="400" y="374" fill="#6f6f78" style="letter-spacing:1.8px;font-size:11px">MEMORY</text>
-  <rect class="chip" x="400" y="384" width="60" height="26" rx="13"/><text class="sans tinyW" x="430" y="402" text-anchor="middle">short</text>
-  <rect class="chip" x="468" y="384" width="74" height="26" rx="13"/><text class="sans tinyW" x="505" y="402" text-anchor="middle">medium</text>
-  <rect class="chip" x="550" y="384" width="54" height="26" rx="13"/><text class="sans tinyW" x="577" y="402" text-anchor="middle">long</text>
-  <rect class="chip" x="612" y="384" width="66" height="26" rx="13"/><text class="sans tinyW" x="645" y="402" text-anchor="middle">thesis</text>
-  <rect class="chip" x="686" y="384" width="94" height="26" rx="13"/><text class="sans tinyW" x="733" y="402" text-anchor="middle">moments</text>
+  <text class="sans lbl" x="400" y="374">MEMORY</text>
+  <rect class="chip" x="400" y="384" width="60" height="26" rx="13"/><text class="sans tiny" x="430" y="402" text-anchor="middle" fill="#374151">short</text>
+  <rect class="chip" x="468" y="384" width="74" height="26" rx="13"/><text class="sans tiny" x="505" y="402" text-anchor="middle" fill="#374151">medium</text>
+  <rect class="chip" x="550" y="384" width="54" height="26" rx="13"/><text class="sans tiny" x="577" y="402" text-anchor="middle" fill="#374151">long</text>
+  <rect class="chip" x="612" y="384" width="66" height="26" rx="13"/><text class="sans tiny" x="645" y="402" text-anchor="middle" fill="#374151">thesis</text>
+  <rect class="chip" x="686" y="384" width="94" height="26" rx="13"/><text class="sans tiny" x="733" y="402" text-anchor="middle" fill="#374151">moments</text>
 
   <!-- inner state -->
-  <text class="sans col" x="400" y="440" fill="#6f6f78" style="letter-spacing:1.8px;font-size:11px">INNER STATE</text>
-  <text class="sans tiny" x="400" y="460">mood · 28-day cycle · climate → three directives per turn. Never shown to you.</text>
+  <text class="sans lbl" x="400" y="440">INNER STATE</text>
+  <text class="sans tiny" x="400" y="460">mood · 28-day cycle · relationship climate</text>
+  <text class="sans tiny" x="400" y="477">compiled to a few directives a turn, never shown</text>
 
   <!-- consent -->
-  <rect x="400" y="480" width="380" height="28" rx="8" fill="#1c1508" stroke="#8a6a24" stroke-width="1"/>
-  <text class="sans tinyW herm" x="590" y="499" text-anchor="middle">an action that sends, books or deletes waits for your yes</text>
-
-  <text class="sans tiny" x="590" y="532" text-anchor="middle">per-chat send lock · one reply at a time · in order</text>
+  <rect x="400" y="496" width="380" height="28" rx="8" fill="#fff7ed" stroke="#b45309" stroke-width="1"/>
+  <text class="sans" x="590" y="515" text-anchor="middle" font-size="12" fill="#9a3412">an action that sends, books or deletes waits for your yes</text>
 
   <!-- ─────────── column C · hermes ─────────── -->
   <text class="sans col herm" x="880" y="122">HERMES-AGENT · THE ENGINE</text>
@@ -151,51 +151,44 @@
   <text class="sans chipT" x="916" y="410">memory</text>
   <text class="sans chipS" x="916" y="427">its own · per chat</text>
 
-  <rect x="900" y="452" width="240" height="28" rx="14" fill="#1c1508" stroke="#8a6a24" stroke-width="1"/>
-  <text class="sans tinyW herm" x="1020" y="471" text-anchor="middle">engine mode · reply contract only</text>
+  <rect x="900" y="452" width="240" height="28" rx="14" fill="#fff7ed" stroke="#b45309" stroke-width="1"/>
+  <text class="sans" x="1020" y="471" text-anchor="middle" font-size="12" fill="#9a3412">engine mode · reply contract only</text>
 
-  <text class="sans tiny" x="1020" y="516" text-anchor="middle">an OpenClaw adapter exists</text>
-  <text class="sans tiny" x="1020" y="532" text-anchor="middle">but is untested</text>
+  <text class="sans tiny" x="1020" y="516" text-anchor="middle">an OpenClaw adapter exists, untested</text>
 
-  <!-- ─────────── arrows A ↔ B ─────────── -->
-  <!-- 1 your message -->
-  <line class="line lineYou" x1="282" y1="214" x2="376" y2="214" marker-end="url(#aYou)"/>
-  <circle cx="329" cy="214" r="11" fill="#0b0b0d" stroke="#8f8f99" stroke-width="1.5"/>
-  <text class="sans num you" x="329" y="218" text-anchor="middle">1</text>
+  <!-- ─────────── arrows A ↔ B, aligned to the bubbles ─────────── -->
+  <line class="line lineYou" x1="284" y1="278" x2="376" y2="278" marker-end="url(#aYou)"/>
+  <circle cx="330" cy="278" r="11" fill="#ffffff" stroke="#6b7280" stroke-width="1.5"/>
+  <text class="sans num you" x="330" y="282" text-anchor="middle">1</text>
 
-  <!-- 2 holding text -->
-  <line class="line lineIris" x1="376" y1="268" x2="282" y2="268" marker-end="url(#aIris)"/>
-  <circle cx="329" cy="268" r="11" fill="#0b0b0d" stroke="#b9a7ff" stroke-width="1.5"/>
-  <text class="sans num iris" x="329" y="272" text-anchor="middle">2</text>
+  <line class="line lineIris" x1="376" y1="343" x2="284" y2="343" marker-end="url(#aIris)"/>
+  <circle cx="330" cy="343" r="11" fill="#ffffff" stroke="#6d5bd0" stroke-width="1.5"/>
+  <text class="sans num iris" x="330" y="347" text-anchor="middle">2</text>
 
-  <!-- 5 result in her voice -->
-  <line class="line lineIris" x1="376" y1="380" x2="282" y2="380" marker-end="url(#aIris)"/>
-  <circle cx="329" cy="380" r="11" fill="#0b0b0d" stroke="#b9a7ff" stroke-width="1.5"/>
-  <text class="sans num iris" x="329" y="384" text-anchor="middle">5</text>
+  <line class="line lineIris" x1="376" y1="394" x2="284" y2="394" marker-end="url(#aIris)"/>
+  <circle cx="330" cy="394" r="11" fill="#ffffff" stroke="#6d5bd0" stroke-width="1.5"/>
+  <text class="sans num iris" x="330" y="398" text-anchor="middle">5</text>
 
   <!-- ─────────── arrows B ↔ C ─────────── -->
-  <!-- 3 meta-prompt -->
   <line class="line lineIris" x1="802" y1="214" x2="876" y2="214" marker-end="url(#aIris)"/>
-  <circle cx="839" cy="214" r="11" fill="#0b0b0d" stroke="#b9a7ff" stroke-width="1.5"/>
+  <circle cx="839" cy="214" r="11" fill="#ffffff" stroke="#6d5bd0" stroke-width="1.5"/>
   <text class="sans num iris" x="839" y="218" text-anchor="middle">3</text>
 
-  <!-- 4 contract back -->
-  <line class="line lineHerm" x1="876" y1="268" x2="802" y2="268" marker-end="url(#aHerm)"/>
-  <circle cx="839" cy="268" r="11" fill="#0b0b0d" stroke="#f2c168" stroke-width="1.5"/>
-  <text class="sans num herm" x="839" y="272" text-anchor="middle">4</text>
+  <line class="line lineHerm" x1="876" y1="278" x2="802" y2="278" marker-end="url(#aHerm)"/>
+  <circle cx="839" cy="278" r="11" fill="#ffffff" stroke="#b45309" stroke-width="1.5"/>
+  <text class="sans num herm" x="839" y="282" text-anchor="middle">4</text>
 
-  <!-- 6 push, dashed -->
-  <line class="line lineHerm dash" x1="876" y1="380" x2="802" y2="380" marker-end="url(#aHerm)"/>
-  <circle cx="839" cy="380" r="11" fill="#0b0b0d" stroke="#f2c168" stroke-width="1.5"/>
-  <text class="sans num herm" x="839" y="384" text-anchor="middle">6</text>
+  <line class="line lineHerm dash" x1="876" y1="394" x2="802" y2="394" marker-end="url(#aHerm)"/>
+  <circle cx="839" cy="394" r="11" fill="#ffffff" stroke="#b45309" stroke-width="1.5"/>
+  <text class="sans num herm" x="839" y="398" text-anchor="middle">6</text>
 
   <!-- ─────────── legend ─────────── -->
-  <line x1="40" y1="590" x2="1160" y2="590" stroke="#202026" stroke-width="1"/>
+  <line x1="40" y1="590" x2="1160" y2="590" stroke="#e5e7eb" stroke-width="1"/>
 
   <text class="sans legend" x="40" y="616"><tspan class="legendK you">1</tspan>  your message, on any channel</text>
-  <text class="sans legend" x="330" y="616"><tspan class="legendK iris">2</tspan>  a holding text, at once</text>
-  <text class="sans legend" x="590" y="616"><tspan class="legendK iris">3</tspan>  the meta-prompt, a brief for hermes</text>
+  <text class="sans legend" x="420" y="616"><tspan class="legendK iris">2</tspan>  a holding text, at once</text>
+  <text class="sans legend" x="800" y="616"><tspan class="legendK iris">3</tspan>  the meta-prompt, a brief for hermes</text>
   <text class="sans legend" x="40" y="640"><tspan class="legendK herm">4</tspan>  ANSWER · SOURCE · ACTIONS · FLAGS</text>
-  <text class="sans legend" x="330" y="640"><tspan class="legendK iris">5</tspan>  the result, in her voice</text>
-  <text class="sans legend" x="590" y="640"><tspan class="legendK herm">6</tspan>  cron and mail push back through her, with a reason</text>
+  <text class="sans legend" x="420" y="640"><tspan class="legendK iris">5</tspan>  the result, in her voice</text>
+  <text class="sans legend" x="800" y="640"><tspan class="legendK herm">6</tspan>  cron and mail push back through her</text>
 </svg>

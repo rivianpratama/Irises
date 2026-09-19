@@ -110,13 +110,19 @@ Irises speaks through four prompts. Each one shows the same personality text fro
 
 A fifth role, **Classify**, never speaks. It decides. Respond or ignore in a group, the grounding screen, failure triage.
 
-### The life of a turn
+### The mood and personality system
 
-Every message goes through six steps. The lock in step 4 is the important one. Voice, send and record are one step. If a reply was voiced against an old view of the thread, Irises drops it.
+Irises has a hidden inner state. Three inputs feed it.
 
-<p align="center">
-  <img src="docs/assets/turn.svg" alt="The six steps of a turn. In, Settle, Gate, Lock, Assemble, Speak." width="100%">
-</p>
+| Input | What it gives |
+|-------|---------------|
+| **The clock** | The hour where you are, and day 1 to 28 of an internal cycle. Both set the mood baseline. |
+| **The model** | One true feeling word, the direction it moved, the intent of the turn, and a short private note for the next turn. This is all the model reports. |
+| **The weeks** | A relationship climate with three dials. Ease, candor and playfulness. They move by small fixed steps inside code-owned limits. |
+
+A compiler turns these inputs into at most four short instructions per turn. How sharp, how short, if an idle remark is allowed, and if it is late where you are. The feeling word is filed under one of six cores of the Willcox feeling wheel, and the core decides what changes in the reply. The model never sees a number. No mood prose reaches the prompt. Code owns every number.
+
+The personality text itself never changes. It is one shared block, and every prompt shows it the same way. The inner state only sets the register. This state lives in SQLite, not in the memory files, because none of it is a fact about you. The **Inner state** tab in `/dashboard` reads it back.
 
 ### Memory
 
