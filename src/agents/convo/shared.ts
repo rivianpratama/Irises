@@ -533,10 +533,15 @@ function opsStatusLine(o: ActiveOps): string {
   // the status instead of from hope — and so a second addition doesn't read as the first one again.
   // Absent for the ordinary run, which is why an untouched status line is the bytes it always was.
   const added = o.steers?.length ? ` — you added: ${o.steers.map(s => `"${s}"`).join('; ')}` : '';
+  // What the look was asked to DO as well as find (agents/types.ts `engineActions`), read back from
+  // the task itself. This is the model's only honest source for "did you ask it to do that too?" —
+  // without it the answer came from what it remembered saying, which is how a part that was never
+  // delegated got reported as handed off. Absent for the ordinary run, same discipline as `added`.
+  const handed = o.engineActions?.length ? ` — handed over with it: ${o.engineActions.map(a => `"${a}"`).join('; ')}` : '';
   // Queued: parked behind the concurrency cap, not started. Elapsed/ETA measure RUN time, so suppress
   // the pace clause entirely and say plainly it's still waiting for a slot — never imply progress.
   if (o.lastMilestone === 'queued') {
-    return `- "${o.request}" — queued ${elapsedLabel(o.firstStartedAt)}, hasn't started yet (waiting for a free slot)${added}`;
+    return `- "${o.request}" — queued ${elapsedLabel(o.firstStartedAt)}, hasn't started yet (waiting for a free slot)${added}${handed}`;
   }
   const phrase = o.lastMilestone ? MILESTONE_PHRASES[o.lastMilestone] : undefined;
   let etaPace = '';
@@ -552,7 +557,7 @@ function opsStatusLine(o: ActiveOps): string {
     else if (s.state === 'closing') etaPace = `, you said it'd take ${o.estimatePhrase} (should be close now)`;
     else if (s.state === 'overrun') etaPace = `, you said it'd take ${o.estimatePhrase} (running past that)`;
   }
-  return `- "${o.request}" — started ${elapsedLabel(o.firstStartedAt)} ago${phrase ? `, right now: ${phrase}` : ''}${etaPace}${added}`;
+  return `- "${o.request}" — started ${elapsedLabel(o.firstStartedAt)} ago${phrase ? `, right now: ${phrase}` : ''}${etaPace}${added}${handed}`;
 }
 
 // Exported for unit tests (same pattern as renderReplyOrder).
@@ -564,6 +569,11 @@ export function renderActiveOps(activeOps: ActiveOps[]): string {
   if (requested.length) {
     blocks.push(`You're mid-research and they haven't heard back yet:\n${requested.map(opsStatusLine).join('\n')}`);
   }
+  // Right under the lines it is about, and before every rule that tells her to speak from the status:
+  // what those lines DO and DON'T authorize her to say. The failure it closes is a claim made from
+  // memory of her own holding line rather than from the task — she said she had asked for something
+  // that no task carried, and nothing in the prompt made the difference visible.
+  blocks.push('Those lines are the whole of what was handed over for them — the ask itself, anything they added, and anything the look was asked to do as well as find. Read them as the record: never say a part of what they asked is being taken care of unless it is listed there. If they ask whether some part of it went out and the lines do not carry it, the honest answer is that it did not, and the fix is to send it now.');
   blocks.push('If their new message is just an ack ("ok"/"thanks"/"cool"/"sounds good") or asks about THAT same thing: do NOT delegate_to_ops again, and do NOT repeat a holding line like "pulling that up". Check the thread and the timestamps first — if the answer already landed in a recent bubble of yours, their ack is just closing the loop: close it flat (a tiny ack or a reaction) and say nothing about still working. Only if the result genuinely has NOT gone out yet does one short "still on it" beat fit. Either way, only delegate if they\'ve clearly asked for something genuinely different.');
   blocks.push('If they ask how it\'s going, answer from the status above in your own words — one short bubble naming what it\'s doing and roughly how long it\'s been ("still digging through the emails, couple minutes in"). When the status shows time left, you may pass it on loosely; when it shows "running past that", own it lightly ("taking longer than i thought") — never invent a fresh number, never a countdown, never invent progress beyond what the status shows. If a run shows "queued … hasn\'t started yet", it\'s behind another look of theirs — say it\'s next in line and starting shortly, and don\'t pretend it\'s already digging.');
   if (scheduled.length) {

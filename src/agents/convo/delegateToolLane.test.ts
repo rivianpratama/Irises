@@ -96,7 +96,7 @@ test('both lanes carry engine_actions, identically worded, optional, and separat
     // Done FIRST and reported back per item, failures included: a setup that failed must not vanish.
     assert.match(String(actions.description), /reports each one back, including the ones it could not do/);
     // And the bucket the old wording had no room for: acting on itself is not acting on the user.
-    assert.match(String(actions.description), /needs no approval from them; it is NOT `effect: act`/);
+    assert.match(String(actions.description), /acting on ITSELF needs no approval from them; it is NOT `effect: act`/);
   }
   assert.equal(desc(openclaw, 'engine_actions'), desc(hermes, 'engine_actions'));
   assert.deepEqual((hermes.inputSchema as { required: string[] }).required, ['kind', 'request']);
@@ -108,6 +108,7 @@ test('both lanes carry engine_actions, identically worded, optional, and separat
 test('both lanes invite engine-side setup and keep her own build out of it', () => {
   for (const t of [hermes, openclaw]) {
     assert.match(t.description, /set up, installed or configured on the deep look's own side/);
+    assert.match(t.description, /a thing you ask for, never a thing you refuse/);
     assert.match(t.description, /YOUR OWN build \(install, update, uninstall\), which happens in a terminal/);
   }
 });
@@ -134,7 +135,7 @@ test('kind guidance sends an ask carrying engine actions to general or compute',
 test('request says distilling may change the wording and never the scope', () => {
   for (const t of [hermes, openclaw]) {
     assert.match(desc(t, 'request'), /changes the WORDING, never the scope/);
-    assert.match(desc(t, 'request'), /asking for two things is one delegation carrying both parts/);
+    assert.match(desc(t, 'request'), /every part of what they asked lands here or in engine_actions/);
   }
 });
 

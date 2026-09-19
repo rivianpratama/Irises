@@ -113,6 +113,28 @@ const BEAT_SECOND = "(couldn't get that one)";
  * behavior. This just hands over what came back as Irises's OWN finding, in machinery-free words,
  * and (for a miss) the inert beat note. Facts come only from `instruction`, placed last.
  */
+/**
+ * The clause that keeps a required engine action from vanishing on the way to the user.
+ *
+ * The composer persona drops the ACTIONS line the way it drops SOURCE — correctly, for the ordinary
+ * run, where what the engine DID is back-office nobody asked about. It is exactly wrong for a task
+ * that carried `engineActions`: the user asked for those, was told they were on their way, and a
+ * failed one that gets dropped as back-office becomes a promise nothing ever keeps.
+ *
+ * The other moments matter as much. A miss, a snag or a steering question hands the composer no
+ * result content at all, so nothing there would stop a reply that reads as if the setup had gone
+ * through. Returns '' for a task that carried none — the overwhelming majority — so the instruction
+ * those compose from stays exactly what it was. Pure; exported for unit tests.
+ */
+export function engineActionRelay(task: OpsTask, moment: ComposeMoment): string {
+  const n = task.engineActions?.length ?? 0;
+  if (!n) return '';
+  if (moment !== 'answer') {
+    return `\n\nthey also asked you to get ${n === 1 ? 'one thing' : `${n} things`} set up as part of this, and nothing came back saying they were done — so never word this as if they were. say nothing about that part at all, or say flatly that it isn't done yet; never both, and never a guess about why.`;
+  }
+  return `\n\nbeyond the question, they asked you to get ${n === 1 ? '1 thing' : `${n} things`} done as part of this. whether each one landed is part of their answer, not back-office you drop: work it in as one short plain clause, in their words not the machinery's. if one of them did NOT land, say so plainly and say what stopped it, before you hand over the rest. never let one go unmentioned, and never claim more than what came back says happened.`;
+}
+
 async function composeFollowUp(
   result: OpsResult,
   task: OpsTask,
@@ -155,6 +177,11 @@ async function composeFollowUp(
       instruction += `\n\none more thing about this one: when you started this look you were only partly sure what they meant (you read it as "${task.request}"). so as you answer, make WHICH thing you looked at unmistakable — name the deal/property/document in your first or second bubble, the way a person says "so for the maple st contract..." — flat, no opening added, no apology tour: never say you were unsure, never mention scores, checks, or anything behind the curtain. the facts themselves stay exact as always.`;
     }
   }
+
+  // What they asked to have DONE as well as found. Appended for every moment, because the moments
+  // that hand the composer no result content are exactly the ones where a reply could read as if the
+  // setup had gone through. Empty for a task that carried none.
+  instruction += engineActionRelay(task, moment);
 
   // Continue straight from the exact holding line Irises last sent, so the late reply reads as one
   // seamless thread, not a fresh delivery. This is a continuity anchor only — never a fact source.
