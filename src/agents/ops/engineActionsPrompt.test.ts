@@ -68,6 +68,24 @@ test('a task that was asked for no action renders exactly what it did before the
   assert.doesNotMatch(plain, /Required actions/);
 });
 
+// A second leg re-sends the task (triage.ts retryTaskFor / steerReplayTaskFor both spread it), so
+// the required actions render again, identically — and a replay fires even after a leg that
+// SUCCEEDED, which means the setup the first leg completed would be performed a second time. The
+// engine cannot know that from the block alone, so the leg marker says it.
+test('a second leg is told the assignment may already have been carried out', () => {
+  const retry = buildTaskPrompt(mkTask({ engineActions: ACTIONS, retryOf: 't0' }), AT);
+  assert.match(retry, /A leg of this task has already run/);
+  assert.match(retry, /check whether each one is already in place/);
+  assert.match(retry, /report it as already done rather than doing it again/);
+});
+
+test('the FIRST leg never carries the marker, so an ordinary run is byte-identical', () => {
+  const first = buildTaskPrompt(mkTask({ engineActions: ACTIONS }), AT);
+  assert.doesNotMatch(first, /A leg of this task has already run/);
+  // And a retry that was asked for no action adds nothing either — the marker belongs to the block.
+  assert.equal(buildTaskPrompt(mkTask({ retryOf: 't0' }), AT), buildTaskPrompt(mkTask(), AT));
+});
+
 test('an action is never restated inside the data tag, where it would read as text to ignore', () => {
   const prompt = buildTaskPrompt(mkTask({ engineActions: ACTIONS }), AT);
   const tagged = prompt.slice(prompt.indexOf('<user_request>'));

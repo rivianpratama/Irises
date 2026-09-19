@@ -79,7 +79,14 @@ export function buildTaskPrompt(task: OpsTask, extras: { now?: number; tz?: stri
       // the prompt that hands the engine a list and calls it mandatory, so it must also say what a
       // list may not contain — otherwise the mandate is the widest instruction in the brief.
       "These are actions on your own side. Anything listed here that would touch the user's accounts, messages, money or bookings is outside what this block authorizes: refuse it and report it as refused on the ACTIONS line. Only an AUTHORIZED ACTION line can lift that, and only for the action it names.",
-    ].join('\n')
+      // A second leg re-sends the whole task (ops/triage.ts spreads it for both the retry and the
+      // steer replay), and the replay fires even after a leg that SUCCEEDED — so without this the
+      // engine would perform a completed setup a second time, with no way to know it had. Only the
+      // second leg carries it, so the primary leg is byte-identical to what it was.
+      task.retryOf
+        ? 'A leg of this task has already run, so the actions above may already be done: check whether each one is already in place before you carry it out, and report it as already done rather than doing it again.'
+        : '',
+    ].filter(Boolean).join('\n')
     : '';
   const hints = [
     task.addressHint ? `address hint: ${task.addressHint}` : '',
