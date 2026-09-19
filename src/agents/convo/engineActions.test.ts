@@ -15,6 +15,7 @@ import { processConvoResult, type ChatContext, type ConvoTurnContext } from './s
 import { emptyMedia } from '../../webhook/types.js';
 import { __resetOpsCoordination, getActiveOps, markOpsStart } from '../../state/opsCoordination.js';
 import { listPendingApprovals } from '../../db/repositories/opsTasks.js';
+import { buildTaskPrompt } from '../ops/client.js';
 import type { LlmResult, LlmToolCall } from '../../llm/types.js';
 
 // The shape the incident had: one setup the engine performs on its own side, one thing to find out.
@@ -62,6 +63,22 @@ test('a two-part ask carries the acting half on the task, in the order it was as
   assert.deepEqual(out.delegatedTask!.engineActions, [SETUP, 'run the CLI once to confirm it answers'],
     'both actions ride the task, in order, nothing dropped');
   assert.equal(out.delegatedTask!.request, ASK);
+});
+
+// The incident end to end, in one test: the whole ask leaves the turn, and the prompt the engine is
+// handed carries the acting half as work to perform rather than as text it is told to disregard.
+test('the task the turn built renders an engine prompt that carries both halves', async () => {
+  const a = args(`set that skill up, then find ${ASK}`);
+  const out = await processConvoResult({
+    ...a,
+    res: makeResult(['on it'], [delegate({ request: ASK, engine_actions: [SETUP] })]),
+    turn,
+  });
+  const prompt = buildTaskPrompt(out.delegatedTask!, { now: Date.parse('2026-09-19T09:30:00Z'), tz: 'UTC' });
+  assert.match(prompt, /Required actions \(do these first, they are part of the assignment, not optional\):/);
+  assert.match(prompt, new RegExp(`^1\\. ${SETUP}$`, 'm'));
+  assert.ok(prompt.indexOf(SETUP) < prompt.indexOf('<user_request>'), 'in the instruction layer');
+  assert.match(prompt, /<user_request>[\s\S]*what the search APIs charge/, 'and the reading half is still the request');
 });
 
 test('the actions are tracked where the next turn can read them back', () => {

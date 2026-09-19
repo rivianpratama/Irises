@@ -118,6 +118,25 @@ action does not park behind a yes today. That is the right answer and is now del
 accidental: an action on the engine's own environment is not an action on the user's accounts, and the
 gate exists for the latter. A task may carry engine actions and still be `effect: 'read'`. Pinned by test.
 
+## Decisions taken during implementation
+
+- **The composer persona had to move too.** `src/agents/composer/Context.md` tells the composer to
+  drop the `ACTIONS` line the way it drops `SOURCE`. A code-side instruction alone would have been
+  arguing with the persona, so the persona gains a second exception beside the scheduled-follow-up
+  one: a thing the user asked to have done is their answer, and a failure leads.
+- **`engineActionRelay` covers every moment, not only `answer`.** A miss, a snag and a steering
+  question hand the composer no result content at all, which is exactly where a reply can read as if
+  the setup went through. Those moments get a clause forbidding that reading.
+- **The refusal floor needed a screen as well as a subject.** `refusalLike` had no shape for a
+  refusal built on setup verbs, so the class map would never have been consulted. A closed
+  `SETUP_VERB` list joins the closed access list, and the `code` subject row gains setup vocabulary
+  tightened so a path ending in "skills" and a social "help me set up the garage" still score
+  nothing.
+- **Prompt budget.** `tool_docs` +1,362 and `active_ops` +409; both ceilings ratcheted in
+  `promptPolicy.ts` with the purchase recorded on the line, the house convention. The
+  transcript-share floor holds without moving, after the tool prose was trimmed back. The persona
+  ceiling is untouched: it was already over on main.
+
 ## What this does not do
 
 - No "install a skill from a URL" primitive. The engine decides how.
