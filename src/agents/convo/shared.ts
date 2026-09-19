@@ -2590,7 +2590,14 @@ export async function processConvoResult(args: {
       // the model's own `effect` tag (it reads every language) and the English phrase list
       // (agents/ops/sideEffects.ts). Read here, on the request as it will actually be sent, so the
       // verdict and the brief can never describe different asks.
-      const sideEffect = classifySideEffect(opsRequest, coerceEffect(input.effect));
+      //
+      // The ACTIONS are screened with it, and that is load-bearing rather than tidy: the tool text
+      // tells the model that work on the engine's own side stays 'read', so an action on the USER's
+      // accounts filed as an engine action would hand the gate a request the action is not in — and
+      // the required-actions block would then render it as mandatory. Every entry is read exactly
+      // like the request, so the one argument that says a setup needs no yes cannot also carry a
+      // booking through. Newline-joined, because the lexicon is scanned per phrase, not per field.
+      const sideEffect = classifySideEffect([opsRequest, ...engineActions].join('\n'), coerceEffect(input.effect));
       // 'general' is the tool-less-hint catch-all: the brief IS the steering. If the model
       // skipped it, synthesize a minimal one from the request so Ops never runs blind.
       if (opsKind === 'general' && !metaPrompt) {

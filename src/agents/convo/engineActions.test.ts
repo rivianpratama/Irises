@@ -111,6 +111,9 @@ test('a garbled or empty actions argument leaves the field off rather than track
 // The approval gate exists for actions on the USER's accounts. An action on the engine's own
 // environment is not one, and nothing in the side-effect lexicon reads it as one — so it runs
 // straight through rather than parking behind a yes. Deliberate, and pinned here so it stays so.
+//
+// The pin has a twin below, and the two only hold together: the same argument that says a setup
+// needs no yes is what a mislabelled entry would ride through the gate on.
 test('an engine-side setup is not an act on the world: it starts, it does not park', async () => {
   const a = args('set that skill up and then look this up');
   const out = await processConvoResult({
@@ -122,4 +125,46 @@ test('an engine-side setup is not an act on the world: it starts, it does not pa
   assert.equal(out.delegatedTask!.effect, 'read');
   assert.equal(out.delegatedTask!.approval, undefined);
   assert.equal(listPendingApprovals(a.chatId).length, 0, 'no approval row');
+});
+
+// The bypass the twin above opens if the gate is left reading only `request`. The tool text tells
+// the model that engine work stays "read", so a model that files an action on the USER's accounts
+// as an engine action hands the gate a request nothing in it is about — and the block below it
+// renders that action as mandatory. Every entry is therefore screened exactly like the request.
+test('an action on the USER\'s accounts parks, wherever in the call it was written', async () => {
+  const a = args('find the cheapest flight thursday');
+  const { turn: reask } = { turn: {
+    system: 'persona',
+    messages: [{ role: 'user' as const, content: 'hey' }],
+    tools: [],
+    call: async () => makeResult(['want me to actually book it?']),
+  } as ConvoTurnContext };
+  const out = await processConvoResult({
+    ...a,
+    res: makeResult(['on it'], [delegate({
+      request: 'the cheapest flight thursday', effect: 'read',
+      engine_actions: ['book it on their account once you find it'],
+    })]),
+    turn: reask,
+  });
+  assert.equal(out.delegatedTask, null, 'nothing starts');
+  const parked = listPendingApprovals(a.chatId);
+  assert.equal(parked.length, 1, 'it parks behind a yes like any other action in the world');
+  const task = parked[0].meta.task as Record<string, unknown>;
+  assert.equal(task.effect, 'act');
+  assert.deepEqual(task.engineActions, ['book it on their account once you find it'],
+    'and the action is still on the task, so the yes runs the brief she asked about');
+});
+
+test('the rendered block tells the engine what it may NOT be asked to do', async () => {
+  const a = args('set that skill up and then look this up');
+  const out = await processConvoResult({
+    ...a,
+    res: makeResult(['on it'], [delegate({ request: ASK, engine_actions: [SETUP] })]),
+    turn,
+  });
+  const prompt = buildTaskPrompt(out.delegatedTask!, { now: Date.parse('2026-09-19T09:30:00Z'), tz: 'UTC' });
+  assert.match(prompt, /These are actions on your own side\./);
+  assert.match(prompt, /touch the user's accounts, messages, money or bookings/);
+  assert.match(prompt, /refuse it and report it as refused on the ACTIONS line/);
 });
