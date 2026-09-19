@@ -176,6 +176,14 @@ const NO_ABILITY = String.raw`(?:can'?t|cannot|can\s+not|unable to|not able to|n
 // ("can't promise", "can't tell you why") and turn the floor into an over-delegation machine.
 const ACCESS_VERB = String.raw`(?:get (?:to|at|into)|see|view|reach(?: into)?|access|open|read|check|browse|look (?:at|into|in|through)|list|peek|pull up|dig (?:into|through|around)|go through|run|scan|inspect|fetch|retrieve)`;
 
+// The closed SETUP-verb list, kept apart from the access verbs above because it names a different
+// thing: preparing the deep look's own side for a job rather than reaching something that already
+// exists. Live 2026-09-19, a refusal built on exactly these verbs ("can't install a skill on my
+// side") scored zero on the access shapes and shipped as written. Closed for the same reason the
+// access list is — "can't add" alone would swallow every ordinary inability.
+// The split particle ("set that up", "hook it up") is the common spoken form and gets one word.
+const SETUP_VERB = String.raw`(?:install|set ?up|set [\w']+ up|add|configure|enable|hook ?up|hook [\w']+ up|wire ?up)`;
+
 // Words that must never sit between the negation and an access verb: they turn a refusal shape into
 // an idiom with the opposite meaning ("can't WAIT to see the photos", "can't BELIEVE what i'm
 // seeing", "can't GO wrong"). Screened at every position in the window, so "can't really wait to
@@ -202,6 +210,9 @@ const REFUSAL_LIKE: RegExp[] = [
   new RegExp(String.raw`\b${NO_ABILITY}\b${ABILITY_GAP}\b${ACCESS_VERB}\b`, 'i'),
   // The same claim in noun form: "that's not something i can open", "nothing i can reach from here".
   new RegExp(String.raw`\b(?:not something|nothing) i can\b${ABILITY_GAP}\b${ACCESS_VERB}\b`, 'i'),
+  // The setup shapes, in both forms: "can't install a skill on my side", "nothing i can set up here".
+  new RegExp(String.raw`\b${NO_ABILITY}\b${ABILITY_GAP}\b${SETUP_VERB}\b`, 'i'),
+  new RegExp(String.raw`\b(?:not something|nothing) i can\b${ABILITY_GAP}\b${SETUP_VERB}\b`, 'i'),
   // Flat claims of blindness. "eyes"/"visibility" are the persona-shaped variants a chatty model
   // reaches for when it doesn't want to say "access".
   /\b(?:don'?t|do not) have (?:any |direct |the )?(?:access|eyes|visibility|a view|the ability to (?:see|read|reach|access|open))\b/i,
@@ -230,7 +241,11 @@ const SUBJECT_VOCAB: ReadonlyArray<readonly [CapabilityClass, RegExp]> = [
   ['web', /\b(?:the web|the internet|online|a website|websites?|web ?pages?|urls?|links?|browse the web|search the web|google(?: it)?|look(?:ing)? (?:it |that )?up online)\b/i],
   ['inbox', /\b(?:inbox|e-?mails?|mailbox|gmail|outlook|mail account|your mail)\b/i],
   ['files', /\b(?:files?|filenames?|folders?|subfolders?|directory|directories|dirs?|disk|filesystem|file system|drive|downloads|desktop|documents|paths?|repo|repository|codebase|machine|computer|laptop|locally|local)\b/i],
-  ['code', /\b(?:run (?:code|a script|commands?)|execute|scripts?|the terminal|a terminal|shell|bash|command line)\b/i],
+  // Setting something up on the deep look's own side is work it does with its own code, so the
+  // subject words for it belong here — a skill or a tool it installs for itself, and the setup verbs
+  // aimed at itself. "a host action" is the justification the live refusal reached for, and it is as
+  // false as "local to your machine": the deep look IS that host.
+  ['code', /\b(?:run (?:code|a script|commands?)|execute|scripts?|the terminal|a terminal|shell|bash|command line|host action|(?:a|an|the|your|my|its|another|new|own) (?:skill|plugin|package|dependency|cli|tool|mcp server)s?|(?:install|set|add|configure|enable)(?:\s+[\w']+){0,2}\s+(?:skills?|plugins?|packages?|dependenc(?:y|ies)|clis?|tools?))\b/i],
   ['media', /\b(?:photos?|pictures?|images?|videos?|audio|voice ?memos?|recordings?|screenshots?|pdfs?|attachments?)\b/i],
   ['scheduling', /\b(?:reminders?|remind you|an alarm|schedule (?:that|it|a)|automations?)\b/i],
 ];

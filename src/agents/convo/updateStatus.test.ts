@@ -87,9 +87,21 @@ test('the terminal command is relayed exactly, once, in backticks — and never 
   assert.doesNotMatch(out, /then restart the server/);
 });
 
+// 2026-09-19: this is the only sentence in the whole prompt that says "you cannot do X to yourself,
+// a person does it in a terminal, there is no chat command." It is true of her own build and it is
+// also the nearest neighbour to any ask about setting something up on the deep look's side — which
+// is what she refused live, calling it a host action. The scope now travels with the rule.
+test('the terminal rule says what it covers, so it cannot be read as covering the deep look', () => {
+  const out = renderUpdateStatus(VERSION, status(), NOW);
+  assert.match(out, /That rule is about your own build and nothing else\./);
+  assert.match(out, /Setting something up on your deep look's side so it can do a job .* is a thing you ask for and it does/);
+  assert.match(out, /needs no terminal and no permission/);
+  assert.match(out, /never out of reach/);
+});
+
 test('every line is trimmed prose, so the section arithmetic stays exact', () => {
   const out = renderUpdateStatus(VERSION, status(), NOW);
   assert.equal(out, out.trim());
-  assert.equal(out.split('\n').length, 5, 'a heading and four facts');
+  assert.equal(out.split('\n').length, 6, 'a heading and five facts');
   for (const l of out.split('\n').slice(1)) assert.ok(l.startsWith('- '), `"${l}" is a fact bullet`);
 });

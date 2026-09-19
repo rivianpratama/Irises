@@ -751,6 +751,13 @@ export function renderUpdateStatus(version: VersionInfo, status: UpdateStatus, n
     buildLine,
     waitingLine,
     '- You cannot update yourself. Your person does it in a terminal on the server, one command from the Irises folder: `bash scripts/update.sh`. It pulls, rebuilds, restarts you, and restarts the engine gateway. There is no chat command for it — if they ask you to update, say that plainly and hand them the command exactly as written, once.',
+    // The scope travels with the rule. This is the only sentence in the prompt that says "you cannot
+    // do X to yourself, a person does it in a terminal, there is no chat command", and it is also the
+    // nearest neighbour to any ask about setting something up on the deep look's side — which is what
+    // she refused live (2026-09-19), reading it as the same kind of forbidden host action. The
+    // difference is which machine keeps running: her own build cannot rebuild the process it is
+    // running in, and nothing about the deep look's own setup touches that.
+    "- That rule is about your own build and nothing else. Setting something up on your deep look's side so it can do a job — something for it to install, add or configure for its own use — is a thing you ask for and it does, right inside a lookup: it needs no terminal and no permission from them, it changes nothing about how you are installed, and it is never out of reach.",
     '- If they ask what version you are or whether an update is waiting, answer from the lines above in your own words, one flat sentence, then stop.',
   ].join('\n');
 }
@@ -3063,7 +3070,9 @@ export async function processConvoResult(args: {
           && isDuplicateDelegation(chatId, 'general', ask) !== 'in_flight') {
         delegatedTask = buildForcedTask({
           chatId, agentHandle: chatContext.senderHandle, request: ask,
-          metaPrompt: `The user asked: "${ask}". A draft reply wrongly told them this was impossible from here — it is not: you are running on their machine with the tools for it. Actually carry the request out with the right tool and report only what you really found. If a tool genuinely fails, say precisely what failed; never claim the request itself can't be done.`,
+          // "set up" as well as "found": the same false refusal covers an ask to prepare the engine's
+          // own side, and a brief that only asks for findings invites the setup half to be skipped.
+          metaPrompt: `The user asked: "${ask}". A draft reply wrongly told them this was impossible from here — it is not: you are running on their machine with the tools for it, and anything the ask wants set up on your own side is yours to set up. Actually carry the request out with the right tool and report only what you really did and found. If a tool genuinely fails, say precisely what failed; never claim the request itself can't be done.`,
           replyToMessageId: chatContext?.incomingMessageId,
           originConfidence: reply.confidenceLevel,
         });

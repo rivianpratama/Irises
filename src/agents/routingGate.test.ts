@@ -272,6 +272,28 @@ test('refusedCapabilities: a non-refusal draft is never classified, whatever it 
   }
 });
 
+// 2026-09-19, live: "cant install skills on hermes … asking hermes change nothing, that a host
+// action". Both halves of the screen missed it — no negated ACCESS verb in the sentence, and no
+// class in the subject map for a skill or a tool — so the refusal shipped exactly as written and
+// nothing downstream ever knew. Setting something up on the deep look's side is work the engine
+// does with its own code, so it belongs to the class that names running code.
+test('refusalLike: a refusal to SET something up is an ability refusal too', () => {
+  assert.equal(refusalLike("i can't install a skill on my side"), true);
+  assert.equal(refusalLike('no way for me to set that up from here'), true);
+  assert.equal(refusalLike("i'm not able to add a tool like that"), true);
+  // And the negatives the closed list exists to protect: a decline is not an inability.
+  assert.equal(refusalLike("i won't install that, sounds sketchy"), false);
+  assert.equal(refusalLike("can't wait to set up the new place"), false);
+});
+
+test('refusedCapabilities: a setup refusal resolves to the class that can actually run it', () => {
+  assert.deepEqual(refusedCapabilities("i can't install a skill on my side", 'set up that skill from the url'), ['code']);
+  assert.deepEqual(refusedCapabilities("no can do, that's a host action", 'install the CLI it needs'), ['code']);
+  assert.deepEqual(refusedCapabilities('no can do', 'can you set up that tool for yourself?'), ['code']);
+  // Still nothing for a social decline that happens to sit near the word.
+  assert.deepEqual(refusedCapabilities("no can do, i'm slammed today", 'wanna help me set up the garage'), []);
+});
+
 test('refusedCapabilities: a NAMED path in the refusal is files on its own, with no file noun', () => {
   assert.deepEqual(refusedCapabilities("no can do — ~/.hermes/skills isn't something i can reach", 'name 5 skill folders'), ['files']);
   assert.deepEqual(refusedCapabilities("i can't read /var/log/nginx from here", 'tail the nginx log'), ['files']);
