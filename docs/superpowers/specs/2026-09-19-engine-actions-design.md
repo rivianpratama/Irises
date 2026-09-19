@@ -137,6 +137,31 @@ gate exists for the latter. A task may carry engine actions and still be `effect
   transcript-share floor holds without moving, after the tool prose was trimmed back. The persona
   ceiling is untouched: it was already over on main.
 
+## Review round (same branch)
+
+The first pass opened three holes of its own, all of the same shape: a field that grants a mandate
+needs a screen, a record and evidence.
+
+- **Screen.** `classifySideEffect` read `request` alone while the tool text told the model that
+  engine work stays `read` — so an action on the user's accounts filed as an engine action parked
+  nothing and rendered as mandatory. Every entry is now screened with the request, on both the
+  delegate path and the steer path (a steer has no gate at all, so an entry that reads as an act is
+  refused the mandate and rides on as guidance). The rendered block states the same scope to the
+  engine.
+- **Record.** `steer_research` carried guidance only, so a mid-run "also set X up" could neither join
+  the tracked list the status block calls the whole handover, nor reach the replay leg as anything
+  but data-tagged text. It gains the matching `engine_actions`; the registry is the authority the
+  replay reads, since the task object predates every steer. A second leg also now carries a marker
+  saying the assignment may already have been carried out — both second-leg builders spread the
+  task, and the replay fires even after a leg that succeeded.
+- **Evidence.** The relay clause was built from the task, so an engine that returned no `ACTIONS`
+  line still had the composer told to report every action. It now reads the summary and says plainly
+  when there is no confirmation. The non-answer clause no longer offers silence as an option.
+
+Also: the `code` subject row lost bare "tool"/"cli" (everyday senses survived both anchors); the
+crash apology says the setup did not happen either; the walled-URL scan and the ETA read the actions
+with the ask.
+
 ## What this does not do
 
 - No "install a skill from a URL" primitive. The engine decides how.
