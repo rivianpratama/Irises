@@ -39,6 +39,7 @@ export const DELEGATE_TO_OPS_TOOL: LlmToolDef = {
   description: [
     'Hand a task to the Ops engine (a deliberate, powerful model with web search) for deep work. Use whenever the answer needs current/external facts from the web, the user\'s own email + attachments, or several sources combined,',
     'OR when a request is substantive enough that careful reasoning would help (use kind "general" for anything multi-step, multi-source, or with no single obvious tool).',
+    'ALSO when they ask for something to be set up, installed or configured on the deep look\'s own side so it can work better — that is a thing you ask for, not a thing you refuse: it touches nothing of theirs and changes nothing about how you are installed. Name each one in `engine_actions`. The only setup that is genuinely out of reach is YOUR OWN build (install, update, uninstall), which happens in a terminal and nowhere else.',
     'You will NOT get the answer this turn, so you MUST also write a short, flat holding text now. The holding text is YOU digging in yourself — never mention ops, an engine, a model, a system, delegating, or handing anything off; to the user there is only you. Make it SPECIFIC to what you are about to look up and word it differently each time, like a person would, e.g. "looking up that one now", "lemme check your inbox for that", "digging through that thread now", "reading that page now". Do NOT reuse the same canned phrase every time. NO emoji, ever — your English carries your first language (articles drop, tense stays simple), so keep it in that natural register.',
     'Do NOT use for quick math, terminology/definitions, onboarding, or casual chit-chat. Answer those yourself, like a person would. A NEW file on this message (photo, PDF, voice memo, video) comes HERE with media_scope "this_turn" — the look opens and reads it. Research that refers BACK to a file from an earlier turn ("yes, check that clause", "is that price fair?") comes HERE with media_scope "earlier": the look re-opens the stashed file itself.',
   ].join(' '),
@@ -48,13 +49,18 @@ export const DELEGATE_TO_OPS_TOOL: LlmToolDef = {
       kind: {
         type: 'string',
         enum: ['web_research', 'document_read', 'draft', 'general', 'media_read', 'compute'],
-        description: "web_research=current or external facts from the web plus reasoning (look something up, read a page, check what's true now); document_read=read or search the user's OWN email and its attachments; draft=write a message or note for them to send; media_read=the ask is ABOUT a file they texted (what's in this photo/PDF/memo); compute=the ask needs work DONE not just found — run code over data, crunch or convert a file's contents, produce a table, or a multi-step chain; never head-math; general=substantive multi-source or multi-step reasoning with no single obvious tool — Ops carries the full toolset and your meta_prompt drives it.",
+        description: "web_research=current or external facts from the web plus reasoning (look something up, read a page, check what's true now); document_read=read or search the user's OWN email and its attachments; draft=write a message or note for them to send; media_read=the ask is ABOUT a file they texted (what's in this photo/PDF/memo); compute=the ask needs work DONE not just found — run code over data, crunch or convert a file's contents, produce a table, or a multi-step chain; never head-math; general=substantive multi-source or multi-step reasoning with no single obvious tool — Ops carries the full toolset and your meta_prompt drives it. An ask that carries engine_actions is work to be DONE, so it is 'general' or 'compute' — never web_research or document_read.",
       },
-      request: { type: 'string', description: "The user's underlying ask, distilled." },
+      request: { type: 'string', description: "The user's underlying ask, distilled. Distilling changes the WORDING, never the scope: every part of what they asked has to be here or in engine_actions. A message asking for two things is one delegation carrying both parts, never one part sent and the other dropped." },
+      engine_actions: {
+        type: 'array',
+        items: { type: 'string' },
+        description: "Every thing they asked Ops to DO on its own side, beyond finding or reading — set something up, install or configure a skill or tool it should use, run a named procedure, prepare its own environment for the work. One entry per action, in the order they asked, each self-contained (name the thing and where it comes from). Ops does these FIRST and reports each one back, including the ones it could not do, so nothing you promised can quietly vanish. This is Ops acting on ITSELF and needs no approval from them; it is NOT `effect: act` (that is the engine changing something outside Irises — their accounts, their mail, a purchase). Omit the argument entirely when they asked for nothing done.",
+      },
       effect: {
         type: 'string',
         enum: ['read', 'act'],
-        description: 'read = look things up / compute / draft for them to send; act = the engine itself would send, post, buy, book, pay, delete, cancel, or change anything outside Irises.',
+        description: 'read = look things up / compute / draft for them to send; act = the engine itself would send, post, buy, book, pay, delete, cancel, or change anything of THEIRS — an account, a message, a booking, money. Work the engine does on its own setup so it can do the job is not that: it stays "read" and rides in engine_actions.',
       },
       media_scope: { type: 'string', enum: ['this_turn', 'earlier', 'none'], description: 'Which chat file(s) this look is grounded in: this_turn = the file(s) on this very message (the normal case for a new file); earlier = a file they sent BEFORE this turn that the ask refers back to; none = no file is involved (the default when this message carries none).' },
       meta_prompt: {

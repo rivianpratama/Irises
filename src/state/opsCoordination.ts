@@ -44,6 +44,11 @@ interface InFlightEntry {
   // the engine accepted any of it, because these are things they said about work that is running:
   // the status line reads them back and a refinement leg folds them in.
   steers?: string[];
+  // What the user asked the ENGINE to DO as part of this ask (agents/types.ts `engineActions`),
+  // kept so the "already pulling" status line can name the parts that were really handed over —
+  // the model reads which actions are in the task instead of recalling what it promised. ABSENT
+  // rather than empty, like `steers`.
+  engineActions?: string[];
   // The subset not yet handed to a caller for delivery. A steer that arrives before engineRun
   // exists (hermes takes a second or two to build the agent) waits here rather than being dropped.
   pendingSteers?: string[];
@@ -61,7 +66,7 @@ const recentlyDelegated = new Map<string, Map<string, number>>(); // chatId -> n
  * reply). No sink registered — the flag off, or a test — and every hook below is one false `if`.
  */
 export interface OpsTaskSink {
-  onStart(e: { chatId: string; taskId: string; kind: TaskKind; request: string; budgetMs: number; origin?: 'scheduled' }): void;
+  onStart(e: { chatId: string; taskId: string; kind: TaskKind; request: string; budgetMs: number; origin?: 'scheduled'; engineActions?: string[] }): void;
   onRetry(e: { chatId: string; taskId: string }): void;
   onCancel(e: { chatId: string; taskId: string }): void;
   onDone(e: { chatId: string; taskId: string }): void;
@@ -117,12 +122,16 @@ export function normalizeRequest(kind: string, request: string): string {
 /** Record that an Ops task just started for a chat. Call SYNCHRONOUSLY before `void runOps...`.
  *  Pass the task's AbortController so a user cancel can reach the running loop.
  *  `origin: 'scheduled'` marks an Autonome background run (framed differently in Convo's prompt). */
-export function markOpsStart(chatId: string, taskId: string, info: { kind: TaskKind; request: string; origin?: 'scheduled'; estimate?: EtaEstimate }, cancel?: AbortController): void {
+export function markOpsStart(chatId: string, taskId: string, info: { kind: TaskKind; request: string; origin?: 'scheduled'; estimate?: EtaEstimate; engineActions?: string[] }, cancel?: AbortController): void {
   const normKey = normalizeRequest(info.kind, info.request);
   const now = Date.now();
   const est = info.estimate ?? estimateOpsEta({ kind: info.kind, request: info.request });
   const byTask = inFlight.get(chatId) ?? new Map<string, InFlightEntry>();
-  byTask.set(taskId, { kind: info.kind, request: info.request, normKey, startedAt: now, firstStartedAt: now, origin: info.origin, cancel, estimateMs: est.bucketMs, estimatePhrase: est.phrase });
+  byTask.set(taskId, {
+    kind: info.kind, request: info.request, normKey, startedAt: now, firstStartedAt: now,
+    origin: info.origin, cancel, estimateMs: est.bucketMs, estimatePhrase: est.phrase,
+    ...(info.engineActions?.length ? { engineActions: [...info.engineActions] } : {}),
+  });
   inFlight.set(chatId, byTask);
   const ring = recentlyDelegated.get(chatId) ?? new Map<string, number>();
   ring.set(normKey, now);
@@ -131,7 +140,7 @@ export function markOpsStart(chatId: string, taskId: string, info: { kind: TaskK
   // The durable copy goes AFTER the maps: the maps are the authority this turn, the row is what
   // answers for this run after the process is gone.
   if (taskSink) {
-    try { taskSink.onStart({ chatId, taskId, kind: info.kind, request: info.request, budgetMs: opsStaleMs(), origin: info.origin }); }
+    try { taskSink.onStart({ chatId, taskId, kind: info.kind, request: info.request, budgetMs: opsStaleMs(), origin: info.origin, engineActions: info.engineActions }); }
     catch { /* durable state is best-effort — never the reply's problem */ }
   }
 }
@@ -358,6 +367,10 @@ export interface ActiveOps {
    *  when nobody added anything, so an ordinary run's status line — and the prompt budget pinned to
    *  it — stays exactly the bytes it was. */
   steers?: string[];
+  /** What the user asked the engine to DO as part of this ask, in the order they asked. ABSENT
+   *  rather than empty for the same reason `steers` is — the status line's bytes, and the prompt
+   *  budget pinned to them, must not move for a run that was asked for no action. */
+  engineActions?: string[];
 }
 
 /** Snapshot of research currently running for this chat (stale and cancelled entries filtered out —
@@ -368,7 +381,7 @@ export function getActiveOps(chatId: string, now: number = Date.now()): ActiveOp
   const staleMs = opsStaleMs();
   return [...byTask.entries()]
     .filter(([, e]) => now - e.startedAt < staleMs && !e.cancelled)
-    .map(([taskId, e]) => ({ taskId, kind: e.kind, request: e.request, startedAt: e.startedAt, firstStartedAt: e.firstStartedAt, origin: e.origin, lastMilestone: e.lastMilestone, milestoneAt: e.milestoneAt, estimateMs: e.estimateMs, estimatePhrase: e.estimatePhrase, ...(e.steers?.length ? { steers: [...e.steers] } : {}) }));
+    .map(([taskId, e]) => ({ taskId, kind: e.kind, request: e.request, startedAt: e.startedAt, firstStartedAt: e.firstStartedAt, origin: e.origin, lastMilestone: e.lastMilestone, milestoneAt: e.milestoneAt, estimateMs: e.estimateMs, estimatePhrase: e.estimatePhrase, ...(e.steers?.length ? { steers: [...e.steers] } : {}), ...(e.engineActions?.length ? { engineActions: [...e.engineActions] } : {}) }));
 }
 
 /**

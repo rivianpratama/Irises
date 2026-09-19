@@ -2561,6 +2561,14 @@ export async function processConvoResult(args: {
       const opsKind: TaskKind = (OPS_KINDS as readonly string[]).includes(requestedKind) ? requestedKind as TaskKind : 'general';
       if (opsKind !== requestedKind) console.warn(`[convo] delegate_to_ops kind "${requestedKind}" is not a TaskKind — coerced to 'general'`);
       const opsRequest = String(input.request ?? textToSend);
+      // The acting half of the ask, read as a list of its own so nothing it carries can be lost to
+      // `request`'s single-ask distillation. Strict: anything that is not an array of real strings
+      // leaves the field OFF rather than tracking a half-truth — the honesty surfaces downstream
+      // read this as "what was really handed over", so an empty or garbled one must read as nothing
+      // asked, never as something asked and forgotten.
+      const engineActions = Array.isArray(input.engine_actions)
+        ? input.engine_actions.map(a => String(a ?? '').trim()).filter(Boolean)
+        : [];
       // Would the ENGINE change something outside Irises to do this? Two sources, either sufficient:
       // the model's own `effect` tag (it reads every language) and the English phrase list
       // (agents/ops/sideEffects.ts). Read here, on the request as it will actually be sent, so the
@@ -2625,6 +2633,7 @@ export async function processConvoResult(args: {
         request: opsRequest,
         effect: sideEffect.effect,
         metaPrompt,
+        ...(engineActions.length ? { engineActions } : {}),
         heldMemory: held.block || undefined,
         memoryHits: held.count,
         addressHint: input.address ? String(input.address) : undefined,

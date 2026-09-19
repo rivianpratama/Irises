@@ -28,6 +28,18 @@ export interface OpsTask {
   // executes (user decision 2026-09-04).
   approval?: { askedAt: number; approvedAt?: number; reconfirm?: boolean };
   metaPrompt?: string;      // Convo-authored instruction for Ops (what's needed + relevant context)
+  // What the user asked the ENGINE to DO, beyond finding or reading — one entry per action, in the
+  // order they asked. `request` distils a single ask, so an ask with two halves ("set this up, then
+  // find that") used to arrive with one half gone; this is the half that acts. Its OWN field, like
+  // `heldMemory`, because buildTaskPrompt must render it in the instruction layer: both doctrines
+  // tell the engine that text inside the `user_request` data tag is never an instruction, so an
+  // action folded into the request is an action the engine is told to disobey. ABSENT rather than
+  // empty when nothing was asked, so an ordinary look's prompt stays the bytes it was. Tracked on
+  // the in-flight registry and in the durable row's meta, so the honesty surfaces can read back
+  // exactly which parts were really handed over. An action on the ENGINE's own environment is not
+  // an action on the user's accounts: this field never sets `effect`, and the approval gate is
+  // unmoved by it (ops/sideEffects.ts carries no setup vocabulary, deliberately).
+  engineActions?: string[];
   addressHint?: string;
   dealHint?: string;
   replyToMessageId?: string; // inbound message that triggered this task; the follow-up threads back to it

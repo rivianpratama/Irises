@@ -68,7 +68,13 @@ export interface OpsTaskRecovery {
 export function createOpsTaskRecovery(deps: OpsTaskRecoveryDeps): OpsTaskRecovery {
   const sink: OpsTaskSink = {
     onStart(e) {
-      const ok = insertRunning({ id: e.taskId, chatId: e.chatId, kind: e.kind, request: e.request, budgetMs: e.budgetMs, meta: e.origin ? { origin: e.origin } : {} });
+      // `engineActions` rides the row's free-form meta rather than a column: ops_tasks has no
+      // migration mechanism, and the row only ever has to answer what this run was asked to do.
+      const meta: Record<string, unknown> = {
+        ...(e.origin ? { origin: e.origin } : {}),
+        ...(e.engineActions?.length ? { engineActions: e.engineActions } : {}),
+      };
+      const ok = insertRunning({ id: e.taskId, chatId: e.chatId, kind: e.kind, request: e.request, budgetMs: e.budgetMs, meta });
       if (!ok) {
         // Not fatal to the turn — the run proceeds on the in-memory maps exactly as before this
         // feature existed. What is lost is the ability to own up to it if the process dies, and

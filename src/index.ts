@@ -924,7 +924,7 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
     // The estimate is chosen ONCE here and read by every later ping (opsCoordination), so it takes
     // the leg budget this task will actually run on — a walled-URL browser look gets minutes, and a
     // ping must never call minute three of it an overrun.
-    markOpsStart(chatId, delegatedTask.id, { kind: delegatedTask.kind, request: delegatedTask.request, estimate: estimateOpsEta({ kind: delegatedTask.kind, request: delegatedTask.request, forceGrounding: delegatedTask.forceGrounding, budgetMs: browserLegBudgetFor(delegatedTask) ?? undefined }) }, opsCancel);
+    markOpsStart(chatId, delegatedTask.id, { kind: delegatedTask.kind, request: delegatedTask.request, engineActions: delegatedTask.engineActions, estimate: estimateOpsEta({ kind: delegatedTask.kind, request: delegatedTask.request, forceGrounding: delegatedTask.forceGrounding, budgetMs: browserLegBudgetFor(delegatedTask) ?? undefined }) }, opsCancel);
     // chatId in the line: this is the only observable marker that a turn delegated, and without it a
     // log-only diagnosis (trace buffer full or unreachable) can't tell WHICH chat delegated.
     console.log(`[main] Delegating ${delegatedTask.kind} task to the engine (chat ${chatId})`);
