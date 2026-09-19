@@ -314,17 +314,31 @@ export function getOpsEngineRun(chatId: string, taskId: string): EngineRunHandle
  * Every non-blank addition is remembered on the entry regardless of the answer, so the status line
  * can say "you added: …" and a refinement leg can carry it even when the engine never took it.
  */
-export function requestOpsSteer(chatId: string, taskId: string, text: string): 'ready' | 'queued' | 'unsupported' | 'already_done' {
+export function requestOpsSteer(chatId: string, taskId: string, text: string, engineActions: string[] = []): 'ready' | 'queued' | 'unsupported' | 'already_done' {
   const trimmed = text.trim();
   const entry = inFlight.get(chatId)?.get(taskId);
   if (!entry || entry.cancelled || !trimmed) return 'already_done';
   entry.steers = [...(entry.steers ?? []), trimmed];
+  // An addition can ask for something to be DONE, not just looked at differently. It joins the
+  // tracked list so the status line stays the whole record of what was handed over, and so a replay
+  // leg renders it as an instruction rather than as data. The caller screens it first (the approval
+  // gate's lexicon) — this function never decides what may be mandated, only remembers it.
+  if (engineActions.length) entry.engineActions = [...(entry.engineActions ?? []), ...engineActions];
   // The leg is over even though the task is not: the engine has nothing left to fold this into.
   if (entry.legEnded) return 'already_done';
   if (entry.engineRun) return 'ready';
   if (entry.steerUnreachable) return 'unsupported';
   entry.pendingSteers = [...(entry.pendingSteers ?? []), trimmed];
   return 'queued';
+}
+
+/** Everything this run was asked to DO — what it was delegated with, plus anything a steer added
+ *  since. The registry is the authority: the OpsTask object the orchestrator holds was built before
+ *  any of the additions existed, so a second leg reads the list from here rather than from itself.
+ *  Empty for a gone or cancelled entry, and for every run that was asked for nothing done. */
+export function getOpsEngineActions(chatId: string, taskId: string): string[] {
+  const entry = inFlight.get(chatId)?.get(taskId);
+  return entry && !entry.cancelled ? [...(entry.engineActions ?? [])] : [];
 }
 
 /** Take (and clear) the steers still awaiting delivery — a HAND-OFF, so a second call returns

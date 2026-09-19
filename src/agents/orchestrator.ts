@@ -3,7 +3,7 @@ import { withDeadline, DeadlineError } from './deadline.js';
 import { setPreference } from '../db/repositories/memory.js';
 import { addShortTerm } from '../db/repositories/memoryShort.js';
 import { composeWithComposer } from './composerCore.js';
-import { markOpsDone, isOpsCancelled, noteOpsProgress, markOpsRetry, getOpsEtaStatus, normalizeRequest } from '../state/opsCoordination.js';
+import { markOpsDone, isOpsCancelled, noteOpsProgress, markOpsRetry, getOpsEtaStatus, getOpsEngineActions, normalizeRequest } from '../state/opsCoordination.js';
 import { detectCause, decide, splitMiss, retryTaskFor, steerReplayTaskFor, type TriageDecision } from './ops/triage.js';
 import { selectInterveningUserMessages } from './interveningMessages.js';
 import { redactInternalTools } from './guardrails.js';
@@ -419,7 +419,9 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
       // Keep the in-flight clock fresh so "still on it" and the dedupe guard stay truthful across a
       // second leg the user never explicitly asked for (see markOpsRetry).
       markOpsRetry(task.chatId, task.id);
-      const replayTask = steerReplayTaskFor(task, unapplied);
+      // The registry, not the task: anything a steer asked to have DONE landed there after this task
+      // object was built, and the replay is the leg that has to carry it as an instruction.
+      const replayTask = steerReplayTaskFor(task, unapplied, getOpsEngineActions(task.chatId, task.id));
       const replay = makePings(PROGRESS_QUIET_MS);
       pingStops.push(() => replay.gate.stop());
       const replayAbort = new AbortController();

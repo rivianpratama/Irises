@@ -70,8 +70,16 @@ export function retryTaskFor(task: OpsTask, decision: TriageDecision): OpsTask {
  *
  * Pure: no clock, no env, no engine read.
  */
-export function steerReplayTaskFor(task: OpsTask, steer: string): OpsTask {
-  return { ...task, retryOf: task.id, request: `${task.request}\nThe user added mid-run: ${steer.trim()}` };
+export function steerReplayTaskFor(task: OpsTask, steer: string, engineActions: string[] = []): OpsTask {
+  return {
+    ...task, retryOf: task.id, request: `${task.request}\nThe user added mid-run: ${steer.trim()}`,
+    // Anything the addition asked to have DONE, read from the registry by the caller (the task
+    // object predates every steer). It has to travel as a field rather than inside the request the
+    // line above builds: `request` renders inside the data tag, which both doctrines tell the engine
+    // is never an instruction — so an addition that asks for work would arrive as text to disregard.
+    // Absent when the addition was a direction and nothing more, which is the ordinary replay.
+    ...(engineActions.length ? { engineActions } : {}),
+  };
 }
 
 /** A second leg has already run for this attempt (the cheap retry). Blocks a further RETRY

@@ -229,6 +229,7 @@ export const STEER_RESEARCH_TOOL: LlmToolDef = {
     type: 'object',
     properties: {
       guidance: { type: 'string', description: "What the user just added, narrowed, or corrected — in their terms." },
+      engine_actions: { type: 'array', items: { type: 'string' }, description: 'Only when the addition asks for something to be DONE on the deep look\'s own side rather than looked at differently: one entry per action, same rules as on delegate_to_ops. Omit it for an ordinary narrowing or correction.' },
       match: { type: 'string', description: 'Words identifying which running lookup to steer. Empty when only one is running.' },
     },
     required: ['guidance'],

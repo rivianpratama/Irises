@@ -68,7 +68,11 @@ test('steer_research is offered on the live tool list, right beside cancel_resea
 test('the tool asks for the addition in their words, and only guidance is required', () => {
   const schema = STEER_RESEARCH_TOOL.inputSchema as { properties: Record<string, unknown>; required: string[] };
   assert.deepEqual(schema.required, ['guidance']);
-  assert.deepEqual(Object.keys(schema.properties), ['guidance', 'match']);
+  // `engine_actions` sits between them (2026-09-19): an addition can ask for something to be DONE,
+  // and before it existed such an addition could only travel as guidance — invisible to the record
+  // of what was handed over, and rendered inside the data tag on a replay leg.
+  assert.deepEqual(Object.keys(schema.properties), ['guidance', 'engine_actions', 'match']);
+  assert.match(String((schema.properties.engine_actions as { description: string }).description), /same rules as on delegate_to_ops/);
   // The two confusions that would cost a run: a different ask, and a stop.
   assert.match(STEER_RESEARCH_TOOL.description, /NOT for a wholly different ask/);
   assert.match(STEER_RESEARCH_TOOL.description, /NOT for a stop \(that's cancel_research\)/);

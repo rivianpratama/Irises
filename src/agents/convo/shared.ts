@@ -332,6 +332,7 @@ export function handleSteerResearch(
   chatId: string,
   agentHandle: string,
   engine: EngineBackend | null = getEngineBackend(),
+  engineActions: string[] = [],
 ): Outcome | null {
   const m = match.trim().toLowerCase();
   const active = getActiveOps(chatId);
@@ -352,7 +353,17 @@ export function handleSteerResearch(
   if (!guidance.trim()) return null;
   // Ask the map FIRST, engine or no engine: this is what records their addition on the entry, so the
   // status line reads it back and the refinement leg carries it even when nothing could be delivered.
-  const decided = matches.map(a => ({ taskId: a.taskId, outcome: requestOpsSteer(chatId, a.taskId, guidance) }));
+  // A steered action is screened exactly like a delegated one, and for the same reason: this is the
+  // only other place a list can be turned into a mandate, and the approval gate never sees a steer.
+  // One that would touch the user's own things is dropped from the list rather than parked — the run
+  // is already going, so there is nothing to park — and the words still ride along as guidance,
+  // where the engine's own read-only limit governs them.
+  const mandated = engineActions.filter(a => {
+    if (classifySideEffect(a, 'read').effect === 'read') return true;
+    console.warn(`[convo] dropped a steered engine action that reads as an act on the user (chat ${chatId})`);
+    return false;
+  });
+  const decided = matches.map(a => ({ taskId: a.taskId, outcome: requestOpsSteer(chatId, a.taskId, guidance, mandated) }));
   if (decided.every(d => d.outcome === 'already_done')) {
     return { kind: 'failed', summary: 'that lookup actually just finished — the answer is already landing on their screen', nextStep: 'tell them you\'ll fold their addition in as a quick follow-up look, and delegate_to_ops with the original ask plus the addition' };
   }
@@ -2753,7 +2764,10 @@ export async function processConvoResult(args: {
       // Same chat-scoped, synchronous map as the cancel above, and for the same reason: her ack goes
       // out this turn, so the decision has to be in hand before it does. The delivery POST itself is
       // dispatched inside and never awaited (see handleSteerResearch).
-      const note = handleSteerResearch(String(input.match ?? ''), String(input.guidance ?? ''), chatId, handle ?? '');
+      const steerActions = Array.isArray(input.engine_actions)
+        ? input.engine_actions.map(a => String(a ?? '').trim()).filter(Boolean)
+        : [];
+      const note = handleSteerResearch(String(input.match ?? ''), String(input.guidance ?? ''), chatId, handle ?? '', getEngineBackend(), steerActions);
       if (note) outcomeParts.push(note);
     } else if (call.name === 'recall_memory') {
       // Just captured here — the search + the answer happen in one bounded second pass after
