@@ -195,10 +195,10 @@ export function listStranded(nowMs: number, horizonMs: number, limit = 20): OpsT
   try {
     const rows = stmt(
       `SELECT * FROM ops_tasks
-       WHERE status IN ${LIVE_STATUSES} AND leg_started_at <= ?
+       WHERE status IN ${LIVE_STATUSES} AND (leg_started_at <= ? OR started_at <= ?)
        ORDER BY leg_started_at ASC
        LIMIT ?`
-    ).all(nowMs - horizonMs, limit) as unknown as Row[];
+    ).all(nowMs - horizonMs, nowMs - horizonMs * 2, limit) as unknown as Row[];
     return rows.map(fromRow);
   } catch (error) {
     logDbError('listStranded', error);
