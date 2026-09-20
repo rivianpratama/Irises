@@ -84,6 +84,7 @@ import { saveHookState } from '../../db/repositories/hookState.js';
 import { getAffectState, saveAffectState } from '../../db/repositories/affectState.js';
 import type { RelationshipClimate } from '../../persona/climate.js';
 import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
+import { getRecentErrors, type StoredErrorRow } from '../../diagnostics/errorLog.js';
 import { promptCacheBreakpoints, type PromptSection, type SectionId } from './promptSections.js';
 import {
   convoPersona, personaModulesEnabled, renderCraftModules,
@@ -1483,6 +1484,19 @@ export function renderArchiveRecallPass(query: string, hits: ArchiveHit[], nowMs
   return `${guidance}\n\n${dataTag('memory_archive_results', `(archived, possibly superseded — these were retired from your live memory)\n${lines.join('\n')}`)}`;
 }
 
+function renderErrorLogPass(errors: StoredErrorRow[], nowMs = Date.now()): string {
+  const guidance = errors.length
+    ? "You just read your own error log for this conversation. Tell them what happened — source, what broke, how long ago. Speak plainly: don't invent fixes you can't perform, don't soften failures into vagueness. Same JSON envelope and bubble rules as always."
+    : "You checked your own error log for this conversation and found nothing recent. Whatever stalled didn't register as an error here — it may be upstream or the failure is older than the ring holds. Tell them that honestly.";
+  if (!errors.length) return guidance;
+  const lines = errors.map(e => {
+    const ago = Math.round((nowMs - e.lastAt) / 60000);
+    const count = e.count > 1 ? ` (×${e.count})` : '';
+    return `[${e.source}/${e.category}, ${ago}m ago${count}] ${e.message.slice(0, 200)}`;
+  });
+  return `${guidance}\n\n${dataTag('error_log_results', lines.join('\n'))}`;
+}
+
 /**
  * What the second pass needs to re-invoke the model: the same system prompt and messages the
  * first call used, plus this turn's tool list (the pass re-sends it MINUS recall_memory, which
@@ -2444,6 +2458,7 @@ export async function processConvoResult(args: {
   // The FIRST recall_memory query this turn (a second call in the same envelope is ignored — one
   // archive search per turn, and the second pass below is what answers from it).
   let recallQuery: string | null = null;
+  let errorLogLimit: number | null = null;
 
   for (const call of res.toolCalls) {
     const input = call.input;
@@ -2787,6 +2802,12 @@ export async function processConvoResult(args: {
       // the loop (Convo is single-shot, so a result can't come back inside this call).
       const q = String(input.query ?? '').trim();
       if (q && recallQuery == null) recallQuery = q;
+    } else if (call.name === 'check_error_log') {
+      // Captured here, executed after the loop in its own bounded second pass.
+      if (errorLogLimit == null) {
+        const raw = Number(input.limit ?? 5);
+        errorLogLimit = Math.min(Math.max(Math.round(isFinite(raw) ? raw : 5), 1), 15);
+      }
     } else if (call.name === 'update_directives' && handle) {
       // A language ask saved as a RULE is the old vocabulary — the tool doc now sends it to
       // set_preference, but a model that reaches for the rule anyway must not create the thing the
@@ -2951,6 +2972,65 @@ export async function processConvoResult(args: {
             kind: 'nothing_found',
             summary: "you went back through what you know and it genuinely isn't there",
             nextStep: 'ask them to run the details by you once more',
+          });
+    }
+  }
+
+  // ── check_error_log: bounded second pass with recent error rows ──────────────────────────────────
+  // Same discipline as recall_memory: captured in the loop, executed once here, with the tool
+  // stripped so it cannot recurse. Delegation wins: if the model also delegated, the composer
+  // already has grounded facts coming back and racing a second draft over them is worse than silence.
+  if (errorLogLimit != null && !args.archivePass && !delegatedTask && !suppressedDuplicate && !parkedApproval) {
+    const allErrors = getRecentErrors(Math.min(errorLogLimit * 4, 60));
+    const errors = allErrors.filter(e => !e.chatId || e.chatId === chatId).slice(0, errorLogLimit);
+    const turn = args.turn;
+    const firstPassActed = !!scheduleConfirmation || !!noteConfirmation || outcomeParts.length > 0;
+    let epFailed = !turn || firstPassActed;
+    if (turn && !firstPassActed) {
+      const strippedTools = turn.tools.filter(t => t.name !== 'check_error_log');
+      const messages: LlmMessage[] = [
+        ...turn.messages,
+        { role: 'user', content: renderErrorLogPass(errors) },
+      ];
+      try {
+        const second = await (turn.call ?? callConvoLLM)({
+          role: 'convo',
+          system: turn.system,
+          systemCacheBreakpoints: turn.cacheBreakpoints ?? [convoPersonaChars()],
+          tools: strippedTools,
+          jsonBubbles: true,
+          toolsViaJson: true,
+          messages,
+          trace: { chatId, handle, label: 'convo:error_log' },
+        });
+        return await processConvoResult({
+          ...args,
+          res: second,
+          archivePass: true,
+          quietSpent,
+          turn: { ...turn, tools: strippedTools, messages },
+          trace: args.trace ? { ...args.trace, messages } : undefined,
+        });
+      } catch (err) {
+        console.error('[convo] check_error_log second pass failed', err);
+        epFailed = true;
+      }
+    }
+    if (epFailed) {
+      outcomeParts.push(errors.length
+        ? {
+            kind: 'confirmed',
+            summary: 'you checked your error log',
+            facts: errors.slice(0, 3).map(e => {
+              const ago = Math.round((Date.now() - e.lastAt) / 60000);
+              const count = e.count > 1 ? ` (×${e.count})` : '';
+              return `${ago}m ago — ${e.source}/${e.category}${count}: ${e.message.slice(0, 120)}`;
+            }).join('\n'),
+          }
+        : {
+            kind: 'nothing_found',
+            summary: 'no recent errors logged for this conversation',
+            nextStep: 'check if the issue is upstream',
           });
     }
   }

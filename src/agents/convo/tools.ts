@@ -294,6 +294,23 @@ export const RECALL_MEMORY_TOOL: LlmToolDef = {
   },
 };
 
+export const CHECK_ERROR_LOG_TOOL: LlmToolDef = {
+  name: 'check_error_log',
+  description: [
+    'Read your own recent error log — what broke, when, and why, for this conversation.',
+    'Use it when a delegated task stalled, a reply never came back, or they ask you why something failed.',
+    'Returns recent failures by source, category, message, and how long ago.',
+    'Read-only — use the results to answer them honestly about what happened.',
+  ].join(' '),
+  inputSchema: {
+    type: 'object',
+    properties: {
+      limit: { type: 'number', description: 'How many recent errors to fetch, 1–15 (default 5).' },
+    },
+    required: [],
+  },
+};
+
 export const RENAME_CHAT_TOOL: LlmToolDef = {
   name: 'rename_group_chat',
   description: 'Rename the group chat. Only when explicitly asked. Also send a text response.',
@@ -331,7 +348,7 @@ export function convoToolList(opts: {
     // The two halves of run control, side by side: drop the look, or add to it mid-flight. They read
     // as a pair in the tool docs because the model's mistake to avoid is picking one for the other.
     CANCEL_RESEARCH_TOOL, STEER_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL,
-    UPDATE_MEMORY_TOOL, RECALL_MEMORY_TOOL,
+    UPDATE_MEMORY_TOOL, RECALL_MEMORY_TOOL, CHECK_ERROR_LOG_TOOL,
   ];
   if (opts.isGroupChat) tools.push(RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL);
   return tools;
