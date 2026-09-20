@@ -15,7 +15,7 @@
 import { createHash } from 'node:crypto';
 import { record } from './trace.js';
 import { setDbErrorSink } from '../db/client.js';
-import { insertErrorRows, startErrorLogPruneTimer, type StoredErrorRow } from '../db/repositories/errorLog.js';
+import { insertErrorRows, readRecentErrorsSync, startErrorLogPruneTimer, type StoredErrorRow } from '../db/repositories/errorLog.js';
 
 export type { StoredErrorRow };
 
@@ -295,13 +295,20 @@ export async function flushErrorLog(timeoutMs = 3000): Promise<void> {
   }
 }
 
+const DB_FALLBACK_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 /**
  * Newest-first slice of the in-memory ring. Live entry objects (a later fold bumps a count you
  * already read — deliberate: the dashboard shows the current count).
+ *
+ * When the ring is empty (fresh restart, errors flushed to SQLite on prior SIGTERM), falls back
+ * to a synchronous DB read over the last 24h so the caller sees history from previous lifetimes
+ * rather than a blank slate. better-sqlite3 is synchronous, making this safe on the hot path.
  */
 export function getRecentErrors(limit = 100): StoredErrorRow[] {
   const n = Math.min(Math.max(limit, 1), RING_CAP);
-  return ring.slice(-n).reverse();
+  if (ring.length > 0) return ring.slice(-n).reverse();
+  return readRecentErrorsSync(n, Date.now() - DB_FALLBACK_WINDOW_MS);
 }
 
 let handlersInstalled = false;

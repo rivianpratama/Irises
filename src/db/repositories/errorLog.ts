@@ -107,6 +107,22 @@ export interface ListErrorsParams {
   limit?: number;
 }
 
+/** Synchronous newest-first read used only to seed the in-memory ring after a restart.
+ *  better-sqlite3 is synchronous, so this is safe to call on the hot path as a one-time
+ *  cold-start fallback. Reads degrade to []. */
+export function readRecentErrorsSync(limit: number, sinceMs: number): StoredErrorRow[] {
+  try {
+    const rows = stmt(
+      `SELECT ${COLUMNS} FROM error_log WHERE created_at >= ?
+       ORDER BY created_at DESC, id DESC LIMIT ?`
+    ).all(sinceMs, Math.min(Math.max(limit, 1), 200)) as unknown as Record<string, unknown>[];
+    return rows.map(rowToError);
+  } catch (error) {
+    logDbError('readRecentErrorsSync', error);
+    return [];
+  }
+}
+
 /** Newest-first error rows matching the filter bar. */
 export async function listErrors(params: ListErrorsParams): Promise<StoredErrorRow[]> {
   try {
