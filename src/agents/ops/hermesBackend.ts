@@ -732,7 +732,20 @@ export class HermesBackend implements EngineBackend {
     // apart from the caller's cancel because only the caller's is a 'cancelled' upstream.
     let ownGiveUp = false;
     const giveUp = () => { ownGiveUp = true; controller.abort(); };
-    const timer = setTimeout(giveUp, Math.max(1, deadline - Date.now()));
+    let timer: NodeJS.Timeout | null = null;
+    const scheduleGiveUp = () => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        giveUp();
+        return;
+      }
+      const delay = Math.min(remaining, 2_147_483_647);
+      timer = setTimeout(() => {
+        if (delay < remaining) scheduleGiveUp();
+        else giveUp();
+      }, delay);
+    };
+    scheduleGiveUp();
     const onCallerAbort = () => controller.abort();
     // ONE listener for BOTH give-ups: whichever aborts, hermes is told to stop. `once` so a caller
     // abort landing right after our timer cannot POST /stop twice.
@@ -791,7 +804,7 @@ export class HermesBackend implements EngineBackend {
       }
       throw new EngineUnavailableError(`hermes not reachable at ${this.baseUrl} (${(err as Error)?.message ?? err})`, err);
     } finally {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       ctx.signal?.removeEventListener('abort', onCallerAbort);
     }
   }

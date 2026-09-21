@@ -219,6 +219,42 @@ export interface EngineBackend {
 // ── dispatch ──────────────────────────────────────────────────────────────────
 
 /**
+ * Parse a millisecond number or a human-friendly duration string into milliseconds.
+ * Supports units: d/days, h/hours, m/mins/minutes, s/secs/seconds, ms.
+ * Non-positive, non-finite, empty or invalid strings return null.
+ */
+export function parseDurationMs(raw: unknown): number | null {
+  if (typeof raw === 'number') {
+    return Number.isFinite(raw) && raw > 0 ? raw : null;
+  }
+  if (typeof raw !== 'string') return null;
+  const str = raw.trim().toLowerCase();
+  if (!str) return null;
+
+  // Direct numeric representation (e.g. '240000', '600000')
+  const num = Number(str);
+  if (Number.isFinite(num)) {
+    return num > 0 ? num : null;
+  }
+
+  // Human duration syntax: e.g. '7d', '3 days', '24h', '30m', '45s', '1000ms'
+  const match = str.match(/^(\d+(?:\.\d+)?)\s*(d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes|s|sec|secs|second|seconds|ms)$/);
+  if (!match) return null;
+
+  const val = parseFloat(match[1]);
+  const unit = match[2];
+  let multiplier = 1;
+  if (unit.startsWith('d')) multiplier = 86_400_000;
+  else if (unit.startsWith('h')) multiplier = 3_600_000;
+  else if (unit.startsWith('m') && unit !== 'ms') multiplier = 60_000;
+  else if (unit.startsWith('s')) multiplier = 1_000;
+  else if (unit === 'ms') multiplier = 1;
+
+  const res = val * multiplier;
+  return Number.isFinite(res) && res > 0 ? res : null;
+}
+
+/**
  * Per-call budget: the transport request must give up BEFORE the orchestrator's own
  * OPS_TASK_TIMEOUT_MS deadline abandons the run, so the failure is a clean mapped result
  * (not a DeadlineError synthetic) whenever the engine is merely slow to say no.
@@ -230,7 +266,8 @@ export interface EngineBackend {
  * DeadlineError instead of a mapped timeout).
  */
 export function computeEngineTimeoutMs(env: NodeJS.ProcessEnv, legBudgetMs?: number): number {
-  const explicit = Number(env.ENGINE_TIMEOUT_MS);
+  const parsed = parseDurationMs(env.ENGINE_TIMEOUT_MS);
+  const explicit = parsed ?? Number(env.ENGINE_TIMEOUT_MS);
   const standard = Number.isFinite(explicit) && explicit > 0
     ? explicit
     : transportWindowFor(standardLegBudgetMs(env));
@@ -260,8 +297,8 @@ export const ENGINE_TIMEOUT_MS = computeEngineTimeoutMs(process.env);
  *  zero/negative window all read as the documented four minutes, so nothing derived from this — the
  *  transport window, the staleness horizon in state/opsCoordination.ts — can inherit a NaN. */
 export function standardLegBudgetMs(env: NodeJS.ProcessEnv): number {
-  const ms = Number(env.OPS_TASK_TIMEOUT_MS);
-  return Number.isFinite(ms) && ms > 0 ? ms : 4 * 60_000;
+  const ms = parseDurationMs(env.OPS_TASK_TIMEOUT_MS);
+  return ms ?? 4 * 60_000;
 }
 
 /** The leg budget a walled-URL browser task gets when `OPS_BROWSER_TASK_TIMEOUT_MS` is switched on
@@ -285,9 +322,9 @@ export const BROWSER_LEG_BUDGET_MS = 900_000;
 export function browserLegBudgetMs(env: NodeJS.ProcessEnv): number | null {
   const raw = (env.OPS_BROWSER_TASK_TIMEOUT_MS || '').trim().toLowerCase();
   if (raw === '') return null;
-  if (['true', 'on', 'yes', '1'].includes(raw)) return BROWSER_LEG_BUDGET_MS;
-  const ms = Number(raw);
-  return Number.isFinite(ms) && ms > 0 ? ms : null;
+  if (['true', 'on', 'yes', '1'].includes(raw)) return Math.max(BROWSER_LEG_BUDGET_MS, standardLegBudgetMs(env));
+  const parsed = parseDurationMs(raw);
+  return parsed ?? null;
 }
 
 /** The mid-flight-cancel gate (env: OPS_CANCEL_ENGINE_ABORT). Default ON, read at CALL time — the

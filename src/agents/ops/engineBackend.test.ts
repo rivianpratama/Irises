@@ -5,7 +5,7 @@ process.env.TZ = 'UTC';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resetEngineBackendCache, getEngineBackend, withEngineSlot, engineSlotState, runViaEngine, computeEngineTimeoutMs, computeEngineQueueWaitMs, standardLegBudgetMs, browserLegBudgetMs, BROWSER_LEG_BUDGET_MS, EngineRunError, EngineUnavailableError, type EngineBackend } from './engineBackend.js';
+import { resetEngineBackendCache, getEngineBackend, withEngineSlot, engineSlotState, runViaEngine, computeEngineTimeoutMs, computeEngineQueueWaitMs, standardLegBudgetMs, browserLegBudgetMs, parseDurationMs, BROWSER_LEG_BUDGET_MS, EngineRunError, EngineUnavailableError, type EngineBackend } from './engineBackend.js';
 import { getTraces, clearTraces } from '../../diagnostics/trace.js';
 import { runTask, buildTaskPrompt, looksLikeMiss } from './client.js';
 import { OpenClawBackend } from './openclawBackend.js';
@@ -65,10 +65,29 @@ test('getEngineBackend: a null answer is NOT cached — OPS_BACKEND set later st
   }
 });
 
+test('parseDurationMs: numbers, duration units, and invalid fallbacks', () => {
+  assert.equal(parseDurationMs(600_000), 600_000);
+  assert.equal(parseDurationMs('600000'), 600_000);
+  assert.equal(parseDurationMs('7d'), 604_800_000);
+  assert.equal(parseDurationMs('3 days'), 259_200_000);
+  assert.equal(parseDurationMs('24h'), 86_400_000);
+  assert.equal(parseDurationMs('30m'), 1_800_000);
+  assert.equal(parseDurationMs('45s'), 45_000);
+  assert.equal(parseDurationMs('500ms'), 500);
+
+  // Invalid / non-positive fallbacks
+  assert.equal(parseDurationMs('0'), null);
+  assert.equal(parseDurationMs('-5s'), null);
+  assert.equal(parseDurationMs(''), null);
+  assert.equal(parseDurationMs('nonsense'), null);
+  assert.equal(parseDurationMs(undefined), null);
+});
+
 test('computeEngineTimeoutMs: default, explicit override, and the small-orchestrator clamp', () => {
   assert.equal(computeEngineTimeoutMs({}), 225_000, '4min orchestrator default − 15s');
   // The operator's own number is taken as written, in both directions.
   assert.equal(computeEngineTimeoutMs({ ENGINE_TIMEOUT_MS: '9000' }), 9_000);
+  assert.equal(computeEngineTimeoutMs({ ENGINE_TIMEOUT_MS: '7d' }), 604_800_000);
   assert.equal(computeEngineTimeoutMs({ ENGINE_TIMEOUT_MS: '600000', OPS_TASK_TIMEOUT_MS: '30000' }), 600_000);
   assert.equal(computeEngineTimeoutMs({ ENGINE_TIMEOUT_MS: 'nonsense' }), 225_000, 'junk falls back to derived');
   assert.equal(computeEngineTimeoutMs({ OPS_TASK_TIMEOUT_MS: '60000' }), 45_000);
@@ -81,6 +100,9 @@ test('computeEngineTimeoutMs: default, explicit override, and the small-orchestr
 test('standardLegBudgetMs: the orchestrator deadline, default four minutes', () => {
   assert.equal(standardLegBudgetMs({}), 240_000);
   assert.equal(standardLegBudgetMs({ OPS_TASK_TIMEOUT_MS: '600000' }), 600_000);
+  assert.equal(standardLegBudgetMs({ OPS_TASK_TIMEOUT_MS: '7d' }), 604_800_000);
+  assert.equal(standardLegBudgetMs({ OPS_TASK_TIMEOUT_MS: '3 days' }), 259_200_000);
+  assert.equal(standardLegBudgetMs({ OPS_TASK_TIMEOUT_MS: '24h' }), 86_400_000);
   // The ONE reading of this env var — computeEngineTimeoutMs derives its window through this
   // function, so junk, empty and a zero-length deadline have to land on the documented default here
   // rather than propagate a NaN into every window and horizon derived from it (state/opsCoordination.ts).
@@ -100,8 +122,10 @@ test('browserLegBudgetMs: unset is today, a number is taken as written, a bare s
   assert.equal(browserLegBudgetMs({ OPS_BROWSER_TASK_TIMEOUT_MS: '-1' }), null, 'a nonsense window is not a budget');
   assert.equal(browserLegBudgetMs({ OPS_BROWSER_TASK_TIMEOUT_MS: 'nonsense' }), null);
   assert.equal(browserLegBudgetMs({ OPS_BROWSER_TASK_TIMEOUT_MS: '600000' }), 600_000);
+  assert.equal(browserLegBudgetMs({ OPS_BROWSER_TASK_TIMEOUT_MS: '7d' }), 604_800_000);
   assert.equal(browserLegBudgetMs({ OPS_BROWSER_TASK_TIMEOUT_MS: 'on' }), BROWSER_LEG_BUDGET_MS);
   assert.equal(browserLegBudgetMs({ OPS_BROWSER_TASK_TIMEOUT_MS: 'TRUE' }), BROWSER_LEG_BUDGET_MS);
+  assert.equal(browserLegBudgetMs({ OPS_BROWSER_TASK_TIMEOUT_MS: 'on', OPS_TASK_TIMEOUT_MS: '7d' }), 604_800_000);
   // `1` is the switch every other flag here takes, not a one-millisecond window.
   assert.equal(browserLegBudgetMs({ OPS_BROWSER_TASK_TIMEOUT_MS: '1' }), BROWSER_LEG_BUDGET_MS);
   assert.equal(BROWSER_LEG_BUDGET_MS, 900_000, '15 minutes — the browser work the live runs actually needed');

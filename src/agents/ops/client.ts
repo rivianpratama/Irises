@@ -152,9 +152,11 @@ export function browserLegBudgetFor(task: OpsTask, env: NodeJS.ProcessEnv = proc
   return hinted ? browserLegBudgetMs(env) : null;
 }
 
-/** The leg deadline for one task: the browser budget when armed, OPS_TASK_TIMEOUT_MS otherwise. */
+/** The leg deadline for one task: the browser budget when armed, OPS_TASK_TIMEOUT_MS otherwise.
+ *  Only ever widens the standard budget, never narrows an ultra-long standard deadline. */
 export function legBudgetFor(task: OpsTask, env: NodeJS.ProcessEnv = process.env): number {
-  return browserLegBudgetFor(task, env) ?? standardLegBudgetMs(env);
+  const browser = browserLegBudgetFor(task, env);
+  return browser ? Math.max(browser, standardLegBudgetMs(env)) : standardLegBudgetMs(env);
 }
 
 /** Execute one delegated task end to end on the configured engine.
@@ -178,6 +180,8 @@ export async function runTask(task: OpsTask, onProgress?: (milestoneKey: string)
   // `tooling` rather than through browserLegBudgetFor so the receipt reports the budget for the
   // decision it just recorded, not a second reading of the probe.
   const browserBudget = tooling.line ? browserLegBudgetMs(process.env) : null;
+  const standardBudget = standardLegBudgetMs(process.env);
+  const effectiveBudget = browserBudget ? Math.max(browserBudget, standardBudget) : standardBudget;
   record({
     type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id,
     label: `${tracePrefix}:kickoff`,
@@ -187,7 +191,7 @@ export async function runTask(task: OpsTask, onProgress?: (milestoneKey: string)
     detail: {
       gapMs: Date.now() - task.createdAt, kind: task.kind,
       walledHosts: tooling.hosts, toolingHint: !!tooling.line, browserTooling: browser ?? null,
-      budgetMs: browserBudget ?? standardLegBudgetMs(process.env),
+      budgetMs: effectiveBudget,
       // How many of her held things the TASK carried (agents/routingGate.ts) — the block rides its
       // own `heldMemory` field beside the brief, never inside it. Always a number, so a look that
       // went out blind reads as 0 rather than as a missing field.
