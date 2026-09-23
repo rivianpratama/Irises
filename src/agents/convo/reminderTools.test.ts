@@ -11,8 +11,8 @@
 //     threaded onto processConvoResult's args).
 //
 // Exercised end-to-end against processConvoResult with a stub engine (repo DI convention: no
-// module mocks) — same harness composerParaphrase.test.ts and unkeptPromise.test.ts use. Later
-// tasks (id-addressed reminder tools) add more tests to this file.
+// module mocks) — same harness composerParaphrase.test.ts and unkeptPromise.test.ts use. The later
+// tasks' tests (id-addressed reminder tools, the create-time hold) live here too.
 
 process.env.DATA_BACKEND = 'memory';
 
@@ -21,25 +21,41 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { processConvoResult, type ChatContext } from './shared.js';
 import { emptyMedia } from '../../webhook/types.js';
-import { resetEngineBackendCache, type EngineBackend, type ReminderRef, type ReminderSpec } from '../ops/engineBackend.js';
+import {
+  resetEngineBackendCache, type EngineBackend, type ReminderPatch, type ReminderRef, type ReminderSpec,
+} from '../ops/engineBackend.js';
+import { getTraces, clearTraces } from '../../diagnostics/trace.js';
 import type { LlmResult, LlmToolCall } from '../../llm/types.js';
 
-// Minimal engine stub (repo DI convention): serves canned reminders and captures createReminder
-// specs so a test can assert what timezone actually reached the engine.
-function installStubEngine(reminders: ReminderRef[] = []): { createdSpecs: ReminderSpec[] } {
+// Minimal engine stub (repo DI convention): serves canned reminders and captures every write —
+// createReminder specs (so a test can assert what timezone actually reached the engine), the ids a
+// cancel deleted, and each updateReminder call.
+function installStubEngine(reminders: ReminderRef[] = []): {
+  createdSpecs: ReminderSpec[];
+  cancelledIds: string[];
+  updates: Array<{ id: string; patch: ReminderPatch }>;
+} {
   const createdSpecs: ReminderSpec[] = [];
+  const cancelledIds: string[] = [];
+  const updates: Array<{ id: string; patch: ReminderPatch }> = [];
   const engine: EngineBackend = {
     name: 'hermes',
     async runTask() { throw new Error('not under test'); },
     async createReminder(spec) { createdSpecs.push(spec); return { id: 'r1', title: spec.title ?? spec.instruction, schedule: spec.cron ?? '' }; },
     async listReminders() { return reminders; },
-    async cancelReminder() { return false; },
+    async cancelReminder(id) { cancelledIds.push(id); return reminders.some(r => r.id === id); },
+    async updateReminder(id, patch) {
+      updates.push({ id, patch });
+      const old = reminders.find(r => r.id === id);
+      if (!old) return { ok: false, reason: 'not_found' };
+      return { ok: true, ref: { ...old, title: patch.title ?? old.title, ...(patch.cron ? { expr: patch.cron, schedule: patch.cron } : {}) } };
+    },
     async remember() { /* not under test */ },
     async probe() { return { ok: true }; },
     async channelSend() { return {}; },
   };
   resetEngineBackendCache(engine);
-  return { createdSpecs };
+  return { createdSpecs, cancelledIds, updates };
 }
 
 test.afterEach(() => {
@@ -169,4 +185,121 @@ test('a successful schedule is still voiced when a cancel in the same turn misse
   assert.match(out.text!, /done, all set/, 'the reminder that WAS set is said');
   assert.match(out.text!, /couldnt track that one down/, 'and so is the cancel that missed');
   assert.doesNotMatch(out.text!, /switched it/, "the draft's claim that the swap happened does not ship");
+});
+
+// ── Task 6: reminders addressed by the id the model can see ─────────────────────────────────────
+// The incident's cancel matched a title substring the model had to guess. Worse, a match that fit
+// several reminders used to be one outcome for all of them, and an id-only call (the shape the new
+// tool asks for) read as an empty match, which fits EVERY reminder.
+
+const MORNING: ReminderRef = {
+  id: '2448ff495f3b', title: 'morning news brief', schedule: 'every day 7am', kind: 'cron', expr: '0 7 * * *',
+  instruction: 'send me the economy headlines', nextRunAt: '2026-09-24T07:00:00+00:00',
+};
+const EVENING: ReminderRef = {
+  id: '9d0c42fcef9d', title: 'evening news brief', schedule: 'every day 6pm', kind: 'cron', expr: '0 18 * * *',
+  instruction: 'send me the sports headlines', nextRunAt: '2026-09-23T18:00:00+00:00',
+};
+const PLANTS: ReminderRef = {
+  id: '42cbde8bd745', title: 'water the plants', schedule: 'every day 6pm', kind: 'cron', expr: '0 18 * * *',
+  instruction: 'water the balcony plants', nextRunAt: '2026-09-23T18:00:00+00:00',
+};
+
+/** Pin the engine's own zone for a test that compares schedules, and put it back after. */
+async function withEngineTz(tz: string, fn: () => Promise<void>): Promise<void> {
+  const prev = process.env.HERMES_TZ;
+  process.env.HERMES_TZ = tz;
+  try { await fn(); } finally {
+    if (prev === undefined) delete process.env.HERMES_TZ; else process.env.HERMES_TZ = prev;
+  }
+}
+
+test('a cancel whose words fit two reminders cancels neither, and lists both ids', async () => {
+  const { cancelledIds } = installStubEngine([MORNING, EVENING]);
+  const a = baseArgs();
+  const res = makeResult(['done, cancelled it'], [{ name: 'cancel_automation', input: { match: 'news brief' } }]);
+
+  const out = await processConvoResult({ ...a, res, textToSend: 'cancel the news brief', userTz: 'UTC' });
+
+  assert.deepEqual(cancelledIds, [], 'nothing is cancelled when the words fit more than one');
+  assert.match(out.text!, /R2448ff/, 'the first candidate is offered by its id');
+  assert.match(out.text!, /R9d0c42/, 'and so is the second');
+  assert.doesNotMatch(out.text!, /cancelled it/, "the draft's claim does not ship");
+});
+
+test('update_automation by short id sends one in-place update, and the reply confirms it', async () => {
+  const { updates, createdSpecs, cancelledIds } = installStubEngine([MORNING, EVENING]);
+  const a = baseArgs();
+  const res = makeResult(['done, moved it to 8'], [
+    { name: 'update_automation', input: { id: 'R2448ff', cron: '0 8 * * *' } },
+  ]);
+
+  const out = await processConvoResult({ ...a, res, textToSend: 'move my morning brief to 8', userTz: 'Asia/Jakarta' });
+
+  assert.equal(updates.length, 1, 'one update call, no cancel-and-recreate');
+  assert.equal(updates[0].id, MORNING.id, 'the short id resolved to the full engine id');
+  assert.equal(updates[0].patch.cron, '0 8 * * *');
+  assert.equal(updates[0].patch.timezone, 'Asia/Jakarta', "the cron rides the user's zone");
+  assert.equal(updates[0].patch.chatId, a.chatId);
+  assert.equal(updates[0].patch.scheduleKind, undefined, 'same shape, so the in-place path');
+  assert.deepEqual([createdSpecs.length, cancelledIds.length], [0, 0]);
+  assert.match(out.text!, /moved it to 8/, "the model's own confirmation ships, since it landed");
+  assert.match(out.text!, /R2448ff/, 'with what now stands beside it');
+});
+
+test('an unknown id is not_found, and the live ids are offered', async () => {
+  const { cancelledIds } = installStubEngine([MORNING, EVENING]);
+  const a = baseArgs();
+  const res = makeResult(['cancelled'], [{ name: 'cancel_automation', input: { id: 'R777777' } }]);
+
+  const out = await processConvoResult({ ...a, res, textToSend: 'cancel that reminder', userTz: 'UTC' });
+
+  assert.deepEqual(cancelledIds, [], 'an id that names nothing cancels nothing');
+  assert.match(out.text!, /couldnt track that one down/, 'said as a miss');
+  assert.match(out.text!, /R2448ff/, 'with what they do have');
+  assert.match(out.text!, /R9d0c42/);
+});
+
+// ── Task 9: a create that collides with an existing reminder is held ────────────────────────────
+
+test('a second 7am daily in different words is HELD, not created, and the reply names the existing one', async () => {
+  // The incident's end state was five enabled 7am jobs: every repeat of "switch my brief" added one.
+  // `distinct:true` is the model's claim that this one serves another purpose, and on the first
+  // pass it has not yet seen what it collides with, so the claim is ignored there.
+  await withEngineTz('UTC', async () => {
+    const { createdSpecs } = installStubEngine([MORNING]);
+    const a = baseArgs();
+    clearTraces();
+    const res = makeResult(['got it, 7am govt news every day'], [scheduleCall({
+      title: 'govt news', instruction: 'send me indonesian government news', cron: '0 7 * * *', distinct: true,
+    })]);
+
+    const out = await processConvoResult({ ...a, res, textToSend: 'add a 7am govt news reminder', userTz: 'UTC' });
+
+    assert.equal(createdSpecs.length, 0, 'held: no second job lands on the same slot');
+    assert.match(out.text!, /R2448ff/, 'the reminder already on that slot is named by its id');
+    assert.match(out.text!, /morning news brief/);
+    assert.doesNotMatch(out.text!, /got it, 7am/, "the draft's claim that it was set does not ship");
+    const ignored = getTraces().find(e => e.label === 'convo:tool_arg_ignored' && (e.detail as { arg?: string } | undefined)?.arg === 'distinct');
+    assert.ok(ignored, 'the ignored distinct claim is on the record');
+  });
+});
+
+test('cancel(id) + schedule for the same slot in one turn creates the new one', async () => {
+  // The per-turn ledger: the cancel runs first (canonical order) and takes the old reminder out of
+  // what this turn's create is checked against, so the replacement is not held by the very reminder
+  // it replaces.
+  await withEngineTz('UTC', async () => {
+    const { createdSpecs, cancelledIds } = installStubEngine([MORNING, PLANTS]);
+    const a = baseArgs();
+    const res = makeResult(['switched it to govt news'], [
+      scheduleCall({ title: 'govt news', instruction: 'send me indonesian government news', cron: '0 7 * * *' }),
+      { name: 'cancel_automation', input: { id: 'R2448ff' } },
+    ]);
+
+    await processConvoResult({ ...a, res, textToSend: 'swap my 7am brief for govt news', userTz: 'UTC' });
+
+    assert.deepEqual(cancelledIds, [MORNING.id], 'the id named exactly one reminder');
+    assert.equal(createdSpecs.length, 1, 'the replacement is created');
+  });
 });

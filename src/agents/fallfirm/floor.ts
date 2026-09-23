@@ -39,13 +39,20 @@ export function fallfirmFloor(o: Outcome): string {
   if (o.parts?.length) return o.parts.map(fallfirmFloor).join('\n---\n');
   switch (o.kind) {
     case 'confirmed':
-      return o.facts ? `done, all set\n---\n${o.facts}` : 'done, all set';
+      return withFacts('done, all set', o.facts);
     case 'nothing_found':
-      return "couldnt track that one down";
+      return withFacts("couldnt track that one down", o.facts);
     case 'failed':
     default:
-      return "hit a snag on that just now, nothing came back";
+      return withFacts("hit a snag on that just now, nothing came back", o.facts);
   }
+}
+
+// A failure's facts are relayed too. On a miss they are what the user needs next: the items a call
+// that missed or matched several could have meant, or the reminder a held create collides with. A
+// floor that drops them leaves the user nothing to pick from and no way to know what already stands.
+function withFacts(line: string, facts: string | undefined): string {
+  return facts ? `${line}\n---\n${facts}` : line;
 }
 
 // ── Static command reference (deterministic, deliberately NOT voiced) ─────────────────────────

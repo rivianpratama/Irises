@@ -4,7 +4,8 @@ import { getUpdateStatus, updateChecksLive, type UpdateStatus } from '../../upda
 import type { VersionInfo } from '../../update/version.js';
 import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
 import { browserLegBudgetFor } from '../ops/client.js';
-import type { CapabilitySummary, CapabilityClass, EngineBackend } from '../ops/engineBackend.js';
+import type { CapabilitySummary, CapabilityClass, EngineBackend, ReminderPatch, ReminderRef } from '../ops/engineBackend.js';
+import { engineZone } from '../ops/hermesBackend.js';
 import { markIntroWoven } from '../ops/firstMove.js';
 import {
   approvalAskFallback, classifySideEffect, coerceEffect, opsApprovalGateEnabled, renderApprovalAsk,
@@ -96,8 +97,9 @@ import { dropSchemaEcho } from './toolCallGuard.js';
 import { orderToolCalls } from './toolOrder.js';
 import {
   actionSucceeded, combinedOutcome, needsCorrection, resolveRef, toOutcome,
-  type ActionResult, type ActionStatus,
+  type ActionCandidate, type ActionResult, type ActionStatus,
 } from './actionResults.js';
+import { detectCollision, type LedgerReminder, type NewReminder } from './reminderCollision.js';
 import { callLLM } from '../../llm/callLLM.js';
 import { record } from '../../diagnostics/trace.js';
 import { HOOK_OFF_TURN_LABEL, QUIET_GUARD_LABEL } from '../../diagnostics/traceLabels.js';
@@ -230,7 +232,105 @@ function noEngine(tool: string, target = ''): ActionResult {
   };
 }
 
-async function handleScheduleAutomation(input: Record<string, unknown>, handle: string, chatId: string, userTz?: string): Promise<ActionResult> {
+/** The id a reminder is shown and addressed by: R + the first 6 hex chars of the engine's own id.
+ *  Short enough to say out loud, and a prefix of the real id that resolveRef reads back to it. */
+function shortReminderId(id: string): string {
+  return `R${id.slice(0, 6)}`;
+}
+
+/** When a reminder fires next, in their zone: the engine's next run, else a one-shot's own time,
+ *  else whatever schedule text the engine reported. */
+function reminderWhen(r: ReminderRef, tz: string): string {
+  const at = r.nextRunAt ?? r.runAt;
+  return at ? formatWhen(at, tz) : r.schedule;
+}
+
+/** One reminder as something the user can pick by its id. */
+function reminderCandidate(r: ReminderRef, tz: string): ActionCandidate {
+  const when = reminderWhen(r, tz);
+  return { id: shortReminderId(r.id), label: when ? `${r.title} (${when})` : r.title };
+}
+
+/** The most reminders a miss offers, the same ten the list shows. */
+const MAX_REMINDER_CANDIDATES = 10;
+
+function reminderCandidates(items: readonly ReminderRef[], tz: string): ActionCandidate[] {
+  return items.slice(0, MAX_REMINDER_CANDIDATES).map(r => reminderCandidate(r, tz));
+}
+
+/**
+ * This chat's reminders as THIS turn sees them (TurnEffects.reminders): read live from the engine
+ * once, by the first reminder call that needs them, then kept in step with what the turn's own
+ * cancels, updates and creates did. "Cancel that one and set this instead" is one turn, and the
+ * create must be judged against the list the cancel left, never against a fresh read that may
+ * still show the reminder being replaced, or against the one taken before the cancel ran.
+ *
+ * A copy, so the ledger's edits never reach whatever the engine handed back. A read that throws
+ * caches nothing: the next call that needs the list tries again.
+ */
+async function turnReminders(effects: TurnEffects, engine: EngineBackend, chatId: string): Promise<LedgerReminder[]> {
+  if (!effects.reminders) effects.reminders = [...await engine.listReminders(chatId)];
+  return effects.reminders;
+}
+
+type ReminderPick =
+  | { kind: 'match'; ref: LedgerReminder }
+  | { kind: 'ambiguous'; refs: LedgerReminder[] }
+  | { kind: 'none' };
+
+/**
+ * The one reminder a call names. The id first (resolveRef: a unique prefix of four or more, with or
+ * without the R), then the words: its title, and only when no title fits, the reminder's own text.
+ * The match arg is tried as an id too, and the id arg as words, because each is a slip the model
+ * makes with the other. Several fits is `ambiguous`, and the caller acts on none of them.
+ */
+function pickReminder(items: readonly LedgerReminder[], id: string, match: string): ReminderPick {
+  const ids = items.map(r => r.id);
+  for (const ref of [id, match]) {
+    if (!ref) continue;
+    const got = resolveRef(ref, ids, 'R');
+    if (got.kind === 'match') return { kind: 'match', ref: items.find(r => r.id === got.id)! };
+    if (got.kind === 'ambiguous') return { kind: 'ambiguous', refs: items.filter(r => got.ids.includes(r.id)) };
+  }
+  const words = (match || id).toLowerCase();
+  if (!words) return { kind: 'none' };
+  let hits = items.filter(r => r.title.toLowerCase().includes(words));
+  if (!hits.length) hits = items.filter(r => (r.instruction ?? '').toLowerCase().includes(words));
+  if (hits.length === 1) return { kind: 'match', ref: hits[0] };
+  return hits.length ? { kind: 'ambiguous', refs: hits } : { kind: 'none' };
+}
+
+/** A pick that did not name exactly one reminder, as the result the turn keeps. Never acts: a miss
+ *  offers what does exist, and several fits offer those, so the next look can name one by its id. */
+function unpicked(tool: string, target: string, picked: Exclude<ReminderPick, { kind: 'match' }>, items: readonly LedgerReminder[], tz: string, verb: string): ActionResult {
+  if (picked.kind === 'ambiguous') {
+    return {
+      tool, status: 'ambiguous', target,
+      detail: `that fits more than one of their reminders, so none was ${verb}`,
+      candidates: reminderCandidates(picked.refs, tz),
+      nextStep: 'they can say which of these they mean',
+    };
+  }
+  if (!target) {
+    return {
+      tool, status: 'ambiguous', target,
+      detail: `it was not clear which reminder they meant, so none was ${verb}`,
+      candidates: reminderCandidates(items, tz),
+      nextStep: 'they can say which of these they mean',
+    };
+  }
+  return {
+    tool, status: 'not_found', target,
+    detail: `none of their reminders matches that, so nothing was ${verb}`,
+    candidates: reminderCandidates(items, tz),
+    nextStep: 'they can pick from the reminders they do have',
+  };
+}
+
+async function handleScheduleAutomation(
+  input: Record<string, unknown>, handle: string, chatId: string, effects: TurnEffects,
+  opts: { userTz?: string; honorDistinct: boolean },
+): Promise<ActionResult> {
   const tool = 'schedule_automation';
   const instruction = String(input.instruction ?? '').trim();
   const title = input.title ? String(input.title) : undefined;
@@ -243,25 +343,85 @@ async function handleScheduleAutomation(input: Record<string, unknown>, handle: 
   // common case is silence, and silence means THEIR zone, not the host's. `userTz` is this turn's
   // already-resolved zone (client.ts, from the stored `agent_tz` preference) — DEFAULT_TZ is only
   // the last resort for a caller that never threaded one through (a test, or an older call site).
-  const timezone = (input.timezone as string) || userTz || DEFAULT_TZ;
+  const timezone = (input.timezone as string) || opts.userTz || DEFAULT_TZ;
+  const displayTz = opts.userTz || DEFAULT_TZ;
   const engine = getEngineBackend();
   if (!engine) return noEngine(tool, target);
-  try {
-    if (input.schedule_kind === 'cron') {
-      const cron = String(input.cron ?? '');
-      if (!cron || !isValidCron(cron, timezone)) {
-        return { tool, status: 'invalid', target, detail: "that repeat schedule didn't parse", nextStep: 'ask them for the timing again' };
-      }
-      // The zone rides along: the cron's wall clock is the USER's, and the engine's cron may run in
-      // a different one (the adapter shifts the fields).
-      await engine.createReminder({ chatId, agentHandle: handle, instruction, cron, title, timezone });
-      return { tool, status: 'done', target, detail: 'a recurring reminder is now set — it repeats on their schedule' };
+
+  let next: NewReminder;
+  if (input.schedule_kind === 'cron') {
+    const cron = String(input.cron ?? '');
+    if (!cron || !isValidCron(cron, timezone)) {
+      return { tool, status: 'invalid', target, detail: "that repeat schedule didn't parse", nextStep: 'ask them for the timing again' };
     }
+    next = { kind: 'cron', cron, title, instruction };
+  } else {
     const ts = Date.parse(String(input.fire_at ?? ''));
     if (Number.isNaN(ts)) return { tool, status: 'invalid', target, detail: "couldn't tell when they want the reminder", nextStep: 'ask what time to remind them' };
     if (ts <= Date.now()) return { tool, status: 'invalid', target, detail: 'the time they gave has already passed', nextStep: 'mention you can set it for a later time instead' };
-    await engine.createReminder({ chatId, agentHandle: handle, instruction, fireAt: ts, title, timezone });
-    return { tool, status: 'done', target, detail: 'a one-time reminder is set', facts: formatWhen(new Date(ts).toISOString(), timezone).toLowerCase() };
+    next = { kind: 'once', fireAt: ts, title, instruction };
+  }
+
+  // ── Hold, then revise ──────────────────────────────────────────────────────────────────────
+  // The 2026-09-23 incident ended with five enabled 7am jobs: every "switch my brief" turn whose
+  // cancel missed still created a new one. So a create is read against what already stands (the
+  // turn's ledger, after this turn's own cancels and updates), and one that lands on a slot or a
+  // purpose an existing reminder covers is HELD: never created, with the reminder it collides with
+  // handed back so the reply can offer to change that one instead. When the list cannot be read at
+  // all, nothing is created either: a duplicate is the one outcome the user ruled out, and the
+  // create would have gone to the same engine that just failed to answer.
+  let items: LedgerReminder[];
+  try {
+    items = await turnReminders(effects, engine, chatId);
+  } catch (err) {
+    console.error('[convo] schedule_automation could not read the existing reminders', err);
+    return { tool, status: 'unavailable', target, detail: "couldn't check the reminders they already have, so nothing new was set", nextStep: 'ask them to try again in a bit' };
+  }
+  const collision = detectCollision(next, items, { userTz: timezone, engineTz: engineZone(), nowMs: Date.now() });
+  if (collision.kind === 'identical') {
+    // The one reminder asked for twice. Already true, so a success, and no claim can override it:
+    // a second copy of the same words on the same slot is never what anyone meant.
+    const same = reminderCandidate(collision.with, displayTz);
+    return { tool, status: 'already', target, detail: 'this exact reminder is already set, so nothing new was added', facts: `[${same.id}] ${same.label}` };
+  }
+  // `distinct` is the model's claim that this one serves another purpose. It is honored only on a
+  // pass that has already shown the model what the create collides with (DispatchContext
+  // `honorDistinct`); written blind, before any collision was seen, it is ignored, and recorded.
+  const wantsDistinct = input.distinct === true;
+  if (wantsDistinct && !opts.honorDistinct) {
+    record({
+      type: 'event', label: 'convo:tool_arg_ignored', chatId, handle,
+      detail: { tool, arg: 'distinct', value: 'true', reason: 'collision_not_yet_seen', held: collision.kind === 'similar' },
+    });
+  }
+  if (collision.kind === 'similar' && !(wantsDistinct && opts.honorDistinct)) {
+    return {
+      tool, status: 'held', target,
+      detail: 'a reminder of theirs already covers this time or this purpose, so a second one was not added',
+      candidates: reminderCandidates(collision.with, displayTz),
+      nextStep: 'the existing one can be changed to cover this instead',
+    };
+  }
+
+  try {
+    if (next.kind === 'cron') {
+      // The zone rides along: the cron's wall clock is the USER's, and the engine's cron may run in
+      // a different one (the adapter shifts the fields).
+      const ref = await engine.createReminder({ chatId, agentHandle: handle, instruction, cron: next.cron, title, timezone });
+      effects.reminders = [...items, {
+        id: ref.id, title: (title || instruction).slice(0, 40), schedule: next.cron!,
+        kind: 'cron', expr: next.cron, exprZone: timezone, instruction,
+      }];
+      return { tool, status: 'done', target, detail: 'a recurring reminder is now set — it repeats on their schedule' };
+    }
+    const ts = next.fireAt!;
+    const ref = await engine.createReminder({ chatId, agentHandle: handle, instruction, fireAt: ts, title, timezone });
+    const iso = new Date(ts).toISOString();
+    effects.reminders = [...items, {
+      id: ref.id, title: (title || instruction).slice(0, 40), schedule: iso,
+      kind: 'once', runAt: iso, nextRunAt: iso, instruction,
+    }];
+    return { tool, status: 'done', target, detail: 'a one-time reminder is set', facts: formatWhen(iso, timezone).toLowerCase() };
   } catch (err) {
     console.error('[convo] schedule_automation failed', err);
     return { tool, status: 'unavailable', target, detail: 'saving that reminder hit a snag', nextStep: 'ask them to try again' };
@@ -281,12 +441,9 @@ async function renderAutomationsList(_handle: string, chatId: string, tz: string
     // correction block below): the model's honest "you don't have any right now" was getting
     // overwritten by a Fallfirm re-voicing of the exact same fact. Reporting nothing is not a failure.
     if (!items.length) return { tool, status: 'done', target: '', detail: 'they have no reminders set up right now' };
-    const list = items.slice(0, 10).map((a, i) => {
-      // R + first 6 hex chars of the engine's own id — short enough to say out loud, and a prefix
-      // of the real id (later tasks resolve an id this short back to the one job it names).
-      const shortId = `R${a.id.slice(0, 6)}`;
+    const list = items.slice(0, MAX_REMINDER_CANDIDATES).map((a, i) => {
       const when = a.nextRunAt ? formatWhen(a.nextRunAt, tz) : a.schedule;
-      return `${i + 1}. [${shortId}] ${a.title} — ${when}`;
+      return `${i + 1}. [${shortReminderId(a.id)}] ${a.title} — ${when}`;
     }).join('\n');
     return { tool, status: 'done', target: '', detail: 'these are their current reminders', facts: list };
   } catch (err) {
@@ -295,30 +452,136 @@ async function renderAutomationsList(_handle: string, chatId: string, tz: string
   }
 }
 
-// Cancel by fuzzy match on title. `cancelled` names the one reminder that actually went, for the
-// turn's ledger (a second cancel of it this turn is then `already`, never a miss).
-async function handleCancelAutomation(match: string, _handle: string, chatId: string): Promise<{ result: ActionResult; cancelled?: { id: string; title: string } }> {
+// Cancel by the id the model can see (or, as the fallback, by words). `cancelled` names the one
+// reminder that actually went, for the turn's ledger of cancels (a second cancel of it this turn is
+// then `already`, never a miss). A call that names several or none acts on nothing.
+async function handleCancelAutomation(input: Record<string, unknown>, chatId: string, effects: TurnEffects, tz: string): Promise<{ result: ActionResult; cancelled?: { id: string; title: string } }> {
   const tool = 'cancel_automation';
-  const target = match.trim();
-  const m = target.toLowerCase();
+  const id = String(input.id ?? '').trim();
+  const match = String(input.match ?? '').trim();
+  const target = id || match;
   const engine = getEngineBackend();
   if (!engine) return { result: noEngine(tool, target) };
   const snag: ActionResult = { tool, status: 'unavailable', target, detail: 'canceling that reminder hit a snag', nextStep: 'ask them to try again' };
   try {
-    const items = await engine.listReminders(chatId);
+    const items = await turnReminders(effects, engine, chatId);
     if (!items.length) return { result: { tool, status: 'not_found', target, detail: 'they have no reminders set up to cancel' } };
-    const matches = m ? items.filter(a => a.title.toLowerCase().includes(m)) : items;
-    if (matches.length === 0) return { result: { tool, status: 'not_found', target, detail: "couldn't find a reminder matching that", nextStep: 'mention you can list what they have' } };
-    if (matches.length > 1) return { result: { tool, status: 'ambiguous', target, detail: 'several of their reminders match that', nextStep: 'mention you can list them so they can pick' } };
-    const ok = await engine.cancelReminder(matches[0].id);
+    const picked = pickReminder(items, id, match);
+    if (picked.kind !== 'match') return { result: unpicked(tool, target, picked, items, tz, 'cancelled') };
+    const ok = await engine.cancelReminder(picked.ref.id);
     if (!ok) return { result: snag };
+    effects.reminders = items.filter(r => r.id !== picked.ref.id);
     return {
-      result: { tool, status: 'done', target: matches[0].title, detail: 'that reminder is cancelled' },
-      cancelled: { id: matches[0].id, title: matches[0].title },
+      result: { tool, status: 'done', target: picked.ref.title, detail: 'that reminder is cancelled' },
+      cancelled: { id: picked.ref.id, title: picked.ref.title },
     };
   } catch (err) {
     console.error('[convo] cancel reminder failed', err);
     return { result: snag };
+  }
+}
+
+/**
+ * A reminder as it stands after an update: the engine's answer over what the turn knew, with the
+ * patch filling what the answer leaves out. The title and text are the patch's or the old ones
+ * (the engine's name for a job carries this chat's prefix). A new time the engine did not report
+ * back is known only as the patch's cron, in the zone the patch gave it.
+ */
+function revisedReminder(old: LedgerReminder, fresh: ReminderRef, patch: ReminderPatch): LedgerReminder {
+  const base: LedgerReminder = {
+    ...old,
+    id: fresh.id || old.id,
+    title: patch.title ?? old.title,
+    instruction: patch.instruction ?? old.instruction,
+    ...(fresh.nextRunAt ? { nextRunAt: fresh.nextRunAt } : {}),
+  };
+  if (patch.cron === undefined && patch.fireAt === undefined) return base;
+  if (fresh.expr || fresh.runAt) {
+    return { ...base, kind: fresh.kind, expr: fresh.expr, runAt: fresh.runAt, schedule: fresh.schedule || base.schedule, exprZone: undefined, nextRunAt: fresh.nextRunAt };
+  }
+  if (patch.cron !== undefined) {
+    return { ...base, kind: 'cron', expr: patch.cron, exprZone: patch.timezone, runAt: undefined, schedule: patch.cron, nextRunAt: fresh.nextRunAt };
+  }
+  const iso = new Date(patch.fireAt!).toISOString();
+  return { ...base, kind: 'once', runAt: iso, expr: undefined, exprZone: undefined, schedule: iso, nextRunAt: fresh.nextRunAt ?? iso };
+}
+
+/**
+ * Revise one reminder in place (EngineBackend.updateReminder): the one way a reminder changes, so
+ * a change never goes through a cancel and a new schedule, which is how the incident's cancel that
+ * missed and create that landed left doubles behind. Only the fields the call carries change. The
+ * schedule's SHAPE changes (cron ↔ once) only when the call asks for the other shape than the one
+ * the reminder has; a new time in the same shape rides the in-place path.
+ */
+async function handleUpdateAutomation(input: Record<string, unknown>, handle: string, chatId: string, effects: TurnEffects, userTz?: string): Promise<ActionResult> {
+  const tool = 'update_automation';
+  const id = String(input.id ?? '').trim();
+  const match = String(input.match ?? '').trim();
+  const target = id || match;
+  const timezone = (input.timezone as string) || userTz || DEFAULT_TZ;
+  const displayTz = userTz || DEFAULT_TZ;
+  const engine = getEngineBackend();
+  if (!engine) return noEngine(tool, target);
+  if (!engine.updateReminder) {
+    return { tool, status: 'unavailable', target, detail: "changing a reminder in place isn't possible right now, so it stands as it was" };
+  }
+
+  const text = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+  const title = text(input.title);
+  const instruction = text(input.instruction);
+  const cron = text(input.cron);
+  const fireAtRaw = text(input.fire_at);
+  const askedKind = input.schedule_kind === 'cron' || input.schedule_kind === 'once' ? input.schedule_kind : undefined;
+  const wantKind = askedKind ?? (cron ? 'cron' : fireAtRaw ? 'once' : undefined);
+  let fireAt: number | undefined;
+  if (wantKind === 'cron') {
+    if (!cron || !isValidCron(cron, timezone)) {
+      return { tool, status: 'invalid', target, detail: "that repeat schedule didn't parse, so the reminder is unchanged", nextStep: 'ask them for the timing again' };
+    }
+  } else if (wantKind === 'once') {
+    fireAt = Date.parse(fireAtRaw ?? '');
+    if (Number.isNaN(fireAt)) return { tool, status: 'invalid', target, detail: "couldn't tell the new time, so the reminder is unchanged", nextStep: 'ask what time they want it' };
+    if (fireAt <= Date.now()) return { tool, status: 'invalid', target, detail: 'the new time has already passed, so the reminder is unchanged', nextStep: 'mention it can move to a later time instead' };
+  }
+  if (!title && !instruction && !wantKind) {
+    return { tool, status: 'invalid', target, detail: 'the change did not say what should be different, so the reminder is unchanged', nextStep: 'ask them what to change about it' };
+  }
+
+  const snag: ActionResult = { tool, status: 'unavailable', target, detail: 'changing that reminder hit a snag, so it stands as it was', nextStep: 'ask them to try again' };
+  try {
+    const items = await turnReminders(effects, engine, chatId);
+    if (!items.length) return { tool, status: 'not_found', target, detail: 'they have no reminders set up to change' };
+    const picked = pickReminder(items, id, match);
+    if (picked.kind !== 'match') return unpicked(tool, target, picked, items, displayTz, 'changed');
+    const old = picked.ref;
+    const kindNow = old.kind ?? (old.expr ? 'cron' : old.runAt ? 'once' : undefined);
+    const scheduleKind = wantKind && kindNow && wantKind !== kindNow ? wantKind : undefined;
+    const patch: ReminderPatch = {
+      chatId, agentHandle: handle, timezone,
+      ...(title ? { title } : {}),
+      ...(instruction ? { instruction } : {}),
+      ...(wantKind === 'cron' ? { cron } : {}),
+      ...(wantKind === 'once' ? { fireAt } : {}),
+      ...(scheduleKind ? { scheduleKind } : {}),
+    };
+    const out = await engine.updateReminder(old.id, patch);
+    if (!out.ok) {
+      if (out.reason === 'not_found') {
+        // Gone from the engine since the list was read: the ledger drops it, and the rest is offered.
+        const rest = items.filter(r => r.id !== old.id);
+        effects.reminders = rest;
+        return { tool, status: 'not_found', target, detail: 'that reminder is no longer set, so there was nothing to change', candidates: reminderCandidates(rest, displayTz) };
+      }
+      if (out.reason === 'invalid') return { tool, status: 'invalid', target, detail: "that change couldn't be applied, so the reminder is unchanged", nextStep: 'ask them for the change again' };
+      return snag;
+    }
+    const now = revisedReminder(old, out.ref, patch);
+    effects.reminders = items.map(r => (r.id === old.id ? now : r));
+    const stands = reminderCandidate(now, displayTz);
+    return { tool, status: 'done', target: now.title, detail: 'that reminder is changed, and this is how it stands now', facts: `[${stands.id}] ${stands.label}` };
+  } catch (err) {
+    console.error('[convo] update reminder failed', err);
+    return snag;
   }
 }
 
@@ -2285,6 +2548,10 @@ export interface TurnEffects {
   parkedApproval: { request: string; variant: 'park' | 'reconfirm' } | null;
   /** What this turn's cancels actually dropped. */
   cancelled: CancelledRef[];
+  /** This chat's reminders as the turn sees them: read live once, by the first reminder call that
+   *  needs them, then kept in step with the turn's own cancels, updates and creates, so a create is
+   *  judged against what those left (convo/reminderCollision.ts). Null until read. */
+  reminders: LedgerReminder[] | null;
   reaction: Reaction | null;
   renameChat: string | null;
   rememberedUser: ChatResponse['rememberedUser'];
@@ -2301,7 +2568,7 @@ export interface TurnEffects {
 export function newTurnEffects(): TurnEffects {
   return {
     results: [], delegatedTask: null, modelDelegated: false, suppressedDuplicate: false,
-    parkedApproval: null, cancelled: [], reaction: null, renameChat: null, rememberedUser: null,
+    parkedApproval: null, cancelled: [], reminders: null, reaction: null, renameChat: null, rememberedUser: null,
     removeMember: null, noteSaved: false, savedNote: null, directiveActed: false,
     replyLanguageWrittenByTool: false,
   };
@@ -2325,6 +2592,11 @@ interface DispatchContext {
   textToSend: string;
   media: IncomingMedia;
   userTz: string | undefined;
+  /** Whether a create's `distinct` claim (this one serves another purpose than the reminder it
+   *  collides with) is honored. Off on a pass that has not yet shown the model what its create
+   *  collides with, because a claim made before seeing the collision is made blind. A later look at
+   *  the turn's results, which does show it, is the pass that turns this on. */
+  honorDistinct: boolean;
   /** This turn's comprehension score, which rides a delegated task (in-flight, never persisted). */
   originConfidence: number | undefined;
   /** What she holds about this ask, for the brief a delegation carries. */
@@ -2684,14 +2956,16 @@ async function dispatchToolCalls(calls: LlmToolCall[], effects: TurnEffects, ctx
       // Automations stay SENDER-owned even in groups: a group-owned needs_ops automation would
       // run Ops under a pseudo-handle nothing else recognizes. The chatId on the row
       // is still this chat, so a reminder scheduled from a group fires back into the group.
-      effects.results.push(await handleScheduleAutomation(input, chatContext.senderHandle, chatId, ctx.userTz));
+      effects.results.push(await handleScheduleAutomation(input, chatContext.senderHandle, chatId, effects, { userTz: ctx.userTz, honorDistinct: ctx.honorDistinct }));
     } else if (call.name === 'list_automations' && chatContext?.senderHandle) {
       effects.results.push(await renderAutomationsList(chatContext.senderHandle, chatId, ctx.userTz || DEFAULT_TZ));
     } else if (call.name === 'cancel_automation' && chatContext?.senderHandle) {
-      const match = String(input.match ?? '');
-      const { result, cancelled } = await handleCancelAutomation(match, chatContext.senderHandle, chatId);
-      effects.results.push(alreadyCancelled(result, effects, match));
+      const { result, cancelled } = await handleCancelAutomation(input, chatId, effects, ctx.userTz || DEFAULT_TZ);
+      // What the call named, by id or by words, read against what this turn already dropped.
+      effects.results.push(alreadyCancelled(result, effects, String(input.id || input.match || '')));
       if (cancelled) effects.cancelled.push({ tool: 'cancel_automation', id: cancelled.id, label: cancelled.title });
+    } else if (call.name === 'update_automation' && chatContext?.senderHandle) {
+      effects.results.push(await handleUpdateAutomation(input, chatContext.senderHandle, chatId, effects, ctx.userTz));
     } else if (call.name === 'cancel_research') {
       // An action still waiting on their yes is cancelled by DECLINING it — nothing is in flight for
       // requestOpsCancel to stop, so without this the parked row would sit there while she told them
@@ -3043,6 +3317,8 @@ export async function processConvoResult(args: {
   }
   const { recallQuery, errorLogLimit } = await dispatchToolCalls(ordered.calls, effects, {
     chatId, handle, chatContext, textToSend, media, userTz: args.userTz,
+    // No pass honors a blind `distinct` yet: the model has not seen what its create collides with.
+    honorDistinct: false,
     originConfidence: reply.confidenceLevel,
     heldForOps: () => heldForOps(args.relevance?.hits ?? []),
   });

@@ -300,10 +300,11 @@ function extractConfidence(v: Record<string, unknown>): number | undefined {
   return Math.min(100, Math.max(0, Math.round(n)));
 }
 
-// Args whose consumers do STRICT `=== true` checks (disconnect confirm, needs_ops) or store a typed
-// preference value — the flat union schema types them string-compatible (no multi-primitive unions,
-// Gemini's classic 400), so a "true"/"42" string is coerced back to its real primitive here.
-const BOOLEAN_ARGS = new Set(['confirmed', 'needs_ops']);
+// Args whose consumers do STRICT `=== true` checks (disconnect confirm, needs_ops, a reminder's
+// distinct claim) or store a typed preference value — the flat union schema types them
+// string-compatible (no multi-primitive unions, Gemini's classic 400), so a "true"/"42" string is
+// coerced back to its real primitive here.
+const BOOLEAN_ARGS = new Set(['confirmed', 'needs_ops', 'distinct']);
 
 function coerceArgValue(key: string, val: unknown): unknown {
   if (typeof val !== 'string') return val;

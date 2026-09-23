@@ -182,10 +182,18 @@ export const SCHEDULE_AUTOMATION_TOOL: LlmToolDef = {
       timezone: { type: 'string', description: 'IANA timezone for the schedule. Omit it to use their own zone (the one the Current time block is in).' },
       needs_ops: { type: 'boolean', description: 'true if fulfilling it needs fresh data at fire time (the web, their inbox).' },
       ops_kind: { type: 'string', enum: ['web_research', 'document_read', 'draft', 'general', 'media_read', 'compute'], description: 'Hint for what kind of fresh data to pull when needs_ops is true.' },
+      distinct: { type: 'boolean', description: 'true only after you were told a similar reminder already exists and the chat shows this one serves a clearly different purpose. Leave it out otherwise.' },
     },
     required: ['instruction', 'schedule_kind'],
   },
 };
+
+// The two args every id-addressed tool shares. Tool args are FLATTENED into one union for the JSON
+// envelope and the first tool's description of a shared arg wins (pipeline/bubbleJson.ts
+// buildEnvelopeSchema), so each of them reads the same on every tool that carries it: generic
+// enough to be true of any of them, with each tool's own description saying what it addresses.
+const ITEM_ID_ARG = { type: 'string', description: 'The bracketed id shown beside the item, copied as shown.' };
+const ITEM_MATCH_ARG = { type: 'string', description: 'A few words from the item itself (its title or its text), for when no id is in view.' };
 
 export const LIST_AUTOMATIONS_TOOL: LlmToolDef = {
   name: 'list_automations',
@@ -195,11 +203,39 @@ export const LIST_AUTOMATIONS_TOOL: LlmToolDef = {
 
 export const CANCEL_AUTOMATION_TOOL: LlmToolDef = {
   name: 'cancel_automation',
-  description: "Cancel a reminder/automation the user set up. Use when they ask to cancel/stop/remove one. Pass `match`: a few words identifying which one (its title or what it's about, e.g. 'monday recap' or 'dentist'). You MUST also write a short confirming text.",
+  description: [
+    'Remove one reminder/automation the user no longer wants. Name it by `id`; `match` is the fallback when no id is in view.',
+    'One call removes exactly one reminder, and when the words fit several, nothing is removed.',
+    'Removal only: a reminder they want changed is revised with update_automation, never removed and set again.',
+  ].join(' '),
   inputSchema: {
     type: 'object',
-    properties: { match: { type: 'string', description: "Words identifying which automation to cancel (title or topic)." } },
-    required: ['match'],
+    properties: { id: ITEM_ID_ARG, match: ITEM_MATCH_ARG },
+    required: ['id'],
+  },
+};
+
+export const UPDATE_AUTOMATION_TOOL: LlmToolDef = {
+  name: 'update_automation',
+  description: [
+    'Change one of the user\'s existing reminders/automations in place: its title, what it says, or when it fires. Name it by `id`; `match` is the fallback when no id is in view.',
+    'Pass only what changes and leave the rest out; the reminder keeps everything you do not pass.',
+    'A new time is `cron` for a repeating one or `fire_at` for a one-time one, in their zone unless they named another. Set `schedule_kind` only when it switches between one-time and repeating.',
+    'This is the one way to revise a reminder, so a change never goes through a cancel and a new schedule.',
+  ].join(' '),
+  inputSchema: {
+    type: 'object',
+    properties: {
+      id: ITEM_ID_ARG,
+      match: ITEM_MATCH_ARG,
+      title: { type: 'string', description: 'A new short label, only when the label changes.' },
+      instruction: { type: 'string', description: 'The new note to your future self, only when what it delivers changes.' },
+      schedule_kind: { type: 'string', enum: ['once', 'cron'], description: 'Only when it switches between one-time and repeating.' },
+      cron: { type: 'string', description: 'The new 5-field cron, for a repeating one whose time changes.' },
+      fire_at: { type: 'string', description: 'The new absolute ISO 8601 timestamp, for a one-time one whose time changes.' },
+      timezone: { type: 'string', description: 'IANA timezone for the new time. Omit it to use their own zone.' },
+    },
+    required: ['id'],
   },
 };
 
@@ -333,10 +369,12 @@ export const REMOVE_MEMBER_TOOL: LlmToolDef = {
  *
  * Pure, and the flags come in as booleans rather than being read here, so the one place that
  * assembles the live list is also the one a test can read (convo/steerResearch.test.ts). Reminders
- * live entirely on the engine (shared.ts routes all three to createReminder/listReminders/
- * cancelReminder, with no local scheduler behind them). OpenClaw's aren't wired — create and cancel
- * throw, list is always empty — so offering them there buys the user a confirmed reminder that never
- * fires. Gated as a set: listing and canceling mean nothing when nothing can be created.
+ * live entirely on the engine (shared.ts routes all four to createReminder/listReminders/
+ * cancelReminder/updateReminder, with no local scheduler behind them). OpenClaw's aren't wired —
+ * create and cancel throw, list is always empty, there is no update — so offering them there buys
+ * the user a confirmed reminder that never fires. Gated as a set: listing, canceling and revising
+ * mean nothing when nothing can be created. The update sits right after the cancel so the two read
+ * as the pair they are: remove one, or change it in place.
  */
 export function convoToolList(opts: {
   engineName: 'hermes' | 'openclaw' | null;
@@ -344,7 +382,7 @@ export function convoToolList(opts: {
 }): LlmToolDef[] {
   const tools: LlmToolDef[] = [
     REACTION_TOOL, rememberUserTool(), delegateToOpsTool(opts.engineName), setPreferenceTool(),
-    ...(opts.engineName === 'openclaw' ? [] : [SCHEDULE_AUTOMATION_TOOL, LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL]),
+    ...(opts.engineName === 'openclaw' ? [] : [SCHEDULE_AUTOMATION_TOOL, LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL, UPDATE_AUTOMATION_TOOL]),
     // The two halves of run control, side by side: drop the look, or add to it mid-flight. They read
     // as a pair in the tool docs because the model's mistake to avoid is picking one for the other.
     CANCEL_RESEARCH_TOOL, STEER_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL,

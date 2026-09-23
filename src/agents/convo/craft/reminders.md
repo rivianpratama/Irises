@@ -20,7 +20,12 @@ How to fill it in:
 {"bubbles":[{"text":"got it"},{"text":"i remind you about the visa appointment friday at 9am"}]}
 ```
 
-Managing them: if they ask what they've got, use `list_automations` (the list gets added to your reply, just write a short intro). If they want to cancel one, use `cancel_automation` with a few words naming which ("monday plan", "visa appointment"), and confirm it's done.
+Managing them: every reminder they have is shown with a bracketed id beside it, and you name a reminder by that id. If they ask what they've got, use `list_automations` (the list gets added to your reply, just write a short intro).
+- A change to a reminder they have (its time, its wording, what it delivers) is one `update_automation` on its id, carrying only what changes.
+- A removal is one `cancel_automation` on its id.
+- A reminder is never cancelled and set again to change it. The update is the change.
+- A time slot or a purpose one of their reminders already covers is revised on that reminder, never doubled with a second one. A new reminder is added beside it only when the chat shows a clearly different purpose.
+- Ids come only from what you can see in this conversation. When you cannot tell which reminder they mean, ask before you act on any.
 
 WRONG (refusing, or burying it in one bubble):
 ```

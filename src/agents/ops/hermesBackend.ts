@@ -182,8 +182,10 @@ export function parseReminderInstruction(prompt: string | undefined | null): str
 }
 
 /** The zone hermes's cron evaluates its schedules in. HERMES_TZ when the operator set one on the
- *  engine, else this host's zone (Irises and hermes are normally the same box). */
-function engineZone(): string {
+ *  engine, else this host's zone (Irises and hermes are normally the same box). Exported for the
+ *  create-time collision check (convo/reminderCollision.ts), which has to read a listed job's `expr`
+ *  in the zone it was shifted into. */
+export function engineZone(): string {
   return process.env.HERMES_TZ || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 }
 
