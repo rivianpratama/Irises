@@ -169,10 +169,12 @@ function resultLine(r: ActionResult, i: number): string {
  */
 export function renderActionResultsPass(results: readonly ActionResult[], live = ''): string {
   const guidance = [
-    'The actions you just called ran, and the results are below in the order they ran.',
-    'Your earlier draft was written before any of them had happened, so it may claim things that did not.',
-    'Reply to their last message from what actually happened: say every success plainly, and say what did not land and why.',
-    'Where a call missed or matched several things, you may call the right tool once more, addressing the item by the id shown beside it; never act on several items when one was meant, and never repeat an action that already landed.',
+    'The calls you just made have run. What each one did is below in the order it ran, with what stands for them right now.',
+    'Your earlier draft was written before any of them ran, so treat what it says about them as unknown.',
+    'Where a call missed, fit several things or was held, and the chat makes clear which item they mean, fix it now with one call that names that item by the id shown beside it. Where the chat leaves it unclear, ask which one instead.',
+    'A create that was held collides with something they already have: change that item by its id, and set a separate one only when the chat shows it serves a clearly different purpose.',
+    'Never repeat a call that already landed, and never act on several items when one was meant.',
+    'Your reply carries on from what they asked: say plainly what is now done, and what did not land and why.',
     'Never mention tools, calls or results; to them this is just you getting it done. Same JSON envelope, same bubble rules as always.',
   ].join(' ');
   const body = [

@@ -97,11 +97,13 @@ import { detectUnkeptPromise, renderPromiseCorrection, unkeptPromiseGuardEnabled
 import { dropSchemaEcho } from './toolCallGuard.js';
 import { orderToolCalls } from './toolOrder.js';
 import {
-  actionSucceeded, combinedOutcome, needsCorrection, resolveRef, toOutcome,
+  actionSucceeded, combinedOutcome, needsCorrection, renderActionResultsPass, resolveRef, toOutcome,
   type ActionCandidate, type ActionResult, type ActionStatus,
 } from './actionResults.js';
 import { detectCollision, existingKind, type LedgerReminder, type NewReminder } from './reminderCollision.js';
-import { noteLiveReminders, renderLiveReminders, shortReminderId } from './liveReminders.js';
+import {
+  liveRemindersFor, noteLiveReminders, renderLiveReminderRows, renderLiveReminders, shortReminderId,
+} from './liveReminders.js';
 import { callLLM } from '../../llm/callLLM.js';
 import { record } from '../../diagnostics/trace.js';
 import { HOOK_OFF_TURN_LABEL, QUIET_GUARD_LABEL } from '../../diagnostics/traceLabels.js';
@@ -2070,23 +2072,31 @@ function replyBubbles(reply: { legacyText: string | null }): string[] {
  *
  * At most one extra call, and it needs no fence: the re-ask does not re-enter processConvoResult, so
  * the recall second pass and the silent-turn retry each get their own reply checked exactly once.
+ * `opts.retry` false EVALUATES and reports without calling the lane, the knob enforceQuiet has: the
+ * outcome pass is already the turn's last call, so a flagged reply there resolves `kept_original`
+ * with `retried: false`, and its caller falls back. `opts.carried` is what an earlier pass of the
+ * same turn did: a task it built starts when the turn ends, so it backs a promise made here.
  */
 async function enforcePromiseKept(
   args: { res: LlmResult; chatId: string; handle: string | undefined; turn?: ConvoTurnContext },
   bubbles: string[],
   guard: ToolCallGuard,
+  opts: { retry?: boolean; carried?: TurnEffects } = {},
 ): Promise<{ res: LlmResult; fired: boolean }> {
   if (!unkeptPromiseGuardEnabled()) return { res: args.res, fired: false };
-  const { res, chatId, handle, turn } = args;
+  const { res, chatId, handle } = args;
+  const turn = opts.retry === false ? undefined : args.turn;
   // Live, synchronous read of what Ops is doing for this chat RIGHT NOW — the same source the
-  // prompt's active-ops block was built from, re-read here because a run can settle mid-turn.
-  const active = getActiveOps(chatId).length;
+  // prompt's active-ops block was built from, re-read here because a run can settle mid-turn. A task
+  // an earlier pass of this turn built counts too: it starts when the turn ends, so "on it" is true.
+  const carriedTask = opts.carried?.delegatedTask || opts.carried?.suppressedDuplicate ? 1 : 0;
+  const active = getActiveOps(chatId).length + carriedTask;
   const verdict = detectUnkeptPromise(bubbles, res.toolCalls, active);
   if (!verdict.unkept || !verdict.phrase) return { res, fired: false };
   const phrase = verdict.phrase;
   // chatId in the line, not just the trace event: a live convergence round attributes the failure
   // per-chat from the instance log when the trace buffer isn't reachable.
-  console.warn(`[convo] reply promised work with no tool call and nothing running ("${phrase}") — one corrective re-ask (chat ${chatId})`);
+  console.warn(`[convo] reply promised work with no tool call and nothing running ("${phrase}") — ${turn ? 'one corrective re-ask' : 'no re-ask on this pass'} (chat ${chatId})`);
   let out = res;
   let resolved: 'tool_call' | 'honest' | 'kept_original' = 'kept_original';
   if (turn) {
@@ -2624,7 +2634,7 @@ function fallbackConvoTools(): LlmToolDef[] {
 // success or not, in the order it ran.
 //
 // The accumulator outlives a pass. A pass that recurses (the recall and error-log second passes,
-// the silent-turn retry, and later the outcome pass) hands its effects down as `carried`, so the
+// the silent-turn retry, and the outcome pass) hands its effects down as `carried`, so the
 // pass that ships the reply still holds the single delegation slot, every result the turn has
 // produced and the ledger of what it cancelled — none of it can be dropped by a second draft that
 // never saw it happen.
@@ -2669,6 +2679,9 @@ export interface TurnEffects {
   directiveActed: boolean;
   /** The model wrote the reply-language slot itself; the post-reply hook stands down. */
   replyLanguageWrittenByTool: boolean;
+  /** The name of every call dispatched this turn, across passes, in the order it ran: what a later
+   *  pass's turn receipt names as carried. */
+  dispatched: string[];
 }
 
 export function newTurnEffects(): TurnEffects {
@@ -2676,7 +2689,7 @@ export function newTurnEffects(): TurnEffects {
     results: [], delegatedTask: null, modelDelegated: false, suppressedDuplicate: false,
     parkedApproval: null, cancelled: [], reminders: null, reaction: null, renameChat: null, rememberedUser: null,
     removeMember: null, noteSaved: false, savedNote: null, directiveActed: false,
-    replyLanguageWrittenByTool: false,
+    replyLanguageWrittenByTool: false, dispatched: [],
   };
 }
 
@@ -2688,6 +2701,46 @@ export function newTurnEffects(): TurnEffects {
  */
 function slotSnapshot(e: TurnEffects): Pick<TurnEffects, 'delegatedTask' | 'modelDelegated' | 'suppressedDuplicate' | 'parkedApproval'> {
   return { delegatedTask: e.delegatedTask, modelDelegated: e.modelDelegated, suppressedDuplicate: e.suppressedDuplicate, parkedApproval: e.parkedApproval };
+}
+
+// ── The outcome pass's inputs ───────────────────────────────────────────────────────────────────
+/** The most convo model calls one user-visible turn makes: the draft, at most one corrective re-ask,
+ *  and at most one outcome pass. The envelope retry inside callConvoLLM and the Fallfirm voicer are
+ *  not convo calls and are not counted. */
+const MAX_CONVO_CALLS_PER_TURN = 3;
+
+/** The results a second look can act on: something missed, fit several, was held, could not be
+ *  carried out as written, or ended before it could be reached. `unavailable` is left off: when the
+ *  engine is offline or a write snagged, no call the model makes will fare better this turn. */
+const OUTCOME_PASS_STATUSES: ReadonlySet<ActionStatus> = new Set<ActionStatus>(['held', 'not_found', 'ambiguous', 'invalid', 'unreachable']);
+
+/**
+ * The feature gate (env: CONVO_OUTCOME_PASS). Default ON, read at call time, the same parse as the
+ * sibling guards. Off, a turn whose action missed is voiced by Fallfirm as it was before the pass.
+ */
+export function outcomePassEnabled(): boolean {
+  const v = (process.env.CONVO_OUTCOME_PASS || '').trim().toLowerCase();
+  if (v === '') return true;
+  return ['true', '1', 'on', 'yes'].includes(v);
+}
+
+/**
+ * What stands right now, for the pass to address by id: this chat's reminders as the turn's own
+ * calls left them (the ledger, once read; else the live read client.ts already warmed), and every
+ * running lookup. Rows only, since the pass wraps them in its own data tag. Empty when neither is
+ * known; a read that is known to be empty says so, because "none set" is the answer to a miss.
+ */
+async function outcomeLiveState(effects: TurnEffects, chatId: string, sender: string | undefined, tz: string): Promise<string> {
+  const reminders = effects.reminders ?? await liveRemindersFor(getEngineBackend(), chatId, sender);
+  const parts: string[] = [];
+  if (reminders) {
+    parts.push(reminders.length
+      ? `their reminders:\n${renderLiveReminderRows(reminders, { tz, nowMs: Date.now(), engineTz: engineZone() })}`
+      : 'their reminders: none set');
+  }
+  const running = getActiveOps(chatId);
+  if (running.length) parts.push(`lookups running:\n${running.map(o => `[${shortLookupId(o.taskId)}] "${o.request}"`).join('\n')}`);
+  return parts.join('\n');
 }
 
 /** What dispatch reads about the turn and never writes. */
@@ -2757,6 +2810,7 @@ async function dispatchToolCalls(calls: LlmToolCall[], effects: TurnEffects, ctx
 
   for (const call of calls) {
     const input = call.input;
+    effects.dispatched.push(call.name);
     if (call.name === 'send_reaction') {
       const re = coerceReactionIndex(input.re);
       if (input.type === 'custom' && input.emoji) effects.reaction = { type: 'custom', emoji: String(input.emoji), ...(re != null ? { re } : {}) };
@@ -3165,6 +3219,10 @@ export async function processConvoResult(args: {
   archivePass?: boolean;
   // True when THIS pass IS the silent-turn retry — the fence that caps recovery at one extra call.
   silentRetry?: boolean;
+  // Set when THIS pass IS the outcome pass: the one more look the model gets at a turn whose actions
+  // did not all land (see the block after dispatch). `trigger` names the results that missed, as
+  // `tool:status`, for the receipt. It fences everything that would call the model again.
+  outcomePass?: { trigger: string[] };
   // What an EARLIER pass of this same user-visible turn already did (TurnEffects): its delegation
   // slot, every result it produced and the ledger of what it cancelled. Set by whichever pass
   // recursed, never by an outside caller, so the pass that ships the reply builds it from the whole
@@ -3283,14 +3341,14 @@ export async function processConvoResult(args: {
   // starts a run from — so an approved action starts at the one site that has ever started one,
   // inside this turn's chat lock, with its own fresh AbortController (INV-1 untouched).
   //
-  // Fenced off the recall second pass (`archivePass`): that pass re-enters this function with the
-  // same user text, and the ask has already been resolved by the first one.
+  // Fenced off the recall second pass (`archivePass`) and the outcome pass: each re-enters this
+  // function with the same user text, and the ask has already been resolved by the first one.
   //
   // The flag read comes FIRST: with OPS_APPROVAL_GATE off nothing here runs at all — no prefs read,
   // no classify call, no promotion — and a parked row from before the flip is left exactly as it is.
   let settledTask: OpsTask | null = null;
   let settledReconfirm: string | null = null;
-  if (opsApprovalGateEnabled() && chatContext?.senderHandle && !args.archivePass) {
+  if (opsApprovalGateEnabled() && chatContext?.senderHandle && !args.archivePass && !args.outcomePass) {
     const settled = await resolvePendingApproval({
       chatId, handle, sender: chatContext.senderHandle, text: textToSend ?? '',
     });
@@ -3309,9 +3367,13 @@ export async function processConvoResult(args: {
   // very turn just made (`settledTask`); a `settledReconfirm` turn's text is replaced by the ask
   // anyway. Left in front, the guard burned one corrective re-ask on EVERY approved yes and
   // shipped its "honest" retry ("i can't send that from here") over an action that was starting.
+  //
+  // On the outcome pass it only EVALUATES: that pass is the turn's last model call, so a reply it
+  // flags is not re-asked but falls back to voicing the results (see the pass's resolution below).
+  // What an earlier pass already did rides in as `carried`: a task it built backs a promise here.
   const guard = (settledTask || settledReconfirm)
     ? { res: args.res, fired: false }
-    : await enforcePromiseKept(args, replyBubbles(firstReply), guardToolCalls);
+    : await enforcePromiseKept(args, replyBubbles(firstReply), guardToolCalls, { retry: !args.outcomePass, carried: args.carried });
 
   // …and the rhythm backstop beside it, on the turns the selector forced quiet. ONE corrective
   // re-ask per turn, TOTAL: the promise guard goes first and this one stands down whenever it fired,
@@ -3350,7 +3412,7 @@ export async function processConvoResult(args: {
   const quiet = (forcedQuiet && !quietStoodDown)
     ? await enforceQuiet(
       args, replyBubbles(firstReply), coerceStatus(firstReply.statusRaw)?.hook_kind,
-      { retry: !args.quietSpent, file: d => { quietReceipt = d; }, guard: guardToolCalls },
+      { retry: !args.quietSpent && !args.outcomePass, file: d => { quietReceipt = d; }, guard: guardToolCalls },
     )
     : { res: guard.res, fired: false };
   // The stand-down still leaves its receipt, and this is the half that makes the kill switch
@@ -3365,8 +3427,9 @@ export async function processConvoResult(args: {
     );
   }
   // Whether this user-visible turn's ONE corrective re-ask is gone, for any pass that follows this
-  // one. Both guards count: the rule is one re-ask per turn TOTAL, honesty first.
-  const quietSpent = !!args.quietSpent || guard.fired || quiet.fired;
+  // one. Both guards count: the rule is one re-ask per turn TOTAL, honesty first. The outcome pass
+  // inherits it and never sets it: neither guard calls the lane there, so nothing is spent.
+  const quietSpent = args.outcomePass ? !!args.quietSpent : !!args.quietSpent || guard.fired || quiet.fired;
   // The result this turn actually processes. Whatever either backstop left standing was guarded
   // where it was judged, so this read is the idempotent last line described at the top: a kept list
   // re-read drops nothing, and a draft that came through untouched is the same object it was at the
@@ -3427,22 +3490,69 @@ export async function processConvoResult(args: {
     console.log(`[convo] dropped ${ordered.duplicates.length} duplicate tool call(s) (chat ${chatId}): ${ordered.duplicates.join(', ')}`);
     record({ type: 'event', label: 'convo:tool_call_duplicate', chatId, handle, detail: { dropped: ordered.duplicates, total: res.toolCalls.length } });
   }
+  // Where THIS pass's own results and calls start in the turn's lists: everything before is carried.
+  const passStart = effects.results.length;
+  const carriedCalls = effects.dispatched.slice();
   const { recallQuery, errorLogLimit } = await dispatchToolCalls(ordered.calls, effects, {
     chatId, handle, chatContext, textToSend, media, userTz: args.userTz,
-    // No pass honors a blind `distinct` yet: the model has not seen what its create collides with.
-    honorDistinct: false,
+    // A create's `distinct` claim is honored only on the outcome pass, the one pass that has shown
+    // the model what the create collides with. Written on any other pass, it is written blind.
+    honorDistinct: !!args.outcomePass,
     originConfidence: reply.confidenceLevel,
     heldForOps: () => heldForOps(args.relevance?.hits ?? []),
   });
+
+  // ── The outcome pass, as it resolves ──────────────────────────────────────────────────────
+  // This pass IS the one more look (see where it is made, below), and its reply ships only if it
+  // did what it was for. It falls back to voicing every result of the turn, the way a turn with no
+  // pass does, when any action it took did not land, when the promise guard flagged it (that
+  // guard only evaluated above: there is no call left to re-ask with), or when it came back with no
+  // bubble and no tapback. Its draft is then dropped exactly as a first draft is, and what must ship
+  // (a question it parked, a holding line) still ships ahead of the voicing. There is no third pass.
+  let outcomeModel = false;
+  if (args.outcomePass) {
+    const ownFailed = effects.results.slice(passStart).some(r => !actionSucceeded(r));
+    const reacted = !!effects.reaction && effects.reaction !== inherited?.reaction;
+    const resolved = ownFailed ? 'fallback_action_failed'
+      : guard.fired ? 'fallback_unbacked'
+      : !normalizedText && !reacted ? 'fallback_empty'
+      : 'model';
+    outcomeModel = resolved === 'model';
+    if (!outcomeModel) {
+      textParts.length = 0;
+      hardCapped = false;
+    }
+    console.log(`[convo] outcome pass resolved ${resolved} (chat ${chatId})`);
+    record({ type: 'event', label: 'convo:outcome_pass', chatId, handle, detail: { trigger: args.outcomePass.trigger, resolved } });
+  }
+
+  // Does this turn get its outcome pass? Read off the ACTIONS' results as dispatch left them, before
+  // a search that loses to the pass adds its own result below (a search that found nothing is not a
+  // miss the model can fix). The fences, each for its own reason:
+  //   • never from a pass that is itself a later look (recall or error log, or this pass);
+  //   • only with a turn context, since the pass re-sends that turn's prompt;
+  //   • only for a result the model can act on: a miss, several fits, a held create, a call it can
+  //     correct, a run that just ended. A turn whose only problem is `unavailable` (the engine is
+  //     offline, a write snagged) has nothing a second look could fix, and just voices it;
+  //   • never on a turn holding a question: a parked action, a yes just settled, or a re-confirm
+  //     (their answer is what moves it, and a second draft would bury the question);
+  //   • and within the call budget: the draft, at most one corrective re-ask, and this pass.
+  const convoCallsSoFar = 1 + (args.silentRetry ? 1 : 0) + (quietSpent ? 1 : 0);
+  const outcomeTrigger = !args.archivePass && !args.outcomePass && args.turn && outcomePassEnabled()
+    && !effects.parkedApproval && !settledTask && !settledReconfirm
+    && convoCallsSoFar < MAX_CONVO_CALLS_PER_TURN
+    ? effects.results.filter(r => OUTCOME_PASS_STATUSES.has(r.status)).map(r => `${r.tool}:${r.status}`)
+    : [];
 
   // ── The approval ask ──────────────────────────────────────────────────────────────────────
   // An action was parked in the loop above, so the holding line she wrote for it is a claim about
   // work that has not started. Replace it with the question — hers if the one re-ask lands, the code
   // line if it does not. First thing after the loop: every floor below reads `textParts`, and they
-  // must all see the question rather than the holding line it replaced.
+  // must all see the question rather than the holding line it replaced. On the outcome pass the
+  // code line is asked directly: that pass is already the turn's last model call.
   if (effects.parkedApproval) {
     textParts.length = 0;
-    textParts.push(await askForApproval(args, effects.parkedApproval.request, guardToolCalls, effects.parkedApproval.variant));
+    textParts.push(await askForApproval(args.outcomePass ? { ...args, turn: undefined } : args, effects.parkedApproval.request, guardToolCalls, effects.parkedApproval.variant));
     // The shipped text is no longer this parse's text, so this parse's bubble cap is not the cap to
     // report (same rule as every other branch that replaces the reply).
     hardCapped = false;
@@ -3458,7 +3568,7 @@ export async function processConvoResult(args: {
   // with grounded facts and a second draft here would race it onto the user's screen.
   // A PARKED action counts as a delegation here for the same reason: the question just replaced her
   // draft, and a second pass would answer the archive over the top of it.
-  if (recallQuery && !args.archivePass && !effects.delegatedTask && !effects.suppressedDuplicate && !effects.parkedApproval) {
+  if (recallQuery && !args.archivePass && !args.outcomePass && !effects.delegatedTask && !effects.suppressedDuplicate && !effects.parkedApproval) {
     // ── The paraphrase ladder branches HERE ─────────────────────────────────────────────────
     // 'vector' means searchArchive is about to fuse an embedding leg over the same rows, which is a
     // BETTER answer to "they didn't use the words they wrote it down with" than synonyms are — so
@@ -3588,7 +3698,7 @@ export async function processConvoResult(args: {
   // Same discipline as recall_memory: captured in the loop, executed once here, with the tool
   // stripped so it cannot recurse. Delegation wins: if the model also delegated, the composer
   // already has grounded facts coming back and racing a second draft over them is worse than silence.
-  if (errorLogLimit != null && !args.archivePass && !effects.delegatedTask && !effects.suppressedDuplicate && !effects.parkedApproval) {
+  if (errorLogLimit != null && !args.archivePass && !args.outcomePass && !effects.delegatedTask && !effects.suppressedDuplicate && !effects.parkedApproval) {
     const allErrors = getRecentErrors(Math.min(errorLogLimit * 4, 60));
     const errors = allErrors.filter(e => !e.chatId || e.chatId === chatId).slice(0, errorLogLimit);
     const turn = args.turn;
@@ -3646,6 +3756,68 @@ export async function processConvoResult(args: {
     }
   }
 
+  // ── The outcome pass ────────────────────────────────────────────────────────────────────────
+  // Convo is single-shot, so a draft is written before any of its calls run, and an action that
+  // missed used to leave the turn to Fallfirm, a relay with no tools, which could only voice the
+  // miss. The 2026-09-23 incident (convo/actionResults.ts) is what that costs: the model cancelled by
+  // a title it guessed, the cancel missed, and four replies in a row said "no match" while the one
+  // thing that would have fixed it, the reminder's id, was never in front of the model.
+  //
+  // So a turn with a result the model can act on gets ONE more call, modelled on the recall pass: the
+  // same system prompt, the turn's messages, its own draft, and then what actually happened, every
+  // result in order with the live reminders and running lookups by id (renderActionResultsPass). It
+  // can fix what missed by id and write a reply that carries on from what they asked. It sees every
+  // tool but the two searches, and the delegation slot rides in as carried, so a task already built
+  // is never built twice.
+  //
+  // The pass re-enters this function as `outcomePass`, which fences everything that would call the
+  // model again (the approval resolution, the floors, the searches, the silent retry, another pass)
+  // and resolves above: its reply ships, or the turn falls back to voicing every result. A pass that
+  // throws falls back HERE, with the slot restored as the recall pass restores it; its results stay.
+  // The recall and error-log passes never run beside it: a turn with a result to fix has acted, so
+  // both have already fallen back to adding their own result, which the pass is then shown.
+  if (outcomeTrigger.length && args.turn) {
+    const turn = args.turn;
+    const tools = turn.tools.filter(t => t.name !== 'recall_memory' && t.name !== 'check_error_log');
+    const live = await outcomeLiveState(effects, chatId, chatContext?.senderHandle, args.userTz || DEFAULT_TZ);
+    const messages: LlmMessage[] = [
+      ...turn.messages,
+      { role: 'assistant', content: res.text ?? '' },
+      { role: 'user', content: renderActionResultsPass(effects.results, live) },
+    ];
+    const slot = slotSnapshot(effects);
+    try {
+      const second = await (turn.call ?? callConvoLLM)({
+        role: 'convo',
+        system: turn.system,
+        systemCacheBreakpoints: turn.cacheBreakpoints ?? [convoPersonaChars()],
+        tools,
+        jsonBubbles: true,
+        toolsViaJson: true,
+        messages,
+        // The CALL's own label, distinct from the `convo:outcome_pass` decision receipt.
+        trace: { chatId, handle, label: 'convo:outcome_call' },
+      });
+      return await processConvoResult({
+        ...args,
+        res: second,
+        outcomePass: { trigger: outcomeTrigger },
+        quietSpent,
+        carried: effects,
+        turn: { ...turn, tools, messages },
+        trace: args.trace ? { ...args.trace, messages } : undefined,
+      });
+    } catch (err) {
+      console.error('[convo] outcome pass failed — voicing the results', err);
+      Object.assign(effects, slot);   // a pass that threw hands nothing back (slotSnapshot)
+      record({ type: 'event', label: 'convo:outcome_pass', chatId, handle, detail: { trigger: outcomeTrigger, resolved: 'fallback_throw' } });
+    }
+  }
+
+  // The draft the salvages below cut down: none at all when the outcome pass fell back, since its
+  // reply is dropped whole there.
+  const draftText = args.outcomePass && !outcomeModel ? null : normalizedText;
+
   // Composer-paraphrase floor: when the MODEL delegated, any substantive answer it wrote in the same
   // turn is un-grounded (Convo is single-shot, never sees the tool result) AND the composer re-answers
   // the same facts from the real result — stripEchoedHolding only cuts a VERBATIM echo, so a paraphrase
@@ -3667,12 +3839,15 @@ export async function processConvoResult(args: {
   //     lost: every result of a turn that holds a task is voiced AFTER the holding half, below, so
   //     "your 9am reminder is set" still ships, from what actually happened.
   //   • Never over a parked question: that text is the ask, not a draft of hers.
+  //   • Held on the outcome pass too. That draft saw what its reminder calls did, but it has no more
+  //     seen the lookup's answer than the first one had, so its tail is cut the same way and the
+  //     results are voiced after the holding half.
   if (((effects.modelDelegated && effects.delegatedTask) || effects.suppressedDuplicate) && !effects.parkedApproval) {
     // Ground = the user's own words for this ask: a figure they said themselves ("412 Maple") is an
     // echo the holding text may repeat, never a fabrication. Keeps Irises's persona-written holding
     // openers shipping instead of being replaced by the voiced fallback line.
     const ground = [textToSend, effects.delegatedTask?.request, effects.delegatedTask?.addressHint, effects.delegatedTask?.dealHint].filter(Boolean).join('\n');
-    const salvaged = salvageHoldingText(normalizedText, ground);
+    const salvaged = salvageHoldingText(draftText, ground);
     textParts.length = 0;
     if (salvaged) textParts.push(salvaged);
   }
@@ -3692,7 +3867,7 @@ export async function processConvoResult(args: {
   // with a run they have not authorized, and replace her question with a holding line.
   if (process.env.ROUTING_GATE !== 'off' && !effects.delegatedTask && !effects.suppressedDuplicate && !effects.parkedApproval
       && effects.results.length === 0
-      && !args.archivePass
+      && !args.archivePass && !args.outcomePass
       && handle && chatContext?.senderHandle) {
     const lastUser = textToSend ?? '';
     // In-flight dedup must be KIND-AGNOSTIC: the running task may have been delegated under any
@@ -3794,7 +3969,7 @@ export async function processConvoResult(args: {
   //     exists to stop lies, never to force a promise the deployment can't keep.
   if (process.env.REFUSAL_FLOOR !== 'off' && !effects.delegatedTask && !effects.suppressedDuplicate
       && effects.results.length === 0
-      && !args.archivePass
+      && !args.archivePass && !args.outcomePass
       && handle && chatContext?.senderHandle) {
     const ask = textToSend ?? '';
     const refused = refusedCapabilities(normalizedText, ask);
@@ -3830,7 +4005,6 @@ export async function processConvoResult(args: {
   // about. Every branch below either fills a NULL textResponse or replaces it (marked there).
   if (!textResponse) hardCapped = false;
   const results = effects.results;
-  const correcting = needsCorrection(results);
 
   // ── What must ship, whatever the results say ────────────────────────────────────────────────
   // Three parts of a reply are owed to the user whatever else the turn did, and until the results
@@ -3875,6 +4049,12 @@ export async function processConvoResult(args: {
     }
   }
   if (keep !== null) textResponse = keep;
+  // What of the turn is still unsaid. On an outcome pass whose own reply stands whole (nothing cut
+  // it down to a holding line or replaced it with a question), the model wrote that reply WITH every
+  // earlier result in front of it, so only what the pass itself did is left: its own calls ran after
+  // it wrote. Everywhere else it is every result.
+  const unsaid = outcomeModel && keep === null && textResponse ? results.slice(passStart) : results;
+  const correcting = needsCorrection(unsaid);
   // ── The turn's results, voiced ──────────────────────────────────────────────────────────────
   // Every acting call's result, in the order it ran (convo/actionResults.ts). Fallfirm is
   // fallback-only here too:
@@ -3889,16 +4069,16 @@ export async function processConvoResult(args: {
   // `holdingPart` is what a starting task's holding text is: the reply before any results were
   // appended to it, so the composer continues from the holding line and never from a correction.
   let holdingPart: string | null = null;
-  if (results.length && (correcting || keep !== null || !textResponse)) {
+  if (unsaid.length && (correcting || keep !== null || !textResponse)) {
     const voicedResults: ActionResult[] = effects.directiveActed
-      ? [...results, { tool: 'update_directives', status: 'done', target: '', detail: 'the preference they gave you is saved, and you go by it from here' }]
-      : results;
+      ? [...unsaid, { tool: 'update_directives', status: 'done', target: '', detail: 'the preference they gave you is saved, and you go by it from here' }]
+      : unsaid;
     const voiced = await voiceOutcome(combinedOutcome(voicedResults), chatId, handle);
     holdingPart = keep;
     textResponse = keep ? `${keep}\n---\n${voiced}` : voiced;
     hardCapped = false;   // the voiced results REPLACE the parsed text — its cap isn't news about this send
-  } else if (results.length && textResponse) {
-    const facts = results.map(r => r.facts).filter((f): f is string => !!f);
+  } else if (unsaid.length && textResponse) {
+    const facts = unsaid.map(r => r.facts).filter((f): f is string => !!f);
     if (facts.length) {
       holdingPart = textResponse;
       textResponse = `${textResponse}\n---\n${facts.join('\n---\n')}`;
@@ -3943,7 +4123,8 @@ export async function processConvoResult(args: {
   if (!textResponse && !producedHere('reaction') && !producedHere('renameChat') && !producedHere('rememberedUser')
       && !producedHere('removeMember') && !producedHere('delegatedTask')
       && !res.toolCalls.length && textToSend.trim()) {
-    const turn = args.silentRetry ? undefined : args.turn;   // the fence: a retry never retries
+    // The fence: a retry never retries, and the outcome pass already IS the turn's extra call.
+    const turn = args.silentRetry || args.outcomePass ? undefined : args.turn;
     // chatId in the line, not just the trace event: a live convergence round attributes the failure
     // per-chat from the instance log when the trace buffer isn't reachable.
     console.warn(`[convo] silent turn on a real message (chat ${chatId}) — ${turn ? 'retrying once' : 'voicing the floor'}`);
@@ -4277,6 +4458,8 @@ export async function processConvoResult(args: {
           // boundary re-checks it against what shipped.
           silent: producedNothingVisible,
           toolCalls: res.toolCalls.map(c => c.name),
+          // On the outcome pass, what the draft before it dispatched: `toolCalls` is this pass's own.
+          ...(args.outcomePass ? { carriedToolCalls: carriedCalls } : {}),
           // Only when the honesty backstop actually fired — see the field's note in turnTrace.ts.
           ...(guard.fired ? { unkeptPromise: true } : {}),
           // …and only on a turn the rhythm selector ran on. Four settled facts, spread rather than
