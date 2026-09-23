@@ -13,7 +13,7 @@ delete process.env.HERMES_RUN_TRANSPORT;
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { HermesBackend, hermesSessionKey, hermesSessionRotation, jobPrefix, legacyJobPrefix, reminderJobPrompt, shiftCronToEngineZone, inlineLocalImage, normalizeCapabilities, runsTransportEnabled, manifestSupportsRuns } from './hermesBackend.js';
+import { HermesBackend, hermesSessionKey, hermesSessionRotation, jobPrefix, legacyJobPrefix, reminderJobPrompt, parseReminderInstruction, shiftCronToEngineZone, inlineLocalImage, normalizeCapabilities, runsTransportEnabled, manifestSupportsRuns } from './hermesBackend.js';
 import { HERMES_TASK_HEADER, HERMES_ONBOARDING_MESSAGE, hermesOnboardingVersion } from './hermesDoctrine.js';
 import { EngineUnavailableError, EngineRunError, runViaEngine, type EngineRunHandle } from './engineBackend.js';
 import { getTraces, clearTraces } from '../../diagnostics/trace.js';
@@ -681,6 +681,90 @@ test('listReminders: matches both the hashed prefix and the legacy one during th
   ];
   const list = await new HermesBackend({ fetchFn: fakeFetch(200, { jobs }) }).listReminders(chat);
   assert.deepEqual(list.map(r => r.title).sort(), ['new-style', 'pre-hash']);
+});
+
+// The defect this closes: a real hermes job's `schedule` is an OBJECT, and the old code did
+// `schedule: j.schedule ?? ''` straight onto a string-typed field — so a caller that ever rendered
+// it (String(ref.schedule), template-literal interpolation) got the literal text "[object Object]"
+// for their own reminder's schedule. Verified against the live ~/.hermes/cron/jobs.json shape.
+test('listReminders reads hermes\'s schedule object — never "[object Object]"', async () => {
+  const chat = 'web:debug';
+  const prompt = reminderJobPrompt(
+    { chatId: chat, agentHandle: 'h', instruction: 'take the trash out' },
+    'http://127.0.0.1:3000/api/engine/push',
+  );
+  const jobs = [
+    {
+      id: '2448ff495f3b',
+      name: `${jobPrefix(chat)}daily indonesia morning brief`,
+      schedule: { kind: 'cron', expr: '0 7 * * *', display: '0 7 * * *' },
+      schedule_display: '0 7 * * *',
+      next_run_at: '2026-09-24T07:00:00+07:00',
+      created_at: '2026-09-23T16:14:29.960607+07:00',
+      enabled: true,
+      prompt,
+    },
+    {
+      id: 'abc123456789',
+      name: `${jobPrefix(chat)}one-shot`,
+      schedule: { kind: 'once', run_at: '2026-09-21T01:00:00+00:00', display: 'once at 2026-09-21 01:00' },
+      schedule_display: 'once at 2026-09-21 01:00',
+      next_run_at: null,
+      created_at: '2026-09-20T01:00:00+00:00',
+      enabled: true,
+    },
+    {
+      // A disabled job must be filtered out even though the request never asked for it.
+      id: 'deadbeefdead',
+      name: `${jobPrefix(chat)}paused`,
+      schedule: { kind: 'cron', expr: '0 6 * * *', display: '0 6 * * *' },
+      enabled: false,
+    },
+  ];
+  const list = await new HermesBackend({ fetchFn: fakeFetch(200, { jobs }) }).listReminders(chat);
+  assert.equal(list.length, 2, 'the disabled job is excluded');
+
+  const cron = list.find(r => r.title === 'daily indonesia morning brief')!;
+  assert.ok(cron, 'the cron job surfaced');
+  assert.notEqual(cron.schedule, '[object Object]');
+  assert.equal(cron.schedule, '0 7 * * *');
+  assert.equal(cron.kind, 'cron');
+  assert.equal(cron.expr, '0 7 * * *');
+  assert.equal(cron.nextRunAt, '2026-09-24T07:00:00+07:00');
+  assert.equal(cron.createdAt, '2026-09-23T16:14:29.960607+07:00');
+  assert.equal(cron.instruction, 'take the trash out', 'the instruction is recovered from the job prompt');
+
+  const once = list.find(r => r.title === 'one-shot')!;
+  assert.ok(once, 'the one-time job surfaced');
+  assert.notEqual(once.schedule, '[object Object]');
+  assert.equal(once.schedule, 'once at 2026-09-21 01:00');
+  assert.equal(once.kind, 'once');
+  assert.equal(once.runAt, '2026-09-21T01:00:00+00:00');
+  assert.equal(once.nextRunAt, undefined, 'hermes reported none');
+  assert.equal(once.instruction, undefined, 'no reminder_instruction tag on this job — nothing to recover');
+});
+
+// listReminders still supports a legacy bare-string `schedule` (existing fixtures, and possibly
+// older engines) — the object shape above is read FIRST, but a plain string must keep working.
+test('listReminders still supports the legacy bare-string schedule shape', async () => {
+  const chat = 'web:debug';
+  const jobs = [{ id: 'aa11bb22cc33', name: `${jobPrefix(chat)}coffee`, schedule: '0 9 * * *', enabled: true }];
+  const list = await new HermesBackend({ fetchFn: fakeFetch(200, { jobs }) }).listReminders(chat);
+  assert.equal(list.length, 1);
+  assert.equal(list[0].schedule, '0 9 * * *');
+  assert.equal(list[0].kind, undefined);
+});
+
+test('parseReminderInstruction inverts reminderJobPrompt\'s <reminder_instruction> tag', () => {
+  const prompt = reminderJobPrompt(
+    { chatId: 'web:debug', agentHandle: 'h', instruction: 'call mom at 5pm' },
+    'http://127.0.0.1:3000/api/engine/push',
+  );
+  assert.equal(parseReminderInstruction(prompt), 'call mom at 5pm');
+  // No tag at all — a job this adapter didn't build the prompt for.
+  assert.equal(parseReminderInstruction('some other prompt entirely'), undefined);
+  assert.equal(parseReminderInstruction(undefined), undefined);
+  assert.equal(parseReminderInstruction(''), undefined);
 });
 
 test('a 200 that is not JSON is a named engine error, not a raw SyntaxError', async () => {

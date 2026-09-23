@@ -72,6 +72,21 @@ interface RunStatusBody {
 /** What a terminal run event (or a terminal poll) says. */
 interface RunOutcome { output: string; pendingSteer?: string }
 
+/** One row off `GET /api/jobs`, as hermes's cron API actually sends it — verified against the live
+ *  `~/.hermes/cron/jobs.json` shape and hermes's own source, NOT the bare-string `schedule` the old
+ *  code assumed. `schedule` is read as either shape: the object hermes sends today, or the plain
+ *  string older fixtures (and possibly older engines) still use. */
+interface RawHermesJob {
+  id?: string | number;
+  name?: string;
+  schedule?: string | { kind?: string; expr?: string; run_at?: string; display?: string };
+  schedule_display?: string;
+  next_run_at?: string | null;
+  created_at?: string;
+  enabled?: boolean;
+  prompt?: string;
+}
+
 /**
  * Which transport `runTask` speaks (env: HERMES_RUN_TRANSPORT, default `runs`).
  *
@@ -148,6 +163,22 @@ export function reminderJobPrompt(spec: ReminderSpec, pushUrl: string): string {
     `POST ${pushUrl} with header "x-engine-token: $IRISES_PUSH_TOKEN" (the IRISES_PUSH_TOKEN environment variable is set in your environment) and JSON body {"chatId": ${JSON.stringify(spec.chatId)}, "kind": "reminder", "text": "<what to tell the user, plain text>"}.`,
     'The text should be the substance only — Irises re-voices it in its own tone. Do not deliver anywhere else.',
   ].join('\n');
+}
+
+/** The regex inverse of `reminderJobPrompt`'s `dataTag('reminder_instruction', …)` call: recovers
+ *  the tag body byte for byte (dataTag trims the content once on the way in, so there is nothing
+ *  left to trim on the way back out). */
+const REMINDER_INSTRUCTION_RE = /<reminder_instruction>\n([\s\S]*?)\n<\/reminder_instruction>/;
+
+/**
+ * Read a reminder job's own words back out of its prompt — the ONLY place they still live once the
+ * job exists (hermes's jobs API reports the schedule, not what the reminder is about). Undefined for
+ * a job whose prompt was never built by `reminderJobPrompt` (hand-created on the engine, or an older
+ * shape) — never guessed, never the raw prompt as a fallback.
+ */
+export function parseReminderInstruction(prompt: string | undefined | null): string | undefined {
+  if (!prompt) return undefined;
+  return REMINDER_INSTRUCTION_RE.exec(prompt)?.[1];
 }
 
 /** The zone hermes's cron evaluates its schedules in. HERMES_TZ when the operator set one on the
@@ -1189,23 +1220,52 @@ export class HermesBackend implements EngineBackend {
     return { id: String(data.job?.id ?? name), title: data.job?.name ?? name, schedule: data.job?.schedule ?? schedule };
   }
 
-  async listReminders(chatId: string): Promise<ReminderRef[]> {
-    const res = await this.requestText('/api/jobs', { method: 'GET', headers: this.headers() }, undefined, 15_000);
+  /**
+   * List the reminders this chat owns, read live off hermes's `/api/jobs`.
+   *
+   * `schedule` on a real hermes job is an OBJECT (`{ kind: 'cron'|'once', expr|run_at, display }`),
+   * not the bare string the old code assumed — that mismatch is why a raw `String(job.schedule)`
+   * used to hand the user "[object Object]" for their own reminder's schedule. Existing test
+   * fixtures (and, presumably, older engines) still hand back the bare string, so both shapes are
+   * read here: prefer `schedule_display` (top-level, always a string when hermes sends one), then
+   * the object's own `display`, then the string form outright.
+   *
+   * `enabled === false` is filtered defensively even though the request never asks for disabled
+   * jobs (`include_disabled` is left off) — a job could still come back disabled if hermes's default
+   * ever changes, and a paused reminder must never read as an active one.
+   */
+  async listReminders(chatId: string, opts: { timeoutMs?: number } = {}): Promise<ReminderRef[]> {
+    const res = await this.requestText('/api/jobs', { method: 'GET', headers: this.headers() }, undefined, opts.timeoutMs ?? 15_000);
     this.throwForStatus(res, 'job list');
-    const data = this.parseJson<{ jobs?: Array<{ id?: string | number; name?: string; schedule?: string }> }>(res, 'job list');
+    const data = this.parseJson<{ jobs?: Array<RawHermesJob> }>(res, 'job list');
     const prefix = jobPrefix(chatId);
     const legacy = legacyJobPrefix(chatId);
     return (data.jobs ?? [])
+      .filter(j => j.enabled !== false)
       .map(j => {
         const name = j.name ?? '';
         // Both prefixes during the migration window: reminders created before the hash suffix
         // existed still belong to this chat. Identical strings for short ids — the common case.
         const matched = name.startsWith(prefix) ? prefix : name.startsWith(legacy) ? legacy : null;
-        return matched === null ? null : { id: String(j.id ?? ''), title: name.slice(matched.length), schedule: j.schedule ?? '' };
+        if (matched === null) return null;
+        const id = String(j.id ?? '');
+        if (!id) return null; // see the filter's own comment below — kept as an early return here too
+        const schedObj = j.schedule && typeof j.schedule === 'object' ? j.schedule : undefined;
+        const scheduleText = j.schedule_display ?? schedObj?.display ?? (typeof j.schedule === 'string' ? j.schedule : '') ?? '';
+        const kind: 'cron' | 'once' | undefined = schedObj?.kind === 'cron' ? 'cron' : schedObj?.kind === 'once' ? 'once' : undefined;
+        const instruction = parseReminderInstruction(j.prompt);
+        const ref: ReminderRef = { id, title: name.slice(matched.length), schedule: scheduleText };
+        if (kind) ref.kind = kind;
+        if (kind === 'cron' && schedObj?.expr) ref.expr = schedObj.expr;
+        if (kind === 'once' && schedObj?.run_at) ref.runAt = schedObj.run_at;
+        if (j.next_run_at) ref.nextRunAt = j.next_run_at;
+        if (j.created_at) ref.createdAt = j.created_at;
+        if (instruction) ref.instruction = instruction;
+        return ref;
       })
       // An id-less job row must never surface: its ref would carry id '' and a later cancel would
       // DELETE /api/jobs/ — the collection route, which some servers treat as delete-everything.
-      .filter((r): r is ReminderRef => r !== null && r.id !== '');
+      .filter((r): r is ReminderRef => r !== null);
   }
 
   async cancelReminder(id: string): Promise<boolean> {

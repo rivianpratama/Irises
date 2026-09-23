@@ -68,6 +68,29 @@ export interface ReminderRef {
   id: string;
   title: string;
   schedule: string;      // human-readable-ish schedule the engine reported back
+  // Everything below is OPTIONAL and hermes-shaped: an adapter that can't answer one simply omits
+  // it, and a caller that only ever read `schedule`/`id`/`title` sees no change at all.
+  /** The engine's own schedule shape, when it reported one. Absent when only the legacy bare-string
+   *  `schedule` was seen (older fixtures, or an engine that doesn't distinguish). */
+  kind?: 'cron' | 'once';
+  /** The 5-field cron expression, present when `kind === 'cron'`. */
+  expr?: string;
+  /** The one-time fire instant, present when `kind === 'once'`. Kept as the engine's own
+   *  ISO-with-offset string rather than converted to epoch ms — every consumer only ever DISPLAYS
+   *  it (an Intl formatter reads an offset string directly), so there is nothing arithmetic to gain
+   *  from converting it, and converting would be one more place a bad offset could get lost. */
+  runAt?: string;
+  /** The next time this job is due to fire, same ISO-with-offset string representation as `runAt`.
+   *  Absent when the engine didn't report one (a paused job, or an engine that omits it). */
+  nextRunAt?: string;
+  /** When the job was created, same ISO-with-offset string representation. */
+  createdAt?: string;
+  /** The user's original reminder text, recovered from the job's own delivery prompt
+   *  (hermesBackend's `parseReminderInstruction`) — the engine's jobs API reports schedule fields,
+   *  never what the reminder is ABOUT, so this is the only place that text still lives once the job
+   *  exists. Absent for a job whose prompt wasn't built by `reminderJobPrompt` (hand-created on the
+   *  engine, or an older shape). */
+  instruction?: string;
 }
 
 export interface ProbeResult { ok: boolean; detail?: string; }
@@ -141,7 +164,10 @@ export interface EngineBackend {
    */
   steerRun?(handle: EngineRunHandle, text: string, opts?: { signal?: AbortSignal }): Promise<'accepted' | 'not_running'>;
   createReminder(spec: ReminderSpec): Promise<ReminderRef>;
-  listReminders(chatId: string): Promise<ReminderRef[]>;
+  /** `timeoutMs` overrides the adapter's own default request budget — optional, same DI convention
+   *  as `EngineRunContext.timeoutMs`; a caller that doesn't pass it gets the adapter's standard
+   *  window. */
+  listReminders(chatId: string, opts?: { timeoutMs?: number }): Promise<ReminderRef[]>;
   cancelReminder(id: string): Promise<boolean>;
   /** ASK the engine to update its own memory (scoped to this chat's engine session). The
    *  engine owns the decision — Irises never writes engine storage directly, and the same

@@ -219,13 +219,17 @@ const NO_ENGINE_SNAG: Outcome = {
   nextStep: 'ask them to try again in a bit',
 };
 
-async function handleScheduleAutomation(input: Record<string, unknown>, handle: string, chatId: string): Promise<ScheduleResult> {
+async function handleScheduleAutomation(input: Record<string, unknown>, handle: string, chatId: string, userTz?: string): Promise<ScheduleResult> {
   const instruction = String(input.instruction ?? '').trim();
   // A schedule call with no instruction must NOT be a silent no-op: the model's own "got it, i'll
   // remind you" text still ships, so without this correction the user holds a confirm for a
   // reminder that never got saved.
   if (!instruction) return { error: { kind: 'failed', summary: "couldn't tell what the reminder should say", nextStep: 'ask them what to remind them about and when' } };
-  const timezone = (input.timezone as string) || DEFAULT_TZ;
+  // The model states a zone only when the user SAID one ("remind me at 8am Chicago time"); the
+  // common case is silence, and silence means THEIR zone, not the host's. `userTz` is this turn's
+  // already-resolved zone (client.ts, from the stored `agent_tz` preference) — DEFAULT_TZ is only
+  // the last resort for a caller that never threaded one through (a test, or an older call site).
+  const timezone = (input.timezone as string) || userTz || DEFAULT_TZ;
   const title = input.title ? String(input.title) : undefined;
   const snag: Outcome = { kind: 'failed', summary: 'saving that reminder hit a snag', nextStep: 'ask them to try again' };
   const engine = getEngineBackend();
@@ -254,13 +258,23 @@ async function handleScheduleAutomation(input: Record<string, unknown>, handle: 
 
 // The chat's active reminders as an outcome Fallfirm voices (the list content is DATA it can't
 // author itself, so it's carried in `facts` for exact relay). Read live from the engine.
-async function renderAutomationsList(_handle: string, chatId: string): Promise<Outcome> {
+async function renderAutomationsList(_handle: string, chatId: string, tz: string): Promise<Outcome> {
   const engine = getEngineBackend();
   if (!engine) return NO_ENGINE_SNAG;
   try {
     const items = await engine.listReminders(chatId);
-    if (!items.length) return { kind: 'nothing_found', summary: 'they have no reminders set up right now' };
-    const list = items.slice(0, 10).map((a, i) => `${i + 1}. ${a.title} — ${a.schedule}`).join('\n');
+    // Zero reminders is a true, complete answer — not a correction. `nothing_found` used to sit
+    // here, and every non-`confirmed` outcome REPLACES the model's own reply (see the correction
+    // block below): the model's honest "you don't have any right now" was getting overwritten by a
+    // Fallfirm re-voicing of the exact same fact. Reporting nothing is not a failure.
+    if (!items.length) return { kind: 'confirmed', summary: 'they have no reminders set up right now' };
+    const list = items.slice(0, 10).map((a, i) => {
+      // R + first 6 hex chars of the engine's own id — short enough to say out loud, and a prefix
+      // of the real id (later tasks resolve an id this short back to the one job it names).
+      const shortId = `R${a.id.slice(0, 6)}`;
+      const when = a.nextRunAt ? formatWhen(a.nextRunAt, tz) : a.schedule;
+      return `${i + 1}. [${shortId}] ${a.title} — ${when}`;
+    }).join('\n');
     return { kind: 'confirmed', summary: 'these are their current reminders', facts: list };
   } catch (err) {
     console.error('[convo] list reminders failed', err);
@@ -2205,6 +2219,12 @@ export async function processConvoResult(args: {
   // and persisted. The recall second pass forwards it via {...args}; persistence lands on the pass
   // that reaches the final return (the first pass returns early into the recursion).
   computed?: ComputedState;
+  // THE zone for this turn (client.ts, resolved once from the stored `agent_tz` preference, else
+  // DEFAULT_TZ) — read by schedule_automation (a cron with no explicit timezone rides the user's
+  // own clock, not the host's) and list_automations (next-run times render in their zone). Absent
+  // from a caller that never threaded one through, which every reader falls back to DEFAULT_TZ for,
+  // byte-identical to before this field existed. Forwarded by the recall second pass via {...args}.
+  userTz?: string;
   // True when THIS turn's system prompt carried the one-shot install-introduction block
   // (agents/ops/firstMove.ts). Threaded the same way `computed` is — the recall second pass forwards
   // it via {...args}, so the mark lands exactly once, on the pass that actually reaches the return.
@@ -2769,11 +2789,11 @@ export async function processConvoResult(args: {
       // Automations stay SENDER-owned even in groups: a group-owned needs_ops automation would
       // run Ops under a pseudo-handle nothing else recognizes. The chatId on the row
       // is still this chat, so a reminder scheduled from a group fires back into the group.
-      const r = await handleScheduleAutomation(input, chatContext.senderHandle, chatId);
+      const r = await handleScheduleAutomation(input, chatContext.senderHandle, chatId, args.userTz);
       if (r.error) outcomeParts.push(r.error);
       else if (r.confirmation) scheduleConfirmation = r.confirmation;
     } else if (call.name === 'list_automations' && chatContext?.senderHandle) {
-      outcomeParts.push(await renderAutomationsList(chatContext.senderHandle, chatId));
+      outcomeParts.push(await renderAutomationsList(chatContext.senderHandle, chatId, args.userTz || DEFAULT_TZ));
     } else if (call.name === 'cancel_automation' && chatContext?.senderHandle) {
       const note = await handleCancelAutomation(String(input.match ?? ''), chatContext.senderHandle, chatId);
       if (note) outcomeParts.push(note);

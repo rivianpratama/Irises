@@ -744,6 +744,10 @@ export async function chat(
       res, chatId, handle, chatContext, textToSend, history, media,
       turn: { system, messages, tools, call, cacheBreakpoints: prompt.cacheBreakpoints },
       computed,
+      // THE zone this turn already resolved (above, from the stored `agent_tz` preference) — so a
+      // reminder with no explicit timezone in the tool call rides the USER's clock, not the host's,
+      // and a listed reminder's next-run time renders in it too.
+      userTz,
       introWoven: !!introWeave,
       // The turn's ONE relevance verdict, already built during the memory read above — the routing
       // gate reads it so it can stop discarding an answer she held the source for, and a delegation
