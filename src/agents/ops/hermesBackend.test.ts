@@ -105,6 +105,11 @@ test('runTask (streaming): accumulates SSE deltas, heartbeats, and keeps the cha
     assert.equal(body.stream, true);
     const headers = captured[0].init.headers as Record<string, string>;
     assert.equal(headers['X-Hermes-Session-Id'], 'irises-web-debug-w2026-36', 'streaming uses the chat\'s current session');
+    // A run that failed hard streams no content and ends on hermes's error finish chunk: that is the
+    // failure the blocking path gets as a 502, never an empty answer read as "found nothing".
+    const failed = 'data: {"choices":[{"delta":{},"finish_reason":"error"}],"error":{"message":"vision model unavailable"}}\n\ndata: [DONE]\n\n';
+    const failing = new HermesBackend({ fetchFn: (async () => new Response(failed, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })) as typeof fetch, now: () => IN_WEEK_36 });
+    await assert.rejects(failing.runTask('the prompt', mkTask(), {}), (e: unknown) => e instanceof EngineRunError && /vision model unavailable/.test(e.message));
   } finally {
     if (prev === undefined) delete process.env.HERMES_STREAM; else process.env.HERMES_STREAM = prev;
     delete process.env.HERMES_RUN_TRANSPORT;

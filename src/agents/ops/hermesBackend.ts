@@ -1148,27 +1148,49 @@ export class HermesBackend implements EngineBackend {
   }
 
   /** Parse an OpenAI-style SSE stream: accumulate delta content, emit throttled progress heartbeats.
-   *  Exposed shape is a pure string return; malformed/partial frames are skipped, `[DONE]` ends it. */
+   *  Exposed shape is a pure string return; malformed/partial frames are skipped, `[DONE]` ends it.
+   *
+   *  A run that FAILED says so on the stream, not in the status: hermes answers 200 and ends on a
+   *  finish chunk with `finish_reason: "error"` (and, when it has one, an `error.message`). The
+   *  blocking path gets that same failure as a 502 when the run produced no text, and throws. Read
+   *  as plain text here it came back empty, and an empty answer is triaged as a clean run that found
+   *  nothing (`empty_miss`), so a hard image-run failure was told to the user as a miss. The same
+   *  rule as the blocking path: failed with no text is an EngineRunError; failed WITH text returns
+   *  the text, as the blocking path's 200 would. */
   private async consumeSse(body: ReadableStream<Uint8Array>, ctx: EngineRunContext, signal?: AbortSignal): Promise<string> {
     let out = '';
+    let failure: string | null = null;
     let lastHeartbeat = 0;
     const HEARTBEAT_MS = 10_000;
     const heartbeat = (key: string) => {
       const now = this.deps.now();
       if (now - lastHeartbeat >= HEARTBEAT_MS) { lastHeartbeat = now; ctx.onProgress?.(key); }
     };
+    const settle = (): string => {
+      if (failure !== null && !out.trim()) throw new EngineRunError(`hermes run failed: ${failure.slice(0, 300)}`, 'llm_error');
+      return out;
+    };
     for await (const line of this.sseLines(body, signal)) {
       if (!line.startsWith('data:')) continue;
       const payload = line.slice(5).trim();
-      if (payload === '[DONE]') return out;
+      if (payload === '[DONE]') return settle();
       try {
-        const frame = JSON.parse(payload) as { choices?: Array<{ delta?: { content?: string; tool_calls?: unknown[] } }> };
-        const delta = frame.choices?.[0]?.delta;
+        const frame = JSON.parse(payload) as {
+          choices?: Array<{ delta?: { content?: string; tool_calls?: unknown[] }; finish_reason?: string | null }>;
+          error?: { message?: unknown } | string;
+          hermes?: { error?: unknown };
+        };
+        const choice = frame.choices?.[0];
+        const delta = choice?.delta;
         if (typeof delta?.content === 'string' && delta.content) { out += delta.content; heartbeat('streaming'); }
         if (Array.isArray(delta?.tool_calls) && delta.tool_calls.length) heartbeat('engine_tool');
+        if (choice?.finish_reason === 'error' || frame.error) {
+          const said = typeof frame.error === 'string' ? frame.error : frame.error?.message ?? frame.hermes?.error;
+          failure = typeof said === 'string' && said ? said : 'no error text';
+        }
       } catch { /* a partial or non-JSON frame — skip it, more will follow */ }
     }
-    return out;
+    return settle();
   }
 
   /** One-time doctrine delivery (engineOnboarding.ts owns the when). It rides its OWN session key, so
