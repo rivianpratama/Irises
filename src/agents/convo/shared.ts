@@ -2141,7 +2141,7 @@ async function enforcePromiseKept(
   args: { res: LlmResult; chatId: string; handle: string | undefined; turn?: ConvoTurnContext },
   bubbles: string[],
   guard: ToolCallGuard,
-  opts: { retry?: boolean; carried?: TurnEffects } = {},
+  opts: { retry?: boolean; carried?: TurnEffects; earlierBacksClaims?: boolean } = {},
 ): Promise<{ res: LlmResult; fired: boolean; promise: boolean; claim: boolean }> {
   const none = { fired: false, promise: false, claim: false };
   if (!unkeptPromiseGuardEnabled()) return { res: args.res, ...none };
@@ -2152,7 +2152,9 @@ async function enforcePromiseKept(
   // an earlier pass of this turn built counts too: it starts when the turn ends, so "on it" is true.
   const carriedTask = opts.carried?.delegatedTask || opts.carried?.suppressedDuplicate ? 1 : 0;
   const active = getActiveOps(chatId).length + carriedTask;
-  const backedEarlier = changedEarlier(opts.carried);
+  // `earlierBacksClaims` false: what an earlier pass changed is not allowed to back a claim here,
+  // because a miss of that same turn still stands beside it (see the outcome pass's caller).
+  const backedEarlier = opts.earlierBacksClaims !== false && changedEarlier(opts.carried);
   const verdict = detectUnkeptPromise(bubbles, res.toolCalls, active);
   const claimVerdict = detectUnbackedClaim(bubbles, res.toolCalls, backedEarlier);
   const phrase = verdict.unkept ? verdict.phrase : undefined;
@@ -3604,9 +3606,17 @@ export async function processConvoResult(args: {
   const backing = settledDecline
     ? { ...(args.carried ?? newTurnEffects()), results: [...(args.carried?.results ?? []), settledDecline] }
     : args.carried;
+  // An earlier pass's change backs a claim on the outcome pass only while nothing that turn missed
+  // still stands. The pass exists because something missed, and a pass that calls nothing fixes
+  // nothing (actionResults.ts withoutFixedMisses), so its "all done" is about the miss as much as
+  // the success beside it: a reminder that landed backed "the gym one is gone" about a cancel that
+  // never happened. Such a claim is unbacked, and the pass falls back to voicing the results.
+  const missStands = !!args.outcomePass && !!args.carried
+    && !args.res.toolCalls.some(c => MUTATING_TOOLS.has(c.name))
+    && withoutFixedMisses(args.carried.results, []).some(r => !actionSucceeded(r));
   const guard = (settledTask || settledReconfirm)
     ? { res: args.res, fired: false, promise: false, claim: false }
-    : await enforcePromiseKept(args, replyBubbles(firstReply), guardToolCalls, { retry: !args.outcomePass, carried: backing });
+    : await enforcePromiseKept(args, replyBubbles(firstReply), guardToolCalls, { retry: !args.outcomePass, carried: backing, earlierBacksClaims: !missStands });
 
   // …and the rhythm backstop beside it, on the turns the selector forced quiet. ONE corrective
   // re-ask per turn, TOTAL: the promise guard goes first and this one stands down whenever it fired,

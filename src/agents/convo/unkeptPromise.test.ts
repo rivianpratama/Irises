@@ -428,9 +428,11 @@ test('"got it, revised" with nothing changed this turn gets exactly one re-ask',
   assert.equal(tradedBack.text, FABRICATED.join('\n---\n'), 'a promise traded for an unbacked claim is not accepted');
 });
 
-test('a claim on the outcome pass that the first pass backed is not flagged', async () => {
-  // The first pass set one reminder and missed a cancel; the pass writes "all set" about the one
-  // that landed and calls nothing, since nothing is left to do. That claim is true.
+test('a claim on the outcome pass that calls nothing, beside a miss nothing fixed, falls back', async () => {
+  // The first pass set one reminder and missed a cancel. The pass called nothing and wrote "all
+  // done … the gym one is gone", and the trash reminder that landed used to back the whole line,
+  // so a cancel that never happened shipped as done. With a miss still standing and no call of its
+  // own, nothing the pass says can be backed by what an earlier pass did.
   resetEngineBackendCache({
     name: 'hermes',
     async runTask() { throw new Error('not under test'); },
@@ -452,14 +454,13 @@ test('a claim on the outcome pass that the first pass backed is not flagged', as
       turn: {
         ...turnCtx(async () => {
           calls++;
-          return makeResult(['all set, the trash one is in', 'no gym reminder on your list though']);
+          return makeResult(['all done, trash every night at 9 and the gym one is gone']);
         }),
         tools: [REACTION_TOOL, SCHEDULE_AUTOMATION_TOOL, CANCEL_AUTOMATION_TOOL],
       },
     });
     assert.equal(calls, 1, 'the pass, and no re-ask on top of it');
-    assert.equal(getTraces().find(e => e.type === 'event' && e.label === 'convo:unbacked_claim'), undefined);
-    assert.match(out.text!, /^all set, the trash one is in/);
+    assert.doesNotMatch(out.text!, /gym one is gone/, 'the unbacked claim does not ship');
   } finally {
     resetEngineBackendCache(undefined);
   }
