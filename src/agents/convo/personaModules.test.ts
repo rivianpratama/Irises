@@ -209,9 +209,21 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  *     the turn back empty and is banned everywhere, a follow-up asks for the part of their own story
  *     they left out). The block and every page: untouched, which is once more why exactly one addend
  *     moved.
+ *
+ * Then **+601** in the action-honesty branch, two files, both about naming a running or parked
+ * action rather than pointing at it:
+ *   · craft/reminders.md +561 (2,635 → 3,196): "Managing them" stops being two prose sentences and
+ *     becomes the id rule the rewritten reminder list and status lines now support — a reminder is
+ *     named by the bracketed id shown beside it, a change is one `update_automation` on that id
+ *     carrying only what changed, a removal is one `cancel_automation` on it, a covered time slot or
+ *     purpose is revised rather than doubled, and an id that cannot be told apart is asked about
+ *     before anything is touched on it.
+ *   · Context.md +40 (92,079 → 92,119): the data-tag list in "What `<prompt>` is" gains
+ *     `<live_reminders>` and `<action_results>`, the two tags the same work adds to the per-turn
+ *     block. Every other byte of both files, and every other file in the corpus, held.
  */
-const CORPUS_CHARS = 155_779;
-const CORPUS_SHA256 = '56e66df39c474230ffb34d6f041b3094d2c45682b4373a5ad0a8d57fb958ba5b';
+const CORPUS_CHARS = 156_380;
+const CORPUS_SHA256 = '9daa5b262ff4bc4bd498b017aa11b62ff20df078ea76a8c28b2638b879929eda';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 

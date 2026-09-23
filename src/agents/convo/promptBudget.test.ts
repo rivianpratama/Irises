@@ -29,8 +29,8 @@ import { renderDriftAnchor, DRIFT_LONG_WINDOW_CHARS, type DriftMode } from '../.
 import { buildTurnTraceDraft, type MeasuredPrompt, type TranscriptMessage } from '../../diagnostics/turnTrace.js';
 import {
   REACTION_TOOL, REMEMBER_USER_TOOL, delegateToOpsTool, SET_PREFERENCE_TOOL, SCHEDULE_AUTOMATION_TOOL,
-  LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL, CANCEL_RESEARCH_TOOL, STEER_RESEARCH_TOOL,
-  UPDATE_DIRECTIVES_TOOL,
+  LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL, UPDATE_AUTOMATION_TOOL, CANCEL_RESEARCH_TOOL,
+  STEER_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL,
   UPDATE_MEMORY_TOOL, RECALL_MEMORY_TOOL, RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL,
 } from './tools.js';
 import { INTRO_WEAVE_BLOCK } from '../ops/firstMove.js';
@@ -53,9 +53,9 @@ import type { ThreadCandidate } from '../../persona/threads.js';
 import type { ThreadTurn } from '../../memory/threadHarvest.js';
 import type { TurnFocusInput } from './turnFocus.js';
 import type { CraftTurnFacts } from './personaModules.js';
-import type { PersonaTurn } from './shared.js';
+import type { PersonaTurn, LiveState } from './shared.js';
 import type { ActiveOps } from '../../state/opsCoordination.js';
-import type { CapabilitySummary } from '../ops/engineBackend.js';
+import type { CapabilitySummary, ReminderRef } from '../ops/engineBackend.js';
 import type { MediumBundle } from '../../memory/mediumTerm.js';
 import type { ShortTermEntry } from '../../db/repositories/memoryShort.js';
 import type { AgentMemory } from '../../db/repositories/memory.js';
@@ -111,6 +111,12 @@ interface TurnSpec {
    *  together). Absent elsewhere, which reads as a task turn with nothing earned — the mode the drift
    *  anchor falls back to, and the shape the no-regression pin is written against. */
   personaTurn?: PersonaTurn;
+  /** What stands live for this chat beyond `activeOps` (convo/shared.ts LiveState): the reminders on
+   *  the engine, each with its id. One fixture carries one — the media turn, which already carries
+   *  research in flight, so this is the turn where a reply may need to name both a run and a
+   *  reminder by id in the same breath. Absent elsewhere, which renders no `live_reminders` section
+   *  at all, the same as every caller that never reads the engine's list. */
+  liveState?: LiveState;
 }
 
 type BuildArgs = Parameters<typeof buildSystemPromptSections>;
@@ -121,18 +127,20 @@ function argsFor(s: TurnSpec): BuildArgs {
   return [
     s.chatContext, s.contextBlock ?? '', s.activeOps ?? [], s.extraSection, s.tools, s.history,
     s.incomingText, 'UTC', s.affect, s.computed, s.capability ?? null, s.climate, s.thread,
-    s.introWeave, s.turnFocus, s.craft, s.personaTurn,
+    s.introWeave, s.turnFocus, s.craft, s.personaTurn, s.liveState,
   ];
 }
 
 // ── the real tool list ───────────────────────────────────────────────────────
-// Exactly the list convo/client.ts:228-241 assembles on the hermes lane (the richer of the two: the
-// three reminder tools are gated out on openclaw), so the tool_docs ceiling is a production size and
-// not a one-tool sketch. The two group tools are appended for the group fixture, as the client does.
+// Exactly the list convo/tools.ts convoToolList assembles on the hermes lane (the richer of the
+// two: the four reminder tools are gated out on openclaw), so the tool_docs ceiling is a production
+// size and not a one-tool sketch. UPDATE_AUTOMATION_TOOL sits right after CANCEL_AUTOMATION_TOOL,
+// the same place convoToolList puts it — the two read as the pair they are: remove one, or change it
+// in place. The two group tools are appended for the group fixture, as the client does.
 
 const TOOLS_1TO1: LlmToolDef[] = [
   REACTION_TOOL, REMEMBER_USER_TOOL, delegateToOpsTool('hermes'), SET_PREFERENCE_TOOL,
-  SCHEDULE_AUTOMATION_TOOL, LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL,
+  SCHEDULE_AUTOMATION_TOOL, LIST_AUTOMATIONS_TOOL, CANCEL_AUTOMATION_TOOL, UPDATE_AUTOMATION_TOOL,
   CANCEL_RESEARCH_TOOL, STEER_RESEARCH_TOOL, UPDATE_DIRECTIVES_TOOL, UPDATE_MEMORY_TOOL,
   RECALL_MEMORY_TOOL,
 ];
@@ -395,6 +403,75 @@ const ACTIVE_OPS: ActiveOps[] = [
     taskId: 'op2', kind: 'web_research', request: 'commercial lease option-period norms in bend',
     startedAt: FROZEN_MS - 8_000, firstStartedAt: FROZEN_MS - 8_000,
     lastMilestone: 'queued', estimateMs: 180_000, estimatePhrase: 'a few minutes',
+  },
+];
+
+/** The reminders standing for them at the widest the engine ever hands back — ten rows, the render
+ *  cap (liveReminders.ts MAX_LIVE_REMINDERS), each with a real cadence, a next run, a set date and a
+ *  gist near the 90-character clamp, so the `live_reminders` ceiling is the full list a mature
+ *  install can actually be carrying rather than one or two rows standing in for it. Same world as
+ *  MATURE_PROFILE's: the yard, the cedar order, the dock, the permit, soccer, her sister — a person
+ *  with nine months on file has this many standing reminders as often as she has none. */
+const WIDE_REMINDERS: ReminderRef[] = [
+  {
+    id: 'a1b2c3d4e5f6', title: 'morning yard check-in', kind: 'cron', expr: '0 7 * * 1-5',
+    schedule: 'every weekday at 7am', nextRunAt: '2026-01-06T15:00:00+00:00',
+    createdAt: '2025-11-02T18:00:00+00:00',
+    instruction: 'ping me at the gate before the crew clocks in so I can walk the rows and see what needs watering before it gets hot out',
+  },
+  {
+    id: 'b2c3d4e5f6a1', title: 'cedar invoice follow-up', kind: 'once',
+    schedule: 'once at 2026-01-09 09:00', runAt: '2026-01-09T17:00:00+00:00',
+    nextRunAt: '2026-01-09T17:00:00+00:00', createdAt: '2025-12-30T20:00:00+00:00',
+    instruction: 'chase the north supplier in writing about the disputed expedite fee if nobody has answered by friday morning',
+  },
+  {
+    id: 'c3d4e5f6a1b2', title: 'irrigation permit renewal', kind: 'once',
+    schedule: 'once at 2026-01-15 09:00', runAt: '2026-01-15T17:00:00+00:00',
+    nextRunAt: '2026-01-15T17:00:00+00:00', createdAt: '2025-12-20T16:00:00+00:00',
+    instruction: 'send the county the renewal form and last season usage figures before the window closes at the end of the month',
+  },
+  {
+    id: 'd4e5f6a1b2c3', title: 'soccer saturday', kind: 'cron', expr: '0 9 * * 6',
+    schedule: 'every saturday at 9am', nextRunAt: '2026-01-10T17:00:00+00:00',
+    createdAt: '2025-10-14T14:00:00+00:00',
+    instruction: 'nothing before eleven on saturdays, soccer runs long and there is no point trying to fit anything else in first',
+  },
+  {
+    id: 'e5f6a1b2c3d4', title: 'sister visits', kind: 'cron', expr: '0 16 28-31 * *',
+    schedule: 'last weekend of every month', nextRunAt: '2026-01-30T00:00:00+00:00',
+    createdAt: '2025-08-05T12:00:00+00:00',
+    instruction: 'tidy the shack and stock the fridge before she gets in, she always asks about the dock first thing',
+  },
+  {
+    id: 'f6a1b2c3d4e5', title: 'well pump plumber', kind: 'once',
+    schedule: 'once at 2026-01-08 21:00', runAt: '2026-01-08T21:00:00+00:00',
+    nextRunAt: '2026-01-08T21:00:00+00:00', createdAt: '2026-01-04T19:30:00+00:00',
+    instruction: 'confirm one oclock with the plumber or tell him the next opening is two weeks out, he has already rescheduled twice',
+  },
+  {
+    id: 'a2b3c4d5e6f7', title: 'mill schedule call', kind: 'cron', expr: '0 15 * * 3',
+    schedule: 'every wednesday at 3pm', nextRunAt: '2026-01-07T23:00:00+00:00',
+    createdAt: '2025-09-18T13:00:00+00:00',
+    instruction: 'call the mill about the cedar and fir swap and ask again whether partial shipments are possible on request',
+  },
+  {
+    id: 'b3c4d5e6f7a2', title: 'dock board photos', kind: 'once',
+    schedule: 'once at 2026-01-07 15:00', runAt: '2026-01-07T15:00:00+00:00',
+    nextRunAt: '2026-01-07T15:00:00+00:00', createdAt: '2026-01-05T22:00:00+00:00',
+    instruction: 'take photos of the whole pallet in daylight against a straight edge before the supplier will talk about a return',
+  },
+  {
+    id: 'c4d5e6f7a2b3', title: 'weekend close-up', kind: 'cron', expr: '0 6 * * *',
+    schedule: 'every day at 6pm', nextRunAt: '2026-01-06T23:00:00+00:00',
+    createdAt: '2025-07-11T10:00:00+00:00',
+    instruction: 'walk the beds, lock the gate and check the irrigation timer before heading out for the night',
+  },
+  {
+    id: 'd5e6f7a2b3c4', title: 'budget committee round three', kind: 'once',
+    schedule: 'once at 2026-01-12 18:00', runAt: '2026-01-12T18:00:00+00:00',
+    nextRunAt: '2026-01-12T18:00:00+00:00', createdAt: '2025-12-28T09:00:00+00:00',
+    instruction: 'compare the three vendor quotes again before the next price comparison and actually pick one this time',
   },
 ];
 
@@ -684,8 +761,10 @@ const FIXTURES: Fixture[] = [
     ],
   },
   {
-    // 3. MEDIA turn: a file arrived, two looks are already running, and their message queued behind
-    // the chat lock while she was sending — so the reply-order read is the backward-order variant.
+    // 3. MEDIA turn: a file arrived, two looks are already running, their message queued behind the
+    // chat lock while she was sending — so the reply-order read is the backward-order variant — and
+    // ten reminders standing on the engine, the render cap, so this is also the turn `live_reminders`
+    // takes its ceiling on: a reply here may need to act on a run AND a reminder by id in one breath.
     name: 'media turn with research already running',
     spec: {
       chatContext: {
@@ -705,11 +784,12 @@ const FIXTURES: Fixture[] = [
         hits: [{ label: 'the lease pdf they just sent', source: 'research' }],
       },
       craft: craftFacts(MEDIA_DATA, `the lease pdf, can you read it ${MEDIA_NOTE}`),
+      liveState: { reminders: WIDE_REMINDERS },
     },
     memoryStack: MEDIA_STACK,
     sections: [
       'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'update_status',
-      'context_block', 'active_ops', 'current_time', 'weather', 'status_contract',
+      'context_block', 'active_ops', 'live_reminders', 'current_time', 'weather', 'status_contract',
       'conversation_timing', 'reply_order', 'turn_focus', 'behavior_anchor', 'json_anchor',
     ],
   },
