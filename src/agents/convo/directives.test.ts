@@ -145,3 +145,19 @@ test('an empty no-op directive is NOT falsely acknowledged (and trips no reactio
   const stored = await listMediumActive(a.handle, ['directive']);
   assert.equal(stored.length, 0, 'no directive stored for an empty no-op');
 });
+
+test('a saved preference is still said when another action beside it misses', async () => {
+  __resetOpsCoordination();
+  const a = baseArgs();
+  // The miss replaces the model's text with one voicing of the turn's results. The save is not a
+  // result of its own, so before the fix that voicing said only the miss, and the preference that
+  // DID save was never mentioned.
+  const res = makeResult(['lowercase it is, and dropped the flights look'], [
+    directives('add', { text: 'keep everything lowercase' }),
+    { name: 'cancel_research', input: { match: 'flights' } },
+  ]);
+  const out = await processConvoResult({ ...a, res, textToSend: 'lowercase please, and drop the flights look' });
+
+  assert.match(out.text ?? '', /couldnt track that one down/, 'the miss is said');
+  assert.match(out.text ?? '', /done, all set/, 'and so is the save');
+});

@@ -248,6 +248,31 @@ test('an action-bearing turn keeps its own assembly (the confirmation is not dis
   await purgeArchiveFor({ handle: a.handle });
 });
 
+test("an empty second pass still gets the silent-turn retry, whatever the first pass remembered", async () => {
+  // The first pass's effects are carried into the second, so a remember_user it made ships with the
+  // reply. It is not the second pass's ANSWER, though: when that pass came back empty, the silent
+  // floor read the carried remember as "something was produced" and skipped its retry, so the turn
+  // shipped nothing the user asked for.
+  const a = args();
+  await seedArchive(a.handle, a.chatId);
+  let calls = 0;
+  const out = await processConvoResult({
+    ...a,
+    res: makeResult(['one sec'], [
+      { name: 'remember_user', input: { fact: 'is building a back fence' } },
+      recall('fence guy'),
+    ]),
+    turn: turnCtx(async () => {
+      calls++;
+      return calls === 1 ? makeResult([], []) : makeResult(['ruiz fencing, the 3200 quote'], []);
+    }),
+  });
+  assert.equal(calls, 2, 'the recall pass, then its one silent-turn retry');
+  assert.equal(out.text, 'ruiz fencing, the 3200 quote', "the retry's answer ships");
+  assert.ok(out.rememberedUser, 'and the first pass remember still rides along');
+  await purgeArchiveFor({ handle: a.handle });
+});
+
 // ── Semantic recall on ──────────────────────────────────────────────────────
 // The tool's contract must not shift when the search underneath it gains a vector leg: same one
 // second pass, same stripped tool, same data tag. What DOES change is what the search can find.

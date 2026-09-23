@@ -2307,6 +2307,16 @@ export function newTurnEffects(): TurnEffects {
   };
 }
 
+/**
+ * The delegation slot's fields, taken before a second pass recurses and put back if it throws. The
+ * throwing pass never ships, so a task it built would never be kicked off and a question it parked
+ * would never be asked; leaving either in the slot would make this pass's fallback claim it. Its
+ * results stay: what it did to reminders or runs did happen.
+ */
+function slotSnapshot(e: TurnEffects): Pick<TurnEffects, 'delegatedTask' | 'modelDelegated' | 'suppressedDuplicate' | 'parkedApproval'> {
+  return { delegatedTask: e.delegatedTask, modelDelegated: e.modelDelegated, suppressedDuplicate: e.suppressedDuplicate, parkedApproval: e.parkedApproval };
+}
+
 /** What dispatch reads about the turn and never writes. */
 interface DispatchContext {
   chatId: string;
@@ -2993,6 +3003,15 @@ export async function processConvoResult(args: {
   // 'reconfirm' park instead: she re-asks through the same mechanism the park uses, and the floors
   // that fire on "nothing was delegated" stand down for the same reason they do there.
   const effects = args.carried ?? newTurnEffects();
+  // The visible channels as an earlier pass left them, so the silent-turn floor can ask what THIS
+  // pass produced. A carried tapback or remember ships with the reply, but it is not this draft's
+  // answer: a second pass that came back empty is still a silent draft, owed its retry.
+  const inherited = args.carried
+    ? {
+        reaction: args.carried.reaction, renameChat: args.carried.renameChat, rememberedUser: args.carried.rememberedUser,
+        removeMember: args.carried.removeMember, delegatedTask: args.carried.delegatedTask,
+      }
+    : null;
   if (settledTask && !effects.delegatedTask) {
     effects.delegatedTask = settledTask;
     // A promoted approval counts as the model's own delegation: the line she wrote beside it ("okay,
@@ -3120,6 +3139,7 @@ export async function processConvoResult(args: {
         ...turn.messages,
         { role: 'user', content: renderArchiveRecallPass(recallQuery, hits) },
       ];
+      const slot = slotSnapshot(effects);
       try {
         const second = await (turn.call ?? callConvoLLM)({
           role: 'convo',
@@ -3153,6 +3173,7 @@ export async function processConvoResult(args: {
         });
       } catch (err) {
         console.error('[convo] recall_memory second pass failed', err);
+        Object.assign(effects, slot);   // a pass that threw hands nothing back (slotSnapshot)
         secondPassFailed = true;
       }
     }
@@ -3191,6 +3212,7 @@ export async function processConvoResult(args: {
         ...turn.messages,
         { role: 'user', content: renderErrorLogPass(errors) },
       ];
+      const slot = slotSnapshot(effects);
       try {
         const second = await (turn.call ?? callConvoLLM)({
           role: 'convo',
@@ -3213,6 +3235,7 @@ export async function processConvoResult(args: {
         });
       } catch (err) {
         console.error('[convo] check_error_log second pass failed', err);
+        Object.assign(effects, slot);
         epFailed = true;
       }
     }
@@ -3250,13 +3273,13 @@ export async function processConvoResult(args: {
   //     (we `continue` past the assignment) — but the ORIGINAL task's composer is still coming and will
   //     re-voice any claim the model wrote this turn. Same double-say, so salvage here too; the
   //     !textResponse still_on_it voiceInstant below fills the gap when salvage yields nothing.
-  //   • NOT on an action-bearing turn (any recorded result: a schedule, a cancel, a note, a list):
-  //     there the model's text legitimately voices the ACTION's confirmation, not an un-grounded Ops
-  //     answer. Nuking it would leave the confirmation unsaid — with model text standing, an
-  //     all-success turn voices nothing more than its raw facts, so "your 9am reminder is set" would
-  //     silently drop. A turn where an action FAILED is re-assembled below from the holding half.
-  const actionBearing = effects.results.length > 0;
-  if (((effects.modelDelegated && effects.delegatedTask) || effects.suppressedDuplicate) && !actionBearing) {
+  //   • An action-bearing turn (a schedule, a cancel, a note, a list beside the delegation) is
+  //     salvaged too. Its draft was written before any of those actions ran, so whatever it says
+  //     about them is as un-grounded as an answer tail — and a confirmation the salvage cuts is not
+  //     lost: every result of a turn that holds a task is voiced AFTER the holding half, below, so
+  //     "your 9am reminder is set" still ships, from what actually happened.
+  //   • Never over a parked question: that text is the ask, not a draft of hers.
+  if (((effects.modelDelegated && effects.delegatedTask) || effects.suppressedDuplicate) && !effects.parkedApproval) {
     // Ground = the user's own words for this ask: a figure they said themselves ("412 Maple") is an
     // echo the holding text may repeat, never a fabrication. Keeps Irises's persona-written holding
     // openers shipping instead of being replaced by the voiced fallback line.
@@ -3420,30 +3443,29 @@ export async function processConvoResult(args: {
   if (!textResponse) hardCapped = false;
   const results = effects.results;
   const correcting = needsCorrection(results);
-  // Whether the model's OWN words are standing in for the results: a parked turn's text is the
-  // approval question, which says nothing about what else the turn did.
-  const modelWrote = !!textResponse && !effects.parkedApproval;
 
   // ── What must ship, whatever the results say ────────────────────────────────────────────────
-  // Two parts of a reply are owed to the user whatever else the turn did, and until the results
+  // Three parts of a reply are owed to the user whatever else the turn did, and until the results
   // list existed a failed action beside them REPLACED them with its correction:
   //   • the approval question — an action is parked on their yes, and a reply without the question
   //     leaves it parked with nobody asked;
   //   • the holding line of a task that is starting (the model's own, an approved yes, a routed
-  //     one) — the composer continues from it, and a reply that drops it strands the follow-up.
-  // `keep` is that part. The voiced results go AFTER it, never in its place.
+  //     one) — the composer continues from it, and a reply that drops it strands the follow-up;
+  //   • the "still on it" of a task already running that the model asked for again.
+  // `keep` is that part. The voiced results go AFTER it, never in its place. On a turn that holds a
+  // task the draft was already cut to its holding half above, so `keep` never carries a claim about
+  // an action, and every result is voiced after it.
   //
-  // A delegation's holding line is the rare branch: the model normally writes its own. When it
-  // wrote none, voiceInstant is the Composer-shaped progress voice — it reads the recent thread so
-  // the line blends in and doesn't repeat, with the fallfirm/floor.ts pools as the zero-latency
-  // fallback if its call fails. On a correcting turn the draft was never salvaged (a turn with
-  // results is action-bearing, above), so it can claim the very action that just failed; only its
-  // holding half is owed, and the rest is what the voiced results replace.
-  let keep: string | null = effects.parkedApproval ? textResponse : null;
+  // Both reassurances are the rare branch: the model normally writes its own. When it wrote none,
+  // voiceInstant is the Composer-shaped progress voice — it reads the recent thread so the line
+  // blends in and doesn't repeat, with the fallfirm/floor.ts pools as the zero-latency fallback if
+  // its call fails.
+  let keep: string | null = null;
   const task = effects.delegatedTask;
-  if (!effects.parkedApproval && task) {
-    const ground = [textToSend, task.request, task.addressHint, task.dealHint].filter(Boolean).join('\n');
-    keep = correcting ? salvageHoldingText(textResponse, ground) : textResponse;
+  if (effects.parkedApproval) {
+    keep = textResponse;
+  } else if (task) {
+    keep = textResponse;
     if (!keep) {
       // Seed the holding line with the SAME coarse ETA the run is stored with, so the very first beat
       // can set a soft duration expectation ("give me a couple mins" energy) — an offer, never a
@@ -3452,42 +3474,38 @@ export async function processConvoResult(args: {
       const holdEta = estimateOpsEta({ kind: task.kind, request: task.request, budgetMs: browserLegBudgetFor(task) ?? undefined });
       keep = await voiceInstant({ kind: 'holding', taskKind: task.kind, request: task.request, addressHint: task.addressHint, dealHint: task.dealHint, eta: { phrase: holdEta.phrase, state: 'fresh' } }, chatId, handle ?? '');
     }
-    if (keep !== textResponse) hardCapped = false;   // the shipped text is no longer this parse's
-    textResponse = keep;
+  } else if (effects.suppressedDuplicate) {
+    keep = textResponse;
+    if (!keep) {
+      const line = await voiceInstant({ kind: 'still_on_it', request: textToSend }, chatId, handle ?? '');
+      // This reassurance can race the real answer: voiceInstant is a model call, and the in-flight
+      // task it reassures about can settle while it runs (markOpsDone fires only AFTER the answer is
+      // sent). If nothing is in flight anymore, the answer is already on their screen — a late "still
+      // on it" would land AFTER it and read as a contradiction. Silence is the right reply then.
+      if (getActiveOps(chatId).length) keep = line;
+      else console.log('[convo] dropped a stale still_on_it — the in-flight task answered while it was being voiced');
+    }
   }
-  if (!textResponse && effects.suppressedDuplicate && !results.length) {
-    const line = await voiceInstant({ kind: 'still_on_it', request: textToSend }, chatId, handle ?? '');
-    // This reassurance can race the real answer: voiceInstant is a model call, and the in-flight task
-    // it reassures about can settle while it runs (markOpsDone fires only AFTER the answer is sent).
-    // If nothing is in flight anymore, the answer is already on their screen — a late "still on it"
-    // would land AFTER it and read as a contradiction. Silence is the right reply to their nudge then.
-    if (getActiveOps(chatId).length) textResponse = line;
-    else console.log('[convo] dropped a stale still_on_it — the in-flight task answered while it was being voiced');
-  }
-  // A directive/preference that saved with no bubble of its own must still land an acknowledgment —
-  // a bare tool-only turn is what left the user hanging (the update_directives silent-success bug).
-  // A tapback is the lightest honest ack. Only when the model produced NEITHER text NOR a reaction
-  // of its own — its own beat always wins. A reaction-only turn records `[reacted with like]`, which
-  // also breaks the self-perpetuating loop (next turn no longer sees a dangling unresolved ask).
-  // Read before the results are voiced: a directive's success is not one of them (its beat is this
-  // tapback), so a voicing of the rest would never have said it.
-  if (effects.directiveActed && !textResponse && !effects.reaction) {
-    effects.reaction = { type: 'like' };
-  }
+  if (keep !== null) textResponse = keep;
   // ── The turn's results, voiced ──────────────────────────────────────────────────────────────
   // Every acting call's result, in the order it ran (convo/actionResults.ts). Fallfirm is
   // fallback-only here too:
   // - When anything failed, the model's optimistic text ("got it, cancelled") is WRONG, and its
   //   single-shot draft never saw what landed. ONE voicing of ALL the results replaces it — the
   //   successes included, because a failure never erases a success beside it — after `keep`.
-  // - When the model wrote no text of its own, that same voicing IS the reply (after `keep`).
-  // - When the model already spoke and nothing went wrong, its text stands, and only raw `facts`
+  // - When the reply is only `keep`, or the model wrote nothing, that same voicing carries them.
+  // - When the model's own text stands and nothing went wrong, it stands, and only raw `facts`
   //   (data the model can't author, e.g. the automations list) are appended verbatim.
+  // A directive that saved is not a result (its beat is the tapback below), but a voicing that
+  // replaces or follows her words is the only place it would be said, so it joins the list there.
   // `holdingPart` is what a starting task's holding text is: the reply before any results were
   // appended to it, so the composer continues from the holding line and never from a correction.
   let holdingPart: string | null = null;
-  if (results.length && (correcting || !modelWrote)) {
-    const voiced = await voiceOutcome(combinedOutcome(results), chatId, handle);
+  if (results.length && (correcting || keep !== null || !textResponse)) {
+    const voicedResults: ActionResult[] = effects.directiveActed
+      ? [...results, { tool: 'update_directives', status: 'done', target: '', detail: 'the preference they gave you is saved, and you go by it from here' }]
+      : results;
+    const voiced = await voiceOutcome(combinedOutcome(voicedResults), chatId, handle);
     holdingPart = keep;
     textResponse = keep ? `${keep}\n---\n${voiced}` : voiced;
     hardCapped = false;   // the voiced results REPLACE the parsed text — its cap isn't news about this send
@@ -3497,6 +3515,14 @@ export async function processConvoResult(args: {
       holdingPart = textResponse;
       textResponse = `${textResponse}\n---\n${facts.join('\n---\n')}`;
     }
+  }
+  // A directive/preference that saved with no bubble of its own must still land an acknowledgment —
+  // a bare tool-only turn is what left the user hanging (the update_directives silent-success bug).
+  // A tapback is the lightest honest ack. Only when the model produced NEITHER text NOR a reaction
+  // of its own — its own beat always wins. A reaction-only turn records `[reacted with like]`, which
+  // also breaks the self-perpetuating loop (next turn no longer sees a dangling unresolved ask).
+  if (effects.directiveActed && !textResponse && !effects.reaction) {
+    effects.reaction = { type: 'like' };
   }
 
   // ── Silent-turn floor ───────────────────────────────────────────────────────────────────────
@@ -3522,7 +3548,12 @@ export async function processConvoResult(args: {
   // read `retried: false` there would contradict the `convo:silent_turn` event that just recorded
   // `recovery: 'retry'`.
   let retrySpent = args.silentRetry === true;
-  if (!textResponse && !effects.reaction && !effects.renameChat && !effects.rememberedUser && !effects.removeMember && !effects.delegatedTask
+  // Only what THIS pass produced counts here (see `inherited`): the question is whether this draft
+  // answered, and an earlier pass's tapback is not its answer.
+  const producedHere = <K extends keyof NonNullable<typeof inherited>>(k: K): boolean =>
+    !!effects[k] && effects[k] !== inherited?.[k];
+  if (!textResponse && !producedHere('reaction') && !producedHere('renameChat') && !producedHere('rememberedUser')
+      && !producedHere('removeMember') && !producedHere('delegatedTask')
       && !res.toolCalls.length && textToSend.trim()) {
     const turn = args.silentRetry ? undefined : args.turn;   // the fence: a retry never retries
     // chatId in the line, not just the trace event: a live convergence round attributes the failure

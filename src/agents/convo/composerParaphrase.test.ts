@@ -200,8 +200,8 @@ test('schedule + delegate: the reminder confirmation survives (salvage must not 
   installStubEngine();
   t.after(() => resetEngineBackendCache(undefined));
   // A turn that BOTH schedules and delegates: the model writes the reminder confirmation AND a holding
-  // line. Salvage must NOT nuke the model's text (which would leave the reminder silently set) — the
-  // action-bearing guard skips salvage so the confirmation ("9am") ships.
+  // line. The reminder must never end up silently set: the draft is salvaged to its holding half like
+  // any delegation, and the schedule's result is voiced after it, so the confirmation still ships.
   const a = baseArgs();
   const fireAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   const res = makeResult(
