@@ -43,6 +43,17 @@ export function buildOutcomeBrief(o: Outcome, userMemory: string, timingLine?: s
     o.summary,
   ];
   if (timingLine) lines.push(timingLine);
+  // A combined outcome (several actions of one turn): every part is voiced, in order, so a success
+  // is never dropped for the miss beside it. The single-outcome lines above and below are untouched,
+  // so a one-action brief stays byte-identical.
+  if (o.parts?.length) {
+    lines.push('Voice every result below, in this order. A success stays said even when another result beside it failed.');
+    o.parts.forEach((p, i) => {
+      lines.push(`${i + 1}. (${p.kind}) ${p.summary}`);
+      if (p.facts) lines.push(`   exact details to relay word for word, never rounded or reworded: ${p.facts}`);
+      if (p.nextStep) lines.push(`   a next move to leave in their hands, said as something within reach and never as a question: ${p.nextStep}`);
+    });
+  }
   if (o.facts) lines.push(`Exact details to relay word-for-word (never round or reword these): ${o.facts}`);
   if (o.nextStep) lines.push(`A next move to leave in their hands — say it as something you can do or that's within reach, never as a "want me to?" question: ${o.nextStep}`);
   if (o.originalRequest) lines.push(`What they asked, for continuity: "${o.originalRequest}"`);

@@ -93,6 +93,10 @@ import {
 import { renderTurnFocus, turnFocusBlockEnabled, type TurnFocusInput } from './turnFocus.js';
 import { detectUnkeptPromise, renderPromiseCorrection, unkeptPromiseGuardEnabled } from './unkeptPromise.js';
 import { dropSchemaEcho } from './toolCallGuard.js';
+import {
+  actionSucceeded, combinedOutcome, needsCorrection, toOutcome,
+  type ActionResult, type ActionStatus,
+} from './actionResults.js';
 import { callLLM } from '../../llm/callLLM.js';
 import { record } from '../../diagnostics/trace.js';
 import { HOOK_OFF_TURN_LABEL, QUIET_GUARD_LABEL } from '../../diagnostics/traceLabels.js';
@@ -104,7 +108,7 @@ import { voiceOutcome, type Outcome } from '../fallfirm/client.js';
 import { voiceInstant } from '../fallfirm/voiceInstant.js';
 import { recallMedia, MEDIA_RECALL_TTL_MS } from './mediaRecall.js';
 import { emptyMedia, hasMedia, type IncomingMedia } from '../../webhook/types.js';
-import type { LlmRequest, LlmResult, LlmMessage, LlmToolDef } from '../../llm/types.js';
+import type { LlmRequest, LlmResult, LlmMessage, LlmToolCall, LlmToolDef } from '../../llm/types.js';
 import type { OpsTask, TaskKind, PendingClarification } from '../types.js';
 import type { ResolvedReply } from '../../state/replyResolution.js';
 
@@ -211,63 +215,71 @@ function formatWhen(iso: string, tz: string): string {
 
 // Reminders live ON THE ENGINE now (its cron fires them and delivers back through the
 // /api/engine/push endpoint) — Irises holds no automation rows. These handlers keep the exact
-// tool surface + voiced-outcome contract the persona was written against, backed by the engine.
-type ScheduleResult = { confirmation?: Outcome; error?: Outcome };
+// tool surface the persona was written against, backed by the engine. Each one answers with the
+// ActionResult the turn's results list keeps (convo/actionResults.ts) — a success as well as a
+// failure, because the reply is built from the whole list and a success that is never recorded is
+// a success the user never hears about.
 
-const NO_ENGINE_SNAG: Outcome = {
-  kind: 'failed', summary: 'reminders live on your engine, which is offline right now',
-  nextStep: 'ask them to try again in a bit',
-};
+/** No engine to hold a reminder at all: nothing can be read or written. */
+function noEngine(tool: string, target = ''): ActionResult {
+  return {
+    tool, status: 'unavailable', target,
+    detail: 'reminders live on your engine, which is offline right now',
+    nextStep: 'ask them to try again in a bit',
+  };
+}
 
-async function handleScheduleAutomation(input: Record<string, unknown>, handle: string, chatId: string, userTz?: string): Promise<ScheduleResult> {
+async function handleScheduleAutomation(input: Record<string, unknown>, handle: string, chatId: string, userTz?: string): Promise<ActionResult> {
+  const tool = 'schedule_automation';
   const instruction = String(input.instruction ?? '').trim();
+  const title = input.title ? String(input.title) : undefined;
+  const target = (title ?? instruction).slice(0, 80);
   // A schedule call with no instruction must NOT be a silent no-op: the model's own "got it, i'll
   // remind you" text still ships, so without this correction the user holds a confirm for a
   // reminder that never got saved.
-  if (!instruction) return { error: { kind: 'failed', summary: "couldn't tell what the reminder should say", nextStep: 'ask them what to remind them about and when' } };
+  if (!instruction) return { tool, status: 'invalid', target, detail: "couldn't tell what the reminder should say", nextStep: 'ask them what to remind them about and when' };
   // The model states a zone only when the user SAID one ("remind me at 8am Chicago time"); the
   // common case is silence, and silence means THEIR zone, not the host's. `userTz` is this turn's
   // already-resolved zone (client.ts, from the stored `agent_tz` preference) — DEFAULT_TZ is only
   // the last resort for a caller that never threaded one through (a test, or an older call site).
   const timezone = (input.timezone as string) || userTz || DEFAULT_TZ;
-  const title = input.title ? String(input.title) : undefined;
-  const snag: Outcome = { kind: 'failed', summary: 'saving that reminder hit a snag', nextStep: 'ask them to try again' };
   const engine = getEngineBackend();
-  if (!engine) return { error: NO_ENGINE_SNAG };
+  if (!engine) return noEngine(tool, target);
   try {
     if (input.schedule_kind === 'cron') {
       const cron = String(input.cron ?? '');
       if (!cron || !isValidCron(cron, timezone)) {
-        return { error: { kind: 'failed', summary: "that repeat schedule didn't parse", nextStep: 'ask them for the timing again' } };
+        return { tool, status: 'invalid', target, detail: "that repeat schedule didn't parse", nextStep: 'ask them for the timing again' };
       }
       // The zone rides along: the cron's wall clock is the USER's, and the engine's cron may run in
       // a different one (the adapter shifts the fields).
       await engine.createReminder({ chatId, agentHandle: handle, instruction, cron, title, timezone });
-      return { confirmation: { kind: 'confirmed', summary: 'a recurring reminder is now set — it repeats on their schedule' } };
+      return { tool, status: 'done', target, detail: 'a recurring reminder is now set — it repeats on their schedule' };
     }
     const ts = Date.parse(String(input.fire_at ?? ''));
-    if (Number.isNaN(ts)) return { error: { kind: 'failed', summary: "couldn't tell when they want the reminder", nextStep: 'ask what time to remind them' } };
-    if (ts <= Date.now()) return { error: { kind: 'failed', summary: 'the time they gave has already passed', nextStep: 'mention you can set it for a later time instead' } };
+    if (Number.isNaN(ts)) return { tool, status: 'invalid', target, detail: "couldn't tell when they want the reminder", nextStep: 'ask what time to remind them' };
+    if (ts <= Date.now()) return { tool, status: 'invalid', target, detail: 'the time they gave has already passed', nextStep: 'mention you can set it for a later time instead' };
     await engine.createReminder({ chatId, agentHandle: handle, instruction, fireAt: ts, title, timezone });
-    return { confirmation: { kind: 'confirmed', summary: 'a one-time reminder is set', facts: formatWhen(new Date(ts).toISOString(), timezone).toLowerCase() } };
+    return { tool, status: 'done', target, detail: 'a one-time reminder is set', facts: formatWhen(new Date(ts).toISOString(), timezone).toLowerCase() };
   } catch (err) {
     console.error('[convo] schedule_automation failed', err);
-    return { error: snag };
+    return { tool, status: 'unavailable', target, detail: 'saving that reminder hit a snag', nextStep: 'ask them to try again' };
   }
 }
 
-// The chat's active reminders as an outcome Fallfirm voices (the list content is DATA it can't
+// The chat's active reminders as a result Fallfirm voices (the list content is DATA it can't
 // author itself, so it's carried in `facts` for exact relay). Read live from the engine.
-async function renderAutomationsList(_handle: string, chatId: string, tz: string): Promise<Outcome> {
+async function renderAutomationsList(_handle: string, chatId: string, tz: string): Promise<ActionResult> {
+  const tool = 'list_automations';
   const engine = getEngineBackend();
-  if (!engine) return NO_ENGINE_SNAG;
+  if (!engine) return noEngine(tool);
   try {
     const items = await engine.listReminders(chatId);
     // Zero reminders is a true, complete answer — not a correction. `nothing_found` used to sit
-    // here, and every non-`confirmed` outcome REPLACES the model's own reply (see the correction
-    // block below): the model's honest "you don't have any right now" was getting overwritten by a
-    // Fallfirm re-voicing of the exact same fact. Reporting nothing is not a failure.
-    if (!items.length) return { kind: 'confirmed', summary: 'they have no reminders set up right now' };
+    // here, and every result that isn't a success REPLACES the model's own reply (see the
+    // correction block below): the model's honest "you don't have any right now" was getting
+    // overwritten by a Fallfirm re-voicing of the exact same fact. Reporting nothing is not a failure.
+    if (!items.length) return { tool, status: 'done', target: '', detail: 'they have no reminders set up right now' };
     const list = items.slice(0, 10).map((a, i) => {
       // R + first 6 hex chars of the engine's own id — short enough to say out loud, and a prefix
       // of the real id (later tasks resolve an id this short back to the one job it names).
@@ -275,91 +287,113 @@ async function renderAutomationsList(_handle: string, chatId: string, tz: string
       const when = a.nextRunAt ? formatWhen(a.nextRunAt, tz) : a.schedule;
       return `${i + 1}. [${shortId}] ${a.title} — ${when}`;
     }).join('\n');
-    return { kind: 'confirmed', summary: 'these are their current reminders', facts: list };
+    return { tool, status: 'done', target: '', detail: 'these are their current reminders', facts: list };
   } catch (err) {
     console.error('[convo] list reminders failed', err);
-    return { kind: 'failed', summary: 'pulling up their reminders hit a snag', nextStep: 'ask them to try again' };
+    return { tool, status: 'unavailable', target: '', detail: 'pulling up their reminders hit a snag', nextStep: 'ask them to try again' };
   }
 }
 
-// Cancel by fuzzy match on title. Returns null on a clean cancel (Convo's own confirmation
-// stands) or an OUTCOME to voice when 0 / many / failed.
-async function handleCancelAutomation(match: string, _handle: string, chatId: string): Promise<Outcome | null> {
-  const m = match.trim().toLowerCase();
+// Cancel by fuzzy match on title. `cancelled` names the one reminder that actually went, for the
+// turn's ledger (a second cancel of it this turn is then `already`, never a miss).
+async function handleCancelAutomation(match: string, _handle: string, chatId: string): Promise<{ result: ActionResult; cancelled?: { id: string; title: string } }> {
+  const tool = 'cancel_automation';
+  const target = match.trim();
+  const m = target.toLowerCase();
   const engine = getEngineBackend();
-  if (!engine) return NO_ENGINE_SNAG;
+  if (!engine) return { result: noEngine(tool, target) };
+  const snag: ActionResult = { tool, status: 'unavailable', target, detail: 'canceling that reminder hit a snag', nextStep: 'ask them to try again' };
   try {
     const items = await engine.listReminders(chatId);
-    if (!items.length) return { kind: 'nothing_found', summary: 'they have no reminders set up to cancel' };
+    if (!items.length) return { result: { tool, status: 'not_found', target, detail: 'they have no reminders set up to cancel' } };
     const matches = m ? items.filter(a => a.title.toLowerCase().includes(m)) : items;
-    if (matches.length === 0) return { kind: 'nothing_found', summary: "couldn't find a reminder matching that", nextStep: 'mention you can list what they have' };
-    if (matches.length > 1) return { kind: 'failed', summary: 'several of their reminders match that', nextStep: 'mention you can list them so they can pick' };
+    if (matches.length === 0) return { result: { tool, status: 'not_found', target, detail: "couldn't find a reminder matching that", nextStep: 'mention you can list what they have' } };
+    if (matches.length > 1) return { result: { tool, status: 'ambiguous', target, detail: 'several of their reminders match that', nextStep: 'mention you can list them so they can pick' } };
     const ok = await engine.cancelReminder(matches[0].id);
-    return ok ? null : { kind: 'failed', summary: 'canceling that reminder hit a snag', nextStep: 'ask them to try again' };
+    if (!ok) return { result: snag };
+    return {
+      result: { tool, status: 'done', target: matches[0].title, detail: 'that reminder is cancelled' },
+      cancelled: { id: matches[0].id, title: matches[0].title },
+    };
   } catch (err) {
     console.error('[convo] cancel reminder failed', err);
-    return { kind: 'failed', summary: 'canceling that reminder hit a snag', nextStep: 'ask them to try again' };
+    return { result: snag };
   }
 }
 
-// Cancel in-flight Ops research (chat-scoped, in-memory — synchronous by design). Returns null on a
-// clean cancel (Convo's own "dropped it" text stands) or an OUTCOME to voice/correct:
-//  - nothing running → honest nothing_found (never a fake "dropped it"),
-//  - no match given while several run → 'failed' so the correction path makes Irises ask which one,
-//  - every match already finished (the answer is landing/on screen) → 'failed' correction.
-// Exported for unit tests.
-export function handleCancelResearch(match: string, chatId: string): Outcome | null {
-  const m = match.trim().toLowerCase();
+// Cancel in-flight Ops research (chat-scoped, in-memory — synchronous by design). The result:
+//  - nothing running → honest not_found (never a fake "dropped it"),
+//  - no match given while several run → ambiguous, so the correction path makes Irises ask which one,
+//  - every match already finished (the answer is landing/on screen) → unreachable,
+//  - otherwise done, and `cancelled` names the runs that were actually signalled.
+function cancelResearch(match: string, chatId: string): { result: ActionResult; cancelled: ActiveOps[] } {
+  const tool = 'cancel_research';
+  const target = match.trim();
+  const m = target.toLowerCase();
   const active = getActiveOps(chatId);
   if (!active.length) {
-    return { kind: 'nothing_found', summary: "nothing's being looked up for them right now — either it already landed or nothing was started", nextStep: 'if they mean something else, ask what they want dropped' };
+    return { result: { tool, status: 'not_found', target, detail: "nothing's being looked up for them right now — either it already landed or nothing was started", nextStep: 'if they mean something else, ask what they want dropped' }, cancelled: [] };
   }
+  const running = `currently running: ${active.map(a => `"${a.request}"`).join(', ')}`;
   const matches = m ? active.filter(a => a.request.toLowerCase().includes(m)) : active;
   if (matches.length === 0) {
-    return { kind: 'nothing_found', summary: "couldn't find a running lookup matching that", facts: `currently running: ${active.map(a => `"${a.request}"`).join(', ')}`, nextStep: 'ask which of those they mean' };
+    return { result: { tool, status: 'not_found', target, detail: "couldn't find a running lookup matching that", facts: running, nextStep: 'ask which of those they mean' }, cancelled: [] };
   }
   if (!m && matches.length > 1) {
-    return { kind: 'failed', summary: 'more than one lookup is running and it\'s unclear which to drop', facts: `currently running: ${active.map(a => `"${a.request}"`).join(', ')}`, nextStep: 'ask which one they mean' };
+    return { result: { tool, status: 'ambiguous', target, detail: 'more than one lookup is running and it\'s unclear which to drop', facts: running, nextStep: 'ask which one they mean' }, cancelled: [] };
   }
-  const results = matches.map(a => requestOpsCancel(chatId, a.taskId));
-  if (results.every(r => r === 'already_done')) {
-    return { kind: 'failed', summary: 'that lookup actually just finished — the answer is already landing on their screen', nextStep: 'tell them to just ignore it if they don\'t need it' };
+  const signalled = matches.filter(a => requestOpsCancel(chatId, a.taskId) === 'signalled');
+  if (!signalled.length) {
+    return { result: { tool, status: 'unreachable', target, detail: 'that lookup actually just finished — the answer is already landing on their screen', nextStep: 'tell them to just ignore it if they don\'t need it' }, cancelled: [] };
   }
-  return null; // clean cancel — Convo's own confirming text stands
+  return {
+    result: { tool, status: 'done', target: signalled.map(a => a.request).join('; '), detail: 'the lookup they wanted dropped is stopped' },
+    cancelled: signalled,
+  };
+}
+
+// The cancel_research branch table as the Outcome it was voiced as before results existed: null on
+// a clean cancel (Convo's own "dropped it" text stands), else the outcome to voice/correct.
+// Exported for unit tests.
+export function handleCancelResearch(match: string, chatId: string): Outcome | null {
+  const { result } = cancelResearch(match, chatId);
+  return actionSucceeded(result) ? null : toOutcome(result);
 }
 
 // The sibling of the cancel above, and the reason it exists: "also check jakarta" typed forty
 // seconds into a two-minute look is not a stop and not a new ask — dropping the run to start over
 // throws away minutes of real work, and ignoring it answers a question they no longer have.
-// Same branch table as handleCancelResearch (nothing running / no match / ambiguous / already
-// finished), plus the one it cannot share: an engine with no steer route at all.
+// Same branch table as the cancel (nothing running / no match / ambiguous / already finished),
+// plus the one it cannot share: an engine with no steer route at all.
 //
 // SYNCHRONOUS by contract, like the cancel: the in-flight map is the authority and this turn's reply
 // depends on the answer. The engine POST is fire-and-forget (the ladder in ops/steer.ts can spend
-// several seconds inside hermes's construction window), so the Outcome NEVER waits on the network —
+// several seconds inside hermes's construction window), so the result NEVER waits on the network —
 // the same shape as the memory ask further down the tool loop.
 //
-// `engine` is a parameter rather than a read so a test can hand over an engine that steers and one
-// that doesn't: getEngineBackend caches for the process. Exported for unit tests.
-export function handleSteerResearch(
+// Null when there is nothing to record: blank guidance is nothing said, not a steer.
+function steerResearch(
   match: string,
   guidance: string,
   chatId: string,
   agentHandle: string,
-  engine: EngineBackend | null = getEngineBackend(),
-  engineActions: string[] = [],
-): Outcome | null {
-  const m = match.trim().toLowerCase();
+  engine: EngineBackend | null,
+  engineActions: string[],
+): ActionResult | null {
+  const tool = 'steer_research';
+  const target = match.trim();
+  const m = target.toLowerCase();
   const active = getActiveOps(chatId);
   if (!active.length) {
-    return { kind: 'nothing_found', summary: "nothing's being looked up for them right now — either it already landed or nothing was started", nextStep: 'treat what they said as a fresh ask: delegate_to_ops with the original topic plus this addition, if it reads like one' };
+    return { tool, status: 'not_found', target, detail: "nothing's being looked up for them right now — either it already landed or nothing was started", nextStep: 'treat what they said as a fresh ask: delegate_to_ops with the original topic plus this addition, if it reads like one' };
   }
+  const running = `currently running: ${active.map(a => `"${a.request}"`).join(', ')}`;
   const matches = m ? active.filter(a => a.request.toLowerCase().includes(m)) : active;
   if (matches.length === 0) {
-    return { kind: 'nothing_found', summary: "couldn't find a running lookup matching that", facts: `currently running: ${active.map(a => `"${a.request}"`).join(', ')}`, nextStep: 'ask which of those they mean' };
+    return { tool, status: 'not_found', target, detail: "couldn't find a running lookup matching that", facts: running, nextStep: 'ask which of those they mean' };
   }
   if (!m && matches.length > 1) {
-    return { kind: 'failed', summary: "more than one lookup is running and it's unclear which to add this to", facts: `currently running: ${active.map(a => `"${a.request}"`).join(', ')}`, nextStep: 'ask which one they mean' };
+    return { tool, status: 'ambiguous', target, detail: "more than one lookup is running and it's unclear which to add this to", facts: running, nextStep: 'ask which one they mean' };
   }
   // Blank/whitespace guidance is nothing said, not a steer — requestOpsSteer's own blank-text guard
   // answers 'already_done', which reads exactly like the run having just finished. That correction
@@ -378,9 +412,9 @@ export function handleSteerResearch(
     console.warn(`[convo] dropped a steered engine action that reads as an act on the user (chat ${chatId})`);
     return false;
   });
-  const decided = matches.map(a => ({ taskId: a.taskId, outcome: requestOpsSteer(chatId, a.taskId, guidance, mandated) }));
+  const decided = matches.map(a => ({ taskId: a.taskId, request: a.request, outcome: requestOpsSteer(chatId, a.taskId, guidance, mandated) }));
   if (decided.every(d => d.outcome === 'already_done')) {
-    return { kind: 'failed', summary: 'that lookup actually just finished — the answer is already landing on their screen', nextStep: 'tell them you\'ll fold their addition in as a quick follow-up look, and delegate_to_ops with the original ask plus the addition' };
+    return { tool, status: 'unreachable', target, detail: 'that lookup actually just finished — the answer is already landing on their screen', nextStep: 'tell them you\'ll fold their addition in as a quick follow-up look, and delegate_to_ops with the original ask plus the addition' };
   }
   // No route to the run, from either direction: the ENGINE has no steer method at all (OpenClaw),
   // or the map says no handle can ever land for this leg (hermes on the chat transport — only the
@@ -388,7 +422,7 @@ export function handleSteerResearch(
   // nor a queued one can reach the leg, so the correction is owed now rather than after a silent
   // drop. 'unsupported' is deliberately NOT the 'already_done' sentence: the run is still going.
   if (!engine?.steerRun || decided.every(d => d.outcome === 'unsupported')) {
-    return { kind: 'failed', summary: "the run can't take mid-flight additions on this engine, but their note is kept with the task", nextStep: 'tell them you\'ll work it into the answer when it lands — do not promise it changes what\'s being searched right now' };
+    return { tool, status: 'unavailable', target, detail: "the run can't take mid-flight additions on this engine, but their note is kept with the task", nextStep: 'tell them you\'ll work it into the answer when it lands — do not promise it changes what\'s being searched right now' };
   }
   for (const { taskId } of decided.filter(d => d.outcome === 'ready')) {
     const handle = getOpsEngineRun(chatId, taskId);
@@ -398,47 +432,69 @@ export function handleSteerResearch(
     void steerWithRetry(engine, handle, guidance, { chatId, agentHandle, taskId })
       .catch(err => console.warn('[convo] steer delivery failed', err));
   }
-  return null; // delivered or queued — Convo's own "adding that in" text stands
+  // Delivered or queued — Convo's own "adding that in" text stands.
+  return { tool, status: 'done', target: decided.map(d => d.request).join('; '), detail: 'their addition is on its way to the lookup that is running' };
+}
+
+// The steer_research branch table as the Outcome it was voiced as before results existed: null
+// when Convo's own ack stands, else the outcome to voice/correct.
+//
+// `engine` is a parameter rather than a read so a test can hand over an engine that steers and one
+// that doesn't: getEngineBackend caches for the process. Exported for unit tests.
+export function handleSteerResearch(
+  match: string,
+  guidance: string,
+  chatId: string,
+  agentHandle: string,
+  engine: EngineBackend | null = getEngineBackend(),
+  engineActions: string[] = [],
+): Outcome | null {
+  const r = steerResearch(match, guidance, chatId, agentHandle, engine, engineActions);
+  return r && !actionSucceeded(r) ? toOutcome(r) : null;
 }
 
 // Save/change/remove a free-form user preference ("directive").
 // Validation is the write-time guard from the charter's data-vs-instructions boundary.
-// Returns { note, acted }. `note` is a voiced Outcome (failure/ambiguity/nothing-found) or null when
+// Returns { result, acted }. `result` is a failure/ambiguity/nothing-found ActionResult, or null when
 // Convo's own confirmation stands. `acted` is true when the directive request actually reached its
 // asked-for end-state — a performed add/update/remove — so the caller can give a SILENT success its
-// own acknowledgment beat (a tapback) instead of leaving the user hanging. `acted` is false for pure
-// no-ops (empty text, unknown op) and for anything with a `note` (a rejection/ambiguity/snag is its
-// own reply — never also react).
-async function handleUpdateDirectives(input: Record<string, unknown>, handle: string, chatId: string): Promise<{ note: Outcome | null; acted: boolean }> {
+// own acknowledgment beat (a tapback) instead of leaving the user hanging. A success is deliberately
+// NOT a result: the tapback is its beat, and a voiced "done" over a tool-only save would replace it.
+// `acted` is false for pure no-ops (empty text, unknown op) and for anything with a `result` (a
+// rejection/ambiguity/snag is its own reply — never also react).
+async function handleUpdateDirectives(input: Record<string, unknown>, handle: string, chatId: string): Promise<{ result: ActionResult | null; acted: boolean }> {
+  const tool = 'update_directives';
   const op = String(input.op ?? '').toLowerCase();
   const text = String(input.text ?? '').trim();
   const match = String(input.match ?? '').trim().toLowerCase();
+  const target = match || text.slice(0, 80);
+  const fail = (status: ActionStatus, detail: string, nextStep?: string): { result: ActionResult; acted: false } =>
+    ({ result: { tool, status, target, detail, ...(nextStep ? { nextStep } : {}) }, acted: false });
 
   // A durable-write failure on this tier is VOICED, never silently mirrored — Irises must not
   // confirm a preference that didn't actually persist (the medium tier's no-error-margin rule).
-  const snag = (what: string): Outcome =>
-    ({ kind: 'failed', summary: `${what} hit a snag on your end`, nextStep: 'ask them to try again in a minute' });
+  const snag = (what: string) => fail('unavailable', `${what} hit a snag on your end`, 'ask them to try again in a minute');
 
   try {
     if (op === 'add') {
-      if (!text) return { note: null, acted: false };
+      if (!text) return { result: null, acted: false };
       const v = await validateDirective(text, handle);
-      if (!v.ok) return { note: { kind: 'failed', summary: `that can't be saved as a preference because it ${v.reason}`, nextStep: 'note you can still tweak how you talk or what you flag' }, acted: false };
+      if (!v.ok) return fail('invalid', `that can't be saved as a preference because it ${v.reason}`, 'note you can still tweak how you talk or what you flag');
       const created = await addDirective(handle, text); // dedupes a restated pref silently; the acknowledgment beat stands
       // A NEW rule can be the reversal of one they gave weeks ago ("actually, be sarcastic"), and
       // the tier only ever appended — every lane then read both. The pass names what this replaces
       // and retires it with lineage. Fire-and-forget: it costs one small classify call, the
       // acknowledgment beat below is already earned, and a pass that fails changes nothing.
       if (created) void supersedeContradicted(handle, created, chatId);
-      return { note: null, acted: true };
+      return { result: null, acted: true };
     }
 
     const rows = await listMediumActive(handle, ['directive']);
     const directives = rows.map(r => ({ id: r.id, text: r.body }));
-    if (!directives.length) return { note: { kind: 'nothing_found', summary: "they haven't set any preferences with you yet" }, acted: false };
+    if (!directives.length) return fail('not_found', "they haven't set any preferences with you yet");
     const hits = match ? directives.filter(d => d.text.toLowerCase().includes(match)) : directives;
-    if (hits.length === 0) return { note: { kind: 'nothing_found', summary: "couldn't find a preference matching that", nextStep: 'mention you can list what they told you' }, acted: false };
-    if (hits.length > 1) return { note: { kind: 'failed', summary: 'several of their preferences match that', nextStep: 'ask which one they mean' }, acted: false };
+    if (hits.length === 0) return fail('not_found', "couldn't find a preference matching that", 'mention you can list what they told you');
+    if (hits.length > 1) return fail('ambiguous', 'several of their preferences match that', 'ask which one they mean');
 
     if (op === 'remove') {
       const ok = await retractEntry(handle, hits[0].id);
@@ -447,21 +503,21 @@ async function handleUpdateDirectives(input: Record<string, unknown>, handle: st
       // header — the user asked for it to stop and it would not stop. Sequential, never nested:
       // both mutators take the per-handle lock at their own boundary.
       if (ok && parseLanguageDirective(hits[0].text) !== null) await clearReplyLanguage(handle);
-      return ok ? { note: null, acted: true } : { note: { kind: 'failed', summary: 'dropping that preference hit a snag', nextStep: 'ask them to try again' }, acted: false };
+      return ok ? { result: null, acted: true } : fail('unavailable', 'dropping that preference hit a snag', 'ask them to try again');
     }
     if (op === 'update') {
-      if (!text) return { note: null, acted: false };
+      if (!text) return { result: null, acted: false };
       const v = await validateDirective(text, handle);
-      if (!v.ok) return { note: { kind: 'failed', summary: `that change can't be made because it ${v.reason}` }, acted: false };
+      if (!v.ok) return fail('invalid', `that change can't be made because it ${v.reason}`);
       const replacement = await updateDirective(handle, hits[0].id, text);
       // The edited rule's own predecessor is already superseded by this write; what the pass looks
       // for is a THIRD rule the new text contradicts.
       if (replacement) void supersedeContradicted(handle, replacement, chatId);
-      return replacement ? { note: null, acted: true } : { note: { kind: 'failed', summary: 'updating that preference hit a snag', nextStep: 'ask them to try again' }, acted: false };
+      return replacement ? { result: null, acted: true } : fail('unavailable', 'updating that preference hit a snag', 'ask them to try again');
     }
-    return { note: null, acted: false };
+    return { result: null, acted: false };
   } catch (err) {
-    if (err instanceof MediumWriteError) return { note: snag('saving that preference'), acted: false };
+    if (err instanceof MediumWriteError) return snag('saving that preference');
     throw err;
   }
 }
@@ -2152,13 +2208,14 @@ async function resolvePendingApproval(a: {
  * sat there waiting. Settling it 'declined' is the honest reading of the same words.
  *
  * Chat-scoped like handleCancelResearch (the rows are keyed by chat), match-filtered the same way,
- * and returns how many it declined so the caller can drop a now-wrong correction note.
+ * and returns the rows it declined so the caller can drop a now-wrong correction note and keep them
+ * on the turn's ledger of what was cancelled.
  */
-async function declineParkedApprovals(chatId: string, sender: string | undefined, match: string): Promise<number> {
-  if (!opsApprovalGateEnabled()) return 0;
+async function declineParkedApprovals(chatId: string, sender: string | undefined, match: string): Promise<Array<{ id: string; request: string }>> {
+  if (!opsApprovalGateEnabled()) return [];
   const m = match.trim().toLowerCase();
   const parked = listPendingApprovals(chatId).filter(r => !m || r.request.toLowerCase().includes(m));
-  if (!parked.length) return 0;
+  if (!parked.length) return [];
   for (const row of parked) {
     settleOpsTask(row.id, 'declined');
     record({ type: 'event', label: 'ops:approval', chatId, taskId: row.id, detail: { decision: 'declined', taskId: row.id, via: 'cancel' } });
@@ -2173,7 +2230,7 @@ async function declineParkedApprovals(chatId: string, sender: string | undefined
     }
   }
   console.log(`[convo] cancel declined ${parked.length} parked action(s) (chat ${chatId})`);
-  return parked.length;
+  return parked;
 }
 
 /** The tool list a schema-echo lookup is done against when the caller passed no turn context of
@@ -2186,6 +2243,480 @@ async function declineParkedApprovals(chatId: string, sender: string | undefined
 let cachedFallbackTools: LlmToolDef[] | undefined;
 function fallbackConvoTools(): LlmToolDef[] {
   return (cachedFallbackTools ??= convoToolList({ engineName: 'hermes', isGroupChat: true }));
+}
+
+// ── The turn's effects ──────────────────────────────────────────────────────────────────────────
+// Everything the tool calls of ONE user-visible turn did, in one accumulator. It used to be a dozen
+// locals of processConvoResult, and that is how the 2026-09-23 reminder incident happened (see
+// convo/actionResults.ts): a successful schedule wrote its confirmation into a slot of its own, a
+// failed cancel beside it wrote into another, and the reply was assembled from whichever the
+// assembly happened to read. The results list below is the one record every acting call writes,
+// success or not, in the order it ran.
+//
+// The accumulator outlives a pass. A pass that recurses (the recall and error-log second passes,
+// the silent-turn retry, and later the outcome pass) hands its effects down as `carried`, so the
+// pass that ships the reply still holds the single delegation slot, every result the turn has
+// produced and the ledger of what it cancelled — none of it can be dropped by a second draft that
+// never saw it happen.
+
+/** One thing a cancel dropped this turn: a second cancel of it reads as `already`, never a miss. */
+export interface CancelledRef {
+  tool: 'cancel_automation' | 'cancel_research';
+  /** The engine's reminder id, the in-flight task id, or the parked row's id. */
+  id: string;
+  /** Its title or request, for a match-by-words cancel to be read against. */
+  label: string;
+}
+
+export interface TurnEffects {
+  /** Every acting call's result, in dispatch order, across passes. The reply is built from all of
+   *  it: a failure never erases a success beside it. */
+  results: ActionResult[];
+  /** The turn's ONE delegation slot, seeded with an approved parked action. */
+  delegatedTask: OpsTask | null;
+  /** True when the MODEL (or an approval it asked for) built `delegatedTask`, not the routing
+   *  floor. The salvage after dispatch reads it to discard an un-grounded answer tail. */
+  modelDelegated: boolean;
+  /** The model re-delegated work already in flight, so no task was built for it. */
+  suppressedDuplicate: boolean;
+  /** An action parked behind the user's approval (or a late yes that must be re-asked): the
+   *  question replaces her holding line, and the slot is held. */
+  parkedApproval: { request: string; variant: 'park' | 'reconfirm' } | null;
+  /** What this turn's cancels actually dropped. */
+  cancelled: CancelledRef[];
+  reaction: Reaction | null;
+  renameChat: string | null;
+  rememberedUser: ChatResponse['rememberedUser'];
+  removeMember: string | null;
+  /** A note landed this turn (the groomer's trigger), and the row it landed on. */
+  noteSaved: boolean;
+  savedNote: MediumEntry | null;
+  /** A directive that saved silently: a tool-only turn still owes it a tapback. */
+  directiveActed: boolean;
+  /** The model wrote the reply-language slot itself; the post-reply hook stands down. */
+  replyLanguageWrittenByTool: boolean;
+}
+
+export function newTurnEffects(): TurnEffects {
+  return {
+    results: [], delegatedTask: null, modelDelegated: false, suppressedDuplicate: false,
+    parkedApproval: null, cancelled: [], reaction: null, renameChat: null, rememberedUser: null,
+    removeMember: null, noteSaved: false, savedNote: null, directiveActed: false,
+    replyLanguageWrittenByTool: false,
+  };
+}
+
+/** What dispatch reads about the turn and never writes. */
+interface DispatchContext {
+  chatId: string;
+  handle: string | undefined;
+  chatContext: ChatContext | undefined;
+  textToSend: string;
+  media: IncomingMedia;
+  userTz: string | undefined;
+  /** This turn's comprehension score, which rides a delegated task (in-flight, never persisted). */
+  originConfidence: number | undefined;
+  /** What she holds about this ask, for the brief a delegation carries. */
+  heldForOps: () => { block: string; count: number };
+}
+
+/** What ONE pass's calls asked for that only a bounded second pass can answer. Per pass, never
+ *  carried: the second pass is exactly what answers them, and it runs without those tools. */
+interface PassCaptures {
+  /** The FIRST recall_memory query of the pass (one archive search per turn). */
+  recallQuery: string | null;
+  errorLogLimit: number | null;
+}
+
+/**
+ * Run one pass's tool calls against the turn's effects. The calls arrive already guarded, and each
+ * writes what it did into `effects`; what only a second pass can answer comes back as the pass's
+ * captures.
+ */
+async function dispatchToolCalls(calls: LlmToolCall[], effects: TurnEffects, ctx: DispatchContext): Promise<PassCaptures> {
+  const { chatId, handle, chatContext, textToSend, media } = ctx;
+  const captures: PassCaptures = { recallQuery: null, errorLogLimit: null };
+
+  for (const call of calls) {
+    const input = call.input;
+    if (call.name === 'send_reaction') {
+      const re = coerceReactionIndex(input.re);
+      if (input.type === 'custom' && input.emoji) effects.reaction = { type: 'custom', emoji: String(input.emoji), ...(re != null ? { re } : {}) };
+      // POSITIVE membership, never `!== 'custom'`. The old negative test let every other value
+      // through as a Reaction type — a missing `type` became `[reacted with undefined]` in the
+      // live transcript, and a hallucinated glyph would reach the channel as itself. The set is
+      // closed (tools.ts owns it), so an unknown type is a dropped arg, recorded as one.
+      else if (STANDARD_REACTION_TYPES.includes(input.type as StandardReactionType)) {
+        effects.reaction = { type: input.type as StandardReactionType, ...(re != null ? { re } : {}) };
+      } else {
+        record({
+          type: 'event', label: 'convo:tool_arg_ignored', chatId, handle,
+          detail: {
+            tool: 'send_reaction', arg: 'type', value: String(input.type ?? '').slice(0, 40),
+            reason: input.type === 'custom' ? 'custom_without_emoji' : 'not_a_tapback_type',
+          },
+        });
+      }
+    } else if (call.name === 'rename_group_chat') {
+      effects.renameChat = String(input.name);
+    } else if (call.name === 'remove_member') {
+      effects.removeMember = String(input.handle);
+    } else if (call.name === 'remember_user') {
+      // The MODEL picks the write target here — the one write key on a live turn that isn't
+      // bound to the sender. Unvalidated, that is a cross-user memory write: a hallucinated or
+      // context-scraped handle renames ANOTHER user in their own chats. Allow only the sender,
+      // or (group chats) a listed participant; anything else is dropped, never redirected —
+      // the model asserted whose info it is, and rerouting it to the sender would contaminate
+      // the sender's profile with someone else's fact instead.
+      const sender = chatContext?.senderHandle;
+      const requested = typeof input.handle === 'string' ? input.handle.trim() : '';
+      const allowed = !requested
+        || requested === sender
+        || (chatContext?.isGroupChat === true && (chatContext.participantNames ?? []).includes(requested));
+      if (!allowed) {
+        console.warn(`[convo] remember_user ignored: "${requested}" is not the sender or a participant of this chat (sender ${sender ?? 'unknown'})`);
+        // The dropped write is a LOST FACT, and until now it was visible only in a console line: the
+        // live slip was a nickname ("riv") passed as the handle, so the guard did its job and the
+        // thing the user had just said about themselves went nowhere. The value rides along because
+        // it IS the finding — a name here means the tool doc is being misread, not that someone is
+        // writing to a stranger.
+        record({
+          type: 'event', label: 'convo:tool_arg_ignored', chatId, handle,
+          detail: { tool: 'remember_user', arg: 'handle', value: requested.slice(0, 40), reason: 'not_sender_or_participant', group: chatContext?.isGroupChat === true },
+        });
+      } else {
+        const targetHandle = requested || sender;
+        if (targetHandle) {
+          let nameChanged = false, factChanged = false;
+          if (input.name) nameChanged = await setUserName(targetHandle, String(input.name));
+          // Who says so rides along with the fact (memory/provenance.ts). A missing or garbled
+          // basis is filed as a guess — never as something they said.
+          if (input.fact) factChanged = await addUserFact(targetHandle, String(input.fact), coerceBasis(input.basis));
+          if (nameChanged || factChanged) {
+            effects.rememberedUser = {
+              name: nameChanged ? String(input.name) : undefined,
+              fact: factChanged ? String(input.fact) : undefined,
+              isForSender: !requested || requested === sender,
+            };
+          }
+        }
+      }
+    } else if (call.name === 'set_preference' && handle) {
+      // Four routes out of this one tool: 'important_note' APPENDS to the remember-this ledger
+      // (a memory_medium row, rendered verbatim into every user-facing prompt); 'name' is a
+      // PROFILE column, not a pref; the two structured fact keys (comms_style, address_as —
+      // FACT_KEYS) dual-write to the medium tier + legacy prefs (soak window); every other key
+      // is a plain prefs overwrite.
+      if (String(input.key) === 'important_note' && input.value != null) {
+        try {
+          const saved = await addImportantNote(handle, String(input.value), 'convo', coerceBasis(input.basis));
+          if (saved) {
+            effects.results.push({ tool: 'set_preference', status: 'done', target: 'important_note', detail: "their note is saved — you'll keep it in mind" });
+            effects.noteSaved = true;
+            effects.savedNote = saved;
+          }
+        } catch (err) {
+          if (!(err instanceof MediumWriteError)) throw err;
+          // The old path silently mirrored a failed write and confirmed anyway; the medium tier
+          // is fail-loud — voice the snag instead of confirming a save that didn't happen.
+          effects.results.push({ tool: 'set_preference', status: 'unavailable', target: 'important_note', detail: 'saving that note hit a snag on your end', nextStep: 'ask them to try again in a minute' });
+        }
+      } else if (String(input.key) === 'name' && input.value != null && !isGroupHandle(handle)) {
+        // The dead-key bug: the persona and this tool both advertise key 'name', but the name
+        // every prompt renders is user_profiles.name — nothing has ever read prefs.name, so a
+        // model that used set_preference instead of remember_user saw its write silently
+        // vanish. Route it to the profile, and purge any stale prefs.name left by that era.
+        // Group identities skip this: a group has no person's name to set.
+        await setUserName(handle, String(input.value));
+        await setPreference(handle, 'name', undefined);
+      } else if (String(input.key) === REPLY_LANGUAGE_KEY) {
+        // The standing setting, and the reason it is not just another FACT_KEYS row: the write also
+        // retires whatever language RULE was standing, in one path (memory/replyLanguage.ts). Ahead
+        // of the FACT_KEYS branch deliberately — `reply_language` is in that set (it renders as a
+        // fact), so without this the plain dual-write would land and the old rule would survive.
+        const lang = sanitizeLanguageName(input.value);
+        if (lang) {
+          await setReplyLanguage(handle, lang, { source: 'convo', via: 'tool', prov: coerceBasis(input.basis), chatId });
+          effects.replyLanguageWrittenByTool = true;
+        } else {
+          // Not a language name — a sentence, an instruction, a stringified nothing. Dropped rather
+          // than trimmed into one: this value is obeyed by every lane until the user asks again.
+          record({
+            type: 'event', label: 'convo:tool_arg_ignored', chatId, handle,
+            detail: { tool: 'set_preference', arg: 'value', key: REPLY_LANGUAGE_KEY, value: String(input.value ?? '').slice(0, 40), reason: 'not_a_language_name' },
+          });
+        }
+      } else if (input.key && FACT_KEYS.has(String(input.key))) {
+        // Medium tier first; legacy prefs copy keeps the soak-window fallback readable. A medium
+        // failure here is logged, not voiced — fact writes have no confirmation beat to correct,
+        // and the prefs copy (which still wins at render time during the soak) stays current.
+        await upsertFact(handle, String(input.key), String(input.value ?? ''), 'convo', coerceBasis(input.basis))
+          .catch(err => console.error('[convo] medium fact write failed (prefs copy still written)', err));
+        await setPreference(handle, String(input.key), input.value);
+      } else if (input.key) await setPreference(handle, String(input.key), input.value);
+    } else if (call.name === 'delegate_to_ops' && chatContext?.senderHandle) {
+      // One delegation per turn wins (deterministic first-wins). delegatedTask is a single slot;
+      // without this guard a turn that emits BOTH a delegate_to_ops and a delegate_to_mm would build
+      // two tasks and silently drop whichever came first, leaving a holding promise nothing keeps.
+      // A NEW file always goes through delegate_to_mm first (the fast look); research that refers
+      // back to an already-seen file is THIS tool with media_scope "earlier" — Ops re-opens it.
+      // A PARKED action holds the same single slot: it is a delegation that happened, waiting on a
+      // yes, so a second call this turn would park a second row and ask about only one of them.
+      if (effects.delegatedTask || effects.parkedApproval) continue;
+      // If a recent look came up thin and Irises asked a steering question, this delegation is
+      // the refined second look: bump the attempt (so the composer does its soft "couldn't find
+      // it" + offer on a second miss, not another re-aim) and fold the original ask into the
+      // brief so Ops aims better. Bounded by TTL — worst case a brand-new topic during a pending
+      // window gets one extra "couldn't find it" framing, which is still fully in character.
+      let attempt = 1;
+      let metaPrompt = input.meta_prompt ? String(input.meta_prompt) : undefined;
+      const pending = await getPreference<PendingClarification>(chatContext.senderHandle, 'pending_clarification');
+      const isRefinement = !!(pending && typeof pending.at === 'number' && Date.now() - pending.at <= PENDING_CLARIFICATION_TTL_MS);
+      if (isRefinement) {
+        attempt = (pending!.attempt ?? 1) + 1;
+        // If triage identified the exact hole last time, name it so Ops confirms their reply fills it.
+        const asked = pending!.missingFields?.length
+          ? ` you specifically needed from them: ${pending!.missingFields.join('; ')} — their reply supplies it.`
+          : '';
+        const refine = `(this refines an earlier ask that came back thin: "${pending!.request}".${asked} the user has now narrowed it down — combine both and look properly.)`;
+        metaPrompt = metaPrompt ? `${refine}\n\n${metaPrompt}` : refine;
+      }
+
+      // Deterministic dedup backstop (the user's "don't redo the same thing 3x"). The injected
+      // active-ops context is the primary fix (Convo shouldn't re-delegate at all); this guarantees
+      // we never actually run Ops twice for the same ask even if the model ignores it. NEVER applied
+      // to a two-strike refinement (that re-delegation is deliberate).
+      const requestedKind = String(input.kind ?? '');
+      const opsKind: TaskKind = (OPS_KINDS as readonly string[]).includes(requestedKind) ? requestedKind as TaskKind : 'general';
+      if (opsKind !== requestedKind) console.warn(`[convo] delegate_to_ops kind "${requestedKind}" is not a TaskKind — coerced to 'general'`);
+      const opsRequest = String(input.request ?? textToSend);
+      // The acting half of the ask, read as a list of its own so nothing it carries can be lost to
+      // `request`'s single-ask distillation. Strict: anything that is not an array of real strings
+      // leaves the field OFF rather than tracking a half-truth — the honesty surfaces downstream
+      // read this as "what was really handed over", so an empty or garbled one must read as nothing
+      // asked, never as something asked and forgotten.
+      const engineActions = Array.isArray(input.engine_actions)
+        ? input.engine_actions.map(a => String(a ?? '').trim()).filter(Boolean)
+        : [];
+      // Would the ENGINE change something outside Irises to do this? Two sources, either sufficient:
+      // the model's own `effect` tag (it reads every language) and the English phrase list
+      // (agents/ops/sideEffects.ts). Read here, on the request as it will actually be sent, so the
+      // verdict and the brief can never describe different asks.
+      //
+      // The ACTIONS are screened with it, and that is load-bearing rather than tidy: the tool text
+      // tells the model that work on the engine's own side stays 'read', so an action on the USER's
+      // accounts filed as an engine action would hand the gate a request the action is not in — and
+      // the required-actions block would then render it as mandatory. Every entry is read exactly
+      // like the request, so the one argument that says a setup needs no yes cannot also carry a
+      // booking through. Newline-joined, because the lexicon is scanned per phrase, not per field.
+      const sideEffect = classifySideEffect([opsRequest, ...engineActions].join('\n'), coerceEffect(input.effect));
+      // 'general' is the tool-less-hint catch-all: the brief IS the steering. If the model
+      // skipped it, synthesize a minimal one from the request so Ops never runs blind.
+      if (opsKind === 'general' && !metaPrompt) {
+        metaPrompt = `The user asked: "${opsRequest}". Work out what they actually need, use whatever tools fit (the web, their email if connected, your own past chats), and return a concrete, useful answer.`;
+      }
+      // Attach the chat file(s) the research is grounded in, so Ops can open them itself
+      // (read_chat_attachment). Default: this turn's attachments ride along automatically (a safety
+      // net — new files normally route through delegate_to_mm first); media_scope 'earlier' recalls
+      // the 24h stash (the "yes, check it" follow-up after a file read + dangle); 'none' opts out for
+      // research unrelated to a file the same message happens to carry. An empty recall does NOT
+      // kill the delegation — the research may stand alone — but the brief tells Ops the file is
+      // gone so it answers honestly and asks for a resend if the file itself is essential.
+      const opsMediaScope = String(input.media_scope ?? '');
+      let opsMedia: IncomingMedia | undefined;
+      let opsRecalledAgeMs: number | undefined;
+      if (opsMediaScope !== 'none') {
+        if (opsMediaScope !== 'earlier' && hasMedia(media)) {
+          opsMedia = media;
+        } else if (opsMediaScope === 'earlier' && handle) {
+          const rec = await recallMedia(handle, chatId);
+          if (rec && Date.now() - rec.at <= MEDIA_RECALL_TTL_MS) {
+            opsMedia = rec.media;
+            opsRecalledAgeMs = Date.now() - rec.at;
+          } else {
+            const gone = "(note: the file they're referring back to is no longer retrievable — answer what you can without it, and if the file itself is required, say so and ask them to resend it.)";
+            metaPrompt = metaPrompt ? `${gone}\n\n${metaPrompt}` : gone;
+          }
+        }
+      }
+      if (!isRefinement) {
+        // ONLY 'in_flight' suppresses: the original task's follow-up is genuinely coming, so the
+        // model's fresh holding line stays honest. A 'recent' duplicate is NOT suppressed anymore:
+        // the model has already written a holding text promising a follow-up, and suppressing here
+        // made that a promise nothing would ever keep — the user sat waiting until they asked
+        // "how's it going?". Re-running a just-answered ask costs one redundant Ops run; a dangling
+        // "pulling that up" costs their trust. (The cheap path for a 'recent' repeat remains the
+        // PROMPT: Convo is told to answer same-topic follow-ups from recent_research directly.)
+        const dup = isDuplicateDelegation(chatId, opsKind, opsRequest);
+        if (dup === 'in_flight') {
+          effects.suppressedDuplicate = true;
+          console.log(`[convo] suppressing duplicate delegation (${opsKind}) — already in flight`);
+        }
+      }
+      if (effects.suppressedDuplicate) continue;
+
+      // What she holds about this ask goes out WITH the look — the engine keeps no part of her
+      // memory, so anything the request refers to by first name is otherwise a question it has to
+      // come back and ask. In its own field: `metaPrompt` stays the model's own words (the engine's
+      // primary instruction, and the text the walled-URL scan reads), and a kind that wrote no
+      // brief sends none rather than sending her notes as the assignment.
+      const held = ctx.heldForOps();
+      const built: OpsTask = {
+        id: randomUUID(),
+        chatId,
+        agentHandle: chatContext.senderHandle,
+        kind: opsKind,
+        request: opsRequest,
+        effect: sideEffect.effect,
+        metaPrompt,
+        ...(engineActions.length ? { engineActions } : {}),
+        heldMemory: held.block || undefined,
+        memoryHits: held.count,
+        addressHint: input.address ? String(input.address) : undefined,
+        dealHint: input.deal_ref ? String(input.deal_ref) : undefined,
+        replyToMessageId: chatContext?.incomingMessageId,
+        attempt,
+        // This turn's comprehension score rides the task (in-flight, never persisted) so the
+        // composer can caveat a look launched from a shaky read.
+        originConfidence: ctx.originConfidence,
+        media: opsMedia,
+        recalledAgeMs: opsRecalledAgeMs,
+        createdAt: Date.now(),
+      };
+
+      // ── The approval gate (OPS_APPROVAL_GATE, default ON) ─────────────────────────────────────
+      // An action in the world does not start because a model called a tool. It is PARKED — a
+      // durable `pending_approval` row that outlives this process, a pref beside
+      // pending_clarification for the next turn to resolve, and no task handed back, which is the
+      // whole mechanism: index.ts kicks off ONLY from `delegatedTask`, so a null one cannot start
+      // anything and INV-1 (markOpsStart inside the lock) is untouched because nothing is marked.
+      // Task 38 turns the answer into a run.
+      if (opsApprovalGateEnabled()) {
+        if (built.effect === 'act') {
+          const askedAt = Date.now();
+          built.approval = { askedAt };
+          // The whole task is serialized into the row (every field is JSON-safe) so the yes can run
+          // exactly the brief she asked about, even after a restart. Row keyed by chat like every
+          // other ops_tasks row; the pref keyed by sender like every other agent_prefs marker.
+          const parked = insertPendingApproval({
+            id: built.id, chatId, kind: built.kind, request: built.request, meta: { task: built },
+          }, askedAt);
+          if (!parked) {
+            // Not fatal to the turn — she still asks, and a yes on the next turn still finds the
+            // pref. What is lost is the row that would have carried the brief across a restart, and
+            // the same receipt Task 35's sink files makes that silence readable.
+            record({ type: 'event', chatId, taskId: built.id, label: 'ops:durable-write-lost', detail: { taskId: built.id, kind: built.kind, at: 'approval' } });
+          }
+          await setPreference(chatContext.senderHandle, 'pending_approval', {
+            // The actions ride the marker as well as the row: the marker is the fallback the resume
+            // builds from when the row is gone, and a yes that dropped the work half would authorize
+            // a different brief than the one she asked about.
+            taskId: built.id, request: built.request, kind: built.kind, askedAt,
+            ...(built.engineActions?.length ? { engineActions: built.engineActions } : {}),
+          }).catch(err => console.error('[convo] failed to persist pending_approval', err));
+          record({ type: 'event', label: 'ops:approval', chatId, handle, detail: { decision: 'requested', trigger: sideEffect.trigger, taskId: built.id } });
+          // chatId in the line: the park is invisible otherwise — nothing starts, nothing is marked.
+          console.log(`[convo] parked an action behind the user's approval (${sideEffect.trigger}, chat ${chatId})`);
+          effects.parkedApproval = { request: built.request, variant: 'park' };
+          continue;
+        }
+        // Fires on the NO-OP path too: a read delegation is the answer the gate gives thousands of
+        // times for every park, and a receipt that only appeared when it fired would leave the
+        // false-positive rate unreadable.
+        record({ type: 'event', label: 'ops:approval', chatId, handle, detail: { decision: 'not_needed', trigger: sideEffect.trigger } });
+      }
+
+      effects.modelDelegated = true;
+      effects.delegatedTask = built;
+    } else if (call.name === 'update_memory' && handle) {
+      // Silent memory ASK. The ENGINE owns its long-term user model (per-chat engine session
+      // memory) — this requests a reconciliation fire-and-forget (the engine decides what to
+      // keep; Irises never writes engine storage), so it can coexist with a research delegation
+      // in the same turn. Irises's own tiers are written only via its own tools.
+      const engine = getEngineBackend();
+      const note = String(input.request ?? textToSend);
+      if (engine && note.trim()) {
+        // Through the engine slot: this is a full agent run on the engine (its memory loop thinks
+        // about the note), so an unmetered fire-and-forget could push a chatty turn past the
+        // engine's concurrency cap and 429 a real delegation that was already waiting.
+        void withEngineSlot(() => engine.remember(chatId, handle, note))
+          .catch(err => console.warn('[convo] engine remember failed', err));
+      }
+    } else if (call.name === 'schedule_automation' && chatContext?.senderHandle) {
+      // Automations stay SENDER-owned even in groups: a group-owned needs_ops automation would
+      // run Ops under a pseudo-handle nothing else recognizes. The chatId on the row
+      // is still this chat, so a reminder scheduled from a group fires back into the group.
+      effects.results.push(await handleScheduleAutomation(input, chatContext.senderHandle, chatId, ctx.userTz));
+    } else if (call.name === 'list_automations' && chatContext?.senderHandle) {
+      effects.results.push(await renderAutomationsList(chatContext.senderHandle, chatId, ctx.userTz || DEFAULT_TZ));
+    } else if (call.name === 'cancel_automation' && chatContext?.senderHandle) {
+      const match = String(input.match ?? '');
+      const { result, cancelled } = await handleCancelAutomation(match, chatContext.senderHandle, chatId);
+      effects.results.push(result);
+      if (cancelled) effects.cancelled.push({ tool: 'cancel_automation', id: cancelled.id, label: cancelled.title });
+    } else if (call.name === 'cancel_research') {
+      // An action still waiting on their yes is cancelled by DECLINING it — nothing is in flight for
+      // requestOpsCancel to stop, so without this the parked row would sit there while she told them
+      // nothing was running.
+      const match = String(input.match ?? '');
+      const declined = await declineParkedApprovals(chatId, chatContext?.senderHandle, match);
+      if (declined.length) {
+        effects.results.push({
+          tool: 'cancel_research', status: 'done', target: declined.map(r => r.request).join('; '),
+          detail: 'the action that was waiting on their go-ahead is dropped, and nothing of it ran',
+        });
+      }
+      // Chat-scoped (works in groups, needs no handle) and synchronous — the in-flight map is the
+      // authority and the flag must be set before this turn's reply goes out. Still consulted after
+      // a decline, because a real look may ALSO be running for this chat; only its "nothing is being
+      // looked up" miss is dropped, since a park was just dropped and that miss would contradict it.
+      const { result, cancelled } = cancelResearch(match, chatId);
+      if (!(declined.length && result.status === 'not_found')) effects.results.push(result);
+      for (const row of declined) effects.cancelled.push({ tool: 'cancel_research', id: row.id, label: row.request });
+      for (const run of cancelled) effects.cancelled.push({ tool: 'cancel_research', id: run.taskId, label: run.request });
+    } else if (call.name === 'steer_research') {
+      // Same chat-scoped, synchronous map as the cancel above, and for the same reason: her ack goes
+      // out this turn, so the decision has to be in hand before it does. The delivery POST itself is
+      // dispatched inside and never awaited (see steerResearch).
+      const steerActions = Array.isArray(input.engine_actions)
+        ? input.engine_actions.map(a => String(a ?? '').trim()).filter(Boolean)
+        : [];
+      const steered = steerResearch(String(input.match ?? ''), String(input.guidance ?? ''), chatId, handle ?? '', getEngineBackend(), steerActions);
+      if (steered) effects.results.push(steered);
+    } else if (call.name === 'recall_memory') {
+      // Just captured here — the search + the answer happen in one bounded second pass after
+      // the loop (Convo is single-shot, so a result can't come back inside this call).
+      const q = String(input.query ?? '').trim();
+      if (q && captures.recallQuery == null) captures.recallQuery = q;
+    } else if (call.name === 'check_error_log') {
+      // Captured here, executed after the loop in its own bounded second pass.
+      if (captures.errorLogLimit == null) {
+        const raw = Number(input.limit ?? 5);
+        captures.errorLogLimit = Math.min(Math.max(Math.round(isFinite(raw) ? raw : 5), 1), 15);
+      }
+    } else if (call.name === 'update_directives' && handle) {
+      // A language ask saved as a RULE is the old vocabulary — the tool doc now sends it to
+      // set_preference, but a model that reaches for the rule anyway must not create the thing the
+      // slot exists to replace. Routed by SHAPE (memory/standingSettings.ts), so the row is never
+      // written and the ask still lands as the standing setting it is.
+      const dirOp = String(input.op ?? '').toLowerCase();
+      const asLanguage = dirOp === 'add' || dirOp === 'update'
+        ? parseLanguageDirective(String(input.text ?? ''))
+        : null;
+      if (asLanguage) {
+        await setReplyLanguage(handle, asLanguage, { source: 'convo', via: 'tool', chatId });
+        effects.replyLanguageWrittenByTool = true;
+        // The turn still owes an acknowledgment beat: the setting DID land, so a tool-only envelope
+        // must not fall through to the silent-turn floor.
+        effects.directiveActed = true;
+      } else {
+        const { result, acted } = await handleUpdateDirectives(input, handle, chatId);
+        if (result) effects.results.push(result);
+        else if (acted) effects.directiveActed = true;
+      }
+    }
+  }
+  return captures;
 }
 
 /**
@@ -2210,6 +2741,11 @@ export async function processConvoResult(args: {
   archivePass?: boolean;
   // True when THIS pass IS the silent-turn retry — the fence that caps recovery at one extra call.
   silentRetry?: boolean;
+  // What an EARLIER pass of this same user-visible turn already did (TurnEffects): its delegation
+  // slot, every result it produced and the ledger of what it cancelled. Set by whichever pass
+  // recursed, never by an outside caller, so the pass that ships the reply builds it from the whole
+  // turn instead of from its own draft alone.
+  carried?: TurnEffects;
   // True when an EARLIER pass of this same user-visible turn already spent its one corrective
   // re-ask (either guard's). Set by whichever pass recursed, never by an outside caller. The quiet
   // guard on this pass then evaluates and reports as usual — it is the shipping reply, so somebody
@@ -2422,31 +2958,21 @@ export async function processConvoResult(args: {
   // wherever the shipped text stops being this parse's text — a voiced fallback that REPLACES it is
   // Fallfirm's list, not the capped one, and reporting the cap there would be a wrong receipt.
   let hardCapped = reply.hardCapped;
-  let reaction: Reaction | null = null;
-  let renameChat: string | null = null;
-  let rememberedUser: ChatResponse['rememberedUser'] = null;
-  let removeMember: string | null = null;
-  // Seeded with the action the user just authorized, promoted above.
-  let delegatedTask: OpsTask | null = settledTask;
-  // Set when the approval gate parked an action instead of handing it back for kickoff: the request
-  // she is about to ask them about. Its presence is what replaces her holding line with a question
-  // and keeps the routing floor off a turn that deliberately delegated nothing. A yes that arrived
-  // too late seeds it as a 'reconfirm': she re-asks through the same mechanism the park uses, and
-  // the floors that fire on "nothing was delegated" stand down for the same reason they do there.
-  let parkedApproval: { request: string; variant: 'park' | 'reconfirm' } | null =
-    settledReconfirm ? { request: settledReconfirm, variant: 'reconfirm' } : null;
-  // True when the MODEL (not the routing gate below) built delegatedTask, so the salvage after the
-  // loop knows to discard its un-grounded answer tail. Convo is single-shot — it never sees Ops'
-  // result — so any substantive claim it wrote alongside a delegation is un-grounded, and the
-  // composer re-answers the same facts from the real result, doubling them on the user's screen.
-  // A promoted approval sets it for that same reason: the line she wrote beside it ("okay, sending
-  // it now") is un-grounded and the composer is coming back with the real outcome, while the
-  // salvage below keeps the holding half.
-  let modelDelegated = settledTask !== null;
-  // True when the model called delegate_to_ops but it was a deterministic duplicate of work
-  // already running / just answered, so we skipped building the task. Used as a last-resort
-  // fallback so the turn is never silent if the model also wrote no text.
-  let suppressedDuplicate = false;
+  // What this turn's calls do, and what an earlier pass of the same turn already did (TurnEffects,
+  // above). A first pass starts fresh and seeds the delegation slot with the action the user just
+  // authorized, promoted above, so the slot is held before the model's own calls run: it cannot
+  // delegate over the top of work they just said yes to. A yes that arrived too late seeds a
+  // 'reconfirm' park instead: she re-asks through the same mechanism the park uses, and the floors
+  // that fire on "nothing was delegated" stand down for the same reason they do there.
+  const effects = args.carried ?? newTurnEffects();
+  if (settledTask && !effects.delegatedTask) {
+    effects.delegatedTask = settledTask;
+    // A promoted approval counts as the model's own delegation: the line she wrote beside it ("okay,
+    // sending it now") is un-grounded and the composer is coming back with the real outcome, while
+    // the salvage below keeps the holding half.
+    effects.modelDelegated = true;
+  }
+  if (settledReconfirm && !effects.parkedApproval) effects.parkedApproval = { request: settledReconfirm, variant: 'reconfirm' };
   // Which way the routing floor went, set on every turn it was EVALUATED on and left undefined on
   // the turns that never reached it (a delegation already built, the recall second pass, no memory
   // identity). Rides the turn receipt so a month of turns can be bucketed by it.
@@ -2455,410 +2981,24 @@ export async function processConvoResult(args: {
   // above may have replaced the reply, so the honest reading is of what is being processed now) and
   // read once, by the turn receipt. False on every turn the selector did not force quiet.
   let hookViolation = false;
-  // Tool OUTCOMES appended after the model's text (an automations list, or a correction note when a
-  // schedule/cancel/directive couldn't be carried out) — the model couldn't foresee these (it's
-  // single-shot), so Fallfirm voices each in Irises's tone at assembly time.
-  const outcomeParts: Outcome[] = [];
-  // A guaranteed confirmation for a successful schedule, voiced by Fallfirm ONLY as a fallback when
-  // the model called schedule_automation but wrote no text of its own.
-  let scheduleConfirmation: Outcome | null = null;
-  // And for "remember this": a saved important note must never be met with silence.
-  let noteConfirmation: Outcome | null = null;
-  // A note actually landed this turn — the groomer's trigger (see the post-reply block).
-  let noteSaved = false;
-  // …and the row it landed on, which the contradiction pass retires stale notes in the name of.
-  let savedNote: MediumEntry | null = null;
-  // A directive/preference that saved silently (no failure note) — the turn must still acknowledge it
-  // (a tapback, or a voiced line on SMS) so a tool-only reply never leaves the user hanging.
-  let directiveActed = false;
-  // The model already wrote the reply-language slot itself this turn (set_preference, or a language
-  // it tried to save as a rule). The post-reply hook reads this and stands down: a second write
-  // would repeat the value and run the supersede pass twice over rows that are already retired.
-  let replyLanguageWrittenByTool = false;
-  // The FIRST recall_memory query this turn (a second call in the same envelope is ignored — one
-  // archive search per turn, and the second pass below is what answers from it).
-  let recallQuery: string | null = null;
-  let errorLogLimit: number | null = null;
 
-  for (const call of res.toolCalls) {
-    const input = call.input;
-    if (call.name === 'send_reaction') {
-      const re = coerceReactionIndex(input.re);
-      if (input.type === 'custom' && input.emoji) reaction = { type: 'custom', emoji: String(input.emoji), ...(re != null ? { re } : {}) };
-      // POSITIVE membership, never `!== 'custom'`. The old negative test let every other value
-      // through as a Reaction type — a missing `type` became `[reacted with undefined]` in the
-      // live transcript, and a hallucinated glyph would reach the channel as itself. The set is
-      // closed (tools.ts owns it), so an unknown type is a dropped arg, recorded as one.
-      else if (STANDARD_REACTION_TYPES.includes(input.type as StandardReactionType)) {
-        reaction = { type: input.type as StandardReactionType, ...(re != null ? { re } : {}) };
-      } else {
-        record({
-          type: 'event', label: 'convo:tool_arg_ignored', chatId, handle,
-          detail: {
-            tool: 'send_reaction', arg: 'type', value: String(input.type ?? '').slice(0, 40),
-            reason: input.type === 'custom' ? 'custom_without_emoji' : 'not_a_tapback_type',
-          },
-        });
-      }
-    } else if (call.name === 'rename_group_chat') {
-      renameChat = String(input.name);
-    } else if (call.name === 'remove_member') {
-      removeMember = String(input.handle);
-    } else if (call.name === 'remember_user') {
-      // The MODEL picks the write target here — the one write key on a live turn that isn't
-      // bound to the sender. Unvalidated, that is a cross-user memory write: a hallucinated or
-      // context-scraped handle renames ANOTHER user in their own chats. Allow only the sender,
-      // or (group chats) a listed participant; anything else is dropped, never redirected —
-      // the model asserted whose info it is, and rerouting it to the sender would contaminate
-      // the sender's profile with someone else's fact instead.
-      const sender = chatContext?.senderHandle;
-      const requested = typeof input.handle === 'string' ? input.handle.trim() : '';
-      const allowed = !requested
-        || requested === sender
-        || (chatContext?.isGroupChat === true && (chatContext.participantNames ?? []).includes(requested));
-      if (!allowed) {
-        console.warn(`[convo] remember_user ignored: "${requested}" is not the sender or a participant of this chat (sender ${sender ?? 'unknown'})`);
-        // The dropped write is a LOST FACT, and until now it was visible only in a console line: the
-        // live slip was a nickname ("riv") passed as the handle, so the guard did its job and the
-        // thing the user had just said about themselves went nowhere. The value rides along because
-        // it IS the finding — a name here means the tool doc is being misread, not that someone is
-        // writing to a stranger.
-        record({
-          type: 'event', label: 'convo:tool_arg_ignored', chatId, handle,
-          detail: { tool: 'remember_user', arg: 'handle', value: requested.slice(0, 40), reason: 'not_sender_or_participant', group: chatContext?.isGroupChat === true },
-        });
-      } else {
-        const targetHandle = requested || sender;
-        if (targetHandle) {
-          let nameChanged = false, factChanged = false;
-          if (input.name) nameChanged = await setUserName(targetHandle, String(input.name));
-          // Who says so rides along with the fact (memory/provenance.ts). A missing or garbled
-          // basis is filed as a guess — never as something they said.
-          if (input.fact) factChanged = await addUserFact(targetHandle, String(input.fact), coerceBasis(input.basis));
-          if (nameChanged || factChanged) {
-            rememberedUser = {
-              name: nameChanged ? String(input.name) : undefined,
-              fact: factChanged ? String(input.fact) : undefined,
-              isForSender: !requested || requested === sender,
-            };
-          }
-        }
-      }
-    } else if (call.name === 'set_preference' && handle) {
-      // Four routes out of this one tool: 'important_note' APPENDS to the remember-this ledger
-      // (a memory_medium row, rendered verbatim into every user-facing prompt); 'name' is a
-      // PROFILE column, not a pref; the two structured fact keys (comms_style, address_as —
-      // FACT_KEYS) dual-write to the medium tier + legacy prefs (soak window); every other key
-      // is a plain prefs overwrite.
-      if (String(input.key) === 'important_note' && input.value != null) {
-        try {
-          const saved = await addImportantNote(handle, String(input.value), 'convo', coerceBasis(input.basis));
-          if (saved) {
-            noteConfirmation = { kind: 'confirmed', summary: "their note is saved — you'll keep it in mind" };
-            noteSaved = true;
-            savedNote = saved;
-          }
-        } catch (err) {
-          if (!(err instanceof MediumWriteError)) throw err;
-          // The old path silently mirrored a failed write and confirmed anyway; the medium tier
-          // is fail-loud — voice the snag instead of confirming a save that didn't happen.
-          noteConfirmation = { kind: 'failed', summary: 'saving that note hit a snag on your end', nextStep: 'ask them to try again in a minute' };
-        }
-      } else if (String(input.key) === 'name' && input.value != null && !isGroupHandle(handle)) {
-        // The dead-key bug: the persona and this tool both advertise key 'name', but the name
-        // every prompt renders is user_profiles.name — nothing has ever read prefs.name, so a
-        // model that used set_preference instead of remember_user saw its write silently
-        // vanish. Route it to the profile, and purge any stale prefs.name left by that era.
-        // Group identities skip this: a group has no person's name to set.
-        await setUserName(handle, String(input.value));
-        await setPreference(handle, 'name', undefined);
-      } else if (String(input.key) === REPLY_LANGUAGE_KEY) {
-        // The standing setting, and the reason it is not just another FACT_KEYS row: the write also
-        // retires whatever language RULE was standing, in one path (memory/replyLanguage.ts). Ahead
-        // of the FACT_KEYS branch deliberately — `reply_language` is in that set (it renders as a
-        // fact), so without this the plain dual-write would land and the old rule would survive.
-        const lang = sanitizeLanguageName(input.value);
-        if (lang) {
-          await setReplyLanguage(handle, lang, { source: 'convo', via: 'tool', prov: coerceBasis(input.basis), chatId });
-          replyLanguageWrittenByTool = true;
-        } else {
-          // Not a language name — a sentence, an instruction, a stringified nothing. Dropped rather
-          // than trimmed into one: this value is obeyed by every lane until the user asks again.
-          record({
-            type: 'event', label: 'convo:tool_arg_ignored', chatId, handle,
-            detail: { tool: 'set_preference', arg: 'value', key: REPLY_LANGUAGE_KEY, value: String(input.value ?? '').slice(0, 40), reason: 'not_a_language_name' },
-          });
-        }
-      } else if (input.key && FACT_KEYS.has(String(input.key))) {
-        // Medium tier first; legacy prefs copy keeps the soak-window fallback readable. A medium
-        // failure here is logged, not voiced — fact writes have no confirmation beat to correct,
-        // and the prefs copy (which still wins at render time during the soak) stays current.
-        await upsertFact(handle, String(input.key), String(input.value ?? ''), 'convo', coerceBasis(input.basis))
-          .catch(err => console.error('[convo] medium fact write failed (prefs copy still written)', err));
-        await setPreference(handle, String(input.key), input.value);
-      } else if (input.key) await setPreference(handle, String(input.key), input.value);
-    } else if (call.name === 'delegate_to_ops' && chatContext?.senderHandle) {
-      // One delegation per turn wins (deterministic first-wins). delegatedTask is a single slot;
-      // without this guard a turn that emits BOTH a delegate_to_ops and a delegate_to_mm would build
-      // two tasks and silently drop whichever came first, leaving a holding promise nothing keeps.
-      // A NEW file always goes through delegate_to_mm first (the fast look); research that refers
-      // back to an already-seen file is THIS tool with media_scope "earlier" — Ops re-opens it.
-      // A PARKED action holds the same single slot: it is a delegation that happened, waiting on a
-      // yes, so a second call this turn would park a second row and ask about only one of them.
-      if (delegatedTask || parkedApproval) continue;
-      // If a recent look came up thin and Irises asked a steering question, this delegation is
-      // the refined second look: bump the attempt (so the composer does its soft "couldn't find
-      // it" + offer on a second miss, not another re-aim) and fold the original ask into the
-      // brief so Ops aims better. Bounded by TTL — worst case a brand-new topic during a pending
-      // window gets one extra "couldn't find it" framing, which is still fully in character.
-      let attempt = 1;
-      let metaPrompt = input.meta_prompt ? String(input.meta_prompt) : undefined;
-      const pending = await getPreference<PendingClarification>(chatContext.senderHandle, 'pending_clarification');
-      const isRefinement = !!(pending && typeof pending.at === 'number' && Date.now() - pending.at <= PENDING_CLARIFICATION_TTL_MS);
-      if (isRefinement) {
-        attempt = (pending!.attempt ?? 1) + 1;
-        // If triage identified the exact hole last time, name it so Ops confirms their reply fills it.
-        const asked = pending!.missingFields?.length
-          ? ` you specifically needed from them: ${pending!.missingFields.join('; ')} — their reply supplies it.`
-          : '';
-        const refine = `(this refines an earlier ask that came back thin: "${pending!.request}".${asked} the user has now narrowed it down — combine both and look properly.)`;
-        metaPrompt = metaPrompt ? `${refine}\n\n${metaPrompt}` : refine;
-      }
-
-      // Deterministic dedup backstop (the user's "don't redo the same thing 3x"). The injected
-      // active-ops context is the primary fix (Convo shouldn't re-delegate at all); this guarantees
-      // we never actually run Ops twice for the same ask even if the model ignores it. NEVER applied
-      // to a two-strike refinement (that re-delegation is deliberate).
-      const requestedKind = String(input.kind ?? '');
-      const opsKind: TaskKind = (OPS_KINDS as readonly string[]).includes(requestedKind) ? requestedKind as TaskKind : 'general';
-      if (opsKind !== requestedKind) console.warn(`[convo] delegate_to_ops kind "${requestedKind}" is not a TaskKind — coerced to 'general'`);
-      const opsRequest = String(input.request ?? textToSend);
-      // The acting half of the ask, read as a list of its own so nothing it carries can be lost to
-      // `request`'s single-ask distillation. Strict: anything that is not an array of real strings
-      // leaves the field OFF rather than tracking a half-truth — the honesty surfaces downstream
-      // read this as "what was really handed over", so an empty or garbled one must read as nothing
-      // asked, never as something asked and forgotten.
-      const engineActions = Array.isArray(input.engine_actions)
-        ? input.engine_actions.map(a => String(a ?? '').trim()).filter(Boolean)
-        : [];
-      // Would the ENGINE change something outside Irises to do this? Two sources, either sufficient:
-      // the model's own `effect` tag (it reads every language) and the English phrase list
-      // (agents/ops/sideEffects.ts). Read here, on the request as it will actually be sent, so the
-      // verdict and the brief can never describe different asks.
-      //
-      // The ACTIONS are screened with it, and that is load-bearing rather than tidy: the tool text
-      // tells the model that work on the engine's own side stays 'read', so an action on the USER's
-      // accounts filed as an engine action would hand the gate a request the action is not in — and
-      // the required-actions block would then render it as mandatory. Every entry is read exactly
-      // like the request, so the one argument that says a setup needs no yes cannot also carry a
-      // booking through. Newline-joined, because the lexicon is scanned per phrase, not per field.
-      const sideEffect = classifySideEffect([opsRequest, ...engineActions].join('\n'), coerceEffect(input.effect));
-      // 'general' is the tool-less-hint catch-all: the brief IS the steering. If the model
-      // skipped it, synthesize a minimal one from the request so Ops never runs blind.
-      if (opsKind === 'general' && !metaPrompt) {
-        metaPrompt = `The user asked: "${opsRequest}". Work out what they actually need, use whatever tools fit (the web, their email if connected, your own past chats), and return a concrete, useful answer.`;
-      }
-      // Attach the chat file(s) the research is grounded in, so Ops can open them itself
-      // (read_chat_attachment). Default: this turn's attachments ride along automatically (a safety
-      // net — new files normally route through delegate_to_mm first); media_scope 'earlier' recalls
-      // the 24h stash (the "yes, check it" follow-up after a file read + dangle); 'none' opts out for
-      // research unrelated to a file the same message happens to carry. An empty recall does NOT
-      // kill the delegation — the research may stand alone — but the brief tells Ops the file is
-      // gone so it answers honestly and asks for a resend if the file itself is essential.
-      const opsMediaScope = String(input.media_scope ?? '');
-      let opsMedia: IncomingMedia | undefined;
-      let opsRecalledAgeMs: number | undefined;
-      if (opsMediaScope !== 'none') {
-        if (opsMediaScope !== 'earlier' && hasMedia(media)) {
-          opsMedia = media;
-        } else if (opsMediaScope === 'earlier' && handle) {
-          const rec = await recallMedia(handle, chatId);
-          if (rec && Date.now() - rec.at <= MEDIA_RECALL_TTL_MS) {
-            opsMedia = rec.media;
-            opsRecalledAgeMs = Date.now() - rec.at;
-          } else {
-            const gone = "(note: the file they're referring back to is no longer retrievable — answer what you can without it, and if the file itself is required, say so and ask them to resend it.)";
-            metaPrompt = metaPrompt ? `${gone}\n\n${metaPrompt}` : gone;
-          }
-        }
-      }
-      if (!isRefinement) {
-        // ONLY 'in_flight' suppresses: the original task's follow-up is genuinely coming, so the
-        // model's fresh holding line stays honest. A 'recent' duplicate is NOT suppressed anymore:
-        // the model has already written a holding text promising a follow-up, and suppressing here
-        // made that a promise nothing would ever keep — the user sat waiting until they asked
-        // "how's it going?". Re-running a just-answered ask costs one redundant Ops run; a dangling
-        // "pulling that up" costs their trust. (The cheap path for a 'recent' repeat remains the
-        // PROMPT: Convo is told to answer same-topic follow-ups from recent_research directly.)
-        const dup = isDuplicateDelegation(chatId, opsKind, opsRequest);
-        if (dup === 'in_flight') {
-          suppressedDuplicate = true;
-          console.log(`[convo] suppressing duplicate delegation (${opsKind}) — already in flight`);
-        }
-      }
-      if (suppressedDuplicate) continue;
-
-      // What she holds about this ask goes out WITH the look — the engine keeps no part of her
-      // memory, so anything the request refers to by first name is otherwise a question it has to
-      // come back and ask. In its own field: `metaPrompt` stays the model's own words (the engine's
-      // primary instruction, and the text the walled-URL scan reads), and a kind that wrote no
-      // brief sends none rather than sending her notes as the assignment.
-      const held = heldForOps(args.relevance?.hits ?? []);
-      const built: OpsTask = {
-        id: randomUUID(),
-        chatId,
-        agentHandle: chatContext.senderHandle,
-        kind: opsKind,
-        request: opsRequest,
-        effect: sideEffect.effect,
-        metaPrompt,
-        ...(engineActions.length ? { engineActions } : {}),
-        heldMemory: held.block || undefined,
-        memoryHits: held.count,
-        addressHint: input.address ? String(input.address) : undefined,
-        dealHint: input.deal_ref ? String(input.deal_ref) : undefined,
-        replyToMessageId: chatContext?.incomingMessageId,
-        attempt,
-        // This turn's comprehension score rides the task (in-flight, never persisted) so the
-        // composer can caveat a look launched from a shaky read.
-        originConfidence: reply.confidenceLevel,
-        media: opsMedia,
-        recalledAgeMs: opsRecalledAgeMs,
-        createdAt: Date.now(),
-      };
-
-      // ── The approval gate (OPS_APPROVAL_GATE, default ON) ─────────────────────────────────────
-      // An action in the world does not start because a model called a tool. It is PARKED — a
-      // durable `pending_approval` row that outlives this process, a pref beside
-      // pending_clarification for the next turn to resolve, and no task handed back, which is the
-      // whole mechanism: index.ts kicks off ONLY from `delegatedTask`, so a null one cannot start
-      // anything and INV-1 (markOpsStart inside the lock) is untouched because nothing is marked.
-      // Task 38 turns the answer into a run.
-      if (opsApprovalGateEnabled()) {
-        if (built.effect === 'act') {
-          const askedAt = Date.now();
-          built.approval = { askedAt };
-          // The whole task is serialized into the row (every field is JSON-safe) so the yes can run
-          // exactly the brief she asked about, even after a restart. Row keyed by chat like every
-          // other ops_tasks row; the pref keyed by sender like every other agent_prefs marker.
-          const parked = insertPendingApproval({
-            id: built.id, chatId, kind: built.kind, request: built.request, meta: { task: built },
-          }, askedAt);
-          if (!parked) {
-            // Not fatal to the turn — she still asks, and a yes on the next turn still finds the
-            // pref. What is lost is the row that would have carried the brief across a restart, and
-            // the same receipt Task 35's sink files makes that silence readable.
-            record({ type: 'event', chatId, taskId: built.id, label: 'ops:durable-write-lost', detail: { taskId: built.id, kind: built.kind, at: 'approval' } });
-          }
-          await setPreference(chatContext.senderHandle, 'pending_approval', {
-            // The actions ride the marker as well as the row: the marker is the fallback the resume
-            // builds from when the row is gone, and a yes that dropped the work half would authorize
-            // a different brief than the one she asked about.
-            taskId: built.id, request: built.request, kind: built.kind, askedAt,
-            ...(built.engineActions?.length ? { engineActions: built.engineActions } : {}),
-          }).catch(err => console.error('[convo] failed to persist pending_approval', err));
-          record({ type: 'event', label: 'ops:approval', chatId, handle, detail: { decision: 'requested', trigger: sideEffect.trigger, taskId: built.id } });
-          // chatId in the line: the park is invisible otherwise — nothing starts, nothing is marked.
-          console.log(`[convo] parked an action behind the user's approval (${sideEffect.trigger}, chat ${chatId})`);
-          parkedApproval = { request: built.request, variant: 'park' };
-          continue;
-        }
-        // Fires on the NO-OP path too: a read delegation is the answer the gate gives thousands of
-        // times for every park, and a receipt that only appeared when it fired would leave the
-        // false-positive rate unreadable.
-        record({ type: 'event', label: 'ops:approval', chatId, handle, detail: { decision: 'not_needed', trigger: sideEffect.trigger } });
-      }
-
-      modelDelegated = true;
-      delegatedTask = built;
-    } else if (call.name === 'update_memory' && handle) {
-      // Silent memory ASK. The ENGINE owns its long-term user model (per-chat engine session
-      // memory) — this requests a reconciliation fire-and-forget (the engine decides what to
-      // keep; Irises never writes engine storage), so it can coexist with a research delegation
-      // in the same turn. Irises's own tiers are written only via its own tools.
-      const engine = getEngineBackend();
-      const note = String(input.request ?? textToSend);
-      if (engine && note.trim()) {
-        // Through the engine slot: this is a full agent run on the engine (its memory loop thinks
-        // about the note), so an unmetered fire-and-forget could push a chatty turn past the
-        // engine's concurrency cap and 429 a real delegation that was already waiting.
-        void withEngineSlot(() => engine.remember(chatId, handle, note))
-          .catch(err => console.warn('[convo] engine remember failed', err));
-      }
-    } else if (call.name === 'schedule_automation' && chatContext?.senderHandle) {
-      // Automations stay SENDER-owned even in groups: a group-owned needs_ops automation would
-      // run Ops under a pseudo-handle nothing else recognizes. The chatId on the row
-      // is still this chat, so a reminder scheduled from a group fires back into the group.
-      const r = await handleScheduleAutomation(input, chatContext.senderHandle, chatId, args.userTz);
-      if (r.error) outcomeParts.push(r.error);
-      else if (r.confirmation) scheduleConfirmation = r.confirmation;
-    } else if (call.name === 'list_automations' && chatContext?.senderHandle) {
-      outcomeParts.push(await renderAutomationsList(chatContext.senderHandle, chatId, args.userTz || DEFAULT_TZ));
-    } else if (call.name === 'cancel_automation' && chatContext?.senderHandle) {
-      const note = await handleCancelAutomation(String(input.match ?? ''), chatContext.senderHandle, chatId);
-      if (note) outcomeParts.push(note);
-    } else if (call.name === 'cancel_research') {
-      // An action still waiting on their yes is cancelled by DECLINING it — nothing is in flight for
-      // requestOpsCancel to stop, so without this the parked row would sit there while she told them
-      // nothing was running.
-      const declined = await declineParkedApprovals(chatId, chatContext?.senderHandle, String(input.match ?? ''));
-      // Chat-scoped (works in groups, needs no handle) and synchronous — the in-flight map is the
-      // authority and the flag must be set before this turn's reply goes out. Still consulted after
-      // a decline, because a real look may ALSO be running for this chat; only its "nothing is being
-      // looked up" note is dropped, since a park was just dropped and that note would contradict it.
-      const note = handleCancelResearch(String(input.match ?? ''), chatId);
-      if (note && !(declined > 0 && note.kind === 'nothing_found')) outcomeParts.push(note);
-    } else if (call.name === 'steer_research') {
-      // Same chat-scoped, synchronous map as the cancel above, and for the same reason: her ack goes
-      // out this turn, so the decision has to be in hand before it does. The delivery POST itself is
-      // dispatched inside and never awaited (see handleSteerResearch).
-      const steerActions = Array.isArray(input.engine_actions)
-        ? input.engine_actions.map(a => String(a ?? '').trim()).filter(Boolean)
-        : [];
-      const note = handleSteerResearch(String(input.match ?? ''), String(input.guidance ?? ''), chatId, handle ?? '', getEngineBackend(), steerActions);
-      if (note) outcomeParts.push(note);
-    } else if (call.name === 'recall_memory') {
-      // Just captured here — the search + the answer happen in one bounded second pass after
-      // the loop (Convo is single-shot, so a result can't come back inside this call).
-      const q = String(input.query ?? '').trim();
-      if (q && recallQuery == null) recallQuery = q;
-    } else if (call.name === 'check_error_log') {
-      // Captured here, executed after the loop in its own bounded second pass.
-      if (errorLogLimit == null) {
-        const raw = Number(input.limit ?? 5);
-        errorLogLimit = Math.min(Math.max(Math.round(isFinite(raw) ? raw : 5), 1), 15);
-      }
-    } else if (call.name === 'update_directives' && handle) {
-      // A language ask saved as a RULE is the old vocabulary — the tool doc now sends it to
-      // set_preference, but a model that reaches for the rule anyway must not create the thing the
-      // slot exists to replace. Routed by SHAPE (memory/standingSettings.ts), so the row is never
-      // written and the ask still lands as the standing setting it is.
-      const dirOp = String(input.op ?? '').toLowerCase();
-      const asLanguage = dirOp === 'add' || dirOp === 'update'
-        ? parseLanguageDirective(String(input.text ?? ''))
-        : null;
-      if (asLanguage) {
-        await setReplyLanguage(handle, asLanguage, { source: 'convo', via: 'tool', chatId });
-        replyLanguageWrittenByTool = true;
-        // The turn still owes an acknowledgment beat: the setting DID land, so a tool-only envelope
-        // must not fall through to the silent-turn floor.
-        directiveActed = true;
-      } else {
-        const { note, acted } = await handleUpdateDirectives(input, handle, chatId);
-        if (note) outcomeParts.push(note);
-        else if (acted) directiveActed = true;
-      }
-    }
-  }
+  // ── Dispatch ──────────────────────────────────────────────────────────────────────────────────
+  // Every call this pass kept, run into the turn's effects; the two searches come back as captures
+  // for their own bounded second passes below.
+  const { recallQuery, errorLogLimit } = await dispatchToolCalls(res.toolCalls, effects, {
+    chatId, handle, chatContext, textToSend, media, userTz: args.userTz,
+    originConfidence: reply.confidenceLevel,
+    heldForOps: () => heldForOps(args.relevance?.hits ?? []),
+  });
 
   // ── The approval ask ──────────────────────────────────────────────────────────────────────
   // An action was parked in the loop above, so the holding line she wrote for it is a claim about
   // work that has not started. Replace it with the question — hers if the one re-ask lands, the code
   // line if it does not. First thing after the loop: every floor below reads `textParts`, and they
   // must all see the question rather than the holding line it replaced.
-  if (parkedApproval) {
+  if (effects.parkedApproval) {
     textParts.length = 0;
-    textParts.push(await askForApproval(args, parkedApproval.request, guardToolCalls, parkedApproval.variant));
+    textParts.push(await askForApproval(args, effects.parkedApproval.request, guardToolCalls, effects.parkedApproval.variant));
     // The shipped text is no longer this parse's text, so this parse's bubble cap is not the cap to
     // report (same rule as every other branch that replaces the reply).
     hardCapped = false;
@@ -2874,7 +3014,7 @@ export async function processConvoResult(args: {
   // with grounded facts and a second draft here would race it onto the user's screen.
   // A PARKED action counts as a delegation here for the same reason: the question just replaced her
   // draft, and a second pass would answer the archive over the top of it.
-  if (recallQuery && !args.archivePass && !delegatedTask && !suppressedDuplicate && !parkedApproval) {
+  if (recallQuery && !args.archivePass && !effects.delegatedTask && !effects.suppressedDuplicate && !effects.parkedApproval) {
     // ── The paraphrase ladder branches HERE ─────────────────────────────────────────────────
     // 'vector' means searchArchive is about to fuse an embedding leg over the same rows, which is a
     // BETTER answer to "they didn't use the words they wrote it down with" than synonyms are — so
@@ -2935,7 +3075,7 @@ export async function processConvoResult(args: {
     // confirmation for a reminder/note/list this turn already performed (the second pass has no
     // idea it happened). The voiced-outcome fallback below carries the recall result instead, so
     // both land.
-    const firstPassActed = !!scheduleConfirmation || !!noteConfirmation || outcomeParts.length > 0;
+    const firstPassActed = effects.results.length > 0;
     let secondPassFailed = !turn || firstPassActed;
     if (turn && !firstPassActed) {
       const strippedTools = turn.tools.filter(t => t.name !== 'recall_memory');
@@ -2966,6 +3106,8 @@ export async function processConvoResult(args: {
           // …but what the guards SPENT is not discarded: a corrective re-ask already made about
           // this user-visible turn is gone whichever draft it was made about.
           quietSpent,
+          // …and neither is what this pass's calls DID: the pass that ships holds the whole turn.
+          carried: effects,
           turn: { ...turn, tools: strippedTools, messages },
           // The second pass reads one more message than the first (the archive-results turn), and
           // it is the pass whose reply ships — so the receipt measures ITS transcript, not the
@@ -2980,17 +3122,17 @@ export async function processConvoResult(args: {
     if (secondPassFailed) {
       // Never a silent turn: voice what the search found (or didn't) as an outcome, so the user
       // gets an honest answer even when the second call is unavailable or fails.
-      outcomeParts.push(hits.length
+      effects.results.push(hits.length
         ? {
-            kind: 'confirmed',
-            summary: 'you dug back through what you already knew and found it',
+            tool: 'recall_memory', status: 'done', target: recallQuery,
+            detail: 'you dug back through what you already knew and found it',
             // Trimmed hard: `facts` can reach the user verbatim (the model already wrote text),
             // and a wall of raw archive text is not a reply.
             facts: hits.slice(0, 2).map(h => h.snippet.slice(0, 200)).join('\n'),
           }
         : {
-            kind: 'nothing_found',
-            summary: "you went back through what you know and it genuinely isn't there",
+            tool: 'recall_memory', status: 'not_found', target: recallQuery,
+            detail: "you went back through what you know and it genuinely isn't there",
             nextStep: 'ask them to run the details by you once more',
           });
     }
@@ -3000,11 +3142,11 @@ export async function processConvoResult(args: {
   // Same discipline as recall_memory: captured in the loop, executed once here, with the tool
   // stripped so it cannot recurse. Delegation wins: if the model also delegated, the composer
   // already has grounded facts coming back and racing a second draft over them is worse than silence.
-  if (errorLogLimit != null && !args.archivePass && !delegatedTask && !suppressedDuplicate && !parkedApproval) {
+  if (errorLogLimit != null && !args.archivePass && !effects.delegatedTask && !effects.suppressedDuplicate && !effects.parkedApproval) {
     const allErrors = getRecentErrors(Math.min(errorLogLimit * 4, 60));
     const errors = allErrors.filter(e => !e.chatId || e.chatId === chatId).slice(0, errorLogLimit);
     const turn = args.turn;
-    const firstPassActed = !!scheduleConfirmation || !!noteConfirmation || outcomeParts.length > 0;
+    const firstPassActed = effects.results.length > 0;
     let epFailed = !turn || firstPassActed;
     if (turn && !firstPassActed) {
       const strippedTools = turn.tools.filter(t => t.name !== 'check_error_log');
@@ -3028,6 +3170,7 @@ export async function processConvoResult(args: {
           res: second,
           archivePass: true,
           quietSpent,
+          carried: effects,
           turn: { ...turn, tools: strippedTools, messages },
           trace: args.trace ? { ...args.trace, messages } : undefined,
         });
@@ -3037,10 +3180,10 @@ export async function processConvoResult(args: {
       }
     }
     if (epFailed) {
-      outcomeParts.push(errors.length
+      effects.results.push(errors.length
         ? {
-            kind: 'confirmed',
-            summary: 'you checked your error log',
+            tool: 'check_error_log', status: 'done', target: '',
+            detail: 'you checked your error log',
             facts: errors.slice(0, 3).map(e => {
               const ago = Math.round((Date.now() - e.lastAt) / 60000);
               const count = e.count > 1 ? ` (×${e.count})` : '';
@@ -3048,8 +3191,8 @@ export async function processConvoResult(args: {
             }).join('\n'),
           }
         : {
-            kind: 'nothing_found',
-            summary: 'no recent errors logged for this conversation',
+            tool: 'check_error_log', status: 'not_found', target: '',
+            detail: 'no recent errors logged for this conversation',
             nextStep: 'check if the issue is upstream',
           });
     }
@@ -3074,12 +3217,12 @@ export async function processConvoResult(args: {
   //     text legitimately voices the ACTION's confirmation, not an un-grounded Ops answer. Nuking it
   //     would leave the confirmation unsaid — the !textResponse-gated voiceOutcome lines below would be
   //     blocked by the delegation's holding line, silently dropping "your 9am reminder is set".
-  const actionBearing = !!scheduleConfirmation || !!noteConfirmation || outcomeParts.length > 0;
-  if (((modelDelegated && delegatedTask) || suppressedDuplicate) && !actionBearing) {
+  const actionBearing = effects.results.length > 0;
+  if (((effects.modelDelegated && effects.delegatedTask) || effects.suppressedDuplicate) && !actionBearing) {
     // Ground = the user's own words for this ask: a figure they said themselves ("412 Maple") is an
     // echo the holding text may repeat, never a fabrication. Keeps Irises's persona-written holding
     // openers shipping instead of being replaced by the voiced fallback line.
-    const ground = [textToSend, delegatedTask?.request, delegatedTask?.addressHint, delegatedTask?.dealHint].filter(Boolean).join('\n');
+    const ground = [textToSend, effects.delegatedTask?.request, effects.delegatedTask?.addressHint, effects.delegatedTask?.dealHint].filter(Boolean).join('\n');
     const salvaged = salvageHoldingText(normalizedText, ground);
     textParts.length = 0;
     if (salvaged) textParts.push(salvaged);
@@ -3098,8 +3241,8 @@ export async function processConvoResult(args: {
   // Also skipped on a PARKED turn: the model DID delegate — the gate's own reason to stand down —
   // and the task is waiting on the user's yes. Forcing a look here would answer the same message
   // with a run they have not authorized, and replace her question with a holding line.
-  if (process.env.ROUTING_GATE !== 'off' && !delegatedTask && !suppressedDuplicate && !parkedApproval
-      && !scheduleConfirmation && !noteConfirmation && outcomeParts.length === 0
+  if (process.env.ROUTING_GATE !== 'off' && !effects.delegatedTask && !effects.suppressedDuplicate && !effects.parkedApproval
+      && effects.results.length === 0
       && !args.archivePass
       && handle && chatContext?.senderHandle) {
     const lastUser = textToSend ?? '';
@@ -3148,7 +3291,7 @@ export async function processConvoResult(args: {
         // dana is this?" from the engine a minute later. Beside the brief, not inside it — the gate's
         // own brief stays byte-identical, and her memory stays off the walled-URL scan surface.
         const held = heldForOps(turnHits);
-        delegatedTask = buildForcedTask({
+        effects.delegatedTask = buildForcedTask({
           chatId, agentHandle: chatContext.senderHandle, request: lastUser,
           metaPrompt: `The user asked: "${lastUser}". This needs real, grounded data (the web, their own email, or their own past chats) — do NOT answer from general knowledge. Use the right tools and return only grounded facts; if you can't find it, say so.`,
           heldMemory: held.block || undefined,
@@ -3200,8 +3343,8 @@ export async function processConvoResult(args: {
   //   • PLUS the capability intersection: only classes the engine can ACTUALLY do. An honest refusal
   //     (engine off, inbox genuinely not connected, null summary) survives untouched — this floor
   //     exists to stop lies, never to force a promise the deployment can't keep.
-  if (process.env.REFUSAL_FLOOR !== 'off' && !delegatedTask && !suppressedDuplicate
-      && !scheduleConfirmation && !noteConfirmation && outcomeParts.length === 0
+  if (process.env.REFUSAL_FLOOR !== 'off' && !effects.delegatedTask && !effects.suppressedDuplicate
+      && effects.results.length === 0
       && !args.archivePass
       && handle && chatContext?.senderHandle) {
     const ask = textToSend ?? '';
@@ -3212,7 +3355,7 @@ export async function processConvoResult(args: {
       // Same kind-agnostic dedup pair as the gate: never stack a forced task on a run already going.
       if (falsely.length && !hasInFlightRequest(chatId, ask)
           && isDuplicateDelegation(chatId, 'general', ask) !== 'in_flight') {
-        delegatedTask = buildForcedTask({
+        effects.delegatedTask = buildForcedTask({
           chatId, agentHandle: chatContext.senderHandle, request: ask,
           // "set up" as well as "found": the same false refusal covers an ask to prepare the engine's
           // own side, and a brief that only asks for findings invites the setup half to be skipped.
@@ -3237,20 +3380,44 @@ export async function processConvoResult(args: {
   // here means what ships will be a voiced line instead — whose own parse the cap says nothing
   // about. Every branch below either fills a NULL textResponse or replaces it (marked there).
   if (!textResponse) hardCapped = false;
-  // Reassurances that precede a background Ops run — the holding line when the model wrote none, a
-  // "still on it" when a dup was suppressed, the consent prompt. voiceInstant is the Composer-shaped
-  // progress voice: it reads the recent thread so the line blends in and doesn't repeat, with the
-  // fallfirm/floor.ts pools as the zero-latency fallback if its call fails. This sits on the live reply
-  // path but is the rare branch — the model normally writes its own holding line and this is skipped.
-  if (!textResponse && delegatedTask) {
-    // Seed the holding line with the SAME coarse ETA the run is stored with, so the very first beat can
-    // set a soft duration expectation ("give me a couple mins" energy) — an offer, never a countdown.
-    // budgetMs: the leg this task will really get (a walled-URL look runs on the browser budget), so
-    // the first promise cannot be shorter than the deadline Irises is about to wait for.
-    const holdEta = estimateOpsEta({ kind: delegatedTask.kind, request: delegatedTask.request, budgetMs: browserLegBudgetFor(delegatedTask) ?? undefined });
-    textResponse = await voiceInstant({ kind: 'holding', taskKind: delegatedTask.kind, request: delegatedTask.request, addressHint: delegatedTask.addressHint, dealHint: delegatedTask.dealHint, eta: { phrase: holdEta.phrase, state: 'fresh' } }, chatId, handle ?? '');
+  const results = effects.results;
+  const correcting = needsCorrection(results);
+  // Whether the model's OWN words are standing in for the results: a parked turn's text is the
+  // approval question, which says nothing about what else the turn did.
+  const modelWrote = !!textResponse && !effects.parkedApproval;
+
+  // ── What must ship, whatever the results say ────────────────────────────────────────────────
+  // Two parts of a reply are owed to the user whatever else the turn did, and until the results
+  // list existed a failed action beside them REPLACED them with its correction:
+  //   • the approval question — an action is parked on their yes, and a reply without the question
+  //     leaves it parked with nobody asked;
+  //   • the holding line of a task that is starting (the model's own, an approved yes, a routed
+  //     one) — the composer continues from it, and a reply that drops it strands the follow-up.
+  // `keep` is that part. The voiced results go AFTER it, never in its place.
+  //
+  // A delegation's holding line is the rare branch: the model normally writes its own. When it
+  // wrote none, voiceInstant is the Composer-shaped progress voice — it reads the recent thread so
+  // the line blends in and doesn't repeat, with the fallfirm/floor.ts pools as the zero-latency
+  // fallback if its call fails. On a correcting turn the draft was never salvaged (a turn with
+  // results is action-bearing, above), so it can claim the very action that just failed; only its
+  // holding half is owed, and the rest is what the voiced results replace.
+  let keep: string | null = effects.parkedApproval ? textResponse : null;
+  const task = effects.delegatedTask;
+  if (!effects.parkedApproval && task) {
+    const ground = [textToSend, task.request, task.addressHint, task.dealHint].filter(Boolean).join('\n');
+    keep = correcting ? salvageHoldingText(textResponse, ground) : textResponse;
+    if (!keep) {
+      // Seed the holding line with the SAME coarse ETA the run is stored with, so the very first beat
+      // can set a soft duration expectation ("give me a couple mins" energy) — an offer, never a
+      // countdown. budgetMs: the leg this task will really get (a walled-URL look runs on the browser
+      // budget), so the first promise cannot be shorter than the deadline Irises is about to wait for.
+      const holdEta = estimateOpsEta({ kind: task.kind, request: task.request, budgetMs: browserLegBudgetFor(task) ?? undefined });
+      keep = await voiceInstant({ kind: 'holding', taskKind: task.kind, request: task.request, addressHint: task.addressHint, dealHint: task.dealHint, eta: { phrase: holdEta.phrase, state: 'fresh' } }, chatId, handle ?? '');
+    }
+    if (keep !== textResponse) hardCapped = false;   // the shipped text is no longer this parse's
+    textResponse = keep;
   }
-  if (!textResponse && suppressedDuplicate) {
+  if (!textResponse && effects.suppressedDuplicate && !results.length) {
     const line = await voiceInstant({ kind: 'still_on_it', request: textToSend }, chatId, handle ?? '');
     // This reassurance can race the real answer: voiceInstant is a model call, and the in-flight task
     // it reassures about can settle while it runs (markOpsDone fires only AFTER the answer is sent).
@@ -3259,33 +3426,38 @@ export async function processConvoResult(args: {
     if (getActiveOps(chatId).length) textResponse = line;
     else console.log('[convo] dropped a stale still_on_it — the in-flight task answered while it was being voiced');
   }
-  // Tool-outcome confirmations the model didn't voice itself: Fallfirm voices them in Irises's tone.
-  if (!textResponse && scheduleConfirmation) textResponse = await voiceOutcome(scheduleConfirmation, chatId, handle);
-  if (!textResponse && noteConfirmation) textResponse = await voiceOutcome(noteConfirmation, chatId, handle);
   // A directive/preference that saved with no bubble of its own must still land an acknowledgment —
   // a bare tool-only turn is what left the user hanging (the update_directives silent-success bug).
   // A tapback is the lightest honest ack. Only when the model produced NEITHER text NOR a reaction
   // of its own — its own beat always wins. A reaction-only turn records `[reacted with like]`, which
   // also breaks the self-perpetuating loop (next turn no longer sees a dangling unresolved ask).
-  if (directiveActed && !textResponse && !reaction) {
-    reaction = { type: 'like' };
+  // Read before the results are voiced: a directive's success is not one of them (its beat is this
+  // tapback), so a voicing of the rest would never have said it.
+  if (effects.directiveActed && !textResponse && !effects.reaction) {
+    effects.reaction = { type: 'like' };
   }
-  // Tool-outcome notes (list / schedule-cancel / directive). Fallfirm is fallback-only here too:
-  // - Correction outcomes (failed / nothing_found) mean the model's optimistic text
-  //   ("got it, cancelled") is WRONG — the voiced correction REPLACES it, never sits next to it.
-  // - When the model already spoke and nothing went wrong, only raw `facts` (data the model can't
-  //   author, e.g. the automations list) are appended verbatim — no Fallfirm re-voicing on top.
-  // - Only when the model wrote no text at all does Fallfirm voice the outcomes in full.
-  if (outcomeParts.length) {
-    const hasCorrection = outcomeParts.some(o => o.kind !== 'confirmed');
-    if (!textResponse || hasCorrection) {
-      const voiced: string[] = [];
-      for (const o of outcomeParts) voiced.push(await voiceOutcome(o, chatId, handle));
-      textResponse = voiced.join('\n---\n');
-      hardCapped = false;   // the voiced correction REPLACES the parsed text — its cap isn't news about this send
-    } else {
-      const facts = outcomeParts.map(o => o.facts).filter((f): f is string => !!f);
-      if (facts.length) textResponse = `${textResponse}\n---\n${facts.join('\n---\n')}`;
+  // ── The turn's results, voiced ──────────────────────────────────────────────────────────────
+  // Every acting call's result, in the order it ran (convo/actionResults.ts). Fallfirm is
+  // fallback-only here too:
+  // - When anything failed, the model's optimistic text ("got it, cancelled") is WRONG, and its
+  //   single-shot draft never saw what landed. ONE voicing of ALL the results replaces it — the
+  //   successes included, because a failure never erases a success beside it — after `keep`.
+  // - When the model wrote no text of its own, that same voicing IS the reply (after `keep`).
+  // - When the model already spoke and nothing went wrong, its text stands, and only raw `facts`
+  //   (data the model can't author, e.g. the automations list) are appended verbatim.
+  // `holdingPart` is what a starting task's holding text is: the reply before any results were
+  // appended to it, so the composer continues from the holding line and never from a correction.
+  let holdingPart: string | null = null;
+  if (results.length && (correcting || !modelWrote)) {
+    const voiced = await voiceOutcome(combinedOutcome(results), chatId, handle);
+    holdingPart = keep;
+    textResponse = keep ? `${keep}\n---\n${voiced}` : voiced;
+    hardCapped = false;   // the voiced results REPLACE the parsed text — its cap isn't news about this send
+  } else if (results.length && textResponse) {
+    const facts = results.map(r => r.facts).filter((f): f is string => !!f);
+    if (facts.length) {
+      holdingPart = textResponse;
+      textResponse = `${textResponse}\n---\n${facts.join('\n---\n')}`;
     }
   }
 
@@ -3312,7 +3484,7 @@ export async function processConvoResult(args: {
   // read `retried: false` there would contradict the `convo:silent_turn` event that just recorded
   // `recovery: 'retry'`.
   let retrySpent = args.silentRetry === true;
-  if (!textResponse && !reaction && !renameChat && !rememberedUser && !removeMember && !delegatedTask
+  if (!textResponse && !effects.reaction && !effects.renameChat && !effects.rememberedUser && !effects.removeMember && !effects.delegatedTask
       && !res.toolCalls.length && textToSend.trim()) {
     const turn = args.silentRetry ? undefined : args.turn;   // the fence: a retry never retries
     // chatId in the line, not just the trace event: a live convergence round attributes the failure
@@ -3335,7 +3507,7 @@ export async function processConvoResult(args: {
         // Same input, so the whole turn re-processes: a retry that DOES call a tool gets it
         // dispatched exactly as a first pass would. Nothing was persisted or sent above (a silent
         // turn writes no history), so there are no double effects.
-        return await processConvoResult({ ...args, res: retry, silentRetry: true, quietSpent });
+        return await processConvoResult({ ...args, res: retry, silentRetry: true, quietSpent, carried: effects });
       } catch (err) {
         console.error('[convo] silent-turn retry failed — voicing the floor', err);
         reportError({ source: 'convo', category: 'silent_turn', severity: 'warn', err, chatId, handle });
@@ -3362,15 +3534,18 @@ export async function processConvoResult(args: {
   const cleanForRecord = textResponse ? stripReplyTag(textResponse) : textResponse;
 
   // Hand the composer the exact holding line we're sending, so its follow-up continues straight
-  // from it (one seamless thread, not a fresh reply). Tag-free = what the user actually sees.
-  if (delegatedTask && cleanForRecord) delegatedTask.holdingText = cleanForRecord;
+  // from it (one seamless thread, not a fresh reply). Tag-free = what the user actually sees. Only
+  // the holding part when results were appended after it: the composer continues from the line that
+  // held the task, never from a voiced correction about something else.
+  const holdingRecord = holdingPart != null ? stripReplyTag(redactInternalTools(holdingPart)) : cleanForRecord;
+  if (effects.delegatedTask && holdingRecord) effects.delegatedTask.holdingText = holdingRecord;
 
   if (cleanForRecord) {
     const historyMessage = cleanForRecord.split(/(?:---|[\r\n]+)/).map(m => m.trim()).filter(Boolean).join(' ');
     const holdingAt = await addMessage(chatId, 'assistant', historyMessage);
     // Stamp the holding line's canonical timestamp on the task (single-clock). The composer uses
     // it to find messages the user sends WHILE Ops runs, so the late reply can nod to them.
-    if (delegatedTask) delegatedTask.holdingAt = holdingAt;
+    if (effects.delegatedTask) effects.delegatedTask.holdingAt = holdingAt;
     // The introduction has been said — settle the first-move machine forever, which also cancels the
     // proactive send if a sweep is mid-flight. Gated on `cleanForRecord` because a reaction-only or
     // silent turn introduced nobody: leaving the block armed for the next inbound is the right
@@ -3380,8 +3555,8 @@ export async function processConvoResult(args: {
     // The reply is committed to history one line above, so this is the last point inside the turn
     // where "she said it" is still true of everything we can see.
     if (args.introWoven) markIntroWoven();
-  } else if (reaction) {
-    const d = reaction.type === 'custom' ? (reaction as { type: 'custom'; emoji: string }).emoji : reaction.type;
+  } else if (effects.reaction) {
+    const d = effects.reaction.type === 'custom' ? (effects.reaction as { type: 'custom'; emoji: string }).emoji : effects.reaction.type;
     await addMessage(chatId, 'assistant', `[reacted with ${d}]`);
   }
 
@@ -3497,7 +3672,7 @@ export async function processConvoResult(args: {
     // set by whichever member spoke last. A group tunes it deliberately, through the tool.
     const wantLanguage = applyLanguageRequest({
       fastPathAsk: detectEnglishAsk(textToSend),
-      toolWrote: replyLanguageWrittenByTool,
+      toolWrote: effects.replyLanguageWrittenByTool,
       tag: emitted?.language_request,
     });
     if (wantLanguage) await setReplyLanguage(handle, wantLanguage.value, { source: 'convo', via: wantLanguage.via, chatId });
@@ -3549,8 +3724,8 @@ export async function processConvoResult(args: {
   // into one synthesized note, so a note about to be retired for contradicting the new one must not
   // be merged into something first — the merge would carry the stale half of the fact forward under
   // a fresh timestamp, out of reach of both passes.
-  if (handle && noteSaved) {
-    const note = savedNote;
+  if (handle && effects.noteSaved) {
+    const note = effects.savedNote;
     void (async () => {
       if (note) await supersedeContradicted(handle, note, chatId);
       await groomNotes(handle);
@@ -3566,7 +3741,7 @@ export async function processConvoResult(args: {
   // Deliberately NOT shared with the silent-turn floor above, which tests the same six terms at an
   // earlier moment — before it voices — and would read `false` here afterwards. Same words, a
   // different question ("did the model produce nothing" vs "did this turn end with nothing").
-  const producedNothingVisible = !textResponse && !reaction && !renameChat && !rememberedUser && !removeMember && !delegatedTask;
+  const producedNothingVisible = !textResponse && !effects.reaction && !effects.renameChat && !effects.rememberedUser && !effects.removeMember && !effects.delegatedTask;
 
   // Tripwire: that state is the silent-turn failure mode. The floor above now RECOVERS the
   // no-tool-call variant, so what still reaches here is the tool-bearing one (a tool-only envelope
@@ -3667,5 +3842,9 @@ export async function processConvoResult(args: {
       })
     : undefined;
 
-  return { text: textResponse, reaction, renameChat, rememberedUser, removeMember, delegatedTask, generatedImage: null, groupChatIcon: null, hardCapped, turnTrace };
+  return {
+    text: textResponse, reaction: effects.reaction, renameChat: effects.renameChat,
+    rememberedUser: effects.rememberedUser, removeMember: effects.removeMember,
+    delegatedTask: effects.delegatedTask, generatedImage: null, groupChatIcon: null, hardCapped, turnTrace,
+  };
 }

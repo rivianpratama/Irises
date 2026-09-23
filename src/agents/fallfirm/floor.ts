@@ -24,6 +24,9 @@ export interface Outcome {
   nextStep?: string;
   /** What the user originally asked, for seamless continuity. */
   originalRequest?: string;
+  /** Several results of ONE turn voiced together, in the order they ran (convo/actionResults.ts
+   *  combinedOutcome). `kind` is then the worst of them, and `summary` only frames the list. */
+  parts?: Outcome[];
 }
 
 /**
@@ -31,6 +34,9 @@ export interface Outcome {
  * specifics. Returns legacy bubble text.
  */
 export function fallfirmFloor(o: Outcome): string {
+  // A combined outcome is each part's own line, in order — no new copy, and a success beside a miss
+  // is still said when the voicer that would have woven them together is down.
+  if (o.parts?.length) return o.parts.map(fallfirmFloor).join('\n---\n');
   switch (o.kind) {
     case 'confirmed':
       return o.facts ? `done, all set\n---\n${o.facts}` : 'done, all set';

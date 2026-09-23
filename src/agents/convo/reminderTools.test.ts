@@ -141,3 +141,32 @@ test('schedule_automation still honors an EXPLICIT timezone in the call over use
 
   assert.equal(createdSpecs[0].timezone, 'Europe/London', "the model's own explicit zone wins");
 });
+
+// ── Task 4: a failure never erases a success beside it ──────────────────────────────────────────
+
+test('a successful schedule is still voiced when a cancel in the same turn misses', async () => {
+  // The 2026-09-23 incident, one turn of it: "change my 7am brief to government news". The model
+  // cancelled by a title it guessed ("morning brief") and scheduled the replacement. The real title
+  // was "daily indonesia digest", so the cancel missed — and the schedule landed. Its confirmation
+  // lived in a single slot voiced only when the model wrote no text, and the correction for the miss
+  // REPLACED the whole reply, so the user heard "no reminder matched" and never heard that a new 7am
+  // job now existed. Four repeats left five of them on the engine.
+  const { createdSpecs } = installStubEngine([
+    { id: '2448ff495f3b', title: 'daily indonesia digest', schedule: '0 7 * * *' },
+  ]);
+  const a = baseArgs();
+  const res = makeResult(['done, switched it to govt news'], [
+    { name: 'cancel_automation', input: { match: 'morning brief' } },
+    scheduleCall({ instruction: 'send me a brief on indonesian government news', cron: '0 7 * * *' }),
+  ]);
+
+  const out = await processConvoResult({ ...a, res, textToSend: 'change my 7am brief to govt news instead', userTz: 'Asia/Jakarta' });
+
+  assert.equal(createdSpecs.length, 1, 'the replacement reminder was created');
+  assert.ok(out.text, 'never silent');
+  // The Fallfirm lane has no model under test, so each result lands as its floor line — the
+  // schedule's confirmation and the cancel's miss, both, in the order they ran.
+  assert.match(out.text!, /done, all set/, 'the reminder that WAS set is said');
+  assert.match(out.text!, /couldnt track that one down/, 'and so is the cancel that missed');
+  assert.doesNotMatch(out.text!, /switched it/, "the draft's claim that the swap happened does not ship");
+});

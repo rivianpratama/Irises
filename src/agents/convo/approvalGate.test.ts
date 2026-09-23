@@ -574,6 +574,28 @@ test('cancel_research on a parked action declines it instead of claiming nothing
   assert.ok(rec.some(d => d.decision === 'declined' && d.via === 'cancel'), 'the decline is on the record');
 });
 
+test('a parked action keeps its question when a cancel in the same turn misses', async () => {
+  // The question is the one thing a parked turn owes: without it the action sits parked and nobody
+  // was asked. A cancel that missed beside it used to REPLACE the whole reply with its correction,
+  // so the user read "nothing's being looked up" and never saw the question at all.
+  const a = args(ACT_ASK);
+  const { turn } = reasker(['want me to send that to your landlord?']);
+  const out = await processConvoResult({
+    ...a,
+    res: makeResult(['on it, emailing them now'], [
+      delegate(ACT_ASK, 'act'),
+      { name: 'cancel_research', input: { match: 'flights' } },
+    ]),
+    turn,
+  });
+
+  assert.equal(listPendingApprovals(a.chatId).length, 1, 'the action is parked, not declined');
+  assert.ok(out.text, 'never silent');
+  assert.match(out.text!, /want me to send that to your landlord\?/, 'the question ships');
+  assert.match(out.text!, /couldnt track that one down/, 'and the miss is still said, after it');
+  assert.ok(out.text!.indexOf('landlord?') < out.text!.indexOf('couldnt track'), 'the question leads');
+});
+
 // ── the off path ─────────────────────────────────────────────────────────────
 
 test('OPS_APPROVAL_GATE=off: a yes resolves nothing — no read, no lane, no promotion', async () => {
