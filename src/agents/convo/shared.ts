@@ -94,7 +94,7 @@ import {
 } from './personaModules.js';
 import { renderTurnFocus, turnFocusBlockEnabled, type TurnFocusInput } from './turnFocus.js';
 import {
-  detectUnbackedClaim, detectUnkeptPromise, dropClaims, MUTATING_TOOLS, renderClaimCorrection,
+  asksQuestion, detectUnbackedClaim, detectUnkeptPromise, dropClaims, MUTATING_TOOLS, renderClaimCorrection,
   renderPromiseCorrection, unkeptPromiseGuardEnabled,
 } from './unkeptPromise.js';
 import { dropSchemaEcho } from './toolCallGuard.js';
@@ -4395,17 +4395,25 @@ export async function processConvoResult(args: {
   // that stands are data the model cannot author (a list, an exact time), so an earlier success's
   // facts are appended there too, whatever the reply said about them.
   //
-  // An earlier miss the pass left unfixed is unsaid too, even under a reply that stands: the reply
-  // makes no claim (one that did fell back above), but nothing makes it say the miss either, and a
-  // miss dropped in silence is the one outcome the results list exists to prevent. It is voiced
-  // AFTER her reply, which leads the voicing the way a `keep` does.
+  // An earlier miss the pass left unfixed is unsaid too, under a reply that stands and neither asks
+  // nor claims (one that claimed fell back above): nothing makes such a reply say the miss, and a
+  // miss dropped in silence is the one outcome the results list exists to prevent. Only the misses
+  // are voiced, AFTER her reply, which leads the voicing the way a `keep` does; the pass's own
+  // successes are what her reply already says (a read's data still rides, as it would anyway).
+  //
+  // A reply that ASKS stands alone. Asking which one they mean is how a pass answers a miss it can
+  // not fix, so the question is already about exactly those misses, and a voicing of them after it
+  // ("couldnt track that one down", the list again) buried the question under its own subject.
   //
   // A list among them is shown as the turn left it (listAsLeft): a cancel that landed after the list
   // was read took that reminder off it.
   const listTz = args.userTz || DEFAULT_TZ;
   const asLeft = (rs: readonly ActionResult[]) => rs.map(r => listAsLeft(r, effects, listTz));
   const whole = outcomeModel && keep === null && !!textResponse;
-  const unsaid = asLeft(whole ? [...unfixedMisses, ...ownResults] : standing);
+  const voiceUnfixed = whole && unfixedMisses.length > 0 && !asksQuestion(replyBubbles(reply));
+  const unsaid = asLeft(!whole ? standing
+    : voiceUnfixed ? [...unfixedMisses, ...ownResults.filter(r => RELAYED_FACT_TOOLS.has(r.tool))]
+    : ownResults);
   const factSource = whole ? asLeft([...results.slice(0, passStart).filter(actionSucceeded), ...ownResults]) : unsaid;
   const correcting = needsCorrection(unsaid);
   // ── The turn's results, voiced ──────────────────────────────────────────────────────────────

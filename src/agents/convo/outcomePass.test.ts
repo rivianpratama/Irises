@@ -153,6 +153,17 @@ test('the incident: a missed cancel and a held create become ONE in-place update
   assert.doesNotMatch(out.text!, /\[R/, 'no reminder id reaches the user');
   assert.equal(outcomeReceipt()?.resolved, 'model');
 
+  // The same turn with a pass that cannot tell which one they mean and asks. The question is the
+  // whole reply: the misses it asks about are exactly what it is asking, so nothing rides after it.
+  installStubEngine([DIGEST]);
+  const asks = turnCtx(ask, async () => makeResult(['you mean the daily indonesia digest at 7? want me to switch that one to govt news?']));
+  const out3 = await processConvoResult({
+    ...args(ask),
+    res: makeResult(['on it'], [{ name: 'cancel_automation', input: { match: 'morning brief' } }, schedule(GOVT, '0 7 * * *')]),
+    turn: asks.turn,
+  });
+  assert.equal(out3.text, 'you mean the daily indonesia digest at 7? want me to switch that one to govt news?', 'the question ships alone');
+
   // The same fix on a turn that also started a lookup. There the pass's reply is cut to its holding
   // half and the results are voiced after it, and the cancel the pass went on to land by id means
   // the draft's miss is no longer news: it is not voiced beside the fix.

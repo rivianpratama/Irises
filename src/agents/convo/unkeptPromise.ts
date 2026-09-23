@@ -197,16 +197,27 @@ const NOT_A_REPORT_PHRASES = [' going to ', ' want me to '];
 const REPLY_TAG = /^\s*\[\[re:\d+\]\]/;
 const REPLY_TAGS = /\[\[re:\d+\]\]/g;
 
-/** The clauses of a bubble that STATE something, normalized like `clauses()`: each clause whose own
- *  terminator carries a question mark is left out. */
-function statedClauses(text: string): string[] {
+/** A bubble's clauses, normalized like `clauses()`, each with whether its own terminator carries a
+ *  question mark. */
+function terminatedClauses(text: string): Array<{ clause: string; asks: boolean }> {
   const pieces = text.replace(REPLY_TAGS, ' ').toLowerCase().split(/([.!?,;:\n\r]+)/);
-  const out: string[] = [];
+  const out: Array<{ clause: string; asks: boolean }> = [];
   for (let i = 0; i < pieces.length; i += 2) {
-    if ((pieces[i + 1] ?? '').includes('?')) continue;
-    out.push(` ${pieces[i].replace(NON_WORD, ' ').trim()} `);
+    out.push({ clause: ` ${pieces[i].replace(NON_WORD, ' ').trim()} `, asks: (pieces[i + 1] ?? '').includes('?') });
   }
   return out;
+}
+
+/** The clauses of a bubble that STATE something: each clause whose own terminator carries a
+ *  question mark is left out. */
+function statedClauses(text: string): string[] {
+  return terminatedClauses(text).filter(c => !c.asks).map(c => c.clause);
+}
+
+/** Does the reply ask them something? Any bubble with a clause of words ending on a question mark,
+ *  read by the same split that keeps questions from counting as claims. */
+export function asksQuestion(bubbles: readonly string[]): boolean {
+  return bubbles.some(b => terminatedClauses(b).some(c => c.asks && c.clause.trim() !== ''));
 }
 
 /** Does anything ahead of the phrase, inside its clause, make it other than a report? */
