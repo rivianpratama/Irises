@@ -11,7 +11,8 @@
 //     one pair of fire times within COLLISION_TOLERANCE_MS of each other. A one-shot against a
 //     repeat is never a slot collision: "ping me at 9 tomorrow" beside a daily 9am is two asks.
 //   • the PURPOSE — the two reminders' words (title + instruction) contained in each other at
-//     CONTENT_CONTAINMENT or more (memory/textSim.ts), whatever their times.
+//     CONTENT_CONTAINMENT or more (memory/textSim.ts), whatever their times, once the smaller side
+//     has MIN_CONTENT_TOKENS words to go on.
 // Identical words on the same slot is the one reminder asked for twice: `identical`, which the
 // caller answers as already set, with no override.
 //
@@ -37,6 +38,10 @@ export const COLLISION_WINDOW_MS = 8 * 24 * 60 * 60_000;
 const MAX_OCCURRENCES = 50;
 /** The words-contained-in-words score at which two reminders are about the same thing. */
 export const CONTENT_CONTAINMENT = 0.8;
+/** The fewest content words the smaller side needs before containment means anything. Containment
+ *  divides by the smaller set, so a one- or two-word title would otherwise be "contained" in every
+ *  reminder that happens to use those words, at any time. */
+export const MIN_CONTENT_TOKENS = 3;
 
 /** A reminder as the collision check reads it. `exprZone` is the zone its `expr` is written in when
  *  that is NOT the engine's own: a reminder this very turn created or rescheduled is known only by
@@ -69,7 +74,8 @@ export type Collision =
   /** The same slot or the same purpose: held, and these are what it collides with. */
   | { kind: 'similar'; with: LedgerReminder[] };
 
-function existingKind(r: LedgerReminder): 'cron' | 'once' | undefined {
+/** A reminder's schedule shape: the engine's own `kind`, else read off which time field it carries. */
+export function existingKind(r: LedgerReminder): 'cron' | 'once' | undefined {
   return r.kind ?? (r.expr ? 'cron' : r.runAt ? 'once' : undefined);
 }
 
@@ -132,7 +138,9 @@ export function detectCollision(next: NewReminder, existing: readonly LedgerRemi
   for (const r of existing) {
     const slot = sameSlot(next, r, opts);
     if (slot && sameWords(nextInstruction, tokenSet(r.instruction ?? r.title))) return { kind: 'identical', with: r };
-    const purpose = simScore(nextWords, tokenSet(`${r.title} ${r.instruction ?? ''}`)).containment >= CONTENT_CONTAINMENT;
+    const theirWords = tokenSet(`${r.title} ${r.instruction ?? ''}`);
+    const purpose = Math.min(nextWords.size, theirWords.size) >= MIN_CONTENT_TOKENS
+      && simScore(nextWords, theirWords).containment >= CONTENT_CONTAINMENT;
     if (slot || purpose) similar.push(r);
   }
   return similar.length ? { kind: 'similar', with: similar } : { kind: 'none' };

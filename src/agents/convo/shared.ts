@@ -99,7 +99,7 @@ import {
   actionSucceeded, combinedOutcome, needsCorrection, resolveRef, toOutcome,
   type ActionCandidate, type ActionResult, type ActionStatus,
 } from './actionResults.js';
-import { detectCollision, type LedgerReminder, type NewReminder } from './reminderCollision.js';
+import { detectCollision, existingKind, type LedgerReminder, type NewReminder } from './reminderCollision.js';
 import { callLLM } from '../../llm/callLLM.js';
 import { record } from '../../diagnostics/trace.js';
 import { HOOK_OFF_TURN_LABEL, QUIET_GUARD_LABEL } from '../../diagnostics/traceLabels.js';
@@ -554,7 +554,7 @@ async function handleUpdateAutomation(input: Record<string, unknown>, handle: st
     const picked = pickReminder(items, id, match);
     if (picked.kind !== 'match') return unpicked(tool, target, picked, items, displayTz, 'changed');
     const old = picked.ref;
-    const kindNow = old.kind ?? (old.expr ? 'cron' : old.runAt ? 'once' : undefined);
+    const kindNow = existingKind(old);
     const scheduleKind = wantKind && kindNow && wantKind !== kindNow ? wantKind : undefined;
     const patch: ReminderPatch = {
       chatId, agentHandle: handle, timezone,
