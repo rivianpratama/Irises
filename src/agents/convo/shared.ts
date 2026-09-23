@@ -105,7 +105,7 @@ import {
 } from './actionResults.js';
 import { detectCollision, existingKind, type LedgerReminder, type NewReminder } from './reminderCollision.js';
 import {
-  liveRemindersFor, noteLiveReminders, reminderNextRunMs, renderLiveReminderRows, renderLiveReminders, shortReminderId,
+  freshLiveReminders, liveRemindersFor, noteLiveReminders, reminderNextRunMs, renderLiveReminderRows, renderLiveReminders, shortReminderId,
 } from './liveReminders.js';
 import { callLLM } from '../../llm/callLLM.js';
 import { record } from '../../diagnostics/trace.js';
@@ -262,6 +262,9 @@ function reminderCandidates(items: readonly ReminderRef[], tz: string): ActionCa
   return items.slice(0, MAX_REMINDER_CANDIDATES).map(r => reminderCandidate(r, tz));
 }
 
+/** The longest a turn's first reminder call waits on the engine's list. */
+const TURN_LIST_TIMEOUT_MS = 4_000;
+
 /**
  * This chat's reminders as THIS turn sees them (TurnEffects.reminders): read live from the engine
  * once, by the first reminder call that needs them, then kept in step with what the turn's own
@@ -269,11 +272,19 @@ function reminderCandidates(items: readonly ReminderRef[], tz: string): ActionCa
  * create must be judged against the list the cancel left, never against a fresh read that may
  * still show the reminder being replaced, or against the one taken before the cancel ran.
  *
+ * The read sits on the reply path, so it is the live list client.ts already warmed for this turn
+ * when that is fresh (liveReminders.ts, kept in step with every change this process made), and
+ * otherwise one engine read bounded by TURN_LIST_TIMEOUT_MS rather than the adapter's own 15s. A
+ * read that times out is a read that failed, and each caller already fails closed on that (a
+ * create is not made, a cancel or an update is a snag).
+ *
  * A copy, so the ledger's edits never reach whatever the engine handed back. A read that throws
  * caches nothing: the next call that needs the list tries again.
  */
 async function turnReminders(effects: TurnEffects, engine: EngineBackend, chatId: string): Promise<LedgerReminder[]> {
-  if (!effects.reminders) effects.reminders = [...await engine.listReminders(chatId)];
+  if (!effects.reminders) {
+    effects.reminders = freshLiveReminders(chatId) ?? [...await engine.listReminders(chatId, { timeoutMs: TURN_LIST_TIMEOUT_MS })];
+  }
   return effects.reminders;
 }
 

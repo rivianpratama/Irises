@@ -103,6 +103,13 @@ export function liveRemindersFor(engine: EngineBackend | null, chatId: string, s
   return readLiveReminders(engine, chatId, opts);
 }
 
+/** The held list while it is FRESH (younger than freshMs), else null. Never starts a read: this is
+ *  for a caller that would rather ask the engine itself than act on anything older. */
+export function freshLiveReminders(chatId: string, freshMs = LIVE_FRESH_MS): ReminderRef[] | null {
+  const hit = held.get(chatId);
+  return hit && clock() - hit.at < freshMs ? [...hit.list] : null;
+}
+
 /** Write-through: what a turn's own create, cancel or update left standing (its ledger's final
  *  state), held as fresh, so the next turn reads it without asking the engine. */
 export function noteLiveReminders(chatId: string, list: readonly ReminderRef[]): void {
