@@ -2164,12 +2164,12 @@ async function enforcePromiseKept(
   args: { res: LlmResult; chatId: string; handle: string | undefined; turn?: ConvoTurnContext },
   bubbles: string[],
   guard: ToolCallGuard,
-  opts: { retry?: boolean; carried?: TurnEffects; earlierBacksClaims?: boolean } = {},
+  opts: { retry?: boolean; carried?: TurnEffects; earlierBacksClaims?: boolean; budget?: ConvoCallBudget } = {},
 ): Promise<{ res: LlmResult; fired: boolean; promise: boolean; claim: boolean }> {
   const none = { fired: false, promise: false, claim: false };
   if (!unkeptPromiseGuardEnabled()) return { res: args.res, ...none };
   const { res, chatId, handle } = args;
-  const turn = opts.retry === false ? undefined : args.turn;
+  const asked = opts.retry === false ? undefined : args.turn;
   // Live, synchronous read of what Ops is doing for this chat RIGHT NOW — the same source the
   // prompt's active-ops block was built from, re-read here because a run can settle mid-turn. A task
   // an earlier pass of this turn built counts too: it starts when the turn ends, so "on it" is true.
@@ -2183,6 +2183,8 @@ async function enforcePromiseKept(
   const phrase = verdict.unkept ? verdict.phrase : undefined;
   const claim = claimVerdict.unbacked ? claimVerdict.phrase : undefined;
   if (!phrase && !claim) return { res, ...none };
+  // The re-ask is a convo call, so it is taken from the turn's budget only once it is certain to run.
+  const turn = asked && takeConvoCall(opts.budget) ? asked : undefined;
   // chatId in the line, not just the trace event: a live convergence round attributes the failure
   // per-chat from the instance log when the trace buffer isn't reachable.
   const what = [
@@ -2369,10 +2371,10 @@ export async function enforceQuiet(
   args: { res: LlmResult; chatId: string; handle: string | undefined; turn?: ConvoTurnContext },
   bubbles: string[],
   emitted: HookWord | undefined,
-  opts: { retry?: boolean; file?: (detail: QuietGuardDetail) => void; guard?: ToolCallGuard } = {},
+  opts: { retry?: boolean; file?: (detail: QuietGuardDetail) => void; guard?: ToolCallGuard; budget?: ConvoCallBudget } = {},
 ): Promise<{ res: LlmResult; fired: boolean }> {
   const { res, chatId, handle } = args;
-  const turn = opts.retry === false ? undefined : args.turn;
+  const asked = opts.retry === false ? undefined : args.turn;
   const guard = opts.guard ?? makeToolCallGuard(args.turn?.tools ?? fallbackConvoTools(), chatId, handle);
   const violated = quietViolation(emitted, bubbles);
   const sink = opts.file
@@ -2384,6 +2386,8 @@ export async function enforceQuiet(
     file(false, 'clean');
     return { res, fired: false };
   }
+  // Taken from the turn's convo-call budget only once the re-ask is certain to run.
+  const turn = asked && takeConvoCall(opts.budget) ? asked : undefined;
   // chatId in the line, not just the trace event: a live round attributes the failure per-chat from
   // the instance log when the trace buffer isn't reachable. Same reasoning as the promise guard.
   console.warn(`[convo] a forced-quiet turn came back loud (${bubbles.length} bubble(s)${emitted ? `, hook ${emitted}` : ''}) — one corrective re-ask (chat ${chatId})`);
@@ -2464,8 +2468,11 @@ async function askForApproval(
   request: string,
   guard: ToolCallGuard,
   variant: 'park' | 'reconfirm' = 'park',
+  budget?: ConvoCallBudget,
 ): Promise<string> {
-  const { res, chatId, handle, turn } = args;
+  const { res, chatId, handle } = args;
+  // With no convo call left this turn, the code line is the question.
+  const turn = args.turn && takeConvoCall(budget) ? args.turn : undefined;
   // Two notes, one mechanism: the park's ("you were about to…") and the expired yes's ("they said
   // yes, but the ask had run out"). Both are questions about the same action, and both must be
   // impossible to mistake for a claim that it is running.
@@ -2925,6 +2932,26 @@ function slotSnapshot(e: TurnEffects): Pick<TurnEffects, 'delegatedTask' | 'mode
  *  and at most one outcome pass. The envelope retry inside callConvoLLM and the Fallfirm voicer are
  *  not convo calls and are not counted. */
 const MAX_CONVO_CALLS_PER_TURN = 3;
+
+/**
+ * How many convo calls this user-visible turn has made so far. ONE object for the whole turn: the
+ * first pass makes it (its draft is the first call) and every pass it recurses into is handed the
+ * same one, so the cap holds across all of them. It used to be checked only where the outcome pass
+ * is triggered, and a recall turn could make four: the draft, a claim re-ask, the recall pass and
+ * that pass's own re-ask. Every call a pass is about to make, a corrective re-ask or a result pass
+ * alike, takes one first (takeConvoCall), and one that finds none left takes its no-call path: a
+ * guard only evaluates, a second pass voices its fallback, the approval ask ships its code line.
+ */
+interface ConvoCallBudget { used: number }
+
+/** Take one convo call from the turn's budget: true, and counted, when one is left. A caller with no
+ *  budget (a direct caller outside processConvoResult) is not capped here. */
+function takeConvoCall(budget: ConvoCallBudget | undefined): boolean {
+  if (!budget) return true;
+  if (budget.used >= MAX_CONVO_CALLS_PER_TURN) return false;
+  budget.used++;
+  return true;
+}
 
 /** The reads whose facts ride verbatim under a reply that stands: the list of their reminders, and
  *  what a search the model never saw the answer to came back with (a second pass that could not
@@ -3455,6 +3482,9 @@ export async function processConvoResult(args: {
   // recursed, never by an outside caller, so the pass that ships the reply builds it from the whole
   // turn instead of from its own draft alone.
   carried?: TurnEffects;
+  // The turn's convo-call count (ConvoCallBudget), handed down by whichever pass recursed, never by
+  // an outside caller: the first pass makes it, counting its own draft.
+  callBudget?: ConvoCallBudget;
   // True when an EARLIER pass of this same user-visible turn already spent its one corrective
   // re-ask (either guard's). Set by whichever pass recursed, never by an outside caller. The quiet
   // guard on this pass then evaluates and reports as usual — it is the shipping reply, so somebody
@@ -3510,6 +3540,8 @@ export async function processConvoResult(args: {
   } | null;
 }): Promise<ChatResponse> {
   const { chatId, handle, chatContext, textToSend, history, media } = args;
+  // Every convo call this turn makes counts against one cap, whichever pass makes it.
+  const budget: ConvoCallBudget = args.callBudget ?? { used: 1 };
 
   // ── The schema-echo guard ─────────────────────────────────────────────────────────────────────
   // A weak model on the toolsViaJson envelope can answer by reciting the schema it was just shown:
@@ -3639,7 +3671,7 @@ export async function processConvoResult(args: {
     && withoutFixedMisses(args.carried.results, []).some(r => !actionSucceeded(r));
   const guard = (settledTask || settledReconfirm)
     ? { res: args.res, fired: false, promise: false, claim: false }
-    : await enforcePromiseKept(args, replyBubbles(firstReply), guardToolCalls, { retry: !args.outcomePass, carried: backing, earlierBacksClaims: !missStands });
+    : await enforcePromiseKept(args, replyBubbles(firstReply), guardToolCalls, { retry: !args.outcomePass, carried: backing, earlierBacksClaims: !missStands, budget });
 
   // …and the rhythm backstop beside it, on the turns the selector forced quiet. ONE corrective
   // re-ask per turn, TOTAL: the promise guard goes first and this one stands down whenever it fired,
@@ -3678,7 +3710,7 @@ export async function processConvoResult(args: {
   const quiet = (forcedQuiet && !quietStoodDown)
     ? await enforceQuiet(
       args, replyBubbles(firstReply), coerceStatus(firstReply.statusRaw)?.hook_kind,
-      { retry: !args.quietSpent && !args.outcomePass, file: d => { quietReceipt = d; }, guard: guardToolCalls },
+      { retry: !args.quietSpent && !args.outcomePass, file: d => { quietReceipt = d; }, guard: guardToolCalls, budget },
     )
     : { res: guard.res, fired: false };
   // The stand-down still leaves its receipt, and this is the half that makes the kill switch
@@ -3809,10 +3841,9 @@ export async function processConvoResult(args: {
   //   • never on a turn holding a question: a parked action, a yes just settled, or a re-confirm
   //     (their answer is what moves it, and a second draft would bury the question);
   //   • and within the call budget: the draft, at most one corrective re-ask, and this pass.
-  const convoCallsSoFar = 1 + (args.silentRetry ? 1 : 0) + (quietSpent ? 1 : 0);
   const outcomeTrigger = !args.archivePass && !args.outcomePass && args.turn && outcomePassEnabled()
     && !effects.parkedApproval && !settledTask && !settledReconfirm
-    && convoCallsSoFar < MAX_CONVO_CALLS_PER_TURN
+    && budget.used < MAX_CONVO_CALLS_PER_TURN
     ? effects.results.filter(r => OUTCOME_PASS_STATUSES.has(r.status)).map(r => `${r.tool}:${r.status}`)
     : [];
 
@@ -3824,7 +3855,7 @@ export async function processConvoResult(args: {
   // code line is asked directly: that pass is already the turn's last model call.
   if (effects.parkedApproval) {
     textParts.length = 0;
-    textParts.push(await askForApproval(args.outcomePass ? { ...args, turn: undefined } : args, effects.parkedApproval.request, guardToolCalls, effects.parkedApproval.variant));
+    textParts.push(await askForApproval(args.outcomePass ? { ...args, turn: undefined } : args, effects.parkedApproval.request, guardToolCalls, effects.parkedApproval.variant, budget));
     // The shipped text is no longer this parse's text, so this parse's bubble cap is not the cap to
     // report (same rule as every other branch that replaces the reply).
     hardCapped = false;
@@ -3902,8 +3933,9 @@ export async function processConvoResult(args: {
     // idea it happened). The voiced-outcome fallback below carries the recall result instead, so
     // both land.
     const firstPassActed = effects.results.length > 0;
-    let secondPassFailed = !turn || firstPassActed;
-    if (turn && !firstPassActed) {
+    const passable = !!turn && !firstPassActed && takeConvoCall(budget);
+    let secondPassFailed = !passable;
+    if (turn && passable) {
       const strippedTools = turn.tools.filter(t => t.name !== 'recall_memory');
       const messages: LlmMessage[] = [
         ...turn.messages,
@@ -3933,6 +3965,7 @@ export async function processConvoResult(args: {
           // …but what the guards SPENT is not discarded: a corrective re-ask already made about
           // this user-visible turn is gone whichever draft it was made about.
           quietSpent,
+          callBudget: budget,
           // …and neither is what this pass's calls DID: the pass that ships holds the whole turn.
           carried: effects,
           turn: { ...turn, tools: strippedTools, messages },
@@ -3975,8 +4008,9 @@ export async function processConvoResult(args: {
     const errors = allErrors.filter(e => !e.chatId || e.chatId === chatId).slice(0, errorLogLimit);
     const turn = args.turn;
     const firstPassActed = effects.results.length > 0;
-    let epFailed = !turn || firstPassActed;
-    if (turn && !firstPassActed) {
+    const passable = !!turn && !firstPassActed && takeConvoCall(budget);
+    let epFailed = !passable;
+    if (turn && passable) {
       const strippedTools = turn.tools.filter(t => t.name !== 'check_error_log');
       const messages: LlmMessage[] = [
         ...turn.messages,
@@ -3999,6 +4033,7 @@ export async function processConvoResult(args: {
           res: second,
           archivePass: true,
           quietSpent,
+          callBudget: budget,
           carried: effects,
           turn: { ...turn, tools: strippedTools, messages },
           trace: args.trace ? { ...args.trace, messages } : undefined,
@@ -4048,7 +4083,7 @@ export async function processConvoResult(args: {
   // throws falls back HERE, with the slot restored as the recall pass restores it; its results stay.
   // The recall and error-log passes never run beside it: a turn with a result to fix has acted, so
   // both have already fallen back to adding their own result, which the pass is then shown.
-  if (outcomeTrigger.length && args.turn) {
+  if (outcomeTrigger.length && args.turn && takeConvoCall(budget)) {
     const turn = args.turn;
     const tools = turn.tools.filter(t => t.name !== 'recall_memory' && t.name !== 'check_error_log');
     const live = await outcomeLiveState(effects, chatId, chatContext?.senderHandle, args.userTz || DEFAULT_TZ);
@@ -4075,6 +4110,7 @@ export async function processConvoResult(args: {
         res: second,
         outcomePass: { trigger: outcomeTrigger },
         quietSpent,
+        callBudget: budget,
         carried: effects,
         turn: { ...turn, tools, messages },
         trace: args.trace ? { ...args.trace, messages } : undefined,
@@ -4418,7 +4454,7 @@ export async function processConvoResult(args: {
       && !producedHere('removeMember') && !producedHere('delegatedTask')
       && !res.toolCalls.length && textToSend.trim()) {
     // The fence: a retry never retries, and the outcome pass already IS the turn's extra call.
-    const turn = args.silentRetry || args.outcomePass ? undefined : args.turn;
+    const turn = args.silentRetry || args.outcomePass || !args.turn || !takeConvoCall(budget) ? undefined : args.turn;
     // chatId in the line, not just the trace event: a live convergence round attributes the failure
     // per-chat from the instance log when the trace buffer isn't reachable.
     console.warn(`[convo] silent turn on a real message (chat ${chatId}) — ${turn ? 'retrying once' : 'voicing the floor'}`);
@@ -4439,7 +4475,7 @@ export async function processConvoResult(args: {
         // Same input, so the whole turn re-processes: a retry that DOES call a tool gets it
         // dispatched exactly as a first pass would. Nothing was persisted or sent above (a silent
         // turn writes no history), so there are no double effects.
-        return await processConvoResult({ ...args, res: retry, silentRetry: true, quietSpent, carried: effects });
+        return await processConvoResult({ ...args, res: retry, silentRetry: true, quietSpent, callBudget: budget, carried: effects });
       } catch (err) {
         console.error('[convo] silent-turn retry failed — voicing the floor', err);
         reportError({ source: 'convo', category: 'silent_turn', severity: 'warn', err, chatId, handle });
