@@ -391,14 +391,26 @@ async function handleScheduleAutomation(
   // `distinct` is the model's claim that this one serves another purpose. It is honored only on a
   // pass that has already shown the model what the create collides with (DispatchContext
   // `honorDistinct`); written blind, before any collision was seen, it is ignored, and recorded.
+  //
+  // Nor is it honored on a REPLACE: when this turn tried to cancel a reminder the create collides
+  // with and the cancel missed, the create was meant to stand in for that reminder, and "a separate
+  // one" is the one reading the turn rules out. That incident turn's pass sent the replacement back
+  // marked distinct instead of updating the reminder by id, and left two 7am jobs behind a "done".
+  // Held, the pass's only way through is the update. A cancel that found nothing at all offered
+  // every reminder, so the one the create collides with is among what it could have meant.
   const wantsDistinct = input.distinct === true;
-  if (wantsDistinct && !opts.honorDistinct) {
+  const collided = collision.kind === 'similar' ? new Set(collision.with.map(r => shortReminderId(r.id))) : new Set<string>();
+  const replacing = effects.results.some(r => r.tool === 'cancel_automation' && !actionSucceeded(r)
+    && (r.status === 'not_found' || (r.candidates ?? []).some(c => collided.has(c.id))));
+  const blind = wantsDistinct && !opts.honorDistinct;
+  const replace = wantsDistinct && opts.honorDistinct && collision.kind === 'similar' && replacing;
+  if (blind || replace) {
     record({
       type: 'event', label: 'convo:tool_arg_ignored', chatId, handle,
-      detail: { tool, arg: 'distinct', value: 'true', reason: 'collision_not_yet_seen', held: collision.kind === 'similar' },
+      detail: { tool, arg: 'distinct', value: 'true', reason: blind ? 'collision_not_yet_seen' : 'replacing_a_missed_cancel', held: collision.kind === 'similar' },
     });
   }
-  if (collision.kind === 'similar' && !(wantsDistinct && opts.honorDistinct)) {
+  if (collision.kind === 'similar' && !(wantsDistinct && opts.honorDistinct && !replacing)) {
     return {
       tool, status: 'held', target,
       detail: 'a reminder of theirs already covers this time or this purpose, so a second one was not added',

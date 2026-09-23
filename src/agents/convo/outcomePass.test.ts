@@ -265,6 +265,35 @@ test('a held create goes through on the pass when it is marked distinct there', 
   assert.equal(outcomeReceipt()?.resolved, 'model');
   assert.match(out2.text!, /nothing changed yet/, 'the held create is still voiced');
   assert.match(out2.text!, /daily indonesia digest/, 'with the reminder it collided with');
+
+  // `distinct` never overrides an identical reminder, not even on the pass that honors it: the same
+  // words on the same slot is the one reminder asked for twice, and a second copy is never meant.
+  const third = installStubEngine([DIGEST]);
+  const ask3 = 'and a 7am economy headlines one';
+  const c = args(ask3);
+  const same = turnCtx(ask3, async () => makeResult(['a separate one then'], [
+    schedule(DIGEST.instruction!, '0 7 * * *', { distinct: true }),
+  ]));
+  await processConvoResult({ ...c, res: makeResult(['on it'], [schedule(GOVT, '0 7 * * *')]), turn: same.turn });
+  assert.equal(third.createdSpecs.length, 0, 'identical reads as already set, and nothing is created');
+});
+
+test('a create marked distinct on the pass stays held when a cancel this turn missed was replacing it', async () => {
+  // The incident turn, with the pass reaching for `distinct` instead of the update: a cancel by a
+  // guessed title missed, the replacement was held against the reminder it meant to replace, and a
+  // pass that called the replacement a separate purpose made a second 7am job and said "done".
+  const { createdSpecs } = installStubEngine([DIGEST]);
+  const ask = 'change my 7am brief to govt news instead';
+  const a = args(ask);
+  const { turn } = turnCtx(ask, async () => makeResult(['done, govt news at 7 now'], [schedule(GOVT, '0 7 * * *', { distinct: true })]));
+
+  await processConvoResult({
+    ...a,
+    res: makeResult(['done'], [{ name: 'cancel_automation', input: { match: 'morning brief' } }, schedule(GOVT, '0 7 * * *')]),
+    turn,
+  });
+
+  assert.equal(createdSpecs.length, 0, 'no second 7am job: a missed cancel beside a held create is a replace');
 });
 
 test('a list shown on a turn that then cancelled one shows what is left, not what was', async () => {
