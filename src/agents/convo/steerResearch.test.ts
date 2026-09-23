@@ -282,7 +282,7 @@ test('an addition the engine never took reads back as never reached, not as hand
   const line = renderActiveOps(getActiveOps('chatA'));
   assert.match(line, /you added: "under 100k" \(reached the look\)/);
   assert.match(line, /"also check jakarta" \(never reached the look\)/);
-  assert.doesNotMatch(line, /you added: (?:(?! — )[^\n])*"also check jakarta"/, 'what never reached the look is not listed as added');
+  assert.doesNotMatch(line, /you added: (?:(?!; they asked to add)[^\n])*"also check jakarta"/, 'what never reached the look is not listed as added');
 
   // Queued before the run had a handle, and the leg ended before one landed.
   markOpsStart('chatB', 't2', { kind: 'general', request: 'flights to bali' });

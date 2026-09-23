@@ -440,7 +440,7 @@ async function handleScheduleAutomation(
         kind: 'cron', expr: next.cron, exprZone: timezone, instruction, createdAt: new Date().toISOString(),
       }];
       noteLiveReminders(chatId, effects.reminders);
-      return { tool, status: 'done', target, ref: shortReminderId(ref.id), detail: 'a recurring reminder is now set — it repeats on their schedule' };
+      return { tool, status: 'done', target, ref: shortReminderId(ref.id), detail: 'a recurring reminder is now set, and it repeats on their schedule' };
     }
     const ts = next.fireAt!;
     const ref = await engine.createReminder({ chatId, agentHandle: handle, instruction, fireAt: ts, title, timezone });
@@ -713,13 +713,13 @@ function cancelResearch(id: string, match: string, chatId: string): { result: Ac
   const target = (id || match).trim();
   const active = getActiveOps(chatId);
   if (!active.length) {
-    return { result: { tool, status: 'not_found', target, detail: "nothing's being looked up for them right now — either it already landed or nothing was started", nextStep: 'if they mean something else, ask what they want dropped' }, cancelled: [] };
+    return { result: { tool, status: 'not_found', target, detail: "nothing's being looked up for them right now: either it already landed or nothing was started", nextStep: 'if they mean something else, ask what they want dropped' }, cancelled: [] };
   }
   const picked = pickResearch(active, id, match);
   if (picked.kind !== 'match') return { result: researchUnpicked(tool, target, picked, active, 'stopped'), cancelled: [] };
   const run = picked.run;
   if (requestOpsCancel(chatId, run.taskId) !== 'signalled') {
-    return { result: { tool, status: 'unreachable', target, detail: 'that lookup actually just finished — the answer is already landing on their screen', nextStep: 'tell them to just ignore it if they don\'t need it' }, cancelled: [] };
+    return { result: { tool, status: 'unreachable', target, detail: 'that lookup actually just finished, and the answer is already landing on their screen', nextStep: 'tell them to just ignore it if they don\'t need it' }, cancelled: [] };
   }
   return {
     result: { tool, status: 'done', target: run.request, ref: shortLookupId(run.taskId), detail: 'the lookup they wanted dropped is stopped' },
@@ -760,7 +760,7 @@ function steerResearch(
   const target = (id || match).trim();
   const active = getActiveOps(chatId);
   if (!active.length) {
-    return { tool, status: 'not_found', target, detail: "nothing's being looked up for them right now — either it already landed or nothing was started", nextStep: 'nothing was added anywhere, and nothing new was started for it' };
+    return { tool, status: 'not_found', target, detail: "nothing's being looked up for them right now: either it already landed or nothing was started", nextStep: 'nothing was added anywhere, and nothing new was started for it' };
   }
   // The same pick the cancel makes (pickResearch): one run, or none acted on.
   const picked = pickResearch(active, id, match);
@@ -785,7 +785,7 @@ function steerResearch(
   });
   const decided = matches.map(a => ({ taskId: a.taskId, request: a.request, outcome: requestOpsSteer(chatId, a.taskId, guidance, mandated) }));
   if (decided.every(d => d.outcome === 'already_done')) {
-    return { tool, status: 'unreachable', target, detail: 'that lookup actually just finished — the answer is already landing on their screen', nextStep: 'that answer was gathered before their addition, so it may not cover it' };
+    return { tool, status: 'unreachable', target, detail: 'that lookup actually just finished, and the answer is already landing on their screen', nextStep: 'that answer was gathered before their addition, so it may not cover it' };
   }
   // No route to the run, from either direction: the ENGINE has no steer method at all (OpenClaw),
   // or the map says no handle can ever land for this leg (hermes on the chat transport — only the
@@ -998,7 +998,7 @@ function steersClause(o: ActiveOps): string {
   const had = o.steerLog.filter(s => s.delivery !== 'never')
     .map(s => `"${s.text}"${s.delivery === 'reached' ? ' (reached the look)' : ''}`);
   const missed = o.steerLog.filter(s => s.delivery === 'never').map(s => `"${s.text}" (never reached the look)`);
-  return `${had.length ? ` — you added: ${had.join('; ')}` : ''}${missed.length ? ` — they asked to add: ${missed.join('; ')}` : ''}`;
+  return `${had.length ? ` — you added: ${had.join('; ')}` : ''}${missed.length ? `; they asked to add: ${missed.join('; ')}` : ''}`;
 }
 
 /** One status line per in-flight run: the ask, how long it's been going, ETA pace, and — when Ops
@@ -3122,7 +3122,7 @@ async function dispatchToolCalls(calls: LlmToolCall[], effects: TurnEffects, ctx
         try {
           const saved = await addImportantNote(handle, String(input.value), 'convo', coerceBasis(input.basis));
           if (saved) {
-            effects.results.push({ tool: 'set_preference', status: 'done', target: 'important_note', detail: "their note is saved — you'll keep it in mind" });
+            effects.results.push({ tool: 'set_preference', status: 'done', target: 'important_note', detail: "their note is saved, and you'll keep it in mind" });
             effects.noteSaved = true;
             effects.savedNote = saved;
           }
