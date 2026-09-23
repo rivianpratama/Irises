@@ -164,7 +164,8 @@ export function renderPromiseCorrection(phrase: string): string {
 export const CLAIM_WORDS = ['done', 'revised', 'updated', 'switched', 'cancelled', 'removed', 'fixed'] as const;
 
 /** Multi-word claims, matched as whole phrases inside one clause like the promise rows. Each one's
- *  plain reading is "the change you asked for is made". */
+ *  plain reading is "the change you asked for is made". A phrase with no past tense of its own
+ *  ("set it for …") is left off: it reads as an offer or a plan as easily as a report. */
 export const CLAIM_PHRASES = [
   'changed it',
   'switched it',
@@ -174,11 +175,45 @@ export const CLAIM_PHRASES = [
   'removed it',
   'fixed it',
   'moved it',
-  'set it for',
-  'set it to',
   'all set',
   'all done',
 ] as const;
+
+// A claim is a STATEMENT that a change landed. The same words also ask ("all set?"), offer ("want me
+// to switch it"), plan ("i'll have it all set"), set a condition ("if you're all set") or deny ("i
+// haven't changed it yet"), and every one of those is the honest reply to a turn that changed
+// nothing, including the "which one did you mean" a missed cancel should end on. So a clause that
+// ends in a question mark is never a claim, and neither is a phrase with one of these ahead of it
+// inside its clause. `t` is the n't of a contraction, split off by NON_WORD ("haven't" reads "haven
+// t"); `ll` is the 'll of "i'll".
+const NOT_A_REPORT = new Set([
+  'not', 'never', 't', 'cant', 'cannot', 'wont', 'dont', 'didnt', 'havent', 'hasnt', 'isnt', 'wasnt', 'aint',
+  'will', 'll', 'shall', 'should', 'can', 'could', 'would', 'might', 'if', 'gonna', 'wanna',
+]);
+const NOT_A_REPORT_PHRASES = [' going to ', ' want me to '];
+
+/** The `[[re:N]]` routing tag a bubble can open with (state/replyThreading.ts). Its colon is a
+ *  clause break to the splitter, so it is set aside before any clause is read. */
+const REPLY_TAG = /^\s*\[\[re:\d+\]\]/;
+const REPLY_TAGS = /\[\[re:\d+\]\]/g;
+
+/** The clauses of a bubble that STATE something, normalized like `clauses()`: each clause whose own
+ *  terminator carries a question mark is left out. */
+function statedClauses(text: string): string[] {
+  const pieces = text.replace(REPLY_TAGS, ' ').toLowerCase().split(/([.!?,;:\n\r]+)/);
+  const out: string[] = [];
+  for (let i = 0; i < pieces.length; i += 2) {
+    if ((pieces[i + 1] ?? '').includes('?')) continue;
+    out.push(` ${pieces[i].replace(NON_WORD, ' ').trim()} `);
+  }
+  return out;
+}
+
+/** Does anything ahead of the phrase, inside its clause, make it other than a report? */
+function reportsOtherwise(before: string): boolean {
+  return before.trim().split(' ').some(w => NOT_A_REPORT.has(w))
+    || NOT_A_REPORT_PHRASES.some(p => ` ${before.trim()} `.includes(p));
+}
 
 /**
  * The tools whose call is a change made on their behalf, and so the only thing that can back a
@@ -202,12 +237,14 @@ export interface UnbackedClaimVerdict {
 /** The first claim in the reply, bubble by bubble in reading order. */
 function findClaim(bubbles: string[]): string | undefined {
   for (const bubble of bubbles) {
-    for (const clause of clauses(bubble)) {
+    for (const clause of statedClauses(bubble)) {
       const whole = clause.trim();
       const word = CLAIM_WORDS.find(w => w === whole);
       if (word) return word;
-      const phrase = CLAIM_PHRASES.find(p => clause.includes(` ${p} `));
-      if (phrase) return phrase;
+      for (const phrase of CLAIM_PHRASES) {
+        const at = clause.indexOf(` ${phrase} `);
+        if (at >= 0 && !reportsOtherwise(clause.slice(0, at + 1))) return phrase;
+      }
     }
   }
   return undefined;
@@ -239,15 +276,21 @@ export function detectUnbackedClaim(
 export function dropClaims(legacyText: string): string | null {
   const kept: string[] = [];
   for (const bubble of legacyText.split('\n---\n')) {
-    // The split keeps its separators (odd indices), so each surviving clause keeps its own.
-    const pieces = bubble.split(/([.!?,;:\n\r]+)/);
+    // The routing tag is set aside and put back on what survives: the send path threads the bubble
+    // by it, and its colon would otherwise be read as a clause break and cut it in half.
+    const tag = bubble.match(REPLY_TAG)?.[0].trim() ?? '';
+    const body = tag ? bubble.replace(REPLY_TAG, '') : bubble;
+    // The split keeps its separators (odd indices), so each surviving clause keeps its own, and a
+    // clause is judged with its own terminator (a question is never a claim).
+    const pieces = body.split(/([.!?,;:\n\r]+)/);
     const out: string[] = [];
     for (let i = 0; i < pieces.length; i += 2) {
-      if (findClaim([pieces[i]])) continue;
-      out.push(pieces[i], pieces[i + 1] ?? '');
+      const sep = pieces[i + 1] ?? '';
+      if (findClaim([pieces[i] + sep])) continue;
+      out.push(pieces[i], sep);
     }
     const text = out.join('').replace(/\s{2,}/g, ' ').replace(/^[\s.!?,;:]+|[\s,;:]+$/g, '').trim();
-    if (/[a-z0-9]/i.test(text)) kept.push(text);
+    if (/[a-z0-9]/i.test(text)) kept.push(`${tag}${text}`);
   }
   return kept.length ? kept.join('\n---\n') : null;
 }

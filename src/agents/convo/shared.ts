@@ -98,10 +98,10 @@ import {
   renderPromiseCorrection, unkeptPromiseGuardEnabled,
 } from './unkeptPromise.js';
 import { dropSchemaEcho } from './toolCallGuard.js';
-import { orderToolCalls } from './toolOrder.js';
+import { orderToolCalls, toolCallKey } from './toolOrder.js';
 import {
-  actionSucceeded, combinedOutcome, needsCorrection, renderActionResultsPass, resolveRef, toOutcome,
-  type ActionCandidate, type ActionResult, type ActionStatus,
+  actionSucceeded, combinedOutcome, needsCorrection, outcomePassEnabled, renderActionResultsPass, resolveRef,
+  toOutcome, withoutFixedMisses, type ActionCandidate, type ActionResult, type ActionStatus,
 } from './actionResults.js';
 import { detectCollision, existingKind, type LedgerReminder, type NewReminder } from './reminderCollision.js';
 import {
@@ -2139,12 +2139,14 @@ async function enforcePromiseKept(
         trace: { chatId, handle, label: 'convo:unkept_retry' },
       }));
       const retryBubbles = replyBubbles(parseReply(retry.text));
+      // Judged only on what was flagged: a re-ask about a promise that comes back delegating for
+      // real is the fix, whatever else its holding line says.
       const again = detectUnkeptPromise(retryBubbles, retry.toolCalls, active);
       const claimAgain = detectUnbackedClaim(retryBubbles, retry.toolCalls, backedEarlier);
-      if (retry.toolCalls.length && !again.unkept && !claimAgain.unbacked) {
+      if (retry.toolCalls.length && !(phrase && again.unkept) && !(claim && claimAgain.unbacked)) {
         out = retry;
         resolved = 'tool_call';
-      } else if (retryBubbles.length && !again.promised && !claimAgain.claimed) {
+      } else if (retryBubbles.length && !(phrase && again.promised) && !(claim && claimAgain.claimed)) {
         out = retry;
         resolved = 'honest';
       } else {
@@ -2713,8 +2715,8 @@ export interface TurnEffects {
   directiveActed: boolean;
   /** The model wrote the reply-language slot itself; the post-reply hook stands down. */
   replyLanguageWrittenByTool: boolean;
-  /** The name of every call dispatched this turn, across passes, in the order it ran: what a later
-   *  pass's turn receipt names as carried. */
+  /** Every call dispatched this turn, across passes, in the order it ran, as its toolCallKey (name
+   *  plus args). A later pass never runs the same call twice, and its receipt names what was carried. */
   dispatched: string[];
 }
 
@@ -2747,16 +2749,6 @@ const MAX_CONVO_CALLS_PER_TURN = 3;
  *  carried out as written, or ended before it could be reached. `unavailable` is left off: when the
  *  engine is offline or a write snagged, no call the model makes will fare better this turn. */
 const OUTCOME_PASS_STATUSES: ReadonlySet<ActionStatus> = new Set<ActionStatus>(['held', 'not_found', 'ambiguous', 'invalid', 'unreachable']);
-
-/**
- * The feature gate (env: CONVO_OUTCOME_PASS). Default ON, read at call time, the same parse as the
- * sibling guards. Off, a turn whose action missed is voiced by Fallfirm as it was before the pass.
- */
-export function outcomePassEnabled(): boolean {
-  const v = (process.env.CONVO_OUTCOME_PASS || '').trim().toLowerCase();
-  if (v === '') return true;
-  return ['true', '1', 'on', 'yes'].includes(v);
-}
 
 /**
  * What stands right now, for the pass to address by id: this chat's reminders as the turn's own
@@ -2844,7 +2836,7 @@ async function dispatchToolCalls(calls: LlmToolCall[], effects: TurnEffects, ctx
 
   for (const call of calls) {
     const input = call.input;
-    effects.dispatched.push(call.name);
+    effects.dispatched.push(toolCallKey(call));
     if (call.name === 'send_reaction') {
       const re = coerceReactionIndex(input.re);
       if (input.type === 'custom' && input.emoji) effects.reaction = { type: 'custom', emoji: String(input.emoji), ...(re != null ? { re } : {}) };
@@ -3352,6 +3344,20 @@ export async function processConvoResult(args: {
   // two disagree about what the turn is processing.
   const guardedFirst = guardToolCalls(args.res);
   if (guardedFirst !== args.res) args = { ...args, res: guardedFirst };
+  // The outcome pass never runs again a call an earlier pass of this turn already ran (by
+  // toolCallKey, name plus args). Most repeats would be harmless (a second cancel reads `already`),
+  // but a call that leaves no result behind would simply happen twice: a steer that was delivered is
+  // POSTed again, a memory ask is sent again. Dropped HERE, ahead of the honesty guard, so a repeat
+  // that will not run can never be what backs a claim in the same reply.
+  if (args.outcomePass && args.carried?.dispatched.length) {
+    const ranBefore = new Set(args.carried.dispatched);
+    const repeats = args.res.toolCalls.filter(c => ranBefore.has(toolCallKey(c)));
+    if (repeats.length) {
+      console.log(`[convo] outcome pass dropped ${repeats.length} call(s) the draft already ran (chat ${chatId}): ${repeats.map(c => c.name).join(', ')}`);
+      record({ type: 'event', label: 'convo:tool_call_duplicate', chatId, handle, detail: { dropped: repeats.map(c => c.name), total: args.res.toolCalls.length, earlierPass: true } });
+      args = { ...args, res: { ...args.res, toolCalls: args.res.toolCalls.filter(c => !ranBefore.has(toolCallKey(c))) } };
+    }
+  }
 
   // Read ONCE for the turn: the routing gate and the delegation brief must not be able to disagree
   // because someone flipped the env between the two reads.
@@ -3526,7 +3532,7 @@ export async function processConvoResult(args: {
   }
   // Where THIS pass's own results and calls start in the turn's lists: everything before is carried.
   const passStart = effects.results.length;
-  const carriedCalls = effects.dispatched.slice();
+  const carriedCalls = effects.dispatched.map(k => k.slice(0, k.indexOf(':')));
   const { recallQuery, errorLogLimit } = await dispatchToolCalls(ordered.calls, effects, {
     chatId, handle, chatContext, textToSend, media, userTz: args.userTz,
     // A create's `distinct` claim is honored only on the outcome pass, the one pass that has shown
@@ -3851,6 +3857,11 @@ export async function processConvoResult(args: {
   // The draft the salvages below cut down: none at all when the outcome pass fell back, since its
   // reply is dropped whole there.
   const draftText = args.outcomePass && !outcomeModel ? null : normalizedText;
+  // What of the turn still stands. On an outcome pass whose reply stands, a miss the pass itself
+  // went on to fix is no longer news: voicing "couldn't find it" beside the fix would contradict it
+  // (actionResults.ts withoutFixedMisses). Everywhere else, every result stands.
+  const ownResults = effects.results.slice(passStart);
+  const standing = outcomeModel ? withoutFixedMisses(effects.results.slice(0, passStart), ownResults) : effects.results;
 
   // Composer-paraphrase floor: when the MODEL delegated, any substantive answer it wrote in the same
   // turn is un-grounded (Convo is single-shot, never sees the tool result) AND the composer re-answers
@@ -3885,7 +3896,7 @@ export async function processConvoResult(args: {
     // openers shipping instead of being replaced by the voiced fallback line.
     const ground = [textToSend, effects.delegatedTask?.request, effects.delegatedTask?.addressHint, effects.delegatedTask?.dealHint].filter(Boolean).join('\n');
     const salvaged = salvageHoldingText(draftText, ground);
-    const kept = salvaged && needsCorrection(effects.results) ? dropClaims(salvaged) : salvaged;
+    const kept = salvaged && needsCorrection(standing) ? dropClaims(salvaged) : salvaged;
     textParts.length = 0;
     if (kept) textParts.push(kept);
   }
@@ -4090,8 +4101,12 @@ export async function processConvoResult(args: {
   // What of the turn is still unsaid. On an outcome pass whose own reply stands whole (nothing cut
   // it down to a holding line or replaced it with a question), the model wrote that reply WITH every
   // earlier result in front of it, so only what the pass itself did is left: its own calls ran after
-  // it wrote. Everywhere else it is every result.
-  const unsaid = outcomeModel && keep === null && textResponse ? results.slice(passStart) : results;
+  // it wrote. Anywhere else it is what still stands (above). The `facts` that ride beside a reply
+  // that stands are data the model cannot author (a list, an exact time), so an earlier success's
+  // facts are appended there too, whatever the reply said about them.
+  const whole = outcomeModel && keep === null && !!textResponse;
+  const unsaid = whole ? ownResults : standing;
+  const factSource = whole ? [...results.slice(0, passStart).filter(actionSucceeded), ...ownResults] : unsaid;
   const correcting = needsCorrection(unsaid);
   // ── The turn's results, voiced ──────────────────────────────────────────────────────────────
   // Every acting call's result, in the order it ran (convo/actionResults.ts). Fallfirm is
@@ -4115,8 +4130,8 @@ export async function processConvoResult(args: {
     holdingPart = keep;
     textResponse = keep ? `${keep}\n---\n${voiced}` : voiced;
     hardCapped = false;   // the voiced results REPLACE the parsed text — its cap isn't news about this send
-  } else if (unsaid.length && textResponse) {
-    const facts = unsaid.map(r => r.facts).filter((f): f is string => !!f);
+  } else if (factSource.length && textResponse) {
+    const facts = factSource.map(r => r.facts).filter((f): f is string => !!f);
     if (facts.length) {
       holdingPart = textResponse;
       textResponse = `${textResponse}\n---\n${facts.join('\n---\n')}`;

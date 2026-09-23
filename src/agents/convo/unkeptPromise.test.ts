@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import {
   detectUnkeptPromise, renderPromiseCorrection, unkeptPromiseGuardEnabled, PROMISE_PHRASES,
+  detectUnbackedClaim, dropClaims,
 } from './unkeptPromise.js';
 import { processConvoResult, type ChatContext, type ConvoTurnContext } from './shared.js';
 import {
@@ -372,18 +373,37 @@ test('flag off: the fabricated reply ships exactly as it did before the guard ex
 // re-ask with the promise check above.
 
 test('"got it, revised" with nothing changed this turn gets exactly one re-ask', async () => {
+  // A claim is a STATEMENT that a change landed. The same words asked, offered, planned or denied
+  // are the honest replies to a turn that changed nothing, so none of these may cost a re-ask.
+  for (const line of [
+    "i'll set it for 7?",
+    'want me to set it to govt news instead?',
+    'all set?',
+    'i can set it for 7 if you want',
+    "can't set it to 7, that slot's taken",
+    "i haven't changed it yet",
+    "i haven't cancelled it yet",
+  ]) {
+    assert.equal(detectUnbackedClaim([line], null, false).claimed, false, line);
+  }
+  for (const line of ['got it, revised', 'done', 'switched it', '[[re:1]]done']) {
+    assert.equal(detectUnbackedClaim([line], null, false).unbacked, true, line);
+  }
+  // The routing tag survives a dropped claim whole (its colon is not a clause break).
+  assert.equal(dropClaims('[[re:1]]all set, digging in now'), '[[re:1]]digging in now');
+
   const seen: LlmRequest[] = [];
   const out = await processConvoResult({
     ...args(),
     res: makeResult(['got it, revised']),
     turn: turnCtx(async req => {
       seen.push(req);
-      return makeResult(["i haven't changed anything yet, which one did you mean?"]);
+      return makeResult(["i haven't changed it yet, which one did you mean?"]);
     }),
   });
   assert.equal(seen.length, 1, 'one re-ask');
   assert.match(String(seen[0].messages[seen[0].messages.length - 1].content), /"revised"/, 'naming the claim');
-  assert.equal(out.text, "i haven't changed anything yet, which one did you mean?");
+  assert.equal(out.text, "i haven't changed it yet, which one did you mean?", 'the honest answer is accepted');
 });
 
 test('a claim on the outcome pass that the first pass backed is not flagged', async () => {

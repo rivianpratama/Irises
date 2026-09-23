@@ -115,23 +115,25 @@ test('the incident: a missed cancel and a held create become ONE in-place update
   const { createdSpecs, updates } = installStubEngine([DIGEST]);
   const ask = 'change my 7am brief to govt news instead';
   const a = args(ask);
-  const { turn, seen } = turnCtx(ask, async () => makeResult(
-    ['done, your 7am one is govt news now', 'same time as before'],
-    [{ name: 'update_automation', input: { id: 'R9d0c42', instruction: GOVT } }],
-  ));
+  // The incident's own last draft first: it claims the change with no call behind it, which spends
+  // the turn's one corrective re-ask. The re-ask comes back with the calls the model made on every
+  // earlier turn (cancel by a guessed title, schedule the replacement), and then the pass is the
+  // third and last convo call the turn may make.
+  const { turn, seen } = turnCtx(ask, async req => (req.trace?.label === 'convo:unkept_retry'
+    ? makeResult(['done, switched it to govt news'], [
+        { name: 'cancel_automation', input: { match: 'morning brief' } },
+        schedule(GOVT, '0 7 * * *'),
+      ])
+    : makeResult(
+        ['done, your 7am one is govt news now', 'same time as before'],
+        [{ name: 'update_automation', input: { id: 'R9d0c42', instruction: GOVT } }],
+      )));
 
-  const out = await processConvoResult({
-    ...a,
-    res: makeResult(['done, switched it to govt news'], [
-      { name: 'cancel_automation', input: { match: 'morning brief' } },
-      schedule(GOVT, '0 7 * * *'),
-    ]),
-    turn,
-  });
+  const out = await processConvoResult({ ...a, res: makeResult(['got it, revised']), turn });
 
-  assert.equal(seen.length, 1, 'exactly one more look');
-  assert.ok(1 + seen.length <= 3, 'within the three convo calls a turn may make');
-  const pass = seen[0];
+  assert.deepEqual(seen.map(r => r.trace?.label), ['convo:unkept_retry', 'convo:outcome_call'], 'the re-ask, then exactly one more look');
+  assert.equal(1 + seen.length, 3, 'the draft, one re-ask and the pass: the three convo calls a turn may make');
+  const pass = seen[1];
   assert.deepEqual(
     pass.tools?.filter(t => t.name === 'recall_memory' || t.name === 'check_error_log'), [],
     'the searches are stripped from the pass',
@@ -147,6 +149,29 @@ test('the incident: a missed cancel and a held create become ONE in-place update
   assert.match(out.text!, /done, your 7am one is govt news now/, "the pass's own reply ships");
   assert.doesNotMatch(out.text!, /no reminder matched|couldnt track/, 'no canned miss');
   assert.equal(outcomeReceipt()?.resolved, 'model');
+
+  // The same fix on a turn that also started a lookup. There the pass's reply is cut to its holding
+  // half and the results are voiced after it, and the cancel the pass went on to land by id means
+  // the draft's miss is no longer news: it is not voiced beside the fix.
+  installStubEngine([DIGEST]);
+  const ask2 = "drop my morning brief and look up today's govt news";
+  const b = args(ask2);
+  const second = turnCtx(ask2, async () => makeResult(
+    ['on it, still pulling the news', 'dropped the daily digest too'],
+    [{ name: 'cancel_automation', input: { id: 'R9d0c42' } }],
+  ));
+  const out2 = await processConvoResult({
+    ...b,
+    res: makeResult(['on it, pulling that now'], [
+      { name: 'delegate_to_ops', input: { kind: 'general', request: "today's indonesian government news" } },
+      { name: 'cancel_automation', input: { match: 'morning brief' } },
+    ]),
+    turn: second.turn,
+  });
+  assert.deepEqual(second.seen.map(r => r.trace?.label), ['convo:outcome_call']);
+  assert.ok(out2.delegatedTask, 'the lookup still starts');
+  assert.equal(outcomeReceipt()?.resolved, 'model');
+  assert.doesNotMatch(out2.text!, /couldnt track/, 'the miss the pass fixed is not voiced');
 });
 
 test('a pass that throws falls back to voicing every result, the success included, with no third call', async () => {

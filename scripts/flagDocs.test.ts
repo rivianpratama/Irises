@@ -37,6 +37,7 @@ import { convoHistoryMax } from '../src/db/repositories/conversations.js';
 import { walledUrlHintEnabled } from '../src/llm/models.js';
 import { hermesSessionRotation, runsTransportEnabled } from '../src/agents/ops/hermesBackend.js';
 import { unkeptPromiseGuardEnabled } from '../src/agents/convo/unkeptPromise.js';
+import { outcomePassEnabled } from '../src/agents/convo/actionResults.js';
 import { starvedRetryEnabled, reasoningDisableEnabled, llmCallTimeoutMs } from '../src/llm/openrouterRequest.js';
 import { browserLegBudgetMs, opsCancelEngineAbortEnabled } from '../src/agents/ops/engineBackend.js';
 import { leafExamplesExtra } from '../src/persona/idle.js';
@@ -83,6 +84,7 @@ const FLAGS: readonly FlagDoc[] = [
   { name: 'OPS_WALLED_URL_HINT', probe: () => onOff(walledUrlHintEnabled()) },
   { name: 'HERMES_SESSION_ROTATION', probe: () => hermesSessionRotation() },
   { name: 'CONVO_UNKEPT_PROMISE_GUARD', probe: () => onOff(unkeptPromiseGuardEnabled()) },
+  { name: 'CONVO_OUTCOME_PASS', probe: () => onOff(outcomePassEnabled()) },
   { name: 'LLM_STARVED_RETRY', probe: () => onOff(starvedRetryEnabled()) },
   { name: 'LLM_REASONING_DISABLE', probe: () => onOff(reasoningDisableEnabled()) },
   { name: 'LLM_CALL_TIMEOUT_MS', probe: () => String(llmCallTimeoutMs({})) },

@@ -111,6 +111,36 @@ export function combinedOutcome(results: readonly ActionResult[]): Outcome {
   return { kind, summary: 'several things were acted on in this one turn, listed below in the order they ran', parts };
 }
 
+/**
+ * What of a turn still stands once its outcome pass has acted: every result the pass produced, and
+ * of the earlier ones every success and every miss the pass did not fix. A miss counts as fixed when
+ * the pass landed a success in the same family: the reminder tools (a missed cancel the pass turned
+ * into an update by id), the research tools (a missed stop or steer the pass aimed by id), and
+ * otherwise the same tool. In dispatch order, earlier results first.
+ */
+export function withoutFixedMisses(earlier: readonly ActionResult[], pass: readonly ActionResult[]): ActionResult[] {
+  const fixed = new Set(pass.filter(actionSucceeded).map(r => actionFamily(r.tool)));
+  return [...earlier.filter(r => actionSucceeded(r) || !fixed.has(actionFamily(r.tool))), ...pass];
+}
+
+function actionFamily(tool: string): string {
+  if (tool === 'schedule_automation' || tool === 'update_automation' || tool === 'cancel_automation') return 'reminders';
+  if (tool === 'cancel_research' || tool === 'steer_research') return 'research';
+  return tool;
+}
+
+/**
+ * The outcome pass's feature gate (env: CONVO_OUTCOME_PASS, convo/shared.ts). Default ON, read at
+ * call time, the same parse as the sibling guards. Off, a turn whose action missed is voiced by
+ * Fallfirm as it was before the pass existed. Here rather than beside the pass so the flag table
+ * (scripts/flagDocs.test.ts) can read its default without loading the whole convo module.
+ */
+export function outcomePassEnabled(): boolean {
+  const v = (process.env.CONVO_OUTCOME_PASS || '').trim().toLowerCase();
+  if (v === '') return true;
+  return ['true', '1', 'on', 'yes'].includes(v);
+}
+
 // ── resolveRef ──────────────────────────────────────────────────────────────────────────────────
 // The model addresses a live item by the short id it was shown beside it (`[R2448ff]` for a
 // reminder). What comes back is whatever it copied: the whole bracketed id, the id without its
