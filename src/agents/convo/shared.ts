@@ -93,7 +93,10 @@ import {
   type CraftModuleTrace, type CraftTurnFacts, type ModuleGateInput,
 } from './personaModules.js';
 import { renderTurnFocus, turnFocusBlockEnabled, type TurnFocusInput } from './turnFocus.js';
-import { detectUnkeptPromise, renderPromiseCorrection, unkeptPromiseGuardEnabled } from './unkeptPromise.js';
+import {
+  detectUnbackedClaim, detectUnkeptPromise, dropClaims, MUTATING_TOOLS, renderClaimCorrection,
+  renderPromiseCorrection, unkeptPromiseGuardEnabled,
+} from './unkeptPromise.js';
 import { dropSchemaEcho } from './toolCallGuard.js';
 import { orderToolCalls } from './toolOrder.js';
 import {
@@ -2053,11 +2056,17 @@ function replyBubbles(reply: { legacyText: string | null }): string[] {
  * for the failure the persona calls unrecoverable. The lexicon, the verdict and the live evidence are
  * in convo/unkeptPromise.ts; this is the call.
  *
+ * The same re-ask covers the mirror-image failure: a reply that CLAIMS a change landed ("got it,
+ * revised") when nothing this turn changed anything. Either one, or both, spends the one call, and
+ * the note carries each correction that applies. A claim is backed only by a mutating call in the
+ * envelope or by a change an earlier pass of this same turn already made (`opts.carried`); a lookup
+ * that is running backs a promise, never a claim.
+ *
  * Shaped exactly like the JSON-envelope retry above (callConvoLLM): show the model its own reply,
  * append a system-authored correction, ask once. The retry is accepted only if it fixed the thing —
- * it carries a tool call (the work is real now), or it no longer promises and still says something.
- * Anything else keeps the ORIGINAL reply: a fabricated in-flight claim is bad, an empty screen is
- * worse, and this must never turn one into the other.
+ * it carries a tool call that backs what it says (the work is real now), or it no longer promises or
+ * claims and still says something. Anything else keeps the ORIGINAL reply: a fabricated claim is
+ * bad, an empty screen is worse, and this must never turn one into the other.
  *
  * The retry is read through the turn's schema-echo `guard` BEFORE either accept test, because "it
  * carries a tool call" is exactly the question a recitation answers falsely: eleven argless entries
@@ -2074,16 +2083,16 @@ function replyBubbles(reply: { legacyText: string | null }): string[] {
  * the recall second pass and the silent-turn retry each get their own reply checked exactly once.
  * `opts.retry` false EVALUATES and reports without calling the lane, the knob enforceQuiet has: the
  * outcome pass is already the turn's last call, so a flagged reply there resolves `kept_original`
- * with `retried: false`, and its caller falls back. `opts.carried` is what an earlier pass of the
- * same turn did: a task it built starts when the turn ends, so it backs a promise made here.
+ * with `retried: false`, and its caller falls back.
  */
 async function enforcePromiseKept(
   args: { res: LlmResult; chatId: string; handle: string | undefined; turn?: ConvoTurnContext },
   bubbles: string[],
   guard: ToolCallGuard,
   opts: { retry?: boolean; carried?: TurnEffects } = {},
-): Promise<{ res: LlmResult; fired: boolean }> {
-  if (!unkeptPromiseGuardEnabled()) return { res: args.res, fired: false };
+): Promise<{ res: LlmResult; fired: boolean; promise: boolean; claim: boolean }> {
+  const none = { fired: false, promise: false, claim: false };
+  if (!unkeptPromiseGuardEnabled()) return { res: args.res, ...none };
   const { res, chatId, handle } = args;
   const turn = opts.retry === false ? undefined : args.turn;
   // Live, synchronous read of what Ops is doing for this chat RIGHT NOW — the same source the
@@ -2091,16 +2100,24 @@ async function enforcePromiseKept(
   // an earlier pass of this turn built counts too: it starts when the turn ends, so "on it" is true.
   const carriedTask = opts.carried?.delegatedTask || opts.carried?.suppressedDuplicate ? 1 : 0;
   const active = getActiveOps(chatId).length + carriedTask;
+  const backedEarlier = changedEarlier(opts.carried);
   const verdict = detectUnkeptPromise(bubbles, res.toolCalls, active);
-  if (!verdict.unkept || !verdict.phrase) return { res, fired: false };
-  const phrase = verdict.phrase;
+  const claimVerdict = detectUnbackedClaim(bubbles, res.toolCalls, backedEarlier);
+  const phrase = verdict.unkept ? verdict.phrase : undefined;
+  const claim = claimVerdict.unbacked ? claimVerdict.phrase : undefined;
+  if (!phrase && !claim) return { res, ...none };
   // chatId in the line, not just the trace event: a live convergence round attributes the failure
   // per-chat from the instance log when the trace buffer isn't reachable.
-  console.warn(`[convo] reply promised work with no tool call and nothing running ("${phrase}") — ${turn ? 'one corrective re-ask' : 'no re-ask on this pass'} (chat ${chatId})`);
+  const what = [
+    phrase && `promised work with no tool call and nothing running ("${phrase}")`,
+    claim && `claimed a change nothing made ("${claim}")`,
+  ].filter(Boolean).join(' and ');
+  console.warn(`[convo] reply ${what} — ${turn ? 'one corrective re-ask' : 'no re-ask on this pass'} (chat ${chatId})`);
   let out = res;
   let resolved: 'tool_call' | 'honest' | 'kept_original' = 'kept_original';
   if (turn) {
     try {
+      const note = [phrase && renderPromiseCorrection(phrase), claim && renderClaimCorrection(claim)].filter(Boolean).join('\n');
       // Guarded on the way in, so `retry.toolCalls` below is the KEPT list — what the accept test
       // reads and what the receipt describes are then the calls this turn will actually run.
       const retry = guard(await (turn.call ?? callConvoLLM)({
@@ -2113,34 +2130,51 @@ async function enforcePromiseKept(
         messages: [
           ...turn.messages,
           { role: 'assistant', content: res.text ?? '' },
-          { role: 'user', content: renderPromiseCorrection(phrase) },
+          { role: 'user', content: note },
         ],
-        // The CALL's own label, distinct from the decision receipt's `convo:unkept_promise` below:
-        // callLLM records this label into the same ring as a `type: 'llm'` entry, and repo consumers
-        // match by label alone, so one label for both would hide the decision behind the call and
-        // double every trigger in a label count. Same split as `convo:silent_retry`/`silent_turn`.
+        // The CALL's own label, distinct from the decision receipts below: callLLM records this
+        // label into the same ring as a `type: 'llm'` entry, and repo consumers match by label
+        // alone, so one label for both would hide the decision behind the call and double every
+        // trigger in a label count. Same split as `convo:silent_retry`/`silent_turn`.
         trace: { chatId, handle, label: 'convo:unkept_retry' },
       }));
       const retryBubbles = replyBubbles(parseReply(retry.text));
-      if (retry.toolCalls.length) {
+      const again = detectUnkeptPromise(retryBubbles, retry.toolCalls, active);
+      const claimAgain = detectUnbackedClaim(retryBubbles, retry.toolCalls, backedEarlier);
+      if (retry.toolCalls.length && !again.unkept && !claimAgain.unbacked) {
         out = retry;
         resolved = 'tool_call';
-      } else if (retryBubbles.length && !detectUnkeptPromise(retryBubbles, retry.toolCalls, active).promised) {
+      } else if (retryBubbles.length && !again.promised && !claimAgain.claimed) {
         out = retry;
         resolved = 'honest';
       } else {
-        console.warn(`[convo] the re-ask ${retryBubbles.length ? 'promised again' : 'came back empty'} — keeping the original reply (chat ${chatId})`);
+        console.warn(`[convo] the re-ask ${retryBubbles.length ? 'said it again' : 'came back empty'} — keeping the original reply (chat ${chatId})`);
       }
     } catch (err) {
       // The one recovery is spent: the original (dishonest) reply ships, so the log has to be what
       // ties that line to this failure. Same category as the JSON-envelope retry's own exhaustion —
       // it is the same ladder, and it must not be `unkept_promise`, which reportError would mirror
       // into the ring under the very label the decision receipt below uses.
-      reportError({ source: 'convo', category: 'retry_exhausted', severity: 'warn', err, detail: { guard: 'unkept_promise', phrase }, chatId, handle });
+      reportError({ source: 'convo', category: 'retry_exhausted', severity: 'warn', err, detail: { guard: 'unkept_promise', phrase: phrase ?? claim }, chatId, handle });
     }
   }
-  record({ type: 'event', label: 'convo:unkept_promise', chatId, handle, detail: { phrase, retried: !!turn, resolved } });
-  return { res: out, fired: true };
+  // One receipt per failure it caught, each under its own label, with one shared `resolved`: it was
+  // one re-ask whichever of the two it answered.
+  if (phrase) record({ type: 'event', label: 'convo:unkept_promise', chatId, handle, detail: { phrase, retried: !!turn, resolved } });
+  if (claim) record({ type: 'event', label: 'convo:unbacked_claim', chatId, handle, detail: { phrase: claim, retried: !!turn, resolved } });
+  return { res: out, fired: true, promise: !!phrase, claim: !!claim };
+}
+
+/**
+ * Did an EARLIER pass of this same user-visible turn make a change on their behalf? What it did is in
+ * the carried effects: a mutating call that landed (a failed one changed nothing), or one of the
+ * silent writes that leave no result (a directive, a remembered fact, a rename). It is what backs a
+ * claim on a later pass, which calls nothing because nothing is left to do.
+ */
+function changedEarlier(e: TurnEffects | undefined): boolean {
+  if (!e) return false;
+  return e.results.some(r => MUTATING_TOOLS.has(r.tool) && actionSucceeded(r))
+    || e.directiveActed || e.replyLanguageWrittenByTool || !!e.rememberedUser || !!e.renameChat || !!e.removeMember;
 }
 
 // ── The quiet guard ─────────────────────────────────────────────────────────────────────────────
@@ -3370,9 +3404,9 @@ export async function processConvoResult(args: {
   //
   // On the outcome pass it only EVALUATES: that pass is the turn's last model call, so a reply it
   // flags is not re-asked but falls back to voicing the results (see the pass's resolution below).
-  // What an earlier pass already did rides in as `carried`: a task it built backs a promise here.
+  // What an earlier pass already did rides in as `carried`, and is what backs a claim made here.
   const guard = (settledTask || settledReconfirm)
-    ? { res: args.res, fired: false }
+    ? { res: args.res, fired: false, promise: false, claim: false }
     : await enforcePromiseKept(args, replyBubbles(firstReply), guardToolCalls, { retry: !args.outcomePass, carried: args.carried });
 
   // …and the rhythm backstop beside it, on the turns the selector forced quiet. ONE corrective
@@ -3505,7 +3539,7 @@ export async function processConvoResult(args: {
   // ── The outcome pass, as it resolves ──────────────────────────────────────────────────────
   // This pass IS the one more look (see where it is made, below), and its reply ships only if it
   // did what it was for. It falls back to voicing every result of the turn, the way a turn with no
-  // pass does, when any action it took did not land, when the promise guard flagged it (that
+  // pass does, when any action it took did not land, when the promise/claim guard flagged it (that
   // guard only evaluated above: there is no call left to re-ask with), or when it came back with no
   // bubble and no tapback. Its draft is then dropped exactly as a first draft is, and what must ship
   // (a question it parked, a holding line) still ships ahead of the voicing. There is no third pass.
@@ -3842,14 +3876,18 @@ export async function processConvoResult(args: {
   //   • Held on the outcome pass too. That draft saw what its reminder calls did, but it has no more
   //     seen the lookup's answer than the first one had, so its tail is cut the same way and the
   //     results are voiced after the holding half.
+  //   • An ack-shaped claim survives the salvage ("got it, cancelled it" reads as an ack), so on a
+  //     turn where something did not land, every clause that claims a change is dropped from what is
+  //     kept (convo/unkeptPromise.ts dropClaims): beside the voiced miss it would contradict it.
   if (((effects.modelDelegated && effects.delegatedTask) || effects.suppressedDuplicate) && !effects.parkedApproval) {
     // Ground = the user's own words for this ask: a figure they said themselves ("412 Maple") is an
     // echo the holding text may repeat, never a fabrication. Keeps Irises's persona-written holding
     // openers shipping instead of being replaced by the voiced fallback line.
     const ground = [textToSend, effects.delegatedTask?.request, effects.delegatedTask?.addressHint, effects.delegatedTask?.dealHint].filter(Boolean).join('\n');
     const salvaged = salvageHoldingText(draftText, ground);
+    const kept = salvaged && needsCorrection(effects.results) ? dropClaims(salvaged) : salvaged;
     textParts.length = 0;
-    if (salvaged) textParts.push(salvaged);
+    if (kept) textParts.push(kept);
   }
 
   // Routing floor: a data question Convo tried to answer ITSELF (no delegation) is the one
@@ -4460,8 +4498,9 @@ export async function processConvoResult(args: {
           toolCalls: res.toolCalls.map(c => c.name),
           // On the outcome pass, what the draft before it dispatched: `toolCalls` is this pass's own.
           ...(args.outcomePass ? { carriedToolCalls: carriedCalls } : {}),
-          // Only when the honesty backstop actually fired — see the field's note in turnTrace.ts.
-          ...(guard.fired ? { unkeptPromise: true } : {}),
+          // Only when the honesty backstop actually fired — see the fields' notes in turnTrace.ts.
+          ...(guard.promise ? { unkeptPromise: true } : {}),
+          ...(guard.claim ? { unbackedClaim: true } : {}),
           // …and only on a turn the rhythm selector ran on. Four settled facts, spread rather than
           // defaulted, so an absent `hook` means the engine never ran rather than ran and found
           // nothing (diagnostics/turnTrace.ts TurnTraceOutcome).

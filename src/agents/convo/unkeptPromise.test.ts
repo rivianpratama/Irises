@@ -16,7 +16,10 @@ import {
   detectUnkeptPromise, renderPromiseCorrection, unkeptPromiseGuardEnabled, PROMISE_PHRASES,
 } from './unkeptPromise.js';
 import { processConvoResult, type ChatContext, type ConvoTurnContext } from './shared.js';
-import { REACTION_TOOL, DELEGATE_TO_OPS_TOOL, RECALL_MEMORY_TOOL } from './tools.js';
+import {
+  REACTION_TOOL, DELEGATE_TO_OPS_TOOL, RECALL_MEMORY_TOOL, SCHEDULE_AUTOMATION_TOOL, CANCEL_AUTOMATION_TOOL,
+} from './tools.js';
+import { resetEngineBackendCache, type EngineBackend } from '../ops/engineBackend.js';
 import { emptyMedia } from '../../webhook/types.js';
 import { markOpsStart, __resetOpsCoordination } from '../../state/opsCoordination.js';
 import { getTraces, clearTraces, record } from '../../diagnostics/trace.js';
@@ -361,4 +364,61 @@ test('flag off: the fabricated reply ships exactly as it did before the guard ex
   assert.equal(calls, 0, 'no re-ask');
   assert.equal(receipt(), undefined, 'and no receipt');
   assert.equal(out.text, FABRICATED.join('\n---\n'));
+});
+
+// ── the unbacked-claim half ──────────────────────────────────────────────────
+// The incident's last turn said a change had landed ("got it, revised the morning one") with no call
+// behind it at all. A claim is checked against what the turn actually changed, and shares the one
+// re-ask with the promise check above.
+
+test('"got it, revised" with nothing changed this turn gets exactly one re-ask', async () => {
+  const seen: LlmRequest[] = [];
+  const out = await processConvoResult({
+    ...args(),
+    res: makeResult(['got it, revised']),
+    turn: turnCtx(async req => {
+      seen.push(req);
+      return makeResult(["i haven't changed anything yet, which one did you mean?"]);
+    }),
+  });
+  assert.equal(seen.length, 1, 'one re-ask');
+  assert.match(String(seen[0].messages[seen[0].messages.length - 1].content), /"revised"/, 'naming the claim');
+  assert.equal(out.text, "i haven't changed anything yet, which one did you mean?");
+});
+
+test('a claim on the outcome pass that the first pass backed is not flagged', async () => {
+  // The first pass set one reminder and missed a cancel; the pass writes "all set" about the one
+  // that landed and calls nothing, since nothing is left to do. That claim is true.
+  resetEngineBackendCache({
+    name: 'hermes',
+    async runTask() { throw new Error('not under test'); },
+    async createReminder(spec) { return { id: 'aa11bb22cc33', title: spec.title ?? spec.instruction, schedule: spec.cron ?? '' }; },
+    async listReminders() { return []; },
+    async cancelReminder() { return false; },
+    async remember() { /* not under test */ },
+    async probe() { return { ok: true }; },
+    async channelSend() { return {}; },
+  } satisfies EngineBackend);
+  try {
+    let calls = 0;
+    const out = await processConvoResult({
+      ...args(),
+      res: makeResult(['ok'], [
+        { name: 'schedule_automation', input: { instruction: 'take the trash out', schedule_kind: 'cron', cron: '0 21 * * *' } },
+        { name: 'cancel_automation', input: { match: 'gym' } },
+      ]),
+      turn: {
+        ...turnCtx(async () => {
+          calls++;
+          return makeResult(['all set, the trash one is in', 'no gym reminder on your list though']);
+        }),
+        tools: [REACTION_TOOL, SCHEDULE_AUTOMATION_TOOL, CANCEL_AUTOMATION_TOOL],
+      },
+    });
+    assert.equal(calls, 1, 'the pass, and no re-ask on top of it');
+    assert.equal(getTraces().find(e => e.type === 'event' && e.label === 'convo:unbacked_claim'), undefined);
+    assert.match(out.text!, /^all set, the trash one is in/);
+  } finally {
+    resetEngineBackendCache(undefined);
+  }
 });

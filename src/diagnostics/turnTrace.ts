@@ -256,6 +256,9 @@ export interface TurnTraceOutcome {
    *  fired — absence means it did not, and the receipt that carries the phrase and how the re-ask
    *  landed is the always-on `convo:unkept_promise` event, not this field. */
   unkeptPromise?: boolean;
+  /** The same guard fired on a CLAIM: the reply said a change had landed with nothing this turn
+   *  behind it. Set only when it fired; the always-on receipt is `convo:unbacked_claim`. */
+  unbackedClaim?: boolean;
   /** On a turn whose reply came from the outcome pass, the tool names the draft before it had
    *  already dispatched, in order. `toolCalls` is then the pass's own. Absent on every other turn. */
   carriedToolCalls?: string[];

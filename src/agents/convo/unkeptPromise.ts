@@ -11,6 +11,8 @@
 //
 // PURE: the lexicon and the verdict. The one corrective re-ask lives in the call path
 // (convo/shared.ts, beside the JSON-envelope retry it mirrors) — only that has a model to re-ask.
+// The same guard reads the mirror-image claim (a change said to have landed with nothing behind it,
+// the unbacked-claim half below), and both share that one re-ask.
 
 /**
  * The promise lexicon — ENGLISH-ONLY: her L1 is English, and a hand-written list for any other
@@ -143,6 +145,120 @@ export function detectUnkeptPromise(
  */
 export function renderPromiseCorrection(phrase: string): string {
   return `SYSTEM: your reply promised work ("${phrase}") but called no tool and nothing is running for them. Reply again as ONE JSON object: either include the delegate_to_ops entry that actually does the work, or say plainly what you can and can't do right now — never claim work is in progress.`;
+}
+
+// ── The unbacked-claim half ─────────────────────────────────────────────────────────────────────
+// The mirror image of a promise: a claim about the PAST, that a change already landed. Observed live
+// (local instance, 2026-09-23), the last turn of the reminder incident (convo/actionResults.ts): after
+// four replies that each said a cancel had missed, the model wrote "got it, revised the morning one"
+// with no tool call at all. Nothing had been revised; the user read that it had, and stopped asking.
+// A claim can only be checked against what the turn actually changed, so it rides the same guard and
+// the same one re-ask as the promise above.
+
+/**
+ * Single-word claims, ENGLISH-ONLY under the same standing rule as the promise lexicon. A bare word
+ * counts ONLY when it is the whole clause ("got it, revised" splits into "got it" and "revised"):
+ * inside a longer clause each of these words carries no claim ("i fixed dinner", "the updated
+ * schedule", "are we done here"), and the verdict costs a model call.
+ */
+export const CLAIM_WORDS = ['done', 'revised', 'updated', 'switched', 'cancelled', 'removed', 'fixed'] as const;
+
+/** Multi-word claims, matched as whole phrases inside one clause like the promise rows. Each one's
+ *  plain reading is "the change you asked for is made". */
+export const CLAIM_PHRASES = [
+  'changed it',
+  'switched it',
+  'updated it',
+  'revised it',
+  'cancelled it',
+  'removed it',
+  'fixed it',
+  'moved it',
+  'set it for',
+  'set it to',
+  'all set',
+  'all done',
+] as const;
+
+/**
+ * The tools whose call is a change made on their behalf, and so the only thing that can back a
+ * claim. A lookup is not one: work that is RUNNING backs a promise ("on it") and never a claim that
+ * something is done, which is also why a delegation is left off.
+ */
+export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
+  'schedule_automation', 'update_automation', 'cancel_automation', 'cancel_research', 'steer_research',
+  'set_preference', 'update_directives', 'update_memory', 'remember_user', 'rename_group_chat', 'remove_member',
+]);
+
+export interface UnbackedClaimVerdict {
+  /** The reply says a change already landed. */
+  claimed: boolean;
+  /** The claim that made it one, in reading order. Absent when nothing was claimed. */
+  phrase?: string;
+  /** It claimed, and nothing this turn changed anything. */
+  unbacked: boolean;
+}
+
+/** The first claim in the reply, bubble by bubble in reading order. */
+function findClaim(bubbles: string[]): string | undefined {
+  for (const bubble of bubbles) {
+    for (const clause of clauses(bubble)) {
+      const whole = clause.trim();
+      const word = CLAIM_WORDS.find(w => w === whole);
+      if (word) return word;
+      const phrase = CLAIM_PHRASES.find(p => clause.includes(` ${p} `));
+      if (phrase) return phrase;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Did this reply claim a change nothing made? PURE. A claim is backed by a mutating call in the
+ * same envelope (it runs when the turn dispatches), or by `backedEarlier`: a change an earlier pass
+ * of this same user-visible turn already made, which the caller reads off the turn's results.
+ */
+export function detectUnbackedClaim(
+  bubbles: string[],
+  toolCalls: readonly { name: string }[] | null,
+  backedEarlier: boolean,
+): UnbackedClaimVerdict {
+  const phrase = findClaim(bubbles);
+  const claimed = phrase !== undefined;
+  const mutated = (toolCalls ?? []).some(c => MUTATING_TOOLS.has(c.name));
+  return { claimed, ...(phrase !== undefined ? { phrase } : {}), unbacked: claimed && !mutated && !backedEarlier };
+}
+
+/**
+ * Drop every clause that claims a change from a line that must ship beside a result that did not
+ * land (the holding half a delegated turn keeps). The draft was written before its calls ran, so a
+ * claim in it is a guess, and beside a voiced miss it is a contradiction. The rest of each bubble
+ * stands, punctuation and all; a bubble left with nothing is dropped, and nothing left at all is
+ * null, so the caller's own fallback line takes over.
+ */
+export function dropClaims(legacyText: string): string | null {
+  const kept: string[] = [];
+  for (const bubble of legacyText.split('\n---\n')) {
+    // The split keeps its separators (odd indices), so each surviving clause keeps its own.
+    const pieces = bubble.split(/([.!?,;:\n\r]+)/);
+    const out: string[] = [];
+    for (let i = 0; i < pieces.length; i += 2) {
+      if (findClaim([pieces[i]])) continue;
+      out.push(pieces[i], pieces[i + 1] ?? '');
+    }
+    const text = out.join('').replace(/\s{2,}/g, ' ').replace(/^[\s.!?,;:]+|[\s,;:]+$/g, '').trim();
+    if (/[a-z0-9]/i.test(text)) kept.push(text);
+  }
+  return kept.length ? kept.join('\n---\n') : null;
+}
+
+/**
+ * The corrective for an unbacked claim, in the same seam and shape as the promise one. It states the
+ * rule rather than quoting her back at herself beyond the phrase: a change is said only when a call
+ * made it.
+ */
+export function renderClaimCorrection(phrase: string): string {
+  return `SYSTEM: your reply said a change was made ("${phrase}") but nothing this turn changed anything. Reply again as ONE JSON object: either include the call that makes the change, or say plainly what has and has not changed. Say a change landed only when a call behind it did.`;
 }
 
 /**
