@@ -266,6 +266,25 @@ test('a held create goes through on the pass when it is marked distinct there', 
   assert.match(out2.text!, /nothing changed yet/, 'the held create is still voiced');
   assert.match(out2.text!, /daily indonesia digest/, 'with the reminder it collided with');
 
+  // The same turn with a pass that lands its cancel and then claims all of it: its own call backs
+  // "the plants one is gone", and nothing backs "weather is set for 7", which was never made.
+  installStubEngine([DIGEST, plants]);
+  const ask4 = 'drop the plants one and add a 7am weather reminder';
+  const d = args(ask4);
+  const claims = turnCtx(ask4, async () => makeResult(
+    ['all done, plants one is gone and weather is set for 7'],
+    [{ name: 'cancel_automation', input: { id: 'R42cbde' } }],
+  ));
+  const out4 = await processConvoResult({
+    ...d,
+    res: makeResult(['on it'], [
+      { name: 'cancel_automation', input: { match: 'balcony flowers' } },
+      schedule('send me the jakarta weather forecast', '0 7 * * *', { title: 'weather' }),
+    ]),
+    turn: claims.turn,
+  });
+  assert.doesNotMatch(out4.text!, /weather is set/, 'a claim over a held create that still stands does not ship');
+
   // `distinct` never overrides an identical reminder, not even on the pass that honors it: the same
   // words on the same slot is the one reminder asked for twice, and a second copy is never meant.
   const third = installStubEngine([DIGEST]);

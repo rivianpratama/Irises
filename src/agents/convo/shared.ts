@@ -3813,12 +3813,33 @@ export async function processConvoResult(args: {
   // guard only evaluated above: there is no call left to re-ask with), or when it came back with no
   // bubble and no tapback. Its draft is then dropped exactly as a first draft is, and what must ship
   // (a question it parked, a holding line) still ships ahead of the voicing. There is no third pass.
+  //
+  // What the pass left unfixed is read here too, AFTER its own calls ran (actionResults.ts
+  // withoutFixedMisses): the earlier misses none of its successes answered. The guard above judged
+  // the reply before dispatch, where one call that lands backs every claim beside it, so a pass
+  // that cancelled one reminder by id and wrote "all done, plants one is gone and weather is set
+  // for 7" shipped as the model's own reply over a weather create that was still held. While a miss
+  // stands, a claim in the reply is unbacked, and the pass falls back like any other unbacked claim.
   let outcomeModel = false;
+  let passLanded = false;
+  let unfixedMisses: ActionResult[] = [];
+  let residualClaim = false;
   if (args.outcomePass) {
-    const ownFailed = effects.results.slice(passStart).some(r => !actionSucceeded(r));
+    const earlier = effects.results.slice(0, passStart);
+    const own = effects.results.slice(passStart);
+    const ownFailed = own.some(r => !actionSucceeded(r));
+    passLanded = !ownFailed;
+    unfixedMisses = withoutFixedMisses(earlier, own).filter(r => earlier.includes(r) && !actionSucceeded(r));
+    const claimed = !ownFailed && !guard.fired && unfixedMisses.length
+      ? detectUnbackedClaim(replyBubbles(reply), null, false)
+      : null;
+    if (claimed?.claimed) {
+      residualClaim = true;
+      record({ type: 'event', label: 'convo:unbacked_claim', chatId, handle, detail: { phrase: claimed.phrase, retried: false, resolved: 'kept_original', unfixed: unfixedMisses.map(r => `${r.tool}:${r.status}`) } });
+    }
     const reacted = !!effects.reaction && effects.reaction !== inherited?.reaction;
     const resolved = ownFailed ? 'fallback_action_failed'
-      : guard.fired ? 'fallback_unbacked'
+      : guard.fired || residualClaim ? 'fallback_unbacked'
       : !normalizedText && !reacted ? 'fallback_empty'
       : 'model';
     outcomeModel = resolved === 'model';
@@ -4125,11 +4146,12 @@ export async function processConvoResult(args: {
   // The draft the salvages below cut down: none at all when the outcome pass fell back, since its
   // reply is dropped whole there.
   const draftText = args.outcomePass && !outcomeModel ? null : normalizedText;
-  // What of the turn still stands. On an outcome pass whose reply stands, a miss the pass itself
-  // went on to fix is no longer news: voicing "couldn't find it" beside the fix would contradict it
-  // (actionResults.ts withoutFixedMisses). Everywhere else, every result stands.
+  // What of the turn still stands. On an outcome pass whose own calls all landed, a miss the pass
+  // itself went on to fix is no longer news, whether its reply stands or falls back: voicing
+  // "couldn't find it" beside the fix would contradict it (actionResults.ts withoutFixedMisses).
+  // Everywhere else, every result stands.
   const ownResults = effects.results.slice(passStart);
-  const standing = outcomeModel ? withoutFixedMisses(effects.results.slice(0, passStart), ownResults) : effects.results;
+  const standing = passLanded ? withoutFixedMisses(effects.results.slice(0, passStart), ownResults) : effects.results;
 
   // Composer-paraphrase floor: when the MODEL delegated, any substantive answer it wrote in the same
   // turn is un-grounded (Convo is single-shot, never sees the tool result) AND the composer re-answers
@@ -4373,12 +4395,17 @@ export async function processConvoResult(args: {
   // that stands are data the model cannot author (a list, an exact time), so an earlier success's
   // facts are appended there too, whatever the reply said about them.
   //
+  // An earlier miss the pass left unfixed is unsaid too, even under a reply that stands: the reply
+  // makes no claim (one that did fell back above), but nothing makes it say the miss either, and a
+  // miss dropped in silence is the one outcome the results list exists to prevent. It is voiced
+  // AFTER her reply, which leads the voicing the way a `keep` does.
+  //
   // A list among them is shown as the turn left it (listAsLeft): a cancel that landed after the list
   // was read took that reminder off it.
   const listTz = args.userTz || DEFAULT_TZ;
   const asLeft = (rs: readonly ActionResult[]) => rs.map(r => listAsLeft(r, effects, listTz));
   const whole = outcomeModel && keep === null && !!textResponse;
-  const unsaid = asLeft(whole ? ownResults : standing);
+  const unsaid = asLeft(whole ? [...unfixedMisses, ...ownResults] : standing);
   const factSource = whole ? asLeft([...results.slice(0, passStart).filter(actionSucceeded), ...ownResults]) : unsaid;
   const correcting = needsCorrection(unsaid);
   // ── The turn's results, voiced ──────────────────────────────────────────────────────────────
@@ -4405,7 +4432,8 @@ export async function processConvoResult(args: {
       : unsaid;
     const voiced = await voiceOutcome(combinedOutcome(voicedResults), chatId, handle);
     holdingPart = keep;
-    textResponse = keep ? `${keep}\n---\n${voiced}` : voiced;
+    const lead = keep ?? (whole ? textResponse : null);
+    textResponse = lead ? `${lead}\n---\n${voiced}` : voiced;
     hardCapped = false;   // the voiced results REPLACE the parsed text — its cap isn't news about this send
   } else if (factSource.length && textResponse) {
     const facts = factSource.filter(r => RELAYED_FACT_TOOLS.has(r.tool)).map(r => r.facts).filter((f): f is string => !!f);
@@ -4792,7 +4820,7 @@ export async function processConvoResult(args: {
           ...(args.outcomePass ? { carriedToolCalls: carriedCalls } : {}),
           // Only when the honesty backstop actually fired — see the fields' notes in turnTrace.ts.
           ...(guard.promise ? { unkeptPromise: true } : {}),
-          ...(guard.claim ? { unbackedClaim: true } : {}),
+          ...(guard.claim || residualClaim ? { unbackedClaim: true } : {}),
           // …and only on a turn the rhythm selector ran on. Four settled facts, spread rather than
           // defaulted, so an absent `hook` means the engine never ran rather than ran and found
           // nothing (diagnostics/turnTrace.ts TurnTraceOutcome).
