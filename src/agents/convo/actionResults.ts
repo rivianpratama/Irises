@@ -48,6 +48,9 @@ export interface ActionResult {
   /** What the call was aimed at, as the model named it or as it resolved: an id, a match, a title.
    *  Empty when the call names no target (a list). */
   target: string;
+  /** The short id (as shown to the model, `R…`/`L…`) of the one item a successful call acted on or
+   *  made. Absent on a miss, and on a call with no one item. */
+  ref?: string;
   /** Plain description of what happened, for a voicer to put in her words — never shown verbatim. */
   detail: string;
   /** Hard data the user must see exactly (a list, a time). */
@@ -113,14 +116,29 @@ export function combinedOutcome(results: readonly ActionResult[]): Outcome {
 
 /**
  * What of a turn still stands once its outcome pass has acted: every result the pass produced, and
- * of the earlier ones every success and every miss the pass did not fix. A miss counts as fixed when
- * the pass landed a success in the same family: the reminder tools (a missed cancel the pass turned
- * into an update by id), the research tools (a missed stop or steer the pass aimed by id), and
- * otherwise the same tool. In dispatch order, earlier results first.
+ * of the earlier ones every success and every miss the pass did not fix. In dispatch order, earlier
+ * results first.
+ *
+ * What counts as fixed depends on how much the miss named:
+ *   • a `held` or `ambiguous` result named the items it was about (its candidates), so it is fixed
+ *     only by a pass success ON one of them (the held create the pass turned into an update of the
+ *     reminder it collided with), or by the same tool succeeding on the same target (the create sent
+ *     again as a distinct one). A success on some other item says nothing about it: a held create
+ *     beside a cancel of an unrelated reminder was still never made;
+ *   • any other miss named nothing that exists, so a success in the same family fixes it: the
+ *     reminder tools (a missed cancel the pass made by id), the research tools, else the same tool.
  */
 export function withoutFixedMisses(earlier: readonly ActionResult[], pass: readonly ActionResult[]): ActionResult[] {
-  const fixed = new Set(pass.filter(actionSucceeded).map(r => actionFamily(r.tool)));
-  return [...earlier.filter(r => actionSucceeded(r) || !fixed.has(actionFamily(r.tool))), ...pass];
+  const landed = pass.filter(actionSucceeded);
+  const fixed = (miss: ActionResult): boolean => {
+    if (miss.status === 'held' || miss.status === 'ambiguous') {
+      const ids = (miss.candidates ?? []).map(c => c.id);
+      return landed.some(r => (r.ref && ids.length && resolveRef(r.ref, ids).kind === 'match')
+        || (r.tool === miss.tool && r.target === miss.target));
+    }
+    return landed.some(r => actionFamily(r.tool) === actionFamily(miss.tool));
+  };
+  return [...earlier.filter(r => actionSucceeded(r) || !fixed(r)), ...pass];
 }
 
 function actionFamily(tool: string): string {

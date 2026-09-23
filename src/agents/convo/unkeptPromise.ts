@@ -246,6 +246,26 @@ const CLAIM_LEAD_VERBS = new Set([
 ]);
 const CLAIM_OBJECTS = new Set(['the', 'it', 'that', 'this', 'your', 'ur', 'them', 'both', 'those', 'ya', 'u']);
 
+/**
+ * The few words a report opens on ahead of its verb ("i revised the morning one", "ok revised it",
+ * "got it revised it" with no comma). A closed set of whole-word openers, stripped from the front of
+ * the clause before the verb is read, so a negation or a modal can never take an opener's slot:
+ * "i haven't changed it" stops at "haven", which is no opener and no verb.
+ */
+const CLAIM_OPENERS: readonly (readonly string[])[] = [
+  ['got', 'it'], ['i', 've'], ['i', 'have'], ['i'], ['ive'], ['just'], ['ok'], ['okay'], ['already'],
+];
+
+/** The clause's words with its leading openers taken off, however many there are. */
+function afterOpeners(words: string[]): string[] {
+  let rest = words;
+  for (;;) {
+    const opener = CLAIM_OPENERS.find(o => o.every((w, i) => rest[i] === w));
+    if (!opener) return rest;
+    rest = rest.slice(opener.length);
+  }
+}
+
 /** The first claim in the reply, bubble by bubble in reading order. */
 function findClaim(bubbles: string[]): string | undefined {
   for (const bubble of bubbles) {
@@ -253,7 +273,7 @@ function findClaim(bubbles: string[]): string | undefined {
       const whole = clause.trim();
       const word = CLAIM_WORDS.find(w => w === whole);
       if (word) return word;
-      const [lead, object] = whole.split(' ');
+      const [lead, object] = afterOpeners(whole.split(' '));
       if (CLAIM_LEAD_VERBS.has(lead) && CLAIM_OBJECTS.has(object)) return `${lead} ${object}`;
       for (const phrase of CLAIM_PHRASES) {
         const at = clause.indexOf(` ${phrase} `);

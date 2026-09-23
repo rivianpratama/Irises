@@ -389,7 +389,11 @@ test('"got it, revised" with nothing changed this turn gets exactly one re-ask',
   ]) {
     assert.equal(detectUnbackedClaim([line], null, false).claimed, false, line);
   }
-  for (const line of ['got it, revised', 'done', 'switched it', '[[re:1]]done', 'got it, revised the morning one', 'updated it to 8am']) {
+  for (const line of [
+    'got it, revised', 'done', 'switched it', '[[re:1]]done', 'got it, revised the morning one', 'updated it to 8am',
+    'i revised the morning one', 'got it revised the morning one', 'ok revised the morning one',
+    "i've updated your brief to govt news", 'i changed the 7am one to govt news',
+  ]) {
     assert.equal(detectUnbackedClaim([line], null, false).unbacked, true, line);
   }
   // The routing tag survives a dropped claim whole (its colon is not a clause break).
@@ -407,6 +411,21 @@ test('"got it, revised" with nothing changed this turn gets exactly one re-ask',
   assert.equal(seen.length, 1, 'one re-ask');
   assert.match(String(seen[0].messages[seen[0].messages.length - 1].content), /"revised"/, 'naming the claim');
   assert.equal(out.text, "i haven't changed it yet, which one did you mean?", 'the honest answer is accepted');
+
+  // A re-ask that only talks must be honest on both counts: trading the claim for a promise nothing
+  // keeps, or the promise for a claim nothing backs, keeps the original instead.
+  const traded = await processConvoResult({
+    ...args(),
+    res: makeResult(['got it, revised']),
+    turn: turnCtx(async () => makeResult(['my bad, on it now'])),
+  });
+  assert.equal(traded.text, 'got it, revised', 'a claim traded for an unkept promise is not accepted');
+  const tradedBack = await processConvoResult({
+    ...args(),
+    res: fabricated(),
+    turn: turnCtx(async () => makeResult(['got it, switched it'])),
+  });
+  assert.equal(tradedBack.text, FABRICATED.join('\n---\n'), 'a promise traded for an unbacked claim is not accepted');
 });
 
 test('a claim on the outcome pass that the first pass backed is not flagged', async () => {

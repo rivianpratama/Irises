@@ -236,4 +236,30 @@ test('a held create goes through on the pass when it is marked distinct there', 
   assert.equal(createdSpecs.length, 1, 'created once, on the pass that saw the collision');
   assert.equal(createdSpecs[0].instruction, 'send me the jakarta weather forecast');
   assert.equal(outcomeReceipt()?.resolved, 'model');
+
+  // A success on some OTHER reminder does not fix a held create: a pass that cancels an unrelated
+  // one by id and only reacts still leaves the create unmade, and that is still said.
+  const plants: ReminderRef = {
+    id: '42cbde8bd745', title: 'water the plants', schedule: 'every day 6pm', kind: 'cron', expr: '0 18 * * *',
+    instruction: 'water the balcony plants', nextRunAt: '2026-09-23T18:00:00+00:00',
+  };
+  const second = installStubEngine([DIGEST, plants]);
+  const ask2 = 'drop the gym one and add a 7am weather reminder';
+  const b = args(ask2);
+  const next = turnCtx(ask2, async () => makeResult([], [
+    { name: 'cancel_automation', input: { id: 'R42cbde' } },
+    { name: 'send_reaction', input: { type: 'like' } },
+  ]));
+  const out2 = await processConvoResult({
+    ...b,
+    res: makeResult(['on it'], [
+      { name: 'cancel_automation', input: { match: 'gym' } },
+      schedule('send me the jakarta weather forecast', '0 7 * * *', { title: 'weather' }),
+    ]),
+    turn: next.turn,
+  });
+  assert.equal(second.createdSpecs.length, 0, 'nothing was created');
+  assert.equal(outcomeReceipt()?.resolved, 'model');
+  assert.match(out2.text!, /nothing changed yet/, 'the held create is still voiced');
+  assert.match(out2.text!, /R9d0c42/, 'with the reminder it collided with');
 });

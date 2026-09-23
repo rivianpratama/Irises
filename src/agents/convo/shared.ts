@@ -414,7 +414,7 @@ async function handleScheduleAutomation(
         kind: 'cron', expr: next.cron, exprZone: timezone, instruction, createdAt: new Date().toISOString(),
       }];
       noteLiveReminders(chatId, effects.reminders);
-      return { tool, status: 'done', target, detail: 'a recurring reminder is now set — it repeats on their schedule' };
+      return { tool, status: 'done', target, ref: shortReminderId(ref.id), detail: 'a recurring reminder is now set — it repeats on their schedule' };
     }
     const ts = next.fireAt!;
     const ref = await engine.createReminder({ chatId, agentHandle: handle, instruction, fireAt: ts, title, timezone });
@@ -424,7 +424,7 @@ async function handleScheduleAutomation(
       kind: 'once', runAt: iso, nextRunAt: iso, instruction, createdAt: new Date().toISOString(),
     }];
     noteLiveReminders(chatId, effects.reminders);
-    return { tool, status: 'done', target, detail: 'a one-time reminder is set', facts: formatWhen(iso, timezone).toLowerCase() };
+    return { tool, status: 'done', target, ref: shortReminderId(ref.id), detail: 'a one-time reminder is set', facts: formatWhen(iso, timezone).toLowerCase() };
   } catch (err) {
     console.error('[convo] schedule_automation failed', err);
     return { tool, status: 'unavailable', target, detail: 'saving that reminder hit a snag', nextStep: 'ask them to try again' };
@@ -478,7 +478,7 @@ async function handleCancelAutomation(input: Record<string, unknown>, chatId: st
     effects.reminders = items.filter(r => r.id !== picked.ref.id);
     noteLiveReminders(chatId, effects.reminders);
     return {
-      result: { tool, status: 'done', target: picked.ref.title, detail: 'that reminder is cancelled' },
+      result: { tool, status: 'done', target: picked.ref.title, ref: shortReminderId(picked.ref.id), detail: 'that reminder is cancelled' },
       cancelled: { id: picked.ref.id, title: picked.ref.title },
     };
   } catch (err) {
@@ -586,7 +586,7 @@ async function handleUpdateAutomation(input: Record<string, unknown>, handle: st
     effects.reminders = items.map(r => (r.id === old.id ? now : r));
     noteLiveReminders(chatId, effects.reminders);
     const stands = reminderCandidate(now, displayTz);
-    return { tool, status: 'done', target: now.title, detail: 'that reminder is changed, and this is how it stands now', facts: `[${stands.id}] ${stands.label}` };
+    return { tool, status: 'done', target: now.title, ref: stands.id, detail: 'that reminder is changed, and this is how it stands now', facts: `[${stands.id}] ${stands.label}` };
   } catch (err) {
     console.error('[convo] update reminder failed', err);
     return snag;
@@ -671,7 +671,7 @@ function cancelResearch(id: string, match: string, chatId: string): { result: Ac
     return { result: { tool, status: 'unreachable', target, detail: 'that lookup actually just finished — the answer is already landing on their screen', nextStep: 'tell them to just ignore it if they don\'t need it' }, cancelled: [] };
   }
   return {
-    result: { tool, status: 'done', target: run.request, detail: 'the lookup they wanted dropped is stopped' },
+    result: { tool, status: 'done', target: run.request, ref: shortLookupId(run.taskId), detail: 'the lookup they wanted dropped is stopped' },
     cancelled: [run],
   };
 }
@@ -753,7 +753,7 @@ function steerResearch(
       .catch(err => console.warn('[convo] steer delivery failed', err));
   }
   // Delivered or queued — Convo's own "adding that in" text stands.
-  return { tool, status: 'done', target: decided.map(d => d.request).join('; '), detail: 'their addition is on its way to the lookup that is running' };
+  return { tool, status: 'done', target: decided.map(d => d.request).join('; '), ref: shortLookupId(picked.run.taskId), detail: 'their addition is on its way to the lookup that is running' };
 }
 
 // The steer_research branch table as the Outcome it was voiced as before results existed: null
@@ -2139,14 +2139,17 @@ async function enforcePromiseKept(
         trace: { chatId, handle, label: 'convo:unkept_retry' },
       }));
       const retryBubbles = replyBubbles(parseReply(retry.text));
-      // Judged only on what was flagged: a re-ask about a promise that comes back delegating for
-      // real is the fix, whatever else its holding line says.
+      // A retry that CALLS is judged on what was flagged: a re-ask about a promise that comes back
+      // delegating for real is the fix, whatever else its holding line says. A retry that only
+      // TALKS must be honest on both counts, or it has traded one false line for the other ("on it
+      // now" with nothing started, in place of a claimed change, or the reverse).
       const again = detectUnkeptPromise(retryBubbles, retry.toolCalls, active);
       const claimAgain = detectUnbackedClaim(retryBubbles, retry.toolCalls, backedEarlier);
       if (retry.toolCalls.length && !(phrase && again.unkept) && !(claim && claimAgain.unbacked)) {
         out = retry;
         resolved = 'tool_call';
-      } else if (retryBubbles.length && !(phrase && again.promised) && !(claim && claimAgain.claimed)) {
+      } else if (retryBubbles.length && !(phrase && again.promised) && !(claim && claimAgain.claimed)
+          && !again.unkept && !claimAgain.unbacked) {
         out = retry;
         resolved = 'honest';
       } else {
