@@ -206,12 +206,15 @@ export function listStranded(nowMs: number, horizonMs: number, limit = 20): OpsT
   }
 }
 
-/** Actions still waiting on this chat's yes, oldest first. Reads degrade to []. */
-export function listPendingApprovals(chatId: string): OpsTaskRow[] {
+/** Actions still waiting on this chat's yes, oldest first. `sinceMs` keeps only the asks made at or
+ *  after it: a row nobody ever answered stays at pending_approval (only the next turn's resolution
+ *  settles an ask, and only the one its marker names), so an unbounded read reaches asks from days
+ *  ago. Reads degrade to []. */
+export function listPendingApprovals(chatId: string, opts: { sinceMs?: number } = {}): OpsTaskRow[] {
   try {
     const rows = stmt(
-      `SELECT * FROM ops_tasks WHERE chat_id = ? AND status = 'pending_approval' ORDER BY started_at ASC`
-    ).all(chatId) as unknown as Row[];
+      `SELECT * FROM ops_tasks WHERE chat_id = ? AND status = 'pending_approval' AND started_at >= ? ORDER BY started_at ASC`
+    ).all(chatId, opts.sinceMs ?? 0) as unknown as Row[];
     return rows.map(fromRow);
   } catch (error) {
     logDbError('listPendingApprovals', error);

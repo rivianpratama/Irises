@@ -2624,23 +2624,50 @@ async function resolvePendingApproval(a: {
  * declined so the caller can drop a now-wrong correction note and keep them on the turn's ledger of
  * what was cancelled.
  *
- * An `id` (the `A…` the approval section shows) declines exactly the one row it names, and nothing
- * when it names none or several: a running lookup's `L…` id reaches here too, and must not decline
- * anything. With no id, the rows are match-filtered as before.
+ * Only asks inside their clock and its one grace window are in reach. Nothing settles a row nobody
+ * answered, so without the bound a cancel today would decline an ask from days ago that no one on
+ * this turn was talking about.
+ *
+ * What it declines is always one row, or none:
+ *   • an `id` (the `A…` the approval section shows) declines the row it names, and nothing when it
+ *     names none or several: a running lookup's `L…` id reaches here too, and must not decline
+ *     anything;
+ *   • words decline the one row they fit. Words that fit several decline none and come back as the
+ *     candidates, so she asks which;
+ *   • nothing named declines the ask their own marker points at, the one question of hers still
+ *     open. A park overwrites the marker, so an earlier park's row has no marker, and it is not what
+ *     a bare "cancel it" is about.
  */
-async function declineParkedApprovals(chatId: string, sender: string | undefined, id: string, match: string): Promise<Array<{ id: string; request: string }>> {
-  if (!opsApprovalGateEnabled()) return [];
-  const rows = listPendingApprovals(chatId);
+async function declineParkedApprovals(chatId: string, sender: string | undefined, id: string, match: string): Promise<ParkedCancel> {
+  const none: ParkedCancel = { declined: [], ambiguous: null };
+  if (!opsApprovalGateEnabled()) return none;
+  const rows = listPendingApprovals(chatId, { sinceMs: Date.now() - 2 * PENDING_ASK_TTL_MS });
+  if (!rows.length) return none;
   let parked: typeof rows;
   if (id.trim()) {
     const keys = rows.map(r => opsRefKey(r.id));
     const got = resolveRef(id, keys, 'A');
     parked = got.kind === 'match' ? [rows[keys.indexOf(got.id)]] : [];
-  } else {
+  } else if (match.trim()) {
     const m = match.trim().toLowerCase();
-    parked = rows.filter(r => !m || r.request.toLowerCase().includes(m));
+    parked = rows.filter(r => r.request.toLowerCase().includes(m));
+    if (parked.length > 1) {
+      return {
+        declined: [],
+        ambiguous: {
+          tool: 'cancel_research', status: 'ambiguous', target: match.trim(),
+          detail: 'that fits more than one action waiting on their go-ahead, so none was dropped',
+          candidates: parked.map(r => ({ id: shortApprovalId(r.id), label: r.request })), nextStep: 'ask which one they mean',
+        },
+      };
+    }
+  } else {
+    const pa = sender
+      ? await getPreference<PendingApprovalPref>(sender, 'pending_approval').catch(() => undefined)
+      : undefined;
+    parked = rows.filter(r => r.id === pa?.taskId);
   }
-  if (!parked.length) return [];
+  if (!parked.length) return none;
   for (const row of parked) {
     settleOpsTask(row.id, 'declined');
     record({ type: 'event', label: 'ops:approval', chatId, taskId: row.id, detail: { decision: 'declined', taskId: row.id, via: 'cancel' } });
@@ -2655,7 +2682,14 @@ async function declineParkedApprovals(chatId: string, sender: string | undefined
     }
   }
   console.log(`[convo] cancel declined ${parked.length} parked action(s) (chat ${chatId})`);
-  return parked;
+  return { declined: parked, ambiguous: null };
+}
+
+/** What a cancel did to the actions waiting on a yes: the one row it declined, or, when its words
+ *  fit several, the result that names them and drops none. */
+interface ParkedCancel {
+  declined: Array<{ id: string; request: string }>;
+  ambiguous: ActionResult | null;
 }
 
 /** The tool list a schema-echo lookup is done against when the caller passed no turn context of
@@ -2691,6 +2725,8 @@ export interface CancelledRef {
   id: string;
   /** Its title or request, for a match-by-words cancel to be read against. */
   label: string;
+  /** An action that was waiting on their yes, dropped before it ran (by their no, or by a cancel). */
+  parked?: true;
 }
 
 export interface TurnEffects {
@@ -3169,20 +3205,28 @@ async function dispatchToolCalls(calls: LlmToolCall[], effects: TurnEffects, ctx
       // nothing was running.
       const id = String(input.id ?? '').trim();
       const match = String(input.match ?? '');
-      const declined = await declineParkedApprovals(chatId, chatContext?.senderHandle, id, match);
+      const parked = await declineParkedApprovals(chatId, chatContext?.senderHandle, id, match);
+      const declined = parked.declined;
       if (declined.length) {
         effects.results.push({
           tool: 'cancel_research', status: 'done', target: declined.map(r => r.request).join('; '),
+          ref: shortApprovalId(declined[0].id),
           detail: 'the action that was waiting on their go-ahead is dropped, and nothing of it ran',
         });
       }
-      for (const row of declined) effects.cancelled.push({ tool: 'cancel_research', id: row.id, label: row.request });
+      if (parked.ambiguous) effects.results.push(parked.ambiguous);
+      for (const row of declined) effects.cancelled.push({ tool: 'cancel_research', id: row.id, label: row.request, parked: true });
       // Chat-scoped (works in groups, needs no handle) and synchronous — the in-flight map is the
       // authority and the flag must be set before this turn's reply goes out. Still consulted after
       // a decline by words, because a real look may ALSO be running for this chat; only its "nothing
       // is being looked up" miss is dropped, since a park was just dropped and that miss would
-      // contradict it. An id that named the parked action is spent on it: it names no running look.
-      if (!(declined.length && id)) {
+      // contradict it. Three cancels are spent before they get here, since each names one thing and
+      // that thing is not a running look: an id that named the parked action, words that fit several
+      // parked actions (it acts on none), and a cancel naming nothing on a turn that dropped a parked
+      // action, which is the ask their "cancel it" answered.
+      const spent = !!parked.ambiguous || (declined.length > 0 && !!id)
+        || (!id && !match.trim() && effects.cancelled.some(c => c.parked));
+      if (!spent) {
         const { result, cancelled } = cancelResearch(id, match, chatId);
         if (!(declined.length && result.status === 'not_found')) effects.results.push(alreadyCancelled(result, effects, id || match));
         for (const run of cancelled) effects.cancelled.push({ tool: 'cancel_research', id: run.taskId, label: run.request });
@@ -3413,7 +3457,7 @@ export async function processConvoResult(args: {
         tool: 'cancel_research', status: 'done', target: settled.declined.request, ref: shortApprovalId(settled.declined.id),
         detail: 'the action that was waiting on their go-ahead is dropped, and nothing of it ran',
       };
-      settledDeclineRef = { tool: 'cancel_research', id: settled.declined.id, label: settled.declined.request };
+      settledDeclineRef = { tool: 'cancel_research', id: settled.declined.id, label: settled.declined.request, parked: true };
     }
   }
 

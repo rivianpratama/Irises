@@ -17,7 +17,7 @@ import { processConvoResult, type ChatContext, type ConvoTurnContext } from './s
 import { emptyMedia } from '../../webhook/types.js';
 import { __resetOpsCoordination, getActiveOps } from '../../state/opsCoordination.js';
 import { clearTraces, getTraces } from '../../diagnostics/trace.js';
-import { listPendingApprovals, getOpsTask } from '../../db/repositories/opsTasks.js';
+import { listPendingApprovals, getOpsTask, insertPendingApproval } from '../../db/repositories/opsTasks.js';
 import { getPreference } from '../../db/repositories/memory.js';
 import { closeDb, stmt } from '../../db/sqlite.js';
 import { buildContextBlock } from '../../memory/dossier.js';
@@ -589,6 +589,29 @@ test('"cancel that" on a parked action keeps her acknowledgement: the decline is
   assert.equal(receipt('ops:approval')?.decision, 'declined', 'the consent read is what declined it');
   assert.equal(out.text, 'dropped it', 'her acknowledgement stands, with no nothing-found correction');
   assert.equal(receipt('convo:outcome_pass'), undefined, 'and no second look is spent on a miss that is not one');
+});
+
+test('a cancel that names nothing declines only the live ask: an older park, or one two days stale, stands', async () => {
+  // A park overwrites the marker, so an earlier park's row sits at pending_approval with nobody's ask
+  // pointing at it, and a row nobody answered sits there for days. An empty cancel declined every one
+  // of them, including actions they had never been asked about on this turn.
+  const { a, row } = await park();
+  const earlier = randomUUID();
+  const stale = randomUUID();
+  const DAY = 24 * 60 * 60 * 1000;
+  insertPendingApproval({ id: earlier, chatId: a.chatId, kind: 'general', request: 'book the 9am flight', meta: {} }, Date.now() - 60_000);
+  insertPendingApproval({ id: stale, chatId: a.chatId, kind: 'general', request: 'cancel my gym membership', meta: {} }, Date.now() - 2 * DAY);
+
+  laneVerdict = 'UNCLEAR';
+  await processConvoResult({
+    ...answer(a, 'actually forget it'),
+    res: makeResult(['dropped it'], [{ name: 'cancel_research', input: { match: '' } }]),
+    turn: reasker([]).turn,
+  });
+
+  assert.equal(getOpsTask(row.id)?.status, 'declined', 'the ask their marker names is the one dropped');
+  assert.equal(getOpsTask(earlier)?.status, 'pending_approval', 'an earlier park nobody asked about this turn stands');
+  assert.equal(getOpsTask(stale)?.status, 'pending_approval', 'and a two-day-old row is out of the cancel\'s reach');
 });
 
 test('a parked action keeps its question when a cancel in the same turn misses', async () => {
