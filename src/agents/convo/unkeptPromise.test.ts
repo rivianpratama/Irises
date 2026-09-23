@@ -383,10 +383,13 @@ test('"got it, revised" with nothing changed this turn gets exactly one re-ask',
     "can't set it to 7, that slot's taken",
     "i haven't changed it yet",
     "i haven't cancelled it yet",
+    'done for today',
+    'changed my mind, keep it',
+    'updated?',
   ]) {
     assert.equal(detectUnbackedClaim([line], null, false).claimed, false, line);
   }
-  for (const line of ['got it, revised', 'done', 'switched it', '[[re:1]]done']) {
+  for (const line of ['got it, revised', 'done', 'switched it', '[[re:1]]done', 'got it, revised the morning one', 'updated it to 8am']) {
     assert.equal(detectUnbackedClaim([line], null, false).unbacked, true, line);
   }
   // The routing tag survives a dropped claim whole (its colon is not a clause break).

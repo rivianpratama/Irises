@@ -234,6 +234,18 @@ export interface UnbackedClaimVerdict {
   unbacked: boolean;
 }
 
+/**
+ * A statement clause that OPENS on one of these verbs with an object right after it reports a change
+ * made: "revised the morning one", the incident's own last line, which the whole-clause rule above
+ * cannot reach. Both lists are closed and short. "done" and "fixed" are left off, because a
+ * clause they open is as often about her day ("done for today") as about a change; and an object
+ * outside the list keeps an idiom out ("changed my mind").
+ */
+const CLAIM_LEAD_VERBS = new Set([
+  'revised', 'updated', 'switched', 'changed', 'cancelled', 'canceled', 'removed', 'moved', 'deleted', 'replaced',
+]);
+const CLAIM_OBJECTS = new Set(['the', 'it', 'that', 'this', 'your', 'ur', 'them', 'both', 'those', 'ya', 'u']);
+
 /** The first claim in the reply, bubble by bubble in reading order. */
 function findClaim(bubbles: string[]): string | undefined {
   for (const bubble of bubbles) {
@@ -241,6 +253,8 @@ function findClaim(bubbles: string[]): string | undefined {
       const whole = clause.trim();
       const word = CLAIM_WORDS.find(w => w === whole);
       if (word) return word;
+      const [lead, object] = whole.split(' ');
+      if (CLAIM_LEAD_VERBS.has(lead) && CLAIM_OBJECTS.has(object)) return `${lead} ${object}`;
       for (const phrase of CLAIM_PHRASES) {
         const at = clause.indexOf(` ${phrase} `);
         if (at >= 0 && !reportsOtherwise(clause.slice(0, at + 1))) return phrase;
