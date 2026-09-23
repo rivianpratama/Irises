@@ -3250,10 +3250,11 @@ export async function processConvoResult(args: {
   //     (we `continue` past the assignment) — but the ORIGINAL task's composer is still coming and will
   //     re-voice any claim the model wrote this turn. Same double-say, so salvage here too; the
   //     !textResponse still_on_it voiceInstant below fills the gap when salvage yields nothing.
-  //   • NOT on an action-bearing turn (schedule / disconnect / note / list outcome): there the model's
-  //     text legitimately voices the ACTION's confirmation, not an un-grounded Ops answer. Nuking it
-  //     would leave the confirmation unsaid — the !textResponse-gated voiceOutcome lines below would be
-  //     blocked by the delegation's holding line, silently dropping "your 9am reminder is set".
+  //   • NOT on an action-bearing turn (any recorded result: a schedule, a cancel, a note, a list):
+  //     there the model's text legitimately voices the ACTION's confirmation, not an un-grounded Ops
+  //     answer. Nuking it would leave the confirmation unsaid — with model text standing, an
+  //     all-success turn voices nothing more than its raw facts, so "your 9am reminder is set" would
+  //     silently drop. A turn where an action FAILED is re-assembled below from the holding half.
   const actionBearing = effects.results.length > 0;
   if (((effects.modelDelegated && effects.delegatedTask) || effects.suppressedDuplicate) && !actionBearing) {
     // Ground = the user's own words for this ask: a figure they said themselves ("412 Maple") is an
