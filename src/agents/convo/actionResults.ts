@@ -108,9 +108,21 @@ export function toOutcome(r: ActionResult): Outcome {
  * Several ride as `parts` under the worst kind among them: the voicer's brief lists each in turn,
  * and its hardcoded floor strings each part's own line together, so even a dead voicer still says
  * the success beside the miss.
+ *
+ * A miss that would be voiced exactly as one already listed is said once. An outcome pass that sent
+ * a held create again in other words got it held again, and the user read "nothing changed yet"
+ * and the same reminder twice over. Successes are all kept: two cancels that each landed are two
+ * pieces of news even when their lines read the same.
  */
 export function combinedOutcome(results: readonly ActionResult[]): Outcome {
-  const parts = results.map(toOutcome);
+  const said = new Set<string>();
+  const parts = results.map(toOutcome).filter(p => {
+    if (p.kind === 'confirmed') return true;
+    const key = JSON.stringify(p);
+    if (said.has(key)) return false;
+    said.add(key);
+    return true;
+  });
   if (parts.length === 1) return parts[0];
   const kind: OutcomeKind = parts.every(p => p.kind === 'confirmed')
     ? 'confirmed'
