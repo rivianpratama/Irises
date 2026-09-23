@@ -56,6 +56,7 @@ interface InFlightEntry {
 
 const inFlight = new Map<string, Map<string, InFlightEntry>>();   // chatId -> taskId -> entry
 const recentlyDelegated = new Map<string, Map<string, number>>(); // chatId -> normKey -> at (ms)
+const recentlyEnded = new Map<string, EndedOps[]>();              // chatId -> the last few runs that ended
 
 /**
  * The optional durable twin of the maps above. This module is on the REPLY path and imports no
@@ -155,6 +156,9 @@ export function markOpsStart(chatId: string, taskId: string, info: { kind: TaskK
 export function requestOpsCancel(chatId: string, taskId: string): 'signalled' | 'already_done' {
   const entry = inFlight.get(chatId)?.get(taskId);
   if (!entry) return 'already_done';
+  // Noted at the stop rather than at the teardown: the orchestrator may take a while to unwind the
+  // leg, and the very next turn must already read this run as dropped.
+  if (!entry.cancelled) noteEnded(chatId, taskId, entry, 'cancelled');
   entry.cancelled = true;
   entry.cancel?.abort();
   recentlyDelegated.get(chatId)?.delete(entry.normKey);
@@ -352,10 +356,14 @@ export function takePendingSteers(chatId: string, taskId: string): string[] {
   return queued;
 }
 
-/** Clear a single finished task. Call from runOpsAndFollowUp's finally, AFTER the result handoff. */
-export function markOpsDone(chatId: string, taskId: string): void {
+/** Clear a single finished task. Call from runOpsAndFollowUp's finally, AFTER the result handoff.
+ *  `ended` says how it went, for the recently-ended list: 'delivered' when a follow-up reached them,
+ *  'failed' when none did. A cancelled run was already noted as cancelled when it was stopped. */
+export function markOpsDone(chatId: string, taskId: string, ended: 'delivered' | 'failed' = 'delivered'): void {
   const byTask = inFlight.get(chatId);
   if (!byTask) return;
+  const entry = byTask.get(taskId);
+  if (entry && !entry.cancelled) noteEnded(chatId, taskId, entry, ended);
   const had = byTask.delete(taskId);
   if (byTask.size === 0) inFlight.delete(chatId);
   // Only when an entry actually existed: a second markOpsDone (or one for a task this process never
@@ -396,6 +404,65 @@ export function getActiveOps(chatId: string, now: number = Date.now()): ActiveOp
   return [...byTask.entries()]
     .filter(([, e]) => now - e.startedAt < staleMs && !e.cancelled)
     .map(([taskId, e]) => ({ taskId, kind: e.kind, request: e.request, startedAt: e.startedAt, firstStartedAt: e.firstStartedAt, origin: e.origin, lastMilestone: e.lastMilestone, milestoneAt: e.milestoneAt, estimateMs: e.estimateMs, estimatePhrase: e.estimatePhrase, ...(e.steers?.length ? { steers: [...e.steers] } : {}), ...(e.engineActions?.length ? { engineActions: [...e.engineActions] } : {}) }));
+}
+
+// ── Recently ended ──────────────────────────────────────────────────────────────────────────────
+// A run leaves getActiveOps the moment it is stopped or finishes, and with it the only thing that
+// told the next turn it existed. "Did you stop it?", or a second stop for the same look, then read
+// against nothing at all: the model could not tell a run dropped a minute ago from one that never
+// started. So the last few endings stay readable for a short while, in memory like the rest of this
+// module (a restart forgets them, which is right: a new process never ran them).
+
+export type OpsEnding = 'cancelled' | 'delivered' | 'failed';
+
+export interface EndedOps {
+  taskId: string;
+  request: string;
+  /** How it ended: stopped at their word, a follow-up delivered, or over with nothing delivered. */
+  ended: OpsEnding;
+  at: number;
+  origin?: 'scheduled';
+}
+
+/** How long an ended run stays readable. */
+export const RECENTLY_ENDED_MS = 15 * 60_000;
+/** The most endings kept per chat; the oldest goes first. */
+const MAX_RECENTLY_ENDED = 5;
+
+function noteEnded(chatId: string, taskId: string, entry: InFlightEntry, ended: OpsEnding): void {
+  const now = Date.now();
+  const kept = (recentlyEnded.get(chatId) ?? []).filter(e => now - e.at < RECENTLY_ENDED_MS && e.taskId !== taskId);
+  kept.push({ taskId, request: entry.request, ended, at: now, ...(entry.origin ? { origin: entry.origin } : {}) });
+  recentlyEnded.set(chatId, kept.slice(-MAX_RECENTLY_ENDED));
+}
+
+/** The runs of this chat that ended in the last RECENTLY_ENDED_MS, oldest first. */
+export function getRecentlyEndedOps(chatId: string, now: number = Date.now()): EndedOps[] {
+  const live = (recentlyEnded.get(chatId) ?? []).filter(e => now - e.at < RECENTLY_ENDED_MS);
+  if (live.length) recentlyEnded.set(chatId, live);
+  else recentlyEnded.delete(chatId);
+  return live.map(e => ({ ...e }));
+}
+
+// ── Ids ─────────────────────────────────────────────────────────────────────────────────────────
+// A lookup and a parked action are shown with a short id the model can copy back, the way a reminder
+// is (convo/liveReminders.ts shortReminderId): a letter for what it is, then the first six characters
+// of the ops task id with a UUID's dashes dropped. The letter keeps the kinds apart in one reply, and
+// resolveRef reads the short id back to the full one.
+
+/** What a short id is a prefix of: the task id with a UUID's dashes dropped. */
+export function opsRefKey(id: string): string {
+  return id.replace(/-/g, '');
+}
+
+/** The id a running lookup is shown and addressed by. */
+export function shortLookupId(taskId: string): string {
+  return `L${opsRefKey(taskId).slice(0, 6)}`;
+}
+
+/** The id an action parked behind their approval is shown and addressed by (its ops_tasks row). */
+export function shortApprovalId(rowId: string): string {
+  return `A${opsRefKey(rowId).slice(0, 6)}`;
 }
 
 /**
@@ -457,5 +524,6 @@ function prune(chatId: string): void {
 export function __resetOpsCoordination(): void {
   inFlight.clear();
   recentlyDelegated.clear();
+  recentlyEnded.clear();
   taskSink = null;
 }

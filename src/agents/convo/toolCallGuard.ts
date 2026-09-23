@@ -13,7 +13,7 @@
 //
 // "Drop the calls with no args" is the wrong rule on its own, and that is the whole difficulty:
 // `list_automations` and `cancel_research` are legitimately argless (no `required` in their schemas,
-// and the cancel tool doc tells her to call it with match empty when only one look is running), so a
+// and a cancel that names nothing stops the one look they asked for, convo/shared.ts pickResearch), so a
 // rule like that would break real turns to fix this one. What is actually diagnostic is the ENVELOPE
 // SHAPE: a model doing work asks for one thing, or two things it named; a model echoing its schema
 // produces a run of argless calls. So there are two rules, and one of them reads the whole envelope.

@@ -58,8 +58,8 @@ test('R1 needs no second call to fire: a lone required-args echo is still an ech
 });
 
 // ── the three legitimately argless tools ─────────────────────────────────────
-// No `required` in their inputSchema, and the cancel doc says to call it with match empty when one
-// look is running — so "drop empty args" would have broken real turns. This is why R2 reads the
+// No `required` in their inputSchema, and a cancel that names nothing stops the one look they asked
+// for — so "drop empty args" would have broken real turns. This is why R2 reads the
 // envelope's SHAPE instead.
 
 test('a LONE argless call is real intent and is kept', () => {

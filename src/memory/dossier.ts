@@ -32,6 +32,7 @@ import { buildTurnRelevance, memoryRelevanceEnabled, type TurnRelevance } from '
 import type { MemoryGateReason, MemoryGateReport, MemoryGateReports } from '../diagnostics/turnTrace.js';
 import { scopeHistoryToUser } from './transcript.js';
 import { isGroupHandle } from './identity.js';
+import { shortApprovalId } from '../state/opsCoordination.js';
 import { record } from '../diagnostics/trace.js';
 import { reportError } from '../diagnostics/errorLog.js';
 import type { StoredMessage, UserProfile } from '../db/types.js';
@@ -155,7 +156,10 @@ export function gatePendingApproval(pa: PendingApprovalCtx | undefined, nowMs: n
 export function renderPendingApproval(pa: PendingApprovalCtx, nowMs: number): string {
   const ago = formatAgo(typeof pa.askedAt === 'number' ? Math.floor(pa.askedAt / 1000) : undefined, nowMs);
   const when = ago ? ` (asked ${ago})` : '';
-  return `## You asked them to approve an action (their next reply is probably the answer)\nYou asked whether to go ahead with: "${pa.request}"${when}. It has NOT started, and will not until they say yes — never speak about it as if it were running.\nIf they say yes, it starts as this turn ends: one short line that you are doing it. If they say no, let it go in one line. If they reply about something else, answer that normally — the ask stays open until they settle it.`;
+  // The id the parked row is addressed by (cancel_research takes it), the way a running lookup and a
+  // reminder are shown with theirs.
+  const ref = pa.taskId ? `[${shortApprovalId(pa.taskId)}] ` : '';
+  return `## You asked them to approve an action (their next reply is probably the answer)\nYou asked whether to go ahead with: ${ref}"${pa.request}"${when}. It has NOT started, and will not until they say yes — never speak about it as if it were running.\nIf they say yes, it starts as this turn ends: one short line that you are doing it. If they say no, let it go in one line. If they reply about something else, answer that normally — the ask stays open until they settle it.`;
 }
 
 interface PendingEmailContext {

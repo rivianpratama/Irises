@@ -670,8 +670,9 @@ export async function runOpsAndFollowUp(task: OpsTask, sendFollowUp: SendFollowU
     // task.createdAt → this exit): the one number the <60s target is measured against.
     record({ type: 'event', chatId: task.chatId, handle: task.agentHandle, taskId: task.id, label: 'ops:duration', detail: { kind: task.kind, ms: Date.now() - task.createdAt } });
     // Clear this task's in-flight marker LAST, so it outlives the result handoff above. Per-taskId
-    // clear means a concurrent distinct task's marker survives.
-    markOpsDone(task.chatId, task.id);
+    // clear means a concurrent distinct task's marker survives. How it ended rides along for the
+    // next turn's recently-ended list (a cancel was noted when it was stopped).
+    markOpsDone(task.chatId, task.id, finalSent ? 'delivered' : 'failed');
   }
 }
 

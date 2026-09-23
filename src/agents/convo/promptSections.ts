@@ -32,6 +32,7 @@ export const DYN_SECTION_IDS = [
   'context_block',        // buildContextBlock — the dossier plus the wrapped memory tiers
   'thesis',               // her one read on this person (memory/thesisEngine.ts) — '' until it exists
   'active_ops',           // renderActiveOps — research already running for this chat
+  'live_reminders',       // renderLiveReminders — their reminders on the engine, each with its id
   'group',                // "Group chat"
   'tapped_reply',         // whichever ONE of the four ResolvedReply kinds rendered
   'burst',                // the numbered incoming messages of a burst

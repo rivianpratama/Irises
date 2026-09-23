@@ -236,6 +236,31 @@ test('several running + a match → cancels only the matching one', () => {
   assert.equal(active[0].request, 'comps on 412 maple');
 });
 
+test('a match that fits two lookups cancels neither, and offers both by id', () => {
+  // Words are a fallback, and words that fit two runs name neither: stopping both would drop work
+  // they still want, and stopping one would be a guess.
+  __resetOpsCoordination();
+  markOpsStart('chatA', 't1', { kind: 'web_research', request: 'mortgage rates in austin' }, new AbortController());
+  markOpsStart('chatA', 't2', { kind: 'web_research', request: 'mortgage rates in dallas' }, new AbortController());
+  const note = handleCancelResearch('mortgage rates', 'chatA');
+  assert.equal(note?.kind, 'failed');
+  assert.match(note?.facts ?? '', /\[Lt1\] mortgage rates in austin/);
+  assert.match(note?.facts ?? '', /\[Lt2\] mortgage rates in dallas/);
+  assert.equal(isOpsCancelled('chatA', 't1'), false);
+  assert.equal(isOpsCancelled('chatA', 't2'), false);
+  assert.equal(getActiveOps('chatA').length, 2);
+});
+
+test('one lookup they asked for beside a scheduled one: an empty match stops the one they asked for', () => {
+  __resetOpsCoordination();
+  markOpsStart('chatA', 't-user', { kind: 'web_research', request: 'comps on 412 maple' }, new AbortController());
+  markOpsStart('chatA', 't-sched', { kind: 'general', request: 'daily inbox sweep', origin: 'scheduled' }, new AbortController());
+  const note = handleCancelResearch('', 'chatA');
+  assert.equal(note, null, 'a clean cancel: her own confirmation stands');
+  assert.equal(isOpsCancelled('chatA', 't-user'), true);
+  assert.equal(isOpsCancelled('chatA', 't-sched'), false, 'the scheduled check keeps running');
+});
+
 test('a match that fits nothing → nothing_found listing what IS running', () => {
   __resetOpsCoordination();
   markOpsStart('chatA', 't1', { kind: 'general', request: 'full inbox scan' });

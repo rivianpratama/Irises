@@ -12,7 +12,7 @@ import { getUserProfile } from '../../db/repositories/profiles.js';
 import { buildContextBlockWithHot } from '../../memory/dossier.js';
 import { memoryRelevanceEnabled, shortEntryLabel, threadHit } from '../../memory/relevance.js';
 import { renderedTurnFocusHits, type TurnFocusHit, type TurnFocusInput } from './turnFocus.js';
-import { getActiveOps } from '../../state/opsCoordination.js';
+import { getActiveOps, getRecentlyEndedOps } from '../../state/opsCoordination.js';
 import { getConversation, addMessage, clearConversation, clearUserProfile } from '../../state/conversation.js';
 import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
 import { pendingIntroWeave } from '../ops/firstMove.js';
@@ -52,6 +52,7 @@ import { record } from '../../diagnostics/trace.js';
 import { HOOKS_SELECT_LABEL, MOMENTS_OFFER_LABEL } from '../../diagnostics/traceLabels.js';
 import type { LlmMessage, LlmRequest, LlmResult, LlmToolDef } from '../../llm/types.js';
 import { buildSystemPromptSections, processConvoResult, formatHistory, emptyExtras, callConvoLLM, annotateTappedReply } from './shared.js';
+import { liveRemindersFor } from './liveReminders.js';
 import { voiceOutcome } from '../fallfirm/client.js';
 import { helpText } from '../fallfirm/floor.js';
 import { claimPendingUpdateNote } from '../../update/announce.js';
@@ -271,6 +272,17 @@ export async function chat(
   // allowed to go unconsumed when the gate reads a different string than the one predicted.
   if (earlyClassify) void earlyClassify.catch(() => {});
 
+  // ONE engine read for the turn: it picks the delegate tool's lane, gates the reminder tools, feeds
+  // the capability summary further down, and gates the live reminders read just below — all four
+  // must agree on the same engine. Read HERE, ahead of the parallel batch, so that read can start
+  // with it.
+  const engine = getEngineBackend();
+  const engineName = engine?.name ?? null;
+  // The reminders standing for them (convo/liveReminders.ts), started now so the engine round trip
+  // runs beside the memory reads instead of after them, and awaited just before the prompt is built.
+  // Never rejects, and never outlasts its budget: a slow engine reads as null, which renders nothing.
+  const liveRemindersRead = liveRemindersFor(engine, chatId, chatContext?.senderHandle);
+
   const [context, agentTz, climate, thesisDoc, whoProfile] = handle
     ? await Promise.all([
         // Pass the current turn text so the short-tier renderer can gate whether the freshest research
@@ -366,10 +378,6 @@ export async function chat(
 
   if (textToSend) await addMessage(chatId, 'user', textToSend, chatContext?.senderHandle);
 
-  // ONE engine read for the turn: it picks the delegate tool's lane, gates the reminder tools, and
-  // feeds the capability summary further down — all three must agree on the same engine.
-  const engine = getEngineBackend();
-  const engineName = engine?.name ?? null;
   // The list itself — order included — lives in tools.ts (convoToolList); the flags are read HERE so
   // that function stays pure and testable.
   const tools: LlmToolDef[] = convoToolList({
@@ -722,7 +730,10 @@ export async function chat(
   // lines that ride inside that section when the directive allows one, and her one read on this
   // person. Each renders nothing when it is empty.
   const personaTurn = { hooks: hookDirective, moments: momentLines, thesis: thesisSection };
-  const prompt = buildSystemPromptSections(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, userTz, affectState, computed, capabilitySummary, climate, thread, introWeave, turnFocus, craftFacts, personaTurn);
+  // What stands live beyond the running lookups (convo/shared.ts LiveState): their reminders, read
+  // above within its budget, and the lookups that ended in the last few minutes.
+  const liveState = { reminders: await liveRemindersRead, endedOps: getRecentlyEndedOps(chatId) };
+  const prompt = buildSystemPromptSections(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, userTz, affectState, computed, capabilitySummary, climate, thread, introWeave, turnFocus, craftFacts, personaTurn, liveState);
   const system = prompt.system;
 
   try {

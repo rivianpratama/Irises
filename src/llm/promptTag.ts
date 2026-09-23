@@ -32,7 +32,12 @@ export function dataTag(name: string, content: string | null | undefined): strin
  *  block a delegation carries into the ops prompt (agents/routingGate.ts). A tag added here must be
  *  added for EVERY payload: the list is one regex, so it is the closer of its own block that a
  *  stored note is likeliest to carry. */
-const PAYLOAD_TAGS = [PROMPT_TAG, 'memory_short', 'memory_medium', 'memory_long', 'user_directives', 'held_memory'];
+const PAYLOAD_TAGS = [
+  PROMPT_TAG, 'memory_short', 'memory_medium', 'memory_long', 'user_directives', 'held_memory',
+  // Reminder titles and texts (convo/liveReminders.ts), and the results a turn's calls came back with
+  // (convo/actionResults.ts renderActionResultsPass), both of which carry words somebody else wrote.
+  'live_reminders', 'action_results',
+];
 const TAG_BREAKOUT_RE = new RegExp(`<(/?)(?:${PAYLOAD_TAGS.join('|')})\\b`, 'gi');
 
 /**

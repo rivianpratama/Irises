@@ -154,6 +154,9 @@ export const THREADS_SELECT_LABEL = 'threads:select';
  */
 export const DATA_BUDGET_KEYS: readonly BudgetKey[] = [
   'context_block', 'memory_stack', 'burst', 'group', 'active_ops', 'tapped_reply',
+  // Their reminders, one row each (convo/liveReminders.ts): somebody with ten reminders legitimately
+  // carries a longer section than somebody with one, so an overshoot is a fact about them.
+  'live_reminders',
   // Her one read on this person, written per person by the weekly pass (memory/thesisEngine.ts).
   // Two to four sentences about somebody with nine months of history is legitimately longer than
   // two to four about somebody with three weeks, so an overshoot here is a fact about them and is

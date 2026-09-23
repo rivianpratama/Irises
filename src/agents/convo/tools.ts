@@ -243,12 +243,12 @@ export const CANCEL_RESEARCH_TOOL: LlmToolDef = {
   name: 'cancel_research',
   description: [
     "Stop a lookup you're currently running for the user. ONLY on an explicit stop — \"stop\", \"cancel that\", \"nevermind\", \"forget it\", \"don't bother\". A bare \"ok\"/\"thanks\" is NEVER a cancel — that's them closing the loop, not stopping work.",
-    'If exactly one lookup is running, call it with match empty. If SEVERAL are running and they didn\'t say which, do NOT call this yet — ask which one in one short bubble first (the "already pulling" section names them), then call it with `match`: a few words identifying the one to drop.',
+    'Name the lookup by `id`, the bracketed id beside it in the "already pulling" section; `match` is the fallback when no id is in view. One call stops exactly one lookup, and when the words fit several, nothing is stopped. If several of theirs are running and they did not say which, ask which one in one short bubble before calling this.',
     'You MUST also write a short confirming text ("dropped it" energy), as a statement, never a question.',
   ].join(' '),
   inputSchema: {
     type: 'object',
-    properties: { match: { type: 'string', description: 'Words identifying which lookup to cancel. Empty when only one is running.' } },
+    properties: { id: ITEM_ID_ARG, match: ITEM_MATCH_ARG },
   },
 };
 
@@ -257,7 +257,7 @@ export const STEER_RESEARCH_TOOL: LlmToolDef = {
   description: [
     "Add to, narrow, or correct a lookup you're ALREADY running for the user — without dropping it. Use when they extend or fix the live ask mid-run: \"also check X\", \"actually jakarta, not bekasi\", \"under 100k only\", \"skip the ones without parking\".",
     "NOT for a wholly different ask (that's a fresh delegate_to_ops — and if it replaces the running one, cancel_research first, same turn). NOT for a stop (that's cancel_research). A bare \"ok\"/\"thanks\" is never a steer.",
-    'If exactly one lookup is running, call it with match empty. If SEVERAL are running and they didn\'t say which, do NOT call this yet — ask which one in one short bubble first (the "already pulling" section names them), then call it with `match`.',
+    'Name the lookup by `id`, the bracketed id beside it in the "already pulling" section; `match` is the fallback when no id is in view. One call adds to exactly one lookup, and when the words fit several, nothing is added. If several of theirs are running and they did not say which, ask which one in one short bubble before calling this.',
     'Pass `guidance` as the user\'s addition in plain words (what to add/narrow/fix), not a rewrite of the whole ask.',
     'You MUST also write a short acknowledging text ("adding that in" energy, one bubble, no promise of a new timeline) — never a question, never "let me start over".',
   ].join(' '),
@@ -266,7 +266,8 @@ export const STEER_RESEARCH_TOOL: LlmToolDef = {
     properties: {
       guidance: { type: 'string', description: "What the user just added, narrowed, or corrected — in their terms." },
       engine_actions: { type: 'array', items: { type: 'string' }, description: 'Only when the addition asks for something to be DONE on the deep look\'s own side rather than looked at differently: one entry per action, same rules as on delegate_to_ops. Omit it for an ordinary narrowing or correction.' },
-      match: { type: 'string', description: 'Words identifying which running lookup to steer. Empty when only one is running.' },
+      id: ITEM_ID_ARG,
+      match: ITEM_MATCH_ARG,
     },
     required: ['guidance'],
   },

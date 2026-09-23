@@ -54,7 +54,8 @@ import { coerceBasis } from '../../memory/provenance.js';
 import type { TurnRelevance, RelevanceHit } from '../../memory/relevance.js';
 import {
   isDuplicateDelegation, getActiveOps, hasInFlightRequest, requestOpsCancel,
-  requestOpsSteer, getOpsEngineRun, type ActiveOps,
+  requestOpsSteer, getOpsEngineRun, opsRefKey, shortLookupId, shortApprovalId,
+  type ActiveOps, type EndedOps,
 } from '../../state/opsCoordination.js';
 import { steerWithRetry } from '../ops/steer.js';
 import { etaStatus, estimateOpsEta } from '../etaEstimate.js';
@@ -100,6 +101,7 @@ import {
   type ActionCandidate, type ActionResult, type ActionStatus,
 } from './actionResults.js';
 import { detectCollision, existingKind, type LedgerReminder, type NewReminder } from './reminderCollision.js';
+import { noteLiveReminders, renderLiveReminders, shortReminderId } from './liveReminders.js';
 import { callLLM } from '../../llm/callLLM.js';
 import { record } from '../../diagnostics/trace.js';
 import { HOOK_OFF_TURN_LABEL, QUIET_GUARD_LABEL } from '../../diagnostics/traceLabels.js';
@@ -230,12 +232,6 @@ function noEngine(tool: string, target = ''): ActionResult {
     detail: 'reminders live on your engine, which is offline right now',
     nextStep: 'ask them to try again in a bit',
   };
-}
-
-/** The id a reminder is shown and addressed by: R + the first 6 hex chars of the engine's own id.
- *  Short enough to say out loud, and a prefix of the real id that resolveRef reads back to it. */
-function shortReminderId(id: string): string {
-  return `R${id.slice(0, 6)}`;
 }
 
 /** When a reminder fires next, in their zone: the engine's next run, else a one-shot's own time,
@@ -410,8 +406,9 @@ async function handleScheduleAutomation(
       const ref = await engine.createReminder({ chatId, agentHandle: handle, instruction, cron: next.cron, title, timezone });
       effects.reminders = [...items, {
         id: ref.id, title: (title || instruction).slice(0, 40), schedule: next.cron!,
-        kind: 'cron', expr: next.cron, exprZone: timezone, instruction,
+        kind: 'cron', expr: next.cron, exprZone: timezone, instruction, createdAt: new Date().toISOString(),
       }];
+      noteLiveReminders(chatId, effects.reminders);
       return { tool, status: 'done', target, detail: 'a recurring reminder is now set — it repeats on their schedule' };
     }
     const ts = next.fireAt!;
@@ -419,8 +416,9 @@ async function handleScheduleAutomation(
     const iso = new Date(ts).toISOString();
     effects.reminders = [...items, {
       id: ref.id, title: (title || instruction).slice(0, 40), schedule: iso,
-      kind: 'once', runAt: iso, nextRunAt: iso, instruction,
+      kind: 'once', runAt: iso, nextRunAt: iso, instruction, createdAt: new Date().toISOString(),
     }];
+    noteLiveReminders(chatId, effects.reminders);
     return { tool, status: 'done', target, detail: 'a one-time reminder is set', facts: formatWhen(iso, timezone).toLowerCase() };
   } catch (err) {
     console.error('[convo] schedule_automation failed', err);
@@ -436,6 +434,8 @@ async function renderAutomationsList(_handle: string, chatId: string, tz: string
   if (!engine) return noEngine(tool);
   try {
     const items = await engine.listReminders(chatId);
+    // A fresh read of the whole list: the next turn's live section can read it as is.
+    noteLiveReminders(chatId, items);
     // Zero reminders is a true, complete answer — not a correction. `nothing_found` used to sit
     // here, and every result that isn't a success REPLACES the model's own reply (see the
     // correction block below): the model's honest "you don't have any right now" was getting
@@ -471,6 +471,7 @@ async function handleCancelAutomation(input: Record<string, unknown>, chatId: st
     const ok = await engine.cancelReminder(picked.ref.id);
     if (!ok) return { result: snag };
     effects.reminders = items.filter(r => r.id !== picked.ref.id);
+    noteLiveReminders(chatId, effects.reminders);
     return {
       result: { tool, status: 'done', target: picked.ref.title, detail: 'that reminder is cancelled' },
       cancelled: { id: picked.ref.id, title: picked.ref.title },
@@ -570,6 +571,7 @@ async function handleUpdateAutomation(input: Record<string, unknown>, handle: st
         // Gone from the engine since the list was read: the ledger drops it, and the rest is offered.
         const rest = items.filter(r => r.id !== old.id);
         effects.reminders = rest;
+        noteLiveReminders(chatId, rest);
         return { tool, status: 'not_found', target, detail: 'that reminder is no longer set, so there was nothing to change', candidates: reminderCandidates(rest, displayTz) };
       }
       if (out.reason === 'invalid') return { tool, status: 'invalid', target, detail: "that change couldn't be applied, so the reminder is unchanged", nextStep: 'ask them for the change again' };
@@ -577,6 +579,7 @@ async function handleUpdateAutomation(input: Record<string, unknown>, handle: st
     }
     const now = revisedReminder(old, out.ref, patch);
     effects.reminders = items.map(r => (r.id === old.id ? now : r));
+    noteLiveReminders(chatId, effects.reminders);
     const stands = reminderCandidate(now, displayTz);
     return { tool, status: 'done', target: now.title, detail: 'that reminder is changed, and this is how it stands now', facts: `[${stands.id}] ${stands.label}` };
   } catch (err) {
@@ -585,42 +588,94 @@ async function handleUpdateAutomation(input: Record<string, unknown>, handle: st
   }
 }
 
+type ResearchPick =
+  | { kind: 'match'; run: ActiveOps }
+  | { kind: 'ambiguous'; runs: ActiveOps[] }
+  | { kind: 'none' };
+
+/**
+ * The one running lookup a cancel_research or steer_research call names, shared by both so the two
+ * can never read the same words differently. The id first (resolveRef over the task ids a short
+ * `L…` id is a prefix of), then the words against each run's request. The match arg is tried as an
+ * id too, and the id arg as words, the same slip tolerance pickReminder has.
+ *
+ * Several fits is `ambiguous`, and the caller acts on none of them. Stopping or steering every run
+ * a few words happened to fit is how a stop meant for one look dropped two.
+ *
+ * Nothing named at all picks the one run THEY asked for: a scheduled check running beside it is
+ * not what "stop that" is about, since they never started it. A scheduled run is picked only when
+ * it is the only thing running.
+ */
+function pickResearch(active: readonly ActiveOps[], id: string, match: string): ResearchPick {
+  const keys = active.map(a => opsRefKey(a.taskId));
+  for (const ref of [id, match]) {
+    if (!ref.trim()) continue;
+    const got = resolveRef(ref, keys, 'L');
+    if (got.kind === 'match') return { kind: 'match', run: active[keys.indexOf(got.id)] };
+    if (got.kind === 'ambiguous') return { kind: 'ambiguous', runs: active.filter((_, i) => got.ids.includes(keys[i])) };
+  }
+  const words = (match.trim() || id.trim()).toLowerCase();
+  if (!words) {
+    const theirs = active.filter(a => a.origin !== 'scheduled');
+    if (theirs.length === 1) return { kind: 'match', run: theirs[0] };
+    if (!theirs.length && active.length === 1) return { kind: 'match', run: active[0] };
+    return { kind: 'ambiguous', runs: theirs.length ? theirs : [...active] };
+  }
+  const hits = active.filter(a => a.request.toLowerCase().includes(words));
+  if (hits.length === 1) return { kind: 'match', run: hits[0] };
+  return hits.length ? { kind: 'ambiguous', runs: hits } : { kind: 'none' };
+}
+
+/** Running lookups as something the user can pick by id. */
+function researchCandidates(runs: readonly ActiveOps[]): ActionCandidate[] {
+  return runs.map(a => ({ id: shortLookupId(a.taskId), label: a.request }));
+}
+
+/** A pick that did not name exactly one lookup, as the result the turn keeps. Never acts. */
+function researchUnpicked(tool: string, target: string, picked: Exclude<ResearchPick, { kind: 'match' }>, active: readonly ActiveOps[], verb: string): ActionResult {
+  if (picked.kind === 'ambiguous') {
+    return {
+      tool, status: 'ambiguous', target,
+      detail: `that fits more than one running lookup, so none was ${verb}`,
+      candidates: researchCandidates(picked.runs), nextStep: 'ask which one they mean',
+    };
+  }
+  return {
+    tool, status: 'not_found', target, detail: "couldn't find a running lookup matching that",
+    candidates: researchCandidates(active), nextStep: 'ask which of those they mean',
+  };
+}
+
 // Cancel in-flight Ops research (chat-scoped, in-memory — synchronous by design). The result:
 //  - nothing running → honest not_found (never a fake "dropped it"),
-//  - no match given while several run → ambiguous, so the correction path makes Irises ask which one,
-//  - every match already finished (the answer is landing/on screen) → unreachable,
-//  - otherwise done, and `cancelled` names the runs that were actually signalled.
-function cancelResearch(match: string, chatId: string): { result: ActionResult; cancelled: ActiveOps[] } {
+//  - a call that names several, or none while several of theirs run → ambiguous, so the correction
+//    path makes Irises ask which one, and nothing is stopped,
+//  - the one it names already finished (the answer is landing/on screen) → unreachable,
+//  - otherwise done, and `cancelled` names the run that was actually signalled.
+function cancelResearch(id: string, match: string, chatId: string): { result: ActionResult; cancelled: ActiveOps[] } {
   const tool = 'cancel_research';
-  const target = match.trim();
-  const m = target.toLowerCase();
+  const target = (id || match).trim();
   const active = getActiveOps(chatId);
   if (!active.length) {
     return { result: { tool, status: 'not_found', target, detail: "nothing's being looked up for them right now — either it already landed or nothing was started", nextStep: 'if they mean something else, ask what they want dropped' }, cancelled: [] };
   }
-  const running = `currently running: ${active.map(a => `"${a.request}"`).join(', ')}`;
-  const matches = m ? active.filter(a => a.request.toLowerCase().includes(m)) : active;
-  if (matches.length === 0) {
-    return { result: { tool, status: 'not_found', target, detail: "couldn't find a running lookup matching that", facts: running, nextStep: 'ask which of those they mean' }, cancelled: [] };
-  }
-  if (!m && matches.length > 1) {
-    return { result: { tool, status: 'ambiguous', target, detail: 'more than one lookup is running and it\'s unclear which to drop', facts: running, nextStep: 'ask which one they mean' }, cancelled: [] };
-  }
-  const signalled = matches.filter(a => requestOpsCancel(chatId, a.taskId) === 'signalled');
-  if (!signalled.length) {
+  const picked = pickResearch(active, id, match);
+  if (picked.kind !== 'match') return { result: researchUnpicked(tool, target, picked, active, 'stopped'), cancelled: [] };
+  const run = picked.run;
+  if (requestOpsCancel(chatId, run.taskId) !== 'signalled') {
     return { result: { tool, status: 'unreachable', target, detail: 'that lookup actually just finished — the answer is already landing on their screen', nextStep: 'tell them to just ignore it if they don\'t need it' }, cancelled: [] };
   }
   return {
-    result: { tool, status: 'done', target: signalled.map(a => a.request).join('; '), detail: 'the lookup they wanted dropped is stopped' },
-    cancelled: signalled,
+    result: { tool, status: 'done', target: run.request, detail: 'the lookup they wanted dropped is stopped' },
+    cancelled: [run],
   };
 }
 
 // The cancel_research branch table as the Outcome it was voiced as before results existed: null on
 // a clean cancel (Convo's own "dropped it" text stands), else the outcome to voice/correct.
 // Exported for unit tests.
-export function handleCancelResearch(match: string, chatId: string): Outcome | null {
-  const { result } = cancelResearch(match, chatId);
+export function handleCancelResearch(match: string, chatId: string, id = ''): Outcome | null {
+  const { result } = cancelResearch(id, match, chatId);
   return actionSucceeded(result) ? null : toOutcome(result);
 }
 
@@ -637,6 +692,7 @@ export function handleCancelResearch(match: string, chatId: string): Outcome | n
 //
 // Null when there is nothing to record: blank guidance is nothing said, not a steer.
 function steerResearch(
+  id: string,
   match: string,
   guidance: string,
   chatId: string,
@@ -645,20 +701,15 @@ function steerResearch(
   engineActions: string[],
 ): ActionResult | null {
   const tool = 'steer_research';
-  const target = match.trim();
-  const m = target.toLowerCase();
+  const target = (id || match).trim();
   const active = getActiveOps(chatId);
   if (!active.length) {
     return { tool, status: 'not_found', target, detail: "nothing's being looked up for them right now — either it already landed or nothing was started", nextStep: 'treat what they said as a fresh ask: delegate_to_ops with the original topic plus this addition, if it reads like one' };
   }
-  const running = `currently running: ${active.map(a => `"${a.request}"`).join(', ')}`;
-  const matches = m ? active.filter(a => a.request.toLowerCase().includes(m)) : active;
-  if (matches.length === 0) {
-    return { tool, status: 'not_found', target, detail: "couldn't find a running lookup matching that", facts: running, nextStep: 'ask which of those they mean' };
-  }
-  if (!m && matches.length > 1) {
-    return { tool, status: 'ambiguous', target, detail: "more than one lookup is running and it's unclear which to add this to", facts: running, nextStep: 'ask which one they mean' };
-  }
+  // The same pick the cancel makes (pickResearch): one run, or none acted on.
+  const picked = pickResearch(active, id, match);
+  if (picked.kind !== 'match') return researchUnpicked(tool, target, picked, active, 'added to');
+  const matches = [picked.run];
   // Blank/whitespace guidance is nothing said, not a steer — requestOpsSteer's own blank-text guard
   // answers 'already_done', which reads exactly like the run having just finished. That correction
   // would be a lie to a lookup that is still going. Bail before the map sees it: no record, no POST,
@@ -712,8 +763,9 @@ export function handleSteerResearch(
   agentHandle: string,
   engine: EngineBackend | null = getEngineBackend(),
   engineActions: string[] = [],
+  id = '',
 ): Outcome | null {
-  const r = steerResearch(match, guidance, chatId, agentHandle, engine, engineActions);
+  const r = steerResearch(id, match, guidance, chatId, agentHandle, engine, engineActions);
   return r && !actionSucceeded(r) ? toOutcome(r) : null;
 }
 
@@ -887,7 +939,7 @@ function opsStatusLine(o: ActiveOps): string {
   // Queued: parked behind the concurrency cap, not started. Elapsed/ETA measure RUN time, so suppress
   // the pace clause entirely and say plainly it's still waiting for a slot — never imply progress.
   if (o.lastMilestone === 'queued') {
-    return `- "${o.request}" — queued ${elapsedLabel(o.firstStartedAt)}, hasn't started yet (waiting for a free slot)${added}${handed}`;
+    return `- [${shortLookupId(o.taskId)}] "${o.request}" — queued ${elapsedLabel(o.firstStartedAt)}, hasn't started yet (waiting for a free slot)${added}${handed}`;
   }
   const phrase = o.lastMilestone ? MILESTONE_PHRASES[o.lastMilestone] : undefined;
   let etaPace = '';
@@ -903,12 +955,32 @@ function opsStatusLine(o: ActiveOps): string {
     else if (s.state === 'closing') etaPace = `, you said it'd take ${o.estimatePhrase} (should be close now)`;
     else if (s.state === 'overrun') etaPace = `, you said it'd take ${o.estimatePhrase} (running past that)`;
   }
-  return `- "${o.request}" — started ${elapsedLabel(o.firstStartedAt)} ago${phrase ? `, right now: ${phrase}` : ''}${etaPace}${added}${handed}`;
+  return `- [${shortLookupId(o.taskId)}] "${o.request}" — started ${elapsedLabel(o.firstStartedAt)} ago${phrase ? `, right now: ${phrase}` : ''}${etaPace}${added}${handed}`;
+}
+
+const ENDED_PHRASES: Record<EndedOps['ended'], [verb: string, tail: string]> = {
+  cancelled: ['stopped', ''],
+  delivered: ['finished', ', and its follow-up reached them'],
+  failed: ['ended', ' without an answer'],
+};
+
+/** The lookups that ended in the last few minutes (opsCoordination.ts getRecentlyEndedOps), as the
+ *  short record a next turn needs to speak of a dropped or landed look as over. '' when none did. */
+function renderEndedOps(ended: readonly EndedOps[], active: readonly ActiveOps[]): string {
+  const live = new Set(active.map(a => a.taskId));
+  const lines = ended.filter(e => !live.has(e.taskId)).map(e => {
+    const scheduled = e.origin === 'scheduled' ? ' (a scheduled check)' : '';
+    const [verb, tail] = ENDED_PHRASES[e.ended];
+    return `- "${e.request}"${scheduled}: ${verb} ${elapsedLabel(e.at)} ago${tail}`;
+  });
+  if (!lines.length) return '';
+  return `Ended in the last few minutes, so none of these can be stopped or added to. Speak of each one as over, the way its line says it ended:\n${lines.join('\n')}`;
 }
 
 // Exported for unit tests (same pattern as renderReplyOrder).
-export function renderActiveOps(activeOps: ActiveOps[]): string {
-  if (!activeOps.length) return '';
+export function renderActiveOps(activeOps: ActiveOps[], ended: readonly EndedOps[] = []): string {
+  const endedBlock = renderEndedOps(ended, activeOps);
+  if (!activeOps.length) return endedBlock ? `\n\n## Lookups of theirs that just ended\nNothing is running for them right now.\n${endedBlock}` : '';
   const requested = activeOps.filter(o => o.origin !== 'scheduled');
   const scheduled = activeOps.filter(o => o.origin === 'scheduled');
   const blocks: string[] = ["## You're already pulling something for them right now"];
@@ -927,12 +999,13 @@ export function renderActiveOps(activeOps: ActiveOps[]): string {
   blocks.push('If their new message is just an ack ("ok"/"thanks"/"cool"/"sounds good") or asks about THAT same thing: do NOT delegate_to_ops again, and do NOT repeat a holding line like "pulling that up". Check the thread and the timestamps first — if the answer already landed in a recent bubble of yours, their ack is just closing the loop: close it flat (a tiny ack or a reaction) and say nothing about still working. Only if the result genuinely has NOT gone out yet does one short "still on it" beat fit. Either way, only delegate if they\'ve clearly asked for something genuinely different.');
   blocks.push('If they ask how it\'s going, answer from the status above in your own words — one short bubble naming what it\'s doing and roughly how long it\'s been ("still digging through the emails, couple minutes in"). When the status shows time left, you may pass it on loosely; when it shows "running past that", own it lightly ("taking longer than i thought") — never invent a fresh number, never a countdown, never invent progress beyond what the status shows. If a run shows "queued … hasn\'t started yet", it\'s behind another look of theirs — say it\'s next in line and starting shortly, and don\'t pretend it\'s already digging.');
   if (scheduled.length) {
-    blocks.push(`Also running right now — a scheduled check they set up earlier (they did NOT just ask for this):\n${scheduled.map(opsStatusLine).join('\n')}\nDon't say "still on it" as if you're answering them. But if their new message asks about that same thing, do NOT delegate_to_ops for it — tell them you're actually pulling exactly that right now and it'll reach them in a moment. cancel_research stops this run; if they want the recurring check itself gone, that's cancel_automation.`);
+    blocks.push(`Also running right now — a scheduled check they set up earlier (they did NOT just ask for this):\n${scheduled.map(opsStatusLine).join('\n')}\nDon't say "still on it" as if you're answering them. But if their new message asks about that same thing, do NOT delegate_to_ops for it — tell them you're actually pulling exactly that right now and it'll reach them in a moment. cancel_research with its id stops this run; if they want the recurring check itself gone, that's cancel_automation.`);
   }
+  if (endedBlock) blocks.push(endedBlock);
   // Ahead of the STOP block, because a stop is the rarer of the two and the one this used to be the
   // only instruction for: everything ELSE they might say about a live look — an addition, a
   // narrowing, a correction, a replacement — landed as either a duplicate delegation or nothing.
-  blocks.push('If their new message ADDS to, narrows, or corrects the running lookup ("also check…", "actually in…", "only under…"): call steer_research with their addition as `guidance` — the run keeps going with it folded in. Ack it in one short bubble ("adding that in"), no new timeline. If instead they\'ve changed the ask to something genuinely different that REPLACES the running one: call cancel_research AND delegate_to_ops in this same turn (drop the old, start the new), and say so plainly in one line. One lookup running → act right away (empty match). Several → ask which one first.');
+  blocks.push('If their new message ADDS to, narrows, or corrects the running lookup ("also check…", "actually in…", "only under…"): call steer_research with their addition as `guidance` — the run keeps going with it folded in. Ack it in one short bubble ("adding that in"), no new timeline. If instead they\'ve changed the ask to something genuinely different that REPLACES the running one: call cancel_research AND delegate_to_ops in this same turn (drop the old, start the new), and say so plainly in one line. Either way, pass the id of the lookup their message is about. One lookup of theirs running → act right away. Several and they did not say which → ask which one first.');
   // Between the steer block and the stop block, because it is the case that fell between them live
   // (2026-09-11): the running look was named again ("oppo find n6", seven minutes in, right after she
   // offered "a different angle"), and with no rule for a bare restatement the model read it as a fresh
@@ -942,7 +1015,7 @@ export function renderActiveOps(activeOps: ActiveOps[]): string {
   // Stated as the principle (same subject ⇒ same run; only its direction or its existence can change),
   // not as sample phrasings: a rule keyed to wordings generalises exactly as far as the wordings.
   blocks.push('A message about the subject of a look that is already running is about that run. The subject is already being served, so the message can never be a new ask; decide only what it changes. If it gives the run a direction it does not yet have — anything that narrows or redirects where or how to look, including a direction you proposed and they accepted — call steer_research with that direction as `guidance` and ack it in one short bubble. If it changes nothing about the run, it is a status question: answer from the status above. Never delegate_to_ops for a subject that is already running — the second run knows nothing the first has learned, so it can only cost time and return the same answer twice.');
-  blocks.push('If they tell you to STOP ("stop", "cancel that", "nevermind", "forget it"): call cancel_research. One lookup running → cancel it right away (empty match) and confirm lightly. Several running and they didn\'t say which → ask which one in ONE short bubble first (the list above names them), no cancel yet. A bare "ok"/"thanks" is NEVER a cancel.');
+  blocks.push('If they tell you to STOP ("stop", "cancel that", "nevermind", "forget it"): call cancel_research and pass its id. One lookup of theirs running → cancel it right away and confirm lightly. Several running and they didn\'t say which → ask which one in ONE short bubble first (the list above names them), no cancel yet. A bare "ok"/"thanks" is NEVER a cancel.');
   return `\n\n${blocks.join('\n')}`;
 }
 
@@ -1171,6 +1244,19 @@ export interface PersonaTurn {
 }
 
 /**
+ * What stands for this chat right now beyond the runs `activeOps` names, handed to the assembler as
+ * values because it is synchronous and both are reads the caller does: the reminders on the engine
+ * (convo/liveReminders.ts; null when unread, slow, or gated off, which renders nothing) and the
+ * lookups that ended in the last few minutes (state/opsCoordination.ts getRecentlyEndedOps). This is
+ * what lets a reply carry on from what the earlier turns actually left standing, by id, instead of
+ * from what the model remembers saying about it.
+ */
+export interface LiveState {
+  reminders?: readonly ReminderRef[] | null;
+  endedOps?: readonly EndedOps[];
+}
+
+/**
  * Build the front-line system prompt AND report what it is made of: persona + the per-turn
  * group/burst/reply/time sections + the two static anchors. `extraSection`, when given, is appended
  * at the very end of the per-turn block (an optional addendum hook).
@@ -1240,6 +1326,9 @@ export function buildSystemPromptSections(
   // non-Convo caller — reads as a task turn with nothing earned, which is the same prompt this
   // function built before the struct existed.
   personaTurn?: PersonaTurn,
+  // What stands live for this chat beyond `activeOps` (see LiveState above). Absent, which is every
+  // caller that did not read it, renders neither the reminders section nor the ended-lookups tail.
+  liveState?: LiveState,
 ): PromptSectionsResult {
   // The persona head: the always-on core with the craft pages loading per-turn inside the block
   // below, or — with CONVO_PERSONA_MODULES off — the whole corpus, pages included, exactly as it
@@ -1405,8 +1494,13 @@ export function buildSystemPromptSections(
   // Synchronous, in-memory "research is running right now" awareness (NOT from durable prefs —
   // that path loses the read-after-write race against a fast follow-up). Stops the redundant
   // re-delegation + repeated holding line when the user acks mid-research.
-  const activeOpsSection = renderActiveOps(activeOps).trim();
+  const activeOpsSection = renderActiveOps(activeOps, liveState?.endedOps ?? []).trim();
   if (activeOpsSection) push('active_ops', activeOpsSection);
+
+  // The reminders standing for them, each with its id, right beside the runs: the two things this
+  // turn may stop or change, read from where they live rather than from the transcript.
+  const liveRemindersSection = renderLiveReminders(liveState?.reminders, { tz, nowMs: Date.now(), engineTz: engineZone() });
+  if (liveRemindersSection) push('live_reminders', liveRemindersSection);
 
   // The participant list is printed here and nowhere else, which is what makes this the only place
   // the write route for a fact about SOMEONE ELSE can be stated. remember_user's own `handle` doc is
@@ -2471,14 +2565,26 @@ async function resolvePendingApproval(a: {
  * would answer "nothing running" and she would tell them nothing was happening, while the parked row
  * sat there waiting. Settling it 'declined' is the honest reading of the same words.
  *
- * Chat-scoped like handleCancelResearch (the rows are keyed by chat), match-filtered the same way,
- * and returns the rows it declined so the caller can drop a now-wrong correction note and keep them
- * on the turn's ledger of what was cancelled.
+ * Chat-scoped like handleCancelResearch (the rows are keyed by chat), and returns the rows it
+ * declined so the caller can drop a now-wrong correction note and keep them on the turn's ledger of
+ * what was cancelled.
+ *
+ * An `id` (the `A…` the approval section shows) declines exactly the one row it names, and nothing
+ * when it names none or several: a running lookup's `L…` id reaches here too, and must not decline
+ * anything. With no id, the rows are match-filtered as before.
  */
-async function declineParkedApprovals(chatId: string, sender: string | undefined, match: string): Promise<Array<{ id: string; request: string }>> {
+async function declineParkedApprovals(chatId: string, sender: string | undefined, id: string, match: string): Promise<Array<{ id: string; request: string }>> {
   if (!opsApprovalGateEnabled()) return [];
-  const m = match.trim().toLowerCase();
-  const parked = listPendingApprovals(chatId).filter(r => !m || r.request.toLowerCase().includes(m));
+  const rows = listPendingApprovals(chatId);
+  let parked: typeof rows;
+  if (id.trim()) {
+    const keys = rows.map(r => opsRefKey(r.id));
+    const got = resolveRef(id, keys, 'A');
+    parked = got.kind === 'match' ? [rows[keys.indexOf(got.id)]] : [];
+  } else {
+    const m = match.trim().toLowerCase();
+    parked = rows.filter(r => !m || r.request.toLowerCase().includes(m));
+  }
   if (!parked.length) return [];
   for (const row of parked) {
     settleOpsTask(row.id, 'declined');
@@ -2611,8 +2717,9 @@ interface PassCaptures {
   errorLogLimit: number | null;
 }
 
-/** The ref letter each cancel's ids are shown with, for a re-cancel written as an id. */
-const CANCEL_REF_LETTER: Record<CancelledRef['tool'], string> = { cancel_automation: 'R', cancel_research: 'L' };
+/** The ref letters each cancel's ids are shown with, for a re-cancel written as an id: a research
+ *  cancel drops running lookups (`L…`) and parked actions (`A…`) alike. */
+const CANCEL_REF_LETTERS: Record<CancelledRef['tool'], string[]> = { cancel_automation: ['R'], cancel_research: ['L', 'A'] };
 
 /**
  * A cancel that found nothing, read against what THIS turn already dropped. Two cancels of one
@@ -2628,9 +2735,10 @@ function alreadyCancelled(r: ActionResult, effects: TurnEffects, match: string):
   if (!m) hit = prior[0];
   else {
     hit = prior.find(c => c.label.toLowerCase().includes(m));
-    if (!hit) {
-      const ref = resolveRef(m, prior.map(c => c.id), CANCEL_REF_LETTER[r.tool as CancelledRef['tool']] ?? '');
-      if (ref.kind === 'match') hit = prior.find(c => c.id === ref.id);
+    for (const letter of hit ? [] : CANCEL_REF_LETTERS[r.tool as CancelledRef['tool']] ?? ['']) {
+      const keys = prior.map(c => opsRefKey(c.id));
+      const ref = resolveRef(m, keys, letter);
+      if (ref.kind === 'match') { hit = prior[keys.indexOf(ref.id)]; break; }
     }
   }
   return hit
@@ -2970,22 +3078,26 @@ async function dispatchToolCalls(calls: LlmToolCall[], effects: TurnEffects, ctx
       // An action still waiting on their yes is cancelled by DECLINING it — nothing is in flight for
       // requestOpsCancel to stop, so without this the parked row would sit there while she told them
       // nothing was running.
+      const id = String(input.id ?? '').trim();
       const match = String(input.match ?? '');
-      const declined = await declineParkedApprovals(chatId, chatContext?.senderHandle, match);
+      const declined = await declineParkedApprovals(chatId, chatContext?.senderHandle, id, match);
       if (declined.length) {
         effects.results.push({
           tool: 'cancel_research', status: 'done', target: declined.map(r => r.request).join('; '),
           detail: 'the action that was waiting on their go-ahead is dropped, and nothing of it ran',
         });
       }
+      for (const row of declined) effects.cancelled.push({ tool: 'cancel_research', id: row.id, label: row.request });
       // Chat-scoped (works in groups, needs no handle) and synchronous — the in-flight map is the
       // authority and the flag must be set before this turn's reply goes out. Still consulted after
-      // a decline, because a real look may ALSO be running for this chat; only its "nothing is being
-      // looked up" miss is dropped, since a park was just dropped and that miss would contradict it.
-      const { result, cancelled } = cancelResearch(match, chatId);
-      if (!(declined.length && result.status === 'not_found')) effects.results.push(alreadyCancelled(result, effects, match));
-      for (const row of declined) effects.cancelled.push({ tool: 'cancel_research', id: row.id, label: row.request });
-      for (const run of cancelled) effects.cancelled.push({ tool: 'cancel_research', id: run.taskId, label: run.request });
+      // a decline by words, because a real look may ALSO be running for this chat; only its "nothing
+      // is being looked up" miss is dropped, since a park was just dropped and that miss would
+      // contradict it. An id that named the parked action is spent on it: it names no running look.
+      if (!(declined.length && id)) {
+        const { result, cancelled } = cancelResearch(id, match, chatId);
+        if (!(declined.length && result.status === 'not_found')) effects.results.push(alreadyCancelled(result, effects, id || match));
+        for (const run of cancelled) effects.cancelled.push({ tool: 'cancel_research', id: run.taskId, label: run.request });
+      }
     } else if (call.name === 'steer_research') {
       // Same chat-scoped, synchronous map as the cancel above, and for the same reason: her ack goes
       // out this turn, so the decision has to be in hand before it does. The delivery POST itself is
@@ -2993,7 +3105,7 @@ async function dispatchToolCalls(calls: LlmToolCall[], effects: TurnEffects, ctx
       const steerActions = Array.isArray(input.engine_actions)
         ? input.engine_actions.map(a => String(a ?? '').trim()).filter(Boolean)
         : [];
-      const steered = steerResearch(String(input.match ?? ''), String(input.guidance ?? ''), chatId, handle ?? '', getEngineBackend(), steerActions);
+      const steered = steerResearch(String(input.id ?? '').trim(), String(input.match ?? ''), String(input.guidance ?? ''), chatId, handle ?? '', getEngineBackend(), steerActions);
       if (steered) effects.results.push(steered);
     } else if (call.name === 'recall_memory') {
       // Just captured here — the search + the answer happen in one bounded second pass after

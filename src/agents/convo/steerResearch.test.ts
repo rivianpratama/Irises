@@ -71,7 +71,9 @@ test('the tool asks for the addition in their words, and only guidance is requir
   // `engine_actions` sits between them (2026-09-19): an addition can ask for something to be DONE,
   // and before it existed such an addition could only travel as guidance — invisible to the record
   // of what was handed over, and rendered inside the data tag on a replay leg.
-  assert.deepEqual(Object.keys(schema.properties), ['guidance', 'engine_actions', 'match']);
+  // `id` before `match` (action honesty, Task 8): a lookup is named by the id it is shown with, and
+  // words are the fallback.
+  assert.deepEqual(Object.keys(schema.properties), ['guidance', 'engine_actions', 'id', 'match']);
   assert.match(String((schema.properties.engine_actions as { description: string }).description), /same rules as on delegate_to_ops/);
   // The two confusions that would cost a run: a different ask, and a stop.
   assert.match(STEER_RESEARCH_TOOL.description, /NOT for a wholly different ask/);
