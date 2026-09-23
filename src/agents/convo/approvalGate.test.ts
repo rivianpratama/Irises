@@ -574,6 +574,23 @@ test('cancel_research on a parked action declines it instead of claiming nothing
   assert.ok(rec.some(d => d.decision === 'declined' && d.via === 'cancel'), 'the decline is on the record');
 });
 
+test('"cancel that" on a parked action keeps her acknowledgement: the decline is what the cancel found', async () => {
+  // "cancel" is a decline word, so the consent read settles the row before the tool loop runs. The
+  // cancel_research she wrote beside it then found no parked row and nothing running, and its
+  // "nothing is being looked up" miss replaced the "dropped it" that was true.
+  const { a, row } = await park();
+  const out = await processConvoResult({
+    ...answer(a, 'cancel that'),
+    res: makeResult(['dropped it'], [{ name: 'cancel_research', input: { match: '' } }]),
+    turn: reasker([]).turn,
+  });
+
+  assert.equal(getOpsTask(row.id)?.status, 'declined');
+  assert.equal(receipt('ops:approval')?.decision, 'declined', 'the consent read is what declined it');
+  assert.equal(out.text, 'dropped it', 'her acknowledgement stands, with no nothing-found correction');
+  assert.equal(receipt('convo:outcome_pass'), undefined, 'and no second look is spent on a miss that is not one');
+});
+
 test('a parked action keeps its question when a cancel in the same turn misses', async () => {
   // The question is the one thing a parked turn owes: without it the action sits parked and nobody
   // was asked. A cancel that missed beside it used to REPLACE the whole reply with its correction,

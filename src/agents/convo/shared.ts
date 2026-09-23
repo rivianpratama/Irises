@@ -2448,15 +2448,19 @@ interface PendingApprovalPref {
   expiredAt?: number;
 }
 
-/** What the resolution hands back: at most one of the two, and usually neither. */
+/** What the resolution hands back: at most one of the three, and usually none. */
 interface ApprovalOutcome {
   /** The promoted task, ready for the ONE kickoff site (index.ts, inside this turn's lock). */
   task: OpsTask | null;
   /** The action to re-ask about, when a yes arrived after the ask had already expired. */
   reconfirm: string | null;
+  /** The parked action their no just dropped. Kept apart from "nothing was pending" because the
+   *  turn owes it a result: a cancel_research written beside the no finds neither the row (it is
+   *  settled) nor a run, and its miss must not read as the answer to what they asked. */
+  declined: { id: string; request: string } | null;
 }
 
-const NO_APPROVAL: ApprovalOutcome = { task: null, reconfirm: null };
+const NO_APPROVAL: ApprovalOutcome = { task: null, reconfirm: null, declined: null };
 
 /**
  * The task the user actually said yes to, rebuilt from the durable row.
@@ -2505,7 +2509,8 @@ function approvedTask(pa: PendingApprovalPref, chatId: string, sender: string, n
  *
  * The five ways this goes, with a receipt on every one of them including the no-ops:
  *   • yes, inside the TTL → promote the row, hand the task back, drop the marker;
- *   • no → settle the row 'declined', drop the marker (Convo's own line acknowledges it);
+ *   • no → settle the row 'declined', drop the marker, and hand the dropped action back so the turn
+ *     records it as done (Convo's own line acknowledges it);
  *   • unclear → nothing moves; the ask stays live and the section asks again next turn;
  *   • expired → settle 'expired'; a yes on that turn (or on any turn in the ONE grace window after
  *     it) RE-ASKS instead of running, and parks a fresh row whose yes is a real approval; past the
@@ -2544,8 +2549,9 @@ async function resolvePendingApproval(a: {
     await setPreference(a.sender, 'pending_approval', { taskId: fresh.id, request: fresh.request, kind: fresh.kind, askedAt: now, reconfirm: true })
       .catch(err => console.error('[convo] failed to persist pending_approval', err));
     rec({ decision: 'reconfirm', taskId: fresh.id, of: pa.taskId, ageMs: latencyMs });
-    return { task: null, reconfirm: fresh.request };
+    return { task: null, reconfirm: fresh.request, declined: null };
   };
+  const declinedOutcome = (): ApprovalOutcome => ({ ...NO_APPROVAL, declined: { id: String(pa.taskId), request: String(pa.request) } });
 
   // The grace window: this ask expired on an EARLIER turn (the row is already settled), and the
   // marker was kept because a yes routinely lands a turn or two after the thing it answers.
@@ -2561,7 +2567,7 @@ async function resolvePendingApproval(a: {
     if (consent === 'no') {
       await drop();
       rec({ decision: 'declined', taskId: pa.taskId, latencyMs, stage: 'expired' });
-      return NO_APPROVAL;
+      return declinedOutcome();
     }
     rec({ decision: 'unclear', taskId: pa.taskId, latencyMs, stage: 'expired' });
     return NO_APPROVAL;
@@ -2575,7 +2581,7 @@ async function resolvePendingApproval(a: {
     // re-ask once, and only once — a marker that already carries `reconfirm` retires instead.
     if (consent === 'yes' && !pa.reconfirm) return await armReconfirm();
     // A no, or an ask that was ALREADY the re-ask (one re-ask, ever): the marker goes now.
-    if (consent === 'no' || pa.reconfirm) { await drop(); return NO_APPROVAL; }
+    if (consent === 'no' || pa.reconfirm) { await drop(); return consent === 'no' ? declinedOutcome() : NO_APPROVAL; }
     // Nothing was answered on this turn. Keep the marker, stamped, for one grace window.
     await setPreference(a.sender, 'pending_approval', { ...pa, expiredAt: now })
       .catch(err => console.error('[convo] failed to persist pending_approval', err));
@@ -2591,14 +2597,14 @@ async function resolvePendingApproval(a: {
     // user just authorized; both are on the record.
     rec({ decision: 'approved', taskId: task.id, latencyMs, promoted, fromRow, reconfirm: !!pa.reconfirm });
     console.log(`[convo] approved action starting (chat ${a.chatId}, task ${task.id})`);
-    return { task, reconfirm: null };
+    return { task, reconfirm: null, declined: null };
   }
 
   if (consent === 'no') {
     settleOpsTask(String(pa.taskId), 'declined');
     await drop();
     rec({ decision: 'declined', taskId: pa.taskId, latencyMs });
-    return NO_APPROVAL;
+    return declinedOutcome();
   }
 
   // Unsettled: the action stays parked, the section stays live, and nothing about the row changes.
@@ -3391,12 +3397,24 @@ export async function processConvoResult(args: {
   // no classify call, no promotion — and a parked row from before the flip is left exactly as it is.
   let settledTask: OpsTask | null = null;
   let settledReconfirm: string | null = null;
+  // A no that just dropped the parked action. It is the turn's own cancel, done before the model's
+  // calls run, so it is a result like any other: a cancel_research the model wrote beside it then
+  // reads as a second drop of the same thing (alreadyCancelled), and her "dropped it" is backed.
+  let settledDecline: ActionResult | null = null;
+  let settledDeclineRef: CancelledRef | null = null;
   if (opsApprovalGateEnabled() && chatContext?.senderHandle && !args.archivePass && !args.outcomePass) {
     const settled = await resolvePendingApproval({
       chatId, handle, sender: chatContext.senderHandle, text: textToSend ?? '',
     });
     if (settled.task) settledTask = settled.task;
     else if (settled.reconfirm) settledReconfirm = settled.reconfirm;
+    else if (settled.declined) {
+      settledDecline = {
+        tool: 'cancel_research', status: 'done', target: settled.declined.request, ref: shortApprovalId(settled.declined.id),
+        detail: 'the action that was waiting on their go-ahead is dropped, and nothing of it ran',
+      };
+      settledDeclineRef = { tool: 'cancel_research', id: settled.declined.id, label: settled.declined.request };
+    }
   }
 
   // The honesty backstop, BEFORE anything is dispatched or persisted: a reply that promised work
@@ -3413,10 +3431,15 @@ export async function processConvoResult(args: {
   //
   // On the outcome pass it only EVALUATES: that pass is the turn's last model call, so a reply it
   // flags is not re-asked but falls back to voicing the results (see the pass's resolution below).
-  // What an earlier pass already did rides in as `carried`, and is what backs a claim made here.
+  // What an earlier pass already did rides in as `carried`, and is what backs a claim made here. A
+  // no that just dropped the parked action backs one the same way: "cancelled it" is then true of a
+  // change this turn made, with no call of her own behind it.
+  const backing = settledDecline
+    ? { ...(args.carried ?? newTurnEffects()), results: [...(args.carried?.results ?? []), settledDecline] }
+    : args.carried;
   const guard = (settledTask || settledReconfirm)
     ? { res: args.res, fired: false, promise: false, claim: false }
-    : await enforcePromiseKept(args, replyBubbles(firstReply), guardToolCalls, { retry: !args.outcomePass, carried: args.carried });
+    : await enforcePromiseKept(args, replyBubbles(firstReply), guardToolCalls, { retry: !args.outcomePass, carried: backing });
 
   // …and the rhythm backstop beside it, on the turns the selector forced quiet. ONE corrective
   // re-ask per turn, TOTAL: the promise guard goes first and this one stands down whenever it fired,
@@ -3512,6 +3535,12 @@ export async function processConvoResult(args: {
     effects.modelDelegated = true;
   }
   if (settledReconfirm && !effects.parkedApproval) effects.parkedApproval = { request: settledReconfirm, variant: 'reconfirm' };
+  // A no seeds the drop it made, ahead of the model's own calls, so a cancel of the same action
+  // later in the turn reads as already done rather than as nothing found.
+  if (settledDecline && settledDeclineRef && !effects.cancelled.some(c => c.id === settledDeclineRef!.id)) {
+    effects.results.push(settledDecline);
+    effects.cancelled.push(settledDeclineRef);
+  }
   // Which way the routing floor went, set on every turn it was EVALUATED on and left undefined on
   // the turns that never reached it (a delegation already built, the recall second pass, no memory
   // identity). Rides the turn receipt so a month of turns can be bucketed by it.
