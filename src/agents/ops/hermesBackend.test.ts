@@ -321,6 +321,33 @@ test('runTask: 401 maps to needs_auth, 429 to rate_limited, refused to EngineUna
   await assert.rejects(beDown.runTask('p', mkTask(), {}), EngineUnavailableError);
 });
 
+test('runTask (image leg): the chat call streams, so a cancel closes the connection hermes watches', async () => {
+  // An image never takes /v1/runs, and the blocking chat completion has no stop: hermes interrupts
+  // its agent only when a STREAMING client disconnects. A cancelled photo lookup therefore kept
+  // running on the engine to the end, while Irises had already told them it was stopped.
+  const captured: Captured[] = [];
+  let closed = false;
+  const streamFetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    captured.push({ url: String(url), init: init ?? {} });
+    // One frame, then a stream that stays open, like a run still working.
+    const body = new ReadableStream<Uint8Array>({
+      start(c) { c.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"looking"}}]}\n\n')); },
+      cancel() { closed = true; },
+    });
+    return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+  }) as typeof fetch;
+  const be = new HermesBackend({ fetchFn: streamFetch });
+  const media = { images: [{ url: 'https://cdn/x.jpg', mimeType: 'image/jpeg', filename: 'x.jpg' }], audio: [], video: [], docs: [] };
+  const ac = new AbortController();
+  const p = be.runTask('what is in this photo', mkTask({ media }), { signal: ac.signal });
+  await new Promise(r => setTimeout(r, 10));
+  assert.match(captured[0].url, /\/v1\/chat\/completions$/);
+  assert.equal(JSON.parse(String(captured[0].init.body)).stream, true, 'an image leg asks for a stream');
+  ac.abort();
+  await assert.rejects(p, (e: Error) => e.name === 'AbortError');
+  assert.ok(closed, 'the abort closed the reader, which is the disconnect hermes interrupts on');
+});
+
 test('runTask: a caller abort surfaces as AbortError (mapped to cancelled upstream)', async () => {
   const be = new HermesBackend({
     fetchFn: (async (_u: RequestInfo | URL, init?: RequestInit) => {

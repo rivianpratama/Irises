@@ -642,7 +642,7 @@ export class HermesBackend implements EngineBackend {
       if (out !== null) return out;
       // …else this hermes answered 404 on /v1/runs (latched below) — fall through to chat.
     }
-    return this.runViaChat(content, task, ctx);
+    return this.runViaChat(content, task, ctx, { stream: blocks.length > 0 });
   }
 
   /**
@@ -665,10 +665,20 @@ export class HermesBackend implements EngineBackend {
     return this.capRunsSupported !== false;
   }
 
-  /** The pre-`/v1/runs` transport, unchanged: one blocking (or HERMES_STREAM'd) chat completion.
-   *  Still the path for image-bearing tasks, for `HERMES_RUN_TRANSPORT=chat`, and for a hermes with
-   *  no runs route at all. It carries no run id, so nothing here can be stopped or steered. */
-  private async runViaChat(content: unknown, task: OpsTask, ctx: EngineRunContext): Promise<string> {
+  /**
+   * The pre-`/v1/runs` transport: one chat completion. Still the path for image-bearing tasks, for
+   * `HERMES_RUN_TRANSPORT=chat`, and for a hermes with no runs route at all. It carries no run id,
+   * so nothing here can be steered, and there is no stop route to call.
+   *
+   * What CAN stop it is the connection. hermes hard-interrupts the agent when a STREAMING
+   * chat-completions client disconnects (api_server.py, the SSE writer's ConnectionResetError
+   * branch); a blocking completion has no such hook and runs to the end whatever the client does.
+   * So `opts.stream` streams a leg whose cancel must reach the engine, which today is every
+   * image-bearing one (those can never take /v1/runs), and `requestStream` closes the stream the
+   * moment the leg is given up on. A cancelled photo lookup used to keep its agent working on the
+   * engine to the end, after Irises had told them it was stopped.
+   */
+  private async runViaChat(content: unknown, task: OpsTask, ctx: EngineRunContext, opts: { stream?: boolean } = {}): Promise<string> {
     // No run id exists on this route, so no handle will EVER be published for this leg. Saying so
     // is what lets a mid-run addition be answered honestly inside the turn ("I'll work it into the
     // answer when it lands") instead of queueing for a handle that is never coming. Guarded like
@@ -678,8 +688,9 @@ export class HermesBackend implements EngineBackend {
 
     // HERMES_STREAM (default off): stream the completion so token flow gives a live "still producing"
     // heartbeat for long runs, instead of one silent blocking POST. Falls back safely to non-stream.
-    // It is a CHAT-transport switch only — the runs transport always streams its events.
-    if (process.env.HERMES_STREAM === 'on') {
+    // It is a CHAT-transport switch only — the runs transport always streams its events. A leg that
+    // needs its cancel to reach the engine streams with the flag off too (see above).
+    if (opts.stream || process.env.HERMES_STREAM === 'on') {
       const out = await this.requestStream('/v1/chat/completions', {
         method: 'POST', headers,
         body: JSON.stringify({ model: 'hermes-agent', messages: [{ role: 'user', content }], stream: true }),
@@ -1082,7 +1093,9 @@ export class HermesBackend implements EngineBackend {
         if (typeof out !== 'string') throw new EngineRunError('hermes stream fallback returned no content', 'llm_error', res.status);
         return out;
       }
-      return await this.consumeSse(res.body as ReadableStream<Uint8Array>, ctx);
+      // The window's own signal (the caller's cancel and the timer): its abort closes the reader,
+      // which is the disconnect hermes interrupts the agent on.
+      return await this.consumeSse(res.body as ReadableStream<Uint8Array>, ctx, controller.signal);
     } catch (err) {
       if ((err as Error)?.name === 'AbortError') throw err;
       if (err instanceof EngineRunError) throw err;
@@ -1095,14 +1108,24 @@ export class HermesBackend implements EngineBackend {
 
   /** The wire-level half of every SSE this adapter reads: decode, split on newlines, yield the
    *  non-empty lines. Shared by the chat stream (OpenAI `choices[].delta` frames) and the run event
-   *  stream (`{event,…}` frames) — two frame vocabularies, one framing. */
-  private async *sseLines(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+   *  stream (`{event,…}` frames) — two frame vocabularies, one framing.
+   *
+   *  `signal`, when given, closes the reader the moment it aborts, rather than whenever the fetch
+   *  underneath gets round to erroring the body, and a read that ends that way is an AbortError: a
+   *  stream cut short by a give-up is never a complete answer. */
+  private async *sseLines(body: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncGenerator<string> {
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    const close = () => { void reader.cancel().catch(() => { /* already errored or closed */ }); };
+    if (signal) {
+      if (signal.aborted) close();
+      else signal.addEventListener('abort', close, { once: true });
+    }
     try {
       for (;;) {
         const { done, value } = await reader.read();
+        if (signal?.aborted) throw Object.assign(new Error('hermes stream was given up on'), { name: 'AbortError' });
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         let nl: number;
@@ -1113,6 +1136,7 @@ export class HermesBackend implements EngineBackend {
         }
       }
     } finally {
+      signal?.removeEventListener('abort', close);
       // Every consumer here walks away EARLY — a terminal event, or a throw — and `for await`'s own
       // teardown lands in this finally. Without the cancel the response body is left half-read with
       // its reader still locked: the socket cannot be reused and, on a stream hermes keeps open,
@@ -1125,7 +1149,7 @@ export class HermesBackend implements EngineBackend {
 
   /** Parse an OpenAI-style SSE stream: accumulate delta content, emit throttled progress heartbeats.
    *  Exposed shape is a pure string return; malformed/partial frames are skipped, `[DONE]` ends it. */
-  private async consumeSse(body: ReadableStream<Uint8Array>, ctx: EngineRunContext): Promise<string> {
+  private async consumeSse(body: ReadableStream<Uint8Array>, ctx: EngineRunContext, signal?: AbortSignal): Promise<string> {
     let out = '';
     let lastHeartbeat = 0;
     const HEARTBEAT_MS = 10_000;
@@ -1133,7 +1157,7 @@ export class HermesBackend implements EngineBackend {
       const now = this.deps.now();
       if (now - lastHeartbeat >= HEARTBEAT_MS) { lastHeartbeat = now; ctx.onProgress?.(key); }
     };
-    for await (const line of this.sseLines(body)) {
+    for await (const line of this.sseLines(body, signal)) {
       if (!line.startsWith('data:')) continue;
       const payload = line.slice(5).trim();
       if (payload === '[DONE]') return out;
