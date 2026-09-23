@@ -193,8 +193,10 @@ function cadence(r: ReminderRef): string {
 }
 
 /** When it fires next: the engine's own answer, else a one-shot's time, else the next instant of its
- *  cron in the zone that cron is written in (a row this process just wrote). */
-function nextRunMs(r: ReminderRef & { exprZone?: string }, opts: LiveRenderOptions): number | null {
+ *  cron in the zone that cron is written in (a row this process just wrote). Null when none of those
+ *  can be read. Shared with the reminder results (shared.ts), so a list and a candidate say the same
+ *  time the section does. */
+export function reminderNextRunMs(r: ReminderRef & { exprZone?: string }, opts: Pick<LiveRenderOptions, 'nowMs' | 'engineTz'>): number | null {
   const at = r.nextRunAt ?? r.runAt;
   if (at) {
     const ms = Date.parse(at);
@@ -221,7 +223,7 @@ function row(r: ReminderRef, opts: LiveRenderOptions): string {
   const bits = [cadence(r)].filter(Boolean);
   // A zone Intl cannot read drops the times from the row, never the row from the section.
   try {
-    const next = nextRunMs(r, opts);
+    const next = reminderNextRunMs(r, opts);
     if (next != null) bits.push(`next ${nextLabel(next, opts.tz)} (their time)`);
     const created = r.createdAt ? Date.parse(r.createdAt) : NaN;
     if (!Number.isNaN(created)) bits.push(`set ${dayLabel(created, opts.tz, opts.nowMs)}`);

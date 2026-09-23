@@ -236,7 +236,7 @@ test('several running + a match → cancels only the matching one', () => {
   assert.equal(active[0].request, 'comps on 412 maple');
 });
 
-test('a match that fits two lookups cancels neither, and offers both by id', () => {
+test('a match that fits two lookups cancels neither, and offers both', () => {
   // Words are a fallback, and words that fit two runs name neither: stopping both would drop work
   // they still want, and stopping one would be a guess.
   __resetOpsCoordination();
@@ -244,8 +244,8 @@ test('a match that fits two lookups cancels neither, and offers both by id', () 
   markOpsStart('chatA', 't2', { kind: 'web_research', request: 'mortgage rates in dallas' }, new AbortController());
   const note = handleCancelResearch('mortgage rates', 'chatA');
   assert.equal(note?.kind, 'failed');
-  assert.match(note?.facts ?? '', /\[Lt1\] mortgage rates in austin/);
-  assert.match(note?.facts ?? '', /\[Lt2\] mortgage rates in dallas/);
+  // By what they asked for: the `[L…]` ids are the model's handles, and this is what the user reads.
+  assert.equal(note?.facts, 'mortgage rates in austin\nmortgage rates in dallas');
   assert.equal(isOpsCancelled('chatA', 't1'), false);
   assert.equal(isOpsCancelled('chatA', 't2'), false);
   assert.equal(getActiveOps('chatA').length, 2);

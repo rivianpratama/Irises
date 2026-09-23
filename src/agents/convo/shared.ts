@@ -105,7 +105,7 @@ import {
 } from './actionResults.js';
 import { detectCollision, existingKind, type LedgerReminder, type NewReminder } from './reminderCollision.js';
 import {
-  liveRemindersFor, noteLiveReminders, renderLiveReminderRows, renderLiveReminders, shortReminderId,
+  liveRemindersFor, noteLiveReminders, reminderNextRunMs, renderLiveReminderRows, renderLiveReminders, shortReminderId,
 } from './liveReminders.js';
 import { callLLM } from '../../llm/callLLM.js';
 import { record } from '../../diagnostics/trace.js';
@@ -240,14 +240,17 @@ function noEngine(tool: string, target = ''): ActionResult {
 }
 
 /** When a reminder fires next, in their zone: the engine's next run, else a one-shot's own time,
- *  else whatever schedule text the engine reported. */
-function reminderWhen(r: ReminderRef, tz: string): string {
+ *  else the next instant of a cron this turn just wrote, else whatever schedule text the engine
+ *  reported. Never the raw cron when a time can be read: the user sees this line. */
+function reminderWhen(r: LedgerReminder, tz: string): string {
   const at = r.nextRunAt ?? r.runAt;
-  return at ? formatWhen(at, tz) : r.schedule;
+  if (at) return formatWhen(at, tz);
+  const next = reminderNextRunMs(r, { nowMs: Date.now(), engineTz: engineZone() });
+  return next != null ? formatWhen(new Date(next).toISOString(), tz) : r.schedule;
 }
 
-/** One reminder as something the user can pick by its id. */
-function reminderCandidate(r: ReminderRef, tz: string): ActionCandidate {
+/** One reminder as something the user can pick: the id for the model, the label for them. */
+function reminderCandidate(r: LedgerReminder, tz: string): ActionCandidate {
   const when = reminderWhen(r, tz);
   return { id: shortReminderId(r.id), label: when ? `${r.title} (${when})` : r.title };
 }
@@ -383,7 +386,7 @@ async function handleScheduleAutomation(
     // The one reminder asked for twice. Already true, so a success, and no claim can override it:
     // a second copy of the same words on the same slot is never what anyone meant.
     const same = reminderCandidate(collision.with, displayTz);
-    return { tool, status: 'already', target, detail: 'this exact reminder is already set, so nothing new was added', facts: `[${same.id}] ${same.label}` };
+    return { tool, status: 'already', target, detail: 'this exact reminder is already set, so nothing new was added', facts: same.label };
   }
   // `distinct` is the model's claim that this one serves another purpose. It is honored only on a
   // pass that has already shown the model what the create collides with (DispatchContext
@@ -431,26 +434,51 @@ async function handleScheduleAutomation(
   }
 }
 
-// The chat's active reminders as a result Fallfirm voices (the list content is DATA it can't
-// author itself, so it's carried in `facts` for exact relay). Read live from the engine.
-async function renderAutomationsList(_handle: string, chatId: string, tz: string): Promise<ActionResult> {
+/**
+ * A list of their reminders as the result Fallfirm voices. The list is DATA the model can't author
+ * itself, so it rides `facts` for exact relay: the one kind of fact appended under a reply that
+ * stands (see the assembly below). Titles and times only, in their zone. The id beside each is how
+ * the model names a reminder and is in front of it already (the live section, the outcome pass), so
+ * it never reaches the user's chat.
+ */
+function reminderListResult(items: readonly LedgerReminder[], tz: string): ActionResult {
+  const tool = 'list_automations';
+  // Zero reminders is a true, complete answer — not a correction. `nothing_found` used to sit
+  // here, and every result that isn't a success REPLACES the model's own reply (see the
+  // correction block below): the model's honest "you don't have any right now" was getting
+  // overwritten by a Fallfirm re-voicing of the exact same fact. Reporting nothing is not a failure.
+  if (!items.length) return { tool, status: 'done', target: '', detail: 'they have no reminders set up right now' };
+  const list = items.slice(0, MAX_REMINDER_CANDIDATES)
+    .map((a, i) => `${i + 1}. ${a.title} — ${reminderWhen(a, tz)}`)
+    .join('\n');
+  return { tool, status: 'done', target: '', detail: 'these are their current reminders', facts: list };
+}
+
+/**
+ * A list result as the turn LEFT the list. A list read early in a turn and a cancel that lands after
+ * it (on the outcome pass) used to ship the list as it was read, the cancelled reminder still on it,
+ * under a reply saying it was gone. So a list is shown from the ledger's final state, which every
+ * create, cancel and update of the turn kept in step.
+ */
+function listAsLeft(r: ActionResult, effects: TurnEffects, tz: string): ActionResult {
+  if (r.tool !== 'list_automations' || r.status !== 'done' || !effects.reminders) return r;
+  return reminderListResult(effects.reminders, tz);
+}
+
+// The chat's active reminders, read live from the engine unless this turn already read them (the
+// ledger is that read, kept in step with what the turn's own calls did). The read seeds the ledger,
+// so a create later in the turn is judged against the same list the user is shown.
+async function renderAutomationsList(chatId: string, tz: string, effects: TurnEffects): Promise<ActionResult> {
   const tool = 'list_automations';
   const engine = getEngineBackend();
   if (!engine) return noEngine(tool);
   try {
-    const items = await engine.listReminders(chatId);
-    // A fresh read of the whole list: the next turn's live section can read it as is.
-    noteLiveReminders(chatId, items);
-    // Zero reminders is a true, complete answer — not a correction. `nothing_found` used to sit
-    // here, and every result that isn't a success REPLACES the model's own reply (see the
-    // correction block below): the model's honest "you don't have any right now" was getting
-    // overwritten by a Fallfirm re-voicing of the exact same fact. Reporting nothing is not a failure.
-    if (!items.length) return { tool, status: 'done', target: '', detail: 'they have no reminders set up right now' };
-    const list = items.slice(0, MAX_REMINDER_CANDIDATES).map((a, i) => {
-      const when = a.nextRunAt ? formatWhen(a.nextRunAt, tz) : a.schedule;
-      return `${i + 1}. [${shortReminderId(a.id)}] ${a.title} — ${when}`;
-    }).join('\n');
-    return { tool, status: 'done', target: '', detail: 'these are their current reminders', facts: list };
+    if (!effects.reminders) {
+      effects.reminders = [...await engine.listReminders(chatId)];
+      // A fresh read of the whole list: the next turn's live section can read it as is.
+      noteLiveReminders(chatId, effects.reminders);
+    }
+    return reminderListResult(effects.reminders, tz);
   } catch (err) {
     console.error('[convo] list reminders failed', err);
     return { tool, status: 'unavailable', target: '', detail: 'pulling up their reminders hit a snag', nextStep: 'ask them to try again' };
@@ -586,7 +614,7 @@ async function handleUpdateAutomation(input: Record<string, unknown>, handle: st
     effects.reminders = items.map(r => (r.id === old.id ? now : r));
     noteLiveReminders(chatId, effects.reminders);
     const stands = reminderCandidate(now, displayTz);
-    return { tool, status: 'done', target: now.title, ref: stands.id, detail: 'that reminder is changed, and this is how it stands now', facts: `[${stands.id}] ${stands.label}` };
+    return { tool, status: 'done', target: now.title, ref: stands.id, detail: 'that reminder is changed, and this is how it stands now', facts: stands.label };
   } catch (err) {
     console.error('[convo] update reminder failed', err);
     return snag;
@@ -2873,6 +2901,11 @@ function slotSnapshot(e: TurnEffects): Pick<TurnEffects, 'delegatedTask' | 'mode
  *  not convo calls and are not counted. */
 const MAX_CONVO_CALLS_PER_TURN = 3;
 
+/** The reads whose facts ride verbatim under a reply that stands: the list of their reminders, and
+ *  what a search the model never saw the answer to came back with (a second pass that could not
+ *  run). Each is data the model's own text could not contain. */
+const RELAYED_FACT_TOOLS: ReadonlySet<string> = new Set(['list_automations', 'recall_memory', 'check_error_log']);
+
 /** The results a second look can act on: something missed, fit several, was held, could not be
  *  carried out as written, or ended before it could be reached. `unavailable` is left off: when the
  *  engine is offline or a write snagged, no call the model makes will fare better this turn. */
@@ -3274,7 +3307,7 @@ async function dispatchToolCalls(calls: LlmToolCall[], effects: TurnEffects, ctx
       // is still this chat, so a reminder scheduled from a group fires back into the group.
       effects.results.push(await handleScheduleAutomation(input, chatContext.senderHandle, chatId, effects, { userTz: ctx.userTz, honorDistinct: ctx.honorDistinct }));
     } else if (call.name === 'list_automations' && chatContext?.senderHandle) {
-      effects.results.push(await renderAutomationsList(chatContext.senderHandle, chatId, ctx.userTz || DEFAULT_TZ));
+      effects.results.push(await renderAutomationsList(chatId, ctx.userTz || DEFAULT_TZ, effects));
     } else if (call.name === 'cancel_automation' && chatContext?.senderHandle) {
       const { result, cancelled } = await handleCancelAutomation(input, chatId, effects, ctx.userTz || DEFAULT_TZ);
       // What the call named, by id or by words, read against what this turn already dropped.
@@ -4270,9 +4303,14 @@ export async function processConvoResult(args: {
   // it wrote. Anywhere else it is what still stands (above). The `facts` that ride beside a reply
   // that stands are data the model cannot author (a list, an exact time), so an earlier success's
   // facts are appended there too, whatever the reply said about them.
+  //
+  // A list among them is shown as the turn left it (listAsLeft): a cancel that landed after the list
+  // was read took that reminder off it.
+  const listTz = args.userTz || DEFAULT_TZ;
+  const asLeft = (rs: readonly ActionResult[]) => rs.map(r => listAsLeft(r, effects, listTz));
   const whole = outcomeModel && keep === null && !!textResponse;
-  const unsaid = whole ? ownResults : standing;
-  const factSource = whole ? [...results.slice(0, passStart).filter(actionSucceeded), ...ownResults] : unsaid;
+  const unsaid = asLeft(whole ? ownResults : standing);
+  const factSource = whole ? asLeft([...results.slice(0, passStart).filter(actionSucceeded), ...ownResults]) : unsaid;
   const correcting = needsCorrection(unsaid);
   // ── The turn's results, voiced ──────────────────────────────────────────────────────────────
   // Every acting call's result, in the order it ran (convo/actionResults.ts). Fallfirm is
@@ -4281,8 +4319,12 @@ export async function processConvoResult(args: {
   //   single-shot draft never saw what landed. ONE voicing of ALL the results replaces it — the
   //   successes included, because a failure never erases a success beside it — after `keep`.
   // - When the reply is only `keep`, or the model wrote nothing, that same voicing carries them.
-  // - When the model's own text stands and nothing went wrong, it stands, and only raw `facts`
-  //   (data the model can't author, e.g. the automations list) are appended verbatim.
+  // - When the model's own text stands and nothing went wrong, it stands, and only the facts of a
+  //   READ are appended verbatim (RELAYED_FACT_TOOLS): data the model could not have written, since
+  //   its reply was written before the read ran. Every other success's facts are for the voicer: a
+  //   reply that stands already said the reminder is set, and a time or a title appended under it
+  //   was a second, stale, machine-read copy of the same news (a one-shot's time read in the wrong
+  //   zone, the pre-update title of a reminder her line had just renamed).
   // A directive that saved is not a result (its beat is the tapback below), but a voicing that
   // replaces or follows her words is the only place it would be said, so it joins the list there.
   // `holdingPart` is what a starting task's holding text is: the reply before any results were
@@ -4297,7 +4339,7 @@ export async function processConvoResult(args: {
     textResponse = keep ? `${keep}\n---\n${voiced}` : voiced;
     hardCapped = false;   // the voiced results REPLACE the parsed text — its cap isn't news about this send
   } else if (factSource.length && textResponse) {
-    const facts = factSource.map(r => r.facts).filter((f): f is string => !!f);
+    const facts = factSource.filter(r => RELAYED_FACT_TOOLS.has(r.tool)).map(r => r.facts).filter((f): f is string => !!f);
     if (facts.length) {
       holdingPart = textResponse;
       textResponse = `${textResponse}\n---\n${facts.join('\n---\n')}`;

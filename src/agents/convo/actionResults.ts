@@ -49,13 +49,15 @@ export interface ActionResult {
    *  Empty when the call names no target (a list). */
   target: string;
   /** The short id (as shown to the model, `R…`/`L…`) of the one item a successful call acted on or
-   *  made. Absent on a miss, and on a call with no one item. */
+   *  made. Absent on a miss, and on a call with no one item. Model-facing only, like every id. */
   ref?: string;
   /** Plain description of what happened, for a voicer to put in her words — never shown verbatim. */
   detail: string;
-  /** Hard data the user must see exactly (a list, a time). */
+  /** Hard data the user must see exactly (a list, a time). Written for the user, so it names items
+   *  by their titles and times and never by an id: ids are how the model addresses things. */
   facts?: string;
-  /** The live items a call that missed or matched several could have meant. */
+  /** The live items a call that missed or matched several could have meant. The id is for the model
+   *  (the outcome pass shows it); the user is shown the label alone. */
   candidates?: ActionCandidate[];
   /** A steer for voicing a failure: what is within reach next. */
   nextStep?: string;
@@ -77,16 +79,18 @@ function outcomeKind(status: ActionStatus): OutcomeKind {
   return 'failed';
 }
 
+// Labels only. Fallfirm relays facts word for word, so an id here was an id in the user's chat:
+// "[R9d0c42] daily indonesia digest (Thu, Sep 24, 7:00 AM)" under a reply that had just renamed it.
 function candidateLines(candidates: readonly ActionCandidate[] | undefined): string {
-  return (candidates ?? []).map(c => `[${c.id}] ${c.label}`).join('\n');
+  return (candidates ?? []).map(c => c.label).join('\n');
 }
 
 /**
  * One result as the Fallfirm outcome it has always been voiced as. Lossless for everything the
  * handlers wrote before results existed — `detail` is the old `summary`, and `facts`/`nextStep` carry
  * over untouched — so the exported research handlers can hand their old `Outcome` shape back out of
- * a result without a byte of it changing. Candidates, when there are any, join the facts: they are
- * data the user has to see exactly to pick one.
+ * a result without a byte of it changing. Candidates, when there are any, join the facts by their
+ * labels: they are what the user has to see to pick one, and the id beside each is the model's.
  */
 export function toOutcome(r: ActionResult): Outcome {
   const facts = [r.facts, candidateLines(r.candidates)].filter(Boolean).join('\n');
@@ -205,7 +209,8 @@ export function resolveRef(ref: string, ids: readonly string[], letter = ''): Re
 
 function resultLine(r: ActionResult, i: number): string {
   const target = r.target ? ` on "${r.target}"` : '';
-  const lines = [`${i + 1}. ${r.tool}${target}: ${r.status}. ${r.detail}`];
+  const ref = r.ref ? ` [${r.ref}]` : '';
+  const lines = [`${i + 1}. ${r.tool}${target}${ref}: ${r.status}. ${r.detail}`];
   if (r.facts) lines.push(`   exact details: ${r.facts}`);
   if (r.candidates?.length) lines.push(`   could mean: ${r.candidates.map(c => `[${c.id}] ${c.label}`).join('; ')}`);
   return lines.join('\n');

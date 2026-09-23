@@ -148,6 +148,9 @@ test('the incident: a missed cancel and a held create become ONE in-place update
   assert.equal(createdSpecs.length, 0, 'no second 7am job');
   assert.match(out.text!, /done, your 7am one is govt news now/, "the pass's own reply ships");
   assert.doesNotMatch(out.text!, /no reminder matched|couldnt track/, 'no canned miss');
+  // Shipped once: her line, then "[R9d0c42] daily indonesia digest (…)" under it, an id and the
+  // title the update had just made stale. The ids are how the model names things, never the user.
+  assert.doesNotMatch(out.text!, /\[R/, 'no reminder id reaches the user');
   assert.equal(outcomeReceipt()?.resolved, 'model');
 
   // The same fix on a turn that also started a lookup. There the pass's reply is cut to its holding
@@ -261,5 +264,33 @@ test('a held create goes through on the pass when it is marked distinct there', 
   assert.equal(second.createdSpecs.length, 0, 'nothing was created');
   assert.equal(outcomeReceipt()?.resolved, 'model');
   assert.match(out2.text!, /nothing changed yet/, 'the held create is still voiced');
-  assert.match(out2.text!, /R9d0c42/, 'with the reminder it collided with');
+  assert.match(out2.text!, /daily indonesia digest/, 'with the reminder it collided with');
+});
+
+test('a list shown on a turn that then cancelled one shows what is left, not what was', async () => {
+  // Shipped: the pass cancelled the workout reminder by id and said so, and the list the draft had
+  // pulled before that cancel still rode under her words with "workout" on it.
+  const WORKOUT: ReminderRef = {
+    id: 'aa11bb22cc33', title: 'workout', schedule: 'every day 6am', kind: 'cron', expr: '0 6 * * *',
+    instruction: 'go lift', nextRunAt: '2026-09-25T06:00:00+00:00',
+  };
+  const PLANTS: ReminderRef = {
+    id: '42cbde8bd745', title: 'water the plants', schedule: 'every day 6pm', kind: 'cron', expr: '0 18 * * *',
+    instruction: 'water the balcony plants', nextRunAt: '2026-09-24T18:00:00+00:00',
+  };
+  installStubEngine([WORKOUT, PLANTS]);
+  const ask = 'what reminders do i have, and delete the gym one';
+  const a = args(ask);
+  const { turn } = turnCtx(ask, async () => makeResult(
+    ['gone, the workout one is deleted', "here's what's left"],
+    [{ name: 'cancel_automation', input: { id: 'Raa11bb' } }],
+  ));
+
+  const out = await processConvoResult({
+    ...a,
+    res: makeResult(['here you go'], [{ name: 'list_automations', input: {} }, { name: 'cancel_automation', input: { match: 'gym' } }]),
+    turn,
+  });
+
+  assert.doesNotMatch(out.text!, /^\d\. (\[\w+\] )?workout/m, 'the cancelled reminder is not listed');
 });

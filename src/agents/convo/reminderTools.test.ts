@@ -116,7 +116,7 @@ test("list_automations on an empty list ships the model's own honest reply, unto
   assert.equal(out.text, modelsOwnReply, "the model's own accurate answer ships verbatim");
 });
 
-test('list_automations with reminders shows a short id and the next run time', async () => {
+test('list_automations with reminders shows each one by its title and next run, never by its id', async () => {
   installStubEngine([
     { id: '2448ff495f3b', title: 'daily brief', schedule: '0 7 * * *', nextRunAt: '2026-09-24T07:00:00+07:00' },
   ]);
@@ -128,8 +128,10 @@ test('list_automations with reminders shows a short id and the next run time', a
   const out = await processConvoResult({ ...a, res, textToSend: 'what reminders do i have?', userTz: 'Asia/Jakarta' });
 
   assert.ok(out.text, 'never silent on a list');
-  assert.match(out.text!, /R2448ff/, 'the short id (R + first 6 hex chars) is shown');
-  assert.match(out.text!, /daily brief/);
+  assert.match(out.text!, /daily brief — Thu, Sep 24, 7:00\sAM/, 'the title and the next run, in their zone');
+  // The id is how the MODEL names a reminder (the live list, the outcome pass). The user reads
+  // titles and times: a bracketed hex id relayed into their chat is noise they never asked for.
+  assert.doesNotMatch(out.text!, /R2448ff/, 'the id stays model-facing');
 });
 
 // ── Task 2: a cron with no explicit timezone rides the USER's zone ──────────────────────────────
@@ -156,6 +158,21 @@ test('schedule_automation still honors an EXPLICIT timezone in the call over use
   await processConvoResult({ ...a, res, textToSend: 'remind me at 9am london time', userTz: 'America/Chicago' });
 
   assert.equal(createdSpecs[0].timezone, 'Europe/London', "the model's own explicit zone wins");
+});
+
+test("a one-time reminder whose reply stands ships that reply alone, with no time tacked on", async () => {
+  // Shipped: "got it, i'll ping you tomorrow at 9\n---\nfri, sep 25, 5:36 am". The model's line
+  // stood, and the one-shot's exact time rode under it as a raw fact bubble, read in UTC.
+  installStubEngine();
+  const a = baseArgs();
+  const fireAt = new Date(Date.now() + 36 * 3600_000).toISOString();
+  const res = makeResult(["got it, i'll ping you tomorrow at 9"], [
+    { name: 'schedule_automation', input: { instruction: 'call mom', schedule_kind: 'once', fire_at: fireAt } },
+  ]);
+
+  const out = await processConvoResult({ ...a, res, textToSend: 'remind me at 9pm tomorrow to call mom', userTz: 'UTC' });
+
+  assert.equal(out.text, "got it, i'll ping you tomorrow at 9");
 });
 
 // ── Task 4: a failure never erases a success beside it ──────────────────────────────────────────
@@ -214,7 +231,7 @@ async function withEngineTz(tz: string, fn: () => Promise<void>): Promise<void> 
   }
 }
 
-test('a cancel whose words fit two reminders cancels neither, and lists both ids', async () => {
+test('a cancel whose words fit two reminders cancels neither, and lists both', async () => {
   const { cancelledIds } = installStubEngine([MORNING, EVENING]);
   const a = baseArgs();
   const res = makeResult(['done, cancelled it'], [{ name: 'cancel_automation', input: { match: 'news brief' } }]);
@@ -222,8 +239,9 @@ test('a cancel whose words fit two reminders cancels neither, and lists both ids
   const out = await processConvoResult({ ...a, res, textToSend: 'cancel the news brief', userTz: 'UTC' });
 
   assert.deepEqual(cancelledIds, [], 'nothing is cancelled when the words fit more than one');
-  assert.match(out.text!, /R2448ff/, 'the first candidate is offered by its id');
-  assert.match(out.text!, /R9d0c42/, 'and so is the second');
+  assert.match(out.text!, /morning news brief/, 'the first candidate is offered by its title');
+  assert.match(out.text!, /evening news brief/, 'and so is the second');
+  assert.doesNotMatch(out.text!, /\[R/, 'never by the id the model addresses it with');
   assert.doesNotMatch(out.text!, /cancelled it/, "the draft's claim does not ship");
 });
 
@@ -243,11 +261,12 @@ test('update_automation by short id sends one in-place update, and the reply con
   assert.equal(updates[0].patch.chatId, a.chatId);
   assert.equal(updates[0].patch.scheduleKind, undefined, 'same shape, so the in-place path');
   assert.deepEqual([createdSpecs.length, cancelledIds.length], [0, 0]);
-  assert.match(out.text!, /moved it to 8/, "the model's own confirmation ships, since it landed");
-  assert.match(out.text!, /R2448ff/, 'with what now stands beside it');
+  // It ships alone: the model wrote it knowing the change, and only a list is data it cannot author.
+  // An appended "[R2448ff] morning news brief (…)" was an id and a stale title under her words.
+  assert.equal(out.text, 'done, moved it to 8', "the model's own confirmation ships, and only it");
 });
 
-test('an unknown id is not_found, and the live ids are offered', async () => {
+test('an unknown id is not_found, and what they do have is offered', async () => {
   const { cancelledIds } = installStubEngine([MORNING, EVENING]);
   const a = baseArgs();
   const res = makeResult(['cancelled'], [{ name: 'cancel_automation', input: { id: 'R777777' } }]);
@@ -256,8 +275,8 @@ test('an unknown id is not_found, and the live ids are offered', async () => {
 
   assert.deepEqual(cancelledIds, [], 'an id that names nothing cancels nothing');
   assert.match(out.text!, /couldnt track that one down/, 'said as a miss');
-  assert.match(out.text!, /R2448ff/, 'with what they do have');
-  assert.match(out.text!, /R9d0c42/);
+  assert.match(out.text!, /morning news brief/, 'with what they do have');
+  assert.match(out.text!, /evening news brief/);
 });
 
 // ── Task 9: a create that collides with an existing reminder is held ────────────────────────────
@@ -277,8 +296,7 @@ test('a second 7am daily in different words is HELD, not created, and the reply 
     const out = await processConvoResult({ ...a, res, textToSend: 'add a 7am govt news reminder', userTz: 'UTC' });
 
     assert.equal(createdSpecs.length, 0, 'held: no second job lands on the same slot');
-    assert.match(out.text!, /R2448ff/, 'the reminder already on that slot is named by its id');
-    assert.match(out.text!, /morning news brief/);
+    assert.match(out.text!, /morning news brief/, 'the reminder already on that slot is named');
     assert.doesNotMatch(out.text!, /got it, 7am/, "the draft's claim that it was set does not ship");
     const ignored = getTraces().find(e => e.label === 'convo:tool_arg_ignored' && (e.detail as { arg?: string } | undefined)?.arg === 'distinct');
     assert.ok(ignored, 'the ignored distinct claim is on the record');
