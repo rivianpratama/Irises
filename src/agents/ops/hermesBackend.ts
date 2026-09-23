@@ -1312,7 +1312,17 @@ export class HermesBackend implements EngineBackend {
       body.prompt = reminderJobPrompt(spec, pushUrl);
     }
     if (patch.cron !== undefined) {
-      body.schedule = shiftCronToEngineZone(patch.cron, patch.timezone || DEFAULT_TZ, this.deps.now()).cron;
+      const shifted = shiftCronToEngineZone(patch.cron, patch.timezone || DEFAULT_TZ, this.deps.now());
+      body.schedule = shifted.cron;
+      if (!shifted.exact) {
+        // Same visibility as createReminder's own cron-shift: the job WILL be updated, but it fires
+        // on the engine's clock for this shape (a non-numeric hour, or a day-pinned cron crossing
+        // midnight) — never silent.
+        record({
+          type: 'event', chatId: patch.chatId, handle: patch.agentHandle, label: 'engine:reminder-zone-inexact',
+          detail: { cron: patch.cron, userTz: patch.timezone || DEFAULT_TZ, engineTz: engineZone() },
+        });
+      }
     } else if (patch.fireAt !== undefined) {
       body.schedule = new Date(patch.fireAt).toISOString();
     }
@@ -1373,11 +1383,15 @@ export class HermesBackend implements EngineBackend {
   }
 
   /** Read one job by id — used only when a kind-change update is missing a title/instruction the
-   *  replacement job needs to inherit. `job` is absent on any non-2xx or an unparsable body; `status`
-   *  lets the caller tell a genuine 404 apart from a read that simply didn't come back clean. */
+   *  replacement job needs to inherit. A 404 reports back as `{ status: 404 }` (no `job`) so the
+   *  caller can say `not_found`; every OTHER non-2xx (401/403/429/5xx) throws via `throwForStatus`,
+   *  exactly as every other read on this adapter does — 404 is the one status that gets the softer,
+   *  returned-not-thrown treatment. `job` is also absent for a 2xx whose body won't parse (a proxy's
+   *  HTML error page answered at 200) — that is a failed read, not grounds to throw. */
   private async fetchJob(id: string): Promise<{ status: number; job?: RawHermesJob }> {
     const res = await this.requestText(`/api/jobs/${encodeURIComponent(id)}`, { method: 'GET', headers: this.headers() }, undefined, 15_000);
-    if (!res.ok) return { status: res.status };
+    if (res.status === 404) return { status: res.status };
+    this.throwForStatus(res, 'job get');
     try { return { status: res.status, job: (JSON.parse(res.text) as { job?: RawHermesJob }).job }; }
     catch { return { status: res.status }; }
   }
