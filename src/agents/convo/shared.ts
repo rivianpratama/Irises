@@ -2551,13 +2551,27 @@ async function resolvePendingApproval(a: {
   const now = Date.now();
   const latencyMs = now - pa.askedAt;
   const expired = latencyMs > PENDING_ASK_TTL_MS;
-  // The lane is reached only from here, which is what "never consult it when nothing is pending"
-  // means in code: above this line the function has already returned.
-  const consent = await resolveConsent(a.text, pa.request);
   const rec = (detail: Record<string, unknown>) =>
     record({ type: 'event', label: 'ops:approval', chatId: a.chatId, handle: a.handle, taskId: String(pa.taskId), detail });
   const drop = () => setPreference(a.sender, 'pending_approval', null)
     .catch(err => console.error('[convo] failed to clear pending_approval', err));
+
+  // The row decides whether there is still an ask, not the marker. A row that has moved on (someone
+  // else in the chat declined it, it already ran, a cancel settled it while this marker's clear
+  // failed) is never rebuilt and run by a yes, since its stored task is exactly the brief that was
+  // called off. Its grace-window marker expects the row this function already settled 'expired'.
+  // A row that is gone entirely is the lost park write, and still resolves from the marker below.
+  const row = getOpsTask(String(pa.taskId));
+  const live: readonly string[] = typeof pa.expiredAt === 'number' ? ['expired', 'pending_approval'] : ['pending_approval'];
+  if (row && !live.includes(row.status)) {
+    await drop();
+    rec({ decision: 'stale', taskId: pa.taskId, status: row.status });
+    return NO_APPROVAL;
+  }
+
+  // The lane is reached only from here, which is what "never consult it when nothing is pending"
+  // means in code: above this line the function has already returned.
+  const consent = await resolveConsent(a.text, pa.request);
 
   /**
    * A yes that arrived too late: park the SAME action again as its own row and ask once more. Its
@@ -2696,12 +2710,21 @@ async function declineParkedApprovals(chatId: string, sender: string | undefined
     settleOpsTask(row.id, 'declined');
     record({ type: 'event', label: 'ops:approval', chatId, taskId: row.id, detail: { decision: 'declined', taskId: row.id, via: 'cancel' } });
   }
-  if (sender) {
-    const pa = await getPreference<PendingApprovalPref>(sender, 'pending_approval').catch(() => undefined);
-    // Only the marker for a row we just declined is dropped — another chat's open ask is not this
-    // one's to retire.
+  // The marker lives on the prefs of whoever the ask was put to, which in a group is not always who
+  // cancelled it: the row's own task names its owner. Both are checked, and only a marker naming a
+  // row just declined is dropped, since another chat's open ask is not this one's to retire. A
+  // marker left behind would let its owner's yes rebuild the row's stored task and run the action
+  // someone else in the chat had just called off.
+  const holders = new Set<string>();
+  if (sender) holders.add(sender);
+  for (const row of parked) {
+    const owner = (row.meta?.task as Partial<OpsTask> | undefined)?.agentHandle;
+    if (typeof owner === 'string' && owner) holders.add(owner);
+  }
+  for (const holder of holders) {
+    const pa = await getPreference<PendingApprovalPref>(holder, 'pending_approval').catch(() => undefined);
     if (pa?.taskId && parked.some(r => r.id === pa.taskId)) {
-      await setPreference(sender, 'pending_approval', null)
+      await setPreference(holder, 'pending_approval', null)
         .catch(err => console.error('[convo] failed to clear pending_approval', err));
     }
   }

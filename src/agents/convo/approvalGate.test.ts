@@ -26,6 +26,7 @@ import { buildTaskPrompt } from '../ops/client.js';
 import { __setConsentLlmForTests } from '../ops/consent.js';
 import { setPreference } from '../../db/repositories/memory.js';
 import { PENDING_ASK_TTL_MS } from '../../memory/dossier.js';
+import { groupHandle } from '../../memory/identity.js';
 import type { LlmResult, LlmToolCall, LlmRequest } from '../../llm/types.js';
 
 const ACT_ASK = 'email my landlord that rent is late';
@@ -612,6 +613,36 @@ test('a cancel that names nothing declines only the live ask: an older park, or 
   assert.equal(getOpsTask(row.id)?.status, 'declined', 'the ask their marker names is the one dropped');
   assert.equal(getOpsTask(earlier)?.status, 'pending_approval', 'an earlier park nobody asked about this turn stands');
   assert.equal(getOpsTask(stale)?.status, 'pending_approval', 'and a two-day-old row is out of the cancel\'s reach');
+});
+
+test('in a group, a cancel from one member retires the ask it drops, so its owner\'s yes runs nothing', async () => {
+  // The marker lives on the prefs of whoever asked, and a decline cleared only the SENDER's. B's
+  // cancel settled A's row, A's marker survived it, and A's "yes" then rebuilt the task from the
+  // declined row's stored brief and ran the action someone in the chat had just called off.
+  __resetOpsCoordination();
+  clearTraces();
+  const chatId = randomUUID();
+  const owner = `+1555840${(seq++).toString().padStart(4, '0')}`;
+  const other = `+1555840${(seq++).toString().padStart(4, '0')}`;
+  const turnFrom = (sender: string, textToSend: string) => ({
+    chatId, handle: groupHandle(chatId), history: [], media: emptyMedia(), textToSend,
+    chatContext: { isGroupChat: true, participantNames: ['Sam', 'Jo'], chatName: 'the flat', senderHandle: sender } as ChatContext,
+  });
+
+  await processConvoResult({ ...turnFrom(owner, ACT_ASK), res: makeResult(['on it'], [delegate(ACT_ASK, 'act')]), turn: reasker(['want me to go ahead?']).turn });
+  const row = listPendingApprovals(chatId)[0];
+  assert.ok(row, 'the owner\'s action is parked');
+
+  await processConvoResult({
+    ...turnFrom(other, 'nah leave the landlord out of it'),
+    res: makeResult(['dropped it'], [{ name: 'cancel_research', input: { match: 'landlord' } }]),
+    turn: reasker([]).turn,
+  });
+  assert.equal(getOpsTask(row.id)?.status, 'declined');
+
+  const out = await processConvoResult({ ...turnFrom(owner, 'yes'), res: makeResult(['on it']), turn: reasker(['nothing is running']).turn });
+  assert.equal(out.delegatedTask, null, 'the action someone called off does not run');
+  assert.equal(await getPreference(owner, 'pending_approval'), null, 'and the owner\'s ask went with the row');
 });
 
 test('a parked action keeps its question when a cancel in the same turn misses', async () => {
