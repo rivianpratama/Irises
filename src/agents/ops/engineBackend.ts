@@ -119,7 +119,8 @@ export interface ReminderPatch {
  *  needs to tell apart to answer the user honestly: the id named a job that is gone (`not_found`),
  *  the patch itself couldn't be applied (`invalid` — nothing to change, a kind change missing its
  *  new schedule, or the engine's own validation, e.g. moving a one-shot into the past), or the
- *  engine couldn't be reached at all (`unreachable`). Anything else (auth, rate limit) still throws
+ *  engine couldn't be reached at all or has no such route (`unreachable`: a 404 that is not the
+ *  engine's own "job not found" says nothing about the job). Anything else (auth, rate limit) still throws
  *  EngineRunError, exactly as every other call on this interface does. */
 export type ReminderUpdateResult =
   | { ok: true; ref: ReminderRef }

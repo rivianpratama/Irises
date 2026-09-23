@@ -135,6 +135,22 @@ export function hermesSessionKey(chatId: string): string {
   return `irises-${sanitized.slice(0, 55)}-${hash8(chatId)}`;
 }
 
+/**
+ * Is this 404 hermes saying the JOB is gone? Its jobs routes answer an unknown id with a JSON
+ * `{"error": "Job not found"}`. Any other 404 (aiohttp's plain "404: Not Found" for a route this
+ * hermes does not have, or a proxy's page) says nothing about the job, and reading it as gone made
+ * the caller drop a reminder that still exists from what it knew, so a create in the same turn
+ * could double it. That case is `unreachable` (the capability is not there right now).
+ */
+function jobMissing(res: HermesResponse): boolean {
+  try {
+    const body = JSON.parse(res.text) as { error?: unknown };
+    return typeof body.error === 'string' && /job not found/i.test(body.error);
+  } catch {
+    return false;
+  }
+}
+
 /** Job-name scope so listing/cancel only ever touch jobs Irises created for this chat. Same
  *  collision fix as the session key: a long id carries a hash of the raw id. */
 export function jobPrefix(chatId: string): string {
@@ -1379,7 +1395,7 @@ export class HermesBackend implements EngineBackend {
     const res = await this.requestText(`/api/jobs/${encodeURIComponent(id)}`, {
       method: 'PATCH', headers: this.headers(), body: JSON.stringify(body),
     }, undefined, 15_000);
-    if (res.status === 404) return { ok: false, reason: 'not_found' };
+    if (res.status === 404) return { ok: false, reason: jobMissing(res) ? 'not_found' : 'unreachable' };
     // hermes re-parses a string `schedule` and recomputes next_run_at; moving a one-shot into the
     // past raises inside that parse and answers 500 — the one validation failure this route surfaces
     // outside the 400 the create route uses for the same class of mistake.
@@ -1399,8 +1415,8 @@ export class HermesBackend implements EngineBackend {
     if (title === undefined || instruction === undefined) {
       // The patch didn't carry everything the replacement job needs — read the old one's own title
       // and instruction back so the kind change doesn't silently blank them.
-      const { status, job } = await this.fetchJob(id);
-      if (status === 404) return { ok: false, reason: 'not_found' };
+      const { status, job, gone } = await this.fetchJob(id);
+      if (status === 404) return { ok: false, reason: gone ? 'not_found' : 'unreachable' };
       if (!job) return { ok: false, reason: 'invalid' };
       if (title === undefined) title = this.stripJobPrefix(patch.chatId, job.name ?? '');
       if (instruction === undefined) instruction = parseReminderInstruction(job.prompt) ?? '';
@@ -1431,14 +1447,14 @@ export class HermesBackend implements EngineBackend {
   }
 
   /** Read one job by id — used only when a kind-change update is missing a title/instruction the
-   *  replacement job needs to inherit. A 404 reports back as `{ status: 404 }` (no `job`) so the
-   *  caller can say `not_found`; every OTHER non-2xx (401/403/429/5xx) throws via `throwForStatus`,
+   *  replacement job needs to inherit. A 404 reports back as `{ status: 404 }` (no `job`), with
+   *  `gone` when it is hermes's own "Job not found" (jobMissing), so the caller can say `not_found`; every OTHER non-2xx (401/403/429/5xx) throws via `throwForStatus`,
    *  exactly as every other read on this adapter does — 404 is the one status that gets the softer,
    *  returned-not-thrown treatment. `job` is also absent for a 2xx whose body won't parse (a proxy's
    *  HTML error page answered at 200) — that is a failed read, not grounds to throw. */
-  private async fetchJob(id: string): Promise<{ status: number; job?: RawHermesJob }> {
+  private async fetchJob(id: string): Promise<{ status: number; job?: RawHermesJob; gone?: boolean }> {
     const res = await this.requestText(`/api/jobs/${encodeURIComponent(id)}`, { method: 'GET', headers: this.headers() }, undefined, 15_000);
-    if (res.status === 404) return { status: res.status };
+    if (res.status === 404) return { status: res.status, gone: jobMissing(res) };
     this.throwForStatus(res, 'job get');
     try { return { status: res.status, job: (JSON.parse(res.text) as { job?: RawHermesJob }).job }; }
     catch { return { status: res.status }; }

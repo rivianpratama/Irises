@@ -510,6 +510,10 @@ test('updateReminder: a title-only change sends just the name, built from this c
 test('updateReminder: a 404 on the PATCH is not_found; a 500 (a past one-shot) is invalid', async () => {
   const be404 = new HermesBackend({ fetchFn: fakeFetch(404, { error: 'Job not found' }) });
   assert.deepEqual(await be404.updateReminder!('abc123456789', { chatId: 'c', title: 't' }), { ok: false, reason: 'not_found' });
+  // A 404 that is not hermes's own "Job not found" is a route this hermes lacks, not a gone job: the
+  // caller must not drop the reminder from what it knows, or a create would double it.
+  const noRoute = new HermesBackend({ fetchFn: (async () => new Response('404: Not Found', { status: 404, headers: { 'Content-Type': 'text/plain' } })) as typeof fetch });
+  assert.deepEqual(await noRoute.updateReminder!('abc123456789', { chatId: 'c', title: 't' }), { ok: false, reason: 'unreachable' });
 
   const be500 = new HermesBackend({ fetchFn: fakeFetch(500, { error: 'schedule is in the past' }) });
   assert.deepEqual(await be500.updateReminder!('abc123456789', { chatId: 'c', title: 't' }), { ok: false, reason: 'invalid' });
