@@ -93,6 +93,37 @@ export interface ReminderRef {
   instruction?: string;
 }
 
+/** What `updateReminder` may change on an existing reminder — the engine seam's replacement for a
+ *  caller cancelling and recreating one, so a later tool (`update_automation`) can revise a
+ *  reminder as ONE call instead of two, and never loses the job in between.
+ *
+ *  `chatId` rides every patch (not just a create) because the adapter may need to rebuild the job's
+ *  NAME (from the title) or its delivery PROMPT (from the instruction), both of which are keyed to
+ *  the chat. `scheduleKind` is present only when the caller wants the schedule's SHAPE to change
+ *  (cron ↔ once) — a plain reschedule within the same shape (a new cron expression, or a new
+ *  `fireAt` on an existing one-shot) omits it and rides the in-place update path. */
+export interface ReminderPatch {
+  chatId: string;
+  agentHandle?: string;
+  title?: string;
+  instruction?: string;
+  /** Present only for a kind change (cron ↔ once) — see the interface doc above. */
+  scheduleKind?: 'cron' | 'once';
+  cron?: string;
+  fireAt?: number;
+  timezone?: string;
+}
+
+/** `updateReminder`'s outcome. A closed set rather than a thrown error for the three cases a caller
+ *  needs to tell apart to answer the user honestly: the id named a job that is gone (`not_found`),
+ *  the patch itself couldn't be applied (`invalid` — nothing to change, a kind change missing its
+ *  new schedule, or the engine's own validation, e.g. moving a one-shot into the past), or the
+ *  engine couldn't be reached at all (`unreachable`). Anything else (auth, rate limit) still throws
+ *  EngineRunError, exactly as every other call on this interface does. */
+export type ReminderUpdateResult =
+  | { ok: true; ref: ReminderRef }
+  | { ok: false; reason: 'not_found' | 'invalid' | 'unreachable' };
+
 export interface ProbeResult { ok: boolean; detail?: string; }
 
 /** The closed, CODE-OWNED vocabulary of deep-work action-classes Convo reasons about. An engine's
@@ -169,6 +200,13 @@ export interface EngineBackend {
    *  window. */
   listReminders(chatId: string, opts?: { timeoutMs?: number }): Promise<ReminderRef[]>;
   cancelReminder(id: string): Promise<boolean>;
+  /**
+   * Revise a reminder ALREADY on the engine — its title, instruction, or schedule — as one call, so
+   * a caller never has to cancel and recreate just to fix a typo or nudge a time. Optional the same
+   * way `steerRun` is: a backend without it simply omits the method, and existing hand-written test
+   * stubs keep compiling.
+   */
+  updateReminder?(id: string, patch: ReminderPatch): Promise<ReminderUpdateResult>;
   /** ASK the engine to update its own memory (scoped to this chat's engine session). The
    *  engine owns the decision — Irises never writes engine storage directly, and the same
    *  channel carries update, correction, and forget requests (see docs/ENGINES.md, "Memory

@@ -13,7 +13,7 @@ delete process.env.HERMES_RUN_TRANSPORT;
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { HermesBackend, hermesSessionKey, hermesSessionRotation, jobPrefix, legacyJobPrefix, reminderJobPrompt, parseReminderInstruction, shiftCronToEngineZone, inlineLocalImage, normalizeCapabilities, runsTransportEnabled, manifestSupportsRuns } from './hermesBackend.js';
+import { HermesBackend, hermesSessionKey, hermesSessionRotation, jobPrefix, legacyJobPrefix, reminderJobPrompt, parseReminderInstruction, shiftCronToEngineZone, shiftCronBetweenZones, inlineLocalImage, normalizeCapabilities, runsTransportEnabled, manifestSupportsRuns } from './hermesBackend.js';
 import { HERMES_TASK_HEADER, HERMES_ONBOARDING_MESSAGE, hermesOnboardingVersion } from './hermesDoctrine.js';
 import { EngineUnavailableError, EngineRunError, runViaEngine, type EngineRunHandle } from './engineBackend.js';
 import { getTraces, clearTraces } from '../../diagnostics/trace.js';
@@ -395,6 +395,14 @@ test('shiftCronToEngineZone: unshiftable shapes pass through, flagged inexact', 
   assert.deepEqual(shiftCronToEngineZone('nonsense', 'America/Chicago', SUMMER), { cron: 'nonsense', exact: false });
 });
 
+test('shiftCronBetweenZones: shifting a cron to another zone and back is lossless', () => {
+  // 9am Chicago (CDT, UTC-5) is 7:30pm Kolkata (UTC+5:30) the same instant.
+  const there = shiftCronBetweenZones('0 9 * * *', 'America/Chicago', 'Asia/Kolkata', SUMMER);
+  assert.deepEqual(there, { cron: '30 19 * * *', exact: true });
+  const back = shiftCronBetweenZones(there.cron, 'Asia/Kolkata', 'America/Chicago', SUMMER);
+  assert.deepEqual(back, { cron: '0 9 * * *', exact: true });
+});
+
 test('createReminder: the spec timezone reaches the job body as a shifted schedule', async () => {
   const captured: Captured[] = [];
   const be = new HermesBackend({ fetchFn: fakeFetch(200, { job: { id: 8 } }, captured), now: () => SUMMER });
@@ -437,6 +445,70 @@ test('an id-less job never surfaces, and an empty-id cancel never hits the wire 
   const be = new HermesBackend({ fetchFn: (async () => { called = true; throw new Error('must not be reached'); }) as typeof fetch });
   assert.equal(await be.cancelReminder(''), false);
   assert.equal(called, false);
+});
+
+// ── updateReminder: in-place PATCH, and the kind-change create+delete fallback ──────────────────
+
+test('updateReminder: PATCH carries only the whitelisted fields, and a changed instruction rebuilds the prompt', async () => {
+  const captured: Captured[] = [];
+  const be = new HermesBackend({ fetchFn: fakeFetch(200, { job: { id: 'abc123456789', name: `${jobPrefix('web:debug')}coffee`, schedule: '0 14 * * *' } }, captured) });
+  const result = await be.updateReminder!('abc123456789', {
+    chatId: 'web:debug', instruction: 'wake them up gently', cron: '0 9 * * *', timezone: 'UTC',
+  });
+  assert.equal(result.ok, true);
+  assert.equal(captured.length, 1);
+  assert.match(captured[0].url, /\/api\/jobs\/abc123456789$/);
+  assert.equal(captured[0].init.method, 'PATCH');
+  const body = JSON.parse(String(captured[0].init.body));
+  assert.deepEqual(Object.keys(body).sort(), ['prompt', 'schedule'], 'never repeat/deliver/skills — only what actually changed');
+  assert.equal(body.schedule, '0 9 * * *', 'same offset (UTC) passes the cron through unchanged');
+  assert.match(body.prompt, /<reminder_instruction>\nwake them up gently\n<\/reminder_instruction>/, 'the rebuilt prompt keeps the tag');
+  assert.match(body.prompt, /web:debug/, 'the rebuilt prompt keeps the chatId');
+});
+
+test('updateReminder: a title-only change sends just the name, built from this chat\'s job prefix', async () => {
+  const captured: Captured[] = [];
+  const be = new HermesBackend({ fetchFn: fakeFetch(200, { job: { id: 'abc123456789' } }, captured) });
+  await be.updateReminder!('abc123456789', { chatId: 'web:debug', title: 'new title' });
+  const body = JSON.parse(String(captured[0].init.body));
+  assert.deepEqual(Object.keys(body), ['name']);
+  assert.equal(body.name, `${jobPrefix('web:debug')}new title`);
+});
+
+test('updateReminder: a 404 on the PATCH is not_found; a 500 (a past one-shot) is invalid', async () => {
+  const be404 = new HermesBackend({ fetchFn: fakeFetch(404, { error: 'Job not found' }) });
+  assert.deepEqual(await be404.updateReminder!('abc123456789', { chatId: 'c', title: 't' }), { ok: false, reason: 'not_found' });
+
+  const be500 = new HermesBackend({ fetchFn: fakeFetch(500, { error: 'schedule is in the past' }) });
+  assert.deepEqual(await be500.updateReminder!('abc123456789', { chatId: 'c', title: 't' }), { ok: false, reason: 'invalid' });
+});
+
+test('updateReminder: a kind change POSTs the replacement then DELETEs the old job', async () => {
+  const captured: Captured[] = [];
+  const be = new HermesBackend({
+    fetchFn: fakeFetch(200, { job: { id: 'new123456789', name: `${jobPrefix('web:debug')}coffee`, schedule: '2026-09-01T09:00:00Z' } }, captured),
+  });
+  const fireAt = Date.parse('2026-09-01T09:00:00Z');
+  const result = await be.updateReminder!('old123456789', {
+    chatId: 'web:debug', agentHandle: '+1555', title: 'coffee', instruction: 'nudge them', scheduleKind: 'once', fireAt,
+  });
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.ref.id, 'new123456789');
+  assert.equal(captured.length, 2, 'one POST to create the replacement, one DELETE for the old job');
+  assert.equal(captured[0].init.method, 'POST');
+  assert.match(captured[0].url, /\/api\/jobs$/);
+  assert.equal(captured[1].init.method, 'DELETE');
+  assert.match(captured[1].url, /\/api\/jobs\/old123456789$/);
+});
+
+test('updateReminder: a kind change skips the DELETE when the POST (create) fails', async () => {
+  const captured: Captured[] = [];
+  const be = new HermesBackend({ fetchFn: fakeFetch(500, { error: 'boom' }, captured) });
+  await assert.rejects(be.updateReminder!('old123456789', {
+    chatId: 'web:debug', title: 'coffee', instruction: 'nudge them', scheduleKind: 'cron', cron: '0 9 * * *',
+  }));
+  assert.equal(captured.length, 1, 'the failed create is the only request — no DELETE follows it');
+  assert.equal(captured[0].init.method, 'POST');
 });
 
 test('reminderJobPrompt names the chat, the instruction, and the push contract', () => {

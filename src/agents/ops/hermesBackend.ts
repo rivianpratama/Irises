@@ -5,7 +5,7 @@
 // headers, so hermes builds its own deepening model of each chat.
 import { readFile as fsReadFile } from 'node:fs/promises';
 import { EngineUnavailableError, EngineRunError, ENGINE_TIMEOUT_MS, CAP_ORDER, opsCancelEngineAbortEnabled } from './engineBackend.js';
-import type { EngineBackend, EngineRunContext, EngineRunHandle, ReminderSpec, ReminderRef, ProbeResult, CapabilitySummary, CapabilityClass } from './engineBackend.js';
+import type { EngineBackend, EngineRunContext, EngineRunHandle, ReminderSpec, ReminderRef, ReminderPatch, ReminderUpdateResult, ProbeResult, CapabilitySummary, CapabilityClass } from './engineBackend.js';
 import { HERMES_TASK_HEADER } from './hermesDoctrine.js';
 import { parseDeclaredCapabilities } from './capabilityDeclaration.js';
 import { renderAttachmentBlock } from './attachments.js';
@@ -220,23 +220,23 @@ function numericField(f: string): number | null {
 }
 
 /**
- * Re-express a 5-field cron written in the USER's zone as the same wall-clock moment in the zone
- * hermes's cron runs in — hermes schedules have no timezone of their own, so without this "8am
- * every weekday" fires at the ENGINE's 8am.
+ * Re-express a 5-field cron written in ONE zone as the same wall-clock moment in another — hermes
+ * schedules have no timezone of their own, so without this "8am every weekday" fires at whatever
+ * zone actually evaluates it.
  *
  * `exact: false` means we could not do it safely and passed the cron through unchanged (the caller
  * records a trace warning): a non-numeric hour (`*` / `*​/2` / a list), or a day-shifting offset on a
  * cron pinned to a day-of-month or a month, where rotating the day is not a simple ±1.
  *
- * Accepted residual: the offset is captured at CREATION time. If the user's zone or the engine's
+ * Accepted residual: the offset is captured at CALL time (creation, or an update). If either zone
  * crosses a DST boundary later, the job's effective wall time moves by that hour until it is
- * recreated. Pinning it properly needs a timezone field hermes's cron API does not have.
+ * recreated or updated again. Pinning it properly needs a timezone field hermes's cron API does not
+ * have.
  */
-export function shiftCronToEngineZone(cron: string, userTz: string, nowMs: number = Date.now()): { cron: string; exact: boolean } {
-  const engineTz = engineZone();
+export function shiftCronBetweenZones(cron: string, fromTz: string, toTz: string, nowMs: number = Date.now()): { cron: string; exact: boolean } {
   let diffMin: number;
   try {
-    diffMin = Math.round((zoneOffsetMs(engineTz, nowMs) - zoneOffsetMs(userTz, nowMs)) / 60_000);
+    diffMin = Math.round((zoneOffsetMs(toTz, nowMs) - zoneOffsetMs(fromTz, nowMs)) / 60_000);
   } catch {
     return { cron, exact: false }; // an unknown zone name: never guess, hand it over as written
   }
@@ -263,6 +263,13 @@ export function shiftCronToEngineZone(cron: string, userTz: string, nowMs: numbe
   if (days.some(d => d === null)) return { cron, exact: false }; // ranges/steps: not plainly rotatable
   shifted[4] = days.map(d => String((((d as number) + dayShift) % 7 + 7) % 7)).join(',');
   return { cron: shifted.join(' '), exact: true };
+}
+
+/** The USER-zone → ENGINE-zone case of `shiftCronBetweenZones` — every caller before the update
+ *  path only ever shifted one direction (into the zone hermes evaluates), so this stays a thin
+ *  wrapper rather than making every existing call site name the engine zone itself. */
+export function shiftCronToEngineZone(cron: string, userTz: string, nowMs: number = Date.now()): { cron: string; exact: boolean } {
+  return shiftCronBetweenZones(cron, userTz, engineZone(), nowMs);
 }
 
 /** Magic-byte sniff for the four image types the chat-completions endpoint accepts as data: URLs. */
@@ -1250,18 +1257,7 @@ export class HermesBackend implements EngineBackend {
         if (matched === null) return null;
         const id = String(j.id ?? '');
         if (!id) return null; // see the filter's own comment below — kept as an early return here too
-        const schedObj = j.schedule && typeof j.schedule === 'object' ? j.schedule : undefined;
-        const scheduleText = j.schedule_display ?? schedObj?.display ?? (typeof j.schedule === 'string' ? j.schedule : '') ?? '';
-        const kind: 'cron' | 'once' | undefined = schedObj?.kind === 'cron' ? 'cron' : schedObj?.kind === 'once' ? 'once' : undefined;
-        const instruction = parseReminderInstruction(j.prompt);
-        const ref: ReminderRef = { id, title: name.slice(matched.length), schedule: scheduleText };
-        if (kind) ref.kind = kind;
-        if (kind === 'cron' && schedObj?.expr) ref.expr = schedObj.expr;
-        if (kind === 'once' && schedObj?.run_at) ref.runAt = schedObj.run_at;
-        if (j.next_run_at) ref.nextRunAt = j.next_run_at;
-        if (j.created_at) ref.createdAt = j.created_at;
-        if (instruction) ref.instruction = instruction;
-        return ref;
+        return this.refFromJob(id, name.slice(matched.length), j);
       })
       // An id-less job row must never surface: its ref would carry id '' and a later cancel would
       // DELETE /api/jobs/ — the collection route, which some servers treat as delete-everything.
@@ -1276,6 +1272,139 @@ export class HermesBackend implements EngineBackend {
     if (res.status === 404) return false;
     this.throwForStatus(res, 'job delete');
     return true;
+  }
+
+  /**
+   * Revise a reminder in place, or — for a kind change hermes's PATCH cannot express — by replacing
+   * it. `patch.scheduleKind` is the ONLY signal for the replacement path: a caller asking to
+   * reschedule within the same shape (a new cron expression, or a new `fireAt` on an existing
+   * one-shot) never sets it and always rides the in-place PATCH.
+   *
+   * `EngineUnavailableError` (refused/reset/DNS) is the one failure this converts to a result rather
+   * than letting through — a caller building a typed answer for the user needs `unreachable`
+   * alongside `not_found`/`invalid`, exactly as those two are already results rather than throws.
+   * Anything else (401/403/429, an unexpected 4xx/5xx from the create half of a kind change) still
+   * throws EngineRunError, same as every other call on this interface.
+   */
+  async updateReminder(id: string, patch: ReminderPatch): Promise<ReminderUpdateResult> {
+    if (!id) return { ok: false, reason: 'not_found' };
+    try {
+      return patch.scheduleKind
+        ? await this.recreateReminder(id, patch)
+        : await this.patchReminder(id, patch);
+    } catch (err) {
+      if (err instanceof EngineUnavailableError) return { ok: false, reason: 'unreachable' };
+      throw err;
+    }
+  }
+
+  /** The in-place path: PATCH only the fields the patch actually asked to change. `repeat` is NEVER
+   *  sent — hermes stores it as `{times, completed}`, and a client-built `{times}` would silently
+   *  rewrite a job's completion count (the one field this route must never touch). */
+  private async patchReminder(id: string, patch: ReminderPatch): Promise<ReminderUpdateResult> {
+    const body: Record<string, unknown> = {};
+    if (patch.title !== undefined) {
+      body.name = `${jobPrefix(patch.chatId)}${patch.title.slice(0, 40)}`;
+    }
+    if (patch.instruction !== undefined) {
+      const pushUrl = process.env.IRISES_PUSH_URL || `http://127.0.0.1:${process.env.PORT || 3000}/api/engine/push`;
+      const spec: ReminderSpec = { chatId: patch.chatId, agentHandle: patch.agentHandle ?? '', instruction: patch.instruction };
+      body.prompt = reminderJobPrompt(spec, pushUrl);
+    }
+    if (patch.cron !== undefined) {
+      body.schedule = shiftCronToEngineZone(patch.cron, patch.timezone || DEFAULT_TZ, this.deps.now()).cron;
+    } else if (patch.fireAt !== undefined) {
+      body.schedule = new Date(patch.fireAt).toISOString();
+    }
+    if (!Object.keys(body).length) return { ok: false, reason: 'invalid' }; // nothing was actually asked to change
+
+    const res = await this.requestText(`/api/jobs/${encodeURIComponent(id)}`, {
+      method: 'PATCH', headers: this.headers(), body: JSON.stringify(body),
+    }, undefined, 15_000);
+    if (res.status === 404) return { ok: false, reason: 'not_found' };
+    // hermes re-parses a string `schedule` and recomputes next_run_at; moving a one-shot into the
+    // past raises inside that parse and answers 500 — the one validation failure this route surfaces
+    // outside the 400 the create route uses for the same class of mistake.
+    if (res.status === 500) return { ok: false, reason: 'invalid' };
+    this.throwForStatus(res, 'job update');
+    const data = this.parseJson<{ job?: RawHermesJob }>(res, 'job update');
+    return { ok: true, ref: this.jobToRef(patch.chatId, data.job, id) };
+  }
+
+  /** The replacement path for a kind change (cron ↔ once): hermes distinguishes the two shapes by
+   *  which fields the job was CREATED with, so there is no PATCH body that flips one into the
+   *  other. Create the new job first, and drop the old one only once the new one is confirmed to
+   *  exist — a failed create must never leave the user with no reminder at all. */
+  private async recreateReminder(id: string, patch: ReminderPatch): Promise<ReminderUpdateResult> {
+    let title = patch.title;
+    let instruction = patch.instruction;
+    if (title === undefined || instruction === undefined) {
+      // The patch didn't carry everything the replacement job needs — read the old one's own title
+      // and instruction back so the kind change doesn't silently blank them.
+      const { status, job } = await this.fetchJob(id);
+      if (status === 404) return { ok: false, reason: 'not_found' };
+      if (!job) return { ok: false, reason: 'invalid' };
+      if (title === undefined) title = this.stripJobPrefix(patch.chatId, job.name ?? '');
+      if (instruction === undefined) instruction = parseReminderInstruction(job.prompt) ?? '';
+    }
+    if (patch.scheduleKind === 'cron' && !patch.cron) return { ok: false, reason: 'invalid' };
+    if (patch.scheduleKind === 'once' && !patch.fireAt) return { ok: false, reason: 'invalid' };
+
+    const spec: ReminderSpec = {
+      chatId: patch.chatId, agentHandle: patch.agentHandle ?? '', instruction, title, timezone: patch.timezone,
+      ...(patch.scheduleKind === 'cron' ? { cron: patch.cron } : { fireAt: patch.fireAt }),
+    };
+    const ref = await this.createReminder(spec);
+    await this.cancelReminder(id);
+    return { ok: true, ref };
+  }
+
+  /** Read one job by id — used only when a kind-change update is missing a title/instruction the
+   *  replacement job needs to inherit. `job` is absent on any non-2xx or an unparsable body; `status`
+   *  lets the caller tell a genuine 404 apart from a read that simply didn't come back clean. */
+  private async fetchJob(id: string): Promise<{ status: number; job?: RawHermesJob }> {
+    const res = await this.requestText(`/api/jobs/${encodeURIComponent(id)}`, { method: 'GET', headers: this.headers() }, undefined, 15_000);
+    if (!res.ok) return { status: res.status };
+    try { return { status: res.status, job: (JSON.parse(res.text) as { job?: RawHermesJob }).job }; }
+    catch { return { status: res.status }; }
+  }
+
+  /** Strip this chat's own job-name prefix (current, then legacy) — the same matching listReminders
+   *  does, pulled out so the update path can read a job's title back without re-listing. Falls back
+   *  to the raw name when neither prefix matches (a hand-created job on the engine). */
+  private stripJobPrefix(chatId: string, name: string): string {
+    const prefix = jobPrefix(chatId);
+    if (name.startsWith(prefix)) return name.slice(prefix.length);
+    const legacy = legacyJobPrefix(chatId);
+    if (name.startsWith(legacy)) return name.slice(legacy.length);
+    return name;
+  }
+
+  /** Build a `ReminderRef` from one raw job row the jobs API already handed back, given the title
+   *  this chat's own prefix already stripped out. Shared by `listReminders` (which finds the
+   *  matching prefix while filtering rows that belong to other chats) and the update path (which
+   *  already knows the one job's id and only needs the same field mapping). */
+  private refFromJob(id: string, title: string, job: RawHermesJob | undefined): ReminderRef {
+    const schedObj = job?.schedule && typeof job.schedule === 'object' ? job.schedule : undefined;
+    const scheduleText = job?.schedule_display ?? schedObj?.display ?? (typeof job?.schedule === 'string' ? job.schedule : '') ?? '';
+    const kind: 'cron' | 'once' | undefined = schedObj?.kind === 'cron' ? 'cron' : schedObj?.kind === 'once' ? 'once' : undefined;
+    const instruction = parseReminderInstruction(job?.prompt);
+    const ref: ReminderRef = { id, title, schedule: scheduleText };
+    if (kind) ref.kind = kind;
+    if (kind === 'cron' && schedObj?.expr) ref.expr = schedObj.expr;
+    if (kind === 'once' && schedObj?.run_at) ref.runAt = schedObj.run_at;
+    if (job?.next_run_at) ref.nextRunAt = job.next_run_at;
+    if (job?.created_at) ref.createdAt = job.created_at;
+    if (instruction) ref.instruction = instruction;
+    return ref;
+  }
+
+  /** `refFromJob`, but for a job whose name still carries this chat's prefix (the PATCH/create
+   *  response) — strips it the same way listReminders does, so an updated ref's `title` reads the
+   *  same as every other ref this adapter hands back. */
+  private jobToRef(chatId: string, job: RawHermesJob | undefined, fallbackId: string): ReminderRef {
+    const title = this.stripJobPrefix(chatId, job?.name ?? '');
+    return this.refFromJob(String(job?.id ?? fallbackId), title, job);
   }
 
   async remember(chatId: string, _agentHandle: string, note: string): Promise<void> {
