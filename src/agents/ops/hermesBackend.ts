@@ -1355,7 +1355,20 @@ export class HermesBackend implements EngineBackend {
       ...(patch.scheduleKind === 'cron' ? { cron: patch.cron } : { fireAt: patch.fireAt }),
     };
     const ref = await this.createReminder(spec);
-    await this.cancelReminder(id);
+    try {
+      // cancelReminder's own 404 handling already reads as success here: the old job being GONE
+      // (a race, or it was already cleaned up some other way) is the delete achieving its actual
+      // goal, not a failure to roll back for. Anything it THROWS — auth, rate limit, a 5xx, the
+      // engine going away mid-call — is a genuine failure to retire the old job.
+      await this.cancelReminder(id);
+    } catch {
+      // Leaving both jobs behind is exactly the stray-duplicate defect this replacement path exists
+      // to avoid, so undo the create rather than hand back a ref the user now has TWO jobs under.
+      // Best-effort: if the rollback itself fails there is nothing further to try, and the caller
+      // still needs an honest answer about the update it asked for.
+      await this.cancelReminder(ref.id).catch(() => { /* nothing more to try */ });
+      return { ok: false, reason: 'unreachable' };
+    }
     return { ok: true, ref };
   }
 

@@ -511,6 +511,30 @@ test('updateReminder: a kind change skips the DELETE when the POST (create) fail
   assert.equal(captured[0].init.method, 'POST');
 });
 
+test('updateReminder: a kind change rolls back the new job when the old job\'s DELETE fails', async () => {
+  // routedFetch/Route are declared further down the file but hoisted (a function declaration and a
+  // type alias) — safe to use here since this callback only runs once the whole module has loaded.
+  const captured: Captured[] = [];
+  const fetchFn = routedFetch([
+    { match: /\/api\/jobs$/, respond: () => new Response(JSON.stringify({ job: { id: 'new123456789', name: `${jobPrefix('web:debug')}coffee` } }), { status: 200, headers: { 'Content-Type': 'application/json' } }) },
+    { match: /\/api\/jobs\/old123456789$/, respond: () => new Response(JSON.stringify({ error: 'boom' }), { status: 500, headers: { 'Content-Type': 'application/json' } }) },
+    { match: /\/api\/jobs\/new123456789$/, respond: () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }) },
+  ], captured);
+  const be = new HermesBackend({ fetchFn });
+  const result = await be.updateReminder!('old123456789', {
+    chatId: 'web:debug', title: 'coffee', instruction: 'nudge them', scheduleKind: 'cron', cron: '0 9 * * *',
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.reason, 'unreachable');
+  assert.equal(captured.length, 3, 'create, the failed delete of the old job, then the rollback delete of the new one');
+  assert.equal(captured[0].init.method, 'POST');
+  assert.match(captured[0].url, /\/api\/jobs$/);
+  assert.equal(captured[1].init.method, 'DELETE');
+  assert.match(captured[1].url, /\/api\/jobs\/old123456789$/);
+  assert.equal(captured[2].init.method, 'DELETE');
+  assert.match(captured[2].url, /\/api\/jobs\/new123456789$/, 'the just-created job is cleaned up, never left as a stray duplicate');
+});
+
 test('reminderJobPrompt names the chat, the instruction, and the push contract', () => {
   const p = reminderJobPrompt({ chatId: 'web:debug', agentHandle: 'h', instruction: 'say hi', fireAt: 1 }, 'http://127.0.0.1:3000/api/engine/push');
   assert.match(p, /web:debug/);
