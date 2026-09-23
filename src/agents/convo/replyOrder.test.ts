@@ -2,13 +2,20 @@
 // renderReplyOrder — the computed "what their new message is landing on" line — and
 // handleCancelResearch — the cancel_research tool's branch table (in-memory opsCoordination).
 process.env.TZ = 'UTC';
+process.env.DATA_BACKEND = 'memory';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { renderReplyOrder, renderArrivalGap, buildSystemPrompt, hasTappedReply, handleCancelResearch, type ChatContext } from './shared.js';
+import { randomUUID } from 'node:crypto';
+import {
+  renderReplyOrder, renderArrivalGap, buildSystemPrompt, hasTappedReply, handleCancelResearch, processConvoResult,
+  type ChatContext,
+} from './shared.js';
 import { dateTimeInZone } from '../../pipeline/zonedTime.js';
 import { markOpsStart, markOpsDone, isOpsCancelled, getActiveOps, __resetOpsCoordination } from '../../state/opsCoordination.js';
+import { emptyMedia } from '../../webhook/types.js';
 import type { StoredMessage } from '../../state/conversation.js';
+import type { LlmResult, LlmToolCall } from '../../llm/types.js';
 
 const NOW = dateTimeInZone('2026-07-06', { hour: 21, minute: 14 });
 const MIN = 60_000;
@@ -252,4 +259,64 @@ test('double-cancel: second call finds nothing running (idempotent, honest)', ()
   const second = handleCancelResearch('', 'chatA');
   assert.equal(second?.kind, 'nothing_found');
   markOpsDone('chatA', 't1'); // cleanup
+});
+
+// ── cancel_research beside other calls in one turn (convo/toolOrder.ts) ─────
+// Through processConvoResult: what matters here is the ORDER the turn's calls run in, which only
+// the dispatch loop decides.
+
+function makeResult(bubbles: string[], toolCalls: LlmToolCall[]): LlmResult {
+  const envelope = {
+    confidence_level: 85,
+    tool_calls: toolCalls.map(c => ({ name: c.name, args: c.input })),
+    bubbles: bubbles.map(text => ({ text, re: null })),
+  };
+  return { text: JSON.stringify(envelope), toolCalls, stopReason: 'end_turn', provider: 'anthropic', model: 'test' };
+}
+
+function turnArgs(textToSend: string) {
+  const sender = `+1555830${Math.floor(Math.random() * 9000 + 1000)}`;
+  const chatContext: ChatContext = { isGroupChat: false, participantNames: [], chatName: null, senderHandle: sender };
+  return { chatId: randomUUID(), handle: sender, chatContext, history: [], media: emptyMedia(), textToSend };
+}
+
+test('"scrap that and run it again": the old run is cancelled and the new task is handed back', async () => {
+  // Written in the order a person says it — delegate the ask, then cancel the running one — the
+  // delegate used to run FIRST, find the identical ask still in flight and suppress itself as a
+  // duplicate; then the cancel stopped that very run. Nothing was left running, and with the old run
+  // gone the "still on it" reassurance was dropped too, so the turn went silent.
+  __resetOpsCoordination();
+  const ask = 'mortgage rates in austin this week';
+  const a = turnArgs('scrap that one and run it again from scratch');
+  markOpsStart(a.chatId, 't-old', { kind: 'web_research', request: ask }, new AbortController());
+
+  const out = await processConvoResult({
+    ...a,
+    res: makeResult(['dropping the old one and starting it fresh'], [
+      { name: 'delegate_to_ops', input: { kind: 'web_research', request: ask } },
+      { name: 'cancel_research', input: { match: '' } },
+    ]),
+  });
+
+  assert.equal(isOpsCancelled(a.chatId, 't-old'), true, 'the old run is stopped');
+  assert.ok(out.delegatedTask, 'and a new task is handed back for kickoff');
+  assert.equal(out.delegatedTask!.request, ask);
+  assert.notEqual(out.delegatedTask!.id, 't-old');
+});
+
+test('two identical cancel_research calls in one turn are one cancel, with no correction', async () => {
+  __resetOpsCoordination();
+  const a = turnArgs('stop that');
+  markOpsStart(a.chatId, 't1', { kind: 'general', request: 'full inbox scan' }, new AbortController());
+
+  const out = await processConvoResult({
+    ...a,
+    res: makeResult(['dropped it'], [
+      { name: 'cancel_research', input: { match: '' } },
+      { name: 'cancel_research', input: { match: '' } },
+    ]),
+  });
+
+  assert.equal(isOpsCancelled(a.chatId, 't1'), true);
+  assert.equal(out.text, 'dropped it', 'her own confirmation stands; the echo is not voiced as a miss');
 });

@@ -93,8 +93,9 @@ import {
 import { renderTurnFocus, turnFocusBlockEnabled, type TurnFocusInput } from './turnFocus.js';
 import { detectUnkeptPromise, renderPromiseCorrection, unkeptPromiseGuardEnabled } from './unkeptPromise.js';
 import { dropSchemaEcho } from './toolCallGuard.js';
+import { orderToolCalls } from './toolOrder.js';
 import {
-  actionSucceeded, combinedOutcome, needsCorrection, toOutcome,
+  actionSucceeded, combinedOutcome, needsCorrection, resolveRef, toOutcome,
   type ActionResult, type ActionStatus,
 } from './actionResults.js';
 import { callLLM } from '../../llm/callLLM.js';
@@ -2328,10 +2329,37 @@ interface PassCaptures {
   errorLogLimit: number | null;
 }
 
+/** The ref letter each cancel's ids are shown with, for a re-cancel written as an id. */
+const CANCEL_REF_LETTER: Record<CancelledRef['tool'], string> = { cancel_automation: 'R', cancel_research: 'L' };
+
 /**
- * Run one pass's tool calls against the turn's effects. The calls arrive already guarded, and each
- * writes what it did into `effects`; what only a second pass can answer comes back as the pass's
- * captures.
+ * A cancel that found nothing, read against what THIS turn already dropped. Two cancels of one
+ * thing in one turn are one cancel: the second finds it gone because the first took it, and
+ * voicing that as a miss would contradict the first. Anything but a miss passes through untouched.
+ */
+function alreadyCancelled(r: ActionResult, effects: TurnEffects, match: string): ActionResult {
+  if (r.status !== 'not_found') return r;
+  const m = match.trim().toLowerCase();
+  const prior = effects.cancelled.filter(c => c.tool === r.tool);
+  if (!prior.length) return r;
+  let hit: CancelledRef | undefined;
+  if (!m) hit = prior[0];
+  else {
+    hit = prior.find(c => c.label.toLowerCase().includes(m));
+    if (!hit) {
+      const ref = resolveRef(m, prior.map(c => c.id), CANCEL_REF_LETTER[r.tool as CancelledRef['tool']] ?? '');
+      if (ref.kind === 'match') hit = prior.find(c => c.id === ref.id);
+    }
+  }
+  return hit
+    ? { tool: r.tool, status: 'already', target: hit.label, detail: 'that was already dropped a moment ago, on this same turn' }
+    : r;
+}
+
+/**
+ * Run one pass's tool calls against the turn's effects. The calls arrive already guarded and in
+ * canonical order (convo/toolOrder.ts: cancels, then updates, then creates), and each writes what it
+ * did into `effects`; what only a second pass can answer comes back as the pass's captures.
  */
 async function dispatchToolCalls(calls: LlmToolCall[], effects: TurnEffects, ctx: DispatchContext): Promise<PassCaptures> {
   const { chatId, handle, chatContext, textToSend, media } = ctx;
@@ -2652,7 +2680,7 @@ async function dispatchToolCalls(calls: LlmToolCall[], effects: TurnEffects, ctx
     } else if (call.name === 'cancel_automation' && chatContext?.senderHandle) {
       const match = String(input.match ?? '');
       const { result, cancelled } = await handleCancelAutomation(match, chatContext.senderHandle, chatId);
-      effects.results.push(result);
+      effects.results.push(alreadyCancelled(result, effects, match));
       if (cancelled) effects.cancelled.push({ tool: 'cancel_automation', id: cancelled.id, label: cancelled.title });
     } else if (call.name === 'cancel_research') {
       // An action still waiting on their yes is cancelled by DECLINING it — nothing is in flight for
@@ -2671,7 +2699,7 @@ async function dispatchToolCalls(calls: LlmToolCall[], effects: TurnEffects, ctx
       // a decline, because a real look may ALSO be running for this chat; only its "nothing is being
       // looked up" miss is dropped, since a park was just dropped and that miss would contradict it.
       const { result, cancelled } = cancelResearch(match, chatId);
-      if (!(declined.length && result.status === 'not_found')) effects.results.push(result);
+      if (!(declined.length && result.status === 'not_found')) effects.results.push(alreadyCancelled(result, effects, match));
       for (const row of declined) effects.cancelled.push({ tool: 'cancel_research', id: row.id, label: row.request });
       for (const run of cancelled) effects.cancelled.push({ tool: 'cancel_research', id: run.taskId, label: run.request });
     } else if (call.name === 'steer_research') {
@@ -2984,8 +3012,17 @@ export async function processConvoResult(args: {
 
   // ── Dispatch ──────────────────────────────────────────────────────────────────────────────────
   // Every call this pass kept, run into the turn's effects; the two searches come back as captures
-  // for their own bounded second passes below.
-  const { recallQuery, errorLogLimit } = await dispatchToolCalls(res.toolCalls, effects, {
+  // for their own bounded second passes below. In canonical order with exact duplicates dropped
+  // (convo/toolOrder.ts): every cancel runs before any create, so "stop that and look it up again"
+  // frees the run and its dedupe key before the new ask is judged against them, and a cancel written
+  // twice runs once. Read off the list the guards left standing, so the identity test above never
+  // sees the reorder.
+  const ordered = orderToolCalls(res.toolCalls);
+  if (ordered.duplicates.length) {
+    console.log(`[convo] dropped ${ordered.duplicates.length} duplicate tool call(s) (chat ${chatId}): ${ordered.duplicates.join(', ')}`);
+    record({ type: 'event', label: 'convo:tool_call_duplicate', chatId, handle, detail: { dropped: ordered.duplicates, total: res.toolCalls.length } });
+  }
+  const { recallQuery, errorLogLimit } = await dispatchToolCalls(ordered.calls, effects, {
     chatId, handle, chatContext, textToSend, media, userTz: args.userTz,
     originConfidence: reply.confidenceLevel,
     heldForOps: () => heldForOps(args.relevance?.hits ?? []),
