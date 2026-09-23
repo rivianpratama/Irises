@@ -54,7 +54,7 @@ import { coerceBasis } from '../../memory/provenance.js';
 import type { TurnRelevance, RelevanceHit } from '../../memory/relevance.js';
 import {
   isDuplicateDelegation, getActiveOps, hasInFlightRequest, requestOpsCancel,
-  requestOpsSteer, getOpsEngineRun, opsRefKey, shortLookupId, shortApprovalId,
+  requestOpsSteer, getOpsEngineRun, opsRefKey, shortLookupId, shortApprovalId, noteSteerDelivery,
   type ActiveOps, type EndedOps,
 } from '../../state/opsCoordination.js';
 import { steerWithRetry } from '../ops/steer.js';
@@ -742,14 +742,18 @@ function steerResearch(
   // nor a queued one can reach the leg, so the correction is owed now rather than after a silent
   // drop. 'unsupported' is deliberately NOT the 'already_done' sentence: the run is still going.
   if (!engine?.steerRun || decided.every(d => d.outcome === 'unsupported')) {
+    // A handle with no engine route to aim it at: the map logged it as on its way, and nothing is.
+    for (const d of decided) if (d.outcome === 'ready') noteSteerDelivery(chatId, d.taskId, guidance, 'never');
     return { tool, status: 'unavailable', target, detail: "the run can't take mid-flight additions on this engine, but their note is kept with the task", nextStep: 'the lookup carries on as it was, so its answer may not cover their addition' };
   }
   for (const { taskId } of decided.filter(d => d.outcome === 'ready')) {
     const handle = getOpsEngineRun(chatId, taskId);
     if (!handle) continue; // the run went away between the two reads — the map wins
     // No engine slot: this is one small POST at an existing run, not an agent run, and queueing it
-    // behind the concurrency cap would spend the window it has to land in.
+    // behind the concurrency cap would spend the window it has to land in. Its answer is recorded on
+    // the addition, so the status line says whether the look ever had it.
     void steerWithRetry(engine, handle, guidance, { chatId, agentHandle, taskId })
+      .then(outcome => noteSteerDelivery(chatId, taskId, guidance, outcome === 'accepted' ? 'reached' : 'never'))
       .catch(err => console.warn('[convo] steer delivery failed', err));
   }
   // Delivered or queued — Convo's own "adding that in" text stands.
@@ -929,13 +933,30 @@ function elapsedLabel(startedAt: number): string {
   return secs < 60 ? `~${secs}s` : `~${Math.round(secs / 60)}m`;
 }
 
+/**
+ * What they added to a run, as the status line reads it back. The block below calls these lines the
+ * whole of what was handed over, so an addition is listed as added only while it reached the look
+ * or is still on its way there; one that never reached it is named apart, as asked for and not had.
+ * Every addition used to sit under "you added" alike, so a steer whose POST failed, or that waited
+ * in the queue until its leg ended, read back exactly like one the run folded in.
+ *
+ * A caller that knows only the words (no log) gets the plain list it always got.
+ */
+function steersClause(o: ActiveOps): string {
+  if (!o.steerLog?.length) return o.steers?.length ? ` — you added: ${o.steers.map(s => `"${s}"`).join('; ')}` : '';
+  const had = o.steerLog.filter(s => s.delivery !== 'never')
+    .map(s => `"${s.text}"${s.delivery === 'reached' ? ' (reached the look)' : ''}`);
+  const missed = o.steerLog.filter(s => s.delivery === 'never').map(s => `"${s.text}" (never reached the look)`);
+  return `${had.length ? ` — you added: ${had.join('; ')}` : ''}${missed.length ? ` — they asked to add: ${missed.join('; ')}` : ''}`;
+}
+
 /** One status line per in-flight run: the ask, how long it's been going, ETA pace, and — when Ops
  *  has signalled a milestone — what it's doing right now (mapped from the tool to user-meaning). */
 function opsStatusLine(o: ActiveOps): string {
   // What they ADDED mid-run (steer_research), quoted back so she can answer "did you get that?" from
   // the status instead of from hope — and so a second addition doesn't read as the first one again.
   // Absent for the ordinary run, which is why an untouched status line is the bytes it always was.
-  const added = o.steers?.length ? ` — you added: ${o.steers.map(s => `"${s}"`).join('; ')}` : '';
+  const added = steersClause(o);
   // What the look was asked to DO as well as find (agents/types.ts `engineActions`), read back from
   // the task itself. This is the model's only honest source for "did you ask it to do that too?" —
   // without it the answer came from what it remembered saying, which is how a part that was never
@@ -1000,7 +1021,10 @@ export function renderActiveOps(activeOps: ActiveOps[], ended: readonly EndedOps
   // Gated on the same `requested.length` the lines are: a chat whose only live run is a scheduled
   // check renders no "you're mid-research" list at all, and a rule about lines that are not there
   // is a rule about nothing.
-  if (requested.length) blocks.push('Those lines are the whole of what was handed over for them — the ask itself, anything they added, and anything the look was asked to do as well as find. Read them as the record: never say a part of what they asked is being taken care of unless it is listed there. If they ask whether some part of it went out and the lines do not carry it, the honest answer is that it did not, and the fix is to send it now.');
+  //
+  // An addition marked as never having reached the look is listed so she can own it, never so she
+  // can count it: the rule names that mark as the one thing on the lines that was not handed over.
+  if (requested.length) blocks.push('Those lines are the whole of what was handed over for them: the ask itself, the additions to it, and anything the look was asked to do as well as find, except an addition marked as never having reached the look, which the answer may not cover. Read them as the record: never say a part of what they asked is being taken care of unless it is listed there as handed over. If they ask whether some part of it went out and the lines do not carry it that way, the honest answer is that it did not, and the fix is to send it now.');
   blocks.push('If their new message is just an ack ("ok"/"thanks"/"cool"/"sounds good") or asks about THAT same thing: do NOT delegate_to_ops again, and do NOT repeat a holding line like "pulling that up". Check the thread and the timestamps first — if the answer already landed in a recent bubble of yours, their ack is just closing the loop: close it flat (a tiny ack or a reaction) and say nothing about still working. Only if the result genuinely has NOT gone out yet does one short "still on it" beat fit. Either way, only delegate if they\'ve clearly asked for something genuinely different.');
   blocks.push('If they ask how it\'s going, answer from the status above in your own words — one short bubble naming what it\'s doing and roughly how long it\'s been ("still digging through the emails, couple minutes in"). When the status shows time left, you may pass it on loosely; when it shows "running past that", own it lightly ("taking longer than i thought") — never invent a fresh number, never a countdown, never invent progress beyond what the status shows. If a run shows "queued … hasn\'t started yet", it\'s behind another look of theirs — say it\'s next in line and starting shortly, and don\'t pretend it\'s already digging.');
   if (scheduled.length) {

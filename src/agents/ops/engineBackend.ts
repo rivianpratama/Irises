@@ -13,6 +13,7 @@ import { OpenClawBackend } from './openclawBackend.js';
 // scope — both only ever read the other from inside a function.
 import {
   noteOpsEngineRun, takePendingSteers, beginOpsEngineLeg, endOpsEngineLeg, noteOpsSteerUnreachable,
+  noteSteerDelivery,
 } from '../../state/opsCoordination.js';
 import { steerWithRetry } from './steer.js';
 import type { OpsTask, OpsResult, OpsDebrief, OpsFailureCause } from '../types.js';
@@ -582,10 +583,14 @@ function failureResult(task: OpsTask, cause: OpsFailureCause, detail: string, st
 
 /** Hand the engine the additions the user made BEFORE this run had a handle, one at a time so they
  *  arrive in the order they were said. Fire-and-forget from the run's point of view: the leg itself
- *  must never wait on a courtesy call, and steerWithRetry never throws. */
+ *  must never wait on a courtesy call, and steerWithRetry never throws. Each answer is recorded on
+ *  its addition, so the status line says whether the look ever had it. */
 async function deliverQueuedSteers(engine: EngineBackend, handle: EngineRunHandle, texts: string[], task: OpsTask, signal?: AbortSignal): Promise<void> {
   const where = { chatId: task.chatId, agentHandle: task.agentHandle, taskId: task.id };
-  for (const text of texts) await steerWithRetry(engine, handle, text, where, { signal });
+  for (const text of texts) {
+    const outcome = await steerWithRetry(engine, handle, text, where, { signal });
+    noteSteerDelivery(task.chatId, task.id, text, outcome === 'accepted' ? 'reached' : 'never');
+  }
 }
 
 /** Run one task on the configured engine and shape the outcome as an OpsResult. The debrief is the

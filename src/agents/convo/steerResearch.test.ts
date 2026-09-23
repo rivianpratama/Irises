@@ -260,6 +260,38 @@ test('a bare restatement or a "keep going" nudge is a steer or a status read, ne
   assert.ok(!/oppo|find it|look harder|try again/.test(out), 'no sample utterances in the rule');
 });
 
+test('an addition the engine never took reads back as never reached, not as handed over', async () => {
+  // The status block calls its lines the whole of what was handed over, and every addition sat under
+  // "you added" whether or not the engine ever had it: a POST that errored, or a queued one whose leg
+  // ended first, read back exactly like one the run folded in.
+  __resetOpsCoordination();
+  markOpsStart('chatA', 't1', { kind: 'general', request: 'full inbox scan' });
+  noteOpsEngineRun('chatA', 't1', { engine: 'hermes', runId: 'run_7' });
+  let posts = 0;
+  const engine: EngineBackend = {
+    ...steerableEngine([]),
+    async steerRun() {
+      if (posts++ === 0) return 'accepted' as const;
+      throw new Error('502 from the gateway');
+    },
+  };
+  handleSteerResearch('', 'under 100k', 'chatA', HANDLE, engine);
+  await new Promise(r => setImmediate(r));
+  handleSteerResearch('', 'also check jakarta', 'chatA', HANDLE, engine);
+  await new Promise(r => setImmediate(r));
+  const line = renderActiveOps(getActiveOps('chatA'));
+  assert.match(line, /you added: "under 100k" \(reached the look\)/);
+  assert.match(line, /"also check jakarta" \(never reached the look\)/);
+  assert.doesNotMatch(line, /you added: (?:(?! — )[^\n])*"also check jakarta"/, 'what never reached the look is not listed as added');
+
+  // Queued before the run had a handle, and the leg ended before one landed.
+  markOpsStart('chatB', 't2', { kind: 'general', request: 'flights to bali' });
+  beginOpsEngineLeg('chatB', 't2', true);
+  handleSteerResearch('', 'only morning departures', 'chatB', HANDLE, engine);
+  endOpsEngineLeg('chatB', 't2');
+  assert.match(renderActiveOps(getActiveOps('chatB')), /"only morning departures" \(never reached the look\)/);
+});
+
 test('what they added rides on the status line — running and queued alike', () => {
   const one = renderActiveOps([running({ steers: ['also check jakarta'] })]);
   assert.match(one, /— you added: "also check jakarta"/);

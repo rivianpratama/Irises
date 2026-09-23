@@ -42,8 +42,11 @@ interface InFlightEntry {
   legEnded?: true;
   // Everything the user ADDED to this ask mid-run, in the order they said it — kept whether or not
   // the engine accepted any of it, because these are things they said about work that is running:
-  // the status line reads them back and a refinement leg folds them in.
-  steers?: string[];
+  // the status line reads them back and a refinement leg folds them in. Each one carries whether
+  // the engine ever had it, because the status line is read as the record of what was handed over,
+  // and an addition that never reached the look must not read back like one the run folded in.
+  // `steers` (ActiveOps) and the unapplied list are both derived from this.
+  steerLog?: SteerLogEntry[];
   // What the user asked the ENGINE to DO as part of this ask (agents/types.ts `engineActions`),
   // kept so the "already pulling" status line can name the parts that were really handed over —
   // the model reads which actions are in the task instead of recalling what it promised. ABSENT
@@ -52,10 +55,20 @@ interface InFlightEntry {
   // The subset not yet handed to a caller for delivery. A steer that arrives before engineRun
   // exists (hermes takes a second or two to build the agent) waits here rather than being dropped.
   pendingSteers?: string[];
-  // The additions that never reached a leg: the run could not take one mid-flight, its leg had
-  // already ended, or a queued one was still waiting when the leg did. The answer that comes back
-  // may not cover them, and the follow-up is told so (orchestrator.ts steerRelay).
-  unappliedSteers?: string[];
+}
+
+/**
+ * Where one addition got to. 'pending' until something knows: the POST is out, or it waits in the
+ * queue for a handle. 'reached' once the engine accepted it. 'never' when it cannot arrive any more:
+ * the run could not take one mid-flight, its leg had already ended, the POST came back without the
+ * engine taking it, or it was still waiting when the leg ended. The answer that comes back may not
+ * cover a 'never' one, and the follow-up is told so (orchestrator.ts steerRelay).
+ */
+export type SteerDelivery = 'pending' | 'reached' | 'never';
+
+export interface SteerLogEntry {
+  text: string;
+  delivery: SteerDelivery;
 }
 
 const inFlight = new Map<string, Map<string, InFlightEntry>>();   // chatId -> taskId -> entry
@@ -281,6 +294,10 @@ export function noteOpsSteerUnreachable(chatId: string, taskId: string): void {
  * anything still queued for delivery: those additions reached nobody, and this module imports no
  * diagnostics, so the CALLER owns the trace. Returns [] for a gone or cancelled entry.
  *
+ * Every addition still 'pending' is marked 'never', the queued ones and any whose POST has not
+ * answered: the run they were meant for is over. A POST that comes back accepted after this still
+ * upgrades its own entry (noteSteerDelivery), since the engine did have it.
+ *
  * The task is NOT done here — triage and compose still have to run. `markOpsDone` is that.
  */
 export function endOpsEngineLeg(chatId: string, taskId: string): string[] {
@@ -290,8 +307,24 @@ export function endOpsEngineLeg(chatId: string, taskId: string): string[] {
   entry.legEnded = true;
   const undelivered = entry.pendingSteers ?? [];
   entry.pendingSteers = [];
-  if (undelivered.length) entry.unappliedSteers = [...(entry.unappliedSteers ?? []), ...undelivered];
+  for (const s of entry.steerLog ?? []) if (s.delivery === 'pending') s.delivery = 'never';
   return undelivered;
+}
+
+/**
+ * What became of one addition's delivery: the steer POST (convo/shared.ts steerResearch) or the
+ * drain of the queue (agents/ops/engineBackend.ts deliverQueuedSteers) answered. Marks the earliest
+ * entry with this text still waiting on an answer; 'reached' also lifts an entry the leg's end
+ * already gave up on, because the engine did take it. In-place; no-op on a gone or cancelled entry.
+ */
+export function noteSteerDelivery(chatId: string, taskId: string, text: string, delivery: Exclude<SteerDelivery, 'pending'>): void {
+  const entry = inFlight.get(chatId)?.get(taskId);
+  if (!entry || entry.cancelled) return;
+  const trimmed = text.trim();
+  const log = entry.steerLog ?? [];
+  const hit = log.find(s => s.text === trimmed && s.delivery === 'pending')
+    ?? (delivery === 'reached' ? log.find(s => s.text === trimmed && s.delivery === 'never') : undefined);
+  if (hit) hit.delivery = delivery;
 }
 
 /** The engine handle for an in-flight leg, or undefined when there is none (yet, or ever — an
@@ -322,13 +355,16 @@ export function getOpsEngineRun(chatId: string, taskId: string): EngineRunHandle
  *                    caller says so honestly: what comes back was gathered before the addition.
  *
  * Every non-blank addition is remembered on the entry regardless of the answer, so the status line
- * can say "you added: …" and a refinement leg can carry it even when the engine never took it.
+ * can read it back and a refinement leg can carry it even when the engine never took it. Its
+ * delivery starts 'pending' ('ready' and 'queued'), or 'never' when this answer already says it
+ * cannot arrive; the caller that delivers it reports how that went (noteSteerDelivery).
  */
 export function requestOpsSteer(chatId: string, taskId: string, text: string, engineActions: string[] = []): 'ready' | 'queued' | 'unsupported' | 'already_done' {
   const trimmed = text.trim();
   const entry = inFlight.get(chatId)?.get(taskId);
   if (!entry || entry.cancelled || !trimmed) return 'already_done';
-  entry.steers = [...(entry.steers ?? []), trimmed];
+  const logged: SteerLogEntry = { text: trimmed, delivery: 'pending' };
+  entry.steerLog = [...(entry.steerLog ?? []), logged];
   // An addition can ask for something to be DONE, not just looked at differently. It joins the
   // tracked list so the status line stays the whole record of what was handed over, and so a replay
   // leg renders it as an instruction rather than as data. The caller screens it first (the approval
@@ -337,12 +373,12 @@ export function requestOpsSteer(chatId: string, taskId: string, text: string, en
   // The leg is over even though the task is not: the engine has nothing left to fold this into.
   // Both this and the unsupported answer leave the addition unapplied, which the follow-up reads.
   if (entry.legEnded) {
-    entry.unappliedSteers = [...(entry.unappliedSteers ?? []), trimmed];
+    logged.delivery = 'never';
     return 'already_done';
   }
   if (entry.engineRun) return 'ready';
   if (entry.steerUnreachable) {
-    entry.unappliedSteers = [...(entry.unappliedSteers ?? []), trimmed];
+    logged.delivery = 'never';
     return 'unsupported';
   }
   entry.pendingSteers = [...(entry.pendingSteers ?? []), trimmed];
@@ -358,11 +394,12 @@ export function getOpsEngineActions(chatId: string, taskId: string): string[] {
   return entry && !entry.cancelled ? [...(entry.engineActions ?? [])] : [];
 }
 
-/** What the user added that never reached a leg (InFlightEntry.unappliedSteers), in the order they
- *  said it. Empty for a gone or cancelled entry, and for every run whose additions all landed. */
+/** What the user added that never reached a leg (the 'never' entries of InFlightEntry.steerLog), in
+ *  the order they said it. Empty for a gone or cancelled entry, and for every run whose additions
+ *  all landed. */
 export function getUnappliedSteers(chatId: string, taskId: string): string[] {
   const entry = inFlight.get(chatId)?.get(taskId);
-  return entry && !entry.cancelled ? [...(entry.unappliedSteers ?? [])] : [];
+  return entry && !entry.cancelled ? (entry.steerLog ?? []).filter(s => s.delivery === 'never').map(s => s.text) : [];
 }
 
 /** Take (and clear) the steers still awaiting delivery — a HAND-OFF, so a second call returns
@@ -409,6 +446,9 @@ export interface ActiveOps {
    *  when nobody added anything, so an ordinary run's status line — and the prompt budget pinned to
    *  it — stays exactly the bytes it was. */
   steers?: string[];
+  /** The same additions with where each one got (InFlightEntry.steerLog), so the status line can say
+   *  which reached the look. Present exactly when `steers` is. */
+  steerLog?: SteerLogEntry[];
   /** What the user asked the engine to DO as part of this ask, in the order they asked. ABSENT
    *  rather than empty for the same reason `steers` is — the status line's bytes, and the prompt
    *  budget pinned to them, must not move for a run that was asked for no action. */
@@ -423,7 +463,7 @@ export function getActiveOps(chatId: string, now: number = Date.now()): ActiveOp
   const staleMs = opsStaleMs();
   return [...byTask.entries()]
     .filter(([, e]) => now - e.startedAt < staleMs && !e.cancelled)
-    .map(([taskId, e]) => ({ taskId, kind: e.kind, request: e.request, startedAt: e.startedAt, firstStartedAt: e.firstStartedAt, origin: e.origin, lastMilestone: e.lastMilestone, milestoneAt: e.milestoneAt, estimateMs: e.estimateMs, estimatePhrase: e.estimatePhrase, ...(e.steers?.length ? { steers: [...e.steers] } : {}), ...(e.engineActions?.length ? { engineActions: [...e.engineActions] } : {}) }));
+    .map(([taskId, e]) => ({ taskId, kind: e.kind, request: e.request, startedAt: e.startedAt, firstStartedAt: e.firstStartedAt, origin: e.origin, lastMilestone: e.lastMilestone, milestoneAt: e.milestoneAt, estimateMs: e.estimateMs, estimatePhrase: e.estimatePhrase, ...(e.steerLog?.length ? { steers: e.steerLog.map(s => s.text), steerLog: e.steerLog.map(s => ({ ...s })) } : {}), ...(e.engineActions?.length ? { engineActions: [...e.engineActions] } : {}) }));
 }
 
 // ── Recently ended ──────────────────────────────────────────────────────────────────────────────
