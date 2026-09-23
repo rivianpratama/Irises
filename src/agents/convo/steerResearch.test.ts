@@ -82,11 +82,11 @@ test('the tool asks for the addition in their words, and only guidance is requir
 
 // ── handleSteerResearch, branch by branch ───────────────────────────────────
 
-test('nothing running → honest nothing_found, and it reads as a fresh ask', () => {
+test('nothing running → honest nothing_found, and it says nothing new was started', () => {
   __resetOpsCoordination();
   const note = handleSteerResearch('', 'also check jakarta', 'chatA', HANDLE, null);
   assert.equal(note?.kind, 'nothing_found');
-  assert.match(note?.nextStep ?? '', /fresh ask/);
+  assert.match(note?.nextStep ?? '', /nothing new was started/);
 });
 
 test('a match that fits nothing → nothing_found listing what IS running', () => {
@@ -152,7 +152,7 @@ test('a transport with no run id → the unsupported note, even from an engine t
   const calls: Array<{ handle: EngineRunHandle; text: string }> = [];
   const note = handleSteerResearch('', 'also check jakarta', 'chatA', HANDLE, steerableEngine(calls));
   assert.equal(note?.kind, 'failed');
-  assert.match(note?.nextStep ?? '', /work it into the answer when it lands/);
+  assert.match(note?.nextStep ?? '', /may not cover their addition/);
   assert.equal(calls.length, 0);
   assert.deepEqual(getActiveOps('chatA')[0].steers, ['also check jakarta'], 'their words stay with the task');
 });
@@ -163,8 +163,8 @@ test('an engine with no steer route → the honest failed note, and the addition
   noteOpsEngineRun('chatA', 't1', { engine: 'openclaw', runId: 'run_x' });
   const note = handleSteerResearch('', 'also check jakarta', 'chatA', HANDLE, unsteerableEngine());
   assert.equal(note?.kind, 'failed');
-  assert.match(note?.nextStep ?? '', /work it into the answer when it lands/);
-  // The promise that note makes: their words stay with the task, for the status line and the leg.
+  assert.match(note?.nextStep ?? '', /may not cover their addition/);
+  // What that note states: their words stay with the task, for the status line and the leg.
   assert.deepEqual(getActiveOps('chatA')[0].steers, ['also check jakarta']);
 });
 

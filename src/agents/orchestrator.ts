@@ -3,7 +3,7 @@ import { withDeadline, DeadlineError } from './deadline.js';
 import { setPreference } from '../db/repositories/memory.js';
 import { addShortTerm } from '../db/repositories/memoryShort.js';
 import { composeWithComposer } from './composerCore.js';
-import { markOpsDone, isOpsCancelled, noteOpsProgress, markOpsRetry, getOpsEtaStatus, getOpsEngineActions, normalizeRequest } from '../state/opsCoordination.js';
+import { markOpsDone, isOpsCancelled, noteOpsProgress, markOpsRetry, getOpsEtaStatus, getOpsEngineActions, getUnappliedSteers, normalizeRequest } from '../state/opsCoordination.js';
 import { detectCause, decide, splitMiss, retryTaskFor, steerReplayTaskFor, type TriageDecision } from './ops/triage.js';
 import { selectInterveningUserMessages } from './interveningMessages.js';
 import { redactInternalTools } from './guardrails.js';
@@ -145,6 +145,22 @@ export function engineActionRelay(task: OpsTask, moment: ComposeMoment, summary 
   return `\n\nbeyond the question, they asked you to get ${count} done as part of this. whether each one landed is part of their answer, not back-office you drop: work it in as one short plain clause, in their words not the machinery's. if one of them did NOT land, say so plainly and say what stopped it, before you hand over the rest. never let one go unmentioned, and never claim more than what came back says happened.`;
 }
 
+/**
+ * The clause that keeps an addition the look never took in from being answered as if it had.
+ *
+ * A mid-run addition (steer_research) that the run could not take, or that arrived after its leg
+ * ended, is kept with the task and never reached the engine. The live turn said so plainly, and
+ * promised nothing: the answer that comes back was gathered without it. So the follow-up must not
+ * read as though it covers the addition. Returns '' when every addition landed, which is nearly
+ * always, and outside the answer moment, where there is no answer to over-claim. Pure and exported,
+ * like engineActionRelay.
+ */
+export function steerRelay(unapplied: readonly string[], moment: ComposeMoment): string {
+  if (moment !== 'answer' || !unapplied.length) return '';
+  const said = unapplied.map(s => `"${s}"`).join('; ');
+  return `\n\nwhile you were looking they also added: ${said}. the look already under way could not take that in, so what came back may not cover it. never word the answer as if it does, and if it doesn't cover it, say so in one flat clause.`;
+}
+
 async function composeFollowUp(
   result: OpsResult,
   task: OpsTask,
@@ -192,6 +208,8 @@ async function composeFollowUp(
   // that hand the composer no result content are exactly the ones where a reply could read as if the
   // setup had gone through. Empty for a task that carried none.
   instruction += engineActionRelay(task, moment, result.summary ?? '');
+  // And what they ADDED mid-run that the look never took in. Empty on almost every run.
+  instruction += steerRelay(getUnappliedSteers(chatId, task.id), moment);
 
   // Continue straight from the exact holding line Irises last sent, so the late reply reads as one
   // seamless thread, not a fresh delivery. This is a continuity anchor only — never a fact source.

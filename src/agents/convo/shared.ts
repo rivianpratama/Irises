@@ -706,7 +706,7 @@ function steerResearch(
   const target = (id || match).trim();
   const active = getActiveOps(chatId);
   if (!active.length) {
-    return { tool, status: 'not_found', target, detail: "nothing's being looked up for them right now — either it already landed or nothing was started", nextStep: 'treat what they said as a fresh ask: delegate_to_ops with the original topic plus this addition, if it reads like one' };
+    return { tool, status: 'not_found', target, detail: "nothing's being looked up for them right now — either it already landed or nothing was started", nextStep: 'nothing was added anywhere, and nothing new was started for it' };
   }
   // The same pick the cancel makes (pickResearch): one run, or none acted on.
   const picked = pickResearch(active, id, match);
@@ -731,7 +731,7 @@ function steerResearch(
   });
   const decided = matches.map(a => ({ taskId: a.taskId, request: a.request, outcome: requestOpsSteer(chatId, a.taskId, guidance, mandated) }));
   if (decided.every(d => d.outcome === 'already_done')) {
-    return { tool, status: 'unreachable', target, detail: 'that lookup actually just finished — the answer is already landing on their screen', nextStep: 'tell them you\'ll fold their addition in as a quick follow-up look, and delegate_to_ops with the original ask plus the addition' };
+    return { tool, status: 'unreachable', target, detail: 'that lookup actually just finished — the answer is already landing on their screen', nextStep: 'that answer was gathered before their addition, so it may not cover it' };
   }
   // No route to the run, from either direction: the ENGINE has no steer method at all (OpenClaw),
   // or the map says no handle can ever land for this leg (hermes on the chat transport — only the
@@ -739,7 +739,7 @@ function steerResearch(
   // nor a queued one can reach the leg, so the correction is owed now rather than after a silent
   // drop. 'unsupported' is deliberately NOT the 'already_done' sentence: the run is still going.
   if (!engine?.steerRun || decided.every(d => d.outcome === 'unsupported')) {
-    return { tool, status: 'unavailable', target, detail: "the run can't take mid-flight additions on this engine, but their note is kept with the task", nextStep: 'tell them you\'ll work it into the answer when it lands — do not promise it changes what\'s being searched right now' };
+    return { tool, status: 'unavailable', target, detail: "the run can't take mid-flight additions on this engine, but their note is kept with the task", nextStep: 'the lookup carries on as it was, so its answer may not cover their addition' };
   }
   for (const { taskId } of decided.filter(d => d.outcome === 'ready')) {
     const handle = getOpsEngineRun(chatId, taskId);
