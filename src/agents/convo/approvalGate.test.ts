@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { processConvoResult, type ChatContext, type ConvoTurnContext } from './shared.js';
 import { emptyMedia } from '../../webhook/types.js';
-import { __resetOpsCoordination, getActiveOps } from '../../state/opsCoordination.js';
+import { __resetOpsCoordination, getActiveOps, markOpsStart, shortApprovalId, shortLookupId } from '../../state/opsCoordination.js';
 import { clearTraces, getTraces } from '../../diagnostics/trace.js';
 import { listPendingApprovals, getOpsTask, insertPendingApproval } from '../../db/repositories/opsTasks.js';
 import { getPreference } from '../../db/repositories/memory.js';
@@ -613,6 +613,19 @@ test('a cancel that names nothing declines only the live ask: an older park, or 
   assert.equal(getOpsTask(row.id)?.status, 'declined', 'the ask their marker names is the one dropped');
   assert.equal(getOpsTask(earlier)?.status, 'pending_approval', 'an earlier park nobody asked about this turn stands');
   assert.equal(getOpsTask(stale)?.status, 'pending_approval', 'and a two-day-old row is out of the cancel\'s reach');
+
+  // Words that fit the earlier park AND a lookup that is running: one of each, so neither is acted on.
+  markOpsStart(a.chatId, 'run-flight', { kind: 'general', request: 'cheapest flight to bali' });
+  const { turn, seen } = reasker([]);
+  await processConvoResult({
+    ...answer(a, 'stop the flight thing'),
+    res: makeResult(['dropped it'], [{ name: 'cancel_research', input: { match: 'flight' } }]),
+    turn,
+  });
+  assert.equal(getOpsTask(earlier)?.status, 'pending_approval', 'the parked flight is not declined');
+  assert.equal(getActiveOps(a.chatId).length, 1, 'and the running flight lookup is not stopped');
+  const shown = String(seen.at(-1)?.messages.at(-1)?.content ?? '');
+  assert.ok(shown.includes(shortApprovalId(earlier)) && shown.includes(shortLookupId('run-flight')), 'the candidates name both ids');
 });
 
 test('in a group, a cancel from one member retires the ask it drops, so its owner\'s yes runs nothing', async () => {

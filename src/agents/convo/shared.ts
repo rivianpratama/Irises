@@ -2679,7 +2679,7 @@ async function resolvePendingApproval(a: {
 async function declineParkedApprovals(chatId: string, sender: string | undefined, id: string, match: string): Promise<ParkedCancel> {
   const none: ParkedCancel = { declined: [], ambiguous: null };
   if (!opsApprovalGateEnabled()) return none;
-  const rows = listPendingApprovals(chatId, { sinceMs: Date.now() - 2 * PENDING_ASK_TTL_MS });
+  const rows = parkedInReach(chatId);
   if (!rows.length) return none;
   let parked: typeof rows;
   if (id.trim()) {
@@ -2687,8 +2687,7 @@ async function declineParkedApprovals(chatId: string, sender: string | undefined
     const got = resolveRef(id, keys, 'A');
     parked = got.kind === 'match' ? [rows[keys.indexOf(got.id)]] : [];
   } else if (match.trim()) {
-    const m = match.trim().toLowerCase();
-    parked = rows.filter(r => r.request.toLowerCase().includes(m));
+    parked = parkedFitting(rows, match);
     if (parked.length > 1) {
       return {
         declined: [],
@@ -2730,6 +2729,43 @@ async function declineParkedApprovals(chatId: string, sender: string | undefined
   }
   console.log(`[convo] cancel declined ${parked.length} parked action(s) (chat ${chatId})`);
   return { declined: parked, ambiguous: null };
+}
+
+/** The actions waiting on this chat's yes that a cancel can reach: asks inside their clock and its
+ *  one grace window. A read, nothing more. */
+function parkedInReach(chatId: string): ReturnType<typeof listPendingApprovals> {
+  return listPendingApprovals(chatId, { sinceMs: Date.now() - 2 * PENDING_ASK_TTL_MS });
+}
+
+/** The parked rows a cancel's words fit, by the same test the decline itself applies. */
+function parkedFitting<R extends { request: string }>(rows: readonly R[], words: string): R[] {
+  const m = words.trim().toLowerCase();
+  return rows.filter(r => r.request.toLowerCase().includes(m));
+}
+
+/**
+ * A cancel by words, read against both pools before either is touched. The parked actions and the
+ * running lookups used to be tried one after the other, so words that fit an ask waiting on their
+ * yes and a lookup that was running declined the one and stopped the other. When both pools hold a
+ * fit, this is the one result: every fit from both, as candidates, and nothing acted on. Null when
+ * the call names an id (each id letter names one pool already), carries no words, or only one pool
+ * fits, and the cancel then commits to that pool as before.
+ */
+function cancelWordsAcrossPools(chatId: string, id: string, match: string): ActionResult | null {
+  const words = match.trim();
+  if (id.trim() || !words || !opsApprovalGateEnabled()) return null;
+  const parked = parkedFitting(parkedInReach(chatId), words);
+  if (!parked.length) return null;
+  const active = getActiveOps(chatId);
+  const picked = active.length ? pickResearch(active, '', words) : null;
+  const runs = picked?.kind === 'match' ? [picked.run] : picked?.kind === 'ambiguous' ? picked.runs : [];
+  if (!runs.length) return null;
+  return {
+    tool: 'cancel_research', status: 'ambiguous', target: words,
+    detail: 'that fits an action waiting on their go-ahead and a lookup that is running, so neither was dropped',
+    candidates: [...parked.map(r => ({ id: shortApprovalId(r.id), label: r.request })), ...researchCandidates(runs)],
+    nextStep: 'ask which one they mean',
+  };
 }
 
 /** What a cancel did to the actions waiting on a yes: the one row it declined, or, when its words
@@ -3252,6 +3288,13 @@ async function dispatchToolCalls(calls: LlmToolCall[], effects: TurnEffects, ctx
       // nothing was running.
       const id = String(input.id ?? '').trim();
       const match = String(input.match ?? '');
+      // Words that fit both an ask waiting on their yes and a running lookup name neither: one result
+      // listing every fit, and nothing declined or stopped. Read before either pool is touched.
+      const across = cancelWordsAcrossPools(chatId, id, match);
+      if (across) {
+        effects.results.push(across);
+        continue;
+      }
       const parked = await declineParkedApprovals(chatId, chatContext?.senderHandle, id, match);
       const declined = parked.declined;
       if (declined.length) {
