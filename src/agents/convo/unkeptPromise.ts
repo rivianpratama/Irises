@@ -277,16 +277,29 @@ function afterOpeners(words: string[]): string[] {
   }
 }
 
-/** The first claim in the reply, bubble by bubble in reading order. */
-function findClaim(bubbles: string[]): string | undefined {
+/**
+ * The claim rows with no change named in them: a bare completion word, or "all set" / "all done".
+ * Each one reads as a report ONLY when there was an ask to report on. After "finally finished the
+ * deck", or a "lol", nothing was asked of her, so the same words are about their day: the deck is
+ * done, they are all set. Observed live (2026-09-24 latency round): a bare "done" on exactly that
+ * turn cost a re-ask, and the re-ask shipped an apology for an action nobody asked about. A verb
+ * with its object ("revised the morning one", "switched it") still says SHE changed something,
+ * whatever the turn asked, so those rows hold on every turn.
+ */
+const BARE_CLAIM_PHRASES: ReadonlySet<string> = new Set(['all set', 'all done']);
+
+/** The first claim in the reply, bubble by bubble in reading order. `bare` false leaves out the
+ *  rows that name no change (above). */
+function findClaim(bubbles: string[], bare = true): string | undefined {
   for (const bubble of bubbles) {
     for (const clause of statedClauses(bubble)) {
       const whole = clause.trim();
-      const word = CLAIM_WORDS.find(w => w === whole);
+      const word = bare ? CLAIM_WORDS.find(w => w === whole) : undefined;
       if (word) return word;
       const [lead, object] = afterOpeners(whole.split(' '));
       if (CLAIM_LEAD_VERBS.has(lead) && CLAIM_OBJECTS.has(object)) return `${lead} ${object}`;
       for (const phrase of CLAIM_PHRASES) {
+        if (!bare && BARE_CLAIM_PHRASES.has(phrase)) continue;
         const at = clause.indexOf(` ${phrase} `);
         if (at >= 0 && !reportsOtherwise(clause.slice(0, at + 1))) return phrase;
       }
@@ -299,13 +312,18 @@ function findClaim(bubbles: string[]): string | undefined {
  * Did this reply claim a change nothing made? PURE. A claim is backed by a mutating call in the
  * same envelope (it runs when the turn dispatches), or by `backedEarlier`: a change an earlier pass
  * of this same user-visible turn already made, which the caller reads off the turn's results.
+ *
+ * `taskTurn` false (a share or idle turn, from the turn's hook directive) reads the rows that name
+ * no change as talk about their day (BARE_CLAIM_PHRASES above). Unknown is a task turn: the whole
+ * lexicon, as before the turn kind was passed.
  */
 export function detectUnbackedClaim(
   bubbles: string[],
   toolCalls: readonly { name: string }[] | null,
   backedEarlier: boolean,
+  opts: { taskTurn?: boolean } = {},
 ): UnbackedClaimVerdict {
-  const phrase = findClaim(bubbles);
+  const phrase = findClaim(bubbles, opts.taskTurn !== false);
   const claimed = phrase !== undefined;
   const mutated = (toolCalls ?? []).some(c => MUTATING_TOOLS.has(c.name));
   return { claimed, ...(phrase !== undefined ? { phrase } : {}), unbacked: claimed && !mutated && !backedEarlier };
