@@ -52,7 +52,16 @@ import { reportError } from '../../diagnostics/errorLog.js';
 import { record } from '../../diagnostics/trace.js';
 import { HOOKS_SELECT_LABEL, MOMENTS_OFFER_LABEL } from '../../diagnostics/traceLabels.js';
 import type { LlmMessage, LlmRequest, LlmResult, LlmToolDef } from '../../llm/types.js';
-import { buildSystemPromptSections, processConvoResult, formatHistory, emptyExtras, callConvoLLM, annotateTappedReply } from './shared.js';
+import {
+  buildSystemPromptSections, processConvoResult, formatHistory, emptyExtras, callConvoLLM, annotateTappedReply,
+  parkedApprovalStanding, withOnScreenNote,
+} from './shared.js';
+import { needsGrounding } from '../routingGate.js';
+import { createEnvelopeStream } from '../../pipeline/envelopeStream.js';
+import { BUBBLE_HARD_CAP } from '../../pipeline/bubbleJson.js';
+import {
+  cleanEarlySentence, sentenceBlocker, streamArmed, streamFirstBubbleEnabled,
+} from '../../pipeline/earlyEmit.js';
 import { liveRemindersFor } from './liveReminders.js';
 import { voiceOutcome } from '../fallfirm/client.js';
 import { helpText } from '../fallfirm/floor.js';
@@ -105,6 +114,94 @@ function describeAttachments(media: IncomingMedia, opts: { transcriptionFailed: 
   if (opts.transcriptionFailed) bits.push('a voice memo (transcription not folded in yet — delegate a look to listen)');
   if (!bits.length) return '';
   return `[they attached ${bits.join(' + ')} — the contents aren't unpacked into this note. to see/read what's inside, open it with delegate_to_ops (media_scope "this_turn"); that IS you looking. never guess at what's inside before opening it, and NEVER tell them you can't see/open it.]`;
+}
+
+/**
+ * The early sink for ONE armed turn: the impure half of pipeline/earlyEmit.ts. It reads the model's
+ * envelope as it streams (pipeline/envelopeStream.ts) and hands each finished sentence of the reply
+ * to `send` the moment it closes, for as long as every check keeps reading clean.
+ *
+ * It only ever gets stricter. The first thing that fails disarms it for the rest of the turn and
+ * nothing more goes out early; whatever the model writes after that point is the ordinary pipeline's
+ * to judge, exactly as if nothing had streamed:
+ *   • a `tool_calls` verdict that is anything but a confirmed empty one (the reader fails closed and
+ *     reports it before the first sentence can exist), because a turn that acts can have its reply
+ *     cut to a holding line or replaced by the results;
+ *   • a sentence the per-sentence scan blocks (a promise, a claim, a refusal, an internal leak), or one
+ *     that cleans down to nothing;
+ *   • a sentence from a bubble at or past the count guard's last kept slot (bubbleJson.ts
+ *     collectBubbles keeps the first BUBBLE_HARD_CAP-1 bubbles and the LAST one, so a bubble in
+ *     between may not survive the parse, and one that went out early could not be taken back);
+ *   • a send that fails, so an opening can never arrive with a hole in it.
+ *
+ * Sends run strictly in order on one chain, never overlapping: the send path paces each bubble, and
+ * a second sentence must not overtake the first. `settled()` is that chain, and the turn waits on it
+ * before it settles the reply, so `sent` is final by then: exactly what reached their screen.
+ */
+function armEarlySend(
+  send: NonNullable<ChatContext['earlySend']>,
+  ask: string,
+  chatId: string,
+  handle: string | undefined,
+): { onTextDelta: (delta: string) => void; end: () => void; settled: () => Promise<void>; sent: string[] } {
+  let armed = true;
+  let failed = false;
+  let queued = 0;
+  let why: string | null = null;
+  let chain: Promise<void> = Promise.resolve();
+  const sent: string[] = [];
+  const disarm = (reason: string) => {
+    if (!armed) return;
+    armed = false;
+    why = reason;
+  };
+  const stream = createEnvelopeStream({
+    onToolCalls: empty => { if (!empty) disarm('tool_calls'); },
+    onSentence: (bubble, text) => {
+      if (!armed) return;
+      if (bubble >= BUBBLE_HARD_CAP - 1) { disarm('hard_cap'); return; }
+      const clean = cleanEarlySentence(text);
+      const blocked = clean ? sentenceBlocker(clean, ask) : 'empty';
+      if (blocked) { disarm(blocked); return; }
+      queued++;
+      const isFirst = queued === 1;
+      chain = chain.then(async () => {
+        if (failed) return;
+        try {
+          await send(clean, isFirst);
+          sent.push(clean);
+        } catch (err) {
+          failed = true;
+          disarm('send_failed');
+          console.warn(`[convo] early send failed — the rest of the reply goes out whole (chat ${chatId})`, err);
+        }
+      });
+    },
+  });
+  let ended = false;
+  return {
+    onTextDelta: delta => {
+      if (!armed) return;
+      // The lane calls this from inside its stream reader, which must never see a throw from here.
+      try { stream.push(delta); } catch (err) {
+        disarm('reader_error');
+        console.warn(`[convo] envelope reader threw — early send disarmed (chat ${chatId})`, err);
+      }
+    },
+    end: () => {
+      if (ended) return;
+      ended = true;
+      stream.end();
+      // A turn that ends armed ran clean to the last sentence; `why` stays null for it.
+      armed = false;
+      // One receipt per armed turn, whichever way it went: how many sentences went out early and what,
+      // if anything, stopped the rest. A turn that never armed files none, which is how "not eligible"
+      // reads apart from "eligible and a check said no".
+      record({ type: 'event', label: 'convo:early_send', chatId, handle, detail: { queued, disarmed: why } });
+    },
+    settled: () => chain,
+    sent,
+  };
 }
 
 export async function chat(
@@ -290,6 +387,13 @@ export async function chat(
   // runs beside the memory reads instead of after them, and awaited just before the prompt is built.
   // Never rejects, and never outlasts its budget: a slow engine reads as null, which renders nothing.
   const liveRemindersRead = liveRemindersFor(engine, chatId, chatContext?.senderHandle);
+  // Whether an approval is parked on this sender, for the early-emit gate below: the same pref the
+  // approval resolution reads after the call (convo/shared.ts parkedApprovalStanding). Started here so
+  // it rides beside the memory batch instead of adding a round trip in front of the model call, and
+  // only on a turn whose caller can take an early send at all. Never rejects (a failed read is parked).
+  const parkedRead: Promise<boolean> = chatContext?.earlySend
+    ? parkedApprovalStanding(chatContext.senderHandle)
+    : Promise.resolve(false);
 
   const [context, agentTz, climate, thesisDoc, whoProfile, holdingBeats] = handle
     ? await Promise.all([
@@ -770,24 +874,63 @@ export async function chat(
   const tailMessage: LlmMessage = { role: 'user', content: prompt.tail };
   const turnMessages: LlmMessage[] = [...messages.slice(0, -1), tailMessage, messages[messages.length - 1]];
 
+  // ── the early-emit gate ──────────────────────────────────────────────────────────────────────
+  // May this turn's first sentence go out the moment the model writes it (pipeline/earlyEmit.ts)?
+  // Only on a turn no post-check can rewrite, and every fact is one this turn already holds: the
+  // hook mode the selector picked, the routing gate's own pre-check on the same text it will read
+  // (no freshness read: that can only stand the gate down, never make it fire), the chat and turn
+  // shape, and the parked-approval read started beside the memory batch. Nothing new is awaited in
+  // front of the call but that read, which has long since landed. A caller with no sink never arms.
+  const earlySend = chatContext?.earlySend;
+  const early = earlySend && streamArmed({
+    enabled: streamFirstBubbleEnabled(),
+    hasParkedApproval: await parkedRead,
+    hookMode: hookDirective?.mode,
+    groundingFlagged: needsGrounding(textToSend) === 'yes',
+    isGroupChat,
+    introOrFirstMove: !!introWeave,
+    isBurst: (chatContext?.burstManifest?.length ?? 1) > 1,
+  })
+    ? armEarlySend(earlySend, textToSend, chatId, handle)
+    : null;
+
   try {
-    const res = await (call ?? callConvoLLM)({
-      role: 'convo',
-      system,
-      // Where that system string's stable prefixes end — the persona head, then the end of the
-      // system message, which changes only when this chat's tools, roster or model map do. The
-      // Anthropic lane caches each of them instead of cache-writing the system every call. Read off
-      // the sizes the assembler just reported, so no part of the string is measured twice.
-      systemCacheBreakpoints: prompt.cacheBreakpoints,
-      tools,
-      jsonBubbles: true,   // force the schema-valid envelope at the API on BOTH providers
-      toolsViaJson: true,  // tools are WRITTEN into that envelope (tool_calls), never sent natively
-      messages: turnMessages,
-      trace: { chatId, handle, label: 'convo' },
-    });
+    let res: LlmResult;
+    try {
+      res = await (call ?? callConvoLLM)({
+        role: 'convo',
+        system,
+        // Where that system string's stable prefixes end — the persona head, then the end of the
+        // system message, which changes only when this chat's tools, roster or model map do. The
+        // Anthropic lane caches each of them instead of cache-writing the system every call. Read off
+        // the sizes the assembler just reported, so no part of the string is measured twice.
+        systemCacheBreakpoints: prompt.cacheBreakpoints,
+        tools,
+        jsonBubbles: true,   // force the schema-valid envelope at the API on BOTH providers
+        toolsViaJson: true,  // tools are WRITTEN into that envelope (tool_calls), never sent natively
+        messages: turnMessages,
+        trace: { chatId, handle, label: 'convo' },
+        // The early sink, on an armed turn only. The OpenAI-compatible lanes stream when it is set; the
+        // Anthropic lane ignores it and the turn simply runs whole, as it does unarmed.
+        ...(early ? { onTextDelta: early.onTextDelta } : {}),
+      });
+    } finally {
+      // Nothing streams past the call, and every early send lands before the reply is settled against
+      // them: the sends are part of this turn's critical section, like the rest of its bubbles.
+      early?.end();
+      await early?.settled();
+    }
+    const onScreen = early?.sent ?? [];
     const result = await processConvoResult({
       res, chatId, handle, chatContext, textToSend, history, media,
-      turn: { system, messages: turnMessages, tools, call, cacheBreakpoints: prompt.cacheBreakpoints },
+      // A pass that replaces the draft after part of it went out is told what is on their screen:
+      // every such pass calls through `turn.call`, so it is wrapped here, once.
+      turn: {
+        system, messages: turnMessages, tools,
+        call: onScreen.length ? withOnScreenNote(call ?? callConvoLLM, onScreen) : call,
+        cacheBreakpoints: prompt.cacheBreakpoints,
+      },
+      emittedPrefix: onScreen,
       computed,
       // Her last few holding beats, the same list the `recent_beats` section above printed — so a
       // beat voiced down there when the draft held none steers off them too, without a second read.

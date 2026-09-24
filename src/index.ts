@@ -58,6 +58,7 @@ import { recordTurnTrace, type TurnTraceDraft } from './diagnostics/turnTrace.js
 import { loadContext } from './agents/loadContext.js';
 import { redactInternalTools, stripOpsScaffolding } from './agents/guardrails.js';
 import { splitIntoBubbles, splitIntoBubblesWithSplits } from './pipeline/bubbles.js';
+import { remainderAfterPrefix } from './pipeline/earlyEmit.js';
 import { buildBubbleReport, noteBubbleReport } from './pipeline/bubbleJson.js';
 import type { OpsTask } from './agents/types.js';
 
@@ -468,6 +469,66 @@ async function withTypingKeptAlive<T>(chatId: string, work: Promise<T>): Promise
 }
 
 /**
+ * The per-bubble guardrail every user-facing bubble passes, whichever path sends it (sendBubbles, or
+ * the early sink that sends a sentence while the reply is still being written): strip a leaked
+ * `[[re:N]]` routing tag, strip an echoed timestamp marker, scrub internal tool names and raw Ops
+ * scaffolding. Returns '' for a bubble that was nothing but those, which the caller drops.
+ */
+function prepareBubble(raw: string): string {
+  let stripped = stripReplyTag(raw);
+  if (stripped !== raw) console.warn('[guardrail] stripped a reply-routing tag from a user-facing bubble');
+  // History turns now carry `[9:14 AM]`-style timestamp markers (chatTime.ts); a model slip that
+  // echoes one at the head of a bubble is scrubbed here, same rationale as the [[re:N]] backstop.
+  const unstamped = stripTimestampMarker(stripped);
+  if (unstamped !== stripped) {
+    console.warn('[guardrail] stripped an echoed timestamp marker from a user-facing bubble');
+    stripped = unstamped;
+  }
+  return stripOpsScaffolding(redactInternalTools(stripped));
+}
+
+/**
+ * Send ONE already-prepared bubble: the pacing hold (or the no-dots gap), the send, the sent-bubble
+ * record, and the dots re-asserted when more is coming. The body of sendBubbles' loop, lifted out so
+ * the early sink sends through exactly the same steps a normal reply does. It never puts the dots
+ * down and never logs the delivery: both are once per reply, so the caller does them after its last
+ * bubble. `typingVisible` defaults to the channel's own answer; sendBubbles passes the one it read.
+ */
+async function sendOneBubble(
+  chatId: string,
+  text: string,
+  opts: { isFirst: boolean; isLast: boolean; replyTo?: ReplyTo; paced?: boolean; typingVisible?: boolean },
+): Promise<void> {
+  const { isFirst, isLast, replyTo } = opts;
+  const paced = opts.paced !== false;
+  const typingVisible = opts.typingVisible ?? resolveChannel(chatId).caps.typing;
+  if (paced && typingVisible) {
+    await waitForUserQuiet(chatId);
+    // Hold a LIVE typing indicator for a simulated-typing beat before every bubble (the
+    // first gets only a short beat — the user already waited through the LLM call), then
+    // send. No freshness ping before the last bubble: it could race past the send and
+    // re-show dots after the reply is done.
+    await holdTyping(chatId, typingDelayMs(text, isFirst), !isLast);
+    await waitForUserQuiet(chatId);
+  } else if (paced && !isLast && BRIDGE_BUBBLE_GAP_MS > 0) {
+    // No visible dots: skip the simulated-typing hold (dead air) and keep only a small inter-bubble
+    // gap so a multi-bubble reply still reads as separate sends rather than one wall of text.
+    await sleep(BRIDGE_BUBBLE_GAP_MS);
+  }
+  const sent = await sendMessage(chatId, text, replyTo);
+  // Remember this bubble by its channel message id so a later inbound reply_to can be resolved
+  // back to what Irises said. `replyTo?.message_id` is the anchor this bubble was threaded to (an
+  // inbound id) — the join key when a later tapped reply collapses to that thread root.
+  // Fire-and-forget; never blocks the send.
+  if (sent?.message?.id) void recordSentBubble(chatId, sent.message.id, text, replyTo?.message_id);
+  // If MORE bubbles are coming, re-assert the dots immediately so there's no dark gap — the user
+  // sees "bubble → dots again" = more coming. Not after the last one, where a ping racing past the
+  // send would read as "still typing" with nothing behind it. Fire-and-forget: startTyping swallows
+  // its own errors, and the next bubble's hold re-pings anyway. Only meaningful where dots show.
+  if (paced && typingVisible && !isLast) void startTyping(chatId);
+}
+
+/**
  * Send pre-split bubbles with a live typing indicator. Before every bubble we hold the
  * typing indicator for a simulated-typing beat (character count at a fast-texter speed,
  * floored/capped/jittered — and only a SHORT beat before the first bubble, since the user
@@ -491,16 +552,7 @@ async function sendBubbles(chatId: string, rawBubbles: string[], opts: SendBubbl
   // reply target; without it we fall back to replyToFirst.
   const prepared: { text: string; replyTo?: ReplyTo }[] = [];
   for (let i = 0; i < rawBubbles.length; i++) {
-    let stripped = stripReplyTag(rawBubbles[i]);
-    if (stripped !== rawBubbles[i]) console.warn('[guardrail] stripped a reply-routing tag from a user-facing bubble');
-    // History turns now carry `[9:14 AM]`-style timestamp markers (chatTime.ts); a model slip that
-    // echoes one at the head of a bubble is scrubbed here, same rationale as the [[re:N]] backstop.
-    const unstamped = stripTimestampMarker(stripped);
-    if (unstamped !== stripped) {
-      console.warn('[guardrail] stripped an echoed timestamp marker from a user-facing bubble');
-      stripped = unstamped;
-    }
-    const text = stripOpsScaffolding(redactInternalTools(stripped));
+    const text = prepareBubble(rawBubbles[i]);
     if (!text) continue;
     const replyTo = opts.targets?.[i] ?? (i === 0 ? opts.replyToFirst : undefined);
     prepared.push({ text, replyTo });
@@ -515,31 +567,7 @@ async function sendBubbles(chatId: string, rawBubbles: string[], opts: SendBubbl
   const typingVisible = resolveChannel(chatId).caps.typing;
   for (let i = 0; i < prepared.length; i++) {
     const { text, replyTo } = prepared[i];
-    const isLast = i === prepared.length - 1;
-    if (paced && typingVisible) {
-      await waitForUserQuiet(chatId);
-      // Hold a LIVE typing indicator for a simulated-typing beat before every bubble (the
-      // first gets only a short beat — the user already waited through the LLM call), then
-      // send. No freshness ping before the last bubble: it could race past the send and
-      // re-show dots after the reply is done.
-      await holdTyping(chatId, typingDelayMs(text, i === 0), !isLast);
-      await waitForUserQuiet(chatId);
-    } else if (paced && !isLast && BRIDGE_BUBBLE_GAP_MS > 0) {
-      // No visible dots: skip the simulated-typing hold (dead air) and keep only a small inter-bubble
-      // gap so a multi-bubble reply still reads as separate sends rather than one wall of text.
-      await sleep(BRIDGE_BUBBLE_GAP_MS);
-    }
-    const sent = await sendMessage(chatId, text, replyTo);
-    // Remember this bubble by its channel message id so a later inbound reply_to can be resolved
-    // back to what Irises said. `replyTo?.message_id` is the anchor this bubble was threaded to (an
-    // inbound id) — the join key when a later tapped reply collapses to that thread root.
-    // Fire-and-forget; never blocks the send.
-    if (sent?.message?.id) void recordSentBubble(chatId, sent.message.id, text, replyTo?.message_id);
-    // If MORE bubbles are coming, re-assert the dots immediately so there's no dark gap — the user
-    // sees "bubble → dots again" = more coming. Not after the last one, where a ping racing past the
-    // send would read as "still typing" with nothing behind it. Fire-and-forget: startTyping swallows
-    // its own errors, and the next bubble's hold re-pings anyway. Only meaningful where dots show.
-    if (paced && typingVisible && !isLast) void startTyping(chatId);
+    await sendOneBubble(chatId, text, { isFirst: i === 0, isLast: i === prepared.length - 1, replyTo, paced, typingVisible });
   }
   // The reply is fully out, so put the dots down EXPLICITLY. This used to be left implicit on the
   // theory that "sending a message clears the recipient's typing dots" — true on the web channel,
@@ -741,6 +769,37 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
   }));
   const staleArrivals = arrivals.filter(a => a.sendsAfterArrival > 0).length;
   if (staleArrivals) console.log(`[main] ${staleArrivals}/${arrivals.length} queued message(s) predate later sends`);
+
+  // ── the early sink ────────────────────────────────────────────────────────────────────────────
+  // What `chat()` calls with each sentence of the reply the moment the model has written it, on the
+  // turns its early-emit gate arms (agents/convo/client.ts; pipeline/earlyEmit.ts). A sentence goes
+  // out through the same steps as any other bubble: the send law's split (so it is shaped exactly as
+  // it would be inside the whole reply), the per-bubble guardrail, and sendOneBubble's pacing, typing
+  // and sent-bubble record. `sentEarly` is what the channel actually took, bubble by bubble, which is
+  // what the remainder below is cut against.
+  //
+  // Bubble 1's thread target is the one resolveOutboundBubbles gives a single message's first bubble
+  // (a burst never arms, so its per-bubble tags never reach here): anchored to their message when they
+  // tapped reply or the reply is gapped, else none. Both reads are the ones the send block below
+  // makes, taken now because the first bubble can leave before the reply exists. The early sends log
+  // no delivery (the delivery is logged once, by whatever sends last), so the send log the `gapped`
+  // read below makes still hasn't moved since this one.
+  const earlyAnchor = (incomingReplyTo || (earliestReceivedAt > 0 && countSendsSince(chatId, earliestReceivedAt) > 0))
+    ? { message_id: messageId }
+    : undefined;
+  const sentEarly: string[] = [];
+  const earlySend = async (sentence: string): Promise<void> => {
+    for (const piece of splitIntoBubbles(sentence)) {
+      const bubble = prepareBubble(piece);
+      if (!bubble) continue;
+      // First means first on their screen, which only this side knows: `chat()`'s own `isFirst` is
+      // the same thing whenever the first sentence's pieces all survive the guardrail.
+      const first = sentEarly.length === 0;
+      await sendOneBubble(chatId, bubble, { isFirst: first, isLast: false, replyTo: first ? earlyAnchor : undefined });
+      sentEarly.push(bubble);
+    }
+  };
+
   const out = await agentClient.chat(chatId, text, media, {
     isGroupChat,
     participantNames,
@@ -757,6 +816,7 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
     // Per-message arrival truth (aligned to burstManifest / [msg N]), so the prompt can flag a queued
     // message Irises has already sent past as answering an older state of the thread.
     arrivals,
+    earlySend,
   });
   turnOut = out;
   const { text: responseText, reaction, renameChat, rememberedUser, generatedImage, groupChatIcon, removeMember, delegatedTask, hardCapped, turnTrace } = out;
@@ -816,6 +876,8 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
   // as "nothing shipped" so every exit below (a reaction-only turn, a turn that produced nothing at
   // all) still has an honest reading to file: an empty list capped nothing and split nothing.
   let bubbleReport = buildBubbleReport([], { hardCapped: false, splits: 0 });
+  // Whether bubbles went out early and nothing has closed that delivery yet (see after the block).
+  let earlyDeliveryOpen = sentEarly.length > 0;
 
   if (finalText || generatedImage || groupChatIcon) {
     // Split into bubbles, strip the routing tags, and compute each bubble's native-reply target.
@@ -830,7 +892,14 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
     // would attach another chat's or another agent's cap to this receipt); `splits` comes from the
     // split above. Also parked per chat (lastBubbleReport) for an out-of-band reader — see the
     // ordering note there; a turn receipt assembled here uses the returned report directly.
-    bubbleReport = noteBubbleReport(chatId, buildBubbleReport(bubbles, { hardCapped: hardCapped === true, splits: split.splits }));
+    // Part of the reply may already be on their screen (the early sink above): then only what follows
+    // it is sent, cut with the same comparison the history row was settled with (convo/shared.ts). A
+    // turn that sent nothing early takes none of this and runs exactly as it always has.
+    const remainder = sentEarly.length ? remainderAfterPrefix(bubbles, sentEarly) : null;
+    if (remainder?.diverged) console.log(`[main] the reply changed after ${sentEarly.length} bubble(s) went out early — sending only what is new (chat ${chatId})`);
+    // The report reads the reply as it reached them: what went early, then what follows it.
+    const shipped = remainder ? [...sentEarly, ...remainder.rest] : bubbles;
+    bubbleReport = noteBubbleReport(chatId, buildBubbleReport(shipped, { hardCapped: hardCapped === true, splits: split.splits }));
 
     // If we're delegating, thread the LATE Ops follow-up to the message that actually asked, not the
     // last burst message (which may be a "thanks"). Prefer the message a holding bubble quoted; else,
@@ -843,7 +912,15 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
 
     // Send text messages first (before generating image). The Convo client already
     // recorded the assistant turn, so don't double-record here (record: false).
-    if (bubbles.length > 0) {
+    if (remainder) {
+      // Only the rest, unthreaded: the one bubble a single message's reply anchors is the first, and
+      // that one already went. sendBubbles puts the dots down and logs the delivery after its last.
+      if (remainder.rest.length > 0) {
+        await sendBubbles(chatId, remainder.rest, { record: false });
+        earlyDeliveryOpen = false;
+      }
+      console.log(`[timing] sendMessage (${sentEarly.length} early + ${remainder.rest.length} after): ${Date.now() - start}ms`);
+    } else if (bubbles.length > 0) {
       await sendBubbles(chatId, bubbles, {
         targets,
         record: false,
@@ -894,6 +971,18 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
     console.log(`[timing] total: ${Date.now() - start}ms (${extras || 'text only'})`);
   } else if (reaction) {
     console.log(`[main] Reaction-only response (saved to history for context)`);
+  }
+
+  // A reply that went out early and left nothing after it never reached sendBubbles, which is what
+  // puts the dots down and logs the delivery once a reply is out. Close it here the same way: the
+  // dots come down now rather than at the lock's exit, and the send log gets its one entry, so the
+  // next turn reads this one as sent.
+  if (earlyDeliveryOpen) {
+    if (resolveChannel(chatId).caps.typing) releaseTyping(chatId);
+    noteSend(chatId);
+    // With no text left at all the send block never read the bubbles, so the receipt's reading is
+    // still "nothing shipped". What shipped is what went early.
+    if (!finalText) bubbleReport = noteBubbleReport(chatId, buildBubbleReport(sentEarly, { hardCapped: false, splits: 0 }));
   }
 
   // ── the turn receipt ────────────────────────────────────────────────────────────────────────

@@ -6,7 +6,9 @@ process.env.TZ = 'UTC';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { streamArmed, sentenceBlocker, cleanEarlySentence, type PreCallFacts } from './earlyEmit.js';
+import {
+  streamArmed, sentenceBlocker, cleanEarlySentence, remainderAfterPrefix, settleOnScreen, type PreCallFacts,
+} from './earlyEmit.js';
 
 const CLEAN: PreCallFacts = {
   hasParkedApproval: false,
@@ -69,4 +71,51 @@ test('sentenceBlocker: raw Ops scaffolding reads as an internal leak', () => {
 
 test('cleanEarlySentence: strips a leaked reply-routing tag', () => {
   assert.equal(cleanEarlySentence('[[re:2]]yes'), 'yes');
+});
+
+test('remainderAfterPrefix: an unchanged prefix leaves exactly the tail bubbles', () => {
+  const r = remainderAfterPrefix(['oh nice', 'what did you put in it?', 'mine always burns'], ['Oh  nice']);
+  assert.deepEqual(r, { rest: ['what did you put in it?', 'mine always burns'], diverged: false });
+});
+
+test('remainderAfterPrefix: a prefix that ends inside a bubble leaves the rest of that bubble', () => {
+  // The stream closed a sentence where the bubble splitter did not ("etc." is an abbreviation to it).
+  const r = remainderAfterPrefix(['eggs, rice, etc. and a lot of chili', 'classic'], ['eggs, rice, etc.']);
+  assert.deepEqual(r, { rest: ['and a lot of chili', 'classic'], diverged: false });
+});
+
+test('remainderAfterPrefix: the whole reply already out leaves nothing to send', () => {
+  assert.deepEqual(remainderAfterPrefix(['408'], ['408']), { rest: [], diverged: false });
+});
+
+test('remainderAfterPrefix: a diverged reply never repeats what already went out', () => {
+  const r = remainderAfterPrefix(['oh nice', 'actually wait', 'what rice?'], ['oh nice', 'love that']);
+  assert.equal(r.diverged, true);
+  assert.deepEqual(r.rest, ['actually wait', 'what rice?']);
+  // …and a bubble equal to an emitted sentence, wherever it sits, is dropped.
+  assert.deepEqual(remainderAfterPrefix(['new take', 'Love that'], ['oh nice', 'love that']).rest, ['new take']);
+});
+
+test('remainderAfterPrefix: a prefix that stops mid-word is a divergence, never a cut', () => {
+  assert.equal(remainderAfterPrefix(['heyo there'], ['hey']).diverged, true);
+});
+
+test('remainderAfterPrefix: an empty prefix leaves everything', () => {
+  assert.deepEqual(remainderAfterPrefix(['a', 'b'], []), { rest: ['a', 'b'], diverged: false });
+});
+
+test('settleOnScreen: an unchanged reply ships whole and is recorded whole', () => {
+  assert.deepEqual(settleOnScreen(['oh nice.'], 'oh nice.\n---\nwhat did you put in it?'),
+    { text: 'oh nice.\n---\nwhat did you put in it?', record: 'oh nice.\n---\nwhat did you put in it?' });
+});
+
+test('settleOnScreen: a replaced reply loses its echo, and the record leads with what they saw', () => {
+  // Fused onto the echo with no sentence end, so it no longer reads as the same prefix.
+  const out = settleOnScreen(['oh nice.'], 'oh nice sorry, i cant check that\n---\nwhat was it?');
+  assert.equal(out.text, 'sorry, i cant check that\n---\nwhat was it?');
+  assert.equal(out.record, 'oh nice.\n---\nsorry, i cant check that\n---\nwhat was it?');
+});
+
+test('settleOnScreen: nothing left to ship still records what went out', () => {
+  assert.deepEqual(settleOnScreen(['oh nice.'], null), { text: null, record: 'oh nice.' });
 });

@@ -69,6 +69,7 @@ import { redactInternalTools } from '../guardrails.js';
 import { stripReplyTag } from '../../state/replyThreading.js';
 import { recordHoldingBeat } from '../../state/holdingBeats.js';
 import { parseReply, BUBBLE_LAW_MAX } from '../../pipeline/bubbleJson.js';
+import { settleOnScreen } from '../../pipeline/earlyEmit.js';
 import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '../../pipeline/bubbles.js';
 import { timestampLabel, renderConversationTiming, describeGap } from '../../pipeline/chatTime.js';
 import { DEFAULT_TZ } from '../../pipeline/zonedTime.js';
@@ -155,6 +156,12 @@ export interface ChatContext {
   // AFTER that one was typed — it queued behind the chat lock and now answers an older state of the
   // thread, so renderArrivalGap tells the model to check whether those sends already covered it.
   arrivals?: { receivedAt: number; sendsAfterArrival: number }[];
+  /** The early-send sink (index.ts), when the send boundary can take a sentence before the reply
+   *  finishes: `chat()` hands it each sentence the moment the model has written it, on the turns the
+   *  early-emit gate arms (pipeline/earlyEmit.ts). It sends through the same per-bubble path as the
+   *  rest of the reply. Absent (every other caller, and every test that does not exercise it) means
+   *  the whole reply is awaited first, exactly as before this existed. */
+  earlySend?: (sentence: string, isFirst: boolean) => Promise<void>;
 }
 
 /** True when the user tapped reply on any earlier message this turn (any resolution kind, incl. the
@@ -189,6 +196,11 @@ export interface ChatResponse {
    *  path that never built a prompt (the command fast paths, the legacy agent) — nothing to
    *  attribute. Diagnostics only; see diagnostics/turnTrace.ts. */
   turnTrace?: TurnTraceDraft;
+  /** The sentences that already went out through `ChatContext.earlySend` while the model was still
+   *  writing, in the order they were sent. Absent when nothing went early. When present, `text` is
+   *  either the whole reply that still starts with them (the send boundary sends only what follows)
+   *  or a replacement already stripped of them (pipeline/earlyEmit.ts settleOnScreen). */
+  emittedPrefix?: string[];
 }
 
 export function emptyExtras() {
@@ -1993,9 +2005,17 @@ export function formatHistory(messages: StoredMessage[], isGroupChat: boolean, t
  * No retry on stopReason 'length': a truncated envelope re-truncates on retry, and tier-4 repair
  * already rescues the prefix. Nothing has been dispatched before the retry, so no double effects;
  * the bad draft never reaches history. Both attempts are traced (label ':json_retry').
+ *
+ * No retry either once a STREAMED reply has handed text out (`res.emitted`): the caller's sink may
+ * already have put a sentence of it on their screen, and a resend would answer over the top of it.
+ * What arrived is parsed as it stands, which is the streaming failure path (a cut envelope still
+ * rescues its bubbles through the parser's repair tier). This can't tell a sink that sent something
+ * from one that only read, so it fails closed: the cost is the corrective retry on a streamed turn
+ * whose reply was not an envelope at all, which the schema the lane enforces makes rare.
  */
 export async function callConvoLLM(req: LlmRequest): Promise<LlmResult> {
   const res = await callLLM(req);
+  if (res.emitted) return res;
   const needsRetry = !parseReply(res.text).wasEnvelope && !!res.text?.trim() && res.stopReason !== 'length';
   if (!needsRetry) return res;
 
@@ -2007,8 +2027,11 @@ export async function callConvoLLM(req: LlmRequest): Promise<LlmResult> {
     { role: 'user', content: 'SYSTEM: that reply was not the required format. Resend the SAME content as ONE valid JSON object, exactly the shape {"confidence_level":<0-100>,"tool_calls":[{"name":"...","args":{...}}] or null,"bubbles":[{"text":"...","re":null}]} — nothing before or after the object. If your reply promised to look something up, the matching tool_calls entry must be included.' },
   ];
   try {
+    // Never streamed: the sink belongs to the first call, and a retry that fails validation below is
+    // discarded, so none of its text may reach the screen on the way.
+    const { onTextDelta: _sink, ...unstreamed } = req;
     const retry = await callLLM({
-      ...req,
+      ...unstreamed,
       messages: corrective,
       trace: { ...req.trace, label: `${label}:json_retry` },
     });
@@ -2021,6 +2044,34 @@ export async function callConvoLLM(req: LlmRequest): Promise<LlmResult> {
     reportError({ source: 'convo', category: 'retry_exhausted', severity: 'warn', err, detail: { attempts: 2 }, chatId: req.trace?.chatId });
   }
   return res;
+}
+
+// ── What already went out early ─────────────────────────────────────────────────────────────
+/**
+ * The line a replacement call is handed when part of the first draft already went out (the early
+ * sink in convo/client.ts): what is on their screen, and that her new text comes after it. The same
+ * mechanic the composer's holding-text anchor states (orchestrator.ts), for the same reason: without
+ * it a literal model retypes the line and the echo lands twice. PURE, and the text is data.
+ */
+export function renderOnScreenNote(onScreen: readonly string[]): string {
+  return `Part of your reply already went out while you were still writing it, and is on their screen now: "${onScreen.join(' ')}". Never send it again or retype any part of it. Whatever you write now is the next text after it.`;
+}
+
+/**
+ * Wrap a turn's convo call so every call made through it closes with the on-screen note. Every pass
+ * that can replace the draft after the fact (the promise and quiet re-asks, the recall and error-log
+ * passes, the outcome pass, the silent retry) makes its call through `turn.call`, so wrapping it once
+ * where the turn is built reaches all of them without each learning about early sends. The note is
+ * its own trailing message rather than an edit to the last one, so the instruction each pass wrote
+ * stays exactly as it was.
+ */
+export function withOnScreenNote(
+  call: (req: LlmRequest) => Promise<LlmResult>,
+  onScreen: readonly string[],
+): (req: LlmRequest) => Promise<LlmResult> {
+  if (!onScreen.length) return call;
+  const note: LlmMessage = { role: 'user', content: renderOnScreenNote(onScreen) };
+  return req => call({ ...req, messages: [...req.messages, note] });
 }
 
 // ── recall_memory: the archive second pass ──────────────────────────────────────────────────
@@ -2660,12 +2711,37 @@ function approvedTask(pa: PendingApprovalPref, chatId: string, sender: string, n
  *     grace window the marker lapses and the gate is out of it;
  *   • nothing pending → nothing happens, and the classify lane is never consulted.
  */
+/** Is this marker a parked ask resolvePendingApproval would act on? The one shape test, shared by it
+ *  and by the early-emit read below, so the two can never disagree about what "parked" means. */
+function isParkedMarker(
+  pa: PendingApprovalPref | undefined,
+): pa is PendingApprovalPref & { taskId: string; request: string; askedAt: number } {
+  return !!pa?.taskId && !!pa.request && typeof pa.askedAt === 'number';
+}
+
+/**
+ * Would this turn's approval resolution find something parked? The same flag, the same pref and the
+ * same shape test resolvePendingApproval runs, read BEFORE the model call so the early-emit gate
+ * (convo/client.ts) can keep a turn whose draft that resolution may replace from streaming. Broader
+ * than the resolution on purpose: a stale row it would only drop still reads as parked here, and a
+ * failed read reads as parked, because the cost of a false yes is one turn that does not stream and
+ * the cost of a false no is her draft on their screen over the question she owed them.
+ */
+export async function parkedApprovalStanding(sender: string | undefined): Promise<boolean> {
+  if (!opsApprovalGateEnabled() || !sender) return false;
+  try {
+    return isParkedMarker(await getPreference<PendingApprovalPref>(sender, 'pending_approval'));
+  } catch {
+    return true;
+  }
+}
+
 async function resolvePendingApproval(a: {
   chatId: string; handle: string | undefined; sender: string; text: string;
 }): Promise<ApprovalOutcome> {
   const pa = await getPreference<PendingApprovalPref>(a.sender, 'pending_approval')
     .catch(err => { console.error('[convo] failed to read pending_approval', err); return undefined; });
-  if (!pa?.taskId || !pa.request || typeof pa.askedAt !== 'number') return NO_APPROVAL;
+  if (!isParkedMarker(pa)) return NO_APPROVAL;
 
   const now = Date.now();
   const latencyMs = now - pa.askedAt;
@@ -3595,6 +3671,14 @@ export async function processConvoResult(args: {
   // again. A beat voiced here when the draft held none (voiceInstant) is steered off these, and so is
   // its floor. Absent reads as no history. Forwarded by every recursing pass via {...args}.
   recentBeats?: readonly string[];
+  // The sentences that already went out while the model was still writing this turn's first draft
+  // (convo/client.ts, the early sink), in send order. Absent or empty on every turn that did not
+  // stream, which is every turn the early-emit gate did not arm, and then nothing below changes. When
+  // present they are on their screen whatever this function decides: a pass that replaces the draft
+  // is told so (withOnScreenNote, wrapped round `turn.call` where the turn is built), the reply that
+  // ships is settled against them before it is recorded, and a turn that has them is not silent.
+  // Forwarded by every recursing pass via {...args}.
+  emittedPrefix?: readonly string[];
   hooks?: {
     directive: HookDirective;
     report: HookSelectReport | null;
@@ -3604,6 +3688,7 @@ export async function processConvoResult(args: {
   } | null;
 }): Promise<ChatResponse> {
   const { chatId, handle, chatContext, textToSend, history, media } = args;
+  const onScreen = args.emittedPrefix ?? [];
   // Every convo call this turn makes counts against one cap, whichever pass makes it.
   const budget: ConvoCallBudget = args.callBudget ?? { used: 1 };
 
@@ -4553,8 +4638,11 @@ export async function processConvoResult(args: {
   if (!textResponse && !producedHere('reaction') && !producedHere('renameChat') && !producedHere('rememberedUser')
       && !producedHere('removeMember') && !producedHere('delegatedTask')
       && !res.toolCalls.length && textToSend.trim()) {
-    // The fence: a retry never retries, and the outcome pass already IS the turn's extra call.
-    const turn = args.silentRetry || args.outcomePass || !args.turn || !takeConvoCall(budget) ? undefined : args.turn;
+    // The fence: a retry never retries, and the outcome pass already IS the turn's extra call. Nor is
+    // a draft replayed once part of it went out early: its opening is on their screen, and a fresh
+    // reply to the same input would answer over the top of it (the streaming failure path, where the
+    // envelope was cut past recovery). The floor below closes the thought instead.
+    const turn = onScreen.length || args.silentRetry || args.outcomePass || !args.turn || !takeConvoCall(budget) ? undefined : args.turn;
     // chatId in the line, not just the trace event: a live convergence round attributes the failure
     // per-chat from the instance log when the trace buffer isn't reachable.
     console.warn(`[convo] silent turn on a real message (chat ${chatId}) — ${turn ? 'retrying once' : 'voicing the floor'}`);
@@ -4582,13 +4670,22 @@ export async function processConvoResult(args: {
       }
     }
     // The retry is spent (or unavailable): say SOMETHING honest in Irises's own voice rather than
-    // leave them on read. Framed as a failure so Fallfirm hands the next move back to them.
-    textResponse = await voiceOutcome({
-      kind: 'failed',
-      summary: 'their last message glitched on your end and you never actually answered it',
-      nextStep: 'ask them to say that again',
-      originalRequest: textToSend,
-    }, chatId, handle);
+    // leave them on read. Framed as a failure so Fallfirm hands the next move back to them. When the
+    // opening already went out, that opening is the context: they were answered in part, and the
+    // line has to follow what they have rather than claim they got nothing.
+    textResponse = await voiceOutcome(onScreen.length
+      ? {
+          kind: 'failed',
+          summary: `your reply got cut off after its opening, so all they have is "${onScreen.join(' ')}" and the rest never went out`,
+          nextStep: 'ask them to say that again if what they got does not answer it',
+          originalRequest: textToSend,
+        }
+      : {
+          kind: 'failed',
+          summary: 'their last message glitched on your end and you never actually answered it',
+          nextStep: 'ask them to say that again',
+          originalRequest: textToSend,
+        }, chatId, handle);
   }
 
   // Guardrail: scrub internal tool/agent names before this text is recorded to history or
@@ -4596,10 +4693,27 @@ export async function processConvoResult(args: {
   // Ops is a separate field and is intentionally NOT scrubbed.
   if (textResponse) textResponse = redactInternalTools(textResponse);
 
+  // Part of this reply may already be on their screen (the early sink). Settled here, after every
+  // pass that could replace it and before anything records it: a reply that still opens with what
+  // went out ships whole (the send boundary cuts that opening off itself), and one that was replaced
+  // loses any echo of it, while the record leads with what they actually saw. `shown` is that
+  // record; undefined on every turn that sent nothing early, which leaves all of this as it was.
+  let shown: string | null | undefined;
+  if (onScreen.length) {
+    const settled = settleOnScreen(onScreen, textResponse);
+    if (settled.text !== textResponse) {
+      console.log(`[convo] the reply changed after ${onScreen.length} sentence(s) went out early — settled against their screen (chat ${chatId})`);
+      record({ type: 'event', label: 'convo:early_settled', chatId, handle, detail: { onScreen: onScreen.length, left: settled.text ? 'rest' : 'nothing' } });
+    }
+    textResponse = settled.text;
+    shown = settled.record;
+  }
+
   // The [[re:N]] routing tags must SURVIVE in the returned text (index.ts maps them to inbound
   // message ids to thread each bubble), but must never pollute what we STORE — history, the holding
   // line the composer continues from, and the dossier — so strip them for those uses only.
-  const cleanForRecord = textResponse ? stripReplyTag(textResponse) : textResponse;
+  const recordSource = shown !== undefined ? shown : textResponse;
+  const cleanForRecord = recordSource ? stripReplyTag(recordSource) : recordSource;
 
   // Hand the composer the exact holding line we're sending, so its follow-up continues straight
   // from it (one seamless thread, not a fresh reply). Tag-free = what the user actually sees. Only
@@ -4819,7 +4933,7 @@ export async function processConvoResult(args: {
   // Deliberately NOT shared with the silent-turn floor above, which tests the same six terms at an
   // earlier moment — before it voices — and would read `false` here afterwards. Same words, a
   // different question ("did the model produce nothing" vs "did this turn end with nothing").
-  const producedNothingVisible = !textResponse && !effects.reaction && !effects.renameChat && !effects.rememberedUser && !effects.removeMember && !effects.delegatedTask;
+  const producedNothingVisible = !textResponse && !onScreen.length && !effects.reaction && !effects.renameChat && !effects.rememberedUser && !effects.removeMember && !effects.delegatedTask;
 
   // Tripwire: that state is the silent-turn failure mode. The floor above now RECOVERS the
   // no-tool-call variant, so what still reaches here is the tool-bearing one (a tool-only envelope
@@ -4927,5 +5041,6 @@ export async function processConvoResult(args: {
     text: textResponse, reaction: effects.reaction, renameChat: effects.renameChat,
     rememberedUser: effects.rememberedUser, removeMember: effects.removeMember,
     delegatedTask: effects.delegatedTask, generatedImage: null, groupChatIcon: null, hardCapped, turnTrace,
+    ...(onScreen.length ? { emittedPrefix: [...onScreen] } : {}),
   };
 }
