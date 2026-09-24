@@ -475,6 +475,18 @@ const WIDE_REMINDERS: ReminderRef[] = [
   },
 ];
 
+/** Her holding-beat history at its fullest — HOLDING_BEATS_KEPT (state/holdingBeats.ts), five, oldest
+ *  first as the store returns it — so the `recent_beats` ceiling is the whole list a busy chat carries.
+ *  The media turn is where it is measured: two looks are already running there, so it is a chat whose
+ *  last few handoffs really did leave beats behind. */
+const FULL_BEATS: string[] = [
+  'hmm lemme see what the north supplier says',
+  'one sec',
+  'digging into the cedar lead times',
+  'ok give me a minute on that permit',
+  'hm, pulling up the lease terms',
+];
+
 /** The caller addendum the live turn actually passes: the one-off version note
  *  (update/announce.ts claimPendingUpdateNote — private to that module, so the text is mirrored
  *  here with a stand-in build sha of the same length). */
@@ -784,12 +796,12 @@ const FIXTURES: Fixture[] = [
         hits: [{ label: 'the lease pdf they just sent', source: 'research' }],
       },
       craft: craftFacts(MEDIA_DATA, `the lease pdf, can you read it ${MEDIA_NOTE}`),
-      liveState: { reminders: WIDE_REMINDERS },
+      liveState: { reminders: WIDE_REMINDERS, holdingBeats: FULL_BEATS },
     },
     memoryStack: MEDIA_STACK,
     sections: [
       'persona', 'tool_docs', 'capability', 'model_map', 'craft_modules', 'update_status',
-      'context_block', 'active_ops', 'live_reminders', 'current_time', 'weather', 'status_contract',
+      'context_block', 'active_ops', 'recent_beats', 'live_reminders', 'current_time', 'weather', 'status_contract',
       'conversation_timing', 'reply_order', 'turn_focus', 'behavior_anchor', 'json_anchor',
     ],
   },

@@ -14,6 +14,7 @@ import { memoryRelevanceEnabled, shortEntryLabel, threadHit } from '../../memory
 import { renderedTurnFocusHits, type TurnFocusHit, type TurnFocusInput } from './turnFocus.js';
 import { getActiveOps, getRecentlyEndedOps } from '../../state/opsCoordination.js';
 import { getConversation, addMessage, clearConversation, clearUserProfile } from '../../state/conversation.js';
+import { recentHoldingBeats } from '../../state/holdingBeats.js';
 import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
 import { pendingIntroWeave } from '../ops/firstMove.js';
 import { timestampLabel } from '../../pipeline/chatTime.js';
@@ -290,7 +291,7 @@ export async function chat(
   // Never rejects, and never outlasts its budget: a slow engine reads as null, which renders nothing.
   const liveRemindersRead = liveRemindersFor(engine, chatId, chatContext?.senderHandle);
 
-  const [context, agentTz, climate, thesisDoc, whoProfile] = handle
+  const [context, agentTz, climate, thesisDoc, whoProfile, holdingBeats] = handle
     ? await Promise.all([
         // Pass the current turn text so the short-tier renderer can gate whether the freshest research
         // look renders in full (on-topic follow-up) or collapses to a settled digest line (topic moved on).
@@ -320,8 +321,13 @@ export async function chat(
         // from, pulled here so the edge can name the far side of the contrast without a second parse
         // of the markdown. Null for a group or a not-yet-named person, which the block handles.
         getUserProfile(handle),
+        // Her own last few holding beats in THIS chat (state/holdingBeats.ts), for the `recent_beats`
+        // section the handoff rules point at. Chat-keyed, unlike the handle-keyed reads above: the
+        // beat history belongs to the conversation. A pref read, so it rides this batch rather than
+        // adding a round trip of its own.
+        recentHoldingBeats(chatId),
       ])
-    : [{ block: '', hotLook: null, turn: null, gates: {}, craft: {}, pendingAsk: false }, undefined, defaultClimate(), null, null];
+    : [{ block: '', hotLook: null, turn: null, gates: {}, craft: {}, pendingAsk: false }, undefined, defaultClimate(), null, null, []];
   const contextBlock = context.block;
   // The read as the `thesis` dyn section, or '' — which pushes nothing, so an install with no thesis
   // builds a prompt byte-identical to one that never had the feature. `renderThesisSection` splits
@@ -737,8 +743,9 @@ export async function chat(
   // person. Each renders nothing when it is empty.
   const personaTurn = { hooks: hookDirective, moments: momentLines, thesis: thesisSection };
   // What stands live beyond the running lookups (convo/shared.ts LiveState): their reminders, read
-  // above within its budget, and the lookups that ended in the last few minutes.
-  const liveState = { reminders: await liveRemindersRead, endedOps: getRecentlyEndedOps(chatId) };
+  // above within its budget, the lookups that ended in the last few minutes, and her own recent
+  // holding beats from the batch above.
+  const liveState = { reminders: await liveRemindersRead, endedOps: getRecentlyEndedOps(chatId), holdingBeats };
   const prompt = buildSystemPromptSections(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, userTz, affectState, computed, capabilitySummary, climate, thread, introWeave, turnFocus, craftFacts, personaTurn, liveState);
   const system = prompt.system;
 

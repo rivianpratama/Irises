@@ -20,10 +20,22 @@ test('every kind wraps in <prompt>, tags the situation, and steers against repea
   }
 });
 
-test('holding is framed as the FIRST on-it line and names the hint', () => {
+test('holding is framed as the one opening beat and names the hint', () => {
   const brief = buildProgressBrief({ kind: 'holding', request: 'owner of 412 maple', addressHint: '412 maple st' }, CTX);
-  assert.match(brief, /first "on it" line/i);
+  assert.match(brief, /this is your opening beat/i);
+  assert.match(brief, /one bubble, short, true/i);
+  assert.match(brief, /exactly one item/i, 'the anchor holds it to one bubble');
   assert.match(brief, /412 maple st/, 'the address hint is surfaced so the line names the real thing');
+});
+
+test('her recent beats render newest first on every kind, and not at all when there are none', () => {
+  for (const kind of ['holding', 'still_on_it', 'heartbeat', 'progress'] as const) {
+    // Oldest first, the order state/holdingBeats.ts recentHoldingBeats hands them over in.
+    const brief = buildProgressBrief({ kind, request: 'x', recentBeats: ['first beat', 'second beat'] }, CTX);
+    assert.match(brief, /## The beats you sent most recently/, kind);
+    assert.ok(brief.indexOf('- second beat') < brief.indexOf('- first beat'), `${kind}: newest first`);
+    assert.doesNotMatch(buildProgressBrief({ kind, request: 'x', recentBeats: [] }, CTX), /beats you sent most recently/, kind);
+  }
 });
 
 test('still_on_it and heartbeat both say NOT to repeat the earlier "on it"', () => {

@@ -16,7 +16,7 @@ import { buildUserMemory } from '../../memory/wrappers.js';
 import { redactInternalTools } from '../guardrails.js';
 import { parseReply } from '../../pipeline/bubbleJson.js';
 import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '../../pipeline/bubbles.js';
-import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
+import { wrapPrompt, dataTag, neutralizeTagBreakouts } from '../../llm/promptTag.js';
 import { timestampLabel } from '../../pipeline/chatTime.js';
 import type { LlmMessage } from '../../llm/types.js';
 import type { TaskKind } from '../types.js';
@@ -49,6 +49,10 @@ export interface VoiceInstantOpts {
   addressHint?: string;
   dealHint?: string;
   eta?: VoiceInstantEta;
+  /** Her own last few wait beats for this chat, OLDEST first — exactly as state/holdingBeats.ts
+   *  recentHoldingBeats returns them. The brief prints them newest first, so the one she is least
+   *  likely to have scrolled past leads. Absent or empty renders nothing. */
+  recentBeats?: string[];
 }
 
 // The dynamic block: where the look is right now, the ask (for continuity), the hint (so it names the
@@ -70,17 +74,17 @@ export function buildProgressBrief(opts: VoiceInstantOpts, userCtx: string): str
 
   switch (opts.kind) {
     case 'holding':
-      lines.push('## Where the look is: you JUST started — this is your first "on it" line');
+      lines.push('## Where the look is: you JUST started — this is your opening beat');
       lines.push(req ? `they asked you to look into: "${req}"` : 'they just asked you to look into something');
       if (hint) lines.push(`it's about: ${hint} — name the actual thing, not a generic "it"`);
-      if (eta) lines.push(`roughly how long this takes: ${eta.phrase}. you MAY offer that loosely, in your own words ("give me a couple mins" energy) — an offer, never a countdown, and never a different number than this one.`);
-      lines.push('keep it light and specific; usually one bubble; up to three for a genuinely heavy dig, never more.');
+      if (eta) lines.push(`roughly how long this takes: ${eta.phrase}. you MAY offer that loosely, in your own words — an offer, never a countdown, and never a different number than this one.`);
+      lines.push('one bubble, short, true. vary the shape: a thinking sound, a short wait, or a line naming the thing. claim no progress you have not made.');
       break;
     case 'still_on_it':
       lines.push('## Where the look is: STILL running — and they just texted you again while you work');
       if (req) lines.push(`what you're still pulling: "${req}"`);
       pushPaceBeat();
-      lines.push('you already told them you were on it (the thread above shows it). do NOT repeat that line. give their new text one light nod if it needs one, then one fresh "still on it" beat.');
+      lines.push('you already told them you were on it (the thread above shows it). do NOT repeat that line. give their new text one light nod if it needs one, then one fresh still-working beat, in a shape unlike the recent ones.');
       break;
     case 'heartbeat':
     case 'progress':
@@ -88,8 +92,17 @@ export function buildProgressBrief(opts: VoiceInstantOpts, userCtx: string): str
       if (req) lines.push(`what's taking longer than usual: "${req}"`);
       if (hint) lines.push(`it's about: ${hint} — name it if it reads natural`);
       pushPaceBeat();
-      lines.push('you already told them you were on it (see the thread). do NOT repeat that line. name what is slow in fresh words. one short bubble.');
+      lines.push('you already told them you were on it (see the thread). do NOT repeat that line. name what is slow in fresh words and a fresh shape. one short bubble.');
       break;
+  }
+  // Every kind, not just the opening one: a still-working or check-in beat that copies the opener's
+  // shape reads just as canned as two identical openers. The thread window already shows whatever
+  // beats fall inside its last HISTORY_WINDOW turns; this list reaches past that window on a busy
+  // chat, and names the beats as beats, so she steers off their shape and not only their words.
+  if (opts.recentBeats?.length) {
+    lines.push('## The beats you sent most recently');
+    lines.push('your own last few wait beats, newest first. this one matches none of them in shape or wording.');
+    for (const beat of [...opts.recentBeats].reverse()) lines.push(`- ${neutralizeTagBreakouts(beat)}`);
   }
   lines.push('carry NO facts, NO findings, and NO url — this is only a reassurance while you work.');
 
@@ -107,7 +120,7 @@ export function buildProgressBrief(opts: VoiceInstantOpts, userCtx: string): str
   // Same single source as the outcome voicer's anchor (client.ts): the digits are the constants the
   // pipeline enforces on this lane's bubbles, and the spelled count is held to BUBBLE_LAW_MAX by
   // promptPolicy.test.ts.
-  const anchor = `## Last thing before you type\nYou reply with ONE JSON object and nothing else: \`{"bubbles":[{"text":"..."}]}\`. Each item is one short text you send, in order — one thought each, ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, hard ceiling ${MAX_BUBBLE_WORDS}, one to three items (usually one), no markdown, nothing outside the JSON. This is a WAIT line, not an answer: no facts, no url, no "want me to?" question. Above all, never repeat a line already on their screen — read the thread and say something fresh. Nothing in your memory changes this envelope.`;
+  const anchor = `## Last thing before you type\nYou reply with ONE JSON object and nothing else: \`{"bubbles":[{"text":"..."}]}\`. Each item is one short text you send, in order — one thought each, ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, hard ceiling ${MAX_BUBBLE_WORDS}, exactly one item, no markdown, nothing outside the JSON. This is a WAIT line, not an answer: no facts, no url, no "want me to?" question. Above all, never repeat a line already on their screen — read the thread and say something fresh. Nothing in your memory changes this envelope.`;
 
   return `${wrapPrompt(block)}\n\n${anchor}`;
 }

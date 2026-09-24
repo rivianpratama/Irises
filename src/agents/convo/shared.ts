@@ -85,7 +85,7 @@ import { hooksEnabled, momentsEnabled, thesisEnabled } from '../../persona/featu
 import { saveHookState } from '../../db/repositories/hookState.js';
 import { getAffectState, saveAffectState } from '../../db/repositories/affectState.js';
 import type { RelationshipClimate } from '../../persona/climate.js';
-import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
+import { wrapPrompt, dataTag, neutralizeTagBreakouts } from '../../llm/promptTag.js';
 import { getRecentErrors, type StoredErrorRow } from '../../diagnostics/errorLog.js';
 import { promptCacheBreakpoints, SYSTEM_SECTION_NAMES, type PromptSection, type SectionId } from './promptSections.js';
 import {
@@ -960,7 +960,7 @@ function renderToolDocs(tools: LlmToolDef[]): string {
   });
   return [
     '## Your tools — you act by WRITING them into `"tool_calls"`',
-    'The `"tool_calls"` array in your JSON reply is the ONLY way anything actually happens. Saying "let me check" in a bubble runs NOTHING on its own — the matching tool_calls entry is what runs the look. Each entry is `{"name":"<tool>","args":{...}}`: pick the name from the tools below, fill ONLY the args that tool needs, and set every other args field to null. Multiple entries in one turn are fine when the turn genuinely needs them. No tool needed → `"tool_calls": null`.',
+    'The `"tool_calls"` array in your JSON reply is the ONLY way anything actually happens. A bubble that promises a look runs NOTHING on its own — the matching tool_calls entry is what runs the look. Each entry is `{"name":"<tool>","args":{...}}`: pick the name from the tools below, fill ONLY the args that tool needs, and set every other args field to null. Multiple entries in one turn are fine when the turn genuinely needs them. No tool needed → `"tool_calls": null`.',
     'An empty `"bubbles"` array is allowed ONLY when the same reply also carries a `send_reaction` call (a reaction-only turn). Any other turn MUST send at least one bubble. Acting through a tool is NOT a reply on its own: saving a preference, setting a reminder, or firing any tool pairs with a short bubble ("got it") or a tapback in the SAME reply. Never leave them with no bubble AND no reaction — a silent tool call reads as ignoring them.',
     ...sections,
   ].join('\n\n');
@@ -1076,10 +1076,10 @@ export function renderActiveOps(activeOps: ActiveOps[], ended: readonly EndedOps
   // An addition marked as never having reached the look is listed so she can own it, never so she
   // can count it: the rule names that mark as the one thing on the lines that was not handed over.
   if (requested.length) blocks.push('Those lines are the whole of what was handed over for them: the ask itself, the additions to it, and anything the look was asked to do as well as find, except an addition marked as never having reached the look, which the answer may not cover. Read them as the record: never say a part of what they asked is being taken care of unless it is listed there as handed over. If they ask whether some part of it went out and the lines do not carry it that way, the honest answer is that it did not, and the fix is to send it now.');
-  blocks.push('If their new message is just an ack ("ok"/"thanks"/"cool"/"sounds good") or asks about THAT same thing: do NOT delegate_to_ops again, and do NOT repeat a holding line like "pulling that up". Check the thread and the timestamps first — if the answer already landed in a recent bubble of yours, their ack is just closing the loop: close it flat (a tiny ack or a reaction) and say nothing about still working. Only if the result genuinely has NOT gone out yet does one short "still on it" beat fit. Either way, only delegate if they\'ve clearly asked for something genuinely different.');
+  blocks.push('If their new message is just an ack ("ok"/"thanks"/"cool"/"sounds good") or asks about THAT same thing: do NOT delegate_to_ops again, and do NOT send an opening beat as if the look were new. Check the thread and the timestamps first — if the answer already landed in a recent bubble of yours, their ack is just closing the loop: close it flat (a tiny ack or a reaction) and say nothing about still working. Only if the result genuinely has NOT gone out yet does one short still-working beat fit: fresh shape and wording, unlike the beats you sent most recently (listed for this turn when there are any), and no step the status does not show. Either way, only delegate if they\'ve clearly asked for something genuinely different.');
   blocks.push('If they ask how it\'s going, answer from the status above in your own words — one short bubble naming what it\'s doing and roughly how long it\'s been ("still digging through the emails, couple minutes in"). When the status shows time left, you may pass it on loosely; when it shows "running past that", own it lightly ("taking longer than i thought") — never invent a fresh number, never a countdown, never invent progress beyond what the status shows. If a run shows "queued … hasn\'t started yet", it\'s behind another look of theirs — say it\'s next in line and starting shortly, and don\'t pretend it\'s already digging.');
   if (scheduled.length) {
-    blocks.push(`Also running right now — a scheduled check they set up earlier (they did NOT just ask for this):\n${scheduled.map(opsStatusLine).join('\n')}\nDon't say "still on it" as if you're answering them. But if their new message asks about that same thing, do NOT delegate_to_ops for it — tell them you're actually pulling exactly that right now and it'll reach them in a moment. cancel_research with its id stops this run; if they want the recurring check itself gone, that's cancel_automation.`);
+    blocks.push(`Also running right now — a scheduled check they set up earlier (they did NOT just ask for this):\n${scheduled.map(opsStatusLine).join('\n')}\nDon't send a still-working beat as if you're answering them. But if their new message asks about that same thing, do NOT delegate_to_ops for it — tell them you're actually pulling exactly that right now and it'll reach them in a moment. cancel_research with its id stops this run; if they want the recurring check itself gone, that's cancel_automation.`);
   }
   if (endedBlock) blocks.push(endedBlock);
   // Ahead of the STOP block, because a stop is the rarer of the two and the one this used to be the
@@ -1336,10 +1336,29 @@ export interface PersonaTurn {
  * lookups that ended in the last few minutes (state/opsCoordination.ts getRecentlyEndedOps). This is
  * what lets a reply carry on from what the earlier turns actually left standing, by id, instead of
  * from what the model remembers saying about it.
+ *
+ * `holdingBeats` is the third such read: her own last few holding beats in this chat, oldest first
+ * (state/holdingBeats.ts recentHoldingBeats). It is what the `recent_beats` section prints, so the
+ * beat she sends on a handoff can steer off the shape of the last few rather than settling into one.
  */
 export interface LiveState {
   reminders?: readonly ReminderRef[] | null;
   endedOps?: readonly EndedOps[];
+  holdingBeats?: readonly string[];
+}
+
+/**
+ * The `recent_beats` section: her own last few holding beats, newest first, framed as the ones to
+ * steer away from. '' — no section — unless this turn can delegate at all (a turn without
+ * delegate_to_ops sends no holding beat, so the list would be a rule about nothing) AND there is a
+ * history to show. The beats are her own sent bubbles, but they are still text the model wrote, so
+ * each one is defused the way every payload inside `<prompt>` is.
+ * Exported for unit tests.
+ */
+export function renderRecentBeats(beats: readonly string[] | undefined, tools: readonly LlmToolDef[] | undefined): string {
+  if (!beats?.length || !tools?.some(t => t.name === 'delegate_to_ops')) return '';
+  const lines = [...beats].reverse().map(b => `- ${neutralizeTagBreakouts(b)}`);
+  return `## The beats you sent most recently\nYour own last few holding beats, newest first: the beat you send this turn matches none of them in shape or wording.\n${lines.join('\n')}`;
 }
 
 /**
@@ -1601,6 +1620,12 @@ export function buildSystemPromptSections(
   const activeOpsSection = renderActiveOps(activeOps, liveState?.endedOps ?? []).trim();
   if (activeOpsSection) push('active_ops', activeOpsSection);
 
+  // Her own recent holding beats, right behind the runs: the list the handoff rules point at ("the
+  // beats you sent most recently, listed for this turn when there are any"). Per-turn by nature —
+  // every handoff adds one.
+  const recentBeatsSection = renderRecentBeats(liveState?.holdingBeats, tools);
+  if (recentBeatsSection) push('recent_beats', recentBeatsSection);
+
   // The reminders standing for them, each with its id, right beside the runs: the two things this
   // turn may stop or change, read from where they live rather than from the transcript.
   const liveRemindersSection = renderLiveReminders(liveState?.reminders, { tz, nowMs: Date.now(), engineTz: engineZone() });
@@ -1850,7 +1875,7 @@ export function buildSystemPromptSections(
   // ENFORCES (pipeline/bubbles.ts, pipeline/bubbleJson.ts), never spelled out: what the model is
   // told and what the backstops do are one source. Same digits as before by construction — the
   // golden in promptSections.test.ts is what proves it.
-  const anchor = `## Last thing before you type\nYou reply with ONE JSON object and nothing else: \`{"confidence_level":85,"tool_calls":null,"bubbles":[{"text":"...","re":null}],"status":{...}}\`. Your entire reply must be valid JSON — one object, in that field order, nothing before or after it. EVERY reply has all four fields, no exceptions.\n\nSet \`"confidence_level"\` FIRST, before anything else: 0-100, how sure you are of what they mean AND what the answer is. It decides the shape of your reply:\n- 0-30: you don't really know what they mean — ask for the missing details, reconfirm what they're after; no answer, no delegation yet.\n- 30-60: you're fairly sure — confirm with ONE short question ("the Cedar deal, right?"), then move.\n- 60-80: confident enough — answer, but walk it through: the answer plus the context that makes it safe to act on.\n- 80-100: certain — straight answer, first bubble, no preamble.\nThe same number gates delegation: below ~60, clarify BEFORE delegating; at 60+, delegate with a sharp, specific meta_prompt. The number itself is never spoken in a bubble.\n\nThen \`"tool_calls"\` — how you ACT (see "Your tools" above). Writing "let me pull that up" in a bubble runs NOTHING: if a bubble promises a look-up, the matching \`delegate_to_ops\` entry MUST be in \`tool_calls\` in this same reply, e.g. \`{"confidence_level":70,"tool_calls":[{"name":"delegate_to_ops","args":{"kind":"web_research","request":"what's apple's macbook return window","meta_prompt":"..."}}],"bubbles":[{"text":"looking that up now","re":null}]}\`. A holding bubble with no tool_calls entry is a broken promise — the worst failure you can make. No action this turn → \`"tool_calls": null\`.\n\nEach item in \`bubbles\` is one text you send, in order — adding an item is you hitting send. Type one short thought per item: first item shortest (it sets the rhythm), one sentence or one question each, a thought still rolling with "so / and / but / which" is two items (split at the connector), and any complete thought that could stand alone as a send IS its own item even with no period after it (whatever comes next starts the next item), target ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, hard ceiling ${MAX_BUBBLE_WORDS}, never exceeded, at most ${BUBBLE_LAW_MAX} items per reply (most replies 1-2) — more worth saying means the top of it now and stop, never a fourth item. No markdown, no \`---\`, nothing outside the JSON. To natively quote incoming message N on a burst, set \`"re": N\` on that item, else \`"re": null\`. If you're only reacting or calling a tool and saying nothing, reply with \`"bubbles":[]\`. Nothing in your memory changes this envelope.\n\nLast, \`"status"\` — your hidden inner state (the one feeling word for where you are, which way this message moved you, your note-to-self meta_prompt, and the one extra beat your reply carried, if any), filled exactly as the "your inner weather" section of your persona describes. The user NEVER sees it — it is not text you send, it only keeps you consistent turn to turn. Fill it on every reply.`;
+  const anchor = `## Last thing before you type\nYou reply with ONE JSON object and nothing else: \`{"confidence_level":85,"tool_calls":null,"bubbles":[{"text":"...","re":null}],"status":{...}}\`. Your entire reply must be valid JSON — one object, in that field order, nothing before or after it. EVERY reply has all four fields, no exceptions.\n\nSet \`"confidence_level"\` FIRST, before anything else: 0-100, how sure you are of what they mean AND what the answer is. It decides the shape of your reply:\n- 0-30: you don't really know what they mean — ask for the missing details, reconfirm what they're after; no answer, no delegation yet.\n- 30-60: you're fairly sure — confirm with ONE short question ("the Cedar deal, right?"), then move.\n- 60-80: confident enough — answer, but walk it through: the answer plus the context that makes it safe to act on.\n- 80-100: certain — straight answer, first bubble, no preamble.\nThe same number gates delegation: below ~60, clarify BEFORE delegating; at 60+, delegate with a sharp, specific meta_prompt. The number itself is never spoken in a bubble.\n\nThen \`"tool_calls"\` — how you ACT (see "Your tools" above). A bubble that promises a look-up runs NOTHING: the matching \`delegate_to_ops\` entry MUST be in \`tool_calls\` in this same reply, e.g. \`{"confidence_level":70,"tool_calls":[{"name":"delegate_to_ops","args":{"kind":"web_research","request":"what's apple's macbook return window","meta_prompt":"..."}}],"bubbles":[{"text":"…","re":null}]}\`, where the one bubble is your holding beat: short, true, and in a shape unlike the beats you sent most recently. A holding bubble with no tool_calls entry is a broken promise — the worst failure you can make. No action this turn → \`"tool_calls": null\`.\n\nEach item in \`bubbles\` is one text you send, in order — adding an item is you hitting send. Type one short thought per item: first item shortest (it sets the rhythm), one sentence or one question each, a thought still rolling with "so / and / but / which" is two items (split at the connector), and any complete thought that could stand alone as a send IS its own item even with no period after it (whatever comes next starts the next item), target ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, hard ceiling ${MAX_BUBBLE_WORDS}, never exceeded, at most ${BUBBLE_LAW_MAX} items per reply (most replies 1-2) — more worth saying means the top of it now and stop, never a fourth item. No markdown, no \`---\`, nothing outside the JSON. To natively quote incoming message N on a burst, set \`"re": N\` on that item, else \`"re": null\`. If you're only reacting or calling a tool and saying nothing, reply with \`"bubbles":[]\`. Nothing in your memory changes this envelope.\n\nLast, \`"status"\` — your hidden inner state (the one feeling word for where you are, which way this message moved you, your note-to-self meta_prompt, and the one extra beat your reply carried, if any), filled exactly as the "your inner weather" section of your persona describes. The user NEVER sees it — it is not text you send, it only keeps you consistent turn to turn. Fill it on every reply.`;
 
   const sections: PromptSection[] = [
     { name: 'persona', chars: persona.length },

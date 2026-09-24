@@ -317,21 +317,24 @@ test("the composer's format anchor states the ceiling and the count the pipeline
   );
 });
 
-test("Fallfirm's two anchors state the same target, ceiling and count", () => {
-  const lanes: ReadonlyArray<readonly [string, string]> = [
-    ['voiceOutcome', buildOutcomeBrief({ kind: 'confirmed', summary: 'the reminder is set for 7pm' }, '')],
-    ['voiceInstant', buildProgressBrief({ kind: 'holding', request: 'cedar lead times' }, '')],
-  ];
-  for (const [lane, prompt] of lanes) {
+// The two anchors share the target and the ceiling, and part ways on the count on purpose: the
+// outcome voice may run to the law's full count, while every wait beat is ONE bubble (the holding-beat
+// rule, fallfirm/Progress.md) — a count under the law, so the pipeline backstop never has to cut it.
+test("Fallfirm's two anchors state the same target and ceiling, and each its own count", () => {
+  const outcome = buildOutcomeBrief({ kind: 'confirmed', summary: 'the reminder is set for 7pm' }, '');
+  const instant = buildProgressBrief({ kind: 'holding', request: 'cedar lead times' }, '');
+  for (const [lane, prompt] of [['voiceOutcome', outcome], ['voiceInstant', instant]] as const) {
     assert.ok(
       prompt.includes(`${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, hard ceiling ${MAX_BUBBLE_WORDS}`),
       `${lane}: its anchor's target/ceiling has drifted from the pipeline constants`,
     );
-    assert.ok(
-      prompt.includes(`one to ${SPELLED[BUBBLE_LAW_MAX]} items`),
-      `${lane}: its anchor should say "one to ${SPELLED[BUBBLE_LAW_MAX]} items" — it has drifted from BUBBLE_LAW_MAX`,
-    );
   }
+  assert.ok(
+    outcome.includes(`one to ${SPELLED[BUBBLE_LAW_MAX]} items`),
+    `voiceOutcome: its anchor should say "one to ${SPELLED[BUBBLE_LAW_MAX]} items" — it has drifted from BUBBLE_LAW_MAX`,
+  );
+  assert.ok(instant.includes('exactly one item'), 'voiceInstant: a wait beat is one bubble');
+  assert.ok(BUBBLE_LAW_MAX >= 1, 'one bubble is inside the law');
 });
 
 // ── one personality, four surfaces ───────────────────────────────────────────

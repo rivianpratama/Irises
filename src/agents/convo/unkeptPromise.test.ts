@@ -60,26 +60,9 @@ test('a reply that promises nothing is not a promise at all', () => {
   });
 });
 
-// The lane-prose audit: the holding lines the prose TEACHES her to write, checked against the
-// lexicon that has to catch them when nothing is behind them. ALL FOUR examples the delegate tool
-// doc (convo/tools.ts) spells out are here — a loop over a subset is how the first pass of this
-// audit shipped `looking up that one now` and `reading that page now` as lines the guard let
-// through — plus the JSON anchor's own "let me check" form, which convo/shared.ts names as the
-// sentence that runs nothing. Add the example to this loop whenever a doc adds a holding line.
-test('the holding lines the prose teaches are all promises the guard fires on', () => {
-  for (const line of [
-    'looking up that one now',          // delegate doc, example 1
-    'lemme check your inbox for that',  // delegate doc, example 2
-    'digging through that thread now',  // delegate doc, example 3
-    'reading that page now',            // delegate doc, example 4
-    'let me check your inbox for that', // the JSON anchor's form of example 2
-  ]) {
-    assert.equal(detectUnkeptPromise([line], null, 0).unkept, true, line);
-  }
-});
-
-// And the other half of the same audit: the flat, dry lines the new register produces that are NOT
-// promises. Each of these has to ship exactly as written — a corrective re-ask on an honest reply is
+// The lane-prose audit, the half that outlived the prose's example holding lines (the delegate doc
+// and the JSON anchor now state the beat rule instead of listing lines to copy, so there is no taught
+// line left to loop over): the flat, dry lines the register produces that are NOT promises. Each of these has to ship exactly as written — a corrective re-ask on an honest reply is
 // the failure this lexicon's shortness buys away.
 test('the flat register\'s honest lines are not promises', () => {
   for (const line of [

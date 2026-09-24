@@ -232,9 +232,21 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  *     included; and that a stamped message always came from someone in the chat. The clock
  *     section's "every message carries a timestamp" becomes every message sent, hers and theirs,
  *     which is what formatHistory stamps and the tail is not. Every other file held.
+ *
+ * Then **+87** later in the same branch, two files, one rule: the holding beat a handoff sends is
+ * taught as a principle (one beat every time, varied against her recent ones, true) instead of by
+ * stock lines to copy:
+ *   · Context.md +103 (92,394 → 92,497): the running-shoes few-shot's three holding bubbles become
+ *     one placeholder beat beside its delegate_to_ops entry; the step-3, inbox, already-running and
+ *     "When you do delegate" lines say one short beat in fresh words, unlike the recent beats listed
+ *     for the turn, claiming nothing not held; and the two holding registers (a promise-y line for a
+ *     real dig, a tiny one for a file) collapse into one rule, the file look keeping its allowance
+ *     that the beat may be the whole reply.
+ *   · craft/attachments.md −16: its two quoted file-look beats become "one short holding beat".
+ *     Every other file held.
  */
-const CORPUS_CHARS = 156_655;
-const CORPUS_SHA256 = '7b90592153b21be8bce421b539ae55f0be41594af9e7e11573717cd7ac6ee517';
+const CORPUS_CHARS = 156_742;
+const CORPUS_SHA256 = '6c5d0350acc615ac99cd7f88f14f8ba758d8fcc6d2f41ea8cf1970ccc04847d3';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
