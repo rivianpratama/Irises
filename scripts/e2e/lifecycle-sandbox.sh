@@ -559,6 +559,31 @@ expect_sha "the repaired build is the one answering" "$NEXT_SHA"
 check "a repair refreshes the engine's plugin" present "$STUB_LOG" "plugins enable irises-bridge"
 check "and the restart takes the gateway with it" grep -qE "hermes gateway re?start" "$STUB_LOG"
 
+# ── 2c. a local commit nobody pushed ──────────────────────────────────────────
+# The operator's own commit, not on origin yet: nothing upstream to pull, and the box is still on the
+# build from before it. The one command after a commit has to bring it live all the same — build,
+# restart, plugin, gateway — rather than signing off "local is ahead, nothing to do".
+step "2c/12  a local commit, unpushed — update still builds it and bounces the gateway"
+printf '\n%s\n' "// e2e: a local, unpushed change" >> "$CLONE/src/index.ts"
+git -C "$CLONE" -c user.name=e2e -c user.email=e2e@example.invalid commit --quiet -am "e2e: local only"
+LOCAL_SHA="$(git -C "$CLONE" rev-parse HEAD)"
+: > "$STUB_LOG"
+set +e
+LOCAL_OUT="$(cd "$CLONE" && bash scripts/update.sh --yes 2>&1)"
+LOCAL_RC=$?
+set -e
+printf '%s\n' "$LOCAL_OUT" | sed 's/^/    | /'
+check_rc "the local build succeeded" 0 "$LOCAL_RC"
+check_out "it reports ok" "RESULT: ok" "$LOCAL_OUT"
+check "dist/ was stamped from the local commit" test "$(dist_sha)" = "$LOCAL_SHA"
+expect_sha "the local build is the one answering" "$LOCAL_SHA"
+check "the engine's plugin was refreshed" present "$STUB_LOG" "plugins enable irises-bridge"
+check "and the gateway was bounced" grep -qE "hermes gateway re?start" "$STUB_LOG"
+# Published now, so origin and the clone agree again for every stage after this one — they
+# fast-forward onto origin, and a clone left ahead of it would diverge from their commits.
+git -C "$CLONE" push --quiet origin "$BRANCH"
+NEXT_SHA="$LOCAL_SHA"
+
 # ── 3a. a build that does not compile ─────────────────────────────────────────
 step "3a/12  rollback (exit 3) — a commit that does NOT compile"
 BADBUILD_SHA="$(publish "e2e: does not compile" 'const irisesE2E: number = "not a number";')" \
