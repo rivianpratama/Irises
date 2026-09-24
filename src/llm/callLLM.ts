@@ -485,12 +485,18 @@ export async function callOpenAICompatible(
   // The one consequence: on that path output_tokens is the SUM across two legs, so it can exceed
   // max_tokens_sent (the SERVED cap) — `truncated`/stop_reason, not the output==cap equality, is
   // what identifies a reply that hit its ceiling there.
+  const cachedOf = (x?: typeof u) =>
+    ((x as { prompt_tokens_details?: { cached_tokens?: number } } | undefined)?.prompt_tokens_details?.cached_tokens) ?? 0;
+  const cached = cachedOf(u) + cachedOf(starvedUsage);
   const usage = u || starvedUsage
     ? {
-      inputTokens: (u?.prompt_tokens ?? 0) + (starvedUsage?.prompt_tokens ?? 0),
+      // Cache reads are billed (and fed to budget enforcement) separately from fresh input, the way
+      // the Anthropic lane already reports them — so input here is the UNCACHED remainder and the
+      // row's generated total_tokens still sums to what the provider counted.
+      inputTokens: (u?.prompt_tokens ?? 0) + (starvedUsage?.prompt_tokens ?? 0) - cached,
       outputTokens: (u?.completion_tokens ?? 0) + (starvedUsage?.completion_tokens ?? 0),
       cacheCreationInputTokens: 0,
-      cacheReadInputTokens: 0,
+      cacheReadInputTokens: cached,
     }
     : undefined;
   // Server-tool text is an OpenRouter concept; a generic OpenAI endpoint returns none, so this is a
