@@ -179,31 +179,49 @@ async function runLiveProbe(): Promise<number> {
   // The stream connection runs for the whole round: opening a fresh one per probe would race the
   // server's mouth lock (a reply already in flight when the socket reopens is a reply this process
   // never sees), and the prototype's one-socket-for-the-round design already proved out live.
+  //
+  // It is aborted explicitly on every exit path below (`stopStream()`). Unlike bench.mjs — which
+  // ended with a bare `process.exit(0)` and let that blow away the still-open connection — this file
+  // reports its result through `main()`'s exit code, and `process.exitCode` alone only takes effect
+  // once the event loop drains; an unaborted `reader.read()` awaiting forever would otherwise hang the
+  // CLI on every run, success or failure, instead of exiting.
+  const streamAbort = new AbortController();
   let events: StreamEvent[] = [];
+  const stopStream = () => streamAbort.abort();
   (async () => {
-    const res = await fetch(withAuth('/api/web/stream'), { headers: { Accept: 'text/event-stream' } });
+    let res: Response;
+    try {
+      res = await fetch(withAuth('/api/web/stream'), { headers: { Accept: 'text/event-stream' }, signal: streamAbort.signal });
+    } catch {
+      return; // aborted before it even connected — nothing to read
+    }
     if (!res.body) return;
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = '';
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let i: number;
-      while ((i = buf.indexOf('\n\n')) !== -1) {
-        const frame = buf.slice(0, i);
-        buf = buf.slice(i + 2);
-        const data = frame.split('\n').find(l => l.startsWith('data: '))?.slice(6);
-        if (!data) continue;
-        try {
-          const ev = JSON.parse(data) as StreamEvent;
-          ev.rx = Date.now();
-          events.push(ev);
-        } catch {
-          // a stray `: ping` / `: connected` comment line, not a data frame — nothing to parse
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let i: number;
+        while ((i = buf.indexOf('\n\n')) !== -1) {
+          const frame = buf.slice(0, i);
+          buf = buf.slice(i + 2);
+          const data = frame.split('\n').find(l => l.startsWith('data: '))?.slice(6);
+          if (!data) continue;
+          try {
+            const ev = JSON.parse(data) as StreamEvent;
+            ev.rx = Date.now();
+            events.push(ev);
+          } catch {
+            // a stray `: ping` / `: connected` comment line, not a data frame — nothing to parse
+          }
         }
       }
+    } catch {
+      // reader.read() rejects with AbortError once stopStream() fires at the end of the round —
+      // expected, not a failure worth reporting.
     }
   })();
   await sleep(1500); // give the stream a moment to actually attach before the first POST
@@ -219,6 +237,7 @@ async function runLiveProbe(): Promise<number> {
     });
     if (!res.ok) {
       console.error(`[bench] POST failed (${res.status}): ${await res.text()}`);
+      stopStream();
       return 1;
     }
     let lastBubbleAt = 0;
@@ -274,6 +293,7 @@ async function runLiveProbe(): Promise<number> {
 
   writeResults(label, rows);
   printSummary(rows);
+  stopStream();
   return 0;
 }
 
