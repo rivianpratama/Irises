@@ -54,7 +54,7 @@ import { HOOKS_SELECT_LABEL, MOMENTS_OFFER_LABEL } from '../../diagnostics/trace
 import type { LlmMessage, LlmRequest, LlmResult, LlmToolDef } from '../../llm/types.js';
 import {
   buildSystemPromptSections, processConvoResult, formatHistory, emptyExtras, callConvoLLM, annotateTappedReply,
-  parkedApprovalStanding, withOnScreenNote,
+  parkedApprovalStanding, withOnScreenNote, type ConvoStreamCommit,
 } from './shared.js';
 import { needsGrounding } from '../routingGate.js';
 import { createEnvelopeStream } from '../../pipeline/envelopeStream.js';
@@ -136,14 +136,24 @@ function describeAttachments(media: IncomingMedia, opts: { transcriptionFailed: 
  *
  * Sends run strictly in order on one chain, never overlapping: the send path paces each bubble, and
  * a second sentence must not overtake the first. `settled()` is that chain, and the turn waits on it
- * before it settles the reply, so `sent` is final by then: exactly what reached their screen.
+ * before it settles the reply, so `sent` is final by then: exactly what reached their screen, down to
+ * the pieces of a sentence whose send failed partway (the sink reports what it got out).
+ *
+ * `committed()` is whether any sentence was handed to the sink at all, which is final the moment the
+ * lane returns (it drops deltas after that). It is the question the recovery paths ask: a streamed
+ * reply with nothing committed is a reply nobody has seen, so the ordinary retries may still run on
+ * it; one with something committed may not answer over the top of it. `freeze()` disarms for good,
+ * for a caller about to make a call of its own that must not stream.
  */
 function armEarlySend(
   send: NonNullable<ChatContext['earlySend']>,
   ask: string,
   chatId: string,
   handle: string | undefined,
-): { onTextDelta: (delta: string) => void; end: () => void; settled: () => Promise<void>; sent: string[] } {
+): {
+  onTextDelta: (delta: string) => void; end: () => void; settled: () => Promise<void>; sent: string[];
+  committed: () => boolean; freeze: () => void;
+} {
   let armed = true;
   let failed = false;
   let queued = 0;
@@ -167,13 +177,18 @@ function armEarlySend(
       const isFirst = queued === 1;
       chain = chain.then(async () => {
         if (failed) return;
+        let error: unknown;
         try {
-          await send(clean, isFirst);
-          sent.push(clean);
+          const out = await send(clean, isFirst);
+          if (out.shown) sent.push(out.shown);
+          error = out.error;
         } catch (err) {
+          error = err ?? new Error('early send failed');
+        }
+        if (error !== undefined) {
           failed = true;
           disarm('send_failed');
-          console.warn(`[convo] early send failed — the rest of the reply goes out whole (chat ${chatId})`, err);
+          console.warn(`[convo] early send failed — the rest of the reply goes out whole (chat ${chatId})`, error);
         }
       });
     },
@@ -201,6 +216,8 @@ function armEarlySend(
     },
     settled: () => chain,
     sent,
+    committed: () => queued > 0,
+    freeze: () => disarm('frozen'),
   };
 }
 
@@ -219,7 +236,7 @@ export async function chat(
    * else, so a test that starts at `processConvoResult` cannot see any of it. The same function is
    * handed to `turn.call` below, so the retry ladders use the fake too.
    */
-  call?: (req: LlmRequest) => Promise<LlmResult>,
+  call?: (req: LlmRequest, stream?: ConvoStreamCommit) => Promise<LlmResult>,
 ): Promise<ChatResponse> {
   const cmd = userMessage.toLowerCase().trim();
 
@@ -390,9 +407,12 @@ export async function chat(
   // Whether an approval is parked on this sender, for the early-emit gate below: the same pref the
   // approval resolution reads after the call (convo/shared.ts parkedApprovalStanding). Started here so
   // it rides beside the memory batch instead of adding a round trip in front of the model call, and
-  // only on a turn whose caller can take an early send at all. Never rejects (a failed read is parked).
-  const parkedRead: Promise<boolean> = chatContext?.earlySend
-    ? parkedApprovalStanding(chatContext.senderHandle)
+  // only on a turn that could arm at all: a caller with a sink, the switch on, not a room. So the kill
+  // switch costs nothing, not even this read. Never rejects (a failed read is parked). The switch is
+  // read ONCE, here, and the gate below takes the same answer.
+  const streamOn = !!chatContext?.earlySend && streamFirstBubbleEnabled() && !(chatContext?.isGroupChat ?? false);
+  const parkedRead: Promise<boolean> = streamOn
+    ? parkedApprovalStanding(chatContext?.senderHandle)
     : Promise.resolve(false);
 
   const [context, agentTz, climate, thesisDoc, whoProfile, holdingBeats] = handle
@@ -883,7 +903,7 @@ export async function chat(
   // front of the call but that read, which has long since landed. A caller with no sink never arms.
   const earlySend = chatContext?.earlySend;
   const early = earlySend && streamArmed({
-    enabled: streamFirstBubbleEnabled(),
+    enabled: streamOn,
     hasParkedApproval: await parkedRead,
     hookMode: hookDirective?.mode,
     groundingFlagged: needsGrounding(textToSend) === 'yes',
@@ -894,31 +914,61 @@ export async function chat(
     ? armEarlySend(earlySend, textToSend, chatId, handle)
     : null;
 
+  const firstReq: LlmRequest = {
+    role: 'convo',
+    system,
+    // Where that system string's stable prefixes end — the persona head, then the end of the
+    // system message, which changes only when this chat's tools, roster or model map do. The
+    // Anthropic lane caches each of them instead of cache-writing the system every call. Read off
+    // the sizes the assembler just reported, so no part of the string is measured twice.
+    systemCacheBreakpoints: prompt.cacheBreakpoints,
+    tools,
+    jsonBubbles: true,   // force the schema-valid envelope at the API on BOTH providers
+    toolsViaJson: true,  // tools are WRITTEN into that envelope (tool_calls), never sent natively
+    messages: turnMessages,
+    trace: { chatId, handle, label: 'convo' },
+  };
+
   try {
     let res: LlmResult;
     try {
-      res = await (call ?? callConvoLLM)({
-        role: 'convo',
-        system,
-        // Where that system string's stable prefixes end — the persona head, then the end of the
-        // system message, which changes only when this chat's tools, roster or model map do. The
-        // Anthropic lane caches each of them instead of cache-writing the system every call. Read off
-        // the sizes the assembler just reported, so no part of the string is measured twice.
-        systemCacheBreakpoints: prompt.cacheBreakpoints,
-        tools,
-        jsonBubbles: true,   // force the schema-valid envelope at the API on BOTH providers
-        toolsViaJson: true,  // tools are WRITTEN into that envelope (tool_calls), never sent natively
-        messages: turnMessages,
-        trace: { chatId, handle, label: 'convo' },
+      res = await (call ?? callConvoLLM)(
         // The early sink, on an armed turn only. The OpenAI-compatible lanes stream when it is set; the
-        // Anthropic lane ignores it and the turn simply runs whole, as it does unarmed.
-        ...(early ? { onTextDelta: early.onTextDelta } : {}),
-      });
+        // Anthropic lane ignores it and the turn simply runs whole, as it does unarmed. The envelope
+        // retry asks the sink whether anything went out before it decides it may resend.
+        early ? { ...firstReq, onTextDelta: early.onTextDelta } : firstReq,
+        early ? { committed: early.committed, freeze: early.freeze } : undefined,
+      );
     } finally {
       // Nothing streams past the call, and every early send lands before the reply is settled against
       // them: the sends are part of this turn's critical section, like the rest of its bubbles.
       early?.end();
       await early?.settled();
+    }
+    // A streamed reply the lane could not finish (it broke, or the call ran out of time, after text
+    // had started to arrive) comes back as a partial with stopReason 'error' rather than a throw
+    // (llm/types.ts LlmResult.emitted). What happens to it depends on whether any of it went out.
+    if (early && res.emitted && res.stopReason === 'error') {
+      if (!early.committed()) {
+        // Nobody has seen a word of it, so it is recovered exactly the way an unstreamed turn's
+        // failure would be: one more call, unstreamed, whose own lane fallback applies. Parsing the
+        // partial instead would ship whatever the repair tier made of a cut envelope.
+        console.warn(`[convo] streamed reply broke before any of it went out — one unstreamed re-run (chat ${chatId})`);
+        record({ type: 'event', label: 'convo:stream_rerun', chatId, handle });
+        res = await (call ?? callConvoLLM)({ ...firstReq, trace: { chatId, handle, label: 'convo:stream_rerun' } });
+      } else {
+        // Part of it is on their screen. The reply is then exactly that and nothing more: the sentences
+        // that went out were whole, and everything after them is a cut envelope the repair tier would
+        // close mid-word, or a tool call cut mid-argument. Handed on as an envelope of those sentences
+        // alone, so the reply settles to "nothing left to send" and the record is what they saw.
+        console.warn(`[convo] streamed reply broke after ${early.sent.length} sentence(s) went out — keeping only those (chat ${chatId})`);
+        record({ type: 'event', label: 'convo:stream_cut', chatId, handle, detail: { shown: early.sent.length } });
+        res = {
+          ...res,
+          text: JSON.stringify({ tool_calls: null, bubbles: early.sent.map(text => ({ text, re: null })) }),
+          toolCalls: [],
+        };
+      }
     }
     const onScreen = early?.sent ?? [];
     const result = await processConvoResult({

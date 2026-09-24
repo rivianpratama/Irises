@@ -7,7 +7,7 @@ process.env.TZ = 'UTC';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  streamArmed, sentenceBlocker, cleanEarlySentence, remainderAfterPrefix, settleOnScreen, type PreCallFacts,
+  streamArmed, sentenceBlocker, cleanEarlySentence, remainderAfterPrefix, settleOnScreen, cleanBubbles, type PreCallFacts,
 } from './earlyEmit.js';
 
 const CLEAN: PreCallFacts = {
@@ -109,11 +109,22 @@ test('settleOnScreen: an unchanged reply ships whole and is recorded whole', () 
     { text: 'oh nice.\n---\nwhat did you put in it?', record: 'oh nice.\n---\nwhat did you put in it?' });
 });
 
-test('settleOnScreen: a replaced reply loses its echo, and the record leads with what they saw', () => {
-  // Fused onto the echo with no sentence end, so it no longer reads as the same prefix.
-  const out = settleOnScreen(['oh nice.'], 'oh nice sorry, i cant check that\n---\nwhat was it?');
-  assert.equal(out.text, 'sorry, i cant check that\n---\nwhat was it?');
-  assert.equal(out.record, 'oh nice.\n---\nsorry, i cant check that\n---\nwhat was it?');
+test('settleOnScreen: a replaced reply drops a bubble they already have, and the record leads with it', () => {
+  const out = settleOnScreen(['oh nice.'], 'oh nice sorry, i cant check that\n---\noh nice.\n---\nwhat was it?');
+  assert.equal(out.text, 'oh nice sorry, i cant check that\n---\nwhat was it?');
+  assert.equal(out.record, 'oh nice.\n---\noh nice sorry, i cant check that\n---\nwhat was it?');
+});
+
+test('settleOnScreen: a replacement that only starts with the same letters keeps every word', () => {
+  assert.equal(settleOnScreen(['ok.'], 'okay lemme check that').text, 'okay lemme check that');
+  assert.equal(settleOnScreen(['no.'], 'nope not that one').text, 'nope not that one');
+});
+
+test('settleOnScreen: an echoed timestamp marker on the first bubble is the same line, not a new one', () => {
+  const final = '[9:14 AM] thats 408.\n---\nnice round number';
+  const out = settleOnScreen(['thats 408.'], final);
+  assert.equal(out.text, final, 'nothing diverged: it ships whole and the boundary cuts the prefix');
+  assert.deepEqual(remainderAfterPrefix(cleanBubbles(final), ['thats 408.']), { rest: ['nice round number'], diverged: false });
 });
 
 test('settleOnScreen: nothing left to ship still records what went out', () => {

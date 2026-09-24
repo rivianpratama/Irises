@@ -160,8 +160,12 @@ export interface ChatContext {
    *  finishes: `chat()` hands it each sentence the moment the model has written it, on the turns the
    *  early-emit gate arms (pipeline/earlyEmit.ts). It sends through the same per-bubble path as the
    *  rest of the reply. Absent (every other caller, and every test that does not exercise it) means
-   *  the whole reply is awaited first, exactly as before this existed. */
-  earlySend?: (sentence: string, isFirst: boolean) => Promise<void>;
+   *  the whole reply is awaited first, exactly as before this existed.
+   *
+   *  It never needs to throw: it resolves with what of the sentence actually reached their screen
+   *  (`shown`, '' when every piece cleaned to nothing) and, when a piece failed to send, the `error`,
+   *  so the turn records the pieces that did go out and sends nothing more early. */
+  earlySend?: (sentence: string, isFirst: boolean) => Promise<{ shown: string; error?: unknown }>;
 }
 
 /** True when the user tapped reply on any earlier message this turn (any resolution kind, incl. the
@@ -1991,6 +1995,14 @@ export function formatHistory(messages: StoredMessage[], isGroupChat: boolean, t
   }));
 }
 
+/** What a streamed convo call can ask about the early sink it fed (convo/client.ts armEarlySend):
+ *  whether anything went out, and a way to stop it for good. `llm` is the lane, tests only. */
+export interface ConvoStreamCommit {
+  committed?: () => boolean;
+  freeze?: () => void;
+  llm?: (req: LlmRequest) => Promise<LlmResult>;
+}
+
 /**
  * The front-line LLM call with the ONE-shot corrective retry beneath the never-non-JSON guarantee.
  * API-level schema enforcement (response_format / output_config.format) makes a non-envelope reply
@@ -2006,16 +2018,21 @@ export function formatHistory(messages: StoredMessage[], isGroupChat: boolean, t
  * already rescues the prefix. Nothing has been dispatched before the retry, so no double effects;
  * the bad draft never reaches history. Both attempts are traced (label ':json_retry').
  *
- * No retry either once a STREAMED reply has handed text out (`res.emitted`): the caller's sink may
- * already have put a sentence of it on their screen, and a resend would answer over the top of it.
- * What arrived is parsed as it stands, which is the streaming failure path (a cut envelope still
- * rescues its bubbles through the parser's repair tier). This can't tell a sink that sent something
- * from one that only read, so it fails closed: the cost is the corrective retry on a streamed turn
- * whose reply was not an envelope at all, which the schema the lane enforces makes rare.
+ * No retry either once a STREAMED reply has put something on their screen: a resend would answer
+ * over the top of it. `emitted` alone only says the lane handed text to the sink, which reads it
+ * without necessarily sending any of it (a tool call disarms it before the first sentence), so the
+ * question is put to the sink itself (`stream.committed`, convo/client.ts armEarlySend). Nothing
+ * committed means nobody has seen a word, and the retry runs exactly as it would have, unstreamed,
+ * with the sink frozen first. Without a sink to ask, an emitted reply is treated as committed: the
+ * safe side, since the one thing this must never do is say a thing twice.
  */
-export async function callConvoLLM(req: LlmRequest): Promise<LlmResult> {
-  const res = await callLLM(req);
-  if (res.emitted) return res;
+export async function callConvoLLM(req: LlmRequest, stream: ConvoStreamCommit = {}): Promise<LlmResult> {
+  const llm = stream.llm ?? callLLM;
+  const res = await llm(req);
+  if (res.emitted) {
+    if (stream.committed?.() ?? true) return res;
+    stream.freeze?.();
+  }
   const needsRetry = !parseReply(res.text).wasEnvelope && !!res.text?.trim() && res.stopReason !== 'length';
   if (!needsRetry) return res;
 
@@ -2030,7 +2047,7 @@ export async function callConvoLLM(req: LlmRequest): Promise<LlmResult> {
     // Never streamed: the sink belongs to the first call, and a retry that fails validation below is
     // discarded, so none of its text may reach the screen on the way.
     const { onTextDelta: _sink, ...unstreamed } = req;
-    const retry = await callLLM({
+    const retry = await llm({
       ...unstreamed,
       messages: corrective,
       trace: { ...req.trace, label: `${label}:json_retry` },
@@ -2124,7 +2141,7 @@ export interface ConvoTurnContext {
   system: string;
   messages: LlmMessage[];
   tools: LlmToolDef[];
-  call?: (req: LlmRequest) => Promise<LlmResult>;
+  call?: (req: LlmRequest, stream?: ConvoStreamCommit) => Promise<LlmResult>;
   /** Where that system string's cache-reusable prefixes end (buildSystemPromptSections). Carried so
    *  the extra calls made from HERE — the envelope retry, the recall second pass, the silent-turn
    *  retry — read the cache the first call just wrote instead of re-billing the persona and the
@@ -4522,12 +4539,14 @@ export async function processConvoResult(args: {
       // countdown. budgetMs: the leg this task will really get (a walled-URL look runs on the browser
       // budget), so the first promise cannot be shorter than the deadline Irises is about to wait for.
       const holdEta = estimateOpsEta({ kind: task.kind, request: task.request, budgetMs: browserLegBudgetFor(task) ?? undefined });
-      keep = await voiceInstant({ kind: 'holding', taskKind: task.kind, request: task.request, addressHint: task.addressHint, dealHint: task.dealHint, eta: { phrase: holdEta.phrase, state: 'fresh' }, recentBeats: args.recentBeats }, chatId, handle ?? '');
+      // `onScreen`: on a turn whose opening already went out early (the false-refusal floor is the one
+      // that can force a task after that), the beat follows it rather than starting the reply over.
+      keep = await voiceInstant({ kind: 'holding', taskKind: task.kind, request: task.request, addressHint: task.addressHint, dealHint: task.dealHint, eta: { phrase: holdEta.phrase, state: 'fresh' }, recentBeats: args.recentBeats, onScreen }, chatId, handle ?? '');
     }
   } else if (effects.suppressedDuplicate) {
     keep = textResponse;
     if (!keep) {
-      const line = await voiceInstant({ kind: 'still_on_it', request: textToSend, recentBeats: args.recentBeats }, chatId, handle ?? '');
+      const line = await voiceInstant({ kind: 'still_on_it', request: textToSend, recentBeats: args.recentBeats, onScreen }, chatId, handle ?? '');
       // This reassurance can race the real answer: voiceInstant is a model call, and the in-flight
       // task it reassures about can settle while it runs (markOpsDone fires only AFTER the answer is
       // sent). If nothing is in flight anymore, the answer is already on their screen — a late "still

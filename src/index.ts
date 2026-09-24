@@ -366,8 +366,15 @@ async function processPendingChat(chatId: string) {
         );
       } catch (error) {
         console.error(`[main] Error processing run for ${merged.from} in chat ${chatId}:`, error);
-        // A turn that dies here answered nobody — the user is left on read. Durable, not just logged.
-        reportError({ source: 'convo', category: 'turn_failure', err: error, chatId, handle: merged.from });
+        // A turn that dies here usually answered nobody — the user is left on read. Durable, not just
+        // logged. The exception is a turn whose opening already went out early (processMessage tags
+        // it): they have that much, and the report says so rather than calling it silence.
+        const answeredInPart = (error as { answeredInPart?: number } | null)?.answeredInPart;
+        if (answeredInPart) console.error(`[main] the failed turn had already sent ${answeredInPart} bubble(s) early — they have its opening, recorded to history (chat ${chatId})`);
+        reportError({
+          source: 'convo', category: 'turn_failure', err: error, chatId, handle: merged.from,
+          ...(answeredInPart ? { detail: { answeredInPart } } : {}),
+        });
       } finally {
         // This run's texts (including drained lates — same object identities) are recorded now:
         // stop advertising them to the pending-inbound glance while later runs process.
@@ -538,8 +545,8 @@ async function sendOneBubble(
  * Single send path for the live reply and out-of-band follow-ups (Ops, engine push) —
  * and for EVERY channel, so web and the bridge pace exactly the same.
  */
-async function sendBubbles(chatId: string, rawBubbles: string[], opts: SendBubbleOpts = {}): Promise<void> {
-  if (rawBubbles.length === 0) return;
+async function sendBubbles(chatId: string, rawBubbles: string[], opts: SendBubbleOpts = {}): Promise<number> {
+  if (rawBubbles.length === 0) return 0;
   // Hard guardrail: this is the single send path for EVERY user-facing bubble (live reply,
   // Ops follow-up, engine push). Per bubble we (1) strip any `[[re:N]]` reply-routing tag
   // — a backstop so a model slip from ANY agent can never leak it, even when targets aren't supplied
@@ -557,7 +564,7 @@ async function sendBubbles(chatId: string, rawBubbles: string[], opts: SendBubbl
     const replyTo = opts.targets?.[i] ?? (i === 0 ? opts.replyToFirst : undefined);
     prepared.push({ text, replyTo });
   }
-  if (prepared.length === 0) return;
+  if (prepared.length === 0) return 0;
 
   const paced = opts.paced !== false;
   // Does THIS channel actually show a typing indicator? On one that does (web, or the bridge with
@@ -583,6 +590,10 @@ async function sendBubbles(chatId: string, rawBubbles: string[], opts: SendBubbl
   // this send is flagged stale to the next turn's prompt (outboundLog.countSendsSince).
   noteSend(chatId);
   if (opts.record !== false) await addMessage(chatId, 'assistant', prepared.map(p => p.text).join(' '));
+  // How many bubbles actually went out. Zero means every one cleaned to nothing and this returned
+  // before the dots came down or the delivery was logged, which a caller closing a delivery it
+  // started elsewhere (the early sink) has to know.
+  return prepared.length;
 }
 
 /**
@@ -597,7 +608,7 @@ async function sendBubbles(chatId: string, rawBubbles: string[], opts: SendBubbl
  * exception, where interleaving a live reply beats delaying an emergency.
  */
 const speak = createMouth({
-  sendBubbles,
+  sendBubbles: async (chatId, bubbles, opts) => { await sendBubbles(chatId, bubbles, opts); },
   splitIntoBubbles,
   lastSpokenAt: chatId => lastSendAt(chatId),
   voiceTimeoutMs: Number(process.env.FOLLOWUP_VOICE_TIMEOUT_MS || 120_000),
@@ -788,16 +799,39 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
     ? { message_id: messageId }
     : undefined;
   const sentEarly: string[] = [];
-  const earlySend = async (sentence: string): Promise<void> => {
-    for (const piece of splitIntoBubbles(sentence)) {
-      const bubble = prepareBubble(piece);
-      if (!bubble) continue;
-      // First means first on their screen, which only this side knows: `chat()`'s own `isFirst` is
-      // the same thing whenever the first sentence's pieces all survive the guardrail.
-      const first = sentEarly.length === 0;
-      await sendOneBubble(chatId, bubble, { isFirst: first, isLast: false, replyTo: first ? earlyAnchor : undefined });
-      sentEarly.push(bubble);
+  // It reports what of the sentence actually went out rather than throwing, so a send that fails on
+  // its second piece still leaves the first one in the turn's record.
+  const earlySend = async (sentence: string): Promise<{ shown: string; error?: unknown }> => {
+    const shown: string[] = [];
+    try {
+      for (const piece of splitIntoBubbles(sentence)) {
+        const bubble = prepareBubble(piece);
+        if (!bubble) continue;
+        // First means first on their screen, which only this side knows: `chat()`'s own `isFirst` is
+        // the same thing whenever the first sentence's pieces all survive the guardrail.
+        const first = sentEarly.length === 0;
+        await sendOneBubble(chatId, bubble, { isFirst: first, isLast: false, replyTo: first ? earlyAnchor : undefined });
+        sentEarly.push(bubble);
+        shown.push(bubble);
+      }
+    } catch (error) {
+      return { shown: shown.join(' '), error };
     }
+    return { shown: shown.join(' ') };
+  };
+
+  // A turn that dies after its opening went out early did answer, in part: that part is on their
+  // screen, so it goes in the history (nothing else will record it, the convo client never reached
+  // its own write) and the delivery is logged and its dots put down, the way a finished send would.
+  // The error still propagates, tagged, so the failure is reported as the partial answer it was.
+  const closeEarlyOnFailure = async (error: unknown): Promise<never> => {
+    if (sentEarly.length) {
+      await addMessage(chatId, 'assistant', sentEarly.join(' ')).catch(err => console.error('[main] failed to record the early bubbles of a failed turn', err));
+      if (resolveChannel(chatId).caps.typing) releaseTyping(chatId);
+      noteSend(chatId);
+      if (error && typeof error === 'object') (error as { answeredInPart?: number }).answeredInPart = sentEarly.length;
+    }
+    throw error;
   };
 
   const out = await agentClient.chat(chatId, text, media, {
@@ -817,7 +851,7 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
     // message Irises has already sent past as answering an older state of the thread.
     arrivals,
     earlySend,
-  });
+  }).catch(closeEarlyOnFailure);
   turnOut = out;
   const { text: responseText, reaction, renameChat, rememberedUser, generatedImage, groupChatIcon, removeMember, delegatedTask, hardCapped, turnTrace } = out;
   console.log(`[timing] agent: ${Date.now() - start}ms`);
@@ -895,7 +929,12 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
     // Part of the reply may already be on their screen (the early sink above): then only what follows
     // it is sent, cut with the same comparison the history row was settled with (convo/shared.ts). A
     // turn that sent nothing early takes none of this and runs exactly as it always has.
-    const remainder = sentEarly.length ? remainderAfterPrefix(bubbles, sentEarly) : null;
+    // Compared as cleaned (sendBubbles' own per-bubble guardrail), because what went early was cleaned
+    // on its way out: a final bubble still carrying an echoed `[9:14 AM]` marker is the line already
+    // on their screen, and comparing it raw would read as a new one and send it twice.
+    const remainder = sentEarly.length
+      ? remainderAfterPrefix(bubbles.map(prepareBubble).filter(Boolean), sentEarly)
+      : null;
     if (remainder?.diverged) console.log(`[main] the reply changed after ${sentEarly.length} bubble(s) went out early — sending only what is new (chat ${chatId})`);
     // The report reads the reply as it reached them: what went early, then what follows it.
     const shipped = remainder ? [...sentEarly, ...remainder.rest] : bubbles;
@@ -915,8 +954,7 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
     if (remainder) {
       // Only the rest, unthreaded: the one bubble a single message's reply anchors is the first, and
       // that one already went. sendBubbles puts the dots down and logs the delivery after its last.
-      if (remainder.rest.length > 0) {
-        await sendBubbles(chatId, remainder.rest, { record: false });
+      if (remainder.rest.length > 0 && await sendBubbles(chatId, remainder.rest, { record: false }) > 0) {
         earlyDeliveryOpen = false;
       }
       console.log(`[timing] sendMessage (${sentEarly.length} early + ${remainder.rest.length} after): ${Date.now() - start}ms`);

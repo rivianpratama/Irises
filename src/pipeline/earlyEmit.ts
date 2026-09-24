@@ -24,7 +24,7 @@
 
 import { detectUnkeptPromise, detectUnbackedClaim } from '../agents/convo/unkeptPromise.js';
 import { refusedCapabilities } from '../agents/routingGate.js';
-import { redactInternalTools, stripOpsScaffolding, stripEchoedHolding } from '../agents/guardrails.js';
+import { redactInternalTools, stripOpsScaffolding } from '../agents/guardrails.js';
 import { stripReplyTag } from '../state/replyThreading.js';
 import { stripTimestampMarker } from './chatTime.js';
 import { splitIntoBubbles, splitIntoBubblesWithSplits } from './bubbles.js';
@@ -204,6 +204,13 @@ export function remainderAfterPrefix(finalBubbles: string[], prefix: string[]): 
   return { rest: finalBubbles.filter(b => !sent.has(norm(b))), diverged: true };
 }
 
+/** A reply as the send path will deliver it: split by the send law, each bubble through the same
+ *  per-bubble cleanup, the ones that clean to nothing dropped. Exported because the send boundary
+ *  (index.ts) cuts its remainder against the same shapes. */
+export function cleanBubbles(text: string): string[] {
+  return splitIntoBubbles(text).map(cleanEarlySentence).filter(Boolean);
+}
+
 /**
  * The final reply of a turn that sent part of itself early, settled against what is already on their
  * screen (`onScreen`, the sentences that went out, in order). PURE. Returns the text still to hand to
@@ -211,26 +218,26 @@ export function remainderAfterPrefix(finalBubbles: string[], prefix: string[]): 
  *
  *   • The reply still starts with what went out: it ships whole (the send boundary cuts the prefix
  *     off itself, with the same comparison) and is recorded whole, which is what they will have read.
- *   • It was replaced: a verbatim echo of the on-screen text is cut off its front (stripEchoedHolding,
- *     the composer's own backstop for the same slip), any bubble identical to one they already have is
- *     dropped, and the record leads with what went out, so the transcript she reads next turn matches
- *     their screen instead of a reply that never arrived in that shape.
+ *   • It was replaced: any bubble identical to one they already have is dropped, and the record leads
+ *     with what went out, so the transcript she reads next turn matches their screen instead of a
+ *     reply that never arrived in that shape. Nothing is cut off the front of a bubble that merely
+ *     starts with the same letters: stripEchoedHolding compares with the punctuation and spaces gone,
+ *     so on-screen "ok." would take "ok" off "okay, one sec" and ship "ay, one sec". A bubble is
+ *     only ever dropped whole, for being the same bubble.
+ *
+ * Both sides are compared in the send path's own bubble shapes AND after its own per-bubble cleanup
+ * (cleanEarlySentence is the same four steps sendBubbles runs), because the sentence that went early
+ * was cleaned on its way out: a final bubble that still carries an echoed `[9:14 AM]` marker is the
+ * same line on their screen, and reading it as a different one would send it twice.
  *   • Nothing is left to ship: the record is what went out alone. They were not left on read.
  */
 export function settleOnScreen(onScreen: readonly string[], finalText: string | null): { text: string | null; record: string | null } {
   const shown = onScreen.join('\n---\n');
   if (!onScreen.length) return { text: finalText, record: finalText };
   if (!finalText || !finalText.trim()) return { text: null, record: shown };
-  // Both sides in the send path's own bubble shapes, so a sentence and the bubble it became compare,
-  // and tag-free, as the send boundary reads them (a streamed turn is never a burst, so a routing tag
-  // here threads nothing and would only make the same sentence look different).
-  const shownBubbles = onScreen.flatMap(s => splitIntoBubbles(s));
-  const untagged = stripReplyTag(finalText);
-  if (!remainderAfterPrefix(splitIntoBubbles(untagged), shownBubbles).diverged) {
-    return { text: finalText, record: finalText };
-  }
-  const unechoed = stripEchoedHolding(untagged, shown);
-  const { rest } = remainderAfterPrefix(splitIntoBubbles(unechoed), shownBubbles);
+  const shownBubbles = cleanBubbles(onScreen.join('\n'));
+  const { rest, diverged } = remainderAfterPrefix(cleanBubbles(finalText), shownBubbles);
+  if (!diverged) return { text: finalText, record: finalText };
   const text = rest.length ? rest.join('\n---\n') : null;
   return { text, record: text ? `${shown}\n---\n${text}` : shown };
 }

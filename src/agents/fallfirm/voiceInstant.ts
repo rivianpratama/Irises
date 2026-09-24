@@ -53,6 +53,10 @@ export interface VoiceInstantOpts {
    *  recentHoldingBeats returns them. The brief prints them newest first, so the one she is least
    *  likely to have scrolled past leads. Absent or empty renders nothing. */
   recentBeats?: readonly string[];
+  /** What of this same reply already went out while it was still being written (the early sink,
+   *  convo/client.ts), in send order. This beat is the next text after it, so the brief says so.
+   *  Absent or empty renders nothing, which is every turn that did not stream. */
+  onScreen?: readonly string[];
 }
 
 // The dynamic block: where the look is right now, the ask (for continuity), the hint (so it names the
@@ -103,6 +107,10 @@ export function buildProgressBrief(opts: VoiceInstantOpts, userCtx: string): str
     lines.push('## The beats you sent most recently');
     lines.push('your own last few wait beats, newest first. this one matches none of them in shape or wording.');
     for (const beat of [...opts.recentBeats].reverse()) lines.push(`- ${neutralizeTagBreakouts(beat)}`);
+  }
+  if (opts.onScreen?.length) {
+    lines.push('## Already on their screen from this reply');
+    lines.push(`you sent this a moment ago, as the start of this same reply: "${neutralizeTagBreakouts(opts.onScreen.join(' '))}". your beat is the next text after it, so it never retypes any of it.`);
   }
   lines.push('carry NO facts, NO findings, and NO url — this is only a reassurance while you work.');
 
