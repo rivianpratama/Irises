@@ -31,20 +31,61 @@ export function convoHistoryMax(): number {
   return Math.floor(n);
 }
 
+// The granularity the read window's START moves in. A plain last-N window slides its first row by
+// one on every single turn once a chat outgrows the cap, which means the system-prompt-then-history
+// prefix OpenRouter would otherwise cache never repeats byte-for-byte two turns running — the whole
+// point of the byte-stable system message ahead of it is wasted. Moving the start in whole chunks
+// instead means the first row (and everything after it, up to the next chunk boundary) stays fixed
+// across a run of turns, so the shared prefix actually hits cache.
+const DEFAULT_CONVO_HISTORY_TRIM_CHUNK = 20;
+
+/** Same call-time-read, sanitize-or-default contract as convoHistoryMax, for the chunk size. */
+export function convoHistoryTrimChunk(): number {
+  const raw = (process.env.CONVO_HISTORY_TRIM_CHUNK || '').trim();
+  if (!raw) return DEFAULT_CONVO_HISTORY_TRIM_CHUNK;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_CONVO_HISTORY_TRIM_CHUNK;
+  return Math.floor(n);
+}
+
+/**
+ * The index (0-based, oldest-first) of the first history row to include, given `total` rows on
+ * hand and a `max`-row cap. Below the cap every row is in view, so the start is always 0 — nothing
+ * to trim yet, nothing to chunk. Past the cap, a plain "keep the newest max" window would move its
+ * start by one row every single turn; this instead advances it in whole `chunk`-sized steps, so the
+ * start (and the shared prefix built on top of it) stays put between jumps. `chunk` is clamped to
+ * `[1, max]` — a chunk of 0 would divide by zero, and a chunk wider than the whole cap would just be
+ * the cap.
+ */
+export function historyWindowStart(total: number, max: number, chunk: number): number {
+  if (total <= max) return 0;
+  const c = Math.min(Math.max(Math.floor(chunk), 1), max);
+  return Math.ceil((total - max) / c) * c;
+}
+
 type MessageRow = { role: 'user' | 'assistant'; content: string; handle: string | null; created_at: number };
 
 export async function getConversation(chatId: string): Promise<StoredMessage[]> {
   try {
-    // LIMIT is BOUND, not interpolated: the cap is env-driven now, and env text never belongs in
-    // a SQL string (convoHistoryMax already sanitizes — this is the second lock on the same door).
+    const cutoff = Date.now() - RETENTION_MS;
+    const max = convoHistoryMax();
+    // Count first so the window's start can be computed in whole chunks (historyWindowStart)
+    // instead of always taking the newest `max` rows — a plain "newest N" LIMIT slides its first
+    // row by one every turn, which is exactly the un-cacheable prefix this chunking exists to fix.
+    const { total } = stmt(
+      `SELECT COUNT(*) AS total FROM messages WHERE chat_id = ? AND created_at > ?`
+    ).get(chatId, cutoff) as unknown as { total: number };
+    const start = historyWindowStart(total, max, convoHistoryTrimChunk());
+    // Ascending order straight from the chunk boundary: OFFSET/LIMIT are BOUND, not interpolated,
+    // same rule as the old LIMIT-only query. id breaks same-millisecond ties in true insertion
+    // order, so no reverse() is needed the way the old DESC-then-reverse query needed one.
     const rows = stmt(
       `SELECT role, content, handle, created_at FROM messages
        WHERE chat_id = ? AND created_at > ?
-       ORDER BY created_at DESC, id DESC
-       LIMIT ?`
-    ).all(chatId, Date.now() - RETENTION_MS, convoHistoryMax()) as unknown as MessageRow[];
-    // id breaks same-millisecond ties, so the reversed list is true insertion order.
-    return rows.reverse().map(r => ({
+       ORDER BY created_at ASC, id ASC
+       LIMIT ? OFFSET ?`
+    ).all(chatId, cutoff, total - start, start) as unknown as MessageRow[];
+    return rows.map(r => ({
       role: r.role,
       content: r.content,
       ...(r.handle ? { handle: r.handle } : {}),
