@@ -32,9 +32,10 @@ import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '
 import { ENVELOPE_FIELDS, STATUS_CONTRACT_HEADER } from '../../persona/status.js';
 import { MOOD_CORES, CORE_VALENCE_BAND } from '../../persona/mood.js';
 import type { ThreadRung } from '../../persona/threads.js';
-import { FORMAT_ANCHOR, buildComposerDynamic } from '../composerCore.js';
+import { FORMAT_ANCHOR } from '../composerCore.js';
 import { buildOutcomeBrief } from '../fallfirm/client.js';
 import { buildProgressBrief } from '../fallfirm/voiceInstant.js';
+import { loadContext } from '../loadContext.js';
 import { renderPersonaBlock, DRIFT_MODES, type DriftMode, type PersonaLane } from '../../persona/policy.js';
 import type { HookDirective } from '../../persona/hooks.js';
 import type { PersonaTurn } from './shared.js';
@@ -346,15 +347,19 @@ test("Fallfirm's two anchors state the same target, ceiling and count", () => {
 // that renderPersonaBlock returns the same bytes four times is a tautology and policy.test.ts already
 // pins it; the failure mode this catches is a lane whose prompt builder simply never renders it —
 // which is exactly what all four lanes looked like the day before this landed.
+//
+// T7 moved the block out of the composer/Fallfirm `<prompt>` tails and into their system prompts
+// (composerCore.ts, fallfirm/client.ts, fallfirm/voiceInstant.ts), matching Convo — so all four
+// surfaces below are now each lane's system prompt, built the same `persona + Context.md`/
+// `persona + Progress.md` way the real call sites assemble it.
 
-/** The four surfaces, each built the way its own lane builds it. Convo's is the whole system prompt;
- *  the other three are the `<prompt>` block their voicer hands the model. */
+/** The four surfaces, each built the way its own lane builds its system prompt. */
 function surfacePrompts(): ReadonlyArray<readonly [PersonaLane, string]> {
   return [
     ['convo', buildSystemPromptSections(undefined, '').system],
-    ['composer', buildComposerDynamic('', '## What just landed\nthe cedars ship thursday', '')],
-    ['fallfirm', buildOutcomeBrief({ kind: 'confirmed', summary: 'the reminder is set for 7pm' }, '')],
-    ['fallfirm_progress', buildProgressBrief({ kind: 'holding', request: 'cedar lead times' }, '')],
+    ['composer', `${renderPersonaBlock('composer')}\n\n${loadContext('composer')}`],
+    ['fallfirm', `${renderPersonaBlock('fallfirm')}\n\n${loadContext('fallfirm')}`],
+    ['fallfirm_progress', `${renderPersonaBlock('fallfirm_progress')}\n\n${loadContext('fallfirm', 'Progress.md')}`],
   ];
 }
 

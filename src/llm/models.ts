@@ -137,12 +137,19 @@ export const EFFORT: Record<LlmRole, EffortLevel | null> = {
  *  buildAnthropicSystem): the persona head, stable for the deployment, and the end of the system,
  *  stable for the chat — do not remove the systemCacheBreakpoints plumbing, or a change to one
  *  chat's tool list re-bills every chat's persona. Harmless no-op on the OpenRouter/deepseek primary
- *  lane: cache_control is an Anthropic-only feature non-Anthropic providers ignore. */
+ *  lane: cache_control is an Anthropic-only feature non-Anthropic providers ignore.
+ *
+ *  Fallfirm (env: FALLFIRM_CACHE_SYSTEM, default on): the same shape as Convo, one span. Its system
+ *  is `persona + Context.md` for the outcome voice and `persona + Progress.md` for the holding voice
+ *  (fallfirm/client.ts, fallfirm/voiceInstant.ts) — both byte-identical every call, so the whole
+ *  string is passed with no systemCacheBreakpoints (buildAnthropicSystem caches it as one block). The
+ *  Composer relay rides the SAME cache under the `convo` role above (composerCore.ts calls `llm({
+ *  role: 'convo', ... })`), so it needed no entry of its own here. */
 export const CACHE_SYSTEM: Record<LlmRole, boolean> = {
   convo: parseBoolEnv(process.env.CONVO_CACHE_SYSTEM, true),
   ops: parseBoolEnv(process.env.OPS_CACHE_SYSTEM, true),
   classify: false,
-  fallfirm: false,
+  fallfirm: parseBoolEnv(process.env.FALLFIRM_CACHE_SYSTEM, true),
 };
 /** Sampling temperature, per role (env: <ROLE>_TEMPERATURE). null = don't send it.
  *  NOTE: temperature and extended thinking are mutually exclusive on Claude 4.x — the Anthropic path

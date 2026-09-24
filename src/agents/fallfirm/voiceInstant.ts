@@ -93,14 +93,13 @@ export function buildProgressBrief(opts: VoiceInstantOpts, userCtx: string): str
   }
   lines.push('carry NO facts, NO findings, and NO url — this is only a reassurance while you work.');
 
-  // The shared persona block leads, exactly as it does in the outcome voicer (client.ts): Progress.md
-  // is the holding lane's FUNCTION file — where the look is, what a wait line may and may not carry —
-  // and the person doing the waiting is the same one who answered on the front line. Same bytes, all
-  // four surfaces (persona/policy.ts).
+  // The shared persona block used to lead here, exactly as it did in the outcome voicer (client.ts);
+  // it now rides in the system prompt instead (ahead of Progress.md — see `voiceInstant`'s `system`
+  // assembly below), as a byte-stable prefix the Anthropic lane can cache-hit rather than re-bill on
+  // every wait beat.
   //
   // userCtx arrives pre-wrapped (buildUserMemory) — not re-wrapped in a data tag here.
   const block = [
-    renderPersonaBlock('fallfirm_progress'),
     userCtx,
     dataTag('progress', lines.join('\n')),
   ].filter(Boolean).join('\n\n');
@@ -136,7 +135,11 @@ export async function voiceInstant(opts: VoiceInstantOpts, chatId: string, handl
     ]);
     const res = await callLLM({
       role: 'fallfirm',
-      system: loadContext('fallfirm', 'Progress.md'),
+      // Persona block first, then Progress.md — the holding lane's FUNCTION file (where the look is,
+      // what a wait line may and may not carry). Same bytes as every other surface (persona/policy.ts),
+      // byte-identical every call, so CACHE_SYSTEM.fallfirm turns this prefix into a cache hit instead
+      // of a line re-billed inside the final user message every wait beat (models.ts).
+      system: `${renderPersonaBlock('fallfirm_progress')}\n\n${loadContext('fallfirm', 'Progress.md')}`,
       jsonBubbles: true, // tool-less; structured outputs guarantee the envelope
       messages: [
         ...formatHistory(history),

@@ -48,6 +48,7 @@ test('the JSON envelope becomes legacy bubble text; the instruction rides inside
   assert.match(String(last.content), /<prompt>[\s\S]*the deadline is march 14[\s\S]*<\/prompt>/);
   assert.equal(captured[0].jsonBubbles, true);
   assert.ok(captured[0].system, 'the composer persona is the system prompt');
+  assert.ok(String(captured[0].system).startsWith(renderPersonaBlock('composer')), 'the shared persona block leads the system prompt, ahead of Context.md');
 });
 
 test('the format anchor is the LAST thing in the message (recency holds the split rule)', async () => {
@@ -168,11 +169,10 @@ test('a fresh carried affect state is injected — weather BEFORE the facts, anc
   assert.ok(content.endsWith(FORMAT_ANCHOR), 'FORMAT_ANCHOR is still the very last thing');
 
   // read-only: the composer is never asked to (re-)emit a status field, and keeps its own envelope.
-  // Read OUTSIDE the shared persona block: that block is the one personality all four surfaces render
-  // (persona/policy.ts) and it uses the word once, in the machinery-is-invisible line telling her
-  // never to NAME a status to anyone. Everything this lane is actually asked for is in the rest.
-  const askedFor = content.split(renderPersonaBlock('composer')).join('');
-  assert.doesNotMatch(askedFor, /status/i);
+  // The shared persona block now rides in the system prompt (not this message), so no split-out is
+  // needed here — the persona's one "status" mention (the machinery-is-invisible line) never reaches
+  // this final user message at all.
+  assert.doesNotMatch(content, /status/i);
   assert.equal(captured[0].envelopeSchema, undefined); // default bubbles+confidence envelope, unchanged
   assert.equal(captured[0].jsonBubbles, true);
 });
@@ -253,24 +253,20 @@ test('a group identity never renders a register, even with a moved row stored un
 });
 
 // --- the dynamic block's own order ---------------------------------------------------------------
-// buildComposerDynamic is the pure half of the assembly above: four strings in, one <prompt> body
-// out. It is exported because the four-surface verbatim test (convo/promptPolicy.test.ts) has to
-// assert the shared persona block against the REAL assembly rather than a re-typed copy — and once it
-// is a named function, the order it fixes is worth pinning here, where a reader of this lane looks.
+// buildComposerDynamic is the pure half of the assembly above: three strings in, one <prompt> body
+// out. The shared persona block no longer rides here — it moved to the system prompt (see
+// `composeWithComposer`'s `system` assembly, and the persona-in-system assertion above) — so what's
+// left to pin is the order of what still does: weather, then facts, then the memory layer.
 
-test('the dynamic block is persona, weather, facts, memory — in that order', () => {
-  const block = renderPersonaBlock('composer');
+test('the dynamic block is weather, facts, memory — in that order', () => {
   const dynamic = buildComposerDynamic('## Where you are right now\nweather', 'the deadline is march 14', 'how to address them: Sam');
-  assert.ok(dynamic.startsWith(block), 'who is typing comes before anything about how she feels');
   const at = (needle: string) => dynamic.indexOf(needle);
-  assert.ok(at(block) < at('## Where you are right now'), 'persona before weather');
+  assert.ok(dynamic.startsWith('## Where you are right now'), 'weather leads when it is present');
   assert.ok(at('## Where you are right now') < at('the deadline is march 14'), 'weather before the facts');
   assert.ok(at('the deadline is march 14') < at('how to address them: Sam'), 'the facts before the memory layer');
-  assert.equal(dynamic.split(block).length - 1, 1, 'the block is stated once');
 });
 
-test('an empty weather or memory layer drops out, and the block still leads', () => {
-  const block = renderPersonaBlock('composer');
+test('an empty weather or memory layer drops out, and the facts still lead', () => {
   const dynamic = buildComposerDynamic('', 'the deadline is march 14', '');
-  assert.equal(dynamic, `${block}\n\nthe deadline is march 14`, 'no blank joins, no empty sections');
+  assert.equal(dynamic, 'the deadline is march 14', 'no blank joins, no empty sections');
 });

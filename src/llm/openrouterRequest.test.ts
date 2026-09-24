@@ -262,11 +262,12 @@ test('temperature passes through on the OpenRouter path when set', () => {
 });
 
 test('non-opted-in roles DISABLE reasoning explicitly and keep a plain-string system', () => {
-  // fallfirm opts into neither reasoning nor caching (both hardcoded off, not env-driven) — a stable
-  // example of the plain-string path. (convo used to sit here but now opts into caching; see below.)
-  // The reasoning field is no longer absent: absent means "the model's default decides", and an
-  // inherited reasoning model then eats the small per-call caps (see openrouterRequest.reasoning.test.ts).
-  const params = buildOpenRouterParams({ role: 'fallfirm', system: 'sys', messages: [{ role: 'user', content: 'x' }] }) as Any;
+  // classify opts into neither reasoning nor caching (both hardcoded/defaulted off) — a stable
+  // example of the plain-string path. (convo and fallfirm used to sit here but now opt into
+  // caching; see below.) The reasoning field is no longer absent: absent means "the model's
+  // default decides", and an inherited reasoning model then eats the small per-call caps (see
+  // openrouterRequest.reasoning.test.ts).
+  const params = buildOpenRouterParams({ role: 'classify', system: 'sys', messages: [{ role: 'user', content: 'x' }] }) as Any;
   assert.deepEqual(params.reasoning, { enabled: false });
   assert.equal(params.messages[0].content, 'sys');
 });
@@ -277,6 +278,15 @@ test('convo system prompt is sent as a cache_control content block (persona cach
   const params = buildOpenRouterParams({ role: 'convo', system: 'persona', messages: [{ role: 'user', content: 'x' }] }) as Any;
   assert.ok(Array.isArray(params.messages[0].content), 'convo system is now a cache_control block array');
   assert.equal(params.messages[0].content[0].text, 'persona');
+  assert.equal(params.messages[0].content[0].cache_control.type, 'ephemeral');
+});
+
+test('fallfirm system prompt is also sent as a cache_control content block (FALLFIRM_CACHE_SYSTEM default on)', () => {
+  // Same shape as convo, now that the persona block moved into fallfirm's system prompt (T7): it is
+  // byte-identical across the outcome and progress voices, so it's worth the same cache treatment.
+  const params = buildOpenRouterParams({ role: 'fallfirm', system: 'persona + Context.md', messages: [{ role: 'user', content: 'x' }] }) as Any;
+  assert.ok(Array.isArray(params.messages[0].content), 'fallfirm system is now a cache_control block array');
+  assert.equal(params.messages[0].content[0].text, 'persona + Context.md');
   assert.equal(params.messages[0].content[0].cache_control.type, 'ephemeral');
 });
 
