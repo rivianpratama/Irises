@@ -6,7 +6,7 @@ process.env.DATA_BACKEND = 'memory'; // module transitively imports the db layer
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildProgressBrief } from './voiceInstant.js';
+import { buildProgressBrief, firstBubble } from './voiceInstant.js';
 
 const CTX = 'how to address them: Sam';
 
@@ -48,4 +48,11 @@ test('still_on_it and heartbeat both say NOT to repeat the earlier "on it"', () 
 test('the user_context is carried through for addressing/style', () => {
   const brief = buildProgressBrief({ kind: 'holding', request: 'x' }, CTX);
   assert.match(brief, /how to address them: Sam/);
+});
+
+test('a holding beat is capped to ONE bubble in code: the first non-empty one', () => {
+  assert.equal(firstBubble('hmm\n---\nlemme look'), 'hmm');
+  assert.equal(firstBubble('  \n---\nlemme look\n---\nback in a sec'), 'lemme look');
+  assert.equal(firstBubble('one sec'), 'one sec');
+  assert.equal(firstBubble(' \n---\n '), null);
 });

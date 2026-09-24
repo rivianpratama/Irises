@@ -167,9 +167,22 @@ test('reassurance idioms from the persona ("scanning", "hang tight", "almost the
   }
 });
 
-test('an ack alone never salvages — it promises no look, so the voiced fallback takes over', () => {
+test('a longer ack alone never salvages — it reacts but holds no look, so the voiced fallback takes over', () => {
   assert.equal(salvageHoldingText("okay that's a real question"), null);
   assert.equal(salvageHoldingText('oof, the martinez file again'), null);
+});
+
+// A bare hum is a holding beat of its own: the prompts teach a thinking sound as one of the three
+// beat shapes, so the salvager must let it ship instead of swapping in a generated line. Only a SHORT
+// ack counts alone (the ≤3-word rule); a longer one still needs a real holding bubble after it.
+test('a bare hum or a short ack is a beat on its own; a claim after it is still cut', () => {
+  assert.equal(salvageHoldingText('hmm'), 'hmm');
+  assert.equal(salvageHoldingText('hmmm\n---\nthe answer is 42'), 'hmmm');
+  assert.equal(salvageHoldingText('mmm'), 'mmm');
+  assert.equal(salvageHoldingText('ok bet'), 'ok bet');
+  assert.equal(salvageHoldingText('hmm\n---\nfound it, the owner is the delgado trust'), 'hmm');
+  // A claim-bearing bubble is dropped even when it opens with an ack.
+  assert.equal(salvageHoldingText('yeah, checked and there is nothing there'), null);
 });
 
 test('a lowercase assertion cannot sneak in as an ack opener', () => {

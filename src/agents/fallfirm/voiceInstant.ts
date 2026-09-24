@@ -20,7 +20,7 @@ import { wrapPrompt, dataTag, neutralizeTagBreakouts } from '../../llm/promptTag
 import { timestampLabel } from '../../pipeline/chatTime.js';
 import type { LlmMessage } from '../../llm/types.js';
 import type { TaskKind } from '../types.js';
-import { holdingFloor, stillOnItText, heartbeatText } from './floor.js';
+import { holdingFloor, stillOnItText, heartbeatText, pickFresh, HOLDING_DEFAULT } from './floor.js';
 
 // Recent turns prepended for VOICE/continuity ONLY — never a fact source (this voice carries no
 // facts). This is the window that lets it see its own last holding line / ping so it never repeats.
@@ -52,7 +52,7 @@ export interface VoiceInstantOpts {
   /** Her own last few wait beats for this chat, OLDEST first — exactly as state/holdingBeats.ts
    *  recentHoldingBeats returns them. The brief prints them newest first, so the one she is least
    *  likely to have scrolled past leads. Absent or empty renders nothing. */
-  recentBeats?: string[];
+  recentBeats?: readonly string[];
 }
 
 // The dynamic block: where the look is right now, the ask (for continuity), the hint (so it names the
@@ -125,14 +125,23 @@ export function buildProgressBrief(opts: VoiceInstantOpts, userCtx: string): str
   return `${wrapPrompt(block)}\n\n${anchor}`;
 }
 
-// The floor when the LLM call fails/empties — the same pooled, zero-latency phrases as before.
+// The floor when the LLM call fails/empties — the same pooled, zero-latency phrases as before,
+// steered off the beats she sent last (opts.recentBeats) so a fallback never repeats one of them.
 function floorFor(opts: VoiceInstantOpts): string {
+  const recent = opts.recentBeats ?? [];
   switch (opts.kind) {
-    case 'holding': return opts.taskKind ? holdingFloor(opts.taskKind) : 'on it, one sec';
-    case 'still_on_it': return stillOnItText();
+    case 'holding': return opts.taskKind ? holdingFloor(opts.taskKind, recent) : pickFresh(HOLDING_DEFAULT, recent);
+    case 'still_on_it': return stillOnItText(recent);
     case 'heartbeat': return heartbeatText({ addressHint: opts.addressHint, dealHint: opts.dealHint });
     case 'progress': return stillOnItText();
   }
+}
+
+/** The first non-empty bubble of legacy bubble text, or null when there is none. The opening beat
+ *  is ONE bubble: the brief and the anchor both say so, and this holds it in code when a model
+ *  writes more anyway — a second bubble on a handoff is where a wait line starts to narrate. */
+export function firstBubble(legacyText: string): string | null {
+  return legacyText.split(/\n---\n/).map(b => b.trim()).find(Boolean) ?? null;
 }
 
 /**
@@ -161,7 +170,8 @@ export async function voiceInstant(opts: VoiceInstantOpts, chatId: string, handl
       trace: { chatId, handle, label: `fallfirm:progress:${opts.kind}` },
     });
     const reply = parseReply(res.text);
-    if (reply.legacyText) return redactInternalTools(reply.legacyText);
+    const text = reply.legacyText && opts.kind === 'holding' ? firstBubble(reply.legacyText) : reply.legacyText;
+    if (text) return redactInternalTools(text);
     console.warn(`[voiceInstant] empty reply (${opts.kind}) — using floor`);
   } catch (err) {
     console.warn(`[voiceInstant] LLM call failed (${opts.kind}) — using floor`, err);

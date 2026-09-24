@@ -67,6 +67,7 @@ import {
 import { addMessage, setUserName, addUserFact, UserProfile, StoredMessage } from '../../state/conversation.js';
 import { redactInternalTools } from '../guardrails.js';
 import { stripReplyTag } from '../../state/replyThreading.js';
+import { recordHoldingBeat } from '../../state/holdingBeats.js';
 import { parseReply, BUBBLE_LAW_MAX } from '../../pipeline/bubbleJson.js';
 import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '../../pipeline/bubbles.js';
 import { timestampLabel, renderConversationTiming, describeGap } from '../../pipeline/chatTime.js';
@@ -3589,6 +3590,11 @@ export async function processConvoResult(args: {
   // `momentOffered` is whether the sampler actually put a moment in front of her this turn — read
   // off the OFFER, not off whether she used one, because the offer is what was billed
   // (persona/moments.ts `billOffers`) and the spacing counter has to move with the bill.
+  // Her own last few holding beats in this chat, oldest first — the list convo/client.ts already
+  // read for the `recent_beats` prompt section (LiveState.holdingBeats), handed down rather than read
+  // again. A beat voiced here when the draft held none (voiceInstant) is steered off these, and so is
+  // its floor. Absent reads as no history. Forwarded by every recursing pass via {...args}.
+  recentBeats?: readonly string[];
   hooks?: {
     directive: HookDirective;
     report: HookSelectReport | null;
@@ -4431,12 +4437,12 @@ export async function processConvoResult(args: {
       // countdown. budgetMs: the leg this task will really get (a walled-URL look runs on the browser
       // budget), so the first promise cannot be shorter than the deadline Irises is about to wait for.
       const holdEta = estimateOpsEta({ kind: task.kind, request: task.request, budgetMs: browserLegBudgetFor(task) ?? undefined });
-      keep = await voiceInstant({ kind: 'holding', taskKind: task.kind, request: task.request, addressHint: task.addressHint, dealHint: task.dealHint, eta: { phrase: holdEta.phrase, state: 'fresh' } }, chatId, handle ?? '');
+      keep = await voiceInstant({ kind: 'holding', taskKind: task.kind, request: task.request, addressHint: task.addressHint, dealHint: task.dealHint, eta: { phrase: holdEta.phrase, state: 'fresh' }, recentBeats: args.recentBeats }, chatId, handle ?? '');
     }
   } else if (effects.suppressedDuplicate) {
     keep = textResponse;
     if (!keep) {
-      const line = await voiceInstant({ kind: 'still_on_it', request: textToSend }, chatId, handle ?? '');
+      const line = await voiceInstant({ kind: 'still_on_it', request: textToSend, recentBeats: args.recentBeats }, chatId, handle ?? '');
       // This reassurance can race the real answer: voiceInstant is a model call, and the in-flight
       // task it reassures about can settle while it runs (markOpsDone fires only AFTER the answer is
       // sent). If nothing is in flight anymore, the answer is already on their screen — a late "still
@@ -4600,7 +4606,17 @@ export async function processConvoResult(args: {
   // the holding part when results were appended after it: the composer continues from the line that
   // held the task, never from a voiced correction about something else.
   const holdingRecord = holdingPart != null ? stripReplyTag(redactInternalTools(holdingPart)) : cleanForRecord;
-  if (effects.delegatedTask && holdingRecord) effects.delegatedTask.holdingText = holdingRecord;
+  if (effects.delegatedTask && holdingRecord) {
+    effects.delegatedTask.holdingText = holdingRecord;
+    // And it joins her recent beats (state/holdingBeats.ts), which the next handoff's prompt and floor
+    // steer off. Only the holding part, and only on a turn whose reply IS a holding line: a parked
+    // turn's reply is the question, never a beat. One line, the way history stores it. Fire and
+    // forget: a lost write costs one beat of variety, and the reply must not wait on it.
+    if (!effects.parkedApproval) {
+      const beat = holdingRecord.split(/\n---\n/).map(b => b.trim()).filter(Boolean).join(' ');
+      if (beat) void recordHoldingBeat(chatId, beat).catch(() => {});
+    }
+  }
 
   if (cleanForRecord) {
     const historyMessage = cleanForRecord.split(/(?:---|[\r\n]+)/).map(m => m.trim()).filter(Boolean).join(' ');

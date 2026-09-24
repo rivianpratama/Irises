@@ -19,6 +19,8 @@ import { randomUUID } from 'node:crypto';
 import { processConvoResult, type ChatContext } from './shared.js';
 import { emptyMedia } from '../../webhook/types.js';
 import { markOpsStart, __resetOpsCoordination } from '../../state/opsCoordination.js';
+import { recentHoldingBeats } from '../../state/holdingBeats.js';
+import { HOLDING } from '../fallfirm/floor.js';
 import type { LlmResult, LlmToolCall } from '../../llm/types.js';
 
 // Minimal engine stub (repo DI convention): captures remember() and accepts reminders.
@@ -132,14 +134,27 @@ test('delegate with NO safe opener: voiceInstant holding path still produces tex
   assert.equal(out.delegatedTask!.holdingText, out.text);
 });
 
-test('delegate with EMPTY bubbles: voiceInstant holding path produces text', async () => {
+// Shape, never a pinned string: the beat is drawn from a varied pool (a hum, a wait, a line naming
+// the thing), so what holds is that ONE non-empty beat ships and it joins her recent beats.
+test('delegate with EMPTY bubbles: voiceInstant holding path produces one beat, and records it', async () => {
   const a = baseArgs();
   const res = makeResult([], [delegate('comps on 55 Birch')]);
   const out = await processConvoResult({ ...a, res, textToSend: 'pull comps on 55 Birch' });
 
   assert.ok(out.delegatedTask);
   assert.ok(out.text && out.text.trim().length > 0, 'never silent on a bare delegation');
+  assert.doesNotMatch(out.text!, /\n---\n/, 'the holding beat is a single bubble');
   assert.equal(out.delegatedTask!.holdingText, out.text);
+  // The record is fire-and-forget; let it land.
+  for (let i = 0; i < 5 && !(await recentHoldingBeats(a.chatId)).length; i++) await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(await recentHoldingBeats(a.chatId), [out.text]);
+});
+
+test('the fallback beat steers off her recent beats', async () => {
+  const a = baseArgs();
+  const recentBeats = HOLDING.web_research!.slice(0, -1);
+  const out = await processConvoResult({ ...a, res: makeResult([], [delegate('comps on 55 Birch')]), textToSend: 'pull comps on 55 Birch', recentBeats });
+  assert.equal(out.text, HOLDING.web_research!.at(-1), 'the one line she has not sent lately');
 });
 
 test('multi-intent (pleasantry + delegate): the ack opener AND the holding line both ship, no data leaks', async () => {

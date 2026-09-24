@@ -113,11 +113,16 @@ const HOLDING_LIKE = /\b(one sec|a sec|one more sec|hang on|hang tight|hold on|l
 
 // A short acknowledgment/empathy beat that legitimately OPENS a multi-bubble holding text ("okay
 // that's a real question", "oof, the martinez file again", "you're welcome!") — kept when it leads
-// into a real holding bubble, but never sufficient on its own (an ack alone promises no look).
-// Anchored to interjection openers so a lowercase ASSERTION ("the owner is the delgado trust")
+// into a real holding bubble, and sufficient on its own only when it is as short as a beat
+// (ACK_BEAT_MAX_WORDS below): a hum ("hmm", "mmm") is one of the beat's own shapes. Anchored to interjection openers so a lowercase ASSERTION ("the owner is the delgado trust")
 // can't sneak in as an "ack".
-const ACK_LIKE = /^(?:ok(?:ay)?|kk+|oo+f+|ugh+|ha(?:ha)*|heh+|lol|hm+|oh+|ooh+|whew|sheesh|yeah|yep|yes|sure(?: thing)?|alright|all right|right|fair(?: enough)?|good (?:one|question|call|shout)|got it|gotcha|nice|solid|bet|say less|no worries|no problem|np|of course|absolutely|honestly|anytime|my pleasure|you'?re welcome|welcome|love (?:it|that))\b/i;
+const ACK_LIKE = /^(?:ok(?:ay)?|kk+|oo+f+|ugh+|ha(?:ha)*|heh+|lol|hm+|mm+|um+|uh+|oh+|ooh+|whew|sheesh|yeah|yep|yes|sure(?: thing)?|alright|all right|right|fair(?: enough)?|good (?:one|question|call|shout)|got it|gotcha|nice|solid|bet|say less|no worries|no problem|np|of course|absolutely|honestly|anytime|my pleasure|you'?re welcome|welcome|love (?:it|that))\b/i;
 const ACK_MAX_WORDS = 8; // an ack is a beat, not a paragraph — anything longer isn't one
+// A thinking sound or a two-word nod ("hmm", "ok bet") is a whole holding beat of its own: the
+// prompts teach it as one of the beat's three shapes, and the look it fronts is already running.
+// Only this short an ack stands alone — a longer one reads as a reaction to what they said, and
+// without a real holding bubble after it the user has no sign anything is happening.
+const ACK_BEAT_MAX_WORDS = 3;
 
 // Digit-runs in `text` (e.g. "412", "410000" from "$410,000") — the unit of the grounding check.
 const digitRuns = (text: string): string[] => (text.match(/\d+/g) ?? []).map(r => r.replace(/^0+(?=\d)/, ''));
@@ -131,8 +136,9 @@ const digitRuns = (text: string): string[] => (text.match(/\d+/g) ?? []).map(r =
  * fabrication, so it survives; any digit NOT in the ground still ends the salvage. With no ground,
  * every figure breaks (the old conservative behavior).
  *
- * Returns null when no bubble actually holds the line (acks alone don't count — a draft that never
- * says "on it" salvages nothing, and the voiced fallback line takes over).
+ * Returns null when no bubble actually holds the line. A bare hum or a short ack (≤ 3 words) holds
+ * it on its own; a longer ack alone does not, so a draft that is only a reaction salvages nothing
+ * and the voiced fallback line takes over.
  */
 export function salvageHoldingText(legacyText: string | null, ground?: string): string | null {
   if (!legacyText) return null;
@@ -146,8 +152,10 @@ export function salvageHoldingText(legacyText: string | null, ground?: string): 
     // Figures: safe only when every digit-run is an echo of the user's own ask.
     const runs = digitRuns(bubble);
     if (runs.length && (bubble.includes('$') || !runs.every(r => groundRuns.some(g => g.includes(r))))) break;
-    if (HOLDING_LIKE.test(bubble)) hasHolding = true;
-    else if (!(ACK_LIKE.test(bubble) && bubble.split(/\s+/).length <= ACK_MAX_WORDS)) break; // neither holding nor a short ack — stop rather than guess
+    const words = bubble.split(/\s+/).length;
+    const ack = ACK_LIKE.test(bubble);
+    if (HOLDING_LIKE.test(bubble) || (ack && words <= ACK_BEAT_MAX_WORDS)) hasHolding = true;
+    else if (!(ack && words <= ACK_MAX_WORDS)) break; // neither holding nor a short ack — stop rather than guess
     kept.push(bubble);
   }
   return hasHolding && kept.length ? kept.join('\n---\n') : null;

@@ -789,6 +789,9 @@ export async function chat(
       res, chatId, handle, chatContext, textToSend, history, media,
       turn: { system, messages: turnMessages, tools, call, cacheBreakpoints: prompt.cacheBreakpoints },
       computed,
+      // Her last few holding beats, the same list the `recent_beats` section above printed — so a
+      // beat voiced down there when the draft held none steers off them too, without a second read.
+      recentBeats: holdingBeats,
       // THE zone this turn already resolved (above, from the stored `agent_tz` preference) — so a
       // reminder with no explicit timezone in the tool call rides the USER's clock, not the host's,
       // and a listed reminder's next-run time renders in it too.
