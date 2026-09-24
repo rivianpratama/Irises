@@ -42,6 +42,9 @@ import { isTypingFresh as isTypingFreshAt, shouldFlush, effectiveSettleMs } from
 import { typingDelayMs as pacedTypingDelayMs, holdLoop, type PacingConfig } from './state/pacing.js';
 import { createTypingLifecycle } from './state/typingStop.js';
 import { mergeBurst, splitBurstBySender } from './state/burstMerge.js';
+import { warmIdleClassify } from './agents/convo/idleClassify.js';
+import { classifyNeeded } from './persona/idle.js';
+import { hooksEnabled, shareTurnsEnabled } from './persona/featureFlags.js';
 import { resolveOutboundBubbles, resolveReactionTarget, stripReplyTag } from './state/replyThreading.js';
 import { noteSend, countSendsSince, lastSendAt } from './state/outboundLog.js';
 import { stripTimestampMarker } from './pipeline/chatTime.js';
@@ -961,6 +964,37 @@ export function enqueueInbound(
   // upstream); it feeds arrivals/gap detection. Falls back to now when absent (web/CLI, or an engine
   // that doesn't forward timestamps) — exactly the prior behavior.
   pending.messages.push({ from, text, messageId, media, incomingReplyTo, receivedAt: receivedAt ?? Date.now() });
+
+  // Classify DURING the settle window (the user chose this over folding the classifier into the
+  // convo call): the verdict for the burst as it stands right now is computed while we wait for
+  // them to stop typing, so the gate in chat() reads a finished (or in-flight, joined) answer and
+  // never adds its own latency. A newer text changes the combined string, so its own warm call
+  // replaces this one's relevance; the stale entry is simply never read.
+  //
+  // The string warmed is the one chat() will read. A turn is one CONSECUTIVE same-sender run
+  // (processPendingChat), merged by mergeBurst and handed to chat() untouched, where the gate trims
+  // it — so the run this text just joined, merged the same way, is that string. In a 1:1 the run is
+  // the whole burst. In a group every run is warmed at its own last text, which is the last moment
+  // it was the run still growing; a group message the room gate then ignores costs five tokens.
+  //
+  // Every condition is the prefetch's own in chat(), asked of the same functions with the same
+  // facts: the hooks flag (with it off no gate runs, so there is nothing to warm for), no media (a
+  // voice memo folds its transcript into the text later, and any attachment changes the gate's
+  // facts), the text-bearing count as the burst size, and the share flag, without which every
+  // signal is a veto and the share turns — the slow ones — would never be warmed. Read per text
+  // rather than once: an env flip between two texts of one burst costs at most one wasted call.
+  // The one miss: a text that lands while this chat's turn waits for the mouth is warmed as a run of
+  // its own, and the turn then folds it into the remerged whole — a different string, so that turn
+  // makes its own call exactly as it did before the warm existed.
+  const run = splitBurstBySender(pending.messages).at(-1) ?? [];
+  const burstText = mergeBurst(run).combinedText.trim();
+  if (hooksEnabled() && burstText && run.every(m => !hasMedia(m.media))
+      && classifyNeeded(burstText, {
+        attachmentNote: false,
+        burstSize: run.filter(m => m.text?.trim()).length,
+      }, { shareTurns: shareTurnsEnabled() })) {
+    warmIdleClassify({ chatId, handle: from }, burstText);
+  }
 
   // Index this inbound message's id → text so a LATER tapped reply that the transport collapses to
   // the thread root (this user's own message) resolves to what they said. Sits HERE, in the single

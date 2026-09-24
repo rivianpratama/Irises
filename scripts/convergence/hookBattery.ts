@@ -431,9 +431,11 @@ export function realOffer(d: MomentOfferDetail | null): Required<Omit<MomentOffe
   };
 }
 
-/** `idle:classify` (agents/convo/idleClassify.ts): layer 3's reading, one per turn that reached it,
- *  cache hit or lane call. Names and numbers only — the message itself never enters the ring. */
-export interface IdleClassifyDetail { verdict: IdleVerdict; cached: boolean; chars: number; failed?: string }
+/** `idle:classify` (agents/convo/idleClassify.ts): layer 3's reading, one per turn that reached it —
+ *  a cache hit (`cached`), a wait on the call the inbound door started while the burst settled
+ *  (`joined`), or a lane call of its own (neither). Names and numbers only — the message itself never
+ *  enters the ring. */
+export interface IdleClassifyDetail { verdict: IdleVerdict; cached: boolean; joined?: boolean; chars: number; failed?: string }
 
 // ── the evidence one probe item is scored on ────────────────────────────────────────────────────
 
@@ -861,7 +863,7 @@ export const CHECKS: Record<CheckId, HookCheck> = {
     run(ev) {
       if (!ev.select) return unscored(`no ${HOOKS_SELECT_LABEL} receipt for this chat (flag off? old binary?)`);
       const said = ev.classify
-        ? `layer 3 answered '${ev.classify.verdict}'${ev.classify.failed ? ` (failed: ${ev.classify.failed})` : ''}, cached ${ev.classify.cached}`
+        ? `layer 3 answered '${ev.classify.verdict}'${ev.classify.failed ? ` (failed: ${ev.classify.failed})` : ''}, cached ${ev.classify.cached}${ev.classify.joined ? ', joined the settle-window call' : ''}`
         : `no ${IDLE_CLASSIFY_LABEL} receipt at all`;
       if (ev.select.reason === NOT_IDLE) {
         return fail(`the gate read this stall as WORK (layer '${ev.select.idleLayer}'; ${said}) — a lane that `

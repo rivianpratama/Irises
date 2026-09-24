@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import {
   IDLE_CLASSIFY_CACHE_MAX, IDLE_CLASSIFY_MAX_TOKENS, IDLE_CLASSIFY_PROMPT, IDLE_CLASSIFY_TIMEOUT_MS,
   clearIdleClassifyCache, idleCacheKey, idleClassifyCacheSize, makeIdleClassifier, readIdleVerdict,
+  warmIdleClassify,
 } from './idleClassify.js';
 import { isIdleTurn, type IdleFacts, type IdleOptions } from '../../persona/idle.js';
 import { getTraces, clearTraces } from '../../diagnostics/trace.js';
@@ -222,4 +223,55 @@ test('the receipt carries a size and a verdict — never the message', async () 
   const classify = makeIdleClassifier({ chatId: 'c1', llm: async () => result('stall') });
   await isIdleTurn(secret, CLEAR, classify);
   assert.doesNotMatch(JSON.stringify(receipts()), new RegExp(secret));
+});
+
+// ── the settle-window warm ───────────────────────────────────────────────────
+// The inbound door starts the call while the burst settles (index.ts enqueueInbound), and the gate
+// reads it later. One text is one lane call and one receipt, however the two overlap.
+
+test('a warm call in flight is joined by the reading, not duplicated', async () => {
+  setup();
+  let calls = 0;
+  let release!: (v: LlmResult) => void;
+  const llm = (() => { calls++; return new Promise<LlmResult>(r => { release = r; }); }) as never;
+  warmIdleClassify({ chatId: 'c1', llm, timeoutMs: 5000 }, 'ちょっと待って');
+  const read = makeIdleClassifier({ chatId: 'c1', llm, timeoutMs: 5000 })('ちょっと待って');
+  release(result('stall'));
+  assert.equal(await read, 'stall');
+  assert.equal(calls, 1, 'the reading waited on the warm call instead of starting its own');
+});
+
+test('a warm call files no receipt; the reading files exactly one, and says it joined', async () => {
+  setup();
+  let release!: (v: LlmResult) => void;
+  const llm = (() => new Promise<LlmResult>(r => { release = r; })) as never;
+  warmIdleClassify({ chatId: 'c1', llm, timeoutMs: 5000 }, 'そうかもね');
+  assert.deepEqual(receipts(), [], 'nobody has read the verdict yet, so nothing is receipted');
+  const read = makeIdleClassifier({ chatId: 'c1', llm, timeoutMs: 5000 })('そうかもね');
+  release(result('stall'));
+  await read;
+  // A join is neither a cache hit nor a call of its own: the flag is what lets a live round tell the
+  // settle-window warm working from a cache that already knew the word.
+  assert.deepEqual(receipts(), [{ verdict: 'stall', cached: false, joined: true, chars: 5 }]);
+});
+
+test('a warm call that finished is a plain cache hit for the reading', async () => {
+  setup();
+  let calls = 0;
+  const llm = (async () => { calls++; return result('stall'); }) as never;
+  warmIdleClassify({ chatId: 'c1', llm }, 'まあまあ');
+  await new Promise(r => setImmediate(r));
+  assert.equal(await makeIdleClassifier({ chatId: 'c1', llm })('まあまあ'), 'stall');
+  assert.equal(calls, 1);
+  assert.deepEqual(receipts(), [{ verdict: 'stall', cached: true, chars: 4 }]);
+});
+
+test('a warm call that failed teaches nothing, and the reading makes its own call', async () => {
+  setup();
+  let calls = 0;
+  const llm = (async () => { calls++; if (calls === 1) throw new Error('lane down'); return result('stall'); }) as never;
+  warmIdleClassify({ chatId: 'c1', llm }, 'ふーん');
+  assert.equal(await makeIdleClassifier({ chatId: 'c1', llm })('ふーん'), 'stall');
+  assert.equal(calls, 2, 'the failed warm poisoned nothing');
+  assert.deepEqual(receipts(), [{ verdict: 'stall', cached: false, chars: 3 }]);
 });

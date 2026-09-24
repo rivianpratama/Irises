@@ -241,12 +241,19 @@ export async function chat(
   // it used to sit between their message and the first byte of the prompt, because the gate runs
   // after the dossier comes back and the gate is what asks.
   //
-  // THE PROMISE IS THREADED, NOT THE CACHE. Warming the classifier's cache here would double the
-  // work on exactly the messages it is meant to save — the store has no in-flight coalescing, so a
-  // prefetch that has not answered by the time the gate asks is a second call and a second receipt,
-  // and the live round reads "two receipts on one turn" as a broken prefetch. So the pending promise
-  // itself is what the gate consumes, through the same classifier instance, and the reading is filed
-  // exactly once.
+  // Since 2026-09-24 this is usually not the first ask. The inbound door already started the call
+  // while the burst settled (index.ts enqueueInbound → `warmIdleClassify`), so the reading this line
+  // starts is nearly always a cache hit or a join onto that call, and it only makes a call of its own
+  // on a turn the door could not warm — a late text folded in, a warm that failed. The classifier
+  // coalesces: a call already running for the same words is waited on rather than repeated, and the
+  // warm itself files no receipt, so one text stays one lane call and one `idle:classify` receipt
+  // whichever side got there first (convo/idleClassify.ts).
+  //
+  // THE PROMISE IS STILL THREADED. The reading is started here and the pending promise itself is what
+  // the gate consumes, through the same classifier instance, because a second reading of the same
+  // text would be a second receipt, and the live round reads "two receipts on one turn" as a broken
+  // prefetch. The coalescing keeps a second reading from costing a second lane call; only threading
+  // the promise keeps it from filing a second receipt.
   //
   // Two conditions, both about being able to promise the gate the SAME message. A voice memo folds
   // its transcript into the text further down, so the string the gate reads does not exist yet; and
