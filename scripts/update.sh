@@ -428,6 +428,18 @@ if [ -n "$ROLLBACK_TO" ]; then
   exit "$RC"
 fi
 
+# Every path below that restarts Irises takes the gateway with it, so the engine never runs on
+# against a server that came up after it did. Sets GATEWAY_STATE; returns 1 on an unverified bounce.
+bounce_gateway() {
+  local engine
+  engine="$(engine_kind)"
+  if [ "$engine" = "off" ]; then GATEWAY_STATE="n/a (standalone install)"; return 0; fi
+  if [ "$DO_GATEWAY" != "1" ]; then GATEWAY_STATE="skipped (--no-gateway-restart)"; return 0; fi
+  if gateway_restart "$engine" 90; then GATEWAY_STATE="bounced and verified"; return 0; fi
+  GATEWAY_STATE="NOT verified — bounce it yourself once you know why"
+  return 1
+}
+
 # ── compare ──────────────────────────────────────────────────────────────────
 if [ "$OLD" = "$NEW" ]; then
   if [ -n "$BUILT" ] && [ "$BUILT" != "$NEW" ] && [ "$CHECK" != "1" ]; then
@@ -455,6 +467,8 @@ if [ "$OLD" = "$NEW" ]; then
     [ -z "$WEB_MARKER" ] || rm -f "$WEB_MARKER"
     write_receipt "$NEW" "$NEW"
     REPAIR_RESTART="skipped (--no-restart) — the repaired build is on disk; restart Irises yourself"
+    REPAIR_RESULT=ok
+    REPAIR_RC=0
     if [ "$DO_RESTART" = "1" ]; then
       if ! irises_restart_verify "$ROOT" "$PORT" "$NEW" 45; then
         withdraw_receipt
@@ -466,13 +480,27 @@ if [ "$OLD" = "$NEW" ]; then
       fi
       REPAIR_RESTART="restarted, build ${NEW:0:7} verified live"
     fi
-    summary ok \
+    # The update that died here advanced HEAD before its build, so it never reached its own plugin
+    # refresh either: the engine still holds the previous sha's copy. Refreshed before the bounce,
+    # because the bounce is when the engine loads it — the same order the apply path keeps below.
+    REPAIR_ENGINE="$(engine_kind)"
+    REPAIR_PLUGIN="n/a (standalone install — no engine)"
+    if [ "$REPAIR_ENGINE" != "off" ]; then
+      if plugin_refresh "$REPAIR_ENGINE" "$ROOT"; then
+        REPAIR_PLUGIN="refreshed"
+      else
+        REPAIR_PLUGIN="NOT refreshed — see the warning above"
+      fi
+    fi
+    if ! bounce_gateway; then REPAIR_RESULT=gateway-failed; REPAIR_RC=5; fi
+    summary "$REPAIR_RESULT" \
       "repaired an unfinished build at ${NEW:0:7} (the code was already there)" \
       "web UI:   $WEB_STATE" \
       "Irises:   $REPAIR_RESTART" \
-      "plugin + gateway: not touched — a repair only rebuilds this clone" \
+      "plugin:   $REPAIR_PLUGIN" \
+      "gateway:  $GATEWAY_STATE" \
       "data:     $STATE_DIR — untouched, as always"
-    exit 0
+    exit "$REPAIR_RC"
   fi
   say "already up to date ($(git rev-parse --short HEAD), branch $BRANCH)"
   summary up-to-date "HEAD and origin/$BRANCH are both $(git rev-parse --short HEAD)"
@@ -588,10 +616,12 @@ if [ "$DO_RESTART" = "1" ]; then
     err "the new build did not come up — rolling back"
     if rollback_to "$OLD"; then
       if irises_restart_verify "$ROOT" "$PORT" "$OLD" 45; then
+        bounce_gateway || true
         summary rolled-back \
           "${NEW:0:7} would not serve; rolled back to ${OLD:0:7}" \
           "Irises is back up on the OLD build — nothing was announced in chat" \
           "plugin:   untouched (still the previous copy)" \
+          "gateway:  $GATEWAY_STATE" \
           "the failure is in $STATE_DIR/logs/server.log"
         exit 4
       fi

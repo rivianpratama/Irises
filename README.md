@@ -285,7 +285,7 @@ bash scripts/configure.sh --model-inherit             # back to the engine's mod
 bash scripts/configure.sh --set CONVO_EFFORT=low      # any documented .env key
 ```
 
-Each run shows the change first, then makes a backup of the file and writes the change. If the change is in the Irises `.env`, the script **restarts Irises** and checks `/health`. If the change is on the hermes side, the script **restarts the hermes gateway**, because hermes reads those keys only at start. The hermes side means `--front`, and also `--port` when the port move changes `IRISES_URL`. Pass `--no-gateway-restart` if you want to skip that restart.
+Each run shows the change first, then makes a backup of the file and writes the change. If the change is in the Irises `.env`, the script **restarts Irises** and checks `/health`. Every restart of Irises also **restarts the hermes gateway**, and so does a change on the hermes side, because hermes reads those keys only at start. The hermes side means `--front`, and also `--port` when the port move changes `IRISES_URL`. Pass `--no-gateway-restart` if you want to skip the gateway restart.
 
 Secrets never go on the command line. Pass the key name with `--set` and put the value in the `IRISES_SET_VALUE` variable. The details are in [docs/INSTALL.md](docs/INSTALL.md#changing-settings-after-the-install).
 

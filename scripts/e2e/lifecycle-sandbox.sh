@@ -555,7 +555,9 @@ check_out "the repair reports ok" "RESULT: ok" "$REPAIR_OUT"
 check_out "and says what it repaired" "repaired an unfinished build" "$REPAIR_OUT"
 check "dist/ was re-stamped from HEAD" test "$(dist_sha)" = "$NEXT_SHA"
 expect_sha "the repaired build is the one answering" "$NEXT_SHA"
-check "a repair leaves the engine's plugin alone" absent "$STUB_LOG" "plugins enable irises-bridge"
+# The update that left dist/ half-built died before its plugin refresh too, so a repair finishes it.
+check "a repair refreshes the engine's plugin" present "$STUB_LOG" "plugins enable irises-bridge"
+check "and the restart takes the gateway with it" grep -qE "hermes gateway re?start" "$STUB_LOG"
 
 # ── 3a. a build that does not compile ─────────────────────────────────────────
 step "3a/12  rollback (exit 3) — a commit that does NOT compile"
@@ -1007,6 +1009,7 @@ expect_sha "Irises was restarted and still serves the build she was on" "$WIZ_HE
 # The proof that the restart was real and not a health check against the process that never died:
 # .env is read at boot, so a server with the old pid is a server on the old timezone.
 check "the restart cycled the detached server — a new pid" pid_changed "$CFG_PID" "$(srv_pid)"
+check "and the gateway was bounced with her" grep -qE "hermes gateway re?start" "$STUB_LOG"
 
 # 2. the browser chat — the same rung, answered `n` where the prompt defaults to the state the box
 # is in (the wizard turned it on, so the default here is `y` and the `n` is a real answer).
