@@ -3081,8 +3081,10 @@ function slotSnapshot(e: TurnEffects): Pick<TurnEffects, 'delegatedTask' | 'mode
 
 // ── The outcome pass's inputs ───────────────────────────────────────────────────────────────────
 /** The most convo model calls one user-visible turn makes: the draft, at most one corrective re-ask,
- *  and at most one outcome pass. The envelope retry inside callConvoLLM and the Fallfirm voicer are
- *  not convo calls and are not counted. */
+ *  and at most one outcome pass. A draft whose stream broke before any of it went out is re-run once
+ *  (convo/client.ts), and that re-run counts, so such a turn arrives here with two already used. The
+ *  envelope retry inside callConvoLLM and the Fallfirm voicer are not convo calls and are not
+ *  counted. */
 const MAX_CONVO_CALLS_PER_TURN = 3;
 
 /**
@@ -4743,10 +4745,12 @@ export async function processConvoResult(args: {
     effects.delegatedTask.holdingText = holdingRecord;
     // And it joins her recent beats (state/holdingBeats.ts), which the next handoff's prompt and floor
     // steer off. Only the holding part, and only on a turn whose reply IS a holding line: a parked
-    // turn's reply is the question, never a beat. One line, the way history stores it. Fire and
-    // forget: a lost write costs one beat of variety, and the reply must not wait on it.
+    // turn's reply is the question, never a beat. Only its LAST bubble, too: a holding part of more
+    // than one bubble opens on a nod to what they said and ends on the beat, and the nod is no beat
+    // to steer off. Fire and forget: a lost write costs one beat of variety, and the reply must not
+    // wait on it.
     if (!effects.parkedApproval) {
-      const beat = holdingRecord.split(/\n---\n/).map(b => b.trim()).filter(Boolean).join(' ');
+      const beat = holdingRecord.split(/\n---\n/).map(b => b.trim()).filter(Boolean).at(-1);
       if (beat) void recordHoldingBeat(chatId, beat).catch(() => {});
     }
   }

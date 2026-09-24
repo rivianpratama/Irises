@@ -145,6 +145,28 @@ test('a stream that breaks before anything went out is re-run once, unstreamed',
   assert.equal(out.emittedPrefix, undefined);
 });
 
+test('the re-run of a broken stream counts against the turn\'s call cap', async () => {
+  const log: string[] = [];
+  const sent: string[] = [];
+  const calls: LlmRequest[] = [];
+  // The re-run comes back empty, so the silent-turn retry spends the turn's third call. That retry
+  // promises work with no tool behind it, which the guard would re-ask: a fourth call, had the re-run
+  // gone uncounted.
+  const unkept = { confidence_level: 95, tool_calls: null, bubbles: [{ text: 'on it', re: null }], status: {} };
+  const empty = { confidence_level: 95, tool_calls: null, bubbles: [], status: {} };
+  const lane = async (req: LlmRequest): Promise<LlmResult> => {
+    calls.push(req);
+    if (req.onTextDelta) {
+      const partial = '{"confidence_level":95,"tool_calls":null,"bubbles":[{"text":"thats 4';
+      req.onTextDelta(partial);
+      return { text: partial, toolCalls: [], stopReason: 'error', provider: 'openrouter', model: 'test', emitted: true };
+    }
+    return { text: JSON.stringify(calls.length === 2 ? empty : unkept), toolCalls: [], stopReason: 'end_turn', provider: 'openrouter', model: 'test' };
+  };
+  await chat(randomUUID(), ASK, emptyMedia(), ctx(log, sent), lane);
+  assert.ok(calls.length <= 3, `at most three convo calls, the broken stream included: ${calls.map(c => c.trace?.label).join(', ')}`);
+});
+
 test('a stream that breaks after a sentence went out keeps that sentence and nothing of the fragment', async () => {
   const log: string[] = [];
   const sent: string[] = [];

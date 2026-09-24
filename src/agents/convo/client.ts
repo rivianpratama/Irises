@@ -931,6 +931,9 @@ export async function chat(
 
   try {
     let res: LlmResult;
+    // Whether the draft took a second call: a stream that broke before any of it went out is re-run
+    // once, below, and that re-run is a convo call like any other, so it counts against the turn's cap.
+    let reran = false;
     try {
       res = await (call ?? callConvoLLM)(
         // The early sink, on an armed turn only. The OpenAI-compatible lanes stream when it is set; the
@@ -956,6 +959,7 @@ export async function chat(
         console.warn(`[convo] streamed reply broke before any of it went out — one unstreamed re-run (chat ${chatId})`);
         record({ type: 'event', label: 'convo:stream_rerun', chatId, handle });
         res = await (call ?? callConvoLLM)({ ...firstReq, trace: { chatId, handle, label: 'convo:stream_rerun' } });
+        reran = true;
       } else {
         // Part of it is on their screen. The reply is then exactly that and nothing more: the sentences
         // that went out were whole, and everything after them is a cut envelope the repair tier would
@@ -981,6 +985,9 @@ export async function chat(
         cacheBreakpoints: prompt.cacheBreakpoints,
       },
       emittedPrefix: onScreen,
+      // The broken stream and its re-run are two calls already spent, so the passes after the draft
+      // share the one call left under MAX_CONVO_CALLS_PER_TURN instead of the usual two.
+      callBudget: reran ? { used: 2 } : undefined,
       computed,
       // Her last few holding beats, the same list the `recent_beats` section above printed — so a
       // beat voiced down there when the draft held none steers off them too, without a second read.
