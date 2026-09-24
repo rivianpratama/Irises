@@ -157,6 +157,9 @@ export const DATA_BUDGET_KEYS: readonly BudgetKey[] = [
   // Their reminders, one row each (convo/liveReminders.ts): somebody with ten reminders legitimately
   // carries a longer section than somebody with one, so an overshoot is a fact about them.
   'live_reminders',
+  // Her own last few holding beats (state/holdingBeats.ts): up to five, each as long as she made it,
+  // so a chat with a full history of long beats legitimately measures wider than a fixture.
+  'recent_beats',
   // Her one read on this person, written per person by the weekly pass (memory/thesisEngine.ts).
   // Two to four sentences about somebody with nine months of history is legitimately longer than
   // two to four about somebody with three weeks, so an overshoot here is a fact about them and is

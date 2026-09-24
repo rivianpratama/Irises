@@ -7,6 +7,12 @@ import { isTypingFresh, shouldFlush, effectiveSettleMs } from './batchTiming.js'
 const SETTLE = 5000;   // rolling window: flush 5s after the last message
 const t0 = 1_000_000;
 
+test('snappy settle curve: 1.8s base, +0.4s per extra text, capped at 4s', () => {
+  assert.equal(effectiveSettleMs(1, 1800, 400, 4000), 1800);
+  assert.equal(effectiveSettleMs(3, 1800, 400, 4000), 2600);
+  assert.equal(effectiveSettleMs(12, 1800, 400, 4000), 4000);
+});
+
 test('effectiveSettleMs grows +1s per message from a 5s base, capped at 20s', () => {
   const eff = (n: number) => effectiveSettleMs(n, 5000, 1000, 20000);
   assert.equal(eff(1), 5000);   // bubble 1 = 5s

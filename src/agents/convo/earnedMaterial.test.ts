@@ -107,7 +107,7 @@ test('the rendered read lands in the thesis section, and the evidence tail never
   // again on its way through — the tail is the weekly pass's private input.
   const withNotes = `${READ}\n\n## evidence\n- a note the nightly pass left`;
   const section = renderThesisSection(withNotes);
-  const { system } = buildSystemPromptSections(...build({ hooks: null, moments: [], thesis: section }));
+  const { tail: system } = buildSystemPromptSections(...build({ hooks: null, moments: [], thesis: section }));
   assert.ok(system.includes(THESIS_SECTION_HEADING));
   assert.ok(system.includes(READ));
   assert.ok(!system.includes('a note the nightly pass left'), 'the notes are not prompt material');
@@ -115,21 +115,21 @@ test('the rendered read lands in the thesis section, and the evidence tail never
 
 test('a moment line rides inside the hooks block ONLY when the directive opened the lead', () => {
   const open = buildSystemPromptSections(...build({ hooks: HOOK, moments: [MOMENT_LINE], thesis: '' }));
-  assert.ok(open.system.includes(MOMENTS_LEAD));
-  assert.ok(open.system.includes(MOMENT_LINE));
+  assert.ok(open.tail.includes(MOMENTS_LEAD));
+  assert.ok(open.tail.includes(MOMENT_LINE));
 
   // The gate is the DIRECTIVE, not the sample: a closed lead makes the sample dead weight, which is
   // why `selectHook` decides it and the renderer only obeys.
   const shut = buildSystemPromptSections(...build({ hooks: { ...HOOK, moments: false }, moments: [MOMENT_LINE], thesis: '' }));
-  assert.ok(shut.system.includes(HOOK_HEADING), 'still a hook turn');
-  assert.ok(!shut.system.includes(MOMENTS_LEAD));
-  assert.ok(!shut.system.includes(MOMENT_LINE));
+  assert.ok(shut.tail.includes(HOOK_HEADING), 'still a hook turn');
+  assert.ok(!shut.tail.includes(MOMENTS_LEAD));
+  assert.ok(!shut.tail.includes(MOMENT_LINE));
 
   // …and a task turn renders neither, whatever it was handed.
   const task = buildSystemPromptSections(...build({
     hooks: { ...HOOK, idle: false, mode: 'task', offerAllowed: false }, moments: [MOMENT_LINE], thesis: '',
   }));
-  assert.ok(!task.system.includes(MOMENT_LINE));
+  assert.ok(!task.tail.includes(MOMENT_LINE));
 });
 
 // ── the client seam: a REAL turn ─────────────────────────────────────────────
@@ -137,6 +137,13 @@ test('a moment line rides inside the hooks block ONLY when the directive opened 
 function fakeLane(res: LlmResult): { seen: LlmRequest[]; call: (req: LlmRequest) => Promise<LlmResult> } {
   const seen: LlmRequest[] = [];
   return { seen, call: async (req: LlmRequest) => { seen.push(req); return res; } };
+}
+
+/** The prompt text the lane was handed: the system message, then the per-turn tail, which rides as
+ *  its own user message right before theirs (convo/client.ts). */
+function promptSeen(req: LlmRequest): string {
+  const tail = req.messages[req.messages.length - 2];
+  return `${req.system ?? ''}\n\n${typeof tail?.content === 'string' ? tail.content : ''}`;
 }
 
 const clientCtx = (over: Partial<ChatContext> = {}): ChatContext => ({
@@ -186,7 +193,7 @@ test('her read reaches the prompt on a real turn, off the store, behind the doss
   const { seen, call } = fakeLane(envelope(['six to eight weeks, same as last time']));
   await chat(randomUUID(), 'any word on the cedars', emptyMedia(), clientCtx(), call);
 
-  const system = seen[0].system ?? '';
+  const system = promptSeen(seen[0]);
   assert.ok(system.includes(THESIS_SECTION_HEADING), 'the section rendered');
   assert.ok(system.includes(READ));
   assert.ok(!system.includes('a note nobody but the weekly pass may read'));
@@ -199,7 +206,7 @@ test('with the thesis flag OFF the store is never read and nothing renders', asy
   assert.equal(await saveThesis(SENDER, READ, 0, THESIS_REWRITE_WRITER), 1);
   const { seen, call } = fakeLane(envelope(['six to eight weeks']));
   await chat(randomUUID(), 'any word on the cedars', emptyMedia(), clientCtx(), call);
-  const system = seen[0].system ?? '';
+  const system = promptSeen(seen[0]);
   assert.ok(!system.includes(THESIS_SECTION_HEADING));
   assert.ok(!system.includes(READ));
 });
@@ -212,7 +219,7 @@ test('an idle turn with the spacing spent is OFFERED a moment, and the offer is 
   const { seen, call } = fakeLane(envelope(['still no volcano?']));
   await chat(chatId, 'hey', emptyMedia(), clientCtx(), call);
 
-  const system = seen[0].system ?? '';
+  const system = promptSeen(seen[0]);
   assert.ok(system.includes(MOMENTS_LEAD), 'the lead reached the prompt');
   assert.ok(system.includes('- (habit, last week) checked the volcano dashboard again and decided nothing'));
   assert.deepEqual(receipt('moments:offer'), { offered: 1, rendered: 1, held: 1, excluded: 0 });
@@ -236,7 +243,7 @@ test('a moment offered in the last day is held back, and the turn renders no lea
   const { seen, call } = fakeLane(envelope(['mm']));
   await chat(chatId, 'hey', emptyMedia(), clientCtx(), call);
 
-  const system = seen[0].system ?? '';
+  const system = promptSeen(seen[0]);
   assert.ok(system.includes(HOOK_HEADING), 'still an idle hook turn');
   assert.ok(!system.includes(MOMENTS_LEAD), 'the same callback twice in a day is a bot with one anecdote');
   // THE HEALTHY NO-OP, receipted. The sampler ran, drew nothing, and says so in numbers: the one
@@ -260,7 +267,7 @@ test('a moment that renders to nothing is not an offer, and is billed for nothin
   const { seen, call } = fakeLane(envelope(['mm']));
   await chat(chatId, 'hey', emptyMedia(), clientCtx(), call);
 
-  const system = seen[0].system ?? '';
+  const system = promptSeen(seen[0]);
   assert.ok(system.includes(HOOK_HEADING), 'still an idle hook turn');
   assert.ok(!system.includes(MOMENTS_LEAD), 'no lead, because there was no line to lead with');
   // Drawn but not rendered, and the two numbers say exactly that — which is the reading a bare
@@ -287,7 +294,7 @@ test('an unreadable MOMENTS.md offers nothing, writes nothing, and says which si
   try {
     const lane = fakeLane(envelope(['mm']));
     await chat(chatId, 'hey', emptyMedia(), clientCtx(), lane.call);
-    system = lane.seen[0].system ?? '';
+    system = promptSeen(lane.seen[0]);
   } finally {
     console.error = realError;
   }
@@ -322,7 +329,7 @@ test('a /forget landing between the read and the bill refuses the bill', async (
 
   const { seen, call } = fakeLane(envelope(['still no volcano?']));
   await chat(chatId, 'hey', emptyMedia(), clientCtx(), call);
-  assert.ok((seen[0].system ?? '').includes(MOMENTS_LEAD), 'the offer really was made this turn');
+  assert.ok(promptSeen(seen[0]).includes(MOMENTS_LEAD), 'the offer really was made this turn');
 
   const realWarn = console.warn;
   console.warn = () => {};
@@ -348,7 +355,7 @@ test('a TASK turn is offered nothing, whatever the file holds', async () => {
   const { seen, call } = fakeLane(envelope(['six to eight weeks, same as last time']));
   await chat(chatId, 'deploy the cedars order', emptyMedia(), clientCtx(), call);
 
-  assert.ok(!(seen[0].system ?? '').includes(MOMENTS_LEAD));
+  assert.ok(!promptSeen(seen[0]).includes(MOMENTS_LEAD));
   assert.equal(receipt('moments:offer'), undefined);
   assert.equal((await readMoments(SENDER)).entries[0].offered, 0, 'nothing was billed');
 });
@@ -362,7 +369,7 @@ test('with the moments flag OFF the file is never read and nothing is billed', a
   const { seen, call } = fakeLane(envelope(['mm']));
   await chat(chatId, 'hey', emptyMedia(), clientCtx(), call);
 
-  assert.ok(!(seen[0].system ?? '').includes(MOMENTS_LEAD));
+  assert.ok(!promptSeen(seen[0]).includes(MOMENTS_LEAD));
   assert.equal(receipt('moments:offer'), undefined);
   assert.equal((await readMoments(SENDER)).entries[0].offered, 0);
 });
@@ -377,7 +384,7 @@ test('a GROUP room is offered no moment and gets no read — every per-person st
   const { seen, call } = fakeLane(envelope(['mm']));
   await chat(chatId, 'hey', emptyMedia(), clientCtx({ isGroupChat: true, participantNames: ['Sam', 'Jo'] }), call);
 
-  const system = seen[0].system ?? '';
+  const system = promptSeen(seen[0]);
   assert.ok(!system.includes(MOMENTS_LEAD));
   assert.ok(!system.includes(THESIS_SECTION_HEADING));
   assert.equal((await readMoments(SENDER)).entries[0].offered, 0);

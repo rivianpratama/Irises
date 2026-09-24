@@ -26,7 +26,7 @@ import type { StoredMessage } from '../db/types.js';
 type Any = any;
 
 /** One fake OpenAI-compatible completion. `finish: 'length'` + null content IS the starvation shape. */
-function reply(over: { content?: string | null; finish?: string } = {}): Any {
+function reply(over: { content?: string | null; finish?: string; usage?: Any } = {}): Any {
   return {
     id: 'cmpl-fake', object: 'chat.completion', created: 0, model: 'fake/reasoner',
     choices: [{
@@ -35,7 +35,7 @@ function reply(over: { content?: string | null; finish?: string } = {}): Any {
       logprobs: null,
       message: { role: 'assistant', content: over.content === undefined ? 'pong' : over.content, refusal: null },
     }],
-    usage: { prompt_tokens: 10, completion_tokens: 5 },
+    usage: over.usage ?? { prompt_tokens: 10, completion_tokens: 5 },
   };
 }
 const starved = (): Any => reply({ content: null, finish: 'length' });
@@ -227,6 +227,20 @@ test('an unretried call bills exactly one leg, as before', async () => {
   const result = await callOpenAICompatible(req(), 'openrouter', send);
   assert.deepEqual(result.usage, {
     inputTokens: 10, outputTokens: 5, cacheCreationInputTokens: 0, cacheReadInputTokens: 0,
+  });
+});
+
+test('an OpenRouter cache hit reports as cacheReadInputTokens, not folded into inputTokens', async () => {
+  // OpenRouter's prompt_tokens_details.cached_tokens is a SUBSET of prompt_tokens (the provider's
+  // own accounting, mirroring OpenAI's), not an addition to it — so the ledger's inputTokens is the
+  // UNCACHED remainder, the way the Anthropic lane already reports cache reads separately.
+  const { send, sent } = sender([reply({
+    usage: { prompt_tokens: 40000, completion_tokens: 300, prompt_tokens_details: { cached_tokens: 36000 } },
+  })]);
+  const result = await callOpenAICompatible(req(), 'openrouter', send);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(result.usage, {
+    inputTokens: 4000, outputTokens: 300, cacheCreationInputTokens: 0, cacheReadInputTokens: 36000,
   });
 });
 

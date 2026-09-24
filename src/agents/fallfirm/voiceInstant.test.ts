@@ -6,7 +6,7 @@ process.env.DATA_BACKEND = 'memory'; // module transitively imports the db layer
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildProgressBrief } from './voiceInstant.js';
+import { buildProgressBrief, firstBubble } from './voiceInstant.js';
 
 const CTX = 'how to address them: Sam';
 
@@ -20,10 +20,22 @@ test('every kind wraps in <prompt>, tags the situation, and steers against repea
   }
 });
 
-test('holding is framed as the FIRST on-it line and names the hint', () => {
+test('holding is framed as the one opening beat and names the hint', () => {
   const brief = buildProgressBrief({ kind: 'holding', request: 'owner of 412 maple', addressHint: '412 maple st' }, CTX);
-  assert.match(brief, /first "on it" line/i);
+  assert.match(brief, /this is your opening beat/i);
+  assert.match(brief, /one bubble, short, true/i);
+  assert.match(brief, /exactly one item/i, 'the anchor holds it to one bubble');
   assert.match(brief, /412 maple st/, 'the address hint is surfaced so the line names the real thing');
+});
+
+test('her recent beats render newest first on every kind, and not at all when there are none', () => {
+  for (const kind of ['holding', 'still_on_it', 'heartbeat', 'progress'] as const) {
+    // Oldest first, the order state/holdingBeats.ts recentHoldingBeats hands them over in.
+    const brief = buildProgressBrief({ kind, request: 'x', recentBeats: ['first beat', 'second beat'] }, CTX);
+    assert.match(brief, /## The beats you sent most recently/, kind);
+    assert.ok(brief.indexOf('- second beat') < brief.indexOf('- first beat'), `${kind}: newest first`);
+    assert.doesNotMatch(buildProgressBrief({ kind, request: 'x', recentBeats: [] }, CTX), /beats you sent most recently/, kind);
+  }
 });
 
 test('still_on_it and heartbeat both say NOT to repeat the earlier "on it"', () => {
@@ -36,4 +48,11 @@ test('still_on_it and heartbeat both say NOT to repeat the earlier "on it"', () 
 test('the user_context is carried through for addressing/style', () => {
   const brief = buildProgressBrief({ kind: 'holding', request: 'x' }, CTX);
   assert.match(brief, /how to address them: Sam/);
+});
+
+test('a holding beat is capped to ONE bubble in code: the first non-empty one', () => {
+  assert.equal(firstBubble('hmm\n---\nlemme look'), 'hmm');
+  assert.equal(firstBubble('  \n---\nlemme look\n---\nback in a sec'), 'lemme look');
+  assert.equal(firstBubble('one sec'), 'one sec');
+  assert.equal(firstBubble(' \n---\n '), null);
 });

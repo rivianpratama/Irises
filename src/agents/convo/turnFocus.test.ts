@@ -405,7 +405,8 @@ test('turn_focus is the LAST dyn section id, so a new push site cannot land afte
 
 test('the turn-focus block is the last section inside </prompt>, on every path', () => {
   for (const p of PLACEMENT) {
-    const { system, sections } = buildSystemPromptSections(...p.args);
+    // The tail's block: every per-turn section rides the tail message, and this one closes it.
+    const { tail, sections } = buildSystemPromptSections(...p.args);
     const names = sections.map(s => s.name);
 
     // (1) by section order: the last dyn section, i.e. the one right before the anchors.
@@ -413,20 +414,20 @@ test('the turn-focus block is the last section inside </prompt>, on every path',
 
     // (2) by string position: nothing of the block's own between it and the closing tag.
     const block = renderTurnFocus(FOCUS);
-    const at = system.indexOf(block);
+    const at = tail.indexOf(block);
     assert.ok(at > 0, `${p.name}: the block is in the prompt`);
-    // lastIndexOf, not indexOf: the persona's own "What <prompt> is" section names the closing tag
-    // in prose long before the real one, and nothing after the block carries it.
-    const close = system.lastIndexOf(`</${PROMPT_TAG}>`);
+    // lastIndexOf, not indexOf: nothing after the block carries the closing tag, and the anchors
+    // behind it are the only text that follows.
+    const close = tail.lastIndexOf(`</${PROMPT_TAG}>`);
     assert.ok(at < close, `${p.name}: inside the block`);
-    assert.equal(system.slice(at + block.length, close), '\n', `${p.name}: nothing between it and </prompt>`);
+    assert.equal(tail.slice(at + block.length, close), '\n', `${p.name}: nothing between it and </prompt>`);
   }
 });
 
 test('the extra section still renders — the focus block sits after it, not instead of it', () => {
-  const { system } = buildSystemPromptSections(...PLACEMENT[3].args);
-  assert.ok(system.includes('An addendum the caller tacked on.'));
-  assert.ok(system.indexOf('An addendum the caller tacked on.') < system.indexOf("## This turn — what you're answering"));
+  const { tail } = buildSystemPromptSections(...PLACEMENT[3].args);
+  assert.ok(tail.includes('An addendum the caller tacked on.'));
+  assert.ok(tail.indexOf('An addendum the caller tacked on.') < tail.indexOf("## This turn — what you're answering"));
 });
 
 // ── the flag ─────────────────────────────────────────────────────────────────
@@ -458,6 +459,7 @@ test('flag off → the section is not pushed and the prompt is byte-identical to
       process.env.CONVO_TURN_FOCUS_BLOCK = 'false';
       const flaggedOff = buildSystemPromptSections(...p.args);
       assert.equal(flaggedOff.system, withoutInput.system, `${p.name}: byte-identical with the flag off`);
+      assert.equal(flaggedOff.tail, withoutInput.tail, `${p.name}: the tail too`);
       assert.deepEqual(flaggedOff.sections, withoutInput.sections, `${p.name}: and no section reported`);
       assert.ok(!flaggedOff.sections.some(s => s.name === 'turn_focus'));
 
@@ -472,8 +474,8 @@ test('flag off → the section is not pushed and the prompt is byte-identical to
 
 test('no turn-focus input → no section, whatever the flag says (the composer/second-pass path)', () => {
   const args = PLACEMENT[0].args.slice(0, 14) as BuildArgs;
-  const { system, sections } = buildSystemPromptSections(...args);
+  const { system, tail, sections } = buildSystemPromptSections(...args);
   assert.ok(!sections.some(s => s.name === 'turn_focus'));
-  assert.ok(!system.includes("## This turn — what you're answering"));
-  assert.equal(buildSystemPrompt(...args), system, 'and the string wrapper still agrees');
+  assert.ok(!tail.includes("## This turn — what you're answering"));
+  assert.equal(buildSystemPrompt(...args), `${system}\n\n${tail}`, 'and the string wrapper still agrees');
 });

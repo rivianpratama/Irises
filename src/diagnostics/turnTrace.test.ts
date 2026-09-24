@@ -29,7 +29,7 @@ import {
 } from './turnTrace.js';
 import { getTraces, clearTraces } from './trace.js';
 import { buildSystemPromptSections, processConvoResult, type ChatContext } from '../agents/convo/shared.js';
-import { SECTION_IDS, sectionsTotalChars, isDynSection } from '../agents/convo/promptSections.js';
+import { SECTION_IDS, sectionsChars, isDynSection, isSystemSection } from '../agents/convo/promptSections.js';
 import { CRAFT_MODULES } from '../agents/convo/personaModules.js';
 import { loadContext } from '../agents/loadContext.js';
 import { coerceStatus, mergeStatus, mergeStatusWithDrift, type AffectState, type ComputedState } from '../persona/status.js';
@@ -100,13 +100,16 @@ function realPrompt() {
 }
 
 /** The turn inputs convo/client.ts hands processConvoResult, over that real prompt. Takes the build
- *  so a test that also asserts against `prompt.system.length` can hand in the one it measured. */
+ *  so a test that also asserts against `prompt.system.length` can hand in the one it measured. The
+ *  messages are laid out the way the client sends them: the history, this turn's tail as its own
+ *  message, then their message last. */
 function turnInputs(prompt = realPrompt()): TurnTraceTurnInputs {
   return {
     prompt,
     messages: [
       { content: 'any word on the cedars' },
       { content: 'checking now' },
+      { content: prompt.tail },
       { content: 'any news on the cedars?' },
     ],
     gates: {
@@ -279,26 +282,29 @@ test('the measured sections add back up to the prompt they came from', () => {
   const detail = buildTurnTrace({ draft: draft(SPOKE, GOOD_STATUS, turnInputs(prompt)), bubbles: TWO_BUBBLES });
 
   assert.equal(detail.prompt.systemChars, prompt.system.length);
-  // The exhaustiveness check, in Task 1's own arithmetic — every character of the assembled prompt
-  // is accounted for by a named section plus the separators between them.
-  assert.equal(sectionsTotalChars(detail.prompt.sections), detail.prompt.systemChars);
+  assert.equal(detail.prompt.tailChars, prompt.tail.length);
+  // The exhaustiveness check, in Task 1's own arithmetic — every character of both messages is
+  // accounted for by a named section plus the separators between them.
+  assert.deepEqual(sectionsChars(detail.prompt.sections), { system: detail.prompt.systemChars, tail: detail.prompt.tailChars });
 
-  const dyn = prompt.sections.filter(s => isDynSection(s.name)).reduce((n, s) => n + s.chars, 0);
-  assert.equal(detail.prompt.dynChars, dyn, 'dynChars is the per-turn block, persona and anchors excluded');
+  const dyn = prompt.sections.filter(s => isDynSection(s.name) && isSystemSection(s.name)).reduce((n, s) => n + s.chars, 0);
+  assert.ok(dyn > 0, 'the system message carries a block of its own');
+  assert.equal(detail.prompt.dynChars, dyn, "dynChars is the system message's block; the tail's sections are not in it");
   assert.equal(detail.prompt.personaChars, prompt.personaChars);
   assert.equal(detail.prompt.anchorChars, prompt.anchorChars);
   assert.ok(detail.prompt.personaChars > detail.prompt.dynChars, 'the persona is still the bulk of it');
 
   // How many cache-reusable prefixes this prompt declared for the lane (llm/callLLM.ts
   // buildAnthropicSystem) — a count, not the offsets, because the offsets are sizes this receipt
-  // already carries. This turn loads craft pages, so it declares two: the persona and that slot.
+  // already carries. Every Convo turn declares two: the persona, and the end of the system message.
   assert.equal(prompt.cacheBreakpoints.length, 2, 'the build itself offered two');
   assert.equal(detail.prompt.cacheBreakpoints, 2);
 
-  // The transcript's share of everything the model reads.
+  // The transcript's share of everything the model reads. The tail travels as a message and is
+  // scaffolding all the same: it is in the denominator and in none of the transcript's own figures.
   assert.equal(detail.prompt.transcriptRows, 3);
   assert.equal(detail.prompt.messagesChars, 'any word on the cedars'.length + 'checking now'.length + 'any news on the cedars?'.length);
-  const share = detail.prompt.messagesChars / (detail.prompt.systemChars + detail.prompt.messagesChars);
+  const share = detail.prompt.messagesChars / (detail.prompt.systemChars + detail.prompt.tailChars + detail.prompt.messagesChars);
   assert.equal(detail.prompt.transcriptShare, Math.round(share * 10_000) / 10_000);
 });
 
@@ -427,7 +433,7 @@ test('the section list is capped, and the cap sits above the whole section vocab
   // above exhaustive rather than approximate.
   assert.ok(SECTION_IDS.length < TRACE_SECTIONS_CAP, `${SECTION_IDS.length} sections < cap ${TRACE_SECTIONS_CAP}`);
 
-  const many = Array.from({ length: 40 }, () => ({ name: 'extra' as const, chars: 10 }));
+  const many = Array.from({ length: 40 }, () => ({ name: 'group' as const, chars: 10 }));
   const turn = turnInputs();
   const detail = buildTurnTrace({
     draft: buildTurnTraceDraft({

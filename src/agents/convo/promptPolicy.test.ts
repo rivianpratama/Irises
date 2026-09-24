@@ -32,9 +32,10 @@ import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '
 import { ENVELOPE_FIELDS, STATUS_CONTRACT_HEADER } from '../../persona/status.js';
 import { MOOD_CORES, CORE_VALENCE_BAND } from '../../persona/mood.js';
 import type { ThreadRung } from '../../persona/threads.js';
-import { FORMAT_ANCHOR, buildComposerDynamic } from '../composerCore.js';
+import { FORMAT_ANCHOR } from '../composerCore.js';
 import { buildOutcomeBrief } from '../fallfirm/client.js';
 import { buildProgressBrief } from '../fallfirm/voiceInstant.js';
+import { loadContext } from '../loadContext.js';
 import { renderPersonaBlock, DRIFT_MODES, type DriftMode, type PersonaLane } from '../../persona/policy.js';
 import type { HookDirective } from '../../persona/hooks.js';
 import type { PersonaTurn } from './shared.js';
@@ -190,11 +191,12 @@ function turnInMode(mode: DriftMode): PersonaTurn {
   return { hooks, moments: [], thesis: '' };
 }
 
-/** The two static bookends after `</prompt>`: the drift anchor, then the JSON contract. The bare
- *  build carries no history, so the anchor's window band is the short one; `personaTurn` is what
- *  picks its mode, and omitting it is the task-turn fallback every non-Convo caller gets. */
+/** The two bookends that close the tail after its `</prompt>`: the drift anchor, then the JSON
+ *  contract. The bare build carries no history, so the anchor's window band is the short one;
+ *  `personaTurn` is what picks its mode, and omitting it is the task-turn fallback every non-Convo
+ *  caller gets. */
 function anchors(personaTurn?: PersonaTurn): { behavior: string; json: string } {
-  const { system } = buildSystemPromptSections(
+  const { tail: system } = buildSystemPromptSections(
     undefined, '', [], undefined, undefined, undefined, undefined, undefined,
     undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
     personaTurn,
@@ -315,21 +317,23 @@ test("the composer's format anchor states the ceiling and the count the pipeline
   );
 });
 
-test("Fallfirm's two anchors state the same target, ceiling and count", () => {
-  const lanes: ReadonlyArray<readonly [string, string]> = [
-    ['voiceOutcome', buildOutcomeBrief({ kind: 'confirmed', summary: 'the reminder is set for 7pm' }, '')],
-    ['voiceInstant', buildProgressBrief({ kind: 'holding', request: 'cedar lead times' }, '')],
-  ];
-  for (const [lane, prompt] of lanes) {
+// The two anchors share the target and the ceiling, and part ways on the count on purpose: the
+// outcome voice may run to the law's full count, while every wait beat is ONE bubble (the holding-beat
+// rule, fallfirm/Progress.md) — a count under the law, so the pipeline backstop never has to cut it.
+test("Fallfirm's two anchors state the same target and ceiling, and each its own count", () => {
+  const outcome = buildOutcomeBrief({ kind: 'confirmed', summary: 'the reminder is set for 7pm' }, '');
+  const instant = buildProgressBrief({ kind: 'holding', request: 'cedar lead times' }, '');
+  for (const [lane, prompt] of [['voiceOutcome', outcome], ['voiceInstant', instant]] as const) {
     assert.ok(
       prompt.includes(`${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, hard ceiling ${MAX_BUBBLE_WORDS}`),
       `${lane}: its anchor's target/ceiling has drifted from the pipeline constants`,
     );
-    assert.ok(
-      prompt.includes(`one to ${SPELLED[BUBBLE_LAW_MAX]} items`),
-      `${lane}: its anchor should say "one to ${SPELLED[BUBBLE_LAW_MAX]} items" — it has drifted from BUBBLE_LAW_MAX`,
-    );
   }
+  assert.ok(
+    outcome.includes(`one to ${SPELLED[BUBBLE_LAW_MAX]} items`),
+    `voiceOutcome: its anchor should say "one to ${SPELLED[BUBBLE_LAW_MAX]} items" — it has drifted from BUBBLE_LAW_MAX`,
+  );
+  assert.ok(instant.includes('exactly one item'), 'voiceInstant: a wait beat is one bubble');
 });
 
 // ── one personality, four surfaces ───────────────────────────────────────────
@@ -345,15 +349,19 @@ test("Fallfirm's two anchors state the same target, ceiling and count", () => {
 // that renderPersonaBlock returns the same bytes four times is a tautology and policy.test.ts already
 // pins it; the failure mode this catches is a lane whose prompt builder simply never renders it —
 // which is exactly what all four lanes looked like the day before this landed.
+//
+// T7 moved the block out of the composer/Fallfirm `<prompt>` tails and into their system prompts
+// (composerCore.ts, fallfirm/client.ts, fallfirm/voiceInstant.ts), matching Convo — so all four
+// surfaces below are now each lane's system prompt, built the same `persona + Context.md`/
+// `persona + Progress.md` way the real call sites assemble it.
 
-/** The four surfaces, each built the way its own lane builds it. Convo's is the whole system prompt;
- *  the other three are the `<prompt>` block their voicer hands the model. */
+/** The four surfaces, each built the way its own lane builds its system prompt. */
 function surfacePrompts(): ReadonlyArray<readonly [PersonaLane, string]> {
   return [
     ['convo', buildSystemPromptSections(undefined, '').system],
-    ['composer', buildComposerDynamic('', '## What just landed\nthe cedars ship thursday', '')],
-    ['fallfirm', buildOutcomeBrief({ kind: 'confirmed', summary: 'the reminder is set for 7pm' }, '')],
-    ['fallfirm_progress', buildProgressBrief({ kind: 'holding', request: 'cedar lead times' }, '')],
+    ['composer', `${renderPersonaBlock('composer')}\n\n${loadContext('composer')}`],
+    ['fallfirm', `${renderPersonaBlock('fallfirm')}\n\n${loadContext('fallfirm')}`],
+    ['fallfirm_progress', `${renderPersonaBlock('fallfirm_progress')}\n\n${loadContext('fallfirm', 'Progress.md')}`],
   ];
 }
 

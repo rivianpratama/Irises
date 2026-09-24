@@ -103,9 +103,10 @@ function trace(patch: TracePatch = {}): TurnTraceDetail {
     prompt: {
       sections: sections(patch.sectionsOver, patch.sectionsExtra),
       personaChars: 138_102,
-      dynChars: 11_000,
+      dynChars: 3_000,
       anchorChars: 2_908,
-      systemChars: 152_600,
+      systemChars: 141_150,
+      tailChars: 11_450,
       messagesChars: 1_207,
       transcriptRows: 8,
       // Derived for the same reason the section sizes above are, and it is the harder half to see:
@@ -338,7 +339,7 @@ test('a memory_ceiling warn still prints the share reading its pass line prints'
   const overLine = over.checks.find(c => c.startsWith('memory_ceiling:')) ?? '';
   assert.match(overLine, /warn/);
   assert.match(overLine, /transcript share/);
-  assert.match(overLine, /system \d+ chars over \d+ rows/);
+  assert.match(overLine, /system \d+ \+ tail \d+ chars over \d+ rows/);
 
   // The other way this check warns: the share itself under the floor. Named as its own reason AND
   // still carrying the full reading.
@@ -346,7 +347,7 @@ test('a memory_ceiling warn still prints the share reading its pass line prints'
   const underLine = under.checks.find(c => c.startsWith('memory_ceiling:')) ?? '';
   assert.match(underLine, /warn/);
   assert.match(underLine, new RegExp(`below the ${MIN_TRANSCRIPT_SHARE} floor`));
-  assert.match(underLine, /system \d+ chars over \d+ rows/);
+  assert.match(underLine, /system \d+ \+ tail \d+ chars over \d+ rows/);
   // A share under the floor is reported, never failed — the prompt being prose-heavy is the phase's
   // subject, not this turn's defect.
   assert.notEqual(under.verdict, 'MEMORY_DUMP');

@@ -29,6 +29,13 @@
 // those entries are the ones the cap below evicts, and they are why the cap is a count of readings
 // and not a count of stalls. The cache earns its keep on the repetitive half and simply carries the
 // other half until it falls off the end.
+//
+// WHY A WARM, AND WHY IT COALESCES. Since 2026-09-24 the call is started at the inbound door, while
+// the burst settles (`warmIdleClassify`, called from index.ts), instead of on the reply path. The
+// settle wait is the same order of time as five tokens on a working lane, so by the time the gate
+// asks, the verdict is a cache hit or a call already in flight that the gate simply waits on. The
+// in-flight map is what makes that safe: one text is one lane call and one receipt whichever of the
+// two gets there first, and the warm itself files nothing because nobody has read it yet.
 
 import { callLLM } from '../../llm/callLLM.js';
 import { dataTag, wrapPrompt } from '../../llm/promptTag.js';
@@ -63,11 +70,11 @@ export const IDLE_CLASSIFY_MAX_TOKENS = 5;
 /**
  * Six seconds, and then the turn goes on without it.
  *
- * This call sits ON the reply path, ahead of the prompt build: every millisecond it spends is a
- * millisecond before she starts typing. Six is generous for five tokens on any lane and short enough
- * that a wedged provider costs one flat reply instead of a visibly hung conversation. The timer is
- * unref'd for the reason every timer in this stack is — a pending deadline must never be the thing
- * keeping the process alive.
+ * This call sits ON the reply path, ahead of the prompt build, whenever the settle-window warm did
+ * not already answer it: every millisecond it spends there is a millisecond before she starts
+ * typing. Six is generous for five tokens on any lane and short enough that a wedged provider costs
+ * one flat reply instead of a visibly hung conversation. The timer is unref'd for the reason every
+ * timer in this stack is — a pending deadline must never be the thing keeping the process alive.
  */
 export const IDLE_CLASSIFY_TIMEOUT_MS = 6_000;
 
@@ -112,9 +119,30 @@ export function readIdleVerdict(text: string | null | undefined): IdleVerdict {
  *  every entry is equally small and equally durable. */
 const cache = new Map<string, IdleVerdict>();
 
-/** The test seam, and the only way anything empties this map. */
+/** What one lane call came back with: a verdict it earned, or the name of the way it failed. The
+ *  two are kept apart rather than folded into `unclear` here because only a verdict may be cached
+ *  or handed to a second reader — a failure is this call's own, and whoever reads it next asks
+ *  again. */
+type ClassifyOutcome = IdleVerdict | { failed: string; timedOut: boolean };
+
+/**
+ * The calls that have been started and not yet answered, keyed exactly like the cache.
+ *
+ * WHY THIS EXISTS. The inbound door starts a call while the burst is still settling
+ * (`warmIdleClassify`, from index.ts), and the gate asks for the same text a moment later. Without
+ * this map a warm call that had not answered by then would be a second call for the same words and,
+ * worse, a second receipt on one turn. With it, the gate's reading waits on the call already running
+ * — which is also the one that has had the most time to finish — and files the turn's only receipt.
+ * An entry lives exactly as long as its call and is removed by the call itself, answered or not.
+ */
+const inflight = new Map<string, Promise<ClassifyOutcome>>();
+
+/** The test seam, and the only way anything empties these maps. A call still running when this is
+ *  called finishes harmlessly: it no longer owns its in-flight slot, so it cannot remove a newer
+ *  one. */
 export function clearIdleClassifyCache(): void {
   cache.clear();
+  inflight.clear();
 }
 
 /** How many readings are held right now — the cap's own pin, and a number a test can assert on
@@ -124,6 +152,13 @@ export function idleClassifyCacheSize(): number {
 }
 
 /**
+ * What `deadline` rejects with, as a class of its own so a reader can tell a lane that ran out the
+ * clock from a lane that threw. Its `name` stays the plain `Error` every receipt has always carried
+ * for a timeout, so the ring reads exactly as it did; the class is for this module's own branching.
+ */
+class IdleClassifyTimeout extends Error {}
+
+/**
  * Reject after `ms`. A copy of agents/deadline.ts's `withDeadline` in miniature rather than an
  * import of it: that module's DeadlineError is the orchestrator's vocabulary for a background agent
  * run that has to be triaged, and this failure is not triaged at all — it is read as a task turn and
@@ -131,7 +166,7 @@ export function idleClassifyCacheSize(): number {
  */
 function deadline<T>(work: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`idle classify exceeded ${ms}ms`)), ms);
+    const timer = setTimeout(() => reject(new IdleClassifyTimeout(`idle classify exceeded ${ms}ms`)), ms);
     (timer as { unref?: () => void }).unref?.();
     work.then(
       v => { clearTimeout(timer); resolve(v); },
@@ -140,48 +175,25 @@ function deadline<T>(work: Promise<T>, ms: number): Promise<T> {
   });
 }
 
+/** Who is asking, for the call's own trace line and the reading's receipt, plus the two test seams. */
+interface ClassifyCtx {
+  chatId: string;
+  handle?: string;
+  llm?: typeof callLLM;
+  /** Test seam only, alongside `llm`: production omits it and gets IDLE_CLASSIFY_TIMEOUT_MS. A
+   *  suite that drove the real six seconds would spend six seconds of every run proving that a
+   *  number is the number it is. */
+  timeoutMs?: number;
+}
+
 /**
- * The classifier persona/idle.ts's third layer is handed, bound to this turn's chat and handle so
- * the receipt can be attributed.
- *
- * Returns a function rather than being one, because the gate's seam takes `(text) => Promise<verdict>`
- * and the trace context is the caller's, not the gate's. `deps.llm` is the unit-test injection point;
- * production passes nothing.
- *
- * ONE RECEIPT PER READING, cached or not (`idle:classify`). That is the point of the `cached` flag:
- * a live round has to be able to tell a working fallback from a dead one, and a cache hit that filed
- * nothing would make a busy install look like a lane that stopped being called.
+ * ONE lane call for one text, registered in `inflight` for as long as it runs. It files no receipt:
+ * a receipt is a READING, and whether this call is read by the gate that started it, by a gate that
+ * joined it, or by nobody at all is the caller's business. It never rejects — every failure comes
+ * back as `{ failed }` — so a warm call nobody waits on can never become an unhandled rejection.
  */
-export function makeIdleClassifier(
-  ctx: {
-    chatId: string;
-    handle?: string;
-    llm?: typeof callLLM;
-    /** Test seam only, alongside `llm`: production omits it and gets IDLE_CLASSIFY_TIMEOUT_MS. A
-     *  suite that drove the real six seconds would spend six seconds of every run proving that a
-     *  number is the number it is. */
-    timeoutMs?: number;
-  },
-): (text: string) => Promise<IdleVerdict> {
-  return async (text: string): Promise<IdleVerdict> => {
-    const key = idleCacheKey(text);
-    const file = (verdict: IdleVerdict, cached: boolean, failed?: string) => {
-      record({
-        type: 'event',
-        label: IDLE_CLASSIFY_LABEL,
-        chatId: ctx.chatId,
-        handle: ctx.handle,
-        // Names and numbers only: the message itself never enters the ring, the way no receipt in
-        // this stack carries her words or theirs. `chars` is the one measurement that says which
-        // kind of message this was without quoting it.
-        detail: { verdict, cached, chars: [...key].length, ...(failed ? { failed } : {}) },
-      });
-      return verdict;
-    };
-
-    const hit = cache.get(key);
-    if (hit !== undefined) return file(hit, true);
-
+function runClassify(ctx: ClassifyCtx, text: string, key: string): Promise<ClassifyOutcome> {
+  const call = (async (): Promise<ClassifyOutcome> => {
     const llm = ctx.llm ?? callLLM;
     let verdict: IdleVerdict;
     try {
@@ -198,10 +210,10 @@ export function makeIdleClassifier(
       verdict = readIdleVerdict(res.text);
     } catch (err) {
       // Not reported as an error: an install with no classify lane would file one on every stall,
-      // and the consequence of this failure is one flat reply. The receipt below is the record, and
-      // it says `failed` so a scan of the ring can tell a lane that is answering `unclear` from a
-      // lane that is not answering.
-      return file('unclear', false, err instanceof Error ? err.name : 'error');
+      // and the consequence of this failure is one flat reply. The reading's receipt is the record,
+      // and it says `failed` so a scan of the ring can tell a lane that is answering `unclear` from
+      // a lane that is not answering. Nothing is cached: a failure teaches nothing.
+      return { failed: err instanceof Error ? err.name : 'error', timedOut: err instanceof IdleClassifyTimeout };
     }
 
     // Oldest-first eviction, one entry at a time: the map is only ever grown by this line, so it can
@@ -211,6 +223,81 @@ export function makeIdleClassifier(
       if (!oldest.done) cache.delete(oldest.value);
     }
     cache.set(key, verdict);
-    return file(verdict, false);
+    return verdict;
+  })();
+  inflight.set(key, call);
+  // Removed by identity, so a call that outlived a cache clear cannot evict the slot of a newer one.
+  void call.finally(() => { if (inflight.get(key) === call) inflight.delete(key); });
+  return call;
+}
+
+/**
+ * Start the reading for `text` NOW, before anyone asks for it — the inbound door calls this while the
+ * burst settles, so the verdict is ready (or nearly) by the time the gate in chat() reads the turn.
+ *
+ * Fire-and-forget and receipt-free. It does nothing when the verdict is already cached or a call for
+ * the same words is already running, so a burst that re-warms on every text costs one call per
+ * distinct string and never two for one. A warm the turn never reads — a newer text changed the
+ * burst, a later veto settled the turn — is five tokens spent and a cache entry that may yet be used.
+ */
+export function warmIdleClassify(ctx: ClassifyCtx, text: string): void {
+  const key = idleCacheKey(text);
+  if (!key || cache.has(key) || inflight.has(key)) return;
+  // runClassify never rejects; the catch is insurance, because nobody is waiting on this promise.
+  void runClassify(ctx, text, key).catch(() => {});
+}
+
+/**
+ * The classifier persona/idle.ts's third layer is handed, bound to this turn's chat and handle so
+ * the receipt can be attributed.
+ *
+ * Returns a function rather than being one, because the gate's seam takes `(text) => Promise<verdict>`
+ * and the trace context is the caller's, not the gate's. `deps.llm` is the unit-test injection point;
+ * production passes nothing.
+ *
+ * ONE RECEIPT PER READING, however the verdict was come by (`idle:classify`). A cache hit says
+ * `cached`; a reading that waited on a call already running — the settle-window warm, nearly always
+ * — says `joined`; a reading that made its own call says neither. That is the point of the two
+ * flags: a live round has to be able to tell a working fallback from a dead one, and a hit that filed
+ * nothing would make a busy install look like a lane that stopped being called.
+ *
+ * A joined call that FAILED FAST is not this reading's answer. The failure taught the cache nothing,
+ * so the reading makes its own call exactly as it would have with nothing running, and files that. A
+ * joined call that TIMED OUT is the answer, and it is `unclear`, the verdict a timeout on the reading's
+ * own call produces: the lane already had the whole deadline and spent it, and a second call would
+ * stack a second deadline on the reply path behind the first. One deadline is the worst a turn waits.
+ */
+export function makeIdleClassifier(ctx: ClassifyCtx): (text: string) => Promise<IdleVerdict> {
+  return async (text: string): Promise<IdleVerdict> => {
+    const key = idleCacheKey(text);
+    const file = (verdict: IdleVerdict, how: 'call' | 'cached' | 'joined', failed?: string) => {
+      record({
+        type: 'event',
+        label: IDLE_CLASSIFY_LABEL,
+        chatId: ctx.chatId,
+        handle: ctx.handle,
+        // Names and numbers only: the message itself never enters the ring, the way no receipt in
+        // this stack carries her words or theirs. `chars` is the one measurement that says which
+        // kind of message this was without quoting it.
+        detail: {
+          verdict, cached: how === 'cached', ...(how === 'joined' ? { joined: true } : {}),
+          chars: [...key].length, ...(failed ? { failed } : {}),
+        },
+      });
+      return verdict;
+    };
+
+    const hit = cache.get(key);
+    if (hit !== undefined) return file(hit, 'cached');
+
+    const running = inflight.get(key);
+    if (running) {
+      const joined = await running;
+      if (typeof joined === 'string') return file(joined, 'joined');
+      if (joined.timedOut) return file('unclear', 'joined', joined.failed);
+    }
+
+    const own = await runClassify(ctx, text, key);
+    return typeof own === 'string' ? file(own, 'call') : file('unclear', 'call', own.failed);
   };
 }

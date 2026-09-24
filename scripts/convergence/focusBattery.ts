@@ -311,7 +311,7 @@ export const CHECKS: Record<CheckId, FocusCheck> = {
         weighed.push(`${key} ${s.chars}/${ceiling}`);
         if (s.chars > ceiling) over.push(`${key} ${s.chars} over the ${ceiling} fixture ceiling`);
       }
-      const share = `transcript share ${p.transcriptShare} (floor ${MIN_TRANSCRIPT_SHARE}), system ${p.systemChars} chars over ${p.transcriptRows} rows`;
+      const share = `transcript share ${p.transcriptShare} (floor ${MIN_TRANSCRIPT_SHARE}), system ${p.systemChars} + tail ${p.tailChars} chars over ${p.transcriptRows} rows`;
       const read = weighed.length ? weighed.join(', ') : 'no turn-shaped section in the receipt';
       const notes: string[] = [];
       if (over.length) notes.push(`${over.join('; ')} — read the gates before calling it a defect`);

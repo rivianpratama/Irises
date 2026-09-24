@@ -301,15 +301,42 @@ export function buildOpenRouterParams(
     };
   }
   // Plugins are MERGED (an mm turn can carry a PDF and need both):
-  //   - response-healing: free server-side repair of near-JSON replies (non-streaming only, which is
-  //     all we do) — belt-and-braces under the toolsViaJson never-non-JSON guarantee. It can't help
-  //     when a provider drops response_format entirely, so the client-side retry still backstops it.
+  //   - response-healing: free server-side repair of near-JSON replies — belt-and-braces under the
+  //     toolsViaJson never-non-JSON guarantee. It can't help when a provider drops response_format
+  //     entirely, so the client-side retry still backstops it. NON-STREAMING ONLY: a streamed call
+  //     strips it again in toStreamingParams below.
   //   - file-parser: only when a PDF is actually present, so plain-text calls stay unaffected.
   const plugins: unknown[] = [];
   if (req.toolsViaJson && req.jsonBubbles) plugins.push({ id: 'response-healing' });
   if (hasDocument(req)) plugins.push({ id: 'file-parser', pdf: { engine: OPENROUTER_PDF_ENGINE } });
   if (plugins.length) params.plugins = plugins;
   return params;
+}
+
+/** A lane body as sent STREAMED: the same body plus the two streaming fields. */
+export type StreamingParams =
+  Omit<OpenRouterParams, 'stream'> & { stream: true; stream_options: { include_usage: true } };
+
+/**
+ * The streamed form of an already-built lane body (either lane — the generic body just has no
+ * `plugins` to touch). Everything that shapes the REPLY stays, response_format's json_schema above
+ * all: streaming changes how the envelope arrives, never what it may contain. Two changes only:
+ *  • `stream` + `stream_options.include_usage` — without include_usage the stream carries no usage
+ *    at all, and the token ledger and budget enforcement would see a free call.
+ *  • the response-healing plugin is dropped: OpenRouter only applies it to non-streamed replies.
+ *    (Its repair was a backstop; the client-side parse and retry still run on the accumulated text.)
+ * Pure; returns a fresh object.
+ */
+export function toStreamingParams(
+  params: OpenRouterParams | OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
+): StreamingParams {
+  const out = { ...params, stream: true, stream_options: { include_usage: true } } as StreamingParams;
+  if (out.plugins) {
+    const kept = out.plugins.filter(p => (p as { id?: string } | null)?.id !== 'response-healing');
+    if (kept.length) out.plugins = kept;
+    else delete out.plugins;
+  }
+  return out;
 }
 
 /**

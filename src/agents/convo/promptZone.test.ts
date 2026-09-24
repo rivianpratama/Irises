@@ -92,8 +92,8 @@ test('a transcript row with no zone given falls back to DEFAULT_TZ, unchanged', 
 // ── (2) the conversation-timing words ────────────────────────────────────────
 
 test('the conversation_timing block reads the daypart off the user\'s clock', () => {
-  const jakarta = buildSystemPromptSections(...argsFor(JAKARTA)).system;
-  const utc = buildSystemPromptSections(...argsFor('UTC')).system;
+  const jakarta = buildSystemPromptSections(...argsFor(JAKARTA)).tail;
+  const utc = buildSystemPromptSections(...argsFor('UTC')).tail;
 
   // 08:15 in Jakarta is morning; the same instant is 01:15 and "late night" on the host's clock, and
   // that sentence used to arrive in the same prompt as a Current-time line saying quarter past eight
@@ -109,8 +109,8 @@ test('the timing regime itself is read in the user\'s zone, not the host\'s', ()
   // OVERNIGHT is a calendar-day comparison (chatTime.classifyGap → dayKey). Their last bubble is
   // 02:15 the same Tuesday morning in Jakarta and Monday evening in UTC, so the host's zone had the
   // model greeting someone who never went to bed.
-  const jakarta = buildSystemPromptSections(...argsFor(JAKARTA)).system;
-  const utc = buildSystemPromptSections(...argsFor('UTC')).system;
+  const jakarta = buildSystemPromptSections(...argsFor(JAKARTA)).tail;
+  const utc = buildSystemPromptSections(...argsFor('UTC')).tail;
 
   assert.match(lineStartingWith(jakarta, 'The thread was last alive'), /earlier today\. Pick up naturally/);
   assert.match(lineStartingWith(utc, 'The last exchange was'), /before their night\. They're coming back fresh/);
@@ -118,16 +118,16 @@ test('the timing regime itself is read in the user\'s zone, not the host\'s', ()
 
 test('the clock block and the timing block name the same daypart', () => {
   // The disagreement the bug actually was: two sections, one prompt, seven hours apart.
-  const { system } = buildSystemPromptSections(...argsFor(JAKARTA));
-  assert.match(lineStartingWith(system, "Right now it's"), /8:15 AM for them, in Asia\/Jakarta/);
-  assert.ok(!system.includes("It's Tuesday late night for them."));
+  const { tail } = buildSystemPromptSections(...argsFor(JAKARTA));
+  assert.match(lineStartingWith(tail, "Right now it's"), /8:15 AM for them, in Asia\/Jakarta/);
+  assert.ok(!tail.includes("It's Tuesday late night for them."));
 });
 
 test('the assembler with no stored zone builds exactly what it built before', () => {
-  assert.equal(
-    buildSystemPromptSections(...argsFor(undefined)).system,
-    buildSystemPromptSections(...argsFor('UTC')).system,
-  );
+  const bare = buildSystemPromptSections(...argsFor(undefined));
+  const utc = buildSystemPromptSections(...argsFor('UTC'));
+  assert.equal(bare.system, utc.system);
+  assert.equal(bare.tail, utc.tail);
 });
 
 // ── (3) the reply-order stamp ────────────────────────────────────────────────

@@ -82,31 +82,73 @@ export function helpText(): string {
 // call (that latency would defeat the reassurance). Centralized here so no instant copy is scattered.
 //
 // Every line below is a small POOL, not a single string — one hardcoded phrase repeated verbatim
-// across a conversation reads like a bot. `pick()` (textVariants.ts) picks a variant at random each
-// call; nobody awaits or persists which ones already fired, so this stays a synchronous, zero-latency
-// lookup, same as before.
+// across a conversation reads like a bot. The holding and still-on-it pools go further: they are
+// handed her last few beats for the chat (state/holdingBeats.ts, oldest first) and `pickFresh`
+// never picks one of those while a fresh line is left. It stays a synchronous, zero-latency lookup:
+// the caller already holds that list, nothing is read here.
+//
+// The holding pools mirror the three beat shapes the prompts teach — a thinking sound, a short
+// wait, a line naming the thing — so a fallback beat is as varied as one she writes herself. Each
+// line promises only a look that is starting: none claims a result or names what does the looking.
 
-const HOLDING: Partial<Record<TaskKind, readonly string[]>> = {
-  web_research: ['looking up that one now', 'digging into it now, one sec', 'checking on that, hang on'],
-  document_read: ['checking your inbox now, one sec', 'searching your email now', 'digging through your inbox, hang on'],
-  draft: ['drafting that now', 'writing that up now', 'putting that draft together now'],
+/** One pick from `pool` that is none of `recent` (her last few beats, OLDEST first), at random
+ *  among the fresh ones. When every line has been used recently, the least recently used one comes
+ *  back: the beat she sent furthest back is the one least likely to still be on their screen, and
+ *  the most recent is never repeated. Compared trimmed and case-blind, since a recorded beat went
+ *  through the send path. `rand` is the test seam. */
+export function pickFresh<T extends string>(pool: readonly T[], recent: readonly string[], rand: () => number = Math.random): T {
+  // Every pool here is a non-empty literal, so an empty one is a coding slip, not a runtime case —
+  // say so plainly instead of returning `undefined` into the send path.
+  if (!pool.length) throw new Error('pickFresh: empty pool');
+  const key = (s: string) => s.trim().toLowerCase();
+  const lastUsed = new Map<string, number>();
+  recent.forEach((beat, i) => lastUsed.set(key(beat), i));
+  const fresh = pool.filter(line => !lastUsed.has(key(line)));
+  if (fresh.length) return fresh[Math.min(fresh.length - 1, Math.floor(rand() * fresh.length))];
+  return pool.reduce((best, line) => (lastUsed.get(key(line))! < lastUsed.get(key(best))! ? line : best));
+}
+
+export const HOLDING: Partial<Record<TaskKind, readonly string[]>> = {
+  web_research: [
+    'hmm lemme look that up', 'hmmm', 'ooh good one, lemme see', 'one sec, looking it up',
+    'gimme a sec on this one', 'looking up that one now', 'digging into it now', 'checking on that, hang on',
+    'mm lemme dig',
+  ],
+  document_read: [
+    'hmm lemme dig through your inbox', 'hmmm', 'mmm lemme see whats in there', 'checking your inbox now, one sec',
+    'gimme a sec, going through your mail', 'searching your email now', 'digging through your inbox, hang on',
+    'going through your emails now', 'one sec, scanning your inbox',
+  ],
+  draft: [
+    'hmm lemme write this up', 'mm ok, writing it now', 'gimme a sec to write it', 'give me a bit, putting words together',
+    'drafting that now', 'writing that up now', 'putting that draft together now', 'one sec, working on the wording',
+    'on it, drafting',
+  ],
   // File read — deliberately a tiny human beat (not a "pulling records" line), matching the minimal
   // holding register for a media delegation. Fallback-only; the LLM voicer usually writes its own.
-  media_read: ['one sec, looking at that', 'lemme open this up', 'taking a look at that now'],
+  media_read: [
+    'hmm lemme see', 'mm looking at it now', 'ooh ok, opening it', 'one sec, looking at that',
+    'gimme a sec with this', 'hold on, opening it up', 'lemme open this up', 'taking a look at that now',
+  ],
 };
 
-const HOLDING_DEFAULT: readonly string[] = ['on it, give me a sec', 'on it, one sec', 'give me a sec on that one'];
+export const HOLDING_DEFAULT: readonly string[] = [
+  'hmm', 'hmmm lemme see', 'mm ok, looking into it', 'one sec', 'gimme a bit on this one',
+  'hang on, lemme look', 'on it, give me a sec', 'on it, one sec', 'give me a sec on that one',
+];
 
-/** Instant holding line when the model delegated without writing one. */
-export function holdingFloor(kind: TaskKind): string {
-  return pick(HOLDING[kind] ?? HOLDING_DEFAULT);
+/** Instant holding line when the model delegated without writing one — never one of `recent`, her
+ *  last few beats in this chat, oldest first, while the pool has a fresh line left. */
+export function holdingFloor(kind: TaskKind, recent: readonly string[] = []): string {
+  return pickFresh(HOLDING[kind] ?? HOLDING_DEFAULT, recent);
 }
 
 const STILL_ON_IT_POOL: readonly string[] = ['still on that, hang tight', 'still working on that one', 'still on it, one sec more', 'still on it, almost there'];
 
-/** Instant "still working" reassurance when a duplicate delegation was suppressed (nothing new to pull). */
-export function stillOnItText(): string {
-  return pick(STILL_ON_IT_POOL);
+/** Instant "still working" reassurance when a duplicate delegation was suppressed (nothing new to
+ *  pull) — steered off her recent beats the same way. */
+export function stillOnItText(recent: readonly string[] = []): string {
+  return pickFresh(STILL_ON_IT_POOL, recent);
 }
 
 // Plain, no-context heartbeat variants — used when the task carries no address/deal hint, or on the

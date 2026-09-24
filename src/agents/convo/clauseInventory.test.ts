@@ -160,7 +160,9 @@ const THESIS = renderThesisSection(
   + 'fix it, and they read a question about the schedule as a question about their competence.',
 );
 
-const { system: PROMPT } = buildSystemPromptSections(
+// The census reads everything the model is handed, so it reads BOTH messages the assembler builds:
+// the system message and the per-turn tail, joined in the order the model reads them.
+const BUILT = buildSystemPromptSections(
   { isGroupChat: false, participantNames: [], chatName: null, senderHandle: HANDLE, senderProfile: PROFILE },
   MEMORY_STACK, [], undefined, [TOOL], HISTORY, TURN_TEXT, 'UTC',
   AFFECT, COMPUTED, { classes: ['web', 'code'], complete: true }, MOVED_CLIMATE,
@@ -175,6 +177,7 @@ const { system: PROMPT } = buildSystemPromptSections(
   // in promptPolicy.ts exists to account for a law restated at the recency edge.)
   { hooks: HOOK_DIRECTIVE, moments: [], thesis: THESIS },
 );
+const PROMPT = `${BUILT.system}\n\n${BUILT.tail}`;
 
 /** Plain substring occurrences — the same number a reader gets from a plain text search. */
 function occurrences(haystack: string, needle: string): number {

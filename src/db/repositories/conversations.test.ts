@@ -1,9 +1,10 @@
 // Run with: npm test   (TZ=UTC tsx --test — runner pins DATA_BACKEND=memory)
 // Conversation + profile round trips on the SQLite layer: retention window,
-// newest-40 cap, insertion-order ties, and the profile upsert/merge semantics.
+// the chunked read window (its start held fixed, advanced in whole trim-chunk
+// jumps), insertion-order ties, and the profile upsert/merge semantics.
 import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { getConversation, addMessage, clearConversation, listActiveChats, hasHistory, pruneMessagesBefore, convoHistoryMax } from './conversations.js';
+import { getConversation, addMessage, clearConversation, listActiveChats, hasHistory, pruneMessagesBefore, convoHistoryMax, historyWindowStart } from './conversations.js';
 import { listArchiveFor, searchArchive } from './memoryArchive.js';
 import { getUserProfile, listUserProfiles, updateUserProfile, addUserFact, setUserName, clearUserProfile } from './profiles.js';
 import { resetStorageForTests, stmt } from '../sqlite.js';
@@ -39,12 +40,29 @@ test('retention: rows past 7d are invisible and pruned on the next write', async
   assert.equal(left.n, 1); // the ancient row was hard-deleted by prune-on-write
 });
 
-test('read cap: only the newest 40 come back, oldest-first', async () => {
+test('history start only moves in whole chunks, so the prefix stays fixed between jumps', () => {
+  assert.equal(historyWindowStart(80, 80, 20), 0);
+  assert.equal(historyWindowStart(81, 80, 20), 20);
+  assert.equal(historyWindowStart(100, 80, 20), 20);
+  assert.equal(historyWindowStart(101, 80, 20), 40);
+  assert.equal(historyWindowStart(50, 80, 20), 0);
+});
+
+test('read cap: the window trims in whole chunks (default max 40, chunk 20), oldest-first', async () => {
   for (let i = 0; i < 45; i++) await addMessage('c4', 'user', `m${i}`);
+  // 45 rows > max 40: start = ceil((45-40)/20)*20 = 20, so rows m20..m44 (25 rows) come back —
+  // NOT a plain newest-40 slice, which is the point: the window's start only jumps in 20s.
   const msgs = await getConversation('c4');
-  assert.equal(msgs.length, 40);
-  assert.equal(msgs[0].content, 'm5');
-  assert.equal(msgs[39].content, 'm44');
+  assert.equal(msgs.length, 25);
+  assert.equal(msgs[0].content, 'm20');
+  assert.equal(msgs[24].content, 'm44');
+
+  // One more message (46 rows) must NOT move the start again — still short of the next 20-row
+  // jump (46-40=6 < 20) — this is the actual cache-hit property: the prefix is stable across turns.
+  await addMessage('c4', 'user', 'm45');
+  const again = await getConversation('c4');
+  assert.equal(again.length, 26);
+  assert.equal(again[0].content, 'm20', 'the start held instead of sliding by one');
 });
 
 test('CONVO_HISTORY_MAX resizes the read window, and is read at call time', async () => {
@@ -60,7 +78,7 @@ test('CONVO_HISTORY_MAX resizes the read window, and is read at call time', asyn
   } finally {
     delete process.env.CONVO_HISTORY_MAX;
   }
-  assert.equal((await getConversation('c5')).length, 40, 'and back to the default when unset');
+  assert.equal((await getConversation('c5')).length, 25, 'and back to the default (chunked) window when unset');
 });
 
 test('a junk or non-positive CONVO_HISTORY_MAX falls back to the default window', async () => {

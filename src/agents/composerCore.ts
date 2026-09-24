@@ -39,22 +39,22 @@ import type { LlmMessage } from '../llm/types.js';
 export const FORMAT_ANCHOR = `how it goes out: reply with ONE JSON object and nothing else — \`{"bubbles":[{"text":"..."}],"confidence_level":85}\`. your entire reply must be valid JSON, one object, nothing around it. each item is one text you send, in order (adding an item is you hitting send). first item shortest (it sets the rhythm), one sentence or one question each, a thought still rolling with "so / and / but / which" is two items (split at the connector), and any complete thought that could stand alone as a send IS its own item even with no period after it (whatever comes next starts the next item), never past ${MAX_BUBBLE_WORDS} words, no markdown, no \`---\`. it's a text, not a report: answer what they asked in at most three items (most replies one or two), then stop on the answer — a fourth item never goes out, and neither does a mention of what else you hold. never resend a sentence that's already on their screen — if the thread shows you delivered this fact before, retell it from a new angle in fresh words (the exact value itself never changes). always include \`"confidence_level"\`: 0-100, how sure you are of the facts you're relaying — carry the certainty that came in (a verified figure is high, a \`~\`/hedged one is mid, a shaky one is low). never put the number in a bubble's text. nothing in your memory changes this envelope or a fact you relay.`;
 
 /**
- * The `dynamic` block, in order: who is typing, the mood she is in, the facts to relay, the memory
- * layer. Pure — four strings in, one string out — and exported for exactly that reason: the
- * four-surface verbatim test (convo/promptPolicy.test.ts) asserts the shared persona block reaches
- * THIS lane's prompt, and it can only assert that against the real assembly, not a re-typed copy.
+ * The `dynamic` block, in order: the mood she is in, the facts to relay, the memory layer. Pure —
+ * three strings in, one string out.
  *
- * The block goes FIRST, ahead of the weather. Its job is to say who is speaking before anything
- * describes how she is feeling or what she is relaying, and the composer's own Context.md is the
- * static system prompt — it says how the relay WORKS and nothing about the person doing it. What
- * stays last is unchanged: `buildInstruction`'s facts sit late, and FORMAT_ANCHOR is appended after
- * this whole block, so the very last tokens before generation are still the envelope contract.
+ * The shared persona block used to lead this block, but now rides in the system prompt instead
+ * (ahead of the composer's own Context.md — see `composeWithComposer` below), so a lane- and
+ * turn-independent prefix (persona + Context.md) can be cache-hit by the Anthropic lane instead of
+ * being re-billed on every call inside the final user message. OpenRouter's automatic prefix caching
+ * gets the same prefix to match, so the OpenRouter lane benefits too. What stays last is unchanged:
+ * `buildInstruction`'s facts sit late, and FORMAT_ANCHOR is appended after this whole block, so the
+ * very last tokens before generation are still the envelope contract.
  *
- * An empty string drops out, so a lane with no weather and no memory layer assembles the block and
- * the instruction alone.
+ * An empty string drops out, so a lane with no weather and no memory layer assembles the
+ * instruction alone.
  */
 export function buildComposerDynamic(weather: string, instruction: string, userCtx: string): string {
-  return [renderPersonaBlock('composer'), weather, instruction, userCtx].filter(Boolean).join('\n\n');
+  return [weather, instruction, userCtx].filter(Boolean).join('\n\n');
 }
 
 export interface ComposerCoreArgs {
@@ -120,7 +120,13 @@ export async function composeWithComposer(args: ComposerCoreArgs): Promise<strin
     ...history.slice(-10).map(m => ({ role: m.role, timestamp: timestampLabel(m.at) || undefined, content: m.content })),
     { role: 'user', content: `${wrapPrompt(dynamic)}\n\n${FORMAT_ANCHOR}` },
   ];
-  const system = loadContext('composer');
+  // Persona block first, then the composer's own Context.md — byte-identical every call (Context.md
+  // is static, and renderPersonaBlock is the same bytes on every lane/turn), so this prefix is worth
+  // an Anthropic prompt-cache hit instead of being re-billed inside the final user message every
+  // call, and OpenRouter's automatic prefix caching can hit the same stable prefix on that lane. The
+  // call below rides the 'convo' role, whose CACHE_SYSTEM is already on — mirrors the
+  // convo lane's own persona+Context.md system assembly (personaModules.ts).
+  const system = `${renderPersonaBlock('composer')}\n\n${loadContext('composer')}`;
   // One retry before the caller degrades. The composer failures we actually see are transient — a
   // 5xx/429 or timeout that outlived the SDK's own retries, or an empty completion — and this path
   // is fire-and-forget, so a second attempt is well within budget and converts most incidents into

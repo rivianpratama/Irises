@@ -1,0 +1,212 @@
+{
+  "label": "p1-medium-r2",
+  "generatedAt": 1790239166489,
+  "rows": [
+    {
+      "kind": "idle",
+      "text": "hey",
+      "t0": 1790238912303,
+      "firstTyping": 1854,
+      "firstBubble": 19831,
+      "lastBubble": 22472,
+      "bubbles": 3,
+      "reply": [
+        "i'm Irises, call me Iris or Lish",
+        "three letters.",
+        "not a small talk person i think"
+      ],
+      "settle": 1831,
+      "convoMs": 17326,
+      "convoOut": 1431,
+      "reasoningTok": 1302,
+      "cachedTok": 24576,
+      "promptTok": 40759,
+      "otherLlmMs": 0,
+      "provider": "Reka"
+    },
+    {
+      "kind": "task",
+      "text": "whats 17% of 2400",
+      "t0": 1790238949992,
+      "firstTyping": 1814,
+      "firstBubble": 9393,
+      "lastBubble": 9393,
+      "bubbles": 1,
+      "reply": [
+        "17% of 2400 is 408"
+      ],
+      "settle": 1804,
+      "convoMs": 6957,
+      "convoOut": 469,
+      "reasoningTok": 347,
+      "cachedTok": 32768,
+      "promptTok": 40382,
+      "otherLlmMs": 442,
+      "provider": "Reka"
+    },
+    {
+      "kind": "share",
+      "text": "finally finished the deck for tomorrow, took me all afternoon",
+      "t0": 1790238974591,
+      "firstTyping": 1821,
+      "firstBubble": 11644,
+      "lastBubble": 11644,
+      "bubbles": 1,
+      "reply": [
+        "so the real audience is tomorrow then"
+      ],
+      "settle": 1811,
+      "convoMs": 9209,
+      "convoOut": 646,
+      "reasoningTok": 521,
+      "cachedTok": 37632,
+      "promptTok": 41629,
+      "otherLlmMs": 422,
+      "provider": "Wafer"
+    },
+    {
+      "kind": "idle",
+      "text": "lol",
+      "t0": 1790239001468,
+      "firstTyping": 1829,
+      "firstBubble": 5726,
+      "lastBubble": 5726,
+      "bubbles": 1,
+      "reply": [
+        "probably the only audience that matters tonight is you and the couch"
+      ],
+      "settle": 1814,
+      "convoMs": 3299,
+      "convoOut": 203,
+      "reasoningTok": 62,
+      "cachedTok": 38144,
+      "promptTok": 41996,
+      "otherLlmMs": 0,
+      "provider": "Wafer"
+    },
+    {
+      "kind": "task",
+      "text": "give me a quick 3 step plan to fix my sleep schedule",
+      "t0": 1790239022303,
+      "firstTyping": 1821,
+      "firstBubble": 8504,
+      "lastBubble": 13026,
+      "bubbles": 3,
+      "reply": [
+        "wake up at same time every day, even weekend",
+        "morning sun right after, 10 min outside",
+        "no screens 1 hour before bed, dim the lights"
+      ],
+      "settle": 1811,
+      "convoMs": 5921,
+      "convoOut": 338,
+      "reasoningTok": 200,
+      "cachedTok": 32768,
+      "promptTok": 40480,
+      "otherLlmMs": 1957,
+      "provider": "Reka"
+    },
+    {
+      "kind": "share",
+      "text": "had nasi goreng for dinner again",
+      "t0": 1790239050415,
+      "firstTyping": 1832,
+      "firstBubble": 6952,
+      "lastBubble": 6952,
+      "bubbles": 1,
+      "reply": [
+        "the classic"
+      ],
+      "settle": 1812,
+      "convoMs": 4511,
+      "convoOut": 386,
+      "reasoningTok": 257,
+      "cachedTok": 37632,
+      "promptTok": 41790,
+      "otherLlmMs": 1099,
+      "provider": "Wafer"
+    },
+    {
+      "kind": "task",
+      "text": "what does idempotent mean, one line",
+      "t0": 1790239072512,
+      "firstTyping": 1833,
+      "firstBubble": 7043,
+      "lastBubble": 7043,
+      "bubbles": 1,
+      "reply": [
+        "same result no matter how many times you run it"
+      ],
+      "settle": 1811,
+      "convoMs": 4605,
+      "convoOut": 324,
+      "reasoningTok": 191,
+      "cachedTok": 37632,
+      "promptTok": 41798,
+      "otherLlmMs": 1256,
+      "provider": "Wafer"
+    },
+    {
+      "kind": "idle",
+      "text": "ok",
+      "t0": 1790239094610,
+      "firstTyping": 1830,
+      "firstBubble": 6184,
+      "lastBubble": 6184,
+      "bubbles": 1,
+      "reply": [
+        "anytime"
+      ],
+      "settle": 1810,
+      "convoMs": 3955,
+      "convoOut": 373,
+      "reasoningTok": 250,
+      "cachedTok": 38144,
+      "promptTok": 42318,
+      "otherLlmMs": 0,
+      "provider": "Wafer"
+    },
+    {
+      "kind": "task",
+      "text": "rewrite this to sound nicer: send me the file now",
+      "t0": 1790239115958,
+      "firstTyping": 1824,
+      "firstBubble": 10606,
+      "lastBubble": 10606,
+      "bubbles": 1,
+      "reply": [
+        "when you get a chance, could you send the file over?"
+      ],
+      "settle": 1806,
+      "convoMs": 8167,
+      "convoOut": 302,
+      "reasoningTok": 169,
+      "cachedTok": 0,
+      "promptTok": 40677,
+      "otherLlmMs": 1226,
+      "provider": "Reka"
+    },
+    {
+      "kind": "share",
+      "text": "gym tomorrow at 6am, wish me luck",
+      "t0": 1790239141573,
+      "firstTyping": 1831,
+      "firstBubble": 5874,
+      "lastBubble": 9737,
+      "bubbles": 3,
+      "reply": [
+        "6am gym.",
+        "bold move for someone who just started fixing their sleep",
+        "good luck, dont let the bench win"
+      ],
+      "settle": 1805,
+      "convoMs": 3589,
+      "convoOut": 166,
+      "reasoningTok": 1,
+      "cachedTok": 36608,
+      "promptTok": 40808,
+      "otherLlmMs": 1216,
+      "provider": "Wafer"
+    }
+  ]
+}

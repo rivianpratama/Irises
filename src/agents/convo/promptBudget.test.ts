@@ -23,7 +23,7 @@ process.env.TZ = 'UTC';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSystemPromptSections, formatHistory, type ChatContext } from './shared.js';
-import { SECTION_IDS, sectionsTotalChars, type SectionId } from './promptSections.js';
+import { SECTION_IDS, sectionsChars, type SectionId } from './promptSections.js';
 import { PROMPT_BUDGET, MIN_TRANSCRIPT_SHARE, type BudgetKey } from './promptPolicy.js';
 import { renderDriftAnchor, DRIFT_LONG_WINDOW_CHARS, type DriftMode } from '../../persona/policy.js';
 import { buildTurnTraceDraft, type MeasuredPrompt, type TranscriptMessage } from '../../diagnostics/turnTrace.js';
@@ -475,6 +475,18 @@ const WIDE_REMINDERS: ReminderRef[] = [
   },
 ];
 
+/** Her holding-beat history at its fullest — HOLDING_BEATS_KEPT (state/holdingBeats.ts), five, oldest
+ *  first as the store returns it — so the `recent_beats` ceiling is the whole list a busy chat carries.
+ *  The media turn is where it is measured: two looks are already running there, so it is a chat whose
+ *  last few handoffs really did leave beats behind. */
+const FULL_BEATS: string[] = [
+  'hmm lemme see what the north supplier says',
+  'one sec',
+  'digging into the cedar lead times',
+  'ok give me a minute on that permit',
+  'hm, pulling up the lease terms',
+];
+
 /** The caller addendum the live turn actually passes: the one-off version note
  *  (update/announce.ts claimPendingUpdateNote — private to that module, so the text is mirrored
  *  here with a stand-in build sha of the same length). */
@@ -727,7 +739,7 @@ const FIXTURES: Fixture[] = [
     },
     memoryStack: COLD_STACK,
     sections: [
-      'persona', 'tool_docs', 'craft_modules', 'model_map', 'update_status', 'name_nudge',
+      'persona', 'tool_docs', 'model_map', 'craft_modules', 'update_status', 'name_nudge',
       'intro_weave', 'context_block', 'current_time', 'conversation_timing', 'hooks', 'turn_focus',
       'behavior_anchor', 'json_anchor',
     ],
@@ -755,7 +767,7 @@ const FIXTURES: Fixture[] = [
     },
     memoryStack: MATURE_STACK,
     sections: [
-      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'update_status',
+      'persona', 'tool_docs', 'capability', 'model_map', 'craft_modules', 'update_status',
       'context_block', 'current_time', 'weather', 'status_contract', 'conversation_timing',
       'reply_order', 'turn_focus', 'behavior_anchor', 'json_anchor',
     ],
@@ -784,12 +796,12 @@ const FIXTURES: Fixture[] = [
         hits: [{ label: 'the lease pdf they just sent', source: 'research' }],
       },
       craft: craftFacts(MEDIA_DATA, `the lease pdf, can you read it ${MEDIA_NOTE}`),
-      liveState: { reminders: WIDE_REMINDERS },
+      liveState: { reminders: WIDE_REMINDERS, holdingBeats: FULL_BEATS },
     },
     memoryStack: MEDIA_STACK,
     sections: [
-      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'update_status',
-      'context_block', 'active_ops', 'live_reminders', 'current_time', 'weather', 'status_contract',
+      'persona', 'tool_docs', 'capability', 'model_map', 'craft_modules', 'update_status',
+      'context_block', 'active_ops', 'recent_beats', 'live_reminders', 'current_time', 'weather', 'status_contract',
       'conversation_timing', 'reply_order', 'turn_focus', 'behavior_anchor', 'json_anchor',
     ],
   },
@@ -825,8 +837,8 @@ const FIXTURES: Fixture[] = [
     },
     memoryStack: GROUP_STACK,
     sections: [
-      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'update_status',
-      'context_block', 'group', 'tapped_reply', 'burst', 'current_time', 'weather',
+      'persona', 'tool_docs', 'capability', 'model_map', 'group', 'craft_modules',
+      'update_status', 'context_block', 'tapped_reply', 'burst', 'current_time', 'weather',
       'status_contract', 'conversation_timing', 'turn_focus', 'behavior_anchor', 'json_anchor',
     ],
   },
@@ -869,7 +881,7 @@ const FIXTURES: Fixture[] = [
     },
     memoryStack: MATURE_STACK,
     sections: [
-      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'update_status',
+      'persona', 'tool_docs', 'capability', 'model_map', 'craft_modules', 'update_status',
       'context_block', 'thesis', 'current_time', 'weather', 'status_contract', 'thread',
       'conversation_timing', 'reply_order', 'extra', 'hooks', 'turn_focus', 'behavior_anchor',
       'json_anchor',
@@ -903,7 +915,7 @@ const FIXTURES: Fixture[] = [
     },
     memoryStack: MATURE_STACK,
     sections: [
-      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'update_status',
+      'persona', 'tool_docs', 'capability', 'model_map', 'craft_modules', 'update_status',
       'context_block', 'current_time', 'weather', 'status_contract', 'conversation_timing',
       'reply_order', 'turn_focus', 'behavior_anchor', 'json_anchor',
     ],
@@ -946,7 +958,7 @@ const FIXTURES: Fixture[] = [
     },
     memoryStack: MATURE_STACK,
     sections: [
-      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'update_status',
+      'persona', 'tool_docs', 'capability', 'model_map', 'craft_modules', 'update_status',
       'context_block', 'current_time', 'weather', 'status_contract', 'conversation_timing',
       'reply_order', 'hooks', 'turn_focus', 'behavior_anchor', 'json_anchor',
     ],
@@ -998,7 +1010,7 @@ const FIXTURES: Fixture[] = [
     },
     memoryStack: MATURE_STACK,
     sections: [
-      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'update_status',
+      'persona', 'tool_docs', 'capability', 'model_map', 'craft_modules', 'update_status',
       'context_block', 'current_time', 'weather', 'status_contract', 'conversation_timing',
       'reply_order', 'hooks', 'turn_focus', 'behavior_anchor', 'json_anchor',
     ],
@@ -1049,8 +1061,8 @@ function transcriptShare(prompt: MeasuredPrompt, messages: readonly TranscriptMe
 test('the process is in UTC — every ceiling below was measured there', () => {
   const args = argsFor({});
   args[7] = '';  // no stored agent_tz, so the clock falls back to DEFAULT_TZ like the timing block does
-  const { system } = buildSystemPromptSections(...args);
-  const clockLine = system.split('\n').find(l => l.startsWith("Right now it's")) ?? '';
+  const { tail } = buildSystemPromptSections(...args);
+  const clockLine = tail.split('\n').find(l => l.startsWith("Right now it's")) ?? '';
   assert.match(
     clockLine, /2:00 AM/,
     `the frozen clock is ${new Date(FROZEN_MS).toISOString()}, but the current-time section renders `
@@ -1071,8 +1083,8 @@ test('the measured sections still account for every character of the prompt', ()
   // Task 1's arithmetic, reused rather than re-derived: if this fails, the budget below is measuring
   // a prompt whose parts no longer add up, and the ceilings mean nothing.
   for (const f of FIXTURES) {
-    const { system, sections } = buildSystemPromptSections(...argsFor(f.spec));
-    assert.equal(sectionsTotalChars(sections), system.length, f.name);
+    const { system, tail, sections } = buildSystemPromptSections(...argsFor(f.spec));
+    assert.deepEqual(sectionsChars(sections), { system: system.length, tail: tail.length }, f.name);
   }
 });
 
@@ -1259,4 +1271,5 @@ test('a default install adds no weather and no thread — the no-regression pin'
 
   const neverHadThem = buildSystemPromptSections(...argsFor(base));
   assert.equal(dormant.system, neverHadThem.system, 'a dormant climate and inventory cost the prompt nothing');
+  assert.equal(dormant.tail, neverHadThem.tail, 'and nothing in the tail either');
 });

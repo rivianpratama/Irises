@@ -34,6 +34,7 @@ import {
 } from './personaModules.js';
 import { renderPersonaBlock } from '../../persona/policy.js';
 import { buildSystemPromptSections, convoPersonaChars, type ChatContext } from './shared.js';
+import { isSystemSection } from './promptSections.js';
 import { chat } from './client.js';
 import { addShortTerm } from '../../db/repositories/memoryShort.js';
 import { emptyMedia } from '../../webhook/types.js';
@@ -221,9 +222,50 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  *   · Context.md +40 (92,079 → 92,119): the data-tag list in "What `<prompt>` is" gains
  *     `<live_reminders>` and `<action_results>`, the two tags the same work adds to the per-turn
  *     block. Every other byte of both files, and every other file in the corpus, held.
+ *
+ * Then **+275** in the snappy-replies branch, ONE file, both edits about where a message came from
+ * now that the turn's sections ride their own untimestamped message instead of the system one:
+ *   · Context.md +275 (92,119 → 92,394): "What `<prompt>` is" stops calling everything in the block
+ *     fresh for this turn and says the guidance comes in two places, the system message for what
+ *     holds all chat long and the one unstamped message right before theirs for this turn; that the
+ *     unstamped message is her own system whole, the closing sections after its `</prompt>`
+ *     included; and that a stamped message always came from someone in the chat. The clock
+ *     section's "every message carries a timestamp" becomes every message sent, hers and theirs,
+ *     which is what formatHistory stamps and the tail is not. Every other file held.
+ *
+ * Then **+87** later in the same branch, two files, one rule: the holding beat a handoff sends is
+ * taught as a principle (one beat every time, varied against her recent ones, true) instead of by
+ * stock lines to copy:
+ *   · Context.md +103 (92,394 → 92,497): the running-shoes few-shot's three holding bubbles become
+ *     one placeholder beat beside its delegate_to_ops entry; the step-3, inbox, already-running and
+ *     "When you do delegate" lines say one short beat in fresh words, unlike the recent beats listed
+ *     for the turn, claiming nothing not held; and the two holding registers (a promise-y line for a
+ *     real dig, a tiny one for a file) collapse into one rule, the file look keeping its allowance
+ *     that the beat may be the whole reply.
+ *   · craft/attachments.md −16: its two quoted file-look beats become "one short holding beat".
+ *     Every other file held.
+ *
+ * Then **+38**, the same rule's second pass, Context.md alone (92,497 → 92,535): the naming
+ * section's RIGHT list of three stock beats becomes one sentence (a beat in which the only one doing
+ * anything is her, no other doer, no place the work goes, no how), and the source question stops
+ * quoting a sample venue ask and a sample clarifying line and says to ask one quick question naming
+ * the two places. Every other file held.
+ *
+ * Then **−188**, the review pass on the same rule, Context.md alone (92,535 → 92,347): the run-status
+ * paragraph drops its five quoted sample replies and says the same thing in plain clauses (what the
+ * run is doing right now, one concrete bubble grounded in the status and never a generic nearly-done
+ * line, pass time left along loosely, own an overrun lightly), and the confidence check's clarifying
+ * question stops quoting two sample asks and says to name the two things or the two places. Every
+ * other file held.
+ *
+ * Then **−6**, the whole-branch review of snappy-replies, Context.md alone (92,347 → 92,341): the
+ * provenance line stops saying the ONE unstamped message right before theirs is her system, since
+ * a correction pass appends further unstamped messages after theirs. The turn's guidance arrives in
+ * an unstamped message right before theirs, and any unstamped message is her own system. Every
+ * other file held.
  */
-const CORPUS_CHARS = 156_380;
-const CORPUS_SHA256 = '9daa5b262ff4bc4bd498b017aa11b62ff20df078ea76a8c28b2638b879929eda';
+const CORPUS_CHARS = 156_586;
+const CORPUS_SHA256 = '07ba0f7dd0dcbedf164cd3d8c26fa4c2b6809f9a6fb1924ad034dd161aec87e4';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
@@ -430,20 +472,20 @@ const args = (): BuildArgs => [
   { attachmentNote: false, emailFlag: false, thinProfile: false },
 ];
 
-test('the craft section sits right after the tool docs, once, inside the block', () => {
-  const { system, sections, craft } = buildSystemPromptSections(...args());
+test('the craft section leads the per-turn tail, once, inside its block', () => {
+  const { system, tail, sections, craft } = buildSystemPromptSections(...args());
   const names = sections.map(s => s.name);
-  assert.equal(names[names.indexOf('tool_docs') + 1], 'craft_modules', 'the craft pages follow the tool docs');
+  assert.equal(names.find(n => !isSystemSection(n)), 'craft_modules', 'the craft pages open the tail');
 
   const text = `${craftModuleText('send_order')}\n\n${craftModuleText('reminders')}`;
   assert.equal(sections.find(s => s.name === 'craft_modules')?.chars, text.length);
-  assert.equal(system.split(text).length - 1, 1, 'the craft text is in the prompt exactly once');
-  const at = system.indexOf(text);
-  // lastIndexOf on both tags: the persona TALKS about `<prompt>`/`</prompt>` in its trust-boundary
-  // section, so the first occurrence of either is prose, not the wrapper.
-  assert.ok(at > system.lastIndexOf('<prompt>\n'), 'it renders inside the per-turn block');
-  assert.ok(at < system.lastIndexOf('\n</prompt>'), 'and before the block closes');
-  assert.ok(at > convoPersona().length, 'and NOT in the cached persona prefix');
+  assert.equal(tail.split(text).length - 1, 1, 'the craft text is in the prompt exactly once');
+  const at = tail.indexOf(text);
+  assert.ok(at === '<prompt>\n'.length, 'it is the first thing inside the tail\'s block');
+  assert.ok(at < tail.lastIndexOf('\n</prompt>'), 'and before the block closes');
+  // The pages are gated per turn, so they must never be in the system message: one page loading
+  // there would re-bill the chat history behind it on every turn its gate flips.
+  assert.ok(!system.includes(text), 'and NOT in the cached system message');
 
   assert.deepEqual(
     craft.filter(m => m.rendered).map(m => m.id), ['send_order', 'reminders'],
@@ -460,21 +502,21 @@ test('the threading craft follows the thread section the engine really rendered,
   withThread[12] = { offer: THEME, outcomeAsk: null };
   const offered = buildSystemPromptSections(...withThread);
   assert.ok(offered.sections.some(s => s.name === 'thread'), 'the thread section rendered');
-  assert.ok(offered.system.includes(craftModuleText('threading')), 'so the tagging craft came with it');
+  assert.ok(offered.tail.includes(craftModuleText('threading')), 'so the tagging craft came with it');
   assert.deepEqual(
     offered.craft.filter(m => m.rendered).map(m => m.id), ['threading', 'send_order', 'reminders'],
   );
 
   const quiet = buildSystemPromptSections(...args());
   assert.ok(!quiet.sections.some(s => s.name === 'thread'), 'no candidate, no section');
-  assert.ok(!quiet.system.includes(craftModuleText('threading')), 'and nine thousand characters of tagging craft stay out');
+  assert.ok(!quiet.tail.includes(craftModuleText('threading')), 'and nine thousand characters of tagging craft stay out');
 });
 
 test('an outcome ask alone is enough — the craft is for reading how they took it, too', () => {
   const askOnly = args();
   askOnly[12] = { offer: null, outcomeAsk: { label: 'the dock boards', material: 'loop' } };
   const built = buildSystemPromptSections(...askOnly);
-  assert.ok(built.system.includes(craftModuleText('threading')));
+  assert.ok(built.tail.includes(craftModuleText('threading')));
 });
 
 test('the hook page loads off the caller\'s fact, never off the turn-focus block', () => {
@@ -486,17 +528,17 @@ test('the hook page loads off the caller\'s fact, never off the turn-focus block
   const blockOnly = args();
   blockOnly[14] = { text: 'hey', hits: [], shape: 'idle', idleStreak: 1, messageChars: 3 };
   const rendering = buildSystemPromptSections(...blockOnly);
-  assert.ok(rendering.system.includes('Turn: idle'), 'the turn-focus block really did render the idle line');
+  assert.ok(rendering.tail.includes('Turn: idle'), 'the turn-focus block really did render the idle line');
   assert.ok(
-    !rendering.system.includes(craftModuleText('hooks')),
+    !rendering.tail.includes(craftModuleText('hooks')),
     'but the page is gated on the caller\'s fact, which this turn did not set',
   );
 
   const factOnly = args();
   factOnly[15] = { attachmentNote: false, emailFlag: false, thinProfile: false, idleTurn: true };
   const gated = buildSystemPromptSections(...factOnly);
-  assert.ok(gated.system.includes(craftModuleText('hooks')), 'the fact alone loads it');
-  assert.ok(!gated.system.includes('Turn: idle'), 'with no turn-focus block in sight');
+  assert.ok(gated.tail.includes(craftModuleText('hooks')), 'the fact alone loads it');
+  assert.ok(!gated.tail.includes('Turn: idle'), 'with no turn-focus block in sight');
   assert.deepEqual(
     gated.craft.filter(m => m.rendered).map(m => m.id), ['send_order', 'reminders', 'hooks'],
   );
@@ -559,12 +601,14 @@ const fakeReply = (text: string): LlmResult => ({
   toolCalls: [], stopReason: 'end_turn', provider: 'anthropic', model: 'test',
 });
 
-/** The turn as the front door runs it, returning the system prompt the lane got. */
+/** The turn as the front door runs it, returning the prompt text the lane got: the system message,
+ *  then the per-turn tail, which rides as its own user message right before theirs (convo/client.ts). */
 async function systemFromRealTurn(handle: string, message: string, media = emptyMedia()): Promise<string> {
   const ctx: ChatContext = { isGroupChat: false, participantNames: [], chatName: null, senderHandle: handle };
   let system = '';
   await chat(randomUUID(), message, media, ctx, async req => {
-    system = system || req.system;
+    const tail = req.messages[req.messages.length - 2];
+    system = system || `${req.system}\n\n${typeof tail?.content === 'string' ? tail.content : ''}`;
     return fakeReply('one sec');
   });
   assert.ok(system.length > 1000, 'the lane really got a prompt');

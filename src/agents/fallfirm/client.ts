@@ -58,16 +58,15 @@ export function buildOutcomeBrief(o: Outcome, userMemory: string, timingLine?: s
   if (o.nextStep) lines.push(`A next move to leave in their hands — say it as something you can do or that's within reach, never as a "want me to?" question: ${o.nextStep}`);
   if (o.originalRequest) lines.push(`What they asked, for continuity: "${o.originalRequest}"`);
 
-  // The shared persona block leads: this lane's system prompt (fallfirm/Context.md) says how the
-  // outcome voice WORKS — the floor, the fidelity rules — and carries nothing about who is speaking,
-  // so who is speaking has to arrive here, ahead of the memory layer and ahead of the outcome. It is
-  // the same bytes Convo and the Composer render (persona/policy.ts), which is the whole point: a
-  // confirmation voiced by this lane must read as the same person who took the ask.
+  // The shared persona block used to lead here; it now rides in the system prompt instead (ahead of
+  // fallfirm/Context.md — see `voiceOutcome`'s `system` assembly below), so who is speaking is still
+  // established before anything about how the outcome WORKS or what to relay, but as a byte-stable
+  // prefix the Anthropic lane can cache-hit instead of re-billing on every call, and that OpenRouter's
+  // automatic prefix caching can hit too.
   //
   // userMemory arrives pre-wrapped (buildUserMemory: guidance outside the tags, payloads inside)
   // — it is NOT re-wrapped in a data tag here.
   const block = [
-    renderPersonaBlock('fallfirm'),
     userMemory,
     dataTag('outcome', lines.join('\n')),
   ].filter(Boolean).join('\n\n');
@@ -96,7 +95,12 @@ export async function voiceOutcome(o: Outcome, chatId: string, handle?: string):
     ]);
     const res = await callLLM({
       role: 'fallfirm',
-      system: loadContext('fallfirm'),
+      // Persona block first, then fallfirm/Context.md — the same bytes Convo and the Composer render
+      // (persona/policy.ts), ahead of how the outcome voice WORKS. Byte-identical every call, so with
+      // CACHE_SYSTEM.fallfirm on this prefix is an Anthropic cache hit instead of a line re-billed
+      // inside the final user message every time (models.ts). On the OpenRouter lane the marker is
+      // ignored, but its automatic prefix caching matches the same stable prefix.
+      system: `${renderPersonaBlock('fallfirm')}\n\n${loadContext('fallfirm')}`,
       jsonBubbles: true, // tool-less; structured outputs guarantee the envelope
       messages: [
         ...formatHistory(history),

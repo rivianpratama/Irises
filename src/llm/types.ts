@@ -93,13 +93,14 @@ export interface LlmRequest {
   toolsViaJson?: boolean;
   // Where the STABLE, cache-reusable prefixes of `system` end, as character offsets in ascending
   // order — Convo passes two (agents/convo/promptSections.ts promptCacheBreakpoints): the static
-  // persona head, and the slot that is stable within a chat (the tool docs plus the craft pages).
-  // When set AND the role opts into caching (CACHE_SYSTEM[role]), the Anthropic path emits one
-  // `cache_control` block per span plus an uncached remainder, so a cache read matches everything up
-  // to the last offset that hasn't changed. Without any of them, a role whose system carries ANY
-  // per-turn-varying tail (Convo embeds the current time to ms) would cache-WRITE the whole system
-  // every call: zero reads, plus a ~25% write premium, and the write tokens still count toward the
-  // daily cap. Offsets outside (0, system.length) or that don't advance are ignored, at most
+  // persona head, and the end of its system message, which is stable within a chat (its per-turn
+  // tail rides in `messages`, after the history). When set AND the role opts into caching
+  // (CACHE_SYSTEM[role]), the Anthropic path emits one `cache_control` block per span plus an
+  // uncached remainder when one is left, so a cache read matches everything up to the last offset
+  // that hasn't changed. Without any of them, a role whose system carries ANY per-turn-varying part
+  // would cache-WRITE the whole system every call: zero reads, plus a ~25% write premium, and the
+  // write tokens still count toward the daily cap. Offsets outside (0, system.length] or that don't
+  // advance are ignored, at most
   // MAX_CACHE_BREAKPOINTS are used, and the whole field is ignored on the OpenRouter/OpenAI lanes
   // (prompt caching is Anthropic-only; Convo's OpenRouter primary is deepseek).
   systemCacheBreakpoints?: readonly number[];
@@ -107,6 +108,16 @@ export interface LlmRequest {
   // this, a task timeout only stops the loop BETWEEN steps while the abandoned request keeps
   // billing to completion.
   signal?: AbortSignal;
+  /**
+   * Opt in to STREAMING on the OpenAI-compatible lanes (openrouter + openai): each non-empty content
+   * delta is handed here as it arrives, so a caller can start acting on the reply before the whole
+   * completion exists. Reasoning deltas never reach it. The returned LlmResult is the same shape as
+   * a non-streamed call's (the full accumulated text, usage from the final chunk), plus `emitted`.
+   * The Anthropic lane IGNORES it: that call stays a single accumulated result, so a turn that
+   * falls back there simply gets no deltas and `emitted` stays unset.
+   * Once a delta has gone out, a failure no longer throws (see LlmResult.emitted).
+   */
+  onTextDelta?: (delta: string) => void;
   trace?: TraceTag;          // optional diagnostics tagging (see src/diagnostics)
 }
 
@@ -162,4 +173,12 @@ export interface LlmResult {
    *  OpenAI-compatible: the served body — the retry's body when a starved retry landed, so it pairs
    *  with the `raw` response leg that actually answered. */
   rawRequest?: unknown;
+  /** Set on a STREAMED call (LlmRequest.onTextDelta): true when at least one delta was delivered to
+   *  the sink. Load-bearing past that point: text the caller may already have sent cannot be taken
+   *  back, so a stream that breaks (or a call that times out) after emitting RETURNS what
+   *  accumulated with stopReason 'error' instead of throwing, and neither the same-lane starved
+   *  retry nor the cross-lane fallback runs — both would produce a second, different reply to a
+   *  turn whose first one is already on its way out. Recovering from the partial is the caller's
+   *  job. Unset on non-streamed calls. */
+  emitted?: boolean;
 }

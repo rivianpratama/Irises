@@ -1,0 +1,214 @@
+{
+  "label": "p1-low-r2",
+  "generatedAt": 1790238903205,
+  "rows": [
+    {
+      "kind": "idle",
+      "text": "hey",
+      "t0": 1790238640196,
+      "firstTyping": 1879,
+      "firstBubble": 13336,
+      "lastBubble": 16433,
+      "bubbles": 4,
+      "reply": [
+        "Irises.",
+        "or Iris, Lish, whatever sticks",
+        "bare 'hey'.",
+        "you dont waste words"
+      ],
+      "settle": 1834,
+      "convoMs": 11057,
+      "convoOut": 867,
+      "reasoningTok": 720,
+      "cachedTok": 37120,
+      "promptTok": 40759,
+      "otherLlmMs": 0,
+      "provider": "Wafer"
+    },
+    {
+      "kind": "task",
+      "text": "whats 17% of 2400",
+      "t0": 1790238671870,
+      "firstTyping": 1836,
+      "firstBubble": 5689,
+      "lastBubble": 5689,
+      "bubbles": 1,
+      "reply": [
+        "408"
+      ],
+      "settle": 1814,
+      "convoMs": 3471,
+      "convoOut": 231,
+      "reasoningTok": 122,
+      "cachedTok": 36608,
+      "promptTok": 40368,
+      "otherLlmMs": 473,
+      "provider": "Wafer"
+    },
+    {
+      "kind": "share",
+      "text": "finally finished the deck for tomorrow, took me all afternoon",
+      "t0": 1790238692717,
+      "firstTyping": 1834,
+      "firstBubble": 7339,
+      "lastBubble": 9400,
+      "bubbles": 2,
+      "reply": [
+        "one afternoon for a deck is honest work",
+        "did it come out the way you wanted?"
+      ],
+      "settle": 1812,
+      "convoMs": 4905,
+      "convoOut": 415,
+      "reasoningTok": 266,
+      "cachedTok": 37376,
+      "promptTok": 41619,
+      "otherLlmMs": 871,
+      "provider": "Wafer"
+    },
+    {
+      "kind": "idle",
+      "text": "lol",
+      "t0": 1790238717320,
+      "firstTyping": 1832,
+      "firstBubble": 17996,
+      "lastBubble": 17996,
+      "bubbles": 1,
+      "reply": [
+        "\"finally\" is doing a lot of work there"
+      ],
+      "settle": 1811,
+      "convoMs": 15558,
+      "convoOut": 1175,
+      "reasoningTok": 1025,
+      "cachedTok": 37632,
+      "promptTok": 41668,
+      "otherLlmMs": 0,
+      "provider": "Wafer"
+    },
+    {
+      "kind": "task",
+      "text": "give me a quick 3 step plan to fix my sleep schedule",
+      "t0": 1790238750458,
+      "firstTyping": 1818,
+      "firstBubble": 12435,
+      "lastBubble": 15691,
+      "bubbles": 3,
+      "reply": [
+        "wake up same time every day, even weekend",
+        "no screen one hour before bed",
+        "move your wake time back 15 min each day"
+      ],
+      "settle": 1810,
+      "convoMs": 10014,
+      "convoOut": 273,
+      "reasoningTok": 124,
+      "cachedTok": 0,
+      "promptTok": 40489,
+      "otherLlmMs": 998,
+      "provider": "Reka"
+    },
+    {
+      "kind": "share",
+      "text": "had nasi goreng for dinner again",
+      "t0": 1790238781345,
+      "firstTyping": 1826,
+      "firstBubble": 15067,
+      "lastBubble": 15067,
+      "bubbles": 1,
+      "reply": [
+        "the 'again' tells me this is a ritual now"
+      ],
+      "settle": 1809,
+      "convoMs": 12631,
+      "convoOut": 1347,
+      "reasoningTok": 1203,
+      "cachedTok": 37632,
+      "promptTok": 41793,
+      "otherLlmMs": 1201,
+      "provider": "Wafer"
+    },
+    {
+      "kind": "task",
+      "text": "what does idempotent mean, one line",
+      "t0": 1790238811469,
+      "firstTyping": 1816,
+      "firstBubble": 10502,
+      "lastBubble": 10502,
+      "bubbles": 1,
+      "reply": [
+        "doing it twice gives same result as once, like pressing send twice on same form"
+      ],
+      "settle": 1810,
+      "convoMs": 8077,
+      "convoOut": 201,
+      "reasoningTok": 80,
+      "cachedTok": 0,
+      "promptTok": 40593,
+      "otherLlmMs": 1035,
+      "provider": "Reka"
+    },
+    {
+      "kind": "idle",
+      "text": "ok",
+      "t0": 1790238837094,
+      "firstTyping": 1834,
+      "firstBubble": 5792,
+      "lastBubble": 7183,
+      "bubbles": 2,
+      "reply": [
+        "three tasks in four minutes.",
+        "definitely working a list rn"
+      ],
+      "settle": 1813,
+      "convoMs": 3355,
+      "convoOut": 267,
+      "reasoningTok": 135,
+      "cachedTok": 38144,
+      "promptTok": 42282,
+      "otherLlmMs": 0,
+      "provider": "Wafer"
+    },
+    {
+      "kind": "task",
+      "text": "rewrite this to sound nicer: send me the file now",
+      "t0": 1790238859445,
+      "firstTyping": 1837,
+      "firstBubble": 5706,
+      "lastBubble": 5706,
+      "bubbles": 1,
+      "reply": [
+        "could you send the file when you get a sec?"
+      ],
+      "settle": 1814,
+      "convoMs": 3255,
+      "convoOut": 254,
+      "reasoningTok": 129,
+      "cachedTok": 36608,
+      "promptTok": 40685,
+      "otherLlmMs": 462,
+      "provider": "Wafer"
+    },
+    {
+      "kind": "share",
+      "text": "gym tomorrow at 6am, wish me luck",
+      "t0": 1790238880286,
+      "firstTyping": 1819,
+      "firstBubble": 5504,
+      "lastBubble": 7801,
+      "bubbles": 2,
+      "reply": [
+        "good luck bro, 6am is brutal but you got it 🫡",
+        "just remember the sleep plan i gave you 🤞"
+      ],
+      "settle": 1807,
+      "convoMs": 3079,
+      "convoOut": 376,
+      "reasoningTok": 233,
+      "cachedTok": 36608,
+      "promptTok": 40729,
+      "otherLlmMs": 816,
+      "provider": "Wafer"
+    }
+  ]
+}

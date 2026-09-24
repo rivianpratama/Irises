@@ -95,13 +95,14 @@ export function needsGrounding(text: string): GroundingNeed {
 
 // ── Draft salvage for a delegation turn ─────────────────────────────────────────────────────────
 // When a turn delegates to Ops, the model's direct draft can't ship as-is (any RESULT it wrote is
-// un-grounded — Convo is single-shot and never sees the tool output). But the draft's OPENING is
-// usually Irises's own genuinely human holding text ("okay that's a real question", "pulling the
-// comps on 412 Maple now") — and per user directive that voice must SHIP whenever it's safe, never
-// be replaced by a generated line. So: keep the leading run of safe holding/acknowledgment bubbles
-// (holding texts are 1–3 bubbles by persona design) and cut at the first bubble that asserts an
-// outcome or carries a figure the user themselves didn't say. Only when nothing safe survives does
-// the caller fall to the Fallfirm-voiced line — Fallfirm is the fallback, never the override.
+// un-grounded — Convo is single-shot and never sees the tool output). But the draft usually carries
+// Irises's own genuinely human holding beat ("hmm", "pulling the comps on 412 Maple now") — and per
+// user directive that voice must SHIP whenever it's safe, never be replaced by a generated line. So:
+// keep ONE beat, the first bubble that holds the line, and cut at the first bubble that asserts an
+// outcome or carries a figure the user themselves didn't say. One, because the handoff beat is one
+// bubble by persona design, and because every bubble kept beside it is one more place for a claim to
+// ride. Only when no beat survives does the caller fall to the Fallfirm-voiced line — Fallfirm is
+// the fallback, never the override.
 
 // A bubble that CLAIMS something happened / was found (or not found) — the fabrication surface.
 const CLAIMS_RESULT = /\b(pulled|checked|searched|scanned|went through|found|surfaced|came (?:up|back)|turned up|shows?|says?|looks like|according to|no (?:results?|matches?|luck|record)|nothing (?:surfaced|came|found|matched|there)|couldn'?t find|didn'?t (?:find|see)|there'?s (?:no|nothing)|don'?t have)\b/i;
@@ -111,11 +112,19 @@ const CLAIMS_RESULT = /\b(pulled|checked|searched|scanned|went through|found|sur
 // "back in a bit", "almost there", "hang tight", "on it").
 const HOLDING_LIKE = /\b(one sec|a sec|one more sec|hang on|hang tight|hold on|lemme|let me|gimme|give me|checking|pulling|digging|grabbing|running|scanning|searching|finding|combing|fetching|chasing|tracking down|working on|going through|looking (?:into|up|at|through)|on it|still (?:on|at|working|going)|almost (?:there|done)|back in a (?:bit|sec|min|minute|few)|be right back|won'?t be long|coming (?:up|right up))\b/i;
 
-// A short acknowledgment/empathy beat that legitimately OPENS a multi-bubble holding text ("okay
-// that's a real question", "oof, the martinez file again", "you're welcome!") — kept when it leads
-// into a real holding bubble, but never sufficient on its own (an ack alone promises no look).
+// A beat that is nothing BUT a thinking sound or a nod ("hmm", "mmm", "ok bet", "hmm 🤔", "hmm...")
+// — one of the beat's own shapes, and a whole holding beat on its own. The WHOLE bubble has to be
+// sounds and separators: a word count lets a short result ride in on an ack ("ok, done", "yeah it
+// closed", "got it, booked"), and every word past the sound is where the claim lives.
+const BEAT_SOUND = String.raw`(?:hm+|mm+|um+|uh+|oh+|ooh+|ok(?:ay)?|kk+|bet|gotcha|got it|say less|sure(?: thing)?|alright)`;
+const BEAT_SEP = String.raw`[\s,.!…~\p{Extended_Pictographic}\u{FE0F}]`;
+const ACK_BEAT = new RegExp(`^${BEAT_SEP}*${BEAT_SOUND}(?:${BEAT_SEP}+${BEAT_SOUND})*${BEAT_SEP}*$`, 'iu');
+
+// A short acknowledgment/empathy opener in front of the beat ("okay that's a real question", "oof,
+// the martinez file again", "you're welcome!") — stepped over on the way to the beat, never kept:
+// an opener that says more than a sound can carry a claim ("ok, done") that no screen here reads.
 // Anchored to interjection openers so a lowercase ASSERTION ("the owner is the delgado trust")
-// can't sneak in as an "ack".
+// can't be stepped over as an "ack" to reach the beat behind it.
 const ACK_LIKE = /^(?:ok(?:ay)?|kk+|oo+f+|ugh+|ha(?:ha)*|heh+|lol|hm+|oh+|ooh+|whew|sheesh|yeah|yep|yes|sure(?: thing)?|alright|all right|right|fair(?: enough)?|good (?:one|question|call|shout)|got it|gotcha|nice|solid|bet|say less|no worries|no problem|np|of course|absolutely|honestly|anytime|my pleasure|you'?re welcome|welcome|love (?:it|that))\b/i;
 const ACK_MAX_WORDS = 8; // an ack is a beat, not a paragraph — anything longer isn't one
 
@@ -123,34 +132,31 @@ const ACK_MAX_WORDS = 8; // an ack is a beat, not a paragraph — anything longe
 const digitRuns = (text: string): string[] => (text.match(/\d+/g) ?? []).map(r => r.replace(/^0+(?=\d)/, ''));
 
 /**
- * Keep the human part of a delegation-turn draft: its leading holding/ack bubbles (max 3 — the
- * persona's 1–3 bubble holding range), in the legacy `\n---\n` wire format in and out.
+ * Keep the human part of a delegation-turn draft: its ONE holding beat, the first bubble that is
+ * holding-like or nothing but a sound/nod (ACK_BEAT), in the legacy `\n---\n` wire format in and out.
+ * Short ack openers before it are stepped over and dropped; anything else before it ends the search.
  *
  * `ground` is the user's OWN words for this ask (their message + address/deal hints): a figure the
  * user themselves said ("comps on 412 Maple" → "pulling comps on 412 Maple now") is an echo, not a
  * fabrication, so it survives; any digit NOT in the ground still ends the salvage. With no ground,
  * every figure breaks (the old conservative behavior).
  *
- * Returns null when no bubble actually holds the line (acks alone don't count — a draft that never
- * says "on it" salvages nothing, and the voiced fallback line takes over).
+ * Returns null when no bubble holds the line: a draft that is only a reaction salvages nothing and
+ * the voiced fallback line takes over.
  */
 export function salvageHoldingText(legacyText: string | null, ground?: string): string | null {
   if (!legacyText) return null;
   const groundRuns = ground ? digitRuns(ground) : [];
-  const kept: string[] = [];
-  let hasHolding = false;
   for (const bubble of legacyText.split(/\n---\n/).map(b => b.trim()).filter(Boolean)) {
-    if (kept.length >= 3) break;
-    if (CLAIMS_RESULT.test(bubble)) break;          // an asserted outcome — the un-grounded part
-    if (bubble.includes('?')) break;                // a question isn't a holding line
+    if (CLAIMS_RESULT.test(bubble)) return null;    // an asserted outcome — the un-grounded part
+    if (bubble.includes('?')) return null;          // a question isn't a holding line
     // Figures: safe only when every digit-run is an echo of the user's own ask.
     const runs = digitRuns(bubble);
-    if (runs.length && (bubble.includes('$') || !runs.every(r => groundRuns.some(g => g.includes(r))))) break;
-    if (HOLDING_LIKE.test(bubble)) hasHolding = true;
-    else if (!(ACK_LIKE.test(bubble) && bubble.split(/\s+/).length <= ACK_MAX_WORDS)) break; // neither holding nor a short ack — stop rather than guess
-    kept.push(bubble);
+    if (runs.length && (bubble.includes('$') || !runs.every(r => groundRuns.some(g => g.includes(r))))) return null;
+    if (HOLDING_LIKE.test(bubble) || ACK_BEAT.test(bubble)) return bubble;
+    if (!(ACK_LIKE.test(bubble) && bubble.split(/\s+/).length <= ACK_MAX_WORDS)) return null; // neither a beat nor a short opener — stop rather than guess
   }
-  return hasHolding && kept.length ? kept.join('\n---\n') : null;
+  return null;
 }
 
 // ── False-capability-refusal screen ─────────────────────────────────────────────────────────────

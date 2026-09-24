@@ -60,27 +60,20 @@ test('a reply that promises nothing is not a promise at all', () => {
   });
 });
 
-// The lane-prose audit: the holding lines the prose TEACHES her to write, checked against the
-// lexicon that has to catch them when nothing is behind them. ALL FOUR examples the delegate tool
-// doc (convo/tools.ts) spells out are here — a loop over a subset is how the first pass of this
-// audit shipped `looking up that one now` and `reading that page now` as lines the guard let
-// through — plus the JSON anchor's own "let me check" form, which convo/shared.ts names as the
-// sentence that runs nothing. Add the example to this loop whenever a doc adds a holding line.
-test('the holding lines the prose teaches are all promises the guard fires on', () => {
-  for (const line of [
-    'looking up that one now',          // delegate doc, example 1
-    'lemme check your inbox for that',  // delegate doc, example 2
-    'digging through that thread now',  // delegate doc, example 3
-    'reading that page now',            // delegate doc, example 4
-    'let me check your inbox for that', // the JSON anchor's form of example 2
-  ]) {
-    assert.equal(detectUnkeptPromise([line], null, 0).unkept, true, line);
-  }
+// The short-wait rows and the thinking sound (unkeptPromise.ts, "The short waits"): a wait whose only
+// reading is "wait for me" is a promise with nothing behind it when no look runs; a bare hum is a
+// reaction and ships as written.
+test('a short wait with nothing behind it is a promise, and a bare thinking sound is not', () => {
+  assert.equal(detectUnkeptPromise(['one sec'], null, 0).unkept, true);
+  assert.equal(detectUnkeptPromise(['give me a sec'], null, 0).unkept, true);
+  assert.equal(detectUnkeptPromise(['hmm'], null, 0).promised, false);
 });
 
-// And the other half of the same audit: the flat, dry lines the new register produces that are NOT
-// promises. Each of these has to ship exactly as written — a corrective re-ask on an honest reply is
-// the failure this lexicon's shortness buys away.
+// The lane-prose audit, the half that outlived the prose's example holding lines (the delegate doc
+// and the JSON anchor now state the beat rule instead of listing lines to copy, so there is no taught
+// line left to loop over): the flat, dry lines the register produces that are NOT promises. Each of
+// these has to ship exactly as written — a corrective re-ask on an honest reply is the failure this
+// lexicon's shortness buys away.
 test('the flat register\'s honest lines are not promises', () => {
   for (const line of [
     'worth checking with a doctor before you rely on this',   // bare "checking" is not a row, on purpose
@@ -323,7 +316,7 @@ test('a promise the reply backed with its own delegation is left alone too', asy
 
 // The per-turn receipt only needs a prompt it can measure — the sizes are not what this pins.
 const TRACE_INPUTS = {
-  prompt: { system: 'SYSTEM PROMPT (persona + this turn)', sections: [], personaChars: 0, anchorChars: 0, craft: [], cacheBreakpoints: [] },
+  prompt: { system: 'SYSTEM PROMPT (persona + this turn)', tail: 'TAIL (this turn)', sections: [], personaChars: 0, anchorChars: 0, craft: [], cacheBreakpoints: [] },
   messages: [{ content: ASK }],
   gates: {
     threads: null,

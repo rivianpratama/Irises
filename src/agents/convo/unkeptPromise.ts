@@ -26,36 +26,32 @@
  * short — every entry is a phrase whose plain reading is "work is happening right now", which is
  * exactly the claim a turn with no tool call and no active run cannot back.
  *
- * FIVE ROWS ADDED FOR THE LANE PROSE, from auditing this array against the holding lines the prose
- * actually teaches. `let me check` / `lemme check` are the gap worth naming: the JSON anchor
- * (convo/shared.ts) and the delegate tool doc (convo/tools.ts) BOTH use "let me check" as their
- * example of the sentence that runs nothing, and the phrase the persona names as the canonical broken
- * promise was not a phrase the guard fired on. `digging through` is the delegate doc's own holding
- * example ("digging through that thread now"), which `digging into` did not reach.
+ * The `let me check` / `lemme check`, `digging through`, `looking up that` and `reading that page`
+ * rows were added when the delegate doc and the JSON anchor still taught example holding lines, and
+ * they stay because she still writes those shapes.
  *
- * `looking up that` and `reading that page` close the other two, and the first pass of this audit
- * missed them. The delegate doc teaches FOUR holding lines; only two of them were phrases the guard
- * fired on — "looking up that one now" and "reading that page now" both came back `promised:false`
- * (verified), because `looking that up` does not reach the other word order and nothing reached the
- * page one at all. So half the holding lines the same prompt teaches were lines this guard would have
- * let through with nothing behind them, which is the exact failure it exists for.
+ * `looking up that` and `reading that page` have a gerund-subject reading that promises nothing —
+ * "looking up that address is free on the county site", "reading that page yourself is faster" — so
+ * each can cost a corrective re-ask on an honest reply. Accepted, and not a new risk: `looking that
+ * up` has fired on "looking that up yourself is free on the county site" since the row was first
+ * written (verified), so the array already took that trade. Severity tips it: a missing row ships a
+ * fabricated in-flight claim, the one failure the persona calls unrecoverable, while a false row
+ * costs one model call on a sentence she rarely writes.
  *
- * Those two rows have a gerund-subject reading that promises nothing — "looking up that address is
- * free on the county site", "reading that page yourself is faster" — so each can cost a corrective
- * re-ask on an honest reply. Accepted, and not a new risk: `looking that up` has fired on "looking
- * that up yourself is free on the county site" since the row was first written (verified), so the
- * array already took that trade for the taught phrases. Severity is what tips it, not frequency — a
- * missing row ships a fabricated in-flight claim, the one failure the persona calls unrecoverable,
- * while a false row costs one model call on a sentence she rarely writes.
+ * The short waits. The delegate doc now asks for a varied beat, and a thinking sound or a short wait
+ * is one of its shapes. The waits whose only reading is "wait for me while I do something" are rows:
+ * `one sec` and `give me a sec`, beside `gimme a sec` and `give me a minute`. The bare thinking
+ * sounds, and the waits that also read as surprise (`hold on`, `wait a sec`), are deliberately left
+ * out: she uses those as reactions in banter, so a row of them would re-ask honest replies all day,
+ * and a corrective re-ask on an honest reply is the worse failure once it stops being rare. A
+ * thinking sound alone promises no specific work, so an undelegated one reads as a reaction and
+ * breaks no promise.
  *
- * What the audit did NOT add, and why, because the plan asked the question: bare `checking` and bare
- * `looking`. Her register is flatter now, so a one-word holding line ("checking.") is a shape she
- * will write — but the matcher below is clause-CONTAINS, not clause-EQUALS, so a row of `checking`
- * would fire on "worth checking with a doctor before you rely on this" and "checking that yourself
- * is the faster route", neither of which promises anything. A one-word entry cannot be restricted to
- * a whole-clause reading without changing the matcher, and a guard that re-asks an honest reply is
- * worse than one that misses a one-word holding line — the delegate doc asks for a SPECIFIC holding
- * line anyway, so the one-word form is off-register in the first place. Multi-word rows only.
+ * Bare `checking` and bare `looking` stay out for the matcher's sake: it matches a phrase anywhere
+ * inside a clause, so a row of `checking` would fire on "worth checking with a doctor before you rely
+ * on this" and "checking that yourself is the faster route", neither of which promises anything. A
+ * one-word entry cannot be restricted to a whole-clause reading without changing the matcher.
+ * Multi-word rows only.
  */
 export const PROMISE_PHRASES = [
   'on it',
@@ -72,6 +68,8 @@ export const PROMISE_PHRASES = [
   'still digging',
   'hang tight',
   'gimme a sec',
+  'give me a sec',
+  'one sec',
   'give me a minute',
   'back in a bit',
 ] as const;

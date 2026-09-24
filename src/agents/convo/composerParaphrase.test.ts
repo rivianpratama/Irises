@@ -19,6 +19,8 @@ import { randomUUID } from 'node:crypto';
 import { processConvoResult, type ChatContext } from './shared.js';
 import { emptyMedia } from '../../webhook/types.js';
 import { markOpsStart, __resetOpsCoordination } from '../../state/opsCoordination.js';
+import { recentHoldingBeats } from '../../state/holdingBeats.js';
+import { HOLDING } from '../fallfirm/floor.js';
 import type { LlmResult, LlmToolCall } from '../../llm/types.js';
 
 // Minimal engine stub (repo DI convention): captures remember() and accepts reminders.
@@ -102,7 +104,7 @@ test('substantive answer + delegate: shipped text drops the un-grounded claim; h
   assert.equal(out.delegatedTask!.holdingText, out.text);
 });
 
-test('pure holding text + delegate: shipped unchanged (whole draft salvages)', async () => {
+test('pure holding text + delegate: her first beat ships as the one holding bubble', async () => {
   const a = baseArgs();
   const res = makeResult(
     ["lemme check", "one sec"],
@@ -111,8 +113,8 @@ test('pure holding text + delegate: shipped unchanged (whole draft salvages)', a
   const out = await processConvoResult({ ...a, res, textToSend: "what's my inspection deadline on 900 Pine?" });
 
   assert.ok(out.delegatedTask);
-  assert.equal(out.text, 'lemme check\n---\none sec', 'a pure-holding reply ships unchanged');
-  assert.equal(out.delegatedTask!.holdingText, 'lemme check\n---\none sec');
+  assert.equal(out.text, 'lemme check', 'her own first beat ships, and only that one');
+  assert.equal(out.delegatedTask!.holdingText, 'lemme check');
 });
 
 test('delegate with NO safe opener: voiceInstant holding path still produces text', async () => {
@@ -132,21 +134,35 @@ test('delegate with NO safe opener: voiceInstant holding path still produces tex
   assert.equal(out.delegatedTask!.holdingText, out.text);
 });
 
-test('delegate with EMPTY bubbles: voiceInstant holding path produces text', async () => {
+// Shape, never a pinned string: the beat is drawn from a varied pool (a hum, a wait, a line naming
+// the thing), so what holds is that ONE non-empty beat ships and it joins her recent beats.
+test('delegate with EMPTY bubbles: voiceInstant holding path produces one beat, and records it', async () => {
   const a = baseArgs();
   const res = makeResult([], [delegate('comps on 55 Birch')]);
   const out = await processConvoResult({ ...a, res, textToSend: 'pull comps on 55 Birch' });
 
   assert.ok(out.delegatedTask);
   assert.ok(out.text && out.text.trim().length > 0, 'never silent on a bare delegation');
+  assert.doesNotMatch(out.text!, /\n---\n/, 'the holding beat is a single bubble');
   assert.equal(out.delegatedTask!.holdingText, out.text);
+  // The record is fire-and-forget; let it land.
+  for (let i = 0; i < 5 && !(await recentHoldingBeats(a.chatId)).length; i++) await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(await recentHoldingBeats(a.chatId), [out.text]);
 });
 
-test('multi-intent (pleasantry + delegate): the ack opener AND the holding line both ship, no data leaks', async () => {
+test('the fallback beat steers off her recent beats', async () => {
   const a = baseArgs();
-  // "you're welcome!" is a legit ack opener leading into a real holding bubble — Irises's own words
-  // ship (the 2026-07-06 Fallfirm-override fix: model text is kept whenever safe, Fallfirm only
-  // fills genuine gaps). The digits ("55 Birch") are the user's own words, so they're a safe echo.
+  const recentBeats = HOLDING.web_research!.slice(0, -1);
+  const out = await processConvoResult({ ...a, res: makeResult([], [delegate('comps on 55 Birch')]), textToSend: 'pull comps on 55 Birch', recentBeats });
+  assert.equal(out.text, HOLDING.web_research!.at(-1), 'the one line she has not sent lately');
+});
+
+test('multi-intent (pleasantry + delegate): her own holding line ships as the one beat, no data leaks', async () => {
+  const a = baseArgs();
+  // "you're welcome!" is an ack opener leading into a real holding bubble. The salvage keeps ONE beat,
+  // so the opener is stepped over, and her own holding line ships (the 2026-07-06 Fallfirm-override
+  // fix: model text is kept whenever safe, Fallfirm only fills genuine gaps). The digits ("55 Birch")
+  // are the user's own words, so they're a safe echo.
   const res = makeResult(
     ["you're welcome!", "pulling comps on 55 Birch now"],
     [delegate('comps on 55 Birch')],
@@ -154,8 +170,7 @@ test('multi-intent (pleasantry + delegate): the ack opener AND the holding line 
   const out = await processConvoResult({ ...a, res, textToSend: 'thanks, also pull comps on 55 Birch' });
 
   assert.ok(out.delegatedTask);
-  assert.match(out.text!, /you'?re welcome/i, "Irises's own pleasantry survives");
-  assert.match(out.text!, /pulling comps on 55 Birch now/i, 'her own holding line ships, not a generated one');
+  assert.equal(out.text, 'pulling comps on 55 Birch now', 'her own holding line ships, not a generated one');
   assert.equal(out.delegatedTask!.holdingText, out.text);
 });
 
@@ -171,8 +186,8 @@ test("persona-example holding text with the user's own address digits ships verb
   const out = await processConvoResult({ ...a, res, textToSend: 'pull comps on 412 Maple' });
 
   assert.ok(out.delegatedTask);
-  assert.equal(out.text, "okay that's a real question\n---\npulling the comps on 412 Maple now",
-    "Convo's own reply ships — Fallfirm never overrides a safe model-written holding text");
+  assert.equal(out.text, 'pulling the comps on 412 Maple now',
+    "Convo's own beat ships — Fallfirm never overrides a safe model-written holding text");
   assert.equal(out.delegatedTask!.holdingText, out.text);
 });
 
@@ -200,8 +215,9 @@ test('schedule + delegate: the reminder confirmation survives (salvage must not 
   installStubEngine();
   t.after(() => resetEngineBackendCache(undefined));
   // A turn that BOTH schedules and delegates: the model writes the reminder confirmation AND a holding
-  // line. The reminder must never end up silently set: the draft is salvaged to its holding half like
-  // any delegation, and the schedule's result is voiced after it, so the confirmation still ships.
+  // line. The reminder must never end up silently set: the draft is salvaged to its one beat like any
+  // delegation (her own "i'll remind you" goes with the rest of the draft), and the schedule's result
+  // is voiced after it, from what actually ran, so a confirmation still ships.
   const a = baseArgs();
   const fireAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   const res = makeResult(
@@ -211,6 +227,8 @@ test('schedule + delegate: the reminder confirmation survives (salvage must not 
   const out = await processConvoResult({ ...a, res, textToSend: 'remind me about 55 Birch tomorrow 9am and pull comps on it' });
 
   assert.ok(out.delegatedTask, 'the lookup was still delegated');
-  assert.match(out.text!, /9am/i, 'the reminder confirmation was not swallowed by the delegation holding line');
-  assert.match(out.text!, /pulling comps/i, 'the holding line for the lookup also shipped');
+  const bubbles = out.text!.split('\n---\n');
+  assert.equal(bubbles[0], 'pulling comps on 55 Birch now', 'the holding line for the lookup leads');
+  assert.ok(bubbles.length > 1 && bubbles.slice(1).join(' ').trim().length > 0,
+    'the reminder confirmation was not swallowed by the delegation holding line');
 });

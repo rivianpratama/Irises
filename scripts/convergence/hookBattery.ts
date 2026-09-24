@@ -431,9 +431,11 @@ export function realOffer(d: MomentOfferDetail | null): Required<Omit<MomentOffe
   };
 }
 
-/** `idle:classify` (agents/convo/idleClassify.ts): layer 3's reading, one per turn that reached it,
- *  cache hit or lane call. Names and numbers only — the message itself never enters the ring. */
-export interface IdleClassifyDetail { verdict: IdleVerdict; cached: boolean; chars: number; failed?: string }
+/** `idle:classify` (agents/convo/idleClassify.ts): layer 3's reading, one per turn that reached it —
+ *  a cache hit (`cached`), a wait on the call the inbound door started while the burst settled
+ *  (`joined`), or a lane call of its own (neither). Names and numbers only — the message itself never
+ *  enters the ring. */
+export interface IdleClassifyDetail { verdict: IdleVerdict; cached: boolean; joined?: boolean; chars: number; failed?: string }
 
 // ── the evidence one probe item is scored on ────────────────────────────────────────────────────
 
@@ -646,8 +648,8 @@ export const CHECKS: Record<CheckId, HookCheck> = {
       }
       // THE SECOND EXEMPTION, and the one that would otherwise fail a healthy engine on every probe
       // aimed at work. `delegate_to_ops` tells her, in its own description (agents/convo/tools.ts),
-      // that she will NOT get the answer this turn and so MUST write a short flat holding text now —
-      // "looking up that one now". Measured against the judge's `leaf` definition ("carries nothing —
+      // that she will NOT get the answer this turn and so MUST send one short holding beat now, every
+      // time. Measured against the judge's `leaf` definition ("carries nothing —
       // no answer, no read, no question that moves anything") by a judge told to be literal, that
       // mandated line is a textbook hit. The receipt settles it without a second call: `toolCalls` is
       // the names of the tools the turn actually ran, so a reply that shipped BESIDE real work is not
@@ -861,7 +863,7 @@ export const CHECKS: Record<CheckId, HookCheck> = {
     run(ev) {
       if (!ev.select) return unscored(`no ${HOOKS_SELECT_LABEL} receipt for this chat (flag off? old binary?)`);
       const said = ev.classify
-        ? `layer 3 answered '${ev.classify.verdict}'${ev.classify.failed ? ` (failed: ${ev.classify.failed})` : ''}, cached ${ev.classify.cached}`
+        ? `layer 3 answered '${ev.classify.verdict}'${ev.classify.failed ? ` (failed: ${ev.classify.failed})` : ''}, cached ${ev.classify.cached}${ev.classify.joined ? ', joined the settle-window call' : ''}`
         : `no ${IDLE_CLASSIFY_LABEL} receipt at all`;
       if (ev.select.reason === NOT_IDLE) {
         return fail(`the gate read this stall as WORK (layer '${ev.select.idleLayer}'; ${said}) — a lane that `
@@ -1633,7 +1635,7 @@ export const SCRIPT_CHECKS: Record<ScriptCheckId, ScriptCheck> = {
       const readable = rest.filter(r => r.trace !== null);
       // The FOURTH partition, and the same argument as `leaf_reply`'s tool exemption: three of the
       // script's task turns (5 'deploy prod', 9 the container, 25 'run the tests') are written to
-      // make her delegate, and `delegate_to_ops` requires a flat holding line on the turn it is
+      // make her delegate, and `delegate_to_ops` requires a short holding beat on the turn it is
       // called — which a literal judge reads as a leaf every time. `toolCalls` is the turn's own
       // record of the work it did, so these are counted and printed rather than held to the rule.
       const worked = readable.filter(r => r.trace!.outcome.toolCalls.length);

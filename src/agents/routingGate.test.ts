@@ -104,7 +104,7 @@ test('the path screen keeps its precision: slashes in prose are not paths', () =
   }
 });
 
-test("a forced delegation keeps the draft's human holding opener, drops the fabricated tail", () => {
+test("a forced delegation keeps the draft's human holding beat, drops the fabricated tail", () => {
   // The Martinez incident, as bubbles: two genuine holding lines, then an invented result + re-aim.
   const draft = [
     'lemme check your records for martinez',
@@ -112,7 +112,7 @@ test("a forced delegation keeps the draft's human holding opener, drops the fabr
     'pulled your inbox for martinez threads, nothing surfaced',
     'check a different spelling or do you have a property on record for them?',
   ].join('\n---\n');
-  assert.equal(salvageHoldingText(draft), 'lemme check your records for martinez\n---\ngive me one sec');
+  assert.equal(salvageHoldingText(draft), 'lemme check your records for martinez');
 });
 
 test('salvage stops at the first bubble that asserts an outcome, even bubble one', () => {
@@ -127,9 +127,9 @@ test('salvage is conservative: ungrounded figures, questions, and non-holding pr
   assert.equal(salvageHoldingText(''), null);
 });
 
-test('salvage caps at three bubbles (the persona 1–3 holding range) and keeps the legacy wire format', () => {
+test('salvage keeps exactly one beat, the first that holds the line', () => {
   const draft = ['pulling that up for you', 'hang on', 'checking one more place', 'lemme look'].join('\n---\n');
-  assert.equal(salvageHoldingText(draft), 'pulling that up for you\n---\nhang on\n---\nchecking one more place');
+  assert.equal(salvageHoldingText(draft), 'pulling that up for you');
 });
 
 // ── The Fallfirm-override regression (2026-07-06): Convo's persona-compliant holding texts MUST
@@ -150,15 +150,11 @@ test("a figure the user themselves said is an echo, not a fabrication — the pe
   assert.equal(salvageHoldingText('pulling the comps on 412 Maple now'), null);
 });
 
-// Not a quote of the persona's own holding example anymore: that one is emoji-free and every
-// bubble holds ("on it" / "digging up stability shoes near that price" / "back in a bit with short
-// list", the worked exchange under Context.md's "CURIOSITY FIRST" section). This fixture keeps the
-// harder shape on purpose — an ACK opener that promises no look, plus a trailing emoji the persona
-// now forbids outright, a slip off the wire the salvager has to carry through rather than reject:
-// salvage reads promises, not style.
-test('a 3-bubble holding draft (ack opener + holding + sign-off beat) survives whole', () => {
+// The harder shape on purpose: an ACK opener that promises no look, the beat, then a sign-off with
+// a trailing emoji. The opener is stepped over and the sign-off dropped — the one beat ships.
+test('a 3-bubble holding draft (ack opener + holding + sign-off) salvages to its one beat', () => {
   const draft = ["okay that's a real question", 'digging through the thread now', 'back in a bit 🙂'].join('\n---\n');
-  assert.equal(salvageHoldingText(draft), draft);
+  assert.equal(salvageHoldingText(draft), 'digging through the thread now');
 });
 
 test('reassurance idioms from the persona ("scanning", "hang tight", "almost there", "on it") are holding-like', () => {
@@ -167,9 +163,31 @@ test('reassurance idioms from the persona ("scanning", "hang tight", "almost the
   }
 });
 
-test('an ack alone never salvages — it promises no look, so the voiced fallback takes over', () => {
+test('a longer ack alone never salvages — it reacts but holds no look, so the voiced fallback takes over', () => {
   assert.equal(salvageHoldingText("okay that's a real question"), null);
   assert.equal(salvageHoldingText('oof, the martinez file again'), null);
+});
+
+// A bare hum is a holding beat of its own: the prompts teach a thinking sound as one of the three
+// beat shapes, so the salvager must let it ship instead of swapping in a generated line. Only a
+// bubble that is NOTHING but sounds/nods counts alone; a short ack that says more is where a result
+// rides in ("ok, done"), so it is never the beat.
+test('a bare hum or nod is a beat on its own; a claim after it is still cut', () => {
+  for (const beat of ['hmm', 'mmm', 'ok bet', 'hmm 🤔', 'hmm...']) {
+    assert.equal(salvageHoldingText(beat), beat, `expected to survive: ${beat}`);
+  }
+  assert.equal(salvageHoldingText('hmmm\n---\nthe answer is 42'), 'hmmm');
+  assert.equal(salvageHoldingText('hmm\n---\nfound it, the owner is the delgado trust'), 'hmm');
+  // A claim-bearing bubble is dropped even when it opens with an ack.
+  assert.equal(salvageHoldingText('yeah, checked and there is nothing there'), null);
+});
+
+test('a short claim dressed as an ack is never the beat', () => {
+  for (const claim of ['ok, done', 'yeah it closed', 'yes it is', 'got it, booked', 'yep, gone']) {
+    assert.equal(salvageHoldingText(claim), null, `expected NOT a beat: ${claim}`);
+  }
+  // Stepped over as an opener, and never shipped in front of the beat behind it.
+  assert.equal(salvageHoldingText('ok, done\n---\nchecking the rest now'), 'checking the rest now');
 });
 
 test('a lowercase assertion cannot sneak in as an ack opener', () => {
@@ -177,9 +195,9 @@ test('a lowercase assertion cannot sneak in as an ack opener', () => {
   assert.equal(salvageHoldingText('the owner is the delgado trust\n---\nchecking the exact spelling now'), null);
 });
 
-test('an ack opener followed by a real holding bubble survives (pleasantry no longer lost)', () => {
+test('an ack opener followed by a real holding bubble salvages to the holding bubble alone', () => {
   const draft = ["you're welcome!", 'pulling comps on 55 Birch now'].join('\n---\n');
-  assert.equal(salvageHoldingText(draft, 'pull comps on 55 Birch'), draft);
+  assert.equal(salvageHoldingText(draft, 'pull comps on 55 Birch'), 'pulling comps on 55 Birch now');
 });
 
 // ── The false-capability-refusal regression (2026-08-23, E2E retest, weak model) ─────────────────

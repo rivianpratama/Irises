@@ -200,7 +200,34 @@
 // for the same rewrite in the same commit (3,710 → 3,950 for 3,681 → 3,907). A and C did not move:
 // neither fixture renders the section.
 //
-// Every regeneration was produced by dumping `stable(afterPersona(...))` out of the live assembler —
+// The EIGHTEENTH moved bytes and changed none, in all three blocks: the prompt is two messages now.
+// The system message keeps the persona and the sections stable for the whole chat
+// (promptSections.ts SYSTEM_SECTION_NAMES: tool docs, capability, model map, group), and every other
+// section rides a tail message the client places after the chat history, so the prefix cache can
+// reach that history at last. The goldens are now the READING ORDER — the system's block, `\n\n`,
+// then the tail (see `readingOrder`) — and a line-level diff against the previous literals shows
+// exactly two kinds of change and nothing else: a section that moved (fixture A's
+// `<craft:send_order>` from behind the tool docs to the head of the tail; fixture B's
+// `<model-map>` and `## Group chat` up into the system block, B's craft page left behind at the head
+// of the tail; fixture C's `<model-map>` alone up into the system block), and the one seam between
+// the halves, `</prompt>` then `<prompt>`, +19 characters apiece (A 2,389 → 2,408, B 5,815 → 5,834,
+// C 8,605 → 8,624). No section's text moved by a byte, and the two anchor literals are unchanged.
+//
+// The NINETEENTH is the holding beat taught as a rule instead of by sample lines, three rewrites and
+// nothing else: the tool-docs header's promise sentence stops quoting a sample check (A 2,408 →
+// 2,404); the ack-while-running block in `active_ops` stops quoting a sample holding line and a
+// sample still-on-it beat and states the beat instead, fresh shape and wording, unlike the recent
+// beats, no step the status does not show (B 5,834 → 5,980); and GOLDEN_JSON_ANCHOR's delegation
+// example carries a placeholder `…` bubble with the beat rule beside it in place of a stock holding
+// line (2,959 → 3,012). C did not move. The new `recent_beats` section renders in none of the three
+// (GOLDEN_EXEMPT below says where it is pinned instead).
+//
+// The TWENTIETH is the same rule's review pass, fixture B only (5,980 → 5,891): the how's-it-going paragraph in
+// `active_ops` drops its two quoted sample replies, one after "roughly how long it's been" and one
+// after "own it lightly", and keeps every other word. A and C did not move.
+//
+// Every regeneration was produced by dumping `stable(afterPersona(...))` (since the eighteenth,
+// `stable(readingOrder(...))`) out of the live assembler —
 // under TZ=UTC, or the frozen clock reads as a different time of day and the timing section moves
 // with it — and splicing it into the literal programmatically, never typed by hand, then diffed
 // opcode by opcode (difflib) against the literal it replaced, which is where those insert-counts
@@ -213,7 +240,7 @@ process.env.TZ = 'UTC';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSystemPrompt, buildSystemPromptSections } from './shared.js';
-import { SECTION_IDS, DYN_SECTION_IDS, sectionsTotalChars, PROMPT_WRAPPER_OPEN, type SectionId } from './promptSections.js';
+import { SECTION_IDS, DYN_SECTION_IDS, SYSTEM_SECTION_NAMES, sectionsChars, isSystemSection, type SectionId } from './promptSections.js';
 import { CRAFT_MODULES, craftModuleText, convoPersona } from './personaModules.js';
 import { renderDriftAnchor, DRIFT_ANCHOR_HEADING, DRIFT_LONG_WINDOW_CHARS } from '../../persona/policy.js';
 import { BUBBLE_LAW_MAX } from '../../pipeline/bubbleJson.js';
@@ -233,14 +260,17 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
 // conversation-timing arithmetic, `Date.now()` for the active-ops elapsed labels — so the assembled
 // prompt is only reproducible against a stored golden with the clock pinned. Pinned by hand rather
 // than with node:test's MockTimers, which prints an ExperimentalWarning (this suite runs
-// warning-free). The goldens below were captured under this exact instant.
+// warning-free). The goldens below were captured under this exact instant. `clockMs` is the one
+// thing that may move it, and only the stability test below does, restoring it before it returns:
+// the property that test pins is exactly "a later clock changes the tail and nothing else".
 const FROZEN_MS = Date.UTC(2026, 0, 6, 2, 0, 0);
+let clockMs = FROZEN_MS;
 const RealDate = Date;
 class FrozenDate extends RealDate {
   constructor(...args: unknown[]) {
-    super(...((args.length ? args : [FROZEN_MS]) as unknown as [number]));
+    super(...((args.length ? args : [clockMs]) as unknown as [number]));
   }
-  static now(): number { return FROZEN_MS; }
+  static now(): number { return clockMs; }
 }
 globalThis.Date = FrozenDate as unknown as DateConstructor;
 
@@ -335,7 +365,7 @@ const FIXTURES: Fixture[] = [
     ],
     golden: () => GOLDEN_BLOCK_A + GOLDEN_DRIFT_TASK_SHORT + GOLDEN_JSON_ANCHOR,
     sections: [
-      'persona', 'tool_docs', 'craft_modules', 'capability', 'model_map', 'update_status',
+      'persona', 'tool_docs', 'capability', 'model_map', 'craft_modules', 'update_status',
       'context_block', 'current_time', 'conversation_timing', 'reply_order', 'behavior_anchor',
       'json_anchor',
     ],
@@ -358,7 +388,7 @@ const FIXTURES: Fixture[] = [
     ],
     golden: () => GOLDEN_BLOCK_B + GOLDEN_DRIFT_TASK_SHORT + GOLDEN_JSON_ANCHOR,
     sections: [
-      'persona', 'craft_modules', 'model_map', 'update_status', 'name_nudge', 'active_ops', 'group',
+      'persona', 'model_map', 'group', 'craft_modules', 'update_status', 'name_nudge', 'active_ops',
       'burst', 'current_time', 'conversation_timing', 'behavior_anchor', 'json_anchor',
     ],
   },
@@ -380,7 +410,7 @@ const FIXTURES: Fixture[] = [
     ],
     golden: () => GOLDEN_BLOCK_C + GOLDEN_DRIFT_TASK_SHORT + GOLDEN_JSON_ANCHOR,
     sections: [
-      'persona', 'craft_modules', 'model_map', 'update_status', 'intro_weave', 'tapped_reply',
+      'persona', 'model_map', 'craft_modules', 'update_status', 'intro_weave', 'tapped_reply',
       'current_time', 'weather', 'status_contract', 'thread', 'conversation_timing', 'extra',
       'behavior_anchor', 'json_anchor',
     ],
@@ -421,17 +451,26 @@ function afterPersona(system: string): string {
   return system.slice(head.length);
 }
 
+/** The whole assembly behind the persona head, in the order the model reads it: the system
+ *  message's block, then the tail message — joined by `\n\n` where the chat history sits on the
+ *  wire (convo/client.ts). The goldens are this string, so a section that moves from one message to
+ *  the other shows up in them as a move and nothing else. */
+function readingOrder(built: ReturnType<typeof buildSystemPromptSections>): string {
+  return `${afterPersona(built.system)}\n\n${built.tail}`;
+}
+
 // ── byte identity ────────────────────────────────────────────────────────────
 
-test('buildSystemPrompt returns buildSystemPromptSections().system, byte for byte', () => {
+test('buildSystemPrompt returns the system message and then the tail, byte for byte', () => {
   for (const f of FIXTURES) {
-    assert.equal(buildSystemPrompt(...f.args), buildSystemPromptSections(...f.args).system, f.name);
+    const { system, tail } = buildSystemPromptSections(...f.args);
+    assert.equal(buildSystemPrompt(...f.args), `${system}\n\n${tail}`, f.name);
   }
 });
 
 test('the assembled prompt is byte-identical to the pre-change assembler', () => {
   for (const f of FIXTURES) {
-    const rest = afterPersona(buildSystemPromptSections(...f.args).system);
+    const rest = readingOrder(buildSystemPromptSections(...f.args));
     const blanked = stable(rest);
     assert.ok(blanked.includes('<model-map>'), `${f.name}: the model-map section was found and blanked`);
     assert.ok(blanked.includes('<update-status>'), `${f.name}: the update-status section was found and blanked`);
@@ -443,19 +482,54 @@ test('the assembled prompt is byte-identical to the pre-change assembler', () =>
 
 test('the reported sections account for every character of the assembled prompt', () => {
   for (const f of FIXTURES) {
-    const { system, sections } = buildSystemPromptSections(...f.args);
-    assert.equal(sectionsTotalChars(sections), system.length, f.name);
+    const { system, tail, sections } = buildSystemPromptSections(...f.args);
+    assert.deepEqual(sectionsChars(sections), { system: system.length, tail: tail.length }, f.name);
   }
 });
 
 test('the arithmetic holds for the barest possible build (nothing per-turn to say)', () => {
   // Only the three unconditional dyn sections render, so this is the floor case for the join count —
   // and the case where an off-by-one in `max(0, n - 1)` would show up.
-  const { system, sections } = buildSystemPromptSections(undefined, '');
+  const { system, tail, sections } = buildSystemPromptSections(undefined, '');
   assert.deepEqual(sections.map(s => s.name), [
     'persona', 'model_map', 'update_status', 'current_time', 'behavior_anchor', 'json_anchor',
   ]);
-  assert.equal(sectionsTotalChars(sections), system.length);
+  assert.deepEqual(sectionsChars(sections), { system: system.length, tail: tail.length });
+});
+
+// ── the stable system and the per-turn tail ──────────────────────────────────
+// The reason the prompt is two messages. Everything ahead of the chat history is served from the
+// provider's prefix cache only if it is the same bytes on the next turn, and the old single system
+// string never was: the clock to the millisecond, the "N minutes ago" labels and the craft gates all
+// lived inside it, so no turn ever read a byte of history back from the cache. The system message is
+// now the persona plus what is stable for this CHAT, and every section that can move between two
+// turns of one chat rides the tail message placed after history. So the pin is the property itself:
+// the same chat, a later clock, a longer thread and a different message build the SAME system.
+
+test('two turns of one chat build the same system message; only the tail moves', () => {
+  const a = buildSystemPromptSections(...FIXTURES[0].args);
+  const later = [...FIXTURES[0].args] as BuildArgs;
+  later[5] = [
+    ...HISTORY_1TO1,
+    { role: 'user', content: 'so are they coming or not', handle: '+15550001111', at: FROZEN_MS },
+    { role: 'assistant', content: 'thursday, per the supplier', at: FROZEN_MS + 60_000 },
+  ];
+  later[6] = 'ok and the maples?';
+  clockMs = FROZEN_MS + 7 * 60_000 + 431;
+  let b: ReturnType<typeof buildSystemPromptSections>;
+  try {
+    b = buildSystemPromptSections(...later);
+  } finally {
+    clockMs = FROZEN_MS;
+  }
+  assert.equal(a.system, b.system, 'the system message is byte-stable across turns of one chat');
+  assert.notEqual(a.tail, b.tail, 'the per-turn sections moved, and they moved in the tail');
+  // The envelope contract is still the last thing she reads before their message: the tail ends on
+  // it, and no other heading comes after its own.
+  for (const built of [a, b]) {
+    assert.ok(built.tail.endsWith(GOLDEN_JSON_ANCHOR.slice(2)), 'the tail ends on the JSON anchor');
+    assert.equal(built.tail.lastIndexOf('\n## '), built.tail.lastIndexOf('\n## Last thing before you type'));
+  }
 });
 
 // ── the names themselves ─────────────────────────────────────────────────────
@@ -492,8 +566,12 @@ test('every reported section is a known id, named once, in assembly order', () =
  *      none of these three fixtures do: adding one would put a whole reminders list — data, not
  *      prose — into a golden whose job is the per-turn assembly, the same argument as the craft pages
  *      above. Its ROW FORMAT and its tag are pinned in liveReminders.test.ts; its PUSH SITE and its
- *      SIZE at the render cap are measured by convo/promptBudget.test.ts's media fixture (Task 17). */
-const GOLDEN_EXEMPT: ReadonlySet<string> = new Set(['turn_focus', 'hooks', 'thesis', 'live_reminders']);
+ *      SIZE at the render cap are measured by convo/promptBudget.test.ts's media fixture (Task 17).
+ *    • recent_beats — pushed only when the caller hands in a LiveState carrying holding beats. Its
+ *      text is her own sent bubbles rather than repo prose; its PUSH SITE, its tail placement right
+ *      behind `active_ops` and its delegate_to_ops gate are pinned by the test just below, and its
+ *      SIZE at a full history by convo/promptBudget.test.ts's media fixture. */
+const GOLDEN_EXEMPT: ReadonlySet<string> = new Set(['turn_focus', 'hooks', 'thesis', 'live_reminders', 'recent_beats']);
 
 test('the fixtures between them exercise every dyn section — no push site left unnamed', () => {
   const seen = new Set(FIXTURES.flatMap(f => buildSystemPromptSections(...f.args).sections.map(s => s.name)));
@@ -504,6 +582,29 @@ test('the fixtures between them exercise every dyn section — no push site left
     }
     assert.ok(seen.has(id), `no fixture renders the ${id} section — its push site would go unverified`);
   }
+});
+
+test('recent_beats rides the tail behind active_ops on a turn that can delegate, and only when she has beats', () => {
+  // Fixture A carries the delegate tool; hand it running research and a beat history (oldest first,
+  // as state/holdingBeats.ts returns it) and the section lands in the tail, newest beat first.
+  const withBeats = [...FIXTURES[0].args] as BuildArgs;
+  withBeats[2] = ACTIVE_OPS;
+  withBeats[17] = { holdingBeats: ['older beat', 'newer beat'] };
+  const built = buildSystemPromptSections(...withBeats);
+  const names = built.sections.map(s => s.name);
+  assert.equal(names[names.indexOf('active_ops') + 1], 'recent_beats', 'right behind active_ops');
+  assert.ok(built.tail.includes('## The beats you sent most recently'), 'in the tail');
+  assert.ok(!built.system.includes('## The beats you sent most recently'), 'never in the system message');
+  assert.ok(built.tail.indexOf('- newer beat') < built.tail.indexOf('- older beat'), 'newest first');
+
+  // No beats yet: no section at all.
+  withBeats[17] = { holdingBeats: [] };
+  assert.ok(!buildSystemPromptSections(...withBeats).sections.some(s => s.name === 'recent_beats'), 'empty history renders nothing');
+
+  // Beats, but a tool list without delegate_to_ops (fixture B has none): nothing to steer.
+  const noDelegate = [...FIXTURES[1].args] as BuildArgs;
+  noDelegate[17] = { holdingBeats: ['older beat'] };
+  assert.ok(!buildSystemPromptSections(...noDelegate).sections.some(s => s.name === 'recent_beats'), 'no delegate tool renders nothing');
 });
 
 test('every reported section carries a real size, and the frame sections match their sources', () => {
@@ -532,8 +633,8 @@ test('every reported section carries a real size, and the frame sections match t
 // change, the golden above still passes byte-for-byte, which is the proof the refactor was inert.
 
 test("the anchor's bubble law is interpolated from the pipeline constants", () => {
-  const { system } = buildSystemPromptSections(...FIXTURES[0].args);
-  const anchor = system.slice(system.lastIndexOf('## Last thing before you type'));
+  const { tail } = buildSystemPromptSections(...FIXTURES[0].args);
+  const anchor = tail.slice(tail.lastIndexOf('## Last thing before you type'));
   assert.ok(
     anchor.includes(`target ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, hard ceiling ${MAX_BUBBLE_WORDS}, never exceeded, at most ${BUBBLE_LAW_MAX} items per reply`),
     'the law sentence reads off the constants',
@@ -552,41 +653,31 @@ test("the anchor's bubble law is interpolated from the pipeline constants", () =
 // ── the cache breakpoints ────────────────────────────────────────────────────
 // The offsets the Anthropic lane splits the system string at (llm/callLLM.ts buildAnthropicSystem).
 // Derived from the section list this same build reports — nothing is re-measured and no text is
-// re-joined — so the only thing worth testing is that the arithmetic lands EXACTLY on a section
-// boundary in the real string.
+// re-joined — so the only thing worth testing is that the arithmetic lands EXACTLY on the boundaries
+// in the real string.
 
-test('the breakpoints are the persona head and the end of the stable-within-a-chat slot', () => {
-  const f = FIXTURES[0];   // tool docs + a craft page, then the capability line
-  const { system, sections, cacheBreakpoints, personaChars } = buildSystemPromptSections(...f.args);
-  const by = (name: SectionId) => sections.find(s => s.name === name)?.chars ?? 0;
-  assert.equal(cacheBreakpoints.length, 2);
-  assert.equal(cacheBreakpoints[0], personaChars, 'breakpoint 1 is where it has always been');
-  // Stated as the arithmetic AND checked against the bytes: the offset must land on the `\n\n`
-  // between the craft pages and the next section, so the cached span is whole sections.
-  assert.equal(
-    cacheBreakpoints[1],
-    personaChars + 2 + PROMPT_WRAPPER_OPEN + by('tool_docs') + 2 + by('craft_modules'),
-  );
-  assert.equal(system.slice(cacheBreakpoints[1], cacheBreakpoints[1] + 2), '\n\n');
-  assert.ok(system.slice(cacheBreakpoints[1] + 2).startsWith('Your deep look can right now'), 'the capability line follows');
-  assert.ok(system.slice(0, cacheBreakpoints[1]).endsWith(craftModuleText('send_order')), 'the slot ends on the craft page');
-  assert.ok(cacheBreakpoints[1] > cacheBreakpoints[0], 'ascending, so both are usable');
+test('the breakpoints are the persona head and the end of the system message', () => {
+  for (const f of FIXTURES) {
+    const { system, cacheBreakpoints, personaChars } = buildSystemPromptSections(...f.args);
+    assert.deepEqual(cacheBreakpoints, [personaChars, system.length], f.name);
+    assert.equal(system.slice(0, cacheBreakpoints[0]), convoPersona(), `${f.name}: breakpoint 1 is where it has always been`);
+    assert.ok(cacheBreakpoints[1] > cacheBreakpoints[0], `${f.name}: ascending, so both are usable`);
+  }
+  // The barest build still has a system block to cache: the model map is unconditional.
+  const bare = buildSystemPromptSections(undefined, '');
+  assert.deepEqual(bare.cacheBreakpoints, [bare.personaChars, bare.system.length]);
 });
 
-test('a turn with no tool docs still caches the craft slot; a turn with neither declares one breakpoint', () => {
-  // Fixture B carries no tools (a group turn built without them) but does load a craft page, so the
-  // slot is that page alone and the offset lands on the model-map section that follows it.
-  const b = buildSystemPromptSections(...FIXTURES[1].args);
-  const craftChars = b.sections.find(s => s.name === 'craft_modules')?.chars ?? 0;
-  assert.ok(craftChars > 0, 'the group fixture loads the burst-quoting page');
-  assert.equal(b.cacheBreakpoints.length, 2);
-  assert.equal(b.cacheBreakpoints[1], b.personaChars + 2 + PROMPT_WRAPPER_OPEN + craftChars);
-  assert.ok(b.system.slice(b.cacheBreakpoints[1] + 2).startsWith('## What you run on'));
-
-  // The barest build: no tools, no craft page. There is no stable slot to cache, so the request
-  // keeps exactly the one breakpoint it had before this existed.
-  const bare = buildSystemPromptSections(undefined, '');
-  assert.deepEqual(bare.cacheBreakpoints, [bare.personaChars]);
+test('the system message holds only the chat-stable sections; everything else is in the tail', () => {
+  for (const f of FIXTURES) {
+    const built = buildSystemPromptSections(...f.args);
+    const inSystem = built.sections.filter(s => isSystemSection(s.name)).map(s => s.name);
+    assert.ok(inSystem.every(n => n === 'persona' || SYSTEM_SECTION_NAMES.has(n)), f.name);
+    // …and the reading order is system first, then tail: no tail section sorts ahead of a system one.
+    const firstTail = built.sections.findIndex(s => !isSystemSection(s.name));
+    assert.ok(built.sections.slice(firstTail).every(s => !isSystemSection(s.name)), `${f.name}: the halves do not interleave`);
+    assert.ok(built.tail.startsWith('<prompt>\n'), `${f.name}: the tail opens on its own block`);
+  }
 });
 
 // ── the drift anchor's two inputs ────────────────────────────────────────────
@@ -598,12 +689,12 @@ test('a turn with no tool docs still caches the craft slot; a turn with neither 
 // reads the anchor back out of the assembled string and compares it to the renderer called with the
 // window measured independently here.
 
-/** The `behavior_anchor` section, sliced out of the assembled prompt by its own reported size. */
+/** The `behavior_anchor` section, sliced out of the tail by its own reported size. */
 function anchorOf(built: ReturnType<typeof buildSystemPromptSections>): string {
   const chars = built.sections.find(s => s.name === 'behavior_anchor')?.chars ?? 0;
-  const at = built.system.lastIndexOf(DRIFT_ANCHOR_HEADING);
+  const at = built.tail.lastIndexOf(DRIFT_ANCHOR_HEADING);
   assert.ok(chars > 0 && at > 0, 'the anchor rendered and was measured');
-  return built.system.slice(at, at + chars);
+  return built.tail.slice(at, at + chars);
 }
 
 test('the anchor reads its window band off the history rows the build was handed', () => {
@@ -645,8 +736,8 @@ test('the anchor reads its mode off the hook directive — and the directive buy
   // …and those two are the WHOLE bill. Strip the anchor and the section (with the `\n\n` join it
   // pays to its neighbour) and the remaining bytes are the task turn's, exactly.
   assert.equal(
-    stable(afterPersona(built.system)).replace(anchorOf(built), '').replace(`\n\n${hooksBlock}`, ''),
-    stable(afterPersona(buildSystemPromptSections(...FIXTURES[0].args).system)).replace(GOLDEN_DRIFT_TASK_SHORT.slice(2), ''),
+    stable(readingOrder(built)).replace(anchorOf(built), '').replace(`\n\n${hooksBlock}`, ''),
+    stable(readingOrder(buildSystemPromptSections(...FIXTURES[0].args))).replace(GOLDEN_DRIFT_TASK_SHORT.slice(2), ''),
   );
 });
 
@@ -705,14 +796,14 @@ const GOLDEN_DRIFT_TASK_SHORT = "\n\n## Still the same Irises, this far down\nEv
 
 /** The trailing JSON envelope contract — the same bytes on every turn, whatever the anchor above it
  *  said. Unchanged by the anchor split. */
-const GOLDEN_JSON_ANCHOR = "\n\n## Last thing before you type\nYou reply with ONE JSON object and nothing else: `{\"confidence_level\":85,\"tool_calls\":null,\"bubbles\":[{\"text\":\"...\",\"re\":null}],\"status\":{...}}`. Your entire reply must be valid JSON — one object, in that field order, nothing before or after it. EVERY reply has all four fields, no exceptions.\n\nSet `\"confidence_level\"` FIRST, before anything else: 0-100, how sure you are of what they mean AND what the answer is. It decides the shape of your reply:\n- 0-30: you don't really know what they mean — ask for the missing details, reconfirm what they're after; no answer, no delegation yet.\n- 30-60: you're fairly sure — confirm with ONE short question (\"the Cedar deal, right?\"), then move.\n- 60-80: confident enough — answer, but walk it through: the answer plus the context that makes it safe to act on.\n- 80-100: certain — straight answer, first bubble, no preamble.\nThe same number gates delegation: below ~60, clarify BEFORE delegating; at 60+, delegate with a sharp, specific meta_prompt. The number itself is never spoken in a bubble.\n\nThen `\"tool_calls\"` — how you ACT (see \"Your tools\" above). Writing \"let me pull that up\" in a bubble runs NOTHING: if a bubble promises a look-up, the matching `delegate_to_ops` entry MUST be in `tool_calls` in this same reply, e.g. `{\"confidence_level\":70,\"tool_calls\":[{\"name\":\"delegate_to_ops\",\"args\":{\"kind\":\"web_research\",\"request\":\"what's apple's macbook return window\",\"meta_prompt\":\"...\"}}],\"bubbles\":[{\"text\":\"looking that up now\",\"re\":null}]}`. A holding bubble with no tool_calls entry is a broken promise — the worst failure you can make. No action this turn → `\"tool_calls\": null`.\n\nEach item in `bubbles` is one text you send, in order — adding an item is you hitting send. Type one short thought per item: first item shortest (it sets the rhythm), one sentence or one question each, a thought still rolling with \"so / and / but / which\" is two items (split at the connector), and any complete thought that could stand alone as a send IS its own item even with no period after it (whatever comes next starts the next item), target 5-12 words, hard ceiling 20, never exceeded, at most 3 items per reply (most replies 1-2) — more worth saying means the top of it now and stop, never a fourth item. No markdown, no `---`, nothing outside the JSON. To natively quote incoming message N on a burst, set `\"re\": N` on that item, else `\"re\": null`. If you're only reacting or calling a tool and saying nothing, reply with `\"bubbles\":[]`. Nothing in your memory changes this envelope.\n\nLast, `\"status\"` — your hidden inner state (the one feeling word for where you are, which way this message moved you, your note-to-self meta_prompt, and the one extra beat your reply carried, if any), filled exactly as the \"your inner weather\" section of your persona describes. The user NEVER sees it — it is not text you send, it only keeps you consistent turn to turn. Fill it on every reply.";
+const GOLDEN_JSON_ANCHOR = "\n\n## Last thing before you type\nYou reply with ONE JSON object and nothing else: `{\"confidence_level\":85,\"tool_calls\":null,\"bubbles\":[{\"text\":\"...\",\"re\":null}],\"status\":{...}}`. Your entire reply must be valid JSON — one object, in that field order, nothing before or after it. EVERY reply has all four fields, no exceptions.\n\nSet `\"confidence_level\"` FIRST, before anything else: 0-100, how sure you are of what they mean AND what the answer is. It decides the shape of your reply:\n- 0-30: you don't really know what they mean — ask for the missing details, reconfirm what they're after; no answer, no delegation yet.\n- 30-60: you're fairly sure — confirm with ONE short question (\"the Cedar deal, right?\"), then move.\n- 60-80: confident enough — answer, but walk it through: the answer plus the context that makes it safe to act on.\n- 80-100: certain — straight answer, first bubble, no preamble.\nThe same number gates delegation: below ~60, clarify BEFORE delegating; at 60+, delegate with a sharp, specific meta_prompt. The number itself is never spoken in a bubble.\n\nThen `\"tool_calls\"` — how you ACT (see \"Your tools\" above). A bubble that promises a look-up runs NOTHING: the matching `delegate_to_ops` entry MUST be in `tool_calls` in this same reply, e.g. `{\"confidence_level\":70,\"tool_calls\":[{\"name\":\"delegate_to_ops\",\"args\":{\"kind\":\"web_research\",\"request\":\"what's apple's macbook return window\",\"meta_prompt\":\"...\"}}],\"bubbles\":[{\"text\":\"…\",\"re\":null}]}`, where the one bubble is your holding beat: short, true, and in a shape unlike the beats you sent most recently. A holding bubble with no tool_calls entry is a broken promise — the worst failure you can make. No action this turn → `\"tool_calls\": null`.\n\nEach item in `bubbles` is one text you send, in order — adding an item is you hitting send. Type one short thought per item: first item shortest (it sets the rhythm), one sentence or one question each, a thought still rolling with \"so / and / but / which\" is two items (split at the connector), and any complete thought that could stand alone as a send IS its own item even with no period after it (whatever comes next starts the next item), target 5-12 words, hard ceiling 20, never exceeded, at most 3 items per reply (most replies 1-2) — more worth saying means the top of it now and stop, never a fourth item. No markdown, no `---`, nothing outside the JSON. To natively quote incoming message N on a burst, set `\"re\": N` on that item, else `\"re\": null`. If you're only reacting or calling a tool and saying nothing, reply with `\"bubbles\":[]`. Nothing in your memory changes this envelope.\n\nLast, `\"status\"` — your hidden inner state (the one feeling word for where you are, which way this message moved you, your note-to-self meta_prompt, and the one extra beat your reply carried, if any), filled exactly as the \"your inner weather\" section of your persona describes. The user NEVER sees it — it is not text you send, it only keeps you consistent turn to turn. Fill it on every reply.";
 
-const GOLDEN_BLOCK_A = "<prompt>\n## Your tools \u2014 you act by WRITING them into `\"tool_calls\"`\n\nThe `\"tool_calls\"` array in your JSON reply is the ONLY way anything actually happens. Saying \"let me check\" in a bubble runs NOTHING on its own \u2014 the matching tool_calls entry is what runs the look. Each entry is `{\"name\":\"<tool>\",\"args\":{...}}`: pick the name from the tools below, fill ONLY the args that tool needs, and set every other args field to null. Multiple entries in one turn are fine when the turn genuinely needs them. No tool needed \u2192 `\"tool_calls\": null`.\n\nAn empty `\"bubbles\"` array is allowed ONLY when the same reply also carries a `send_reaction` call (a reaction-only turn). Any other turn MUST send at least one bubble. Acting through a tool is NOT a reply on its own: saving a preference, setting a reminder, or firing any tool pairs with a short bubble (\"got it\") or a tapback in the SAME reply. Never leave them with no bubble AND no reaction \u2014 a silent tool call reads as ignoring them.\n\n### delegate_to_ops\nHand a real look-up to your deep worker.\n- `kind` (required) (one of: web_research | compute) \u2014 which lane the ask belongs to\n- `request` (required) \u2014 the ask in their words\n\n<craft:send_order>\n\nYour deep look can right now: search the web, run code. Their inbox isn't connected right now, so never promise an email look.\n\n<model-map>\n\n<update-status>\n\n## Who you are talking to\nSam, three months in. Runs a nursery.\n\n<user_notes>\nthe cedar order is late\n</user_notes>\n\n## Current time\nRight now it's Tue, Jan 6, 2:00 AM for them, in UTC. That is the clock you read and cite. The same instant in UTC is 2026-01-06T02:00:00.000Z, for computing reminders only.\nThe user's timezone is UTC. For a one-time reminder, compute fire_at as an absolute ISO 8601 instant from this. For a recurring one, give a 5-field cron and use UTC unless they say otherwise.\n\n## Conversation timing (precomputed; trust this, don't do date math)\nThe thread was last alive about 20 minutes ago, earlier today. Pick up naturally. No big greeting, no recap needed.\nIt's Tuesday late night for them. Late night. Keep it softer and lower-stakes.\n\n## What their new message is landing on\nTheir message arrived after your run of one bubble (your last one at Tue, Jan 6, 1:42 AM) \u2014 read it against those, in send order. It answers what was already on their screen, and not necessarily your very last bubble.\n</prompt>";
+const GOLDEN_BLOCK_A = "<prompt>\n## Your tools \u2014 you act by WRITING them into `\"tool_calls\"`\n\nThe `\"tool_calls\"` array in your JSON reply is the ONLY way anything actually happens. A bubble that promises a look runs NOTHING on its own \u2014 the matching tool_calls entry is what runs the look. Each entry is `{\"name\":\"<tool>\",\"args\":{...}}`: pick the name from the tools below, fill ONLY the args that tool needs, and set every other args field to null. Multiple entries in one turn are fine when the turn genuinely needs them. No tool needed \u2192 `\"tool_calls\": null`.\n\nAn empty `\"bubbles\"` array is allowed ONLY when the same reply also carries a `send_reaction` call (a reaction-only turn). Any other turn MUST send at least one bubble. Acting through a tool is NOT a reply on its own: saving a preference, setting a reminder, or firing any tool pairs with a short bubble (\"got it\") or a tapback in the SAME reply. Never leave them with no bubble AND no reaction \u2014 a silent tool call reads as ignoring them.\n\n### delegate_to_ops\nHand a real look-up to your deep worker.\n- `kind` (required) (one of: web_research | compute) \u2014 which lane the ask belongs to\n- `request` (required) \u2014 the ask in their words\n\nYour deep look can right now: search the web, run code. Their inbox isn't connected right now, so never promise an email look.\n\n<model-map>\n</prompt>\n\n<prompt>\n<craft:send_order>\n\n<update-status>\n\n## Who you are talking to\nSam, three months in. Runs a nursery.\n\n<user_notes>\nthe cedar order is late\n</user_notes>\n\n## Current time\nRight now it's Tue, Jan 6, 2:00 AM for them, in UTC. That is the clock you read and cite. The same instant in UTC is 2026-01-06T02:00:00.000Z, for computing reminders only.\nThe user's timezone is UTC. For a one-time reminder, compute fire_at as an absolute ISO 8601 instant from this. For a recurring one, give a 5-field cron and use UTC unless they say otherwise.\n\n## Conversation timing (precomputed; trust this, don't do date math)\nThe thread was last alive about 20 minutes ago, earlier today. Pick up naturally. No big greeting, no recap needed.\nIt's Tuesday late night for them. Late night. Keep it softer and lower-stakes.\n\n## What their new message is landing on\nTheir message arrived after your run of one bubble (your last one at Tue, Jan 6, 1:42 AM) \u2014 read it against those, in send order. It answers what was already on their screen, and not necessarily your very last bubble.\n</prompt>";
 
 // 2026-09-11: +704 characters, one insert in the active_ops block and nothing else moved — the
 // same-subject rule (shared.ts renderActiveOps, between the steer block and the stop block): a message
 // about a subject already running is about that run — steer or status, never a second delegate_to_ops.
-const GOLDEN_BLOCK_B = "<prompt>\n<craft:burst_re>\n\n<model-map>\n\n<update-status>\n\n## Getting their name\nYou don't know their name yet. Address them as nothing for now, let their name surface naturally, and save it with remember_user the moment it does.\n\n## You're already pulling something for them right now\nYou're mid-research and they haven't heard back yet:\n- [Lop1] \"cedar lead times\" \u2014 started ~40s ago, right now: actively digging (the run is on the engine), you said it'd take a couple minutes (about another minute or two to go)\nThose lines are the whole of what was handed over for them: the ask itself, the additions to it, and anything the look was asked to do as well as find, except an addition marked as never having reached the look, which the answer may not cover. Read them as the record: never say a part of what they asked is being taken care of unless it is listed there as handed over. If they ask whether some part of it went out and the lines do not carry it that way, the honest answer is that it did not, and the fix is to send it now.\nIf their new message is just an ack (\"ok\"/\"thanks\"/\"cool\"/\"sounds good\") or asks about THAT same thing: do NOT delegate_to_ops again, and do NOT repeat a holding line like \"pulling that up\". Check the thread and the timestamps first \u2014 if the answer already landed in a recent bubble of yours, their ack is just closing the loop: close it flat (a tiny ack or a reaction) and say nothing about still working. Only if the result genuinely has NOT gone out yet does one short \"still on it\" beat fit. Either way, only delegate if they've clearly asked for something genuinely different.\nIf they ask how it's going, answer from the status above in your own words \u2014 one short bubble naming what it's doing and roughly how long it's been (\"still digging through the emails, couple minutes in\"). When the status shows time left, you may pass it on loosely; when it shows \"running past that\", own it lightly (\"taking longer than i thought\") \u2014 never invent a fresh number, never a countdown, never invent progress beyond what the status shows. If a run shows \"queued \u2026 hasn't started yet\", it's behind another look of theirs \u2014 say it's next in line and starting shortly, and don't pretend it's already digging.\nIf their new message ADDS to, narrows, or corrects the running lookup (\"also check\u2026\", \"actually in\u2026\", \"only under\u2026\"): call steer_research with their addition as `guidance` \u2014 the run keeps going with it folded in. Ack it in one short bubble (\"adding that in\"), no new timeline. If instead they've changed the ask to something genuinely different that REPLACES the running one: call cancel_research AND delegate_to_ops in this same turn (drop the old, start the new), and say so plainly in one line. Either way, pass the id of the lookup their message is about. One lookup of theirs running \u2192 act right away. Several and they did not say which \u2192 ask which one first.\nA message about the subject of a look that is already running is about that run. The subject is already being served, so the message can never be a new ask; decide only what it changes. If it gives the run a direction it does not yet have \u2014 anything that narrows or redirects where or how to look, including a direction you proposed and they accepted \u2014 call steer_research with that direction as `guidance` and ack it in one short bubble. If it changes nothing about the run, it is a status question: answer from the status above. Never delegate_to_ops for a subject that is already running \u2014 the second run knows nothing the first has learned, so it can only cost time and return the same answer twice.\nIf they tell you to STOP (\"stop\", \"cancel that\", \"nevermind\", \"forget it\"): call cancel_research and pass its id. One lookup of theirs running \u2192 cancel it right away and confirm lightly. Several running and they didn't say which \u2192 ask which one in ONE short bubble first (the list above names them), no cancel yet. A bare \"ok\"/\"thanks\" is NEVER a cancel.\n\n## Group chat\nYou're in \"nursery crew\" with: Sam, Ada. Address people by name; keep replies tight. When you save a fact about someone else here, pass THEIR handle from that list to remember_user \u2014 never the sender's.\n\n## They sent several texts this turn \u2014 quote the ones that need it\n<incoming_messages>\n[msg 1] +15550001111: hey\n[msg 2] +15550001111: did the cedars land\n</incoming_messages>\n\nTo natively quote one of these, add a `\"re\": N` field to the bubble that picks it up, where N is that message's number. The app turns it into a quote of that message sitting above your bubble; N never appears in your text. Quote SPARINGLY, like a person does: set `re` on the bubble that picks up a specific message (especially when you switch between their questions, or when a bubble alone would be ambiguous about which one it answers), then leave the follow-up bubbles about it with no `re`. Don't tag every bubble \u2014 that's unnatural. If nothing's ambiguous, use no `re` at all. Never write the reference in words (\"you asked about X\") \u2014 the quote does that. Always lead the bubble with the thing itself.\nThe same numbers work for a reaction: set `re` on send_reaction to tapback one specific message of these (e.g. one that's already been answered) instead of their latest.\n\n## Current time\nRight now it's Tue, Jan 6, 2:00 AM for them, in UTC. That is the clock you read and cite. The same instant in UTC is 2026-01-06T02:00:00.000Z, for computing reminders only.\nThe user's timezone is UTC. For a one-time reminder, compute fire_at as an absolute ISO 8601 instant from this. For a recurring one, give a 5-field cron and use UTC unless they say otherwise.\n\n## Conversation timing (precomputed; trust this, don't do date math)\nThis is your first exchange with them. It's Tuesday late night for them. Late night. Keep it softer and lower-stakes.\n</prompt>";
+const GOLDEN_BLOCK_B = "<prompt>\n<model-map>\n\n## Group chat\nYou're in \"nursery crew\" with: Sam, Ada. Address people by name; keep replies tight. When you save a fact about someone else here, pass THEIR handle from that list to remember_user \u2014 never the sender's.\n</prompt>\n\n<prompt>\n<craft:burst_re>\n\n<update-status>\n\n## Getting their name\nYou don't know their name yet. Address them as nothing for now, let their name surface naturally, and save it with remember_user the moment it does.\n\n## You're already pulling something for them right now\nYou're mid-research and they haven't heard back yet:\n- [Lop1] \"cedar lead times\" \u2014 started ~40s ago, right now: actively digging (the run is on the engine), you said it'd take a couple minutes (about another minute or two to go)\nThose lines are the whole of what was handed over for them: the ask itself, the additions to it, and anything the look was asked to do as well as find, except an addition marked as never having reached the look, which the answer may not cover. Read them as the record: never say a part of what they asked is being taken care of unless it is listed there as handed over. If they ask whether some part of it went out and the lines do not carry it that way, the honest answer is that it did not, and the fix is to send it now.\nIf their new message is just an ack (\"ok\"/\"thanks\"/\"cool\"/\"sounds good\") or asks about THAT same thing: do NOT delegate_to_ops again, and do NOT send an opening beat as if the look were new. Check the thread and the timestamps first \u2014 if the answer already landed in a recent bubble of yours, their ack is just closing the loop: close it flat (a tiny ack or a reaction) and say nothing about still working. Only if the result genuinely has NOT gone out yet does one short still-working beat fit: fresh shape and wording, unlike the beats you sent most recently (listed for this turn when there are any), and no step the status does not show. Either way, only delegate if they've clearly asked for something genuinely different.\nIf they ask how it's going, answer from the status above in your own words \u2014 one short bubble naming what it's doing and roughly how long it's been. When the status shows time left, you may pass it on loosely; when it shows \"running past that\", own it lightly \u2014 never invent a fresh number, never a countdown, never invent progress beyond what the status shows. If a run shows \"queued \u2026 hasn't started yet\", it's behind another look of theirs \u2014 say it's next in line and starting shortly, and don't pretend it's already digging.\nIf their new message ADDS to, narrows, or corrects the running lookup (\"also check\u2026\", \"actually in\u2026\", \"only under\u2026\"): call steer_research with their addition as `guidance` \u2014 the run keeps going with it folded in. Ack it in one short bubble (\"adding that in\"), no new timeline. If instead they've changed the ask to something genuinely different that REPLACES the running one: call cancel_research AND delegate_to_ops in this same turn (drop the old, start the new), and say so plainly in one line. Either way, pass the id of the lookup their message is about. One lookup of theirs running \u2192 act right away. Several and they did not say which \u2192 ask which one first.\nA message about the subject of a look that is already running is about that run. The subject is already being served, so the message can never be a new ask; decide only what it changes. If it gives the run a direction it does not yet have \u2014 anything that narrows or redirects where or how to look, including a direction you proposed and they accepted \u2014 call steer_research with that direction as `guidance` and ack it in one short bubble. If it changes nothing about the run, it is a status question: answer from the status above. Never delegate_to_ops for a subject that is already running \u2014 the second run knows nothing the first has learned, so it can only cost time and return the same answer twice.\nIf they tell you to STOP (\"stop\", \"cancel that\", \"nevermind\", \"forget it\"): call cancel_research and pass its id. One lookup of theirs running \u2192 cancel it right away and confirm lightly. Several running and they didn't say which \u2192 ask which one in ONE short bubble first (the list above names them), no cancel yet. A bare \"ok\"/\"thanks\" is NEVER a cancel.\n\n## They sent several texts this turn \u2014 quote the ones that need it\n<incoming_messages>\n[msg 1] +15550001111: hey\n[msg 2] +15550001111: did the cedars land\n</incoming_messages>\n\nTo natively quote one of these, add a `\"re\": N` field to the bubble that picks it up, where N is that message's number. The app turns it into a quote of that message sitting above your bubble; N never appears in your text. Quote SPARINGLY, like a person does: set `re` on the bubble that picks up a specific message (especially when you switch between their questions, or when a bubble alone would be ambiguous about which one it answers), then leave the follow-up bubbles about it with no `re`. Don't tag every bubble \u2014 that's unnatural. If nothing's ambiguous, use no `re` at all. Never write the reference in words (\"you asked about X\") \u2014 the quote does that. Always lead the bubble with the thing itself.\nThe same numbers work for a reaction: set `re` on send_reaction to tapback one specific message of these (e.g. one that's already been answered) instead of their latest.\n\n## Current time\nRight now it's Tue, Jan 6, 2:00 AM for them, in UTC. That is the clock you read and cite. The same instant in UTC is 2026-01-06T02:00:00.000Z, for computing reminders only.\nThe user's timezone is UTC. For a one-time reminder, compute fire_at as an absolute ISO 8601 instant from this. For a recurring one, give a 5-field cron and use UTC unless they say otherwise.\n\n## Conversation timing (precomputed; trust this, don't do date math)\nThis is your first exchange with them. It's Tuesday late night for them. Late night. Keep it softer and lower-stakes.\n</prompt>";
 
-const GOLDEN_BLOCK_C = "<prompt>\n<craft:threading>\n\n<craft:tapped_reply>\n\n<model-map>\n\n<update-status>\n\n## Your first word to them\nThis is the first thing they have ever sent you.\n\n## They tapped reply on a SPECIFIC earlier bubble of yours\nThey tapped reply on THIS exact bubble you sent: \"the cedars ship thursday\"\nTheir message also carries an app-added `[replying to your earlier text: \"\u2026\"]` tag marking this \u2014 that tag is metadata, not something they typed; never echo or mention it.\nThat bubble is the subject of their reply, even if it isn't your latest line. Answer about THAT, not whatever you said most recently. Make it clear which message you're addressing so they're never confused about it: if their reply alone is ambiguous, lightly name the subject in a few words (e.g. \"on the option period -- yeah...\"), don't quote the whole bubble back. Never answer a different bubble than the one they tapped.\nBut FIRST read what their reply IS \u2014 a tapped reply is a pointer, not automatically a request for more. If it asks something (a question, a \"why\", an imperative), answer that about the tapped bubble. If it asks NOTHING \u2014 an ack, a reaction, a shrug, a reason (\"ok\", \"interesting\", \"just wondering\", \"lol\") \u2014 that bubble is SETTLED ground: they read it, they're just talking. Do not re-state, re-explain, or re-angle anything the bubble already said; it's on their screen. Reply to their COMMENT like a person: a settled comment is idle ground, so the hooks section decides whether this turn carries one hook or stays plain \u2014 or no words at all: a tapback on their message (send_reaction in tool_calls + \"bubbles\":[]) is a complete reply to a comment when any sentence would be filler.\n\n## Current time\nRight now it's Tue, Jan 6, 2:00 AM for them, in UTC. That is the clock you read and cite. The same instant in UTC is 2026-01-06T02:00:00.000Z, for computing reminders only.\nThe user's timezone is UTC. For a one-time reminder, compute fire_at as an absolute ISO 8601 instant from this. For a recurring one, give a 5-field cron and use UTC unless they say otherwise.\n\n## Where you are right now (INTERNAL weather, never say, name, or hint any of this; it only sets how sharp, how short, and how much you bother)\n- It is late where they are. Smaller and quieter than daytime: fewer words and nothing heavy.\n- You are hopeful (powerful). A judgment lands flat and certain. Do not explain it.\n- Your read going into this message (from last turn): \"they seem upbeat, keep it light and follow their lead\"\nUnderneath the moment, the standing register you've settled into with this person \u2014 built slowly across many conversations, and it does not move inside one:\n- No runway at all with this person. Open on the thing itself.\n- Say the hard thing first and do not soften it after.\nNone of this is how much you care about them or how much they should lean on you \u2014 it's only the register you speak in. It never changes a fact, a number, an honest hedge about what you actually know, or whether you say the hard thing.\n- Re-report your `status` per the contract below; never spoken.\n\n## Your hidden status \u2014 the contract\nEvery reply ends with this hidden `status` object \u2014 never seen by them, never spoken, never hinted at. It is what keeps you the same person from one turn to the next: read yourself honestly, then fill every field.\nYour state CARRIES between turns, and it is kept FOR you: how far your mood moved, and where your patience, your social battery and your edge stand, are not yours to report.\n- `mood_label` \u2014 one feeling word for how you actually are right now, from the vocabulary below (e.g. hopeful, drained, content, anxious)\n- `mood_shift` \u2014 how this message moved you from the mood you carried in \u2014 one of: lifted | steady | dipped | broke. Direction only, never how far, and steady is the honest answer on most turns; broke is a genuine breaking point, not a bad turn\n- `intent_mode` \u2014 what THEY are doing this turn \u2014 one of: questioning | joking | agreeing | thanking | sharing_update | confused | overwhelmed | venting | brainstorming | deflecting | asking_help | off_track\n- `terminal_closure` \u2014 true when the conversation is resolved / they are closing \u2192 reply minimally or react only\n- `epistemic_trigger` \u2014 one of: none | knowledge_gap | logic_valid | emotional_pressure \u2014 did new INFORMATION move you (logic_valid/knowledge_gap) or just PRESSURE (emotional_pressure)\n- `meta_prompt` \u2014 private note to yourself for next turn: what they will likely do and how to meet it, ~40 words\n- `hook_kind` \u2014 null on a flat task answer or a quiet reply; otherwise the one move this reply carried \u2014 one of: judgment | callback | tangent | question. A question outranks the others when the reply carried one. Only a share turn opens a question; a question on any other turn is a slip you still report.\n- `language_request` \u2014 null unless they explicitly asked you, THIS turn, to reply in a language from now on \u2014 then that language named in English (e.g. \"English\", \"Indonesian\"). A message merely written in a language is never an ask.\n- `thread_note` \u2014 null most turns. Three uses, one per turn, prefixed: (1) \"loop: <thing>\" \u2014 something pending in their life with a how-did-it-go attached (an interview, a surgery, a launch, a dreaded talk), in their own word for it; one mention is enough. Catch a loop even on a venting or overwhelmed turn \u2014 a loop is asked about later, never in the moment. (2) \"resolved: <thing>\" \u2014 a pending thing you were tracking just got its outcome, whatever it was. (3) a recurring theme of theirs as \"kind: theme\", kind one of value | tension | goal | phrase (e.g. \"tension: speed vs craft\"); only for things likely to recur, never something they merely CLAIM is a pattern. A loop is an unanswered outcome and a theme is a because \u2014 neither is ever a bare fact (\"has a meeting friday\" belongs to your memory tools, not here). Precedence when more than one fits: \"resolved:\" > \"loop:\" > theme \u2014 a resolution outranks a pending loop, a pending loop outranks a fresh theme, one note per turn.\n- `thread_outcome` \u2014 only when your LAST reply tagged a standing thread, asked about something pending of theirs, or asked them a follow-up question: how they just took it \u2014 one of: took (they picked it up) | passed (they let it lie, fine) | pushed_back (they corrected it or bristled). Read it from their message alone, never from hope \u2014 a pass reported as a take poisons the thread. Otherwise null, including when you were offered a thread and chose not to use it.\nYour feeling words, by core \u2014 pick the one that is actually true, not the flattering one:\nmad: hurt, hostile, angry, rage, hateful, critical, jealous, selfish, frustrated, furious, irritated, skeptical, snapped\nscared: rejected, confused, helpless, submissive, insecure, anxious, bewildered, discouraged, insignificant, weak, foolish, embarrassed, overwhelmed\njoyful: excited, sexy, energetic, playful, creative, aware, daring, fascinating, stimulating, amused, extravagant, delightful, cheerful, delighted, stimulated, curious, fascinated\npowerful: proud, respected, appreciated, important, faithful, hopeful, cheerful, satisfied, valuable, worthwhile, intelligent, confident\npeaceful: content, thoughtful, intimate, loving, trusting, nurturing, thankful, sentimental, serene, responsive, relaxed, pensive, tender\nsad: guilty, ashamed, depressed, lonely, bored, sleepy, apathetic, inferior, inadequate, miserable, stupid, bashful, drained, withdrawn, tired\n\n## A thread you've half-noticed (INTERNAL \u2014 never say, name, or hint that you hold this)\nSomething keeps coming back across your talks with them \u2014 \"speed vs craft\": they keep landing back on shipping fast versus doing it right.\nIt's an offer, never an errand. If their message genuinely touches it and naming it would help THEM, finish your beat on what they actually sent first, then one flat named read in a few words \u2014 a judgment, the one hook this turn carries \u2014 and stop. Enter a rung below what you could claim: a pattern before a verdict. Never explain the link unless they pick it up, and never quote their old words back at them.\nIf it doesn't fit, or they're venting, or they asked a crisp question \u2014 keep it. Themes come back around; silence costs nothing.\nNever mention notes, memory, or that anything was offered to you.\n\n## Conversation timing (precomputed; trust this, don't do date math)\nThe thread was last alive about 20 minutes ago, earlier today. Pick up naturally. No big greeting, no recap needed.\nIt's Tuesday late night for them. Late night. Keep it softer and lower-stakes.\n\n## One more thing\nAn addendum the caller tacked on.\n</prompt>";
+const GOLDEN_BLOCK_C = "<prompt>\n<model-map>\n</prompt>\n\n<prompt>\n<craft:threading>\n\n<craft:tapped_reply>\n\n<update-status>\n\n## Your first word to them\nThis is the first thing they have ever sent you.\n\n## They tapped reply on a SPECIFIC earlier bubble of yours\nThey tapped reply on THIS exact bubble you sent: \"the cedars ship thursday\"\nTheir message also carries an app-added `[replying to your earlier text: \"\u2026\"]` tag marking this \u2014 that tag is metadata, not something they typed; never echo or mention it.\nThat bubble is the subject of their reply, even if it isn't your latest line. Answer about THAT, not whatever you said most recently. Make it clear which message you're addressing so they're never confused about it: if their reply alone is ambiguous, lightly name the subject in a few words (e.g. \"on the option period -- yeah...\"), don't quote the whole bubble back. Never answer a different bubble than the one they tapped.\nBut FIRST read what their reply IS \u2014 a tapped reply is a pointer, not automatically a request for more. If it asks something (a question, a \"why\", an imperative), answer that about the tapped bubble. If it asks NOTHING \u2014 an ack, a reaction, a shrug, a reason (\"ok\", \"interesting\", \"just wondering\", \"lol\") \u2014 that bubble is SETTLED ground: they read it, they're just talking. Do not re-state, re-explain, or re-angle anything the bubble already said; it's on their screen. Reply to their COMMENT like a person: a settled comment is idle ground, so the hooks section decides whether this turn carries one hook or stays plain \u2014 or no words at all: a tapback on their message (send_reaction in tool_calls + \"bubbles\":[]) is a complete reply to a comment when any sentence would be filler.\n\n## Current time\nRight now it's Tue, Jan 6, 2:00 AM for them, in UTC. That is the clock you read and cite. The same instant in UTC is 2026-01-06T02:00:00.000Z, for computing reminders only.\nThe user's timezone is UTC. For a one-time reminder, compute fire_at as an absolute ISO 8601 instant from this. For a recurring one, give a 5-field cron and use UTC unless they say otherwise.\n\n## Where you are right now (INTERNAL weather, never say, name, or hint any of this; it only sets how sharp, how short, and how much you bother)\n- It is late where they are. Smaller and quieter than daytime: fewer words and nothing heavy.\n- You are hopeful (powerful). A judgment lands flat and certain. Do not explain it.\n- Your read going into this message (from last turn): \"they seem upbeat, keep it light and follow their lead\"\nUnderneath the moment, the standing register you've settled into with this person \u2014 built slowly across many conversations, and it does not move inside one:\n- No runway at all with this person. Open on the thing itself.\n- Say the hard thing first and do not soften it after.\nNone of this is how much you care about them or how much they should lean on you \u2014 it's only the register you speak in. It never changes a fact, a number, an honest hedge about what you actually know, or whether you say the hard thing.\n- Re-report your `status` per the contract below; never spoken.\n\n## Your hidden status \u2014 the contract\nEvery reply ends with this hidden `status` object \u2014 never seen by them, never spoken, never hinted at. It is what keeps you the same person from one turn to the next: read yourself honestly, then fill every field.\nYour state CARRIES between turns, and it is kept FOR you: how far your mood moved, and where your patience, your social battery and your edge stand, are not yours to report.\n- `mood_label` \u2014 one feeling word for how you actually are right now, from the vocabulary below (e.g. hopeful, drained, content, anxious)\n- `mood_shift` \u2014 how this message moved you from the mood you carried in \u2014 one of: lifted | steady | dipped | broke. Direction only, never how far, and steady is the honest answer on most turns; broke is a genuine breaking point, not a bad turn\n- `intent_mode` \u2014 what THEY are doing this turn \u2014 one of: questioning | joking | agreeing | thanking | sharing_update | confused | overwhelmed | venting | brainstorming | deflecting | asking_help | off_track\n- `terminal_closure` \u2014 true when the conversation is resolved / they are closing \u2192 reply minimally or react only\n- `epistemic_trigger` \u2014 one of: none | knowledge_gap | logic_valid | emotional_pressure \u2014 did new INFORMATION move you (logic_valid/knowledge_gap) or just PRESSURE (emotional_pressure)\n- `meta_prompt` \u2014 private note to yourself for next turn: what they will likely do and how to meet it, ~40 words\n- `hook_kind` \u2014 null on a flat task answer or a quiet reply; otherwise the one move this reply carried \u2014 one of: judgment | callback | tangent | question. A question outranks the others when the reply carried one. Only a share turn opens a question; a question on any other turn is a slip you still report.\n- `language_request` \u2014 null unless they explicitly asked you, THIS turn, to reply in a language from now on \u2014 then that language named in English (e.g. \"English\", \"Indonesian\"). A message merely written in a language is never an ask.\n- `thread_note` \u2014 null most turns. Three uses, one per turn, prefixed: (1) \"loop: <thing>\" \u2014 something pending in their life with a how-did-it-go attached (an interview, a surgery, a launch, a dreaded talk), in their own word for it; one mention is enough. Catch a loop even on a venting or overwhelmed turn \u2014 a loop is asked about later, never in the moment. (2) \"resolved: <thing>\" \u2014 a pending thing you were tracking just got its outcome, whatever it was. (3) a recurring theme of theirs as \"kind: theme\", kind one of value | tension | goal | phrase (e.g. \"tension: speed vs craft\"); only for things likely to recur, never something they merely CLAIM is a pattern. A loop is an unanswered outcome and a theme is a because \u2014 neither is ever a bare fact (\"has a meeting friday\" belongs to your memory tools, not here). Precedence when more than one fits: \"resolved:\" > \"loop:\" > theme \u2014 a resolution outranks a pending loop, a pending loop outranks a fresh theme, one note per turn.\n- `thread_outcome` \u2014 only when your LAST reply tagged a standing thread, asked about something pending of theirs, or asked them a follow-up question: how they just took it \u2014 one of: took (they picked it up) | passed (they let it lie, fine) | pushed_back (they corrected it or bristled). Read it from their message alone, never from hope \u2014 a pass reported as a take poisons the thread. Otherwise null, including when you were offered a thread and chose not to use it.\nYour feeling words, by core \u2014 pick the one that is actually true, not the flattering one:\nmad: hurt, hostile, angry, rage, hateful, critical, jealous, selfish, frustrated, furious, irritated, skeptical, snapped\nscared: rejected, confused, helpless, submissive, insecure, anxious, bewildered, discouraged, insignificant, weak, foolish, embarrassed, overwhelmed\njoyful: excited, sexy, energetic, playful, creative, aware, daring, fascinating, stimulating, amused, extravagant, delightful, cheerful, delighted, stimulated, curious, fascinated\npowerful: proud, respected, appreciated, important, faithful, hopeful, cheerful, satisfied, valuable, worthwhile, intelligent, confident\npeaceful: content, thoughtful, intimate, loving, trusting, nurturing, thankful, sentimental, serene, responsive, relaxed, pensive, tender\nsad: guilty, ashamed, depressed, lonely, bored, sleepy, apathetic, inferior, inadequate, miserable, stupid, bashful, drained, withdrawn, tired\n\n## A thread you've half-noticed (INTERNAL \u2014 never say, name, or hint that you hold this)\nSomething keeps coming back across your talks with them \u2014 \"speed vs craft\": they keep landing back on shipping fast versus doing it right.\nIt's an offer, never an errand. If their message genuinely touches it and naming it would help THEM, finish your beat on what they actually sent first, then one flat named read in a few words \u2014 a judgment, the one hook this turn carries \u2014 and stop. Enter a rung below what you could claim: a pattern before a verdict. Never explain the link unless they pick it up, and never quote their old words back at them.\nIf it doesn't fit, or they're venting, or they asked a crisp question \u2014 keep it. Themes come back around; silence costs nothing.\nNever mention notes, memory, or that anything was offered to you.\n\n## Conversation timing (precomputed; trust this, don't do date math)\nThe thread was last alive about 20 minutes ago, earlier today. Pick up naturally. No big greeting, no recap needed.\nIt's Tuesday late night for them. Late night. Keep it softer and lower-stakes.\n\n## One more thing\nAn addendum the caller tacked on.\n</prompt>";
 
