@@ -441,6 +441,14 @@ bounce_gateway() {
 }
 
 # ── compare ──────────────────────────────────────────────────────────────────
+# Local ahead of origin (your own unpushed commits): nothing to pull, but HEAD may not be built or
+# running yet. Treated as level with origin, so the repair below builds it, restarts, refreshes the
+# plugin and bounces the gateway — one command after any commit, pushed or not.
+AHEAD=0
+if [ "$OLD" != "$NEW" ] && git merge-base --is-ancestor "$NEW" HEAD; then
+  AHEAD=1
+  NEW="$OLD"
+fi
 if [ "$OLD" = "$NEW" ]; then
   if [ -n "$BUILT" ] && [ "$BUILT" != "$NEW" ] && [ "$CHECK" != "1" ]; then
     # HEAD is current but dist/ was stamped from another commit: a previous update advanced HEAD and
@@ -502,15 +510,13 @@ if [ "$OLD" = "$NEW" ]; then
       "data:     $STATE_DIR — untouched, as always"
     exit "$REPAIR_RC"
   fi
+  if [ "$AHEAD" = "1" ]; then
+    say "local $BRANCH is ahead of origin — nothing upstream to pull"
+    summary noop "local $BRANCH is ahead of origin/$BRANCH"
+    exit 0
+  fi
   say "already up to date ($(git rev-parse --short HEAD), branch $BRANCH)"
   summary up-to-date "HEAD and origin/$BRANCH are both $(git rev-parse --short HEAD)"
-  exit 0
-fi
-
-# Local ahead of origin (your own unpushed commits) → nothing upstream to apply.
-if git merge-base --is-ancestor "$NEW" HEAD; then
-  say "local $BRANCH is ahead of origin — nothing upstream to pull"
-  summary noop "local $BRANCH is ahead of origin/$BRANCH"
   exit 0
 fi
 

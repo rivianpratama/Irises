@@ -305,6 +305,8 @@ The script then does these steps in this order.
 3. It refreshes the bridge plugin inside hermes.
 4. It **restarts the hermes gateway** so that hermes loads the new plugin. This restart takes about 12 seconds.
 
+It is also the one command to run after your own commits, pushed or not: when there is nothing to pull but the build is behind your checkout, it builds your checkout and runs the same restart, plugin and gateway steps.
+
 If the new build fails, the script rolls back to the commit you were on. It never touches your data. The `--check` flag only reports whether an update exists. The `--no-gateway-restart` flag leaves the gateway alone until its next restart.
 
 Irises also notices a new build on her own. She mentions it once in chat and gives you the command. There is no chat command that applies an update, and that is by design. Set `UPDATE_ANNOUNCE_ENABLED=false` if you want her to stay quiet about updates.
