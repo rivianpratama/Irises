@@ -222,9 +222,19 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  *   · Context.md +40 (92,079 → 92,119): the data-tag list in "What `<prompt>` is" gains
  *     `<live_reminders>` and `<action_results>`, the two tags the same work adds to the per-turn
  *     block. Every other byte of both files, and every other file in the corpus, held.
+ *
+ * Then **+275** in the snappy-replies branch, ONE file, both edits about where a message came from
+ * now that the turn's sections ride their own untimestamped message instead of the system one:
+ *   · Context.md +275 (92,119 → 92,394): "What `<prompt>` is" stops calling everything in the block
+ *     fresh for this turn and says the guidance comes in two places, the system message for what
+ *     holds all chat long and the one unstamped message right before theirs for this turn; that the
+ *     unstamped message is her own system whole, the closing sections after its `</prompt>`
+ *     included; and that a stamped message always came from someone in the chat. The clock
+ *     section's "every message carries a timestamp" becomes every message sent, hers and theirs,
+ *     which is what formatHistory stamps and the tail is not. Every other file held.
  */
-const CORPUS_CHARS = 156_380;
-const CORPUS_SHA256 = '9daa5b262ff4bc4bd498b017aa11b62ff20df078ea76a8c28b2638b879929eda';
+const CORPUS_CHARS = 156_655;
+const CORPUS_SHA256 = '7b90592153b21be8bce421b539ae55f0be41594af9e7e11573717cd7ac6ee517';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
