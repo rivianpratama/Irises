@@ -152,3 +152,43 @@ test('a timeout after emitting returns what already went out instead of rejectin
   assert.equal(result.stopReason, 'error');
   assert.equal(getTraces().filter(e => e.label === 'llm:timeout').length, 1, 'the give-up is still on the record');
 });
+
+test('a stream the SDK ends quietly on abort (no finish_reason) is broken, never a clean finish', async () => {
+  // The SDK's iterator returns without throwing on an abort, so the loop just ends. Before any delta
+  // that must reject (the lane policy owns it); after one it is a partial, like any other break.
+  const endsAfterAbort = (items: Any[], ctl: AbortController): StreamSender => (() => (async function* () {
+    for (const it of items) yield it;
+    ctl.abort();
+  })()) as unknown as StreamSender;
+
+  const before = new AbortController();
+  await assert.rejects(
+    () => callOpenAICompatible(convoReq([], { signal: before.signal }), 'openrouter', NO_PLAIN_SEND,
+      endsAfterAbort([chunk({ role: 'assistant', content: '' })], before)),
+    'nothing went out: the cut-off stream surfaces as a failure',
+  );
+
+  const after = new AbortController();
+  const deltas: string[] = [];
+  const result = await callOpenAICompatible(convoReq(deltas, { signal: after.signal }), 'openrouter', NO_PLAIN_SEND,
+    endsAfterAbort([chunk({ content: '{"bubbles":["he' })], after));
+  assert.deepEqual(deltas, ['{"bubbles":["he']);
+  assert.equal(result.text, '{"bubbles":["he');
+  assert.equal(result.emitted, true);
+  assert.equal(result.stopReason, 'error');
+  assert.equal(getTraces().filter(e => e.label === 'llm:stream_error').length, 1);
+});
+
+test('a broken partial never yields an envelope tool call, however repairable the cut', async () => {
+  // A tool_calls entry that is complete but whose envelope was cut: the repair tiers WOULD close it.
+  const cut = '{"confidence_level":"high","tool_calls":[{"name":"set_reminder","args":{"text":"drink water"}}],"bubbles":["on it';
+  const lane = (stopReason: string, emitted: boolean) => async (provider: LlmProvider): Promise<LlmResult> =>
+    ({ text: cut, toolCalls: [], stopReason, truncated: false, provider, model: 'fake/flash', emitted });
+  const base = convoReq([], { providerOverride: 'openrouter' });
+
+  const control = await callLLM(base, lane('length', false));
+  assert.equal(control.toolCalls.length, 1, 'control: the same text off an ordinary cut does parse to a call');
+
+  const broken = await callLLM(base, lane('error', true));
+  assert.deepEqual(broken.toolCalls, [], 'emitted then broke: no action from half a reply');
+});

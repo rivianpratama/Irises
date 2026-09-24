@@ -412,10 +412,18 @@ type DeltaExtras = {
  * copied through verbatim, so prompt_tokens_details.cached_tokens and
  * completion_tokens_details.reasoning_tokens — what the ledger and the latency benchmark read — are
  * exactly the provider's. A stream cut short never sends that chunk, so its usage stays undefined.
+ *
+ * A stream that merely STOPS is treated as broken, never as finished. The SDK's iterator swallows
+ * an abort (openai core/streaming.js returns quietly on isAbortError), so a caller's cancel or the
+ * wall-clock abort ends the loop exactly like a clean end — and a connection the provider closes
+ * early ends it the same way. Neither carries a finish_reason, so: the loop ending with the signal
+ * aborted, or with no finish_reason ever seen, or a chunk carrying an `error` body, all throw INSIDE
+ * the try and take the same before/after-emission rule as a transport throw.
  */
 async function readStream(
   stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>,
   onTextDelta: (delta: string) => void,
+  signal?: AbortSignal,
 ): Promise<StreamedLeg> {
   let text = '';
   let reasoning = '';
@@ -432,6 +440,12 @@ async function readStream(
   let error: unknown;
   try {
     for await (const ch of stream) {
+      // OpenRouter reports a mid-stream provider failure as a chunk with an `error` body (the SDK
+      // throws on most of these itself; this catches the ones it lets through).
+      const chunkErr = (ch as { error?: { message?: string } | string }).error;
+      if (chunkErr) {
+        throw new Error(`stream error chunk: ${typeof chunkErr === 'string' ? chunkErr : chunkErr.message ?? JSON.stringify(chunkErr)}`);
+      }
       id ||= ch.id ?? '';
       created ||= ch.created ?? 0;
       model ||= ch.model ?? '';
@@ -461,6 +475,10 @@ async function readStream(
         onTextDelta(d.content);
       }
     }
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error ? signal.reason : new Error('stream aborted before it finished');
+    }
+    if (finish === null) throw new Error('stream ended without a finish_reason (cut off mid-reply)');
   } catch (err) {
     // Nothing went out yet: this is an ordinary failed call, and the lane policy above it (starved
     // retry, cross-lane fallback) still owns it. Once something went out it is not: see
@@ -540,7 +558,7 @@ export async function callOpenAICompatible(
   ): Promise<{ resp: OpenAI.Chat.Completions.ChatCompletion; body: unknown; emitted: boolean; error?: unknown }> => {
     if (!onTextDelta || !sendStream) return { resp: await sendPlain(p, sendOpts), body: p, emitted: false };
     const body = toStreamingParams(p);
-    return { ...(await readStream(sendStream(body, sendOpts), onTextDelta)), body };
+    return { ...(await readStream(sendStream(body, sendOpts), onTextDelta, sendOpts.signal)), body };
   };
   const first = await sendLeg(params);
   let resp = first.resp;
@@ -750,6 +768,10 @@ async function runWithCallTimeout(run: LaneRunner, provider: LlmProvider, req: L
       ctl.abort();
       settled = true;
       if (emitted) {
+        // Deliberately NO `raw` and NO `usage`: the lane that stopped answering never sent its final
+        // chunk, so there is nothing true to put there. Readers of those fields — the token ledger
+        // (writes zeros) and the latency benchmark (reads raw.usage.* and raw.provider off traces) —
+        // see a call with no provider numbers, which is what this was.
         resolve({
           text: streamed, toolCalls: [], stopReason: 'error', truncated: false,
           provider, model, emitted: true,
@@ -980,7 +1002,11 @@ export async function callLLM(req: LlmRequest, run: LaneRunner = runOn): Promise
   // result.toolCalls here, BEFORE record(), so tracing/the dashboard see them exactly like native
   // calls and every caller dispatches identically. Dedupe against any native calls (belt-and-braces:
   // a misconfig or a provider that tool-called anyway must not double-dispatch one action).
-  if (req.toolsViaJson) {
+  // NOT from a broken partial (a stream that emitted, then broke or timed out): its envelope is cut
+  // mid-JSON, and parseReply's repair tiers would happily close a half-written tool_calls entry into
+  // an action nobody finished asking for. Same rule as the lane's native calls on that path.
+  const brokenPartial = result.emitted === true && result.stopReason === 'error';
+  if (req.toolsViaJson && !brokenPartial) {
     const envCalls = parseReply(result.text).toolCalls ?? [];
     if (envCalls.length) {
       const seen = new Set(result.toolCalls.map(t => `${t.name} ${JSON.stringify(t.input)}`));
