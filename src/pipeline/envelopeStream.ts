@@ -92,9 +92,10 @@ function noSplitAfterPeriod(buf: string): boolean {
 }
 
 // Extended_Pictographic covers the emoji block; U+FE0F (variation selector-16, forces the emoji
-// presentation) and U+200D (ZWJ, joins emoji into one glyph like a family or a flag) ride along
-// with it but aren't Extended_Pictographic themselves.
-const EMOJI_UNIT = /^(?:\p{Extended_Pictographic}|[\u{FE0F}\u{200D}])$/u;
+// presentation), U+200D (ZWJ, joins emoji into one glyph like a family), U+20E3 (the keycap), the
+// skin-tone modifiers and the regional indicators that pair into a flag ride along with it but
+// aren't Extended_Pictographic themselves.
+const EMOJI_UNIT = /^(?:\p{Extended_Pictographic}|\p{Emoji_Modifier}|\p{Regional_Indicator}|[\u{FE0F}\u{200D}\u{20E3}])$/u;
 
 function isHighSurrogate(c: string): boolean {
   const code = c.charCodeAt(0);

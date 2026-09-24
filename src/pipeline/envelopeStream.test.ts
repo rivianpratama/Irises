@@ -147,6 +147,9 @@ test('an ellipsis, dotted or glyph, never splits the sentence', () => {
 test('an emoji run right after a boundary stays with the preceding sentence', () => {
   const r = run(['{"confidence_level":1,"tool_calls":null,"bubbles":[{"text":"done. 😀 next"}]}']);
   assert.deepEqual(r.out, ['0:done. 😀', '0:next']);
+  // A skin tone or a flag is still one emoji, and stays with the line it reacts to.
+  assert.deepEqual(run(['{"tool_calls":null,"bubbles":[{"text":"you got it. 👍🏽 go"}]}']).out, ['0:you got it. 👍🏽', '0:go']);
+  assert.deepEqual(run(['{"tool_calls":null,"bubbles":[{"text":"proud. 🇮🇩 ok"}]}']).out, ['0:proud. 🇮🇩', '0:ok']);
 });
 
 // --- an invalid \uXXXX escape is dropped, not decoded to a NUL (fix review item 7) ---
