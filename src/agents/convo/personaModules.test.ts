@@ -244,9 +244,15 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  *     that the beat may be the whole reply.
  *   · craft/attachments.md −16: its two quoted file-look beats become "one short holding beat".
  *     Every other file held.
+ *
+ * Then **+38**, the same rule's second pass, Context.md alone (92,497 → 92,535): the naming
+ * section's RIGHT list of three stock beats becomes one sentence (a beat in which the only one doing
+ * anything is her, no other doer, no place the work goes, no how), and the source question stops
+ * quoting a sample venue ask and a sample clarifying line and says to ask one quick question naming
+ * the two places. Every other file held.
  */
-const CORPUS_CHARS = 156_742;
-const CORPUS_SHA256 = '6c5d0350acc615ac99cd7f88f14f8ba758d8fcc6d2f41ea8cf1970ccc04847d3';
+const CORPUS_CHARS = 156_780;
+const CORPUS_SHA256 = '4942e45d4d59d482b68d6ad354ac04c63d2ff3bda4e09abf32f7c7d54f412914';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 

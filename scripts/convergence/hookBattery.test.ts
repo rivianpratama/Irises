@@ -1021,8 +1021,8 @@ test('h5: no hooks:select receipt leaves the gate unscored', () => {
 test('h5: the holding line a delegation REQUIRES is not the leaf this build is named after', () => {
   // The one way this battery could still fail a healthy engine, and 'deploy prod' is the probe it
   // would fail on. `delegate_to_ops` tells her in its own description (agents/convo/tools.ts) that
-  // she will not get the answer this turn and so MUST write a short flat holding text — "looking up
-  // that one now" — and the judge, told to be literal, reads exactly that as `leaf`. The receipt
+  // she will not get the answer this turn and so MUST send one short holding beat — and the judge,
+  // told to be literal, reads exactly that as `leaf`. The receipt
   // settles it: the turn's `toolCalls` says real work went out beside the line. A WARN naming the
   // tool, so it stays a case for a person, and NOT a failing verdict aimed at the persona block.
   const delegated = score(item('h5'), {
