@@ -236,10 +236,10 @@ const typingState = new Map<string, { isTyping: boolean; at: number }>();
 // don't use it). We wait for quiet after the LAST message, and every new message RESETS that window
 // — so a whole burst is compiled and answered once. The window GROWS with the burst: the base is
 // BATCH_SETTLE_MS and each additional message adds BATCH_SETTLE_INCREMENT_MS (someone firing off a
-// lot is clearly mid-thought), capped at BATCH_MAX_SETTLE_MS. E.g. 5s, 6s, 7s, … up to 20s.
-const BATCH_SETTLE_MS = Number(process.env.BATCH_SETTLE_MS || 5000);                    // base quiet window (1st message)
-const BATCH_SETTLE_INCREMENT_MS = Number(process.env.BATCH_SETTLE_INCREMENT_MS || 1000); // added per extra message in the burst
-const BATCH_MAX_SETTLE_MS = Number(process.env.BATCH_MAX_SETTLE_MS || 20000);            // ceiling on the (grown) window
+// lot is clearly mid-thought), capped at BATCH_MAX_SETTLE_MS. E.g. 1.8s, 2.2s, 2.6s, … up to 4s.
+const BATCH_SETTLE_MS = Number(process.env.BATCH_SETTLE_MS || 1800);                    // base quiet window (1st message)
+const BATCH_SETTLE_INCREMENT_MS = Number(process.env.BATCH_SETTLE_INCREMENT_MS || 400); // added per extra message in the burst
+const BATCH_MAX_SETTLE_MS = Number(process.env.BATCH_MAX_SETTLE_MS || 4000);            // ceiling on the (grown) window
 const PAUSE_WHILE_TYPING = process.env.PAUSE_WHILE_TYPING === 'true';          // pause our send while the user is mid-typing (default OFF)
 
 // The rolling window for the current burst, grown by how many messages are already queued.
