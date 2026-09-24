@@ -428,6 +428,24 @@ test('"got it, revised" with nothing changed this turn gets exactly one re-ask',
   assert.equal(tradedBack.text, FABRICATED.join('\n---\n'), 'a promise traded for an unbacked claim is not accepted');
 });
 
+test('a bare completion word on a turn that asked for nothing is about their day, never a claim', () => {
+  // Observed live (2026-09-24 latency round): "finally finished the deck", then "lol". The draft
+  // said the deck was done, the bare "done" read as her claiming a change, and the forced re-ask
+  // shipped an apology for an action nobody asked about. A share or idle turn asked for nothing, so
+  // a completion word there is about THEIR thing.
+  const banter = { taskTurn: false };
+  for (const line of ['done', 'deck: done', 'all done, go rest', 'fixed', 'all set for tomorrow then']) {
+    assert.equal(detectUnbackedClaim([line], null, false, banter).claimed, false, line);
+  }
+  // A verb with its object still says SHE changed something, whatever the turn asked for.
+  for (const line of ['got it, revised the morning one', 'switched it', 'i changed the 7am one to govt news', 'cancelled it']) {
+    assert.equal(detectUnbackedClaim([line], null, false, banter).unbacked, true, line);
+  }
+  // And a task turn keeps the whole lexicon, which is also the default when the turn kind is unknown.
+  assert.equal(detectUnbackedClaim(['done'], null, false, { taskTurn: true }).unbacked, true);
+  assert.equal(detectUnbackedClaim(['done'], null, false).unbacked, true);
+});
+
 test('a claim on the outcome pass that calls nothing, beside a miss nothing fixed, falls back', async () => {
   // The first pass set one reminder and missed a cancel. The pass called nothing and wrote "all
   // done … the gym one is gone", and the trash reminder that landed used to back the whole line,

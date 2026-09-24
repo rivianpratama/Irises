@@ -2164,7 +2164,7 @@ async function enforcePromiseKept(
   args: { res: LlmResult; chatId: string; handle: string | undefined; turn?: ConvoTurnContext },
   bubbles: string[],
   guard: ToolCallGuard,
-  opts: { retry?: boolean; carried?: TurnEffects; earlierBacksClaims?: boolean; budget?: ConvoCallBudget } = {},
+  opts: { retry?: boolean; carried?: TurnEffects; earlierBacksClaims?: boolean; budget?: ConvoCallBudget; taskTurn?: boolean } = {},
 ): Promise<{ res: LlmResult; fired: boolean; promise: boolean; claim: boolean }> {
   const none = { fired: false, promise: false, claim: false };
   if (!unkeptPromiseGuardEnabled()) return { res: args.res, ...none };
@@ -2179,7 +2179,7 @@ async function enforcePromiseKept(
   // because a miss of that same turn still stands beside it (see the outcome pass's caller).
   const backedEarlier = opts.earlierBacksClaims !== false && changedEarlier(opts.carried);
   const verdict = detectUnkeptPromise(bubbles, res.toolCalls, active);
-  const claimVerdict = detectUnbackedClaim(bubbles, res.toolCalls, backedEarlier);
+  const claimVerdict = detectUnbackedClaim(bubbles, res.toolCalls, backedEarlier, { taskTurn: opts.taskTurn });
   const phrase = verdict.unkept ? verdict.phrase : undefined;
   const claim = claimVerdict.unbacked ? claimVerdict.phrase : undefined;
   if (!phrase && !claim) return { res, ...none };
@@ -2223,7 +2223,7 @@ async function enforcePromiseKept(
       // TALKS must be honest on both counts, or it has traded one false line for the other ("on it
       // now" with nothing started, in place of a claimed change, or the reverse).
       const again = detectUnkeptPromise(retryBubbles, retry.toolCalls, active);
-      const claimAgain = detectUnbackedClaim(retryBubbles, retry.toolCalls, backedEarlier);
+      const claimAgain = detectUnbackedClaim(retryBubbles, retry.toolCalls, backedEarlier, { taskTurn: opts.taskTurn });
       if (retry.toolCalls.length && !(phrase && again.unkept) && !(claim && claimAgain.unbacked)) {
         out = retry;
         resolved = 'tool_call';
@@ -3671,7 +3671,12 @@ export async function processConvoResult(args: {
     && withoutFixedMisses(args.carried.results, []).some(r => !actionSucceeded(r));
   const guard = (settledTask || settledReconfirm)
     ? { res: args.res, fired: false, promise: false, claim: false }
-    : await enforcePromiseKept(args, replyBubbles(firstReply), guardToolCalls, { retry: !args.outcomePass, carried: backing, earlierBacksClaims: !missStands, budget });
+    : await enforcePromiseKept(args, replyBubbles(firstReply), guardToolCalls, {
+      retry: !args.outcomePass, carried: backing, earlierBacksClaims: !missStands, budget,
+      // A share or idle turn asked for nothing, so a bare completion word there is about their day
+      // (unkeptPromise.ts BARE_CLAIM_PHRASES). No directive is a task turn: the whole lexicon.
+      taskTurn: !args.hooks || args.hooks.directive.mode === 'task',
+    });
 
   // …and the rhythm backstop beside it, on the turns the selector forced quiet. ONE corrective
   // re-ask per turn, TOTAL: the promise guard goes first and this one stands down whenever it fired,
