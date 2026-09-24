@@ -19,6 +19,8 @@ CONV_ENV=()
 [ -n "${CONVO_EFFORT:-}" ] && CONV_ENV=(CONVO_EFFORT="$CONVO_EFFORT")
 case "${1:-}" in
   start)
+    # A server already on the port would answer the health check below and pass for this build.
+    if lsof -iTCP:"$PORT" -sTCP:LISTEN -n -P >/dev/null 2>&1; then echo "port $PORT is busy; run stop first" >&2; exit 1; fi
     mkdir -p "$HOME_DIR"
     (cd "$ROOT" && npm run build >/dev/null)
     (cd "$ROOT" && env PORT="$PORT" IRISES_HOME="$HOME_DIR" HERMES_BRIDGE_URL="http://127.0.0.1:9" \
@@ -27,6 +29,10 @@ case "${1:-}" in
     for _ in $(seq 1 60); do curl -sf "http://127.0.0.1:$PORT/health" >/dev/null && { echo "up on :$PORT"; exit 0; }; sleep 1; done
     echo "bench instance failed to come up; see $HOME_DIR/server.log" >&2; exit 1 ;;
   stop)
-    [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null || true; rm -f "$PIDFILE"; echo stopped ;;
+    [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null || true; rm -f "$PIDFILE"
+    # Whatever still listens on the bench port is a bench instance by construction (the guard
+    # above refuses 3000), so stop it too: a stale pidfile must never leave an old build serving.
+    for pid in $(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null); do kill "$pid" 2>/dev/null || true; done
+    echo stopped ;;
   *) echo "usage: $0 start|stop" >&2; exit 2 ;;
 esac
