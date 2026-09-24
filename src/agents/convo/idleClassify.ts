@@ -122,7 +122,7 @@ const cache = new Map<string, IdleVerdict>();
 /** What one lane call came back with: a verdict it earned, or the name of the way it failed. The
  *  two are kept apart rather than folded into `unclear` here because only a verdict may be cached
  *  or handed to a second reader — a failure is this call's own, and whoever reads it next asks again. */
-type ClassifyOutcome = IdleVerdict | { failed: string };
+type ClassifyOutcome = IdleVerdict | { failed: string; timedOut: boolean };
 
 /**
  * The calls that have been started and not yet answered, keyed exactly like the cache.
@@ -150,6 +150,13 @@ export function idleClassifyCacheSize(): number {
 }
 
 /**
+ * What `deadline` rejects with, as a class of its own so a reader can tell a lane that ran out the
+ * clock from a lane that threw. Its `name` stays the plain `Error` every receipt has always carried
+ * for a timeout, so the ring reads exactly as it did; the class is for this module's own branching.
+ */
+class IdleClassifyTimeout extends Error {}
+
+/**
  * Reject after `ms`. A copy of agents/deadline.ts's `withDeadline` in miniature rather than an
  * import of it: that module's DeadlineError is the orchestrator's vocabulary for a background agent
  * run that has to be triaged, and this failure is not triaged at all — it is read as a task turn and
@@ -157,7 +164,7 @@ export function idleClassifyCacheSize(): number {
  */
 function deadline<T>(work: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`idle classify exceeded ${ms}ms`)), ms);
+    const timer = setTimeout(() => reject(new IdleClassifyTimeout(`idle classify exceeded ${ms}ms`)), ms);
     (timer as { unref?: () => void }).unref?.();
     work.then(
       v => { clearTimeout(timer); resolve(v); },
@@ -204,7 +211,7 @@ function runClassify(ctx: ClassifyCtx, text: string, key: string): Promise<Class
       // and the consequence of this failure is one flat reply. The reading's receipt is the record,
       // and it says `failed` so a scan of the ring can tell a lane that is answering `unclear` from
       // a lane that is not answering. Nothing is cached: a failure teaches nothing.
-      return { failed: err instanceof Error ? err.name : 'error' };
+      return { failed: err instanceof Error ? err.name : 'error', timedOut: err instanceof IdleClassifyTimeout };
     }
 
     // Oldest-first eviction, one entry at a time: the map is only ever grown by this line, so it can
@@ -252,8 +259,11 @@ export function warmIdleClassify(ctx: ClassifyCtx, text: string): void {
  * flags: a live round has to be able to tell a working fallback from a dead one, and a hit that filed
  * nothing would make a busy install look like a lane that stopped being called.
  *
- * A joined call that FAILED is not this reading's answer. The failure taught the cache nothing, so
- * the reading makes its own call exactly as it would have with nothing running, and files that.
+ * A joined call that FAILED FAST is not this reading's answer. The failure taught the cache nothing,
+ * so the reading makes its own call exactly as it would have with nothing running, and files that. A
+ * joined call that TIMED OUT is the answer, and it is `unclear`, the verdict a timeout on the reading's
+ * own call produces: the lane already had the whole deadline and spent it, and a second call would
+ * stack a second deadline on the reply path behind the first. One deadline is the worst a turn waits.
  */
 export function makeIdleClassifier(ctx: ClassifyCtx): (text: string) => Promise<IdleVerdict> {
   return async (text: string): Promise<IdleVerdict> => {
@@ -282,6 +292,7 @@ export function makeIdleClassifier(ctx: ClassifyCtx): (text: string) => Promise<
     if (running) {
       const joined = await running;
       if (typeof joined === 'string') return file(joined, 'joined');
+      if (joined.timedOut) return file('unclear', 'joined', joined.failed);
     }
 
     const own = await runClassify(ctx, text, key);

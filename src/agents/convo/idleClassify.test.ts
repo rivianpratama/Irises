@@ -275,3 +275,23 @@ test('a warm call that failed teaches nothing, and the reading makes its own cal
   assert.equal(calls, 2, 'the failed warm poisoned nothing');
   assert.deepEqual(receipts(), [{ verdict: 'stall', cached: false, chars: 3 }]);
 });
+
+test('a warm call that timed out is read as unclear, not waited on a second time', async () => {
+  setup();
+  // The one failure a retry cannot help: the lane already had the whole deadline and spent it, so a
+  // second call would only stack a second deadline on the reply path behind the first.
+  // The lane answers far too late on a ref'd timer, as in the deadline test above: the deadline's own
+  // timer is unref'd, and a lane that never answered at all would let the event loop end the test first.
+  let calls = 0;
+  const late: ReturnType<typeof setTimeout>[] = [];
+  const llm = (() => {
+    calls++;
+    return new Promise<LlmResult>(resolve => { late.push(setTimeout(() => resolve(result('stall')), 5_000)); });
+  }) as never;
+  warmIdleClassify({ chatId: 'c1', llm, timeoutMs: 20 }, 'えっとね');
+  const verdict = await makeIdleClassifier({ chatId: 'c1', llm, timeoutMs: 20 })('えっとね');
+  late.forEach(clearTimeout);
+  assert.equal(verdict, 'unclear', 'the same verdict a timeout on the reading itself produces');
+  assert.equal(calls, 1, 'no second call after the warm spent the deadline');
+  assert.deepEqual(receipts(), [{ verdict: 'unclear', cached: false, joined: true, chars: 4, failed: 'Error' }]);
+});
