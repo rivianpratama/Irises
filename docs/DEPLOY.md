@@ -227,7 +227,7 @@ that file is parsed once at boot, so an unrestarted change is a change that sile
 run that changed the **engine's `.env`** (`--front`, and the `IRISES_URL` a `--port` move carries
 with it — only where the install wrote that key and it still names the port being moved off; a
 `--port` always restarts Irises either way) bounces the engine gateway, which reads those keys only
-at its start. A `--front`-only run is therefore engine-side only: it takes no backup of this clone,
+at its start. A run that restarted Irises bounces the gateway as well, whichever file it changed. A `--front`-only run is therefore engine-side only: it takes no backup of this clone,
 does not restart Irises, and says `not restarting: only the engine's side changed, and Irises reads
 none of it at boot`. `--yes` is the non-interactive form, `--no-restart` leaves the running server
 on the old settings — except under `--service on|off`, where installing or removing the unit IS the

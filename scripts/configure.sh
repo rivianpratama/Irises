@@ -35,7 +35,7 @@
 #   --no-restart           write the settings, leave the running server on the old ones. A
 #                          --service on|off transition starts or stops Irises anyway — installing a
 #                          unit and leaving it stopped is a state nobody asked for
-#   --no-gateway-restart   skip the engine gateway bounce a --front or --port change would do
+#   --no-gateway-restart   skip the gateway bounce that follows any Irises restart or engine write
 #   -h, --help             this text
 #
 # ENVIRONMENT. Secrets travel this way and never on argv: a command line is readable by every other
@@ -1164,6 +1164,10 @@ if [ -n "$ENGINE_BACKUP" ]; then BACKUP_SHOWN="$BACKUP_SHOWN · engine: $ENGINE_
 
 RESTART_STATE=""
 SERVICE_STATE="unchanged"
+# Set once Irises was actually cycled onto the new settings, by either arm below. The gateway is
+# bounced after it: the engine and the server it hands chats to come up together, so a restart of
+# one is never left running against a gateway that booted before it.
+IRISES_RESTARTED=0
 SHA="$(built_sha "$ROOT")"
 # The port the proof has to target is the one this run ASKED for. .env already carries it, so
 # irises_port would agree — but a verification that reads back its own write proves nothing.
@@ -1219,6 +1223,7 @@ if [ -n "$SERVICE_PLAN" ]; then
     exit 4
   fi
   RESTART_STATE="$RESTART_STATE — build $(printf '%.7s' "${SHA:-unknown}") verified live on :$PORT_NOW"
+  IRISES_RESTARTED=1
 elif [ "$CLONE_CHANGED" = "0" ]; then
   # BEFORE the --no-restart arm, because there is nothing here for --no-restart to be skipping: an
   # engine-only run changed the ENGINE's file and nothing of hers. Tested the other way round, the
@@ -1253,6 +1258,7 @@ else
       "Irises:    restarted, but /health did not report build $(printf '%.7s' "${SHA:-unknown}") within 60s — read $(irises_home)/logs/server.log"
     exit 4
   fi
+  IRISES_RESTARTED=1
   if [ -n "$SHA" ]; then
     RESTART_STATE="restarted — build $(printf '%.7s' "$SHA") verified live on :$PORT_NOW"
   else
@@ -1262,11 +1268,16 @@ fi
 
 # ── the engine's gateway ─────────────────────────────────────────────────────
 # IRISES_URL and IRISES_FRONT are read when the gateway STARTS and at no other moment, so an engine
-# write nobody bounced is a setting that changed a file and nothing else.
-GATEWAY_STATE="n/a (no engine-side change)"
-if [ "$ENGINE_CHANGED" = "1" ] && [ "$ENGINE" != "off" ]; then
+# write nobody bounced is a setting that changed a file and nothing else. And a restart of Irises
+# always takes the gateway with it, engine-side change or not.
+GATEWAY_STATE="n/a (no engine-side change, Irises not restarted)"
+if { [ "$ENGINE_CHANGED" = "1" ] || [ "$IRISES_RESTARTED" = "1" ]; } && [ "$ENGINE" != "off" ]; then
   if [ "$DO_GATEWAY" = "0" ]; then
-    GATEWAY_STATE="skipped (--no-gateway-restart) — the engine reads IRISES_URL / IRISES_FRONT only when its gateway starts"
+    if [ "$ENGINE_CHANGED" = "1" ]; then
+      GATEWAY_STATE="skipped (--no-gateway-restart) — the engine reads IRISES_URL / IRISES_FRONT only when its gateway starts"
+    else
+      GATEWAY_STATE="skipped (--no-gateway-restart) — Irises restarted, the gateway did not"
+    fi
   elif gateway_restart "$ENGINE" 90; then
     GATEWAY_STATE="bounced and verified"
   else
