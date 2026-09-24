@@ -133,7 +133,7 @@ function floorFor(opts: VoiceInstantOpts): string {
     case 'holding': return opts.taskKind ? holdingFloor(opts.taskKind, recent) : pickFresh(HOLDING_DEFAULT, recent);
     case 'still_on_it': return stillOnItText(recent);
     case 'heartbeat': return heartbeatText({ addressHint: opts.addressHint, dealHint: opts.dealHint });
-    case 'progress': return stillOnItText();
+    case 'progress': return stillOnItText(recent);
   }
 }
 

@@ -97,6 +97,9 @@ export function helpText(): string {
  *  the most recent is never repeated. Compared trimmed and case-blind, since a recorded beat went
  *  through the send path. `rand` is the test seam. */
 export function pickFresh<T extends string>(pool: readonly T[], recent: readonly string[], rand: () => number = Math.random): T {
+  // Every pool here is a non-empty literal, so an empty one is a coding slip, not a runtime case —
+  // say so plainly instead of returning `undefined` into the send path.
+  if (!pool.length) throw new Error('pickFresh: empty pool');
   const key = (s: string) => s.trim().toLowerCase();
   const lastUsed = new Map<string, number>();
   recent.forEach((beat, i) => lastUsed.set(key(beat), i));

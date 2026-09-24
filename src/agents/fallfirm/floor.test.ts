@@ -53,6 +53,10 @@ test('pickFresh with every item recent returns the least recently used, never th
   }
 });
 
+test('pickFresh refuses an empty pool plainly', () => {
+  assert.throws(() => pickFresh([], []), /empty pool/);
+});
+
 test('pickFresh with no history still rolls across the whole pool', () => {
   assert.equal(pickFresh(['a', 'b', 'c'], [], () => 0), 'a');
   assert.equal(pickFresh(['a', 'b', 'c'], [], () => 0.999), 'c');

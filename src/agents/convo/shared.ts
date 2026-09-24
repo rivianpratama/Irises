@@ -4326,10 +4326,10 @@ export async function processConvoResult(args: {
           originConfidence: reply.confidenceLevel,
           memoryHits: held.count,
         });
-        // Keep Irises's own words wherever they're safe: the draft's leading holding-style bubbles
-        // ("lemme check your records for martinez", "give me one sec") survive as the holding text —
-        // only the un-grounded tail (claimed results) is discarded. When the draft has no safe
-        // opener, the voiced instant holding line below takes over as before. lastUser is the ground:
+        // Keep Irises's own words wherever they're safe: the draft's first holding beat ("lemme check
+        // your records for martinez", a bare "hmm") survives as the holding text — the rest of the
+        // draft, un-grounded tail and all, is discarded. When the draft has no safe beat, the voiced
+        // instant holding line below takes over as before. lastUser is the ground:
         // figures the user said themselves may echo in the holding line.
         const salvaged = salvageHoldingText(normalizedText, lastUser);
         textParts.length = 0;
