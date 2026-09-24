@@ -22,8 +22,8 @@ case "${1:-}" in
     mkdir -p "$HOME_DIR"
     (cd "$ROOT" && npm run build >/dev/null)
     (cd "$ROOT" && env PORT="$PORT" IRISES_HOME="$HOME_DIR" HERMES_BRIDGE_URL="http://127.0.0.1:9" \
-      "${CONV_ENV[@]}" \
-      nohup node dist/index.js >"$HOME_DIR/server.log" 2>&1 & echo $! >"$PIDFILE")
+      ${CONV_ENV[@]+"${CONV_ENV[@]}"} \
+      nohup node dist/index.js >"$HOME_DIR/server.log" 2>&1 </dev/null & echo $! >"$PIDFILE")
     for _ in $(seq 1 60); do curl -sf "http://127.0.0.1:$PORT/health" >/dev/null && { echo "up on :$PORT"; exit 0; }; sleep 1; done
     echo "bench instance failed to come up; see $HOME_DIR/server.log" >&2; exit 1 ;;
   stop)
