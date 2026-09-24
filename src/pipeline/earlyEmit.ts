@@ -106,7 +106,14 @@ export function streamArmed(f: PreCallFacts): boolean {
  * tripwires — cheapest and most likely first, though the checks are independent and a sentence can
  * only ever carry one of these at a time in practice.
  */
-export function sentenceBlocker(text: string, ask: string): 'promise' | 'claim' | 'refusal' | 'internal' | null {
+export function sentenceBlocker(
+  text: string,
+  ask: string,
+  // A share or idle turn asked for nothing, so a bare completion word there is about their day, the
+  // same reading the whole-reply guard gives it (unkeptPromise.ts BARE_CLAIM_PHRASES). Default: a
+  // task turn, the whole lexicon.
+  taskTurn = true,
+): 'promise' | 'claim' | 'refusal' | 'internal' | null {
   // A promise ("lemme check that") with nothing behind it — no tool call and no active run — reads
   // one sentence early exactly the way it would read as a whole reply: it can't be backed by a call
   // that hasn't happened yet, because the envelope carrying the tool call hasn't finished streaming.
@@ -114,7 +121,7 @@ export function sentenceBlocker(text: string, ask: string): 'promise' | 'claim' 
   // A claim of a change ("revised it") is judged the same way: no mutating call and nothing an
   // earlier pass of this turn already backed it with, both of which are true by construction — the
   // envelope this sentence is streaming out of hasn't run anything yet either.
-  if (detectUnbackedClaim([text], [], false).unbacked) return 'claim';
+  if (detectUnbackedClaim([text], [], false, { taskTurn }).unbacked) return 'claim';
   // The false-refusal floor's own subject map, read against this one sentence and the user's ask —
   // the same signature the whole-reply floor uses (routingGate.ts:283).
   if (refusedCapabilities(text, ask).length > 0) return 'refusal';

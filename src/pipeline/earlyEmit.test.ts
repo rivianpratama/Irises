@@ -57,6 +57,14 @@ test('sentenceBlocker: an unbacked claim', () => {
   assert.equal(sentenceBlocker('got it, revised the morning one', 'can you move it earlier'), 'claim');
 });
 
+test('sentenceBlocker: a bare done on a turn that asked nothing is their day, and streams', () => {
+  // The whole-reply guard reads it that way (unkeptPromise.ts BARE_CLAIM_PHRASES), so the early
+  // check must too, or a share turn's "done" would disarm a reply the full pass lets ship.
+  assert.equal(sentenceBlocker('deck: done', 'finally finished the deck', false), null);
+  assert.equal(sentenceBlocker('deck: done', 'change my reminder to 8'), 'claim');
+  assert.equal(sentenceBlocker('got it, revised the morning one', 'lol', false), 'claim');
+});
+
 test('sentenceBlocker: a clean sentence carrying no failure shape', () => {
   assert.equal(sentenceBlocker('408', 'whats 17% of 2400'), null);
 });

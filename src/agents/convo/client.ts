@@ -150,6 +150,7 @@ function armEarlySend(
   ask: string,
   chatId: string,
   handle: string | undefined,
+  taskTurn: boolean,
 ): {
   onTextDelta: (delta: string) => void; end: () => void; settled: () => Promise<void>; sent: string[];
   committed: () => boolean; freeze: () => void;
@@ -171,7 +172,7 @@ function armEarlySend(
       if (!armed) return;
       if (bubble >= BUBBLE_HARD_CAP - 1) { disarm('hard_cap'); return; }
       const clean = cleanEarlySentence(text);
-      const blocked = clean ? sentenceBlocker(clean, ask) : 'empty';
+      const blocked = clean ? sentenceBlocker(clean, ask, taskTurn) : 'empty';
       if (blocked) { disarm(blocked); return; }
       queued++;
       const isFirst = queued === 1;
@@ -911,7 +912,7 @@ export async function chat(
     introOrFirstMove: !!introWeave,
     isBurst: (chatContext?.burstManifest?.length ?? 1) > 1,
   })
-    ? armEarlySend(earlySend, textToSend, chatId, handle)
+    ? armEarlySend(earlySend, textToSend, chatId, handle, (hookDirective?.mode ?? 'task') === 'task')
     : null;
 
   const firstReq: LlmRequest = {
