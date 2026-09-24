@@ -93,13 +93,14 @@ export interface LlmRequest {
   toolsViaJson?: boolean;
   // Where the STABLE, cache-reusable prefixes of `system` end, as character offsets in ascending
   // order — Convo passes two (agents/convo/promptSections.ts promptCacheBreakpoints): the static
-  // persona head, and the slot that is stable within a chat (the tool docs plus the craft pages).
-  // When set AND the role opts into caching (CACHE_SYSTEM[role]), the Anthropic path emits one
-  // `cache_control` block per span plus an uncached remainder, so a cache read matches everything up
-  // to the last offset that hasn't changed. Without any of them, a role whose system carries ANY
-  // per-turn-varying tail (Convo embeds the current time to ms) would cache-WRITE the whole system
-  // every call: zero reads, plus a ~25% write premium, and the write tokens still count toward the
-  // daily cap. Offsets outside (0, system.length) or that don't advance are ignored, at most
+  // persona head, and the end of its system message, which is stable within a chat (its per-turn
+  // tail rides in `messages`, after the history). When set AND the role opts into caching
+  // (CACHE_SYSTEM[role]), the Anthropic path emits one `cache_control` block per span plus an
+  // uncached remainder when one is left, so a cache read matches everything up to the last offset
+  // that hasn't changed. Without any of them, a role whose system carries ANY per-turn-varying part
+  // would cache-WRITE the whole system every call: zero reads, plus a ~25% write premium, and the
+  // write tokens still count toward the daily cap. Offsets outside (0, system.length] or that don't
+  // advance are ignored, at most
   // MAX_CACHE_BREAKPOINTS are used, and the whole field is ignored on the OpenRouter/OpenAI lanes
   // (prompt caching is Anthropic-only; Convo's OpenRouter primary is deepseek).
   systemCacheBreakpoints?: readonly number[];

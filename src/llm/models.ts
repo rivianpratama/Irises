@@ -131,13 +131,12 @@ export const EFFORT: Record<LlmRole, EffortLevel | null> = {
 /** Cache the large, stable system prefix, per role. Convo (env: CONVO_CACHE_SYSTEM, default on):
  *  its large persona is byte-identical every turn and far over the 4096-token cache floor, so
  *  caching it drops ~90% off the persona input WHENEVER Convo runs on the Anthropic lane — its
- *  transient-error fallback, and any deliberate CONVO_PROVIDER=anthropic flip. CRITICAL: Convo's
- *  system is `persona + PER-TURN sections` (current time to ms, dossier, …), so this flag ALONE is
- *  not enough — a cache breakpoint must sit AFTER the persona, which is why convo/client.ts passes
- *  LlmRequest.systemCacheBreakpoints (see buildAnthropicSystem). Without that split the marker lands
- *  after the varying tail and every turn is a full cache WRITE (no reads, +25% premium) — do not
- *  remove the systemCacheBreakpoints plumbing. Its second offset is the same argument for the tool
- *  docs and the craft pages behind the persona. Harmless no-op on the OpenRouter/deepseek primary
+ *  transient-error fallback, and any deliberate CONVO_PROVIDER=anthropic flip. Convo's system is
+ *  `persona + the sections stable for the chat` (its per-turn tail rides in the messages, after the
+ *  history), and convo/client.ts passes LlmRequest.systemCacheBreakpoints for both halves (see
+ *  buildAnthropicSystem): the persona head, stable for the deployment, and the end of the system,
+ *  stable for the chat — do not remove the systemCacheBreakpoints plumbing, or a change to one
+ *  chat's tool list re-bills every chat's persona. Harmless no-op on the OpenRouter/deepseek primary
  *  lane: cache_control is an Anthropic-only feature non-Anthropic providers ignore. */
 export const CACHE_SYSTEM: Record<LlmRole, boolean> = {
   convo: parseBoolEnv(process.env.CONVO_CACHE_SYSTEM, true),

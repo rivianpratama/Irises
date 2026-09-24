@@ -112,14 +112,16 @@ type AnthropicSystemBlock = { type: 'text'; text: string; cache_control?: { type
 export const MAX_CACHE_BREAKPOINTS = 4;
 
 /**
- * The breakpoints actually usable on `system`, in order: positive, inside the string, and each one
- * strictly past the last (a zero-length block is rejected by the API, and an offset that doesn't
- * advance is exactly what an EMPTY stable slot hands in). Capped at the provider's limit. Pure.
+ * The breakpoints actually usable on `system`, in order: positive, no further than its end, and each
+ * one strictly past the last (a zero-length block is rejected by the API, and an offset that doesn't
+ * advance is exactly what an EMPTY stable slot hands in). An offset AT the end is usable: it is what
+ * Convo declares for a system message that is stable end to end, whose history-bearing tail rides
+ * in the messages instead (agents/convo/promptSections.ts). Capped at the provider's limit. Pure.
  */
 function cacheCutPoints(offsets: readonly number[] | undefined, len: number): number[] {
   const cuts: number[] = [];
   for (const offset of offsets ?? []) {
-    if (!Number.isFinite(offset) || offset <= 0 || offset >= len) continue;
+    if (!Number.isFinite(offset) || offset <= 0 || offset > len) continue;
     if (cuts.length && offset <= cuts[cuts.length - 1]) continue;
     cuts.push(offset);
     if (cuts.length === MAX_CACHE_BREAKPOINTS) break;
@@ -132,9 +134,10 @@ function cacheCutPoints(offsets: readonly number[] | undefined, len: number): nu
  * 1024/4096-token cached spans silently won't cache (no error). Three shapes:
  *  • caching off → the bare string (Anthropic bills it as ordinary input every call).
  *  • caching on WITH breakpoints → one block per span between them, each of those carrying
- *    `cache_control`, plus the remainder after the last one as a final UNcached block. Convo hands
- *    in two: the static persona head, then the slot that is stable WITHIN a chat (the tool docs and
- *    the craft pages, agents/convo/promptSections.ts). Without any split the single breakpoint would
+ *    `cache_control`, plus the remainder after the last one as a final UNcached block when there is
+ *    one. Convo hands in two: the static persona head, then the end of the system message, which is
+ *    stable WITHIN a chat (agents/convo/promptSections.ts) — so its system is two cached blocks and
+ *    no remainder. Without any split the single breakpoint would
  *    sit after the per-turn-varying tail (current time to ms, dossier, …), making every turn a full
  *    cache WRITE — no reads, ~25% premium, and the write tokens still count toward the daily cap.
  *    That is the bug the first breakpoint fixes; the second one is the same argument one level in —
@@ -160,7 +163,7 @@ export function buildAnthropicSystem(
     blocks.push({ type: 'text', text: system.slice(from, cut), cache_control: { type: 'ephemeral' } });
     from = cut;
   }
-  blocks.push({ type: 'text', text: system.slice(from) });
+  if (from < system.length) blocks.push({ type: 'text', text: system.slice(from) });
   return blocks;
 }
 

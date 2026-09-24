@@ -103,9 +103,10 @@ function trace(patch: TracePatch = {}): TurnTraceDetail {
     prompt: {
       sections: sections(patch.sectionsOver, patch.sectionsExtra),
       personaChars: 138_102,
-      dynChars: 11_000,
+      dynChars: 3_000,
       anchorChars: 2_908,
-      systemChars: 152_600,
+      systemChars: 141_150,
+      tailChars: 11_450,
       messagesChars: 1_207,
       transcriptRows: 8,
       // Derived for the same reason the section sizes above are, and it is the harder half to see:

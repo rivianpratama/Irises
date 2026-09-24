@@ -190,11 +190,12 @@ function turnInMode(mode: DriftMode): PersonaTurn {
   return { hooks, moments: [], thesis: '' };
 }
 
-/** The two static bookends after `</prompt>`: the drift anchor, then the JSON contract. The bare
- *  build carries no history, so the anchor's window band is the short one; `personaTurn` is what
- *  picks its mode, and omitting it is the task-turn fallback every non-Convo caller gets. */
+/** The two bookends that close the tail after its `</prompt>`: the drift anchor, then the JSON
+ *  contract. The bare build carries no history, so the anchor's window band is the short one;
+ *  `personaTurn` is what picks its mode, and omitting it is the task-turn fallback every non-Convo
+ *  caller gets. */
 function anchors(personaTurn?: PersonaTurn): { behavior: string; json: string } {
-  const { system } = buildSystemPromptSections(
+  const { tail: system } = buildSystemPromptSections(
     undefined, '', [], undefined, undefined, undefined, undefined, undefined,
     undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
     personaTurn,

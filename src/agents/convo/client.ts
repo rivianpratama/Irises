@@ -718,10 +718,9 @@ export async function chat(
   // Held in a variable (not inlined): recall_memory's second pass re-invokes the model with this
   // SAME system + messages, minus the recall tool (see processConvoResult).
   //
-  // The measuring variant of the assembler, for the same string plus a per-section size table — the
-  // sizes are what the turn receipt reports, and they are free here (`prompt.system` is the
-  // byte-identical output buildSystemPrompt returns, which is now just a wrapper over this call;
-  // see convo/promptSections.ts).
+  // The measuring variant of the assembler: the system message and the per-turn tail, plus a
+  // per-section size table — the sizes are what the turn receipt reports, and they are free here
+  // (see convo/promptSections.ts).
   // The three structural facts behind the craft-module gates (convo/personaModules.ts), none of them
   // re-derived: the attachment note this turn's text already carries, and the two reads the memory
   // loaders answered on the way past (memory/dossier.ts). Everything else a gate needs — the
@@ -743,24 +742,44 @@ export async function chat(
   const prompt = buildSystemPromptSections(chatContext, contextBlock, activeOps, updateNote ?? undefined, tools, history, textToSend, userTz, affectState, computed, capabilitySummary, climate, thread, introWeave, turnFocus, craftFacts, personaTurn, liveState);
   const system = prompt.system;
 
+  // What the model is actually sent: the system message (the persona and what is stable for this
+  // chat), the history, then THIS turn's tail as its own user message, and their message last,
+  // byte-identical to what it was before the tail existed. The order is the cache: the system
+  // message and the history rows the previous turn already sent are the same bytes it sent, so the
+  // provider can serve them from its prefix cache, and only the rows since, the tail and their
+  // message are new input.
+  //
+  // The tail is its own message, and carries no timestamp, for two reasons. The lane prefixes a
+  // message's stamp onto the front of its whole content (llm/timedMessages.ts), so folding the tail
+  // into their message would label the directive block with their arrival time. And their message
+  // stays last and untouched: the JSON anchor that closes the tail is then the last thing ahead of
+  // it, and nothing the model reads after the envelope contract is anything but what they said.
+  //
+  // Stored history never sees the tail — addMessage above wrote their text alone — so a later turn's
+  // history rows carry none of it. Everything that re-invokes the model this turn (the envelope
+  // retry, the recall and error-log passes, the silent-turn retry) spreads THIS list and appends
+  // after it, so each of those calls is a cache hit on this one.
+  const tailMessage: LlmMessage = { role: 'user', content: prompt.tail };
+  const turnMessages: LlmMessage[] = [...messages.slice(0, -1), tailMessage, messages[messages.length - 1]];
+
   try {
     const res = await (call ?? callConvoLLM)({
       role: 'convo',
       system,
-      // Where that system string's stable prefixes end — the persona head, then the tool docs and
-      // craft pages, which change only when this chat's tools or gates do. The Anthropic lane caches
-      // each of them instead of cache-writing the whole per-turn-varying system every call. Read off
+      // Where that system string's stable prefixes end — the persona head, then the end of the
+      // system message, which changes only when this chat's tools, roster or model map do. The
+      // Anthropic lane caches each of them instead of cache-writing the system every call. Read off
       // the sizes the assembler just reported, so no part of the string is measured twice.
       systemCacheBreakpoints: prompt.cacheBreakpoints,
       tools,
       jsonBubbles: true,   // force the schema-valid envelope at the API on BOTH providers
       toolsViaJson: true,  // tools are WRITTEN into that envelope (tool_calls), never sent natively
-      messages,
+      messages: turnMessages,
       trace: { chatId, handle, label: 'convo' },
     });
     const result = await processConvoResult({
       res, chatId, handle, chatContext, textToSend, history, media,
-      turn: { system, messages, tools, call, cacheBreakpoints: prompt.cacheBreakpoints },
+      turn: { system, messages: turnMessages, tools, call, cacheBreakpoints: prompt.cacheBreakpoints },
       computed,
       // THE zone this turn already resolved (above, from the stored `agent_tz` preference) — so a
       // reminder with no explicit timezone in the tool call rides the USER's clock, not the host's,
@@ -784,7 +803,9 @@ export async function chat(
       // already made, and the hit labels the turn-focus block rendered.
       trace: {
         prompt,
-        messages,
+        // The list the model was sent, tail included: the receipt measures the tail off `prompt`
+        // and leaves that message out of the transcript's numbers (diagnostics/turnTrace.ts).
+        messages: turnMessages,
         gates: {
           // The selection engine's accounting, straight off the pre-turn read. Null when selection
           // never ran (threading off, or a group identity — a room has no threads of its own).

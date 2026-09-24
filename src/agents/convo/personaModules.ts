@@ -231,8 +231,8 @@ export function craftModuleText(id: CraftModuleId): string {
  * Which craft this turn needs, rendered — and a disjoint-bucket receipt for the rest.
  *
  * PURE: every gate reads a fact off `ctx`, in registry order, and a page that stays out is never
- * read off disk. The joined text is one prompt section (`craft_modules`), pushed right after the
- * tool docs so the pages sit in the stable-within-a-chat slot ahead of the genuinely per-turn data.
+ * read off disk. The joined text is one prompt section (`craft_modules`), which leads the per-turn
+ * tail: its gates fire off this turn's shape, so it can never ride the cached system message.
  */
 export function renderCraftModules(ctx: ModuleGateInput): CraftModuleRender {
   const loaded: string[] = [];

@@ -272,7 +272,7 @@ export const AFFECT_JS = `
       + '</tr></thead><tbody>' + rows.map(function(r){
         var thin = r.transcriptShare < floor;
         return '<tr><td>'+M.esc(M.ago(r.at))+' ago</td>'
-          + '<td>'+M.fmtNum(r.systemChars)+' ch<br><span class="gauges">persona '+M.fmtNum(r.personaChars)+' \\u00B7 block '+M.fmtNum(r.dynChars)+'</span></td>'
+          + '<td>'+M.fmtNum(r.systemChars)+' ch<br><span class="gauges">persona '+M.fmtNum(r.personaChars)+' \\u00B7 block '+M.fmtNum(r.dynChars)+' \\u00B7 tail '+M.fmtNum(r.tailChars)+'</span></td>'
           + '<td'+(thin?' style="color:var(--warn)"':'')+'>'+M.pct(r.transcriptShare)+'<br><span class="gauges">'+r.transcriptRows+' rows \\u00B7 '+M.fmtNum(r.messagesChars)+' ch</span></td>'
           + '<td>'+r.cacheBreakpoints+'</td>'
           + '<td>'+sectionsSummary(r)+'</td>'

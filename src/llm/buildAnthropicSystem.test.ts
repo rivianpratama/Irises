@@ -51,6 +51,19 @@ test('TWO breakpoints → two cached prefixes in order, the tail still uncached'
   assert.equal(out.map(b => b.text).join(''), system, 'the split adds, drops and reorders nothing');
 });
 
+test('a breakpoint AT the end caches the whole remainder, with no empty block behind it', () => {
+  // Convo since its per-turn tail moved out of the system into the messages: the system message is
+  // stable end to end, so its last breakpoint is its own length. A zero-length trailing block would
+  // be rejected by the API.
+  const persona = 'PERSONA-'.repeat(10);
+  const stable = '\n\n<prompt>\ntool docs, the model map\n</prompt>';
+  const system = persona + stable;
+  assert.deepEqual(buildAnthropicSystem(system, true, [persona.length, system.length]), [
+    { type: 'text', text: persona, cache_control: { type: 'ephemeral' } },
+    { type: 'text', text: stable, cache_control: { type: 'ephemeral' } },
+  ]);
+});
+
 test('a breakpoint that does not advance is dropped — an empty stable slot leaves ONE breakpoint', () => {
   // What a turn with no tool docs and no craft page hands in: the second offset lands exactly where
   // the first did. It must not become a zero-length block (the API rejects those) — the request has

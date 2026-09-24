@@ -34,6 +34,7 @@ import {
 } from './personaModules.js';
 import { renderPersonaBlock } from '../../persona/policy.js';
 import { buildSystemPromptSections, convoPersonaChars, type ChatContext } from './shared.js';
+import { isSystemSection } from './promptSections.js';
 import { chat } from './client.js';
 import { addShortTerm } from '../../db/repositories/memoryShort.js';
 import { emptyMedia } from '../../webhook/types.js';
@@ -430,20 +431,20 @@ const args = (): BuildArgs => [
   { attachmentNote: false, emailFlag: false, thinProfile: false },
 ];
 
-test('the craft section sits right after the tool docs, once, inside the block', () => {
-  const { system, sections, craft } = buildSystemPromptSections(...args());
+test('the craft section leads the per-turn tail, once, inside its block', () => {
+  const { system, tail, sections, craft } = buildSystemPromptSections(...args());
   const names = sections.map(s => s.name);
-  assert.equal(names[names.indexOf('tool_docs') + 1], 'craft_modules', 'the craft pages follow the tool docs');
+  assert.equal(names.find(n => !isSystemSection(n)), 'craft_modules', 'the craft pages open the tail');
 
   const text = `${craftModuleText('send_order')}\n\n${craftModuleText('reminders')}`;
   assert.equal(sections.find(s => s.name === 'craft_modules')?.chars, text.length);
-  assert.equal(system.split(text).length - 1, 1, 'the craft text is in the prompt exactly once');
-  const at = system.indexOf(text);
-  // lastIndexOf on both tags: the persona TALKS about `<prompt>`/`</prompt>` in its trust-boundary
-  // section, so the first occurrence of either is prose, not the wrapper.
-  assert.ok(at > system.lastIndexOf('<prompt>\n'), 'it renders inside the per-turn block');
-  assert.ok(at < system.lastIndexOf('\n</prompt>'), 'and before the block closes');
-  assert.ok(at > convoPersona().length, 'and NOT in the cached persona prefix');
+  assert.equal(tail.split(text).length - 1, 1, 'the craft text is in the prompt exactly once');
+  const at = tail.indexOf(text);
+  assert.ok(at === '<prompt>\n'.length, 'it is the first thing inside the tail\'s block');
+  assert.ok(at < tail.lastIndexOf('\n</prompt>'), 'and before the block closes');
+  // The pages are gated per turn, so they must never be in the system message: one page loading
+  // there would re-bill the chat history behind it on every turn its gate flips.
+  assert.ok(!system.includes(text), 'and NOT in the cached system message');
 
   assert.deepEqual(
     craft.filter(m => m.rendered).map(m => m.id), ['send_order', 'reminders'],
@@ -460,21 +461,21 @@ test('the threading craft follows the thread section the engine really rendered,
   withThread[12] = { offer: THEME, outcomeAsk: null };
   const offered = buildSystemPromptSections(...withThread);
   assert.ok(offered.sections.some(s => s.name === 'thread'), 'the thread section rendered');
-  assert.ok(offered.system.includes(craftModuleText('threading')), 'so the tagging craft came with it');
+  assert.ok(offered.tail.includes(craftModuleText('threading')), 'so the tagging craft came with it');
   assert.deepEqual(
     offered.craft.filter(m => m.rendered).map(m => m.id), ['threading', 'send_order', 'reminders'],
   );
 
   const quiet = buildSystemPromptSections(...args());
   assert.ok(!quiet.sections.some(s => s.name === 'thread'), 'no candidate, no section');
-  assert.ok(!quiet.system.includes(craftModuleText('threading')), 'and nine thousand characters of tagging craft stay out');
+  assert.ok(!quiet.tail.includes(craftModuleText('threading')), 'and nine thousand characters of tagging craft stay out');
 });
 
 test('an outcome ask alone is enough — the craft is for reading how they took it, too', () => {
   const askOnly = args();
   askOnly[12] = { offer: null, outcomeAsk: { label: 'the dock boards', material: 'loop' } };
   const built = buildSystemPromptSections(...askOnly);
-  assert.ok(built.system.includes(craftModuleText('threading')));
+  assert.ok(built.tail.includes(craftModuleText('threading')));
 });
 
 test('the hook page loads off the caller\'s fact, never off the turn-focus block', () => {
@@ -486,17 +487,17 @@ test('the hook page loads off the caller\'s fact, never off the turn-focus block
   const blockOnly = args();
   blockOnly[14] = { text: 'hey', hits: [], shape: 'idle', idleStreak: 1, messageChars: 3 };
   const rendering = buildSystemPromptSections(...blockOnly);
-  assert.ok(rendering.system.includes('Turn: idle'), 'the turn-focus block really did render the idle line');
+  assert.ok(rendering.tail.includes('Turn: idle'), 'the turn-focus block really did render the idle line');
   assert.ok(
-    !rendering.system.includes(craftModuleText('hooks')),
+    !rendering.tail.includes(craftModuleText('hooks')),
     'but the page is gated on the caller\'s fact, which this turn did not set',
   );
 
   const factOnly = args();
   factOnly[15] = { attachmentNote: false, emailFlag: false, thinProfile: false, idleTurn: true };
   const gated = buildSystemPromptSections(...factOnly);
-  assert.ok(gated.system.includes(craftModuleText('hooks')), 'the fact alone loads it');
-  assert.ok(!gated.system.includes('Turn: idle'), 'with no turn-focus block in sight');
+  assert.ok(gated.tail.includes(craftModuleText('hooks')), 'the fact alone loads it');
+  assert.ok(!gated.tail.includes('Turn: idle'), 'with no turn-focus block in sight');
   assert.deepEqual(
     gated.craft.filter(m => m.rendered).map(m => m.id), ['send_order', 'reminders', 'hooks'],
   );
@@ -559,12 +560,14 @@ const fakeReply = (text: string): LlmResult => ({
   toolCalls: [], stopReason: 'end_turn', provider: 'anthropic', model: 'test',
 });
 
-/** The turn as the front door runs it, returning the system prompt the lane got. */
+/** The turn as the front door runs it, returning the prompt text the lane got: the system message,
+ *  then the per-turn tail, which rides as its own user message right before theirs (convo/client.ts). */
 async function systemFromRealTurn(handle: string, message: string, media = emptyMedia()): Promise<string> {
   const ctx: ChatContext = { isGroupChat: false, participantNames: [], chatName: null, senderHandle: handle };
   let system = '';
   await chat(randomUUID(), message, media, ctx, async req => {
-    system = system || req.system;
+    const tail = req.messages[req.messages.length - 2];
+    system = system || `${req.system}\n\n${typeof tail?.content === 'string' ? tail.content : ''}`;
     return fakeReply('one sec');
   });
   assert.ok(system.length > 1000, 'the lane really got a prompt');

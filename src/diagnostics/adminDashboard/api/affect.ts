@@ -380,6 +380,8 @@ export interface TraceRow {
   turnId: string;
   at: number;
   systemChars: number;
+  /** The per-turn tail message, sent after the history (0 on a receipt recorded before it existed). */
+  tailChars: number;
   messagesChars: number;
   personaChars: number;
   dynChars: number;
@@ -499,6 +501,7 @@ function rowFor(turnId: string, at: number, detail: unknown): TraceRow | null {
     turnId,
     at,
     systemChars: asNum(prompt.systemChars),
+    tailChars: asNum(prompt.tailChars),
     messagesChars: asNum(prompt.messagesChars),
     personaChars: asNum(prompt.personaChars),
     dynChars: asNum(prompt.dynChars),

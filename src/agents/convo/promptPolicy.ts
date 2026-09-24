@@ -139,8 +139,8 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
 
 /**
  * The floor under the live conversation's slice of everything the model reads —
- * `messagesChars / (systemChars + messagesChars)`, the same number the per-turn receipt reports
- * (diagnostics/turnTrace.ts).
+ * `messagesChars / (systemChars + tailChars + messagesChars)`, the same number the per-turn
+ * receipt reports (diagnostics/turnTrace.ts).
  *
  * Measured at **0.0068** on the mature fixture — 1,207 characters of a full 40-row window against a
  * 177k-character prompt — and pinned a hair below it. Read that number twice: two thirds of one

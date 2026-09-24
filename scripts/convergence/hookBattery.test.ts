@@ -97,7 +97,7 @@ function trace(patch: TracePatch = {}): TurnTraceDetail {
   return {
     prompt: {
       sections: [],
-      personaChars: 0, dynChars: 0, anchorChars: 0, systemChars: 0, messagesChars: 0,
+      personaChars: 0, dynChars: 0, anchorChars: 0, systemChars: 0, tailChars: 0, messagesChars: 0,
       transcriptRows: 0, transcriptShare: 1, craft: [], cacheBreakpoints: 0,
     },
     gates: {

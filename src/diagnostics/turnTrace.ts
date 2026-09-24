@@ -20,7 +20,7 @@
 //     actually went out, where the draft becomes the recorded detail.
 // recordTurnTrace is the one impure function: the flag, the emit, and the never-throw guard.
 
-import { isDynSection, type PromptSection } from '../agents/convo/promptSections.js';
+import { isDynSection, isSystemSection, type PromptSection } from '../agents/convo/promptSections.js';
 import { record } from './trace.js';
 import { TURN_TRACE_LABEL } from './traceLabels.js';
 import type { BubbleReport } from '../pipeline/bubbleJson.js';
@@ -44,16 +44,19 @@ export { TURN_TRACE_LABEL };
  * Hard bound on the recorded section list. A build can carry at most one entry per section id
  * (SECTION_IDS, currently 21), so this can never fire on an assembled prompt — it exists so a future
  * repeated push can't put an unbounded list into a 30-day store. Because it never fires in practice,
- * `sectionsTotalChars(sections) === systemChars` stays exhaustive rather than approximate
+ * `sectionsChars(sections)` equalling `{ system: systemChars, tail: tailChars }` stays exhaustive
+ * rather than approximate
  * (turnTrace.test.ts pins both halves of that sentence).
  */
 export const TRACE_SECTIONS_CAP = 32;
 
 /** What buildSystemPromptSections returns, structurally — the assembler's own result type is
  *  declared in agents/convo/shared.ts, and diagnostics must not import that 1.7k-line module. The
- *  `system` string is READ for its length and never stored. */
+ *  `system` and `tail` strings are READ for their lengths and never stored. */
 export interface MeasuredPrompt {
   system: string;
+  /** The per-turn tail, sent as its own user message after the history (convo/client.ts). */
+  tail: string;
   sections: readonly PromptSection[];
   personaChars: number;
   anchorChars: number;
@@ -289,24 +292,28 @@ export interface TurnTraceOutcome {
 export interface TurnTracePrompt {
   sections: PromptSection[];
   personaChars: number;
-  /** The per-turn block only (`<prompt>…</prompt>`'s sections) — persona and anchors excluded. */
+  /** The system message's block only (the `<prompt>…</prompt>` behind the persona) — persona
+   *  excluded, and so is every section that rides the tail: `tailChars` counts those. */
   dynChars: number;
   /** The trailing JSON envelope anchor. The behaviour anchor is a section in the list. */
   anchorChars: number;
   systemChars: number;
+  /** The per-turn tail message: its `<prompt>` block and the two anchors. Scaffolding, not
+   *  transcript, although it travels as a user message — so it is its own figure, and none of the
+   *  three transcript figures below count it. */
+  tailChars: number;
   messagesChars: number;
   transcriptRows: number;
-  /** messagesChars / (systemChars + messagesChars), to four decimals. */
+  /** messagesChars / (systemChars + tailChars + messagesChars), to four decimals. */
   transcriptShare: number;
   /**
-   * How many cache-reusable prefixes the prompt declared for the lane — 2 on a turn that carries
-   * tool docs or craft pages (the persona head, then that stable-within-a-chat slot), 1 when it
-   * carries neither, and 0 only from a caller that declared none, which a caching lane then bills as
-   * one whole-system cache write (llm/callLLM.ts buildAnthropicSystem).
+   * How many cache-reusable prefixes the prompt declared for the lane — 2 on every Convo turn (the
+   * persona head, then the whole system message, which is stable within a chat), and 0 only from a
+   * caller that declared none, which a caching lane then bills as one whole-system cache write
+   * (llm/callLLM.ts buildAnthropicSystem).
    *
    * The count, not the offsets: each offset is a running sum of section sizes this receipt already
-   * lists, so the only thing it adds is how many spans the lane was asked to cache — the number that
-   * says whether a turn's craft pages were re-billed at full price or read back from the cache.
+   * lists, so the only thing it adds is how many spans the lane was asked to cache.
    */
   cacheBreakpoints: number;
   /**
@@ -426,17 +433,23 @@ function contentChars(content: string | readonly unknown[]): number {
 
 function measurePrompt(prompt: MeasuredPrompt, messages: readonly TranscriptMessage[]): TurnTracePrompt {
   const systemChars = prompt.system.length;
-  const messagesChars = messages.reduce((n, m) => n + contentChars(m.content), 0);
-  const total = systemChars + messagesChars;
+  const tailChars = prompt.tail.length;
+  // The list the model was sent carries the tail as one of its user messages; the transcript is
+  // everything else. Matched by its content, which is the tail string itself (convo/client.ts), so
+  // a caller that handed in the transcript alone measures the same.
+  const transcript = messages.filter(m => m.content !== prompt.tail);
+  const messagesChars = transcript.reduce((n, m) => n + contentChars(m.content), 0);
+  const total = systemChars + tailChars + messagesChars;
   return {
     sections: prompt.sections.slice(0, TRACE_SECTIONS_CAP).map(s => ({ name: s.name, chars: s.chars })),
     personaChars: prompt.personaChars,
     // Measured off the WHOLE list, so the cap above can only shorten the listing, never the sizes.
-    dynChars: prompt.sections.reduce((n, s) => n + (isDynSection(s.name) ? s.chars : 0), 0),
+    dynChars: prompt.sections.reduce((n, s) => n + (isDynSection(s.name) && isSystemSection(s.name) ? s.chars : 0), 0),
     anchorChars: prompt.anchorChars,
     systemChars,
+    tailChars,
     messagesChars,
-    transcriptRows: messages.length,
+    transcriptRows: transcript.length,
     transcriptShare: total > 0 ? Math.round((messagesChars / total) * 10_000) / 10_000 : 0,
     cacheBreakpoints: prompt.cacheBreakpoints.length,
     craft: prompt.craft.map(c => ({ ...c })),

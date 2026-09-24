@@ -142,6 +142,12 @@ function build(personaTurn?: PersonaTurn): BuildArgs {
   ];
 }
 
+/** The whole prompt text one build hands the model, in reading order: the system message, then the
+ *  per-turn tail (the history sits between them on the wire, convo/client.ts). The hook section, the
+ *  thesis and the drift anchor all ride the tail; reading both halves keeps every byte-identity pin
+ *  below a pin on everything the build produced. */
+const textOf = (built: ReturnType<typeof buildSystemPromptSections>): string => `${built.system}\n\n${built.tail}`;
+
 const sectionsOf = (personaTurn?: PersonaTurn): SectionId[] =>
   buildSystemPromptSections(...build(personaTurn)).sections.map(s => s.name);
 
@@ -171,13 +177,13 @@ test('a TASK turn renders no hooks section — and not one byte differs from a t
   assert.ok(!task.sections.some(s => s.name === 'hooks'));
   // The no-regression pin the whole feature rests on: on the turns that are actually work, the
   // prompt is what an install that never had a hook engine would have built.
-  assert.equal(task.system, none.system);
+  assert.equal(textOf(task), textOf(none));
 });
 
 test('a QUIET turn renders the quiet block, and a HOOK turn the open-kinds one', () => {
   const quiet = buildSystemPromptSections(...build({ hooks: QUIET, moments: [], thesis: '' }));
-  assert.ok(quiet.system.includes(renderHooksSection(QUIET)));
-  assert.ok(quiet.system.includes(QUIET_LAW));
+  assert.ok(textOf(quiet).includes(renderHooksSection(QUIET)));
+  assert.ok(textOf(quiet).includes(QUIET_LAW));
   // A quiet block never names a kind as hers to spend: the mode has already spent the beat, and
   // naming one would be an instruction to think about it. The fourth word is the exception that
   // states the rule rather than breaking it — QUIET_LAW has always carried "no question", inside the
@@ -192,12 +198,12 @@ test('a QUIET turn renders the quiet block, and a HOOK turn the open-kinds one',
   assert.equal(quietBlock.split('question').length - 1, 1, 'and it appears there and nowhere else');
 
   const hook = buildSystemPromptSections(...build({ hooks: HOOK, moments: [], thesis: '' }));
-  assert.ok(hook.system.includes('Open to you this turn: a judgment, a callback or a tangent.'));
+  assert.ok(textOf(hook).includes('Open to you this turn: a judgment, a callback or a tangent.'));
 
   // …and only the ALLOWED kinds reach the prompt.
   const narrowed: HookDirective = { ...HOOK, forbidden: ['judgment', 'tangent'] };
   const one = buildSystemPromptSections(...build({ hooks: narrowed, moments: [], thesis: '' }));
-  assert.ok(one.system.includes('Open to you this turn: a callback.'));
+  assert.ok(textOf(one).includes('Open to you this turn: a callback.'));
 });
 
 test('a SHARE turn that also carries a thread block has its question spent before the section renders', () => {
@@ -213,24 +219,24 @@ test('a SHARE turn that also carries a thread block has its question spent befor
   // The same turn with nothing standing beside it: all four kinds named, and the line saying what a
   // follow-up IS rides under them.
   const alone = buildSystemPromptSections(...build(open));
-  assert.ok(alone.system.includes('Open to you this turn: a judgment, a callback, a tangent or a question.'));
-  assert.ok(alone.system.includes(SHARE_QUESTION_LINE));
+  assert.ok(textOf(alone).includes('Open to you this turn: a judgment, a callback, a tangent or a question.'));
+  assert.ok(textOf(alone).includes(SHARE_QUESTION_LINE));
 
   const withLoop = buildSystemPromptSections(...buildWithThread(open, LOOP_TURN));
   assert.ok(withLoop.sections.some(s => s.name === 'thread'), 'the thread block really rendered');
-  assert.ok(withLoop.system.includes('Open to you this turn: a judgment, a callback or a tangent.'),
+  assert.ok(textOf(withLoop).includes('Open to you this turn: a judgment, a callback or a tangent.'),
     'the three moves she makes out of what she holds survive; the one that asks them does not');
-  assert.ok(!withLoop.system.includes(SHARE_QUESTION_LINE), 'a ban she reads is a kind she is thinking about');
+  assert.ok(!textOf(withLoop).includes(SHARE_QUESTION_LINE), 'a ban she reads is a kind she is thinking about');
   // And the section is byte-for-byte the one a selector that had closed the kind itself would have
   // produced — the copy narrows the directive, it does not render a fourth variant of the block.
-  assert.ok(withLoop.system.includes(renderHooksSection({ ...SHARE, forbidden: ['question'] })));
+  assert.ok(textOf(withLoop).includes(renderHooksSection({ ...SHARE, forbidden: ['question'] })));
 
   // The OUTCOME-ASK half qualifies too, and it is not the looser case it looks like: that block only
   // renders the turn after she floated or asked something, which is the same shape the ledger's own
   // tail closes — they are answering her, and the next move is what she makes of the answer.
   const withAsk = buildSystemPromptSections(...buildWithThread(open, OUTCOME_ASK_TURN));
   assert.ok(withAsk.sections.some(s => s.name === 'thread'));
-  assert.ok(!withAsk.system.includes(SHARE_QUESTION_LINE));
+  assert.ok(!textOf(withAsk).includes(SHARE_QUESTION_LINE));
 
   // Nothing wrote back: the directive the caller handed in is what the receipt and the ledger read,
   // and it still says what her weather and her ledger allowed, not what this prompt had room for.
@@ -239,7 +245,7 @@ test('a SHARE turn that also carries a thread block has its question spent befor
   // An IDLE turn beside the same block is untouched, because there was nothing to touch — hook mode
   // never names the question whatever the selector says, so the two blocks cannot collide there.
   const idleWithLoop = buildSystemPromptSections(...buildWithThread({ hooks: HOOK, moments: [], thesis: '' }, LOOP_TURN));
-  assert.ok(idleWithLoop.system.includes(renderHooksSection(HOOK)));
+  assert.ok(textOf(idleWithLoop).includes(renderHooksSection(HOOK)));
 });
 
 test('a HEAVY share turn never reads a band line naming a kind its section closed', () => {
@@ -259,7 +265,7 @@ test('a HEAVY share turn never reads a band line naming a kind its section close
     const args = build({ hooks, moments: [], thesis: '' });
     args[9] = COMPUTED;
     args[11] = climate;
-    return buildSystemPromptSections(...args).system;
+    return textOf(buildSystemPromptSections(...args));
   };
 
   // The control: an ordinary share turn, every kind open, and the register says the same thing the
@@ -300,7 +306,7 @@ test('the drift anchor takes its mode from the same directive the section does',
   const quiet = buildSystemPromptSections(...build({ hooks: QUIET, moments: [], thesis: '' }));
   const task = buildSystemPromptSections(...build({ hooks: TASK, moments: [], thesis: '' }));
   const anchorOf = (s: string) => s.slice(s.lastIndexOf('## Still the same Irises, this far down'));
-  assert.notEqual(anchorOf(quiet.system), anchorOf(task.system));
+  assert.notEqual(anchorOf(textOf(quiet)), anchorOf(textOf(task)));
 });
 
 test('an empty thesis is never pushed, so Wave 3 costs today nothing', () => {
@@ -317,13 +323,13 @@ test('each flag OFF is byte-identical to an install that never had the feature',
   const full: PersonaTurn = {
     hooks: { ...HOOK, moments: true }, moments: MOMENT_LINES, thesis: THESIS,
   };
-  const bare = buildSystemPromptSections(...build()).system;
+  const bare = textOf(buildSystemPromptSections(...build()));
 
   process.env.CONVO_HOOKS_ENABLED = 'off';
   process.env.MEMORY_THESIS_ENABLED = 'off';
   process.env.MEMORY_MOMENTS_ENABLED = 'off';
   try {
-    assert.equal(buildSystemPromptSections(...build(full)).system, bare, 'all off: nothing is added');
+    assert.equal(textOf(buildSystemPromptSections(...build(full))), bare, 'all off: nothing is added');
   } finally {
     delete process.env.CONVO_HOOKS_ENABLED;
     delete process.env.MEMORY_THESIS_ENABLED;
@@ -331,7 +337,7 @@ test('each flag OFF is byte-identical to an install that never had the feature',
   }
   // …and the comparison has teeth: with the flags at their defaults the same struct changes the
   // prompt in all three places.
-  const on = buildSystemPromptSections(...build(full)).system;
+  const on = textOf(buildSystemPromptSections(...build(full)));
   assert.notEqual(on, bare);
   assert.ok(on.includes(THESIS));
   for (const line of MOMENT_LINES) assert.ok(on.includes(line));
@@ -339,7 +345,7 @@ test('each flag OFF is byte-identical to an install that never had the feature',
   // Each flag is read at CALL time and gates only its own section.
   process.env.CONVO_HOOKS_ENABLED = 'off';
   try {
-    const hooksOff = buildSystemPromptSections(...build(full)).system;
+    const hooksOff = textOf(buildSystemPromptSections(...build(full)));
     assert.ok(hooksOff.includes(THESIS), 'the thesis is not the hook flag\'s business');
     assert.ok(!hooksOff.includes(QUIET_LAW));
     for (const line of MOMENT_LINES) {
@@ -356,7 +362,7 @@ test('each flag OFF is byte-identical to an install that never had the feature',
   // either.
   process.env.MEMORY_MOMENTS_ENABLED = 'off';
   try {
-    const momentsOff = buildSystemPromptSections(...build(full)).system;
+    const momentsOff = textOf(buildSystemPromptSections(...build(full)));
     assert.ok(momentsOff.includes(HOOK_HEADING), 'the hook turn is not the moments flag\'s business');
     assert.ok(momentsOff.includes(THESIS));
     assert.ok(!momentsOff.includes(MOMENTS_LEAD), 'no lead, because there is nothing to lead with');
@@ -799,6 +805,13 @@ function fakeLane(res: LlmResult): { seen: LlmRequest[]; call: (req: LlmRequest)
   return { seen, call: async (req: LlmRequest) => { seen.push(req); return res; } };
 }
 
+/** The prompt text the lane was handed: the system message, then the per-turn tail, which rides as
+ *  its own user message right before theirs (convo/client.ts). */
+function promptSeen(req: LlmRequest): string {
+  const tail = req.messages[req.messages.length - 2];
+  return `${req.system ?? ''}\n\n${typeof tail?.content === 'string' ? tail.content : ''}`;
+}
+
 const clientCtx = (over: Partial<ChatContext> = {}): ChatContext => ({
   isGroupChat: false, participantNames: [], chatName: null, senderHandle: SENDER, ...over,
 });
@@ -834,7 +847,7 @@ test('an IDLE message through the front door renders the hooks block, the Turn l
   await chat(chatId, 'hey', emptyMedia(), clientCtx(), call);
 
   assert.equal(seen.length, 1, 'one front-line call');
-  const system = seen[0].system ?? '';
+  const system = promptSeen(seen[0]);
   assert.ok(system.includes(HOOK_HEADING), 'the hooks section reached the prompt');
   // All three turn-focus fields at once, as one rendered line: the reading, the raw TYPED length, and
   // the stored streak plus this turn (the ledger row is written after the reply, so what is in hand
@@ -907,7 +920,7 @@ test('a TASK message closes the thread offer, renders no hooks block, and still 
   const { seen, call } = fakeLane(envelope(['six to eight weeks, same as last time'], 'judgment'));
   await chat(chatId, 'deploy the cedars order', emptyMedia(), clientCtx(), call);
 
-  const system = seen[0].system ?? '';
+  const system = promptSeen(seen[0]);
   assert.ok(!system.includes(HOOK_HEADING), 'work gets the answer, flat');
   assert.ok(system.includes('Turn: task'));
 
@@ -940,7 +953,7 @@ test('with the hook flag OFF the whole pre-read is inert — no section, no line
     // absences the flag caused rather than absences of an idle turn.
     const { seen, call } = fakeLane(envelope(['hey you']));
     await chat(chatId, 'hey', emptyMedia(), clientCtx(), call);
-    const system = seen[0].system ?? '';
+    const system = promptSeen(seen[0]);
     assert.ok(!system.includes(HOOK_HEADING));
     assert.ok(!system.includes('Turn: idle') && !system.includes('Turn: task'),
       'absent is a third state: no claim about the turn is made at all');
@@ -975,7 +988,15 @@ test('the gate reads what they TYPED, not the annotated message the machinery bu
   const last = seen[0].messages[seen[0].messages.length - 1];
   assert.ok(String(last.content).startsWith('[replying to your earlier text:'),
     'the annotation really did ride along on the message');
-  assert.ok((seen[0].system ?? '').includes(HOOK_HEADING), 'and the turn is still idle');
+  // …and it rides as their message, last and stamped, with this turn's tail as its own untimed user
+  // message right ahead of it (convo/client.ts) — the stamp labels what they sent, never the tail.
+  const tail = seen[0].messages[seen[0].messages.length - 2];
+  assert.equal(tail.role, 'user');
+  assert.equal(tail.timestamp, undefined, 'the tail carries no arrival stamp');
+  assert.ok(String(tail.content).startsWith('<prompt>\n') && String(tail.content).includes('## Last thing before you type'));
+  assert.ok(last.timestamp, 'their message keeps its own');
+  assert.ok(!(seen[0].system ?? '').includes(HOOK_HEADING), 'the hook section is not in the system message');
+  assert.ok(promptSeen(seen[0]).includes(HOOK_HEADING), 'and the turn is still idle');
   assert.equal(receipt('hooks:select')?.idleLayer, 'fast_path', 'decided on the typed word alone');
 });
 
@@ -997,7 +1018,7 @@ test('a SHARE turn through the front door renders the share block, the anchor la
   const { seen, call } = fakeLane(envelope(['the northern yard never says anything on a friday']));
   await chat(chatId, 'hmm', emptyMedia(), clientCtx(), call);
 
-  const system = seen[0].system ?? '';
+  const system = promptSeen(seen[0]);
   assert.ok(system.includes(SHARE_HEADING) && system.includes(SHARE_LEAD), 'the share section reached the prompt');
   assert.ok(!system.includes(HOOK_HEADING), 'and not the hook section, which is the other shape');
   // The line at the recency edge, with the character count and NO streak clause: the count of turns
@@ -1056,7 +1077,7 @@ test('with the share flag OFF the same turn is byte-identical to one whose ledge
   await seedFollowUp(seeded);
   const first = fakeLane(envelope(['mm']));
   await chat(seeded, 'hmm', emptyMedia(), clientCtx(), first.call);
-  const withTail = first.seen[0].system ?? '';
+  const withTail = promptSeen(first.seen[0]);
 
   // A pristine world for the control, so the only thing that differs between the two turns is the
   // ledger row one of them was seeded with.
@@ -1066,7 +1087,7 @@ test('with the share flag OFF the same turn is byte-identical to one whose ledge
   const second = fakeLane(envelope(['mm']));
   await chat(plain, 'hmm', emptyMedia(), clientCtx(), second.call);
 
-  assert.equal(withTail, second.seen[0].system ?? '', 'not one byte of the prompt knows about the tail');
+  assert.equal(withTail, promptSeen(second.seen[0]), 'not one byte of the prompt knows about the tail');
   assert.ok(withTail.includes(HOOK_HEADING) && withTail.includes('Turn: idle'), 'both are the idle turn they were before');
   assert.ok(!withTail.includes(SHARE_HEADING) && !withTail.includes('Turn: share'));
   assert.ok(!withTail.includes(craftModuleText('share')), 'and the share page is not on this build');
