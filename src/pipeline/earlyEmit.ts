@@ -39,11 +39,14 @@ export interface PreCallFacts {
   hasParkedApproval: boolean;
   /** The hook mode picked for this turn (persona/hooks.ts `HookMode`, or `undefined` with no hook
    *  directive at all — which reads as a plain task turn, same as `client.ts`'s own `anchorMode`
-   *  fallback). Streaming is armed on a task turn only: a share or idle (hook/quiet) turn carries its
-   *  own downstream law — one hook, the share turn's gated follow-up, the quiet guard's retry — that
-   *  reads the WHOLE draft before deciding what ships, and an early sentence would already be on the
-   *  user's screen before that law had a turn to act on it. */
-  hookMode: 'task' | 'share' | 'idle' | 'quiet' | string | undefined;
+   *  fallback). `'hook'` is the idle-turn mode's actual value (persona/hooks.ts's `HookMode`), not
+   *  `'idle'`. Every mode arms EXCEPT `'quiet'`: `'task'`, `'share'` and `'hook'` (idle) are exactly
+   *  the slow turns this feature exists to speed up, and the share/hook laws — one hook, the share
+   *  turn's gated follow-up — are enforced in the PROMPT, not by a code guard that rewrites the draft
+   *  after the fact, so there is nothing downstream for an early sentence to race past. `'quiet'` is
+   *  the one mode with a post-draft rewrite (`enforceQuiet` in convo/shared.ts can still replace the
+   *  whole reply after generation), so it's the one mode that never arms. */
+  hookMode: 'task' | 'share' | 'hook' | 'quiet' | string | undefined;
   /** The routing gate's pre-check, and ONLY the pre-check: `needsGrounding(textToSend) === 'yes'`,
    *  with NO freshness read alongside it. The freshness TTL can flip between this read and the gate's
    *  own later one, and `holdsTheAnswer` only ever stands the gate down — it never rewrites what
@@ -85,7 +88,7 @@ export function streamFirstBubbleEnabled(): boolean {
 export function streamArmed(f: PreCallFacts): boolean {
   return f.enabled
     && !f.hasParkedApproval
-    && (f.hookMode === undefined || f.hookMode === 'task')
+    && f.hookMode !== 'quiet'
     && !f.groundingFlagged
     && !f.isGroupChat
     && !f.introOrFirstMove

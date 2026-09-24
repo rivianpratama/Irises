@@ -26,11 +26,20 @@ test('streamArmed: an undefined hookMode reads the same as a task turn', () => {
   assert.equal(streamArmed({ ...CLEAN, hookMode: undefined }), true);
 });
 
-test('streamArmed: each fact flips it false on its own', () => {
+test('streamArmed: a share turn arms — the share law is enforced in the prompt, not by a rewrite', () => {
+  assert.equal(streamArmed({ ...CLEAN, hookMode: 'share' }), true);
+});
+
+test('streamArmed: a hook (idle-turn) mode arms — same reason, the hook law is enforced in the prompt', () => {
+  assert.equal(streamArmed({ ...CLEAN, hookMode: 'hook' }), true);
+});
+
+test('streamArmed: a quiet turn never arms — enforceQuiet can still rewrite the draft after generation', () => {
+  assert.equal(streamArmed({ ...CLEAN, hookMode: 'quiet' }), false);
+});
+
+test('streamArmed: each other fact flips it false on its own', () => {
   assert.equal(streamArmed({ ...CLEAN, hasParkedApproval: true }), false, 'parked approval');
-  assert.equal(streamArmed({ ...CLEAN, hookMode: 'share' }), false, 'share turn');
-  assert.equal(streamArmed({ ...CLEAN, hookMode: 'idle' }), false, 'idle turn');
-  assert.equal(streamArmed({ ...CLEAN, hookMode: 'quiet' }), false, 'quiet turn');
   assert.equal(streamArmed({ ...CLEAN, groundingFlagged: true }), false, 'grounding flagged');
   assert.equal(streamArmed({ ...CLEAN, isGroupChat: true }), false, 'group chat');
   assert.equal(streamArmed({ ...CLEAN, introOrFirstMove: true }), false, 'intro / first move');
