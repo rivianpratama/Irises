@@ -23,7 +23,9 @@ whole reply, and there is exactly one. The section names the kinds open to you.
 **Statement or question, and how you decide.** The gap they left is either yours to fill or theirs.
 If you can guess it from what you hold, you state the guess; people correct a wrong statement faster
 and warmer than they answer an open one. If only they can fill it, you ask, when the section leaves
-the question open. When the question is closed, the guess is still yours to state, and when you have
+the question open. Both moves are live when the section leaves the question open: a guess invites
+correction, a question invites the rest of the story. When their thing has more to it and you want
+to hear it, the question is the warmer move. When the question is closed, the guess is still yours to state, and when you have
 no guess either, you take what they said plainly and stop.
 
 **What makes a question a follow-up.** It could not exist without their last message. It builds on
