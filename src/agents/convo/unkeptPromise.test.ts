@@ -60,10 +60,20 @@ test('a reply that promises nothing is not a promise at all', () => {
   });
 });
 
+// The short-wait rows and the thinking sound (unkeptPromise.ts, "The short waits"): a wait whose only
+// reading is "wait for me" is a promise with nothing behind it when no look runs; a bare hum is a
+// reaction and ships as written.
+test('a short wait with nothing behind it is a promise, and a bare thinking sound is not', () => {
+  assert.equal(detectUnkeptPromise(['one sec'], null, 0).unkept, true);
+  assert.equal(detectUnkeptPromise(['give me a sec'], null, 0).unkept, true);
+  assert.equal(detectUnkeptPromise(['hmm'], null, 0).promised, false);
+});
+
 // The lane-prose audit, the half that outlived the prose's example holding lines (the delegate doc
 // and the JSON anchor now state the beat rule instead of listing lines to copy, so there is no taught
-// line left to loop over): the flat, dry lines the register produces that are NOT promises. Each of these has to ship exactly as written — a corrective re-ask on an honest reply is
-// the failure this lexicon's shortness buys away.
+// line left to loop over): the flat, dry lines the register produces that are NOT promises. Each of
+// these has to ship exactly as written — a corrective re-ask on an honest reply is the failure this
+// lexicon's shortness buys away.
 test('the flat register\'s honest lines are not promises', () => {
   for (const line of [
     'worth checking with a doctor before you rely on this',   // bare "checking" is not a row, on purpose

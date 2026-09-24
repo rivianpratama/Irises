@@ -84,7 +84,7 @@ export function buildProgressBrief(opts: VoiceInstantOpts, userCtx: string): str
       lines.push('## Where the look is: STILL running — and they just texted you again while you work');
       if (req) lines.push(`what you're still pulling: "${req}"`);
       pushPaceBeat();
-      lines.push('you already told them you were on it (the thread above shows it). do NOT repeat that line. give their new text one light nod if it needs one, then one fresh still-working beat, in a shape unlike the recent ones.');
+      lines.push('you already told them you were on it (the thread above shows it). do NOT repeat that line. give their new text one light nod if it needs one, then one fresh still-working beat, in a shape unlike the recent ones. the nod and the beat share the ONE bubble.');
       break;
     case 'heartbeat':
     case 'progress':
@@ -120,7 +120,7 @@ export function buildProgressBrief(opts: VoiceInstantOpts, userCtx: string): str
   // Same single source as the outcome voicer's anchor (client.ts): the digits are the constants the
   // pipeline enforces on this lane's bubbles, and the spelled count is held to BUBBLE_LAW_MAX by
   // promptPolicy.test.ts.
-  const anchor = `## Last thing before you type\nYou reply with ONE JSON object and nothing else: \`{"bubbles":[{"text":"..."}]}\`. Each item is one short text you send, in order — one thought each, ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, hard ceiling ${MAX_BUBBLE_WORDS}, exactly one item, no markdown, nothing outside the JSON. This is a WAIT line, not an answer: no facts, no url, no "want me to?" question. Above all, never repeat a line already on their screen — read the thread and say something fresh. Nothing in your memory changes this envelope.`;
+  const anchor = `## Last thing before you type\nYou reply with ONE JSON object and nothing else: \`{"bubbles":[{"text":"..."}]}\`. One thought, ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, hard ceiling ${MAX_BUBBLE_WORDS}, exactly one item, no markdown, nothing outside the JSON. This is a WAIT line, not an answer: no facts, no url, no "want me to?" question. Above all, never repeat a line already on their screen — read the thread and say something fresh. Nothing in your memory changes this envelope.`;
 
   return `${wrapPrompt(block)}\n\n${anchor}`;
 }

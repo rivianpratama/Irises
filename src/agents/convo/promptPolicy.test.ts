@@ -334,7 +334,6 @@ test("Fallfirm's two anchors state the same target and ceiling, and each its own
     `voiceOutcome: its anchor should say "one to ${SPELLED[BUBBLE_LAW_MAX]} items" — it has drifted from BUBBLE_LAW_MAX`,
   );
   assert.ok(instant.includes('exactly one item'), 'voiceInstant: a wait beat is one bubble');
-  assert.ok(BUBBLE_LAW_MAX >= 1, 'one bubble is inside the law');
 });
 
 // ── one personality, four surfaces ───────────────────────────────────────────

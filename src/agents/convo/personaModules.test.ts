@@ -250,9 +250,16 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * anything is her, no other doer, no place the work goes, no how), and the source question stops
  * quoting a sample venue ask and a sample clarifying line and says to ask one quick question naming
  * the two places. Every other file held.
+ *
+ * Then **−188**, the review pass on the same rule, Context.md alone (92,535 → 92,347): the run-status
+ * paragraph drops its five quoted sample replies and says the same thing in plain clauses (what the
+ * run is doing right now, one concrete bubble grounded in the status and never a generic nearly-done
+ * line, pass time left along loosely, own an overrun lightly), and the confidence check's clarifying
+ * question stops quoting two sample asks and says to name the two things or the two places. Every
+ * other file held.
  */
-const CORPUS_CHARS = 156_780;
-const CORPUS_SHA256 = '4942e45d4d59d482b68d6ad354ac04c63d2ff3bda4e09abf32f7c7d54f412914';
+const CORPUS_CHARS = 156_592;
+const CORPUS_SHA256 = '146ac7819d524ad2aadd3fee98297d9eeb1b0a5aa7e2f845564ad3c032005a3c';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 

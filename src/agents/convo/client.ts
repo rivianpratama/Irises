@@ -324,7 +324,8 @@ export async function chat(
         // Her own last few holding beats in THIS chat (state/holdingBeats.ts), for the `recent_beats`
         // section the handoff rules point at. Chat-keyed, unlike the handle-keyed reads above: the
         // beat history belongs to the conversation. A pref read, so it rides this batch rather than
-        // adding a round trip of its own.
+        // adding a round trip of its own. A turn with no handle gets no beats (the fallback below),
+        // which is harmless: such a turn is rarely a delegating one.
         recentHoldingBeats(chatId),
       ])
     : [{ block: '', hotLook: null, turn: null, gates: {}, craft: {}, pendingAsk: false }, undefined, defaultClimate(), null, null, []];
