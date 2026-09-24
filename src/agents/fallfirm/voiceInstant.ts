@@ -117,7 +117,7 @@ export function buildProgressBrief(opts: VoiceInstantOpts, userCtx: string): str
   // The shared persona block used to lead here, exactly as it did in the outcome voicer (client.ts);
   // it now rides in the system prompt instead (ahead of Progress.md — see `voiceInstant`'s `system`
   // assembly below), as a byte-stable prefix the Anthropic lane can cache-hit rather than re-bill on
-  // every wait beat.
+  // every wait beat, and that OpenRouter's automatic prefix caching can hit too.
   //
   // userCtx arrives pre-wrapped (buildUserMemory) — not re-wrapped in a data tag here.
   const block = [

@@ -70,11 +70,11 @@ export const IDLE_CLASSIFY_MAX_TOKENS = 5;
 /**
  * Six seconds, and then the turn goes on without it.
  *
- * This call sits ON the reply path, ahead of the prompt build, whenever the settle-window warm did not
- * already answer it: every millisecond it spends there is a millisecond before she starts typing. Six is generous for five tokens on any lane and short enough
- * that a wedged provider costs one flat reply instead of a visibly hung conversation. The timer is
- * unref'd for the reason every timer in this stack is — a pending deadline must never be the thing
- * keeping the process alive.
+ * This call sits ON the reply path, ahead of the prompt build, whenever the settle-window warm did
+ * not already answer it: every millisecond it spends there is a millisecond before she starts
+ * typing. Six is generous for five tokens on any lane and short enough that a wedged provider costs
+ * one flat reply instead of a visibly hung conversation. The timer is unref'd for the reason every
+ * timer in this stack is — a pending deadline must never be the thing keeping the process alive.
  */
 export const IDLE_CLASSIFY_TIMEOUT_MS = 6_000;
 
@@ -121,7 +121,8 @@ const cache = new Map<string, IdleVerdict>();
 
 /** What one lane call came back with: a verdict it earned, or the name of the way it failed. The
  *  two are kept apart rather than folded into `unclear` here because only a verdict may be cached
- *  or handed to a second reader — a failure is this call's own, and whoever reads it next asks again. */
+ *  or handed to a second reader — a failure is this call's own, and whoever reads it next asks
+ *  again. */
 type ClassifyOutcome = IdleVerdict | { failed: string; timedOut: boolean };
 
 /**
@@ -137,7 +138,8 @@ type ClassifyOutcome = IdleVerdict | { failed: string; timedOut: boolean };
 const inflight = new Map<string, Promise<ClassifyOutcome>>();
 
 /** The test seam, and the only way anything empties these maps. A call still running when this is
- *  called finishes harmlessly: it no longer owns its in-flight slot, so it cannot remove a newer one. */
+ *  called finishes harmlessly: it no longer owns its in-flight slot, so it cannot remove a newer
+ *  one. */
 export function clearIdleClassifyCache(): void {
   cache.clear();
   inflight.clear();

@@ -1,6 +1,7 @@
 // Run with: npm test   (TZ=UTC tsx --test — runner pins DATA_BACKEND=memory)
 // Conversation + profile round trips on the SQLite layer: retention window,
-// newest-40 cap, insertion-order ties, and the profile upsert/merge semantics.
+// the chunked read window (its start held fixed, advanced in whole trim-chunk
+// jumps), insertion-order ties, and the profile upsert/merge semantics.
 import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { getConversation, addMessage, clearConversation, listActiveChats, hasHistory, pruneMessagesBefore, convoHistoryMax, historyWindowStart } from './conversations.js';

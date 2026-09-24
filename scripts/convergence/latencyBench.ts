@@ -29,7 +29,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { arg, cell, expand, flag, sqlJson } from './harness.js';
+import { arg, cell, expand, flag, sleep, sqlJson } from './harness.js';
 
 // ── Shared bits between the two modes ──────────────────────────────────────────────────────────
 
@@ -40,8 +40,6 @@ function pctile(values: number[], p: number): number {
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))];
 }
-
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 const USAGE = `latencyBench — reply-latency benchmark for the snappy-replies project.
 

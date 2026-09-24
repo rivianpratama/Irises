@@ -257,9 +257,15 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * line, pass time left along loosely, own an overrun lightly), and the confidence check's clarifying
  * question stops quoting two sample asks and says to name the two things or the two places. Every
  * other file held.
+ *
+ * Then **−6**, the whole-branch review of snappy-replies, Context.md alone (92,347 → 92,341): the
+ * provenance line stops saying the ONE unstamped message right before theirs is her system, since
+ * a correction pass appends further unstamped messages after theirs. The turn's guidance arrives in
+ * an unstamped message right before theirs, and any unstamped message is her own system. Every
+ * other file held.
  */
-const CORPUS_CHARS = 156_592;
-const CORPUS_SHA256 = '146ac7819d524ad2aadd3fee98297d9eeb1b0a5aa7e2f845564ad3c032005a3c';
+const CORPUS_CHARS = 156_586;
+const CORPUS_SHA256 = '07ba0f7dd0dcbedf164cd3d8c26fa4c2b6809f9a6fb1924ad034dd161aec87e4';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 

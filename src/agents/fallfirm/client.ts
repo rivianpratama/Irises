@@ -61,7 +61,8 @@ export function buildOutcomeBrief(o: Outcome, userMemory: string, timingLine?: s
   // The shared persona block used to lead here; it now rides in the system prompt instead (ahead of
   // fallfirm/Context.md — see `voiceOutcome`'s `system` assembly below), so who is speaking is still
   // established before anything about how the outcome WORKS or what to relay, but as a byte-stable
-  // prefix the Anthropic lane can cache-hit instead of re-billing on every call.
+  // prefix the Anthropic lane can cache-hit instead of re-billing on every call, and that OpenRouter's
+  // automatic prefix caching can hit too.
   //
   // userMemory arrives pre-wrapped (buildUserMemory: guidance outside the tags, payloads inside)
   // — it is NOT re-wrapped in a data tag here.
@@ -97,7 +98,8 @@ export async function voiceOutcome(o: Outcome, chatId: string, handle?: string):
       // Persona block first, then fallfirm/Context.md — the same bytes Convo and the Composer render
       // (persona/policy.ts), ahead of how the outcome voice WORKS. Byte-identical every call, so with
       // CACHE_SYSTEM.fallfirm on this prefix is an Anthropic cache hit instead of a line re-billed
-      // inside the final user message every time (models.ts).
+      // inside the final user message every time (models.ts). On the OpenRouter lane the marker is
+      // ignored, but its automatic prefix caching matches the same stable prefix.
       system: `${renderPersonaBlock('fallfirm')}\n\n${loadContext('fallfirm')}`,
       jsonBubbles: true, // tool-less; structured outputs guarantee the envelope
       messages: [

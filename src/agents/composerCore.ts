@@ -45,7 +45,8 @@ export const FORMAT_ANCHOR = `how it goes out: reply with ONE JSON object and no
  * The shared persona block used to lead this block, but now rides in the system prompt instead
  * (ahead of the composer's own Context.md — see `composeWithComposer` below), so a lane- and
  * turn-independent prefix (persona + Context.md) can be cache-hit by the Anthropic lane instead of
- * being re-billed on every call inside the final user message. What stays last is unchanged:
+ * being re-billed on every call inside the final user message. OpenRouter's automatic prefix caching
+ * gets the same prefix to match, so the OpenRouter lane benefits too. What stays last is unchanged:
  * `buildInstruction`'s facts sit late, and FORMAT_ANCHOR is appended after this whole block, so the
  * very last tokens before generation are still the envelope contract.
  *
@@ -122,7 +123,8 @@ export async function composeWithComposer(args: ComposerCoreArgs): Promise<strin
   // Persona block first, then the composer's own Context.md — byte-identical every call (Context.md
   // is static, and renderPersonaBlock is the same bytes on every lane/turn), so this prefix is worth
   // an Anthropic prompt-cache hit instead of being re-billed inside the final user message every
-  // call. The call below rides the 'convo' role, whose CACHE_SYSTEM is already on — mirrors the
+  // call, and OpenRouter's automatic prefix caching can hit the same stable prefix on that lane. The
+  // call below rides the 'convo' role, whose CACHE_SYSTEM is already on — mirrors the
   // convo lane's own persona+Context.md system assembly (personaModules.ts).
   const system = `${renderPersonaBlock('composer')}\n\n${loadContext('composer')}`;
   // One retry before the caller degrades. The composer failures we actually see are transient — a

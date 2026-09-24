@@ -4,7 +4,9 @@
 # reach Telegram. The launchd instance on :3000 is never touched.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-HOME_DIR="${BENCH_HOME:-/private/tmp/claude-501/-Users-rivianpratama-Documents-GitHub-Irises/8a23a752-36d2-4665-8445-2670d39f9ce3/scratchpad/bench-home}"
+# BENCH_HOME overrides where that empty IRISES_HOME lives; the default is a fixed temp path any
+# machine has, so the script runs outside the session that wrote it.
+HOME_DIR="${BENCH_HOME:-${TMPDIR:-/tmp}/irises-bench-home}"
 PORT="${BENCH_PORT:-3100}"
 PIDFILE="$HOME_DIR/bench.pid"
 [ "$PORT" = 3000 ] && { echo refuse; exit 2; }
