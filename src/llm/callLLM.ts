@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { MODELS, MAX_TOKENS, PROVIDERS, THINKING, EFFORT, CACHE_SYSTEM, TEMPERATURE } from './models.js';
 import { BUBBLE_ENVELOPE_SCHEMA, buildEnvelopeSchema, parseReply } from '../pipeline/bubbleJson.js';
-import { buildOpenRouterParams, buildOpenAIParams, hasDocument, hasNativeMedia, isLengthStarved, starvedRetryEnabled, llmCallTimeoutMs, type OpenRouterParams } from './openrouterRequest.js';
+import { buildOpenRouterParams, buildOpenAIParams, hasDocument, hasNativeMedia, isLengthStarved, starvedRetryEnabled, llmCallTimeoutMs, toStreamingParams, type OpenRouterParams, type StreamingParams } from './openrouterRequest.js';
 import { renderTimestamps } from './timedMessages.js';
 import { inlineImageBlocks } from './inlineImages.js';
 import { inlineMediaBlocks } from './inlineMedia.js';
@@ -372,17 +372,138 @@ export type ChatSender = (
   opts: { signal?: AbortSignal; maxRetries?: number },
 ) => Promise<OpenAI.Chat.Completions.ChatCompletion>;
 
+/** The streaming twin of ChatSender, used when the request sets onTextDelta. Injectable for the same
+ *  reason (tests hand in a fake chunk sequence); production callers pass nothing and get the SDK's
+ *  own stream. The body arrives already in its streamed form (toStreamingParams). */
+export type StreamSender = (
+  params: StreamingParams,
+  opts: { signal?: AbortSignal; maxRetries?: number },
+) => AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
+
+/** One streamed leg, read to its end. `error` is set only when the stream broke AFTER emitting (a
+ *  break before the first delta is rethrown, so it reaches the retry and fallback policy exactly as
+ *  a non-streamed failure would). */
+interface StreamedLeg {
+  resp: OpenAI.Chat.Completions.ChatCompletion;
+  emitted: boolean;
+  error?: unknown;
+}
+
+/** The wire fields the SDK's chunk type doesn't declare: OpenRouter's upstream `provider` name on
+ *  every chunk, and the reasoning / citation deltas it and deepseek-style endpoints stream. */
+type ChunkExtras = { provider?: string };
+type DeltaExtras = {
+  reasoning?: string | null;
+  reasoning_content?: string | null;
+  reasoning_details?: unknown[];
+  annotations?: unknown[];
+};
+
+/**
+ * Read a completion stream back into the ChatCompletion a non-streamed call would have returned, so
+ * everything after the send (the starvation check, the tool-call parse, the usage builder, the raw
+ * trace) runs on one shape and cannot drift between the two paths.
+ *
+ * Only `delta.content` is text: it is accumulated AND forwarded, one call per non-empty delta.
+ * Reasoning deltas (`reasoning` / `reasoning_content` / `reasoning_details`) are chain-of-thought,
+ * never reply, so they never reach the sink and never enter the text; they are kept on the
+ * synthesized message under the names the non-streamed OpenRouter body uses, so the raw trace reads
+ * the same either way. Usage arrives on the final chunk (include_usage, with `choices: []`) and is
+ * copied through verbatim, so prompt_tokens_details.cached_tokens and
+ * completion_tokens_details.reasoning_tokens — what the ledger and the latency benchmark read — are
+ * exactly the provider's. A stream cut short never sends that chunk, so its usage stays undefined.
+ */
+async function readStream(
+  stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>,
+  onTextDelta: (delta: string) => void,
+): Promise<StreamedLeg> {
+  let text = '';
+  let reasoning = '';
+  const reasoningDetails: unknown[] = [];
+  const annotations: unknown[] = [];
+  const toolCalls: OpenAI.Chat.Completions.ChatCompletionMessageFunctionToolCall[] = [];
+  let finish: string | null = null;
+  let usage: OpenAI.Completions.CompletionUsage | undefined;
+  let id = '';
+  let created = 0;
+  let model = '';
+  let upstream: string | undefined;
+  let emitted = false;
+  let error: unknown;
+  try {
+    for await (const ch of stream) {
+      id ||= ch.id ?? '';
+      created ||= ch.created ?? 0;
+      model ||= ch.model ?? '';
+      upstream ??= (ch as ChunkExtras).provider;
+      if (ch.usage) usage = ch.usage;
+      const c = ch.choices?.[0];
+      if (!c) continue;
+      if (c.finish_reason) finish = c.finish_reason;
+      const d = c.delta as (OpenAI.Chat.Completions.ChatCompletionChunk.Choice.Delta & DeltaExtras) | undefined;
+      if (!d) continue;
+      if (typeof d.reasoning === 'string') reasoning += d.reasoning;
+      else if (typeof d.reasoning_content === 'string') reasoning += d.reasoning_content;
+      if (Array.isArray(d.reasoning_details)) reasoningDetails.push(...d.reasoning_details);
+      if (Array.isArray(d.annotations)) annotations.push(...d.annotations);
+      // Native tool calls stream as fragments keyed by index: the id and name once, the arguments
+      // JSON in pieces. The written-tool-call roles (toolsViaJson) never use these; they are here so
+      // the result shape really is the non-streamed one for any caller.
+      for (const tc of d.tool_calls ?? []) {
+        const slot = (toolCalls[tc.index] ??= { id: '', type: 'function', function: { name: '', arguments: '' } });
+        if (tc.id) slot.id = tc.id;
+        if (tc.function?.name) slot.function.name = tc.function.name;
+        if (tc.function?.arguments) slot.function.arguments += tc.function.arguments;
+      }
+      if (d.content) {
+        text += d.content;
+        emitted = true;
+        onTextDelta(d.content);
+      }
+    }
+  } catch (err) {
+    // Nothing went out yet: this is an ordinary failed call, and the lane policy above it (starved
+    // retry, cross-lane fallback) still owns it. Once something went out it is not: see
+    // LlmResult.emitted.
+    if (!emitted) throw err;
+    error = err;
+  }
+  const calls = toolCalls.filter(Boolean);
+  const message = {
+    role: 'assistant' as const,
+    content: text || null,
+    refusal: null,
+    ...(calls.length ? { tool_calls: calls } : {}),
+    ...(reasoning ? { reasoning } : {}),
+    ...(reasoningDetails.length ? { reasoning_details: reasoningDetails } : {}),
+    ...(annotations.length ? { annotations } : {}),
+  };
+  const resp = {
+    id, object: 'chat.completion', created, model,
+    ...(upstream ? { provider: upstream } : {}),
+    choices: [{ index: 0, message, finish_reason: finish, logprobs: null }],
+    ...(usage ? { usage } : {}),
+  } as unknown as OpenAI.Chat.Completions.ChatCompletion;
+  return { resp, emitted, ...(error !== undefined ? { error } : {}) };
+}
+
 export async function callOpenAICompatible(
   req: LlmRequest,
   provider: 'openrouter' | 'openai',
   sendOverride?: ChatSender,
+  streamOverride?: StreamSender,
 ): Promise<LlmResult> {
+  const onTextDelta = req.onTextDelta;
   let send = sendOverride;
-  if (!send) {
+  let stream = streamOverride;
+  if (!send || (onTextDelta && !stream)) {
     const client = provider === 'openrouter' ? openrouterClient() : openaiClient();
     if (!client) throw laneUnconfiguredError(provider);
-    send = (p, o) => client.chat.completions.create(p, o);
+    send ??= (p, o) => client.chat.completions.create(p, o);
+    stream ??= async function* (p, o) { yield* await client.chat.completions.create(p, o); };
   }
+  const sendPlain = send;
+  const sendStream = stream;
   // Inline remote media as base64 first — providers (esp. Google/Gemini) can't reliably fetch remote
   // image/audio/video URLs, and messaging-CDN links are often not publicly retrievable. Each inliner
   // only touches its own block types, so the order is irrelevant.
@@ -412,7 +533,21 @@ export async function callOpenAICompatible(
   // signal: cancel the in-flight HTTP request, not just the loop around it (see LlmRequest.signal).
   // Document requests get one retry, not the default two — a retry re-uploads the full base64 body.
   const sendOpts = { signal: req.signal, ...(hasDocument(req) ? { maxRetries: 1 } : {}) };
-  let resp = await send(params, sendOpts);
+  /** One leg of the call, streamed when the caller asked for deltas. `body` is what actually went on
+   *  the wire (the streamed form differs from `params`), which is what rawRequest must show. */
+  const sendLeg = async (
+    p: typeof params,
+  ): Promise<{ resp: OpenAI.Chat.Completions.ChatCompletion; body: unknown; emitted: boolean; error?: unknown }> => {
+    if (!onTextDelta || !sendStream) return { resp: await sendPlain(p, sendOpts), body: p, emitted: false };
+    const body = toStreamingParams(p);
+    return { ...(await readStream(sendStream(body, sendOpts), onTextDelta)), body };
+  };
+  const first = await sendLeg(params);
+  let resp = first.resp;
+  let sentBody = first.body;
+  /** Whether any delta reached the caller, and the break that ended a stream after one did. */
+  let emitted = first.emitted;
+  let streamError = first.error;
   let choice = resp.choices[0];
   /** The STARVED leg's usage, kept when a retry replaces `resp`: that leg still consumed a prompt
    *  and burned its whole completion cap on reasoning, and both are billed. Folded into the returned
@@ -426,7 +561,9 @@ export async function callOpenAICompatible(
   // an inherited deepseek-v4 spent the whole cap thinking, so the relationship climate never moved.
   // Cheaper and more faithful than the cross-lane salvage below it: same model, same prompt, just
   // room to answer. Flag LLM_STARVED_RETRY; off → straight to the throw, as before.
-  if (isLengthStarved(choice) && starvedRetryEnabled()) {
+  // Never after emission: text the caller already holds cannot be re-asked. (A leg that emitted has
+  // content, so it cannot read as starved either — the guard says it rather than relying on that.)
+  if (!emitted && isLengthStarved(choice) && starvedRetryEnabled()) {
     const cap = params.max_tokens ?? MAX_TOKENS[req.role];
     const retriedCap = starvedRetryCap(cap);
     let ok = false;
@@ -435,12 +572,16 @@ export async function callOpenAICompatible(
     let starvedCap = cap;
     try {
       const retryParams = build({ maxTokens: retriedCap, disableReasoning: true });
-      const retryResp = await send(retryParams, sendOpts);
+      const retryLeg = await sendLeg(retryParams);
+      const retryResp = retryLeg.resp;
       const retryChoice = retryResp.choices[0];
+      // A retry leg that streamed and then broke still had content, so it counts as landed: its
+      // partial is served (with its break) rather than swapped for a starvation throw.
       ok = !isLengthStarved(retryChoice);
       if (ok) {
         starvedUsage = resp.usage;
         resp = retryResp; choice = retryChoice; params = retryParams; servedMaxTokens = retriedCap;
+        sentBody = retryLeg.body; emitted = retryLeg.emitted; streamError = retryLeg.error;
       }
       else starvedCap = retriedCap;   // the budget that actually failed last
     } catch (err) {
@@ -473,7 +614,21 @@ export async function callOpenAICompatible(
     throw starvedError(provider, model, params.max_tokens ?? MAX_TOKENS[req.role]);
   }
   const toolCalls: LlmResult['toolCalls'] = [];
-  for (const tc of choice.message.tool_calls ?? []) {
+  // A stream that broke after emitting: the reply is served as far as it got (stopReason 'error',
+  // below), and the break gets its own receipt, since nothing throws to leave the usual error trail.
+  // Half-streamed native tool calls are dropped — arguments cut mid-JSON are not a call.
+  const broken = streamError !== undefined;
+  if (broken) {
+    record({
+      type: 'event', label: 'llm:stream_error', role: req.role,
+      chatId: req.trace?.chatId, handle: req.trace?.handle, taskId: req.trace?.taskId,
+      detail: {
+        role: req.role, provider, model, chars: choice.message.content?.length ?? 0,
+        error: String((streamError as Error)?.message ?? streamError).slice(0, 300),
+      },
+    });
+  }
+  for (const tc of broken ? [] : choice.message.tool_calls ?? []) {
     if (tc.type === 'function') {
       let input: Record<string, unknown> = {};
       try { input = JSON.parse(tc.function.arguments || '{}'); } catch { /* ignore malformed */ }
@@ -508,17 +663,20 @@ export async function callOpenAICompatible(
   return {
     text: choice.message.content || null,
     toolCalls,
-    stopReason: choice.finish_reason ?? null,
-    truncated: isTruncatedStop(choice.finish_reason),
+    stopReason: broken ? 'error' : choice.finish_reason ?? null,
+    truncated: !broken && isTruncatedStop(choice.finish_reason),
     provider,
     model,
     usage,
     ...(servedMaxTokens !== undefined ? { servedMaxTokens } : {}),
     serverToolText: serverToolText || undefined,
+    // On a streamed call this is the ChatCompletion readStream synthesized from the chunks.
     raw: resp,
-    // `params` is the body that produced `resp`: build() makes fresh objects and the starved retry
-    // reassigns params = retryParams, so this always pairs with the `raw` response leg above.
-    rawRequest: params,
+    // The body that produced `resp`: build() makes fresh objects, the starved retry reassigns
+    // sentBody with its leg, and a streamed leg records its streamed form — so this always pairs
+    // with the `raw` response leg above.
+    rawRequest: sentBody,
+    ...(onTextDelta ? { emitted } : {}),
   };
 }
 
@@ -555,6 +713,14 @@ function laneTimeoutError(provider: LlmProvider, model: string, ms: number): Err
  * hang this exists to end. It is cleared on every path, so it holds the loop at most one window and
  * only while a call is genuinely in flight.
  *
+ * A STREAMED call (req.onTextDelta) that already emitted when the window closes does not reject:
+ * the text the caller holds is handed back as the result (stopReason 'error', emitted: true), the
+ * same as a stream that broke mid-reply (see LlmResult.emitted). Rejecting would send the turn to
+ * the other lane for a second reply to a message whose first one is already going out. The tally
+ * is kept HERE, from the deltas themselves, because the lane is exactly what stopped answering —
+ * and deltas a lane delivers after the race settled are dropped, so the caller never receives text
+ * that is not in the result it was handed.
+ *
  * Off (or a non-voice role) → `run` is called with the caller's own request object, untouched.
  */
 async function runWithCallTimeout(run: LaneRunner, provider: LlmProvider, req: LlmRequest): Promise<LlmResult> {
@@ -562,23 +728,43 @@ async function runWithCallTimeout(run: LaneRunner, provider: LlmProvider, req: L
   if (ms === null) return run(provider, req);
   const ctl = new AbortController();
   const signal = req.signal ? AbortSignal.any([req.signal, ctl.signal]) : ctl.signal;
+  const sink = req.onTextDelta;
+  let streamed = '';
+  let emitted = false;
+  let settled = false;
+  const onTextDelta = sink
+    ? (delta: string) => {
+      if (settled) return;
+      emitted = true;
+      streamed += delta;
+      sink(delta);
+    }
+    : undefined;
   let timer: NodeJS.Timeout | undefined;
-  const expiry = new Promise<never>((_resolve, reject) => {
+  const expiry = new Promise<LlmResult>((resolve, reject) => {
     timer = setTimeout(() => {
       const model = req.modelOverride || MODELS[req.role][provider];
       // Release the socket, hand the turn back, THEN write the receipt — in that order, so nothing
       // that could go wrong on the diagnostics side can leave the turn hanging, which is the whole
       // failure this function exists to end.
       ctl.abort();
-      reject(laneTimeoutError(provider, model, ms));
+      settled = true;
+      if (emitted) {
+        resolve({
+          text: streamed, toolCalls: [], stopReason: 'error', truncated: false,
+          provider, model, emitted: true,
+        });
+      } else {
+        reject(laneTimeoutError(provider, model, ms));
+      }
       record({
         type: 'event', label: 'llm:timeout', role: req.role,
         chatId: req.trace?.chatId, handle: req.trace?.handle, taskId: req.trace?.taskId,
-        detail: { role: req.role, model, ms },
+        detail: { role: req.role, model, ms, ...(emitted ? { emitted: true, chars: streamed.length } : {}) },
       });
     }, ms);
   });
-  const call = run(provider, { ...req, signal });
+  const call = run(provider, { ...req, signal, ...(onTextDelta ? { onTextDelta } : {}) });
   // The race's loser must never surface as an unhandled rejection: that is FATAL in this process
   // (diagnostics/errorLog.ts exits(1) on one), so a lane that rejects late — with its abort error,
   // after we already gave up — would take the whole VM down with it.
@@ -586,6 +772,7 @@ async function runWithCallTimeout(run: LaneRunner, provider: LlmProvider, req: L
   try {
     return await Promise.race([call, expiry]);
   } finally {
+    settled = true;
     clearTimeout(timer);
   }
 }
@@ -692,10 +879,20 @@ export async function callLLM(req: LlmRequest, run: LaneRunner = runOn): Promise
         : !fallback ? 'unconfigured'
           : null;
 
+  // Whether any streamed delta reached the caller on the primary leg. The lanes already RETURN
+  // rather than throw once they emitted (LlmResult.emitted), so this is the belt under that: a
+  // failure that still escapes after emission must never re-run the turn on another lane, which
+  // would hand the caller a second, different reply on top of the one already going out.
+  let deltasOut = false;
+  const sink = req.onTextDelta;
+  const primaryReq: LlmRequest = sink
+    ? { ...req, onTextDelta: (delta: string) => { deltasOut = true; sink(delta); } }
+    : req;
+
   let result: LlmResult;
   let fellBack = false;
   try {
-    result = await runWithCallTimeout(run, primary, req);
+    result = await runWithCallTimeout(run, primary, primaryReq);
   } catch (err) {
     // The caller's own signal is the authoritative abort check — SDK abort errors are unreliable
     // to sniff (Anthropic's APIUserAbortError never sets .name, so it reads as a generic Error).
@@ -704,7 +901,7 @@ export async function callLLM(req: LlmRequest, run: LaneRunner = runOn): Promise
       recordLlmError(req, primary, err, start);
       throw err;
     }
-    if (!fallbackBlocked && fallback && shouldFallback(err, fallback)) {
+    if (!fallbackBlocked && !deltasOut && fallback && shouldFallback(err, fallback)) {
       const status = (err as { status?: number })?.status ?? 'network';
       console.warn(`[llm] ${primary} call failed (${status}), falling back to ${fallback}`);
       // A starved primary must NOT be retried on the same budget: the whole cap went to reasoning,
