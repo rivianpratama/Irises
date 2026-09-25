@@ -75,25 +75,22 @@ interface Envelope {
   hardCapped: boolean;
 }
 
-// ── the bubble-count law, in two numbers ─────────────────────────────────────────────────────────
-// The LAW is what the model is told and held to: 1-2 bubbles ideal, three at most, no exceptions.
-// Every prompt that states it (Convo's JSON anchor, both envelope schemas below) interpolates this
-// constant, so the prose and the code can never drift apart again.
-export const BUBBLE_LAW_MAX = 3;
+// ── the bubble-count thresholds, in two numbers ──────────────────────────────────────────────────
+// The LAW is the count the BubbleReport flags as "over" — above this the reply is probably carrying
+// too much, though the prompts no longer state a hard cap (the model self-regulates to what feels
+// human). Reports and metrics still key off this to detect runaway verbosity.
+export const BUBBLE_LAW_MAX = 10;
 
-// The runaway GUARD sits above the law: a reply over this many bubbles is a persona failure, not a
-// real text, so cap it before a runaway model fans out hundreds of sends. A cap hit means the model
-// is being too verbose and needs reinforcing (§10.1) — over the law is a slip, over the guard is a
-// break, which is why they are two numbers and not one.
-export const BUBBLE_HARD_CAP = 5;
+// The runaway GUARD: a reply over this many bubbles is a model failure, not a real text, so cap it
+// before a runaway model fans out hundreds of sends. A cap hit means the model is being wildly too
+// verbose and needs reinforcing (§10.1).
+export const BUBBLE_HARD_CAP = 15;
 
 /** The guard's original name, kept so existing importers compile. Same number, one source. */
 export const MAX_BUBBLES = BUBBLE_HARD_CAP;
 
-// The one sentence both envelope schemas use to describe a bubble's text, built from the word law
-// in bubbles.ts (the module that ENFORCES the ceiling) rather than restating it. It used to be two
-// identical literals, one per schema — the exact shape a number drifts out of.
-const BUBBLE_TEXT_DESCRIPTION = `one short thought. One sentence or question, ideally ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, never past ${MAX_BUBBLE_WORDS}`;
+// The one sentence both envelope schemas use to describe a bubble's text.
+const BUBBLE_TEXT_DESCRIPTION = `one thought, one send — a comma means two bubbles. Aim for ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words. Avoid periods and colons`;
 
 // The exact envelope shape, as a JSON Schema for OpenRouter structured outputs (response_format:
 // json_schema). This ENFORCES valid JSON at the API — the fix for weaker tool-calling models

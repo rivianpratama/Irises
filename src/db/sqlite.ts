@@ -361,6 +361,9 @@ export function getDb(): DatabaseSync {
   if (db) return db;
   const p = dbPath();
   if (p !== ':memory:') ensureDir(irisesHome());
+  // Named at open, and flagged when new: a wrong IRISES_HOME otherwise boots a fresh, empty store
+  // with nothing to say her memory is simply somewhere else.
+  if (p !== ':memory:') console.log(`[db] store: ${p}${fs.existsSync(p) ? '' : ' (created — new, empty)'}`);
   const opened = new DatabaseSync(p);
   try {
     if (p !== ':memory:') opened.exec('PRAGMA journal_mode=WAL');

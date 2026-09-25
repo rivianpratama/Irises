@@ -466,8 +466,7 @@ saying so, and that line is a finding.
 2. Confirm `CONVO_THREADING_ENABLED=true` in `deploy/app.env` (or the environment), and
    `THREADING_PINGS_ENABLED` left OFF until T16.
 3. Decide whether to start cold. `SELECT * FROM thread_inventory WHERE handle = 'web:guest';` — if
-   there is a row and you want a clean run, `/forget me` in the chat (which clears the inventory
-   through the same path a user would) or delete the row directly. Record which, because a warm run
+   there is a row and you want a clean run, delete the row directly. Record which, because a warm run
    changes `harvestCount`, which changes the rung ceiling.
 4. **Run the turns by hand, over the web channel, at natural pacing.** One at a time, reading each
    reply before sending the next. The point of the exercise is what the replies sound like; a script

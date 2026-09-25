@@ -290,6 +290,9 @@ cp "$HERMES/.env" "$ENGINE_SEED"
 export PATH="$BIN"
 export HOME="$HOME_DIR"
 export IRISES_HOME="$STATE"
+# irises_home() reads $(irises_root)/.env before the shell, and irises_root honours an exported
+# IRISES_ROOT — one left pointing at a real clone would aim stage 8c's purge at the real home.
+unset IRISES_ROOT
 export HERMES_HOME="$HERMES"
 export NO_COLOR=1
 export STUB_LOG

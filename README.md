@@ -137,7 +137,7 @@ Irises has four memory tiers and two side stores. All of them are SQLite tables 
 
 Beside the tiers sit `MOMENTS.md` and `THESIS.md`. The moments file holds timestamped episodes in her own voice, and each episode is deleted after 60 days. The thesis holds two to four sentences about you and is rewritten each week. Irises injects most of this memory on every turn under an authority ladder. Only the `recall_memory` tool searches, and it searches only the cold archive. Optional semantic recall (`MEMORY_SEMANTIC_RECALL=on`) adds an embedding leg to that search.
 
-The forget rules received more design attention than recall did. A retired fact stays in the archive together with its history. The `/forget` command is the one hard delete, and every background writer checks a forget epoch before it writes. Irises never writes to the engine's storage. It asks the engine in natural language, and the engine's own memory loop decides what to keep.
+The forget rules received more design attention than recall did. A retired fact stays in the archive together with its history. No chat command deletes memory. Irises never writes to the engine's storage. It asks the engine in natural language, and the engine's own memory loop decides what to keep.
 
 You can read the full design in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/MEMORY_ARCHITECTURES.md](docs/MEMORY_ARCHITECTURES.md).
 

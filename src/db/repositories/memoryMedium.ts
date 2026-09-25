@@ -283,7 +283,7 @@ function appendArchive(handle: string, retired: MediumEntry[], source?: ArchiveS
   }));
   appendText(archivePath(handle), retired.map(e => renderEntry(e) + DELIM).join(''));
   rotateArchiveIfLarge(handle);
-  return copied;
+  return copied.then(() => undefined);
 }
 
 /** Trim MEDIUM.archive.md back to its newest entries once it passes the size cap. Unparsable

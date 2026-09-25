@@ -3,7 +3,7 @@
 // (Convo controls Ops, so the dossier only needs to live in Convo; Convo passes
 // relevant slices to Ops via meta-prompts.)
 import { callLLM } from '../llm/callLLM.js';
-import { getMemory, saveDossier, getForgetEpoch } from '../db/repositories/memory.js';
+import { getMemory, getMemoryStrict, saveDossier, getForgetEpoch } from '../db/repositories/memory.js';
 import { getUserProfile } from '../db/repositories/profiles.js';
 import { listShortTerm, SHORT_TTL_MS, type ShortTermEntry } from '../db/repositories/memoryShort.js';
 import { getLongDoc, saveLongDoc } from '../db/repositories/memoryLong.js';
@@ -1027,7 +1027,8 @@ async function runDossierEditPass(handle: string, input: EditPassInput): Promise
   // The document may have changed under us while the model was thinking (another pass, a /forget,
   // the engine seed). The ops were verified against the snapshot THIS pass was shown, so applying
   // them over somebody else's document is exactly the clobber the protocol exists to avoid.
-  const current = await getMemory(handle);
+  // Strict: a read that FAILED must abort the pass, not compare as an empty document.
+  const current = getMemoryStrict(handle);
   if ((current?.dossierMd ?? '').trim() !== base.trim()) {
     console.warn('[memory] dossier edit aborted — the document moved while the model was thinking');
     return;
@@ -1099,8 +1100,10 @@ export async function updateDossier(
     // it could contradict them. Read here, used twice: told to the model as CONFIRMED FACTS, and
     // handed to the persist as what the rewrite may not contradict, so the prompt's request and the
     // guard's enforcement can never be two different lists.
+    // Strict: a failed read throws into the catch below and the pass writes nothing — degrading to
+    // null here made an unreadable dossier look empty, and the merge then overwrote it.
     const [memory, profile, medium] = await Promise.all([
-      getMemory(handle),
+      getMemoryStrict(handle),
       getUserProfile(handle),
       loadMediumBundle(handle),
     ]);

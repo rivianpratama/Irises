@@ -55,10 +55,11 @@ export function splitSentences(bubble: string): string[] {
   return out;
 }
 
-// The personas' own hard ceiling ("no bubble ever exceeds 20 words" — convo/Context.md line 3,
-// composer/Context.md "bubble splitting + word limit"). Below it the bubble is the persona's
-// call and code stays out of the way; above it the persona has already failed and we re-split.
-export const MAX_BUBBLE_WORDS = 20;
+// Safety-net ceiling: a bubble above this is a runaway the persona missed, so we re-split.
+// The prompts no longer state a per-bubble word limit — each bubble is as long as one thought
+// naturally is — but the backstop catches true walls (a thought that ran fifty words is never
+// one thought, it's several the model forgot to split).
+export const MAX_BUBBLE_WORDS = 50;
 
 // The band the prompts tell the model to AIM for, well under the ceiling above — a texting-sized
 // thought. Nothing enforces the band (a 3-word bubble is fine, a 15-word one is the persona's

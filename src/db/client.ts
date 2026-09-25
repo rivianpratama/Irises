@@ -7,10 +7,20 @@
 //              root (SQLite ':memory:' + a throwaway temp dir). Nothing survives
 //              the process — tests and zero-residue local runs.
 //
-// Decided once at first import (tests set DATA_BACKEND before their imports).
+// Decided once at first import. A test process never gets the durable store unless it says so:
+// NODE_TEST_CONTEXT is set by node's runner in every test child (a bare `tsx --test <file>` too),
+// and the argv check covers `tsx <file>.test.ts`. The `process.env.DATA_BACKEND = 'memory'` line at
+// the top of test files does NOT do this — CJS hoists their requires above it. A test that really
+// needs the disk (sqlite.disk.test.ts, stateDir.test.ts) sets DATA_BACKEND=sqlite before a dynamic
+// import, and resetStorageForTests still refuses any home outside the OS temp dir.
 export type DbDriver = 'sqlite' | 'memory';
 
-export const driver: DbDriver = process.env.DATA_BACKEND === 'memory' ? 'memory' : 'sqlite';
+const underTest = !!process.env.NODE_TEST_CONTEXT || /\.test\.[cm]?[jt]s$/.test(process.argv[1] ?? '');
+export const driver: DbDriver =
+  process.env.DATA_BACKEND === 'memory' ? 'memory'
+  : process.env.DATA_BACKEND === 'sqlite' ? 'sqlite'
+  : underTest ? 'memory'
+  : 'sqlite';
 
 // Boot visibility: an install upgraded from the Supabase era may still carry
 // DATA_BACKEND=memory in its .env — without this line it would run ephemeral

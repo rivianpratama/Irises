@@ -26,8 +26,12 @@ type ProfileRow = { handle: string; name: string | null; facts_json: string; fir
 export const PROFILE_FACTS_CAP = 30;
 
 function rowToProfile(r: ProfileRow): UserProfile {
-  let facts: string[] = [];
-  try { facts = JSON.parse(r.facts_json) as string[]; } catch { /* unparseable → no facts */ }
+  let facts: string[];
+  // Throws rather than reading as "no facts": the next addUserFact would write one fact over all of
+  // them. The mutators abort on the throw; getUserProfile degrades it to null.
+  try { facts = JSON.parse(r.facts_json) as string[]; } catch (e) {
+    throw new Error(`user_profiles.facts_json unreadable for ${r.handle}: ${String(e)}`);
+  }
   return { handle: r.handle, name: r.name ?? null, facts, firstSeen: r.first_seen, lastSeen: r.last_seen };
 }
 

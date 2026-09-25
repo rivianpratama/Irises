@@ -142,7 +142,7 @@ export async function pruneMessagesBefore(cutoffMs: number, chatId?: string): Pr
       `SELECT chat_id, role, content, handle, created_at FROM messages WHERE ${where}`
     ).all(...params) as unknown as Array<MessageRow & { chat_id: string }>;
     if (rows.length) {
-      await archiveEntries(rows.map(r => ({
+      const archived = await archiveEntries(rows.map(r => ({
         source: 'message_pruned' as const,
         agentHandle: r.handle ?? undefined,
         chatId: r.chat_id,
@@ -151,6 +151,11 @@ export async function pruneMessagesBefore(cutoffMs: number, chatId?: string): Pr
         meta: { role: r.role },
         createdAt: r.created_at,
       })));
+      // The archive is the only copy a pruned message keeps. A row it could not take stays here.
+      if (!archived) {
+        console.warn('[db] message prune skipped — the archive did not take every row, so none were deleted');
+        return 0;
+      }
     }
     return Number(stmt(`DELETE FROM messages WHERE ${where}`).run(...params).changes);
   } catch (error) {

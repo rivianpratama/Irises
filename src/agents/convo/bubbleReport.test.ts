@@ -48,7 +48,8 @@ function args(textToSend = ASK) {
 }
 
 test("a reply whose own parse hit the guard reports hardCapped, and it is that turn's reply", async () => {
-  const out = await processConvoResult({ ...args(), res: makeResult(['one', 'two', 'three', 'four', 'five', 'six']) });
+  const over = Array.from({ length: 18 }, (_, i) => `bubble${i}`);
+  const out = await processConvoResult({ ...args(), res: makeResult(over) });
   assert.equal(out.hardCapped, true, 'the cap fired on the parse behind this very text');
   assert.equal(out.text!.split('\n---\n').length, BUBBLE_HARD_CAP, 'and the text it describes is the capped list');
 });
@@ -62,7 +63,7 @@ test("another agent's capped parse cannot flip the flag on an unrelated reply", 
   // Stand-ins for every parse that runs through the same collectBubbles and is NOT a delivered
   // Convo reply: the Composer's re-voice, Fallfirm's voicers, callLLM's tool-call extraction, and
   // Convo's own retry-validation parse. Each owns its flag; none of them may colour the next send.
-  const capped = JSON.stringify({ bubbles: ['a', 'b', 'c', 'd', 'e', 'f'].map(text => ({ text })) });
+  const capped = JSON.stringify({ bubbles: Array.from({ length: 18 }, (_, i) => ({ text: `b${i}` })) });
   assert.equal(parseReply(capped).hardCapped, true, 'the capped parse owns its own flag');
   assert.equal(parseReply(capped).hardCapped, true, 'and reading it again does not drain it');
 
