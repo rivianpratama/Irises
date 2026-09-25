@@ -335,8 +335,11 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
  * Then DOWN to 0.0065 for the bubbly voice bank: Context.md and craft/hooks.md gained a large,
  * deliberately varied set of joke, reaction, mood, question and rant examples so the voice does not
  * overfit to a handful of lines. Same terms: the floor follows the share down.
+ *
+ * Then DOWN to 0.0064: the same bank's questions now carry their `?` (a few split into two bubbles),
+ * and the bubble law says a question keeps it. Same terms.
  */
-export const MIN_TRANSCRIPT_SHARE = 0.0065;
+export const MIN_TRANSCRIPT_SHARE = 0.0064;
 
 /**
  * Phrases that must exist in the persona, verbatim — the rules whose deletion would be silent.
