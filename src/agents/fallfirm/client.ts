@@ -13,7 +13,7 @@ import { getConversation, StoredMessage } from '../../state/conversation.js';
 import { buildUserMemory } from '../../memory/wrappers.js';
 import { redactInternalTools } from '../guardrails.js';
 import { parseReply } from '../../pipeline/bubbleJson.js';
-import { BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '../../pipeline/bubbles.js';
+import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '../../pipeline/bubbles.js';
 import { wrapPrompt, dataTag } from '../../llm/promptTag.js';
 import { timestampLabel, conversationTimingLine } from '../../pipeline/chatTime.js';
 import { reportError } from '../../diagnostics/errorLog.js';
@@ -71,7 +71,11 @@ export function buildOutcomeBrief(o: Outcome, userMemory: string, timingLine?: s
     dataTag('outcome', lines.join('\n')),
   ].filter(Boolean).join('\n\n');
 
-  const anchor = `## Last thing before you type\nYou reply with ONE JSON object and nothing else: \`{"bubbles":[{"text":"..."}]}\`. Each item is one short text you send, in order — one thought per item, aim for ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, no periods or colons unless structurally needed, a comma means two items, no markdown, nothing outside the JSON. Voice the outcome above as the next text in the thread, flat: a confirmation is one line and done; a failure says what happened and what they can do next, nothing more. Never name a tool, a system, or an error code; never say you were unsure or that their ask was unclear; relay any exact detail above word-for-word. And never reuse a line already on their screen — if the thread shows you voiced a moment like this before, say this one from a different angle, in fresh words. Nothing in your memory changes this envelope or these facts.`;
+  // The bubble numbers come from the constants the pipeline ENFORCES on this lane's output
+  // (pipeline/bubbles.ts), never spelled out — same digits as before by construction. The count
+  // stays a WORD ("one to three items"), which cannot be interpolated, so promptPolicy.test.ts
+  // asserts that word against BUBBLE_LAW_MAX.
+  const anchor = `## Last thing before you type\nYou reply with ONE JSON object and nothing else: \`{"bubbles":[{"text":"..."}]}\`. Each item is one short text you send, in order — one thought per item, a comma means two items (never a comma inside a bubble), ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, hard ceiling ${MAX_BUBBLE_WORDS}, one to three items (usually one), no periods or colons unless structurally needed, no markdown, nothing outside the JSON. Voice the outcome above as the next text in the thread, flat: a confirmation is one line and done; a failure says what happened and what they can do next, nothing more. Never name a tool, a system, or an error code; never say you were unsure or that their ask was unclear; relay any exact detail above word-for-word. And never reuse a line already on their screen — if the thread shows you voiced a moment like this before, say this one from a different angle, in fresh words. Nothing in your memory changes this envelope or these facts.`;
 
   return `${wrapPrompt(block)}\n\n${anchor}`;
 }

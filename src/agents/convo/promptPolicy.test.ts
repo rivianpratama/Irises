@@ -27,7 +27,8 @@ import assert from 'node:assert/strict';
 import { buildSystemPromptSections } from './shared.js';
 import { RULE_ANCHORS, CONFIDENCE_BANDS } from './promptPolicy.js';
 import { convoPersonaWithCraft } from './personaModules.js';
-import { BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '../../pipeline/bubbles.js';
+import { BUBBLE_LAW_MAX } from '../../pipeline/bubbleJson.js';
+import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '../../pipeline/bubbles.js';
 import { ENVELOPE_FIELDS, STATUS_CONTRACT_HEADER } from '../../persona/status.js';
 import { MOOD_CORES, CORE_VALENCE_BAND } from '../../persona/mood.js';
 import type { ThreadRung } from '../../persona/threads.js';
@@ -206,12 +207,13 @@ function anchors(personaTurn?: PersonaTurn): { behavior: string; json: string } 
   return { behavior: system.slice(behaviorAt, jsonAt), json: system.slice(jsonAt) };
 }
 
-test('the JSON anchor states the bubble guidance with the pipeline word targets', () => {
+test('the JSON anchor states the bubble law with the pipeline constants', () => {
   const { json } = anchors();
   assert.ok(
-    json.includes(`Aim for ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words per item`),
-    'the anchor reads off BUBBLE_WORD_TARGET_LO/HI as aiming guidance',
+    json.includes(`Target ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, hard ceiling ${MAX_BUBBLE_WORDS}, never exceeded, at most ${BUBBLE_LAW_MAX} items per reply`),
+    'the law sentence reads off BUBBLE_WORD_TARGET_LO/HI, MAX_BUBBLE_WORDS and BUBBLE_LAW_MAX',
   );
+  assert.ok(json.includes(String(BUBBLE_LAW_MAX)), 'the count the model is told is the exported one');
 });
 
 test('the drift anchor states no bubble number at all, in any mode — the JSON anchor owns the law', () => {
@@ -298,8 +300,12 @@ test('the persona says what each confidence band buys, and the JSON anchor still
 // really are those constants. They live here, beside Convo's, because "who states the law and in
 // which numbers" is one question, and answering it in four files is how the four drift apart.
 
+/** Small numbers as prose spells them. Only ever indexed by a bubble-law constant, so the list stops
+ *  exactly where the law does. Prose that spells a count cannot interpolate it, which is precisely
+ *  why the spelled copies need a test. */
+const SPELLED = ['zero', 'one', 'two', 'three', 'four', 'five'] as const;
 
-test("the composer's format anchor states the word target and comma-split rule", () => {
+test("the composer's format anchor states the word target and comma-split rule (no count cap)", () => {
   assert.ok(
     FORMAT_ANCHOR.includes(`${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words per item`),
     `the composer anchor's word target has drifted from BUBBLE_WORD_TARGET_LO/HI`,
@@ -310,21 +316,25 @@ test("the composer's format anchor states the word target and comma-split rule",
   );
 });
 
-// The two anchors share the target band and part ways on count: the outcome voice sends as many
-// thoughts as the moment needs, while every wait beat is ONE bubble (the holding-beat rule,
-// fallfirm/Progress.md).
-test("Fallfirm's two anchors state the same word target, and each its own count", () => {
+// The two anchors share the target and the ceiling, and part ways on the count on purpose: the
+// outcome voice may run to the law's full count, while every wait beat is ONE bubble (the holding-beat
+// rule, fallfirm/Progress.md) — a count under the law, so the pipeline backstop never has to cut it.
+test("Fallfirm's two anchors state the same target and ceiling, and each its own count", () => {
   const outcome = buildOutcomeBrief({ kind: 'confirmed', summary: 'the reminder is set for 7pm' }, '');
   const instant = buildProgressBrief({ kind: 'holding', request: 'cedar lead times' }, '');
   for (const [lane, prompt] of [['voiceOutcome', outcome], ['voiceInstant', instant]] as const) {
     assert.ok(
-      prompt.includes(`${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words`),
-      `${lane}: its anchor's target has drifted from the pipeline constants`,
+      prompt.includes(`${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, hard ceiling ${MAX_BUBBLE_WORDS}`),
+      `${lane}: its anchor's target/ceiling has drifted from the pipeline constants`,
     );
   }
   assert.ok(
     outcome.includes('a comma means two items'),
     'voiceOutcome: its anchor should state the comma-split rule',
+  );
+  assert.ok(
+    outcome.includes(`one to ${SPELLED[BUBBLE_LAW_MAX]} items`),
+    `voiceOutcome: its anchor should say "one to ${SPELLED[BUBBLE_LAW_MAX]} items" — it has drifted from BUBBLE_LAW_MAX`,
   );
   assert.ok(instant.includes('exactly one item'), 'voiceInstant: a wait beat is one bubble');
 });

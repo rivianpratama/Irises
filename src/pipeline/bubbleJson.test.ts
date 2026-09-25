@@ -470,12 +470,12 @@ test('parseReply tolerates a null / missing status without breaking the envelope
 });
 
 // ── the bubble thresholds: two numbers, one source ───────────────────────────────────────────
-// BUBBLE_LAW_MAX is the report threshold (above this the reply is flagged as verbose);
-// BUBBLE_HARD_CAP is the runaway guard the parser enforces — the prompts no longer state a hard
-// count cap, but the code guard prevents runaway model output.
+// BUBBLE_LAW_MAX is the count Convo/Fallfirm prompts state ("at most 3 items") and the report
+// threshold; BUBBLE_HARD_CAP is the runaway guard the parser enforces (needed higher so the
+// Composer lane, which has no prompt-level count cap, isn't silently truncated).
 
 test('the law threshold is below the runaway guard, and MAX_BUBBLES is the old name', () => {
-  assert.equal(BUBBLE_LAW_MAX, 10);
+  assert.equal(BUBBLE_LAW_MAX, 3);
   assert.equal(BUBBLE_HARD_CAP, 15);
   assert.equal(MAX_BUBBLES, BUBBLE_HARD_CAP, 'the old export name is an alias, same number');
   assert.ok(BUBBLE_LAW_MAX < BUBBLE_HARD_CAP, 'the guard has to sit above the law it backstops');
@@ -517,13 +517,13 @@ test('BubbleReport counts what ships and the longest bubble in words', () => {
   assert.deepEqual(report, { count: 2, maxWords: 7, overLaw: false, hardCapped: false, splits: 0 });
 });
 
-test('overLaw fires on the eleventh bubble, not the tenth', () => {
-  const atLaw = deliver(envelope(...Array.from({ length: 10 }, (_, i) => String.fromCharCode(97 + i)))).report;
-  assert.equal(atLaw.overLaw, false, 'ten is the law threshold, not a breach');
-  const eleven = deliver(envelope(...Array.from({ length: 11 }, (_, i) => String.fromCharCode(97 + i)))).report;
-  assert.equal(eleven.count, 11);
-  assert.equal(eleven.overLaw, true);
-  assert.equal(eleven.hardCapped, false, 'eleven is over the law but under the guard');
+test('overLaw fires on the fourth bubble, not the third', () => {
+  const atLaw = deliver(envelope('a', 'b', 'c')).report;
+  assert.equal(atLaw.overLaw, false, 'three is the law threshold, not a breach');
+  const four = deliver(envelope('a', 'b', 'c', 'd')).report;
+  assert.equal(four.count, 4);
+  assert.equal(four.overLaw, true);
+  assert.equal(four.hardCapped, false, 'four is over the law but under the guard');
 });
 
 test('hardCapped is true when the parser had to cap a reply over the guard', () => {

@@ -76,10 +76,10 @@ interface Envelope {
 }
 
 // ── the bubble-count thresholds, in two numbers ──────────────────────────────────────────────────
-// The LAW is the count the BubbleReport flags as "over" — above this the reply is probably carrying
-// too much, though the prompts no longer state a hard cap (the model self-regulates to what feels
-// human). Reports and metrics still key off this to detect runaway verbosity.
-export const BUBBLE_LAW_MAX = 10;
+// The LAW is the count the Convo/Fallfirm prompts state as the maximum ("at most 3 items") and that
+// the BubbleReport flags as "over". The Composer prompt drops this cap (it says "as many short
+// thoughts as the moment needs"), but the report still keys off this to detect runaway verbosity.
+export const BUBBLE_LAW_MAX = 3;
 
 // The runaway GUARD: a reply over this many bubbles is a model failure, not a real text, so cap it
 // before a runaway model fans out hundreds of sends. A cap hit means the model is being wildly too
