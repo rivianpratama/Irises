@@ -90,6 +90,10 @@ export interface AffectDirective {
    *  contract: zero is careful (serious moment or numbers), one is the normal baseline (no line
    *  rendered), two is loose (late or amused), three is messy (very late or laughing hard). */
   englishLooseness: 0 | 1 | 2 | 3;
+  /** She is running on empty: a sad core, or a social battery low enough for one bubble. The one
+   *  state in which her mood puts an open-ended ask off rather than merely shortening the answer;
+   *  the hook selector carries it onto a task directive and the drift anchor states it last. */
+  spent: boolean;
 }
 
 /**
@@ -110,7 +114,10 @@ export interface AffectDirective {
  * flat or careful are the turns to state the guess and take what they said.
  *
  * The sentences are Fable's, pasted byte-for-byte from the staging prose (policy-strings.md,
- * CORE_DIRECTIVES). Nothing here is a word list: the three hook words appear because they are the
+ * CORE_DIRECTIVES), plus one clause each on `mad` and `sad` from the autonomy round (2026-09-25):
+ * the persona block lets her mood put off an open-ended ask or refuse a favour asked with a
+ * put-down, and live replays showed that permission unused, 0 of 12, until the turn's own mood line
+ * stated it as her state rather than as an option. Nothing here is a word list: the three hook words appear because they are the
  * three kinds the engine actually has, not because any code matches her reply against them.
  */
 export const CORE_DIRECTIVES: Record<
@@ -118,12 +125,12 @@ export const CORE_DIRECTIVES: Record<
   { line: string; hooks: Exclude<HookAllowance, 'none'>; question: QuestionGate }
 > = {
   mad: {
-    line: 'Sharper and shorter than usual. A judgment comes easily today; keep it on what they did, never on who they are.',
+    line: 'Sharper and shorter than usual. A judgment comes easily today; keep it on what they did, never on who they are. A favour asked in the same breath as a put-down gets a flat no.',
     hooks: 'all',
     question: 'closed',
   },
   sad: {
-    line: 'Fewer words. No tangents. Answer, then stop.',
+    line: 'Fewer words. No tangents. Answer, then stop. Anything open-ended they ask today, research, long writing, a favour with no clock, is too much: say not now, and it stays owed.',
     hooks: 'no_tangent',
     question: 'closed',
   },
@@ -342,6 +349,7 @@ export function compileAffect(
     heavy: compileHeavy(carried),
     lateNight,
     englishLooseness,
+    spent: mood.core === 'sad' || brevity === 'minimal',
   };
 }
 
@@ -354,7 +362,7 @@ export function compileAffect(
 /** One line, by band. `normal` is absent rather than empty — a band with nothing to say renders
  *  nothing, which is the house rule for every optional section. */
 export const BREVITY_LINES: Record<Exclude<BrevityBand, 'normal'>, string> = {
-  minimal: 'One bubble this turn. Say the one thing and stop.',
+  minimal: 'One bubble this turn. Say the one thing and stop. Anything open-ended waits until you have more in you: say not now.',
   tight: 'Fewer words than usual. Two bubbles at most.',
 };
 

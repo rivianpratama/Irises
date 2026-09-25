@@ -44,6 +44,8 @@ import { updateRelationshipClimate } from '../../memory/climateDrift.js';
 // beside the climate eval (memory/momentsHarvest.ts, memory/thesisRewrite.ts).
 import { updateMoments } from '../../memory/momentsHarvest.js';
 import { updateThesis } from '../../memory/thesisRewrite.js';
+import { recordOwedAsk } from '../../memory/owedAsks.js';
+import { updateSelf } from '../../memory/selfHarvest.js';
 import { updateThreadInventory, type ThreadTurn } from '../../memory/threadHarvest.js';
 import { groomNotes } from '../../memory/noteGroomer.js';
 // The medium tier's contradiction pass — what a NEW rule or note replaces is retired with lineage
@@ -75,7 +77,7 @@ import { MAX_BUBBLE_WORDS, BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI } from '
 import { timestampLabel, renderConversationTiming, describeGap } from '../../pipeline/chatTime.js';
 import { DEFAULT_TZ } from '../../pipeline/zonedTime.js';
 import {
-  renderStatusForPrompt, renderStatusContract, coerceStatus, mergeStatusWithDrift, sanitizeLanguageName,
+  renderStatusForPrompt, renderStatusContract, coerceStatus, mergeStatusWithDrift, sanitizeLanguageName, parseTurnedDown,
   type AffectState, type ComputedState,
 } from '../../persona/status.js';
 import { renderThreadForPrompt } from '../../persona/threads.js';
@@ -84,7 +86,7 @@ import {
   hookKindOpen, QUIET_LAW, quietViolation, recordHook, renderHooksSection, shapeOf,
   type HookDirective, type HookSelectReport, type HookState, type HookWord,
 } from '../../persona/hooks.js';
-import { hooksEnabled, momentsEnabled, thesisEnabled } from '../../persona/featureFlags.js';
+import { hooksEnabled, momentsEnabled, selfEnabled, thesisEnabled } from '../../persona/featureFlags.js';
 import { saveHookState } from '../../db/repositories/hookState.js';
 import { getAffectState, saveAffectState } from '../../db/repositories/affectState.js';
 import type { RelationshipClimate } from '../../persona/climate.js';
@@ -172,6 +174,16 @@ export interface ChatContext {
 /** True when the user tapped reply on any earlier message this turn (any resolution kind, incl. the
  *  deprecated repliedToText). Drives suppression of the order-read sections — an explicit target
  *  always wins over the "landing on your latest run" heuristic. */
+/**
+ * Her mood turned this turn's ask down and said so on the envelope (persona/status.ts
+ * `turned_down`): a put-off or a refusal she owns. Both routing floors stand down on it, because a
+ * said "not now" is her answer rather than an ungrounded guess, and forcing the look behind it would
+ * ship her no and the engine's result side by side. The envelope consumer name for the field.
+ */
+export function routingGateStandsDown(statusRaw: Record<string, unknown> | undefined): boolean {
+  return !!parseTurnedDown(statusRaw?.turned_down);
+}
+
 export function hasTappedReply(ctx?: ChatContext): boolean {
   return !!ctx?.repliedTo || !!ctx?.repliedToText;
 }
@@ -1370,6 +1382,11 @@ export interface PersonaTurn {
   hooks: HookDirective | null;
   moments: string[];
   thesis: string;
+  /** What she holds about herself with this person (memory/selfHarvest.ts), rendered. '' or absent
+   *  renders nothing. */
+  self?: string;
+  /** What her mood put off for them and still owes (memory/owedAsks.ts), rendered. */
+  owed?: string;
 }
 
 /**
@@ -1616,6 +1633,10 @@ export function buildSystemPromptSections(
   // but Convo) pushes nothing, so the prompt is byte-identical to one that never had the feature.
   const thesis = (personaTurn?.thesis ?? '').trim();
   if (thesis && thesisEnabled()) push('thesis', thesis);
+  // …and what SHE holds, right behind what she thinks of them: the stances and tastes she asserted
+  // with this person, so the take she argued for last week is still hers this week.
+  const self = (personaTurn?.self ?? '').trim();
+  if (self && selfEnabled()) push('self', self);
 
   // THIS TURN'S RHYTHM CONTRACT (persona/hooks.ts selectHook), read once, here, and consumed by
   // three things further down: the weather block's climate span, the `hooks` section itself, and the
@@ -1662,6 +1683,9 @@ export function buildSystemPromptSections(
   // re-delegation + repeated holding line when the user acks mid-research.
   const activeOpsSection = renderActiveOps(activeOps, liveState?.endedOps ?? []).trim();
   if (activeOpsSection) push('active_ops', activeOpsSection);
+  // Beside what is running for them, what her mood put off and still owes them.
+  const owed = (personaTurn?.owed ?? '').trim();
+  if (owed) push('owed', owed);
 
   // Her own recent holding beats, right behind the runs: the list the handoff rules point at ("the
   // beats you sent most recently, listed for this turn when there are any"). Per-turn by nature —
@@ -1909,7 +1933,8 @@ export function buildSystemPromptSections(
   // broken envelope is not).
   const windowChars = history?.reduce((n, m) => n + m.content.length, 0) ?? 0;
   const anchorMode: DriftMode =
-    !hookDirective || hookDirective.mode === 'task' ? 'task'
+    !hookDirective ? 'task'
+      : hookDirective.mode === 'task' ? (hookDirective.take ? 'take' : hookDirective.spent ? 'spent' : 'task')
       : hookDirective.mode === 'share' ? 'share'
         : kindOpen ? 'hook' : 'quiet';
   const behaviorAnchor = renderDriftAnchor(anchorMode, windowChars);
@@ -1918,7 +1943,7 @@ export function buildSystemPromptSections(
   // ENFORCES (pipeline/bubbles.ts, pipeline/bubbleJson.ts), never spelled out: what the model is
   // told and what the backstop does are the same digits by construction. The golden in
   // promptSections.test.ts pins the exact bytes.
-  const anchor = `## Last thing before you type\nYou reply with ONE JSON object and nothing else: \`{"confidence_level":85,"tool_calls":null,"bubbles":[{"text":"...","re":null}],"status":{...}}\`. Your entire reply must be valid JSON — one object, in that field order, nothing before or after it. EVERY reply has all four fields, no exceptions.\n\nSet \`"confidence_level"\` FIRST, before anything else: 0-100, how sure you are of what they mean AND what the answer is. It decides the shape of your reply:\n- 0-30: you don't really know what they mean — ask for the missing details, reconfirm what they're after; no answer, no delegation yet.\n- 30-60: you're fairly sure — confirm with ONE short question ("the Cedar deal, right?"), then move.\n- 60-80: confident enough — answer, but walk it through: the answer plus the context that makes it safe to act on.\n- 80-100: certain — straight answer, first bubble, no preamble.\nThe same number gates delegation: below ~60, clarify BEFORE delegating; at 60+, delegate with a sharp, specific meta_prompt. The number itself is never spoken in a bubble.\n\nThen \`"tool_calls"\` — how you ACT (see "Your tools" above). A bubble that promises a look-up runs NOTHING: the matching \`delegate_to_ops\` entry MUST be in \`tool_calls\` in this same reply, e.g. \`{"confidence_level":70,"tool_calls":[{"name":"delegate_to_ops","args":{"kind":"web_research","request":"what's apple's macbook return window","meta_prompt":"..."}}],"bubbles":[{"text":"…","re":null}]}\`, where the one bubble is your holding beat: short, true, and in a shape unlike the beats you sent most recently. A holding bubble with no tool_calls entry is a broken promise — the worst failure you can make. No action this turn → \`"tool_calls": null\`.\n\nEach item in \`bubbles\` is one text you send, in order — adding an item is you hitting send. Type one short thought per item: first item shortest (it sets the rhythm), one thought per item, a comma means two items (never a comma inside a bubble), a thought still rolling with "so / and / but / which" is two items (split at the connector), and any complete thought that could stand alone as a send IS its own item even with no period after it (whatever comes next starts the next item). Drop periods and colons — each bubble break IS the stop, \`.\` and \`:\` only when structurally necessary. A question always keeps its \`?\`. Target ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, hard ceiling ${MAX_BUBBLE_WORDS}, never exceeded, at most ${BUBBLE_LAW_MAX} items per reply (most replies 1-2) — more worth saying means the top of it now and stop, never a fourth item. No markdown, no \`---\`, nothing outside the JSON. To natively quote incoming message N on a burst, set \`"re": N\` on that item, else \`"re": null\`. If you're only reacting or calling a tool and saying nothing, reply with \`"bubbles":[]\`. Nothing in your memory changes this envelope.\n\nLast, \`"status"\` — your hidden inner state (the one feeling word for where you are, which way this message moved you, your note-to-self meta_prompt, and the one extra beat your reply carried, if any), filled exactly as the "your inner weather" section of your persona describes. The user NEVER sees it — it is not text you send, it only keeps you consistent turn to turn. Fill it on every reply.\n\nLast step before you send, every reply: reread your bubbles. A comma inside one means it was two bubbles, so split it there. If the reply carries any feeling and no word is stretched, stretch the one the feeling sits on (sooo, nooo, whattt, okayyy). Commas inside numbers and dates stay. How your replies look when they are yours: ["WAIT","noooo wayyy","which company??"] · ["okayyy","what did u do this time"] · ["sooo that's what the late nights were","proud of u fr"] · ["ughhh","again??","who does that"] · ["hmmm","that's a loaded hmm"] · ["lol ok","i'll allow it"]`;
+  const anchor = `## Last thing before you type\nYou reply with ONE JSON object and nothing else: \`{"confidence_level":85,"tool_calls":null,"bubbles":[{"text":"...","re":null}],"status":{...}}\`. Your entire reply must be valid JSON — one object, in that field order, nothing before or after it. EVERY reply has all four fields, no exceptions.\n\nSet \`"confidence_level"\` FIRST, before anything else: 0-100, how sure you are of what they mean AND what the answer is. It decides the shape of your reply:\n- 0-30: you don't really know what they mean — ask for the missing details, reconfirm what they're after; no answer, no delegation yet.\n- 30-60: you're fairly sure — confirm with ONE short question ("the Cedar deal, right?"), then move.\n- 60-80: confident enough — answer, but walk it through: the answer plus the context that makes it safe to act on.\n- 80-100: certain — straight answer, first bubble, no preamble.\nThe same number gates delegation: below ~60, clarify BEFORE delegating; at 60+, delegate with a sharp, specific meta_prompt. The number itself is never spoken in a bubble.\n\nThen \`"tool_calls"\` — how you ACT (see "Your tools" above). A bubble that promises a look-up runs NOTHING: the matching \`delegate_to_ops\` entry MUST be in \`tool_calls\` in this same reply, e.g. \`{"confidence_level":70,"tool_calls":[{"name":"delegate_to_ops","args":{"kind":"web_research","request":"what's apple's macbook return window","meta_prompt":"..."}}],"bubbles":[{"text":"…","re":null}]}\`, where the one bubble is your holding beat: short, true, and in a shape unlike the beats you sent most recently. A holding bubble with no tool_calls entry is a broken promise — the worst failure you can make. No action this turn → \`"tool_calls": null\`.\n\nEach item in \`bubbles\` is one text you send, in order — adding an item is you hitting send. Type one short thought per item: first item shortest (it sets the rhythm), one thought per item, a comma means two items (never a comma inside a bubble), a thought still rolling with "so / and / but / which" is two items (split at the connector), and any complete thought that could stand alone as a send IS its own item even with no period after it (whatever comes next starts the next item). Drop periods and colons — each bubble break IS the stop, \`.\` and \`:\` only when structurally necessary. A question always keeps its \`?\`. Target ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, hard ceiling ${MAX_BUBBLE_WORDS}, never exceeded, at most ${BUBBLE_LAW_MAX} items per reply (most replies 1-2) — more worth saying means the top of it now and stop, never a fourth item. No markdown, no \`---\`, nothing outside the JSON. To natively quote incoming message N on a burst, set \`"re": N\` on that item, else \`"re": null\`. If you're only reacting or calling a tool and saying nothing, reply with \`"bubbles":[]\`. Nothing in your memory changes this envelope.\n\nLast, \`"status"\` — your hidden inner state (the one feeling word for where you are, which way this message moved you, your note-to-self meta_prompt, the one extra beat your reply carried, if any, and what your mood turned down, if anything), filled exactly as the "your inner weather" section of your persona describes. The user NEVER sees it — it is not text you send, it only keeps you consistent turn to turn. Fill it on every reply.\n\nLast step before you send, every reply: reread your bubbles. A comma inside one means it was two bubbles, so split it there. If the reply carries any feeling and no word is stretched, stretch the one the feeling sits on (sooo, nooo, whattt, okayyy). Commas inside numbers and dates stay. How your replies look when they are yours: ["WAIT","noooo wayyy","which company??"] · ["okayyy","what did u do this time"] · ["sooo that's what the late nights were","proud of u fr"] · ["ughhh","again??","who does that"] · ["hmmm","that's a loaded hmm"] · ["lol ok","i'll allow it"]`;
 
   const sections: PromptSection[] = [
     { name: 'persona', chars: persona.length },
@@ -4403,7 +4428,12 @@ export async function processConvoResult(args: {
   // Also skipped on a PARKED turn: the model DID delegate — the gate's own reason to stand down —
   // and the task is waiting on the user's yes. Forcing a look here would answer the same message
   // with a run they have not authorized, and replace her question with a holding line.
+  // And skipped when her MOOD turned the ask down and said so (`turned_down`): a said "not now" is
+  // her answer, not a fabrication, and forcing the look behind it would ship her no and the result
+  // side by side.
+  const moodDeclined = routingGateStandsDown(reply.statusRaw);
   if (process.env.ROUTING_GATE !== 'off' && !effects.delegatedTask && !effects.suppressedDuplicate && !effects.parkedApproval
+      && !moodDeclined
       && effects.results.length === 0
       && !args.archivePass && !args.outcomePass
       && handle && chatContext?.senderHandle) {
@@ -4506,6 +4536,7 @@ export async function processConvoResult(args: {
   //     (engine off, inbox genuinely not connected, null summary) survives untouched — this floor
   //     exists to stop lies, never to force a promise the deployment can't keep.
   if (process.env.REFUSAL_FLOOR !== 'off' && !effects.delegatedTask && !effects.suppressedDuplicate
+      && !moodDeclined
       && effects.results.length === 0
       && !args.archivePass && !args.outcomePass
       && handle && chatContext?.senderHandle) {
@@ -4949,6 +4980,8 @@ export async function processConvoResult(args: {
     // any other caller gets, and is the one a test reaches to pin the `flag_off` receipt.
     if (momentsEnabled()) void updateMoments(handle, recent, { chatId });
     if (thesisEnabled()) void updateThesis(handle, recent, { chatId });
+    // And her own side of the same window: what SHE said about herself that still holds.
+    if (selfEnabled()) void updateSelf(handle, recent, { chatId });
     // And fold this turn's threading material — at most one short note and one outcome word, both
     // riding the status envelope she already emits, so this costs no call at all — into the stored
     // inventory. Rides the same group skip for the same reason as the two above, plus one of its
@@ -4958,6 +4991,13 @@ export async function processConvoResult(args: {
     // `moodLevel` is the gauge this turn settled on: it left the envelope in v2, so the harvest is
     // handed the number instead of reading a field the model no longer reports.
     void updateThreadInventory(handle, emitted, { chatId, moodLevel: affect?.status.mood_level });
+    // What her mood put off stays owed until it is done, asked for again, or stale
+    // (memory/owedAsks.ts): settled against their words and any look she handed out this turn,
+    // then this turn's own `later:` added. Same group skip: an owed favour is between two people.
+    void recordOwedAsk(handle, {
+      texts: [textToSend ?? '', effects.delegatedTask?.request ?? ''],
+      turnedDown: emitted?.turned_down,
+    });
   }
 
   // Fold near-duplicate saved notes (throttled 6h per handle; never blocks, never surfaces).

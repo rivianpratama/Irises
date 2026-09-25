@@ -4,7 +4,8 @@
 // Since 2026-09-11 that is two kinds of message rather than one. The old one is the short stall in a
 // script the examples cannot read. The new one is every message under the share cap that a
 // not-a-stall signal already disqualified from the fast path — a sentence about their day, which is
-// the shape a bid arrives in — and it is the reason this lane now answers with four words.
+// the shape a bid arrives in — and it is the reason this lane now answers with more than two words. Since 2026-09-25 a fifth
+// word, `take`, reads a question that asks for her own opinion (persona/idle.ts, TAKES).
 //
 // The gate itself is a leaf and stays one — it never picks a lane, never sets a deadline and never
 // caches. This module is the production wiring it takes as an argument: the classify lane, five
@@ -12,7 +13,7 @@
 // drives the same three layers by injecting its own function and never touches a network.
 //
 // FAILING TOWARD TASK, everywhere. A thrown lane, a spent budget, an install with no classify lane,
-// a deadline that fired, an answer that is not one of the four words — every one of them comes back
+// a deadline that fired, an answer that is not one of the five words — every one of them comes back
 // `unclear`, which persona/idle.ts reads as a task turn. The asymmetry is the whole design: the cost
 // of a wrong task turn is one flat reply, and the cost of a wrong idle turn is a clever line landing
 // on a piece of work.
@@ -45,7 +46,7 @@ import type { IdleVerdict } from '../../persona/idle.js';
 
 /**
  * The classifier's whole prompt, Fable's words pasted byte-for-byte from the plan
- * (2026-09-11-share-turns.md §5). FOUR words now, defined; nothing about Irises, nothing about
+ * (2026-09-11-share-turns.md §5). FIVE words now, defined; nothing about Irises, nothing about
  * hooks — the lane is being asked a question about a sentence, not being asked to be her.
  *
  * The word that changed everything is `share`, and the two definitions around it are what make it
@@ -59,7 +60,8 @@ export const IDLE_CLASSIFY_PROMPT = [
   'One short message from a person to their assistant follows. Answer with exactly one word.',
   'stall — a greeting, an acknowledgement, a sign-off, a laugh, a filler: it asks for nothing and tells nothing.',
   "share — it tells the assistant something about the person's own day, life, plans or feelings, and asks for nothing.",
-  'ask — it asks for something, gives an instruction, or carries a fact the assistant must act on.',
+  "take — it asks for the assistant's own opinion, taste, feeling or experience, and nothing that has to be looked up or done.",
+  'ask — it asks for something to be looked up, worked out or done, gives an instruction, or carries a fact the assistant must act on.',
   'unclear — you cannot tell.',
 ].join('\n');
 
@@ -96,11 +98,11 @@ export function idleCacheKey(text: string): string {
 }
 
 /**
- * One word from the lane → one of the four verdicts. Anything else is `unclear`, which is a task.
+ * One word from the lane → one of the five verdicts. Anything else is `unclear`, which is a task.
  *
  * Read with `startsWith` rather than equality: a lane that answers "stall." or "stall\n" has
- * answered, and a five-token budget can also clip a longer answer mid-word. The order of the three
- * tested prefixes says nothing — `stall`, `share` and `ask` are disjoint prefixes of each other, so
+ * answered, and a five-token budget can also clip a longer answer mid-word. The order of the four
+ * tested prefixes says nothing — `stall`, `share`, `ask` and `take` are disjoint prefixes of each other, so
  * no answer can match two of them. The leniency is deliberate and bounded: it forgives punctuation,
  * capitals and an inflection ("shared", "asking"), and it forgives nothing about WHICH word the lane
  * chose, which is the only thing this reading is for.
@@ -110,6 +112,7 @@ export function readIdleVerdict(text: string | null | undefined): IdleVerdict {
   if (word.startsWith('stall')) return 'stall';
   if (word.startsWith('share')) return 'share';
   if (word.startsWith('ask')) return 'ask';
+  if (word.startsWith('take')) return 'take';
   return 'unclear';
 }
 

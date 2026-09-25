@@ -1,4 +1,4 @@
-// The four switches this phase ships, in one leaf.
+// The switches the persona engines ship, in one leaf.
 //
 // They live together, and away from the engines they gate, for one reason: every engine here is a
 // pure module that a test imports for the price of a string (persona/hooks.ts, persona/moments.ts,
@@ -90,6 +90,36 @@ export function thesisEnabled(): boolean {
  */
 export function shareTurnsEnabled(): boolean {
   const v = (process.env.CONVO_SHARE_TURNS_ENABLED || '').trim().toLowerCase();
+  if (v === '') return true;
+  return ['true', '1', 'on', 'yes'].includes(v);
+}
+
+/**
+ * Her own self (env: MEMORY_SELF_ENABLED). Default ON.
+ *
+ * Gates both ends of `memories/<handle>/SELF.md`: the daily pass that writes down the stances,
+ * tastes, lessons and changes of mind SHE asserted with this person (memory/selfHarvest.ts), and the
+ * `self` dyn section that hands them back so she stays the same person across the window. Off means
+ * no pass, no section, and an existing file goes stale in place.
+ */
+export function selfEnabled(): boolean {
+  const v = (process.env.MEMORY_SELF_ENABLED || '').trim().toLowerCase();
+  if (v === '') return true;
+  return ['true', '1', 'on', 'yes'].includes(v);
+}
+
+/**
+ * Her own texts (env: IRISES_MUSINGS_ENABLED). Default ON.
+ *
+ * Gates the sweep that lets her text first because something is on HER mind (memory/musings.ts):
+ * a seed from SELF.md, a moment she keeps, or a theme of theirs, voiced by the proactive pipeline as
+ * a `musing`. Its own line, apart from anything the user set up: no reminder, no cron job, no
+ * watched mail rides it. It diverges from THREADING_PINGS_ENABLED (default off) on purpose, because
+ * the owner asked for her to start conversations; the bounds live in the sweep (one a day at most,
+ * daytime where they are, never on a quiet thread they left, never a room).
+ */
+export function musingsEnabled(): boolean {
+  const v = (process.env.IRISES_MUSINGS_ENABLED || '').trim().toLowerCase();
   if (v === '') return true;
   return ['true', '1', 'on', 'yes'].includes(v);
 }

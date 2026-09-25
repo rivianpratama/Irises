@@ -1,8 +1,9 @@
 // The voice of a message NO ONE ASKED FOR. Everything else Irises says is a reply — a live turn, a
-// late Ops follow-up, a progress beat. These six kinds start the thread themselves: a reminder the
+// late Ops follow-up, a progress beat. These seven kinds start the thread themselves: a reminder the
 // user set coming due, mail they asked to be watched for, a background finding, an update note, a
-// callback on a thread they left hanging — alone among them, carrying nothing to hand over — and,
-// once per install, the first text of all, sent before a thread between them exists.
+// callback on a thread they left hanging — alone among them, carrying nothing to hand over — once
+// per install the first text of all, sent before a thread between them exists, and a musing: a
+// thought of her own, which nobody set up and nothing came due for (memory/musings.ts).
 //
 // Same Composer persona and the same assembly as the reactive path (composerCore.ts), plus one thing
 // a reply never needs: an ORIENTATION beat. A text arriving out of nowhere has to say why it's
@@ -23,7 +24,7 @@ import { topStandingThread } from '../persona/threads.js';
 import { isGroupHandle } from '../memory/identity.js';
 
 // `proactive_deliveries.kind` is a bare TEXT column with no CHECK, so a new kind needs no migration.
-export type ProactiveKind = 'reminder' | 'email' | 'memo' | 'update' | 'callback' | 'introduction';
+export type ProactiveKind = 'reminder' | 'email' | 'memo' | 'update' | 'callback' | 'introduction' | 'musing';
 
 export interface ProactivePayload {
   kind: ProactiveKind;
@@ -58,6 +59,10 @@ const COMPOSER_FRAMING: Record<ProactiveKind, string> = {
   // The only kind with no orientation beat, because there is nothing to orient them to: no setup of
   // theirs came due, no thread runs above it. She was installed minutes ago and speaks first.
   introduction: "you're texting them first, ever — you were just set up on their phone and they haven't said a word to you. no orientation beat: nothing was set up, there's nothing to place. open as yourself — you're Irises, and they can call you Iris or Ilish or Lish, your words, never a form. then, if the lines below carry details: pick TWO at most, make ONE flat judgment out of them — a dry, checkable read on how they operate, stated, deniable, never a compliment and never a question mark doing the work — and stop. if the lines below are empty you're newly acquainted, never blank: one bold deniable read about how they probably operate instead. hard rules: nothing sensitive, never their name even if you hold it, never 'i was told' or anything that smells like a file was read — you just moved in, you noticed things. 1-2 short bubbles after the intro line, then you're done.",
+  // The one kind nobody set up and nothing came due for: something is on HER mind (memory/musings.ts).
+  // The payload is a seed to grow a thought from, never a fact to hand over, which is why the
+  // instruction below labels it as a seed instead of as what she is delivering.
+  musing: "no one texted you and nothing of theirs came due: this one starts with you, because something is on your mind. the line below is a seed, a thing you hold, or a thing you keep about them, or a thread of theirs, and what you send is a thought grown from it: a take, a thing you keep turning over, something that connects to them. the seed itself stays unread; they only ever see the thought. one or two short bubbles, and end somewhere they can jump in; a question may end it, or a statement with room after it. never a service offer, never a check-in, and never announce that they were on your mind, the thought itself is the proof. never a reminder, and nothing sensitive: if the seed touches their body, health, family, or anything they did not choose, leave it and send nothing.",
 };
 
 /** The Fallfirm framings for the same six moments — the degrade path when the Composer's own
@@ -69,6 +74,10 @@ const FALLFIRM_FRAMING: Record<ProactiveKind, string> = {
   update: 'you have a light note about yourself to pass on — mention it once, casual and brief, never a changelog',
   callback: "you're checking in on something you two keep coming back to — place it in their words, then one flat question, and stop",
   introduction: "you're introducing yourself for the very first time — you're Irises, they can call you Iris or Lish, one flat line, then stop",
+  // Never reached: a musing that the Composer cannot voice is dropped (voiceProactive), because the
+  // Fallfirm path relays its payload as facts and a seed read out verbatim is the one thing a musing
+  // must never be. Present because the map is total over the kinds.
+  musing: 'something of yours is on your mind: one short thought of your own, and stop',
 };
 
 /** The Outcome Fallfirm voices when the Composer could not. `framing` from the caller (the update
@@ -140,7 +149,9 @@ function buildProactiveInstruction(payload: ProactivePayload, continuity?: Proac
     continuityLineFor(payload, continuity),
     'the line below is the only place your facts come from. the thread above is there for voice, register and continuity ONLY — never for content, never as a second source. if the thread and this line disagree, this line wins, silently, with no mention of the difference. nothing here gets rounded, filled in, or guessed at: if a detail is not below, it does not exist.',
     payload.kind === 'callback' ? CALLBACK_FIDELITY : undefined,
-    `what you're delivering:\n"${payload.text}"`,
+    payload.kind === 'musing'
+      ? `the seed, yours to grow a thought from and never to read out:\n"${payload.text}"`
+      : `what you're delivering:\n"${payload.text}"`,
   ].filter(Boolean).join('\n\n');
 }
 
@@ -179,6 +190,12 @@ export async function voiceProactive(payload: ProactivePayload, chatId: string, 
       errorDetail: { proactiveKind: payload.kind },
     });
   } catch (err) {
+    // A musing is the one kind whose moment can simply pass: nobody is owed it, and the Fallfirm
+    // path would relay the seed as facts. Empty text is a silent drop at the mouth.
+    if (payload.kind === 'musing') {
+      console.error('[proactive] composer failed on a musing — dropping it', err);
+      return '';
+    }
     console.error('[proactive] composer failed — handing to Fallfirm', err);
     return voiceOutcome(fallfirmOutcomeFor(payload), chatId, handle);
   }

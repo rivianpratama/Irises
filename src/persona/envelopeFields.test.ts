@@ -21,7 +21,7 @@ import { ENVELOPE_FIELDS, STATUS_SCHEMA_PROP, type EnvelopeField } from './statu
  *  from the table, because a table that lost or gained a field would derive its own new answer. */
 const V2_KEYS: readonly string[] = [
   'mood_label', 'mood_shift', 'intent_mode', 'terminal_closure',
-  'epistemic_trigger', 'meta_prompt', 'hook_kind', 'language_request', 'thread_note', 'thread_outcome',
+  'epistemic_trigger', 'meta_prompt', 'hook_kind', 'language_request', 'turned_down', 'thread_note', 'thread_outcome',
 ];
 
 /** The modules that declare every name the `consumers` column can use. Read as SOURCE rather than
@@ -37,6 +37,9 @@ const V2_KEYS: readonly string[] = [
 const CONSUMER_SOURCES = [
   './status.ts', './mood.ts', './affectDrift.ts', './threads.ts', '../memory/threadHarvest.ts',
   '../memory/standingSettings.ts', './hooks.ts', './affectCompiler.ts',
+  // `turned_down` joined with two readers outside persona/: the routing floors that stand down on a
+  // mood's no (convo/shared.ts) and the store of what it put off (memory/owedAsks.ts).
+  '../agents/convo/shared.ts', '../memory/owedAsks.ts',
 ] as const;
 
 /** The rule, as a function, so the negative case below can be a real assertion rather than a claim
@@ -45,7 +48,7 @@ function unreadFields(rows: readonly EnvelopeField[]): string[] {
   return rows.filter(f => f.consumers.length === 0).map(f => f.key);
 }
 
-test('the envelope is exactly the ten v2 fields, in emission order', () => {
+test('the envelope is exactly the eleven v2 fields, in emission order', () => {
   assert.deepEqual(
     ENVELOPE_FIELDS.map(f => f.key), V2_KEYS,
     'the shrink from seventeen fields to eight is a one-way migration — a field added back here is '
@@ -53,7 +56,7 @@ test('the envelope is exactly the ten v2 fields, in emission order', () => {
   );
 });
 
-test('the schema both lanes validate against requires those ten keys and nothing else', () => {
+test('the schema both lanes validate against requires those eleven keys and nothing else', () => {
   const p = STATUS_SCHEMA_PROP as { required: string[]; properties: Record<string, unknown> };
   assert.deepEqual(p.required, V2_KEYS);
   assert.deepEqual(Object.keys(p.properties), V2_KEYS);
@@ -142,7 +145,11 @@ test('every consumer the table names is still an exported function', () => {
  * field asking her to nominate her own moments — which would have been paid for on every request to
  * both lanes, twice over, whether or not a moment was ever minted.
  */
-const SCHEMA_JSON_CEILING = 3_650;
+// Autonomy (2026-09-25): +570, from 3,587 to 4,157, all of it `turned_down` joining the table, the
+// one field that lets her mood say no out loud. Its description carries the tiers her mood gets no
+// say on, because a field that could be set on a fact they asked for would let a bad mood skip the
+// routing floor on exactly the turn it exists for.
+const SCHEMA_JSON_CEILING = 4_200;
 
 /** How much the ceiling may sit above the measurement, copied from promptBudget.test.ts so this copy
  *  of the descriptions is held to the same band as the `status_contract` copy of them. The downward

@@ -272,9 +272,14 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * including the message they just sent (its word, its length, the streak), the two samples that
  * counted a stall go, the predict line stops quoting their word, and a read already said in the
  * conversation is spent. Every other file held.
+ *
+ * Then **+3,174**, the autonomy round (186,118 → 189,292): the persona block (policy.ts) takes on the
+ * mood tiers (what her mood may put off, refuse, or never touch), earned praise, stances on anything
+ * including politics, "want them to do well" in place of permanent side-taking, and a repeat that
+ * can get a plain no; Context.md's tests, opinions and scope lines follow it. No craft page moved.
  */
-const CORPUS_CHARS = 186_118;
-const CORPUS_SHA256 = 'f29a4a5c7efb87da2a3c3652940809a2c4031e623bab258b1c78e03e9d393361';
+const CORPUS_CHARS = 189_292;
+const CORPUS_SHA256 = '40d89eff5748dda28209a8071c76917aff79c93b36134b68c4b68e00cec65851';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 

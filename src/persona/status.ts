@@ -109,6 +109,10 @@ export interface EmittedStatus {
   /** The one STANDING SETTING the envelope carries: a language they explicitly asked for THIS turn.
    *  Optional for the same reason the two threading fields are — usually absent, never blank. */
   language_request?: string;
+  /** Her mood turned down what they asked this turn: `later: <ask>` (put off, stays owed) or
+   *  `no: <ask>` (refused). Optional like the fields around it: absent on every turn she did the
+   *  thing or there was nothing asked. Normalized by `parseTurnedDown`. */
+  turned_down?: string;
   // Threading capture. OPTIONAL on purpose: hand-built fixtures keep type-checking, and an absent
   // field is dropped by JSON.stringify instead of persisting an empty string on every affect row.
   thread_note?: string;           // usually absent: a pending thing (`loop:`/`resolved:`) or a recurring theme
@@ -244,6 +248,30 @@ export interface EnvelopeField {
  * The two threading fields stay LAST — `status` is the envelope's last property, and these are its
  * newest, least-often-filled ones.
  */
+/** What `turned_down` tells the model. Its own constant so the field row stays one line. */
+export const TURNED_DOWN_DESCRIPTION = 'null most turns. Set only when your mood had a say on their ask and used it: "later: <their ask, in a few words>" when you put it off and it stays owed, or "no: <their ask, in a few words>" when you refused it outright. Never set on anything your mood gets no say on (a fact or number they asked for, anything with a clock on it, a reminder or watch they set up, fixing your own mistake, their safety), and never on a thing you actually did.';
+
+/** How long an owed ask's words may be. A phrase naming the thing, never the thing itself. */
+export const TURNED_DOWN_ASK_CHARS = 120;
+
+/**
+ * `turned_down` off an envelope of unknown shape → how she turned it down and what, or undefined.
+ * Lenient on the separator ("later: x", "later - x", "Later x") because a small model reaches for
+ * whatever punctuation it likes, strict on the word: only `later` and `no` mean anything, and one
+ * with nothing named is dropped. That is load-bearing for `no`: a bare "no" is what a small model
+ * writes when it means "nothing was turned down", and reading it as a refusal would stand the
+ * routing floor down on a turn she simply answered.
+ */
+export function parseTurnedDown(v: unknown): { how: 'later' | 'no'; ask: string } | undefined {
+  if (typeof v !== 'string') return undefined;
+  const m = v.trim().match(/^(later|no)\b[\s:,.-]*(.*)$/is);
+  if (!m) return undefined;
+  const how = m[1].toLowerCase() as 'later' | 'no';
+  const ask = sanitizeThreadText(m[2], TURNED_DOWN_ASK_CHARS) ?? '';
+  if (!ask) return undefined;
+  return { how, ask };
+}
+
 export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
   {
     key: 'mood_label', type: 'string', required: true,
@@ -321,6 +349,14 @@ export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
     key: 'language_request', type: ['string', 'null'], required: true,
     description: 'null unless they explicitly asked you, THIS turn, to reply in a language from now on — then that language named in English (e.g. "English", "Indonesian"). A message merely written in a language is never an ask.',
     consumers: ['applyLanguageRequest'],
+  },
+  {
+    key: 'turned_down', type: ['string', 'null'], required: true,
+    // The honesty half of letting her mood say no: a put-off or a refusal has to be SAID here, or the
+    // routing floor reads her "not now" as a fabrication and does the look anyway, and nothing is
+    // left owed for her to come back to (memory/owedAsks.ts).
+    description: TURNED_DOWN_DESCRIPTION,
+    consumers: ['routingGateStandsDown', 'recordOwedAsk'],
   },
   {
     key: 'thread_note', type: ['string', 'null'], required: true,
@@ -442,6 +478,7 @@ export function coerceStatus(raw: Record<string, unknown> | undefined | null): E
   // `recordHook` (persona/hooks.ts) reads an absent key as `none`, so a near miss ("a judgment",
   // "witty") costs her nothing — while a defaulted one would spend a beat of the kill switch's
   // three-turn window on a reply that never carried a hook at all.
+  const turnedDown = parseTurnedDown(o.turned_down);
   const rawHook = typeof o.hook_kind === 'string' ? o.hook_kind.trim().toLowerCase() : '';
   const hook = (HOOK_WORDS as readonly string[]).includes(rawHook) ? rawHook as HookWord : undefined;
   // Any dead v1 key on the object (a gauge, `mood_core`, `profile_note`) is simply never read: this
@@ -458,6 +495,7 @@ export function coerceStatus(raw: Record<string, unknown> | undefined | null): E
     // order, so a coerced object's key order is still the table's.
     ...(hook ? { hook_kind: hook } : {}),
     ...(lang ? { language_request: lang } : {}),
+    ...(turnedDown ? { turned_down: `${turnedDown.how}: ${turnedDown.ask}` } : {}),
     ...(note ? { thread_note: note } : {}),
     ...(outcome ? { thread_outcome: outcome } : {}),
   };

@@ -23,6 +23,9 @@ import { getHookState } from '../../db/repositories/hookState.js';
 import { readMoments, writeMoments } from '../../db/repositories/moments.js';
 import { getThesis } from '../../db/repositories/thesis.js';
 import { renderThesisSection } from '../../memory/thesisEngine.js';
+import { readSelf } from '../../db/repositories/self.js';
+import { renderSelfSection } from '../../memory/selfHarvest.js';
+import { readOwedAsks, renderOwedSection, type OwedAsk } from '../../memory/owedAsks.js';
 import {
   billOffers, renderMomentLines, sampleMoments, MOMENT_RECENT_EXCLUDE_MS,
 } from '../../persona/moments.js';
@@ -33,7 +36,7 @@ import {
 } from '../../persona/idle.js';
 import { makeIdleClassifier } from './idleClassify.js';
 import { defaultHookState, selectHook, type HookDirective, type HookSelectReport } from '../../persona/hooks.js';
-import { hooksEnabled, momentsEnabled, shareTurnsEnabled, thesisEnabled } from '../../persona/featureFlags.js';
+import { hooksEnabled, momentsEnabled, selfEnabled, shareTurnsEnabled, thesisEnabled } from '../../persona/featureFlags.js';
 import { compileAffect, type CarriedIntent } from '../../persona/affectCompiler.js';
 import { AFFECT_FRESH_MS } from '../../persona/threads.js';
 import { classifyConsent } from '../ops/consent.js';
@@ -302,7 +305,7 @@ export async function chat(
       // function rather than guessed at.
       attachmentNote: !!describeAttachments(media, { transcriptionFailed: false }),
       burstSize: chatContext?.burstManifest?.length ?? 1,
-    }, { shareTurns: shareOn })
+    }, { shareTurns: shareOn, takeTurns: shareOn })
     ? classifyIdle(earlyText)
     : null;
   // The classifier swallows its own failures (it files `unclear` and returns), so this can only be
@@ -331,7 +334,7 @@ export async function chat(
     ? parkedApprovalStanding(chatContext?.senderHandle)
     : Promise.resolve(false);
 
-  const [context, agentTz, climate, thesisDoc, whoProfile, holdingBeats] = handle
+  const [context, agentTz, climate, thesisDoc, whoProfile, holdingBeats, selfFile, owedAsks] = handle
     ? await Promise.all([
         // Pass the current turn text so the short-tier renderer can gate whether the freshest research
         // look renders in full (on-topic follow-up) or collapses to a settled digest line (topic moved on).
@@ -367,14 +370,22 @@ export async function chat(
         // adding a round trip of its own. A turn with no handle gets no beats (the fallback below),
         // which is harmless: such a turn is rarely a delegating one.
         recentHoldingBeats(chatId),
+        // What SHE holds with this person (memories/<handle>/SELF.md): the stances, tastes, lessons
+        // and changes of mind the daily pass wrote down from her own lines (memory/selfHarvest.ts).
+        // Same two gates as the thesis, for the same reasons: the flag, and a room has no `them`.
+        selfEnabled() && !isGroupHandle(handle) ? readSelf(handle) : Promise.resolve(null),
+        // What her mood put off for them and still owes (memory/owedAsks.ts). A pref read.
+        !isGroupHandle(handle) ? readOwedAsks(handle) : Promise.resolve([] as OwedAsk[]),
       ])
-    : [{ block: '', hotLook: null, turn: null, gates: {}, craft: {}, pendingAsk: false }, undefined, defaultClimate(), null, null, []];
+    : [{ block: '', hotLook: null, turn: null, gates: {}, craft: {}, pendingAsk: false }, undefined, defaultClimate(), null, null, [], null, [] as OwedAsk[]];
   const contextBlock = context.block;
   // The read as the `thesis` dyn section, or '' — which pushes nothing, so an install with no thesis
   // builds a prompt byte-identical to one that never had the feature. `renderThesisSection` splits
   // the document again on its way through: the evidence tail is the weekly pass's private input and
   // has no business in a prompt (memory/thesisEngine.ts).
   const thesisSection = thesisDoc ? renderThesisSection(thesisDoc.docMd) : '';
+  const selfSection = selfFile ? renderSelfSection(selfFile.entries) : '';
+  const owedSection = renderOwedSection(owedAsks, Date.now());
 
   // THE zone for this turn, resolved once here and handed to everything that renders a clock: the
   // circadian baseline, the tapped-reply date label that rides into durable history, the transcript
@@ -549,7 +560,9 @@ export async function chat(
         // for real on the string actually in hand. The same instance either way, so one reading files
         // one receipt whichever branch runs.
         t => (earlyClassify && t === earlyText ? earlyClassify : classifyIdle(t)),
-        { shareTurns: shareOn },
+        // Takes ride the share switch: the same classify layer reads both, and a take is only ever a
+        // task whose answer is her opinion (persona/idle.ts, TAKES).
+        { shareTurns: shareOn, takeTurns: shareOn },
       )
     : { shape: 'task', layer: 'none', signals: [] };
   // The gate's answer as the two craft gates take it: a boolean each, because a gate answers one
@@ -595,8 +608,9 @@ export async function chat(
         playfulnessBand: bandForDial(climate, 'playfulness'),
         lastOutcome: last?.thread_outcome ?? null,
         englishLooseness: affectDirective.englishLooseness,
+        spent: affectDirective.spent,
       },
-      isGroupChat, nowMs,
+      isGroupChat, nowMs, idle.take === true,
     );
     hookDirective = picked.directive;
     hookReport = picked.report;
@@ -618,6 +632,7 @@ export async function chat(
         idle: picked.directive.idle,
         moments: picked.directive.moments,
         shape: idle.shape,
+        take: idle.take === true,
         signals: [...idle.signals],
       },
     });
@@ -758,7 +773,7 @@ export async function chat(
     // share turn, where the count describes the silences before they spoke rather than this turn;
     // that reading belongs there, with the other three, and not to a caller filling a struct.
     ...(hooksOn
-      ? { shape: idle.shape, idleStreak: hookState.idleStreak + 1, messageChars: [...typedText].length }
+      ? { shape: idle.shape, take: idle.take === true, idleStreak: hookState.idleStreak + 1, messageChars: [...typedText].length }
       : {}),
   };
 
@@ -782,7 +797,7 @@ export async function chat(
   // hook directive (which the `hooks` section and the drift anchor's mode read), the sampled moment
   // lines that ride inside that section when the directive allows one, and her one read on this
   // person. Each renders nothing when it is empty.
-  const personaTurn = { hooks: hookDirective, moments: momentLines, thesis: thesisSection };
+  const personaTurn = { hooks: hookDirective, moments: momentLines, thesis: thesisSection, self: selfSection, owed: owedSection };
   // What stands live beyond the running lookups (convo/shared.ts LiveState): their reminders, read
   // above within its budget, the lookups that ended in the last few minutes, and her own recent
   // holding beats from the batch above.

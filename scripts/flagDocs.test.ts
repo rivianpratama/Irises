@@ -41,7 +41,7 @@ import { outcomePassEnabled } from '../src/agents/convo/actionResults.js';
 import { starvedRetryEnabled, reasoningDisableEnabled, llmCallTimeoutMs } from '../src/llm/openrouterRequest.js';
 import { browserLegBudgetMs, opsCancelEngineAbortEnabled } from '../src/agents/ops/engineBackend.js';
 import { leafExamplesExtra } from '../src/persona/idle.js';
-import { hooksEnabled, momentsEnabled, thesisEnabled, shareTurnsEnabled } from '../src/persona/featureFlags.js';
+import { hooksEnabled, momentsEnabled, thesisEnabled, shareTurnsEnabled, selfEnabled, musingsEnabled } from '../src/persona/featureFlags.js';
 
 const REPO = process.cwd();
 const APP_ENV = readFileSync(join(REPO, 'deploy/app.env'), 'utf8');
@@ -74,6 +74,8 @@ const FLAGS: readonly FlagDoc[] = [
   { name: 'CONVO_HOOKS_ENABLED', probe: () => onOff(hooksEnabled()) },
   { name: 'MEMORY_MOMENTS_ENABLED', probe: () => onOff(momentsEnabled()) },
   { name: 'MEMORY_THESIS_ENABLED', probe: () => onOff(thesisEnabled()) },
+  { name: 'MEMORY_SELF_ENABLED', probe: () => onOff(selfEnabled()) },
+  { name: 'IRISES_MUSINGS_ENABLED', probe: () => onOff(musingsEnabled()) },
   // The parser answered `off` here for the length of the series that built the shape and answers
   // `on` from the commit that finished it — and both files had to follow it in the same commit,
   // each time, because a doc that says "default off" beside a switch that is on is the one that

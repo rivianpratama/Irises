@@ -77,6 +77,9 @@ export interface TurnFocusInput {
    * "this is work", which is a different thing to say and worth one line to say it.
    */
   shape?: TurnKind;
+  /** A task whose ask is her own take (persona/idle.ts, TAKES). Renders `Turn: your take` in place
+   *  of `Turn: task`, so the recency edge and the take section name the same turn. */
+  take?: boolean;
   /** How many turns in a row have now been idle, including this one (persona/hooks.ts keeps the
    *  count). Rendered only on an idle turn: how many times running somebody has sent nothing is a
    *  checkable fact about them, and checkable facts are what a hook is made of. */
@@ -120,6 +123,7 @@ const TURN_TASK = 'Turn: task';
  *  the two above are consts — these three strings are prompt text, and prompt text is written, not
  *  assembled out of an identifier that happens to read well in English. */
 const TURN_SHARE = 'Turn: share';
+const TURN_TAKE = 'Turn: your take';
 const HITS_LABEL = 'What you hold that touches it: ';
 const NO_HITS = 'nothing here touches it; answer from the thread above.';
 const CLOSER = 'Answer THIS. Everything above is background — it may shape HOW you answer, never WHAT.';
@@ -325,7 +329,7 @@ function ordinal(n: number): string {
 function renderTurnLine(input: TurnFocusInput): string {
   const shape = input.shape;
   if (shape === undefined) return '';
-  if (shape === 'task') return TURN_TASK;
+  if (shape === 'task') return input.take ? TURN_TAKE : TURN_TASK;
 
   const parts = [shape === 'share' ? TURN_SHARE : TURN_IDLE];
   const chars = input.messageChars;

@@ -34,6 +34,9 @@ import {
   UPDATE_MEMORY_TOOL, RECALL_MEMORY_TOOL, RENAME_CHAT_TOOL, REMOVE_MEMBER_TOOL,
 } from './tools.js';
 import { INTRO_WEAVE_BLOCK } from '../ops/firstMove.js';
+import { renderSelfSection, MAX_SELF_ENTRIES, SELF_TEXT_MAX } from '../../memory/selfHarvest.js';
+import { renderOwedSection, OWED_MAX } from '../../memory/owedAsks.js';
+import { TURNED_DOWN_ASK_CHARS } from '../../persona/status.js';
 import {
   renderUserMemoryWithHot, sanitizeLongDoc, splitSections, profileIsThin,
   type MemoryAudience, type UserMemoryData,
@@ -708,6 +711,23 @@ const MOMENT_LINES: string[] = renderMomentLines(MOMENT_SAMPLE, FROZEN_MS);
 const THESIS = `## Your read on them (INTERNAL — never recite, never name; every judgment is made of it)
 They decide fast on things that cost money and slowly on things that cost a conversation, which is why the supplier disputes sit open for weeks. They would rather re-do a job than ask someone to fix it, and they read a question about the schedule as a question about their competence.`;
 
+/** What SHE holds with this person (memory/selfHarvest.ts), at the file's own cap: every entry at
+ *  the longest a pass may write. A DATA line like the thesis, measured at its arithmetic maximum so
+ *  the ceiling is the most the section can ever cost. */
+const SELF_SECTION = renderSelfSection(Array.from({ length: MAX_SELF_ENTRIES }, (_, i) => ({
+  id: `s${i}`,
+  kind: (['stance', 'taste', 'learned', 'changed'] as const)[i % 4],
+  text: `${'x'.repeat(SELF_TEXT_MAX - 4)} ${String(i).padStart(3, '0')}`.slice(0, SELF_TEXT_MAX),
+  at: FROZEN_MS - i * 60_000,
+})));
+
+/** What her mood put off and still owes them (memory/owedAsks.ts), at the store's cap: every ask at
+ *  the longest the envelope lets it be, and the longest age phrase a live one can carry. */
+const OWED_SECTION = renderOwedSection(Array.from({ length: OWED_MAX }, (_, i) => ({
+  ask: `${'y'.repeat(TURNED_DOWN_ASK_CHARS - 2)}${i}`.slice(0, TURNED_DOWN_ASK_CHARS),
+  at: FROZEN_MS - 3 * 86_400_000,
+})), FROZEN_MS);
+
 // ── the eight fixtures ───────────────────────────────────────────────────────
 
 interface Fixture {
@@ -877,12 +897,12 @@ const FIXTURES: Fixture[] = [
       // than on the cold one because both are things a nine-month relationship has and a first
       // reply does not — and because the directive has to open the moment lead for them to render
       // at all (`moments: true`, which `sampleMoments`' own spacing interval earns).
-      personaTurn: { hooks: OPEN_HOOK, moments: MOMENT_LINES, thesis: THESIS },
+      personaTurn: { hooks: OPEN_HOOK, moments: MOMENT_LINES, thesis: THESIS, self: SELF_SECTION, owed: OWED_SECTION },
     },
     memoryStack: MATURE_STACK,
     sections: [
       'persona', 'tool_docs', 'capability', 'model_map', 'craft_modules', 'update_status',
-      'context_block', 'thesis', 'current_time', 'weather', 'status_contract', 'thread',
+      'context_block', 'thesis', 'self', 'owed', 'current_time', 'weather', 'status_contract', 'thread',
       'conversation_timing', 'reply_order', 'extra', 'hooks', 'turn_focus', 'behavior_anchor',
       'json_anchor',
     ],

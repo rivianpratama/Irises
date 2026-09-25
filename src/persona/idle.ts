@@ -71,7 +71,7 @@ export type TurnKind = typeof TURN_KINDS[number];
  *  the fallback is a seam, and a caller that wires a different classifier still has to answer this
  *  question in these words. `share` is the one that carries the bid — a message that TELLS her
  *  something and asks for nothing — and it is the reading `stall` used to swallow. */
-export type IdleVerdict = 'stall' | 'share' | 'ask' | 'unclear';
+export type IdleVerdict = 'stall' | 'share' | 'ask' | 'take' | 'unclear';
 
 /** Which layer decided, for the receipt (`hooks:select` carries it, persona/hooks.ts). Four values,
  *  disjoint and exhaustive: `veto` a structural fact, `fast_path` the English examples, `classify`
@@ -132,6 +132,17 @@ export interface IdleOptions {
    *  vetoes again, the follow-up relaxation never applies, and a classified `share` reads as a task.
    *  Nothing about this file's shape changes either way — only which side of it ships. */
   shareTurns?: boolean;
+  /** Whether a question that asks for HER take (what she thinks, likes, feels, would do) may be read
+   *  as a take turn rather than a task. Only a message whose one veto is its question mark is ever
+   *  sent to the classifier for this, so every other kind of question stays a task with no call. */
+  takeTurns?: boolean;
+}
+
+/** True when the only thing making this message work is its question mark: no link, no file, no
+ *  look running, no answer of theirs owed. That is the one question shape that can be asking for her
+ *  opinion instead of for a thing, and the only one the take reading is allowed to look at. */
+function onlyQuestionMark(vetoes: readonly string[]): boolean {
+  return vetoes.length === 1 && vetoes[0] === 'question_mark';
 }
 
 /**
@@ -442,7 +453,9 @@ export function classifyNeeded(text: string, facts: CheapIdleFacts, opts?: IdleO
     consent: 'unclear',
   };
   const signals = idleSignals(t, full);
-  if (idleVetoes(t, full, opts).length > 0) return false;
+  const vetoes = idleVetoes(t, full, opts);
+  // A bare question may be asking for her take, and the take reading is the classifier's.
+  if (vetoes.length > 0) return opts?.takeTurns === true && onlyQuestionMark(vetoes);
   if (opts?.shareTurns !== true && signals.length > 0) return false;
   return !fastPathStall(t, signals);
 }
@@ -456,6 +469,9 @@ export interface IdleReading {
   shape: TurnKind;
   layer: IdleLayer;
   signals: readonly string[];
+  /** A task turn whose ask is her own opinion, taste, feeling or experience. Set only by the
+   *  classifier's `take` verdict, and only on a task shape. */
+  take?: boolean;
 }
 
 /**
@@ -483,6 +499,11 @@ export interface IdleReading {
  * relaxation never applies — and a `share` verdict collapses to `task`, so every row of the
  * pre-share table comes back with the same layer and the same answer it did before this file grew a
  * third kind.
+ *
+ * TAKES. With `takeTurns` on, a question whose only veto is its question mark is read by the
+ * classifier too, and a `take` verdict (on it, or on any message that reaches layer 3) comes back as
+ * a task marked `take`: they asked what she thinks, so the answer is her opinion at her mood's
+ * volume. Any other verdict on that question, or a failure, is the plain task it always was.
  */
 export async function isIdleTurn(
   text: string,
@@ -496,7 +517,21 @@ export async function isIdleTurn(
 
   // Both structural reads, always, so the receipt carries the signals whichever way the turn went.
   const signals = idleSignals(t, facts);
-  const vetoed = idleVetoes(t, facts, opts).length > 0
+  const vetoes = idleVetoes(t, facts, opts);
+  // A question whose only veto is its question mark may be asking for HER take. It stays a task
+  // either way (a take is answered, never hooked); the classifier only decides whether the answer is
+  // her opinion, and a failed or unsure call is a plain task, like every other failure here.
+  if (opts?.takeTurns === true && onlyQuestionMark(vetoes)) {
+    try {
+      const word = String(await classify(t) ?? '').trim().toLowerCase();
+      return word === 'take'
+        ? { shape: 'task', layer: 'classify', signals, take: true }
+        : { shape: 'task', layer: 'classify', signals };
+    } catch {
+      return { shape: 'task', layer: 'classify', signals };
+    }
+  }
+  const vetoed = vetoes.length > 0
     // With the third shape off, a signal is what every one of these facts was before it existed: a
     // veto. This one line is the whole of the flag's off path in this layer.
     || (!shareOn && signals.length > 0);
@@ -526,6 +561,8 @@ export async function isIdleTurn(
       : word === 'stall'
         ? (relaxed || signals.length ? 'share' : 'idle')
         : 'task';
+    // A take with no question mark ("curious what you make of cats") is the same ask as one with it.
+    if (word === 'take' && opts?.takeTurns === true) return { shape: 'task', layer: 'classify', signals, take: true };
     return { shape: shareOn || shape !== 'share' ? shape : 'task', layer: 'classify', signals };
   } catch {
     // A thrown call, a spent budget, an install with no classify lane, a deadline that fired. The

@@ -395,7 +395,7 @@ test('no carried row compiles to the loosest reading, and the clock still applie
   const d = compileAffect(undefined, COMPUTED);
   assert.deepEqual(d, {
     mood: DEFAULT_MOOD, bubbleCap: 3, brevity: 'normal', hooks: 'all',
-    question: 'open', heavy: false, lateNight: false, englishLooseness: 1,
+    question: 'open', heavy: false, lateNight: false, englishLooseness: 1, spent: false,
   } satisfies AffectDirective);
   // A first message is not a tired one — but it can still be a late one, and it can still land in a
   // relationship that has moved. Neither of those is about HER.
@@ -465,6 +465,6 @@ test('the compile is pure: frozen inputs survive it and the same inputs give the
   assert.deepEqual(a, b);
   assert.deepEqual(a, {
     mood: { core: 'sad', word: 'drained' }, bubbleCap: 1, brevity: 'minimal', hooks: 'none',
-    question: 'closed', heavy: true, lateNight: true, englishLooseness: 1,
+    question: 'closed', heavy: true, lateNight: true, englishLooseness: 1, spent: true,
   } satisfies AffectDirective);
 });

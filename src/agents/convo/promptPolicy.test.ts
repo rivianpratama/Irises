@@ -185,8 +185,11 @@ function turnInMode(mode: DriftMode): PersonaTurn {
     // reads false here the way the selector sets it. The anchor reads neither field — the mode is
     // its whole input — but a fixture that carries a shape the selector cannot produce is a fixture
     // the next reader believes.
-    idle: mode === 'hook' || mode === 'quiet', mode, forbidden: [], lateNight: false,
+    idle: mode === 'hook' || mode === 'quiet', mode: mode === 'take' || mode === 'spent' ? 'task' : mode, forbidden: [], lateNight: false,
     moments: false, offerAllowed: mode === 'hook' || mode === 'share',
+    // A take and a spent turn are task turns marked as such: the anchor reads the flag, not a hook mode.
+    ...(mode === 'take' ? { take: true } : {}),
+    ...(mode === 'spent' ? { spent: true } : {}),
   };
   return { hooks, moments: [], thesis: '' };
 }

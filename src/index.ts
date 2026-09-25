@@ -26,6 +26,7 @@ import { ensureChatId } from './db/repositories/memory.js';
 import { startRetentionTimers } from './db/retention.js';
 import { initSemanticRecall } from './memory/semanticRecall.js';
 import { initThreadPings } from './memory/threadPings.js';
+import { initMusings } from './memory/musings.js';
 import { getVersion } from './update/version.js';
 import { getModelMap } from './llm/modelMap.js';
 import { getUpdateStatus, startUpdateChecker } from './update/checker.js';
@@ -1119,7 +1120,7 @@ export function enqueueInbound(
       && classifyNeeded(burstText, {
         attachmentNote: false,
         burstSize: run.filter(m => m.text?.trim()).length,
-      }, { shareTurns: shareTurnsEnabled() })) {
+      }, { shareTurns: shareTurnsEnabled(), takeTurns: shareTurnsEnabled() })) {
     warmIdleClassify({ chatId, handle: from }, burstText);
   }
 
@@ -1247,6 +1248,9 @@ app.listen(PORT, () => {
   // Thread-revisit pings: the hourly sweep that asks how a thing they left hanging went. Off unless
   // THREADING_PINGS_ENABLED says otherwise — the one memory surface that texts a phone unprompted.
   initThreadPings({ deliver: proactive.deliver });
+  // Her own texts: the hourly sweep that lets her start a conversation because something is on HER
+  // mind (memory/musings.ts). Its own line, apart from every setup of theirs; IRISES_MUSINGS_ENABLED.
+  initMusings({ deliver: proactive.deliver });
 
   // Update mechanism: a pidfile so scripts/update.sh can cycle this process, a periodic check of the
   // git remote for a newer build, and — woven through Convo, or pushed through the proactive pipeline

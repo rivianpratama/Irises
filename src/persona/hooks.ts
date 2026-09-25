@@ -178,6 +178,10 @@ export interface HookAffectInput {
    *  rendered). Passed through so the renderer can write the instruction without seeing the
    *  affect compiler. */
   englishLooseness?: number;
+  /** She is running on empty this turn (affect compiler `spent`): a sad core or a spent social
+   *  battery. Read only by the task branch, where it marks the directive so the recency edge states
+   *  the tired law (persona/policy.ts, the `spent` drift mode). */
+  spent?: boolean;
 }
 
 /** 0 = no comedy, 1 = dry, 2 = normal, 3 = hot. The dial the jester reads before deciding
@@ -218,6 +222,13 @@ export interface HookDirective {
   /** How loose her English runs this turn. Absent or one means normal baseline (no line rendered).
    *  Zero is careful (serious moment or numbers), two is loose, three is messy. */
   englishLooseness?: 0 | 1 | 2 | 3;
+  /** A task turn whose ask is her own take (persona/idle.ts, TAKES). Only ever set on `task`: the
+   *  answer is still owed, so nothing about the mode changes, but the answer is her opinion and her
+   *  mood decides how hard the jester may reach in it (`playLevel` is computed, not zeroed). */
+  take?: boolean;
+  /** A task turn on which she is running on empty: an open-ended ask gets a not now and stays owed,
+   *  while a fact, a clock or their safety is still answered. Only ever set on a plain `task`. */
+  spent?: boolean;
 }
 
 /**
@@ -261,7 +272,7 @@ export function hookKindOpen(directive: HookDirective | null | undefined): boole
  *  switch, no quiet, the fourth kind reachable — has to be tellable from an idle turn that happened
  *  to leave the same three kinds open. It is also the bucket with no counter-case: a share turn
  *  cannot land anywhere else. */
-export type HookSelectReason = 'not_idle' | 'kill_switch' | 'affect_floor' | 'hook' | 'share';
+export type HookSelectReason = 'not_idle' | 'kill_switch' | 'affect_floor' | 'hook' | 'share' | 'take';
 
 /** The receipt half. Names and numbers only — never her words, never a moment's text. */
 export interface HookSelectReport {
@@ -345,6 +356,7 @@ export function selectHook(
   affect: HookAffectInput,
   isGroup: boolean,
   now: number,
+  take = false,
 ): { directive: HookDirective; report: HookSelectReport } {
   void now;
   // Sliced here as well as on the way into the store: the selector must give the same answer for a
@@ -354,9 +366,17 @@ export function selectHook(
   const report = (reason: HookSelectReason, forbidden: HookWord[]): HookSelectReport =>
     ({ reason, idleLayer, forbidden, lastKinds: [...lastKinds] });
 
+  if (shape === 'task' && take) {
+    // They asked what she thinks. Still a task (the answer is owed and nothing is hooked on), but
+    // the answer is hers, so the play dial reads her mood the way an idle turn's does.
+    return {
+      directive: { idle: false, mode: 'task', take: true, forbidden: [], lateNight: affect.lateNight, moments: false, offerAllowed: false, playLevel: computePlayLevel('hook', affect), englishLooseness: affect.englishLooseness as 0 | 1 | 2 | 3 | undefined },
+      report: report('take', []),
+    };
+  }
   if (shape === 'task') {
     return {
-      directive: { idle: false, mode: 'task', forbidden: [], lateNight: affect.lateNight, moments: false, offerAllowed: false, playLevel: 0, englishLooseness: affect.englishLooseness as 0 | 1 | 2 | 3 | undefined },
+      directive: { idle: false, mode: 'task', forbidden: [], lateNight: affect.lateNight, moments: false, offerAllowed: false, playLevel: 0, englishLooseness: affect.englishLooseness as 0 | 1 | 2 | 3 | undefined, ...(affect.spent ? { spent: true } : {}) },
       report: report('not_idle', []),
     };
   }
@@ -630,7 +650,14 @@ export const SHARE_NONE_OPEN = 'No kind is open this turn. Take what they said p
  *  repeating last night: a share turn is answering something they just sent, so there is no shape
  *  from last night for it to fall back into. It lowers the volume of the move above it and picks
  *  none of it. */
-export const SHARE_LATE_LINE = 'It is late where they are: one short bubble and nothing heavy. Same move, lower volume.';
+/** The take turn: they asked what SHE thinks, likes, feels or would do (persona/idle.ts, TAKES). A
+ *  task by mode, so nothing is hooked on and the answer is owed; the section only says whose answer
+ *  it is, and the play and looseness lines below it carry her mood into it. */
+export const TAKE_HEADING = '## This turn is a take (INTERNAL)';
+export const TAKE_LEAD = 'They asked what you think, like, feel or would do, and your take is the whole answer. Your mood sets the volume it comes out at, dry or bouncing, one line or a rant. Commit to a side and say why.';
+export const TAKE_LATE_LINE = 'It is late where they are: the same take, smaller and quieter.';
+
+export const SHARE_LATE_LINE ='It is late where they are: one short bubble and nothing heavy. Same move, lower volume.';
 
 /** The allowed kinds as English — `a judgment, a callback or a tangent` on a hook turn, and the same
  *  list with `or a question` at the end of it on a share turn. An oxford-less list because it is a
@@ -663,9 +690,12 @@ function nameKinds(kinds: readonly HookWord[]): string {
  * share turn for the same reason).
  */
 export function renderHooksSection(directive: HookDirective, momentLines: string[] = []): string {
-  if (directive.mode === 'task') return '';
+  if (directive.mode === 'task' && !directive.take) return '';
   const lines: string[] = [];
-  if (directive.mode === 'quiet') {
+  if (directive.mode === 'task') {
+    lines.push(TAKE_HEADING, TAKE_LEAD);
+    if (directive.lateNight) lines.push(TAKE_LATE_LINE);
+  } else if (directive.mode === 'quiet') {
     lines.push(QUIET_HEADING, QUIET_LAW);
   } else {
     const allowed = namableKinds(directive.mode).filter(w => !directive.forbidden.includes(w));
