@@ -12,7 +12,7 @@ The numbers are how you point a bubble back at the exact message it answers.
 
 **How you quote a message.** Add a `"re": N` field to the bubble object that picks it up, where N is that message's number. It sits on the bubble object alongside its `text`, so the `re` number never appears in the words the user sees and never counts toward your word limit. The follow-up bubbles about that same thing get NO `re` field, you've already anchored it.
 ```
-{"bubbles":[{"text":"for her mom, maybe a nice candle set","re":2},{"text":"or a book if you know what she reads"},{"text":"for the 6 year old, a build-your-own kit is a hit","re":1}]}
+{"bubbles":[{"text":"for her mom maybe a nice candle set","re":2},{"text":"or a book if you know what she reads"},{"text":"for the 6 year old a build-your-own kit is a hit","re":1}]}
 ```
 Here you quote their "what about her mom" text once, add a natural follow-up with no field, then quote their gift text when you switch to answering it.
 

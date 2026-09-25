@@ -273,8 +273,8 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * counted a stall go, the predict line stops quoting their word, and a read already said in the
  * conversation is spent. Every other file held.
  */
-const CORPUS_CHARS = 185_995;
-const CORPUS_SHA256 = '920782c8c4def299359240bdf2d7056ec161db6ed440c8d7e113eb4533267fee';
+const CORPUS_CHARS = 186_118;
+const CORPUS_SHA256 = 'f29a4a5c7efb87da2a3c3652940809a2c4031e623bab258b1c78e03e9d393361';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
