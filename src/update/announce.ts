@@ -62,8 +62,10 @@ function upgradedFraming(receipt: UpdateReceipt): string {
   // Commit subjects are DEV copy, so they ride the FRAMING (voiced, never relayed verbatim).
   const highlights = receipt.changes.slice(0, 5).join('; ');
   return (
-    'this one is about you: you just came back from an upgrade your person applied, and you are running the new version now. say it once, flat (like "back on the new build"), never a changelog dump. for your own awareness only, paraphrase at most one highlight or none: ' +
-    (highlights || '(no notable highlights)')
+    'this one is about you: you just came back from an upgrade your person applied, and you are running the new version now. say it once, flat, never a changelog dump. ' +
+    (highlights
+      ? 'you know what changed, so name the one difference they would most notice, in your own words: ' + highlights
+      : 'you have no list of what changed this time, so do not claim anything changed or stayed the same.')
   );
 }
 

@@ -105,3 +105,13 @@ test('every line is trimmed prose, so the section arithmetic stays exact', () =>
   assert.equal(out.split('\n').length, 6, 'a heading and five facts');
   for (const l of out.split('\n').slice(1)) assert.ok(l.startsWith('- '), `"${l}" is a fact bullet`);
 });
+
+test('the last upgrade: what changed rides the section; an empty changelog adds nothing', () => {
+  const receipt = {
+    oldSha: '1a2b3c4'.padEnd(40, '0'), newSha: VERSION.sha!, appliedAt: new Date(NOW - 2 * 3_600_000).toISOString(),
+    changes: ['4f2a91c Make replies shorter', '9ab3c7d Add a voice bank'],
+  };
+  const out = renderUpdateStatus(VERSION, status(), NOW, receipt);
+  assert.match(out, /^- Your person upgraded you to this build from build 1a2b3c4, 2 hours ago, and it changed you: Make replies shorter; Add a voice bank\./m);
+  assert.equal(renderUpdateStatus(VERSION, status(), NOW, { ...receipt, changes: [] }), renderUpdateStatus(VERSION, status(), NOW));
+});

@@ -260,6 +260,19 @@ write_receipt() { # OLD NEW  (equal shas → an empty changelog, which still fir
 }
 RECEIPT_OK=0
 
+# Where the receipt's changelog starts: the build that was RUNNING (dist/version.json), not HEAD.
+# Commits made in this clone move HEAD before any update runs, so HEAD..NEW is empty on exactly the
+# path a developer uses every time — and an empty changelog is what made Irises insist "same build".
+# Falls back to the given sha when dist was never stamped or its sha isn't an ancestor of NEW
+# (amended or rebased away), since `git log` on an unknown sha would fail the receipt under pipefail.
+receipt_base() { # FALLBACK NEW
+  if [ -n "$BUILT" ] && git merge-base --is-ancestor "$BUILT" "$2" 2>/dev/null; then
+    printf '%s' "$BUILT"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 # Take the receipt back. Called on every path that undoes a build: nothing should announce an
 # upgrade that is being reversed.
 withdraw_receipt() {
@@ -473,7 +486,7 @@ if [ "$OLD" = "$NEW" ]; then
     # gone, so a deleted marker would report every run as a rebuild.
     WEB_STATE="$(web_state)"
     [ -z "$WEB_MARKER" ] || rm -f "$WEB_MARKER"
-    write_receipt "$NEW" "$NEW"
+    write_receipt "$(receipt_base "$NEW" "$NEW")" "$NEW"
     REPAIR_RESTART="skipped (--no-restart) — the repaired build is on disk; restart Irises yourself"
     REPAIR_RESULT=ok
     REPAIR_RC=0
@@ -609,7 +622,7 @@ web_build "$ROOT"
 WEB_STATE="$(web_state)"
 [ -z "$WEB_MARKER" ] || rm -f "$WEB_MARKER"
 
-write_receipt "$OLD" "$NEW"
+write_receipt "$(receipt_base "$OLD" "$NEW")" "$NEW"
 
 RESTART_STATE="skipped (--no-restart) — the new build is on disk, not running"
 if [ "$DO_RESTART" = "1" ]; then

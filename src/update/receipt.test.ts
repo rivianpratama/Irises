@@ -3,7 +3,7 @@ import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { join } from 'node:path';
-import { consumeUpdateReceipt, shouldAnnounceReceipt } from './receipt.js';
+import { consumeUpdateReceipt, shouldAnnounceReceipt, lastUpgradeFor, _resetLastUpgradeForTests } from './receipt.js';
 import { irisesHome } from '../db/stateDir.js';
 
 function receiptPath(): string { return join(irisesHome(), 'update-receipt.json'); }
@@ -13,6 +13,7 @@ beforeEach(() => {
   fs.rmSync(receiptPath(), { force: true });
   fs.rmSync(join(irisesHome(), 'update-receipt.bad.json'), { force: true });
   fs.rmSync(updatesDir(), { recursive: true, force: true });
+  _resetLastUpgradeForTests();
 });
 
 test('consume parses a valid receipt, archives it, and is at-most-once', () => {
@@ -53,4 +54,16 @@ test('shouldAnnounceReceipt: only when the running build IS the target (null = b
   assert.equal(shouldAnnounceReceipt(r, 'B'.repeat(40)), true);  // case-insensitive
   assert.equal(shouldAnnounceReceipt(r, 'd'.repeat(40)), false); // upgrade didn't take
   assert.equal(shouldAnnounceReceipt(r, null), true);            // unknown build
+});
+
+test('lastUpgradeFor finds the receipt that produced the running build, before and after consume', () => {
+  const b = 'b'.repeat(40);
+  fs.writeFileSync(receiptPath(), JSON.stringify({ oldSha: 'a'.repeat(40), newSha: b, appliedAt: 'x', changes: ['b234567 new'] }));
+  assert.deepEqual(lastUpgradeFor(b)?.changes, ['b234567 new'], 'pending receipt, before the boot announce');
+  _resetLastUpgradeForTests();
+  consumeUpdateReceipt();
+  assert.deepEqual(lastUpgradeFor(b)?.changes, ['b234567 new'], 'archived receipt, after it');
+  _resetLastUpgradeForTests();
+  assert.equal(lastUpgradeFor('c'.repeat(40)), null, 'a build no receipt produced');
+  assert.equal(lastUpgradeFor(null), null);
 });

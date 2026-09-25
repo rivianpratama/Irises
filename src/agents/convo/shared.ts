@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { getModelMap, type ModelMap } from '../../llm/modelMap.js';
 import { getUpdateStatus, updateChecksLive, type UpdateStatus } from '../../update/checker.js';
 import type { VersionInfo } from '../../update/version.js';
+import { lastUpgradeFor, type UpdateReceipt } from '../../update/receipt.js';
 import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
 import { browserLegBudgetFor } from '../ops/client.js';
 import type { CapabilitySummary, CapabilityClass, EngineBackend, ReminderPatch, ReminderRef } from '../ops/engineBackend.js';
@@ -1236,7 +1237,11 @@ Read these off plainly in your own words if asked — you no longer deflect mode
  *  minute-precise phrase would be a different string on every single turn and buy nothing. */
 function lastCheckedPhrase(lastCheckAt: number | null, now: number): string {
   if (lastCheckAt === null) return 'not checked yet since boot';
-  const ago = Math.max(0, now - lastCheckAt);
+  return agoPhrase(lastCheckAt, now);
+}
+
+function agoPhrase(at: number, now: number): string {
+  const ago = Math.max(0, now - at);
   if (ago < 2 * 60_000) return 'just now';
   if (ago < 3_600_000) return `${Math.floor(ago / 60_000)} minutes ago`;
   if (ago < 86_400_000) {
@@ -1263,7 +1268,26 @@ function lastCheckedPhrase(lastCheckAt: number | null, now: number): string {
  * 2% band (promptPolicy.ts). Exported rather than private because it has its own unit test, the same
  * arrangement as renderCapabilityLine / capabilityLine.test.ts.
  */
-export function renderUpdateStatus(version: VersionInfo, status: UpdateStatus, now = Date.now()): string {
+const MAX_UPGRADE_CHANGES = 8;
+
+/** What the upgrade that produced this build changed, from its receipt's commit subjects. Null when
+ *  there is nothing to say — no receipt, or one with an empty changelog — because a line saying
+ *  "nothing changed" is exactly the false belief this exists to prevent. */
+function lastUpgradeLine(receipt: UpdateReceipt | null | undefined, now: number): string | null {
+  if (!receipt) return null;
+  const changes = receipt.changes
+    .map(c => c.replace(/^[0-9a-f]{7,40}\s+/i, '').trim())
+    .filter(Boolean);
+  if (!changes.length) return null;
+  const shown = changes.slice(0, MAX_UPGRADE_CHANGES).map(c => (c.length > 160 ? `${c.slice(0, 157)}...` : c));
+  const more = changes.length > shown.length ? ` (and ${changes.length - shown.length} more)` : '';
+  const at = Date.parse(receipt.appliedAt);
+  const when = Number.isFinite(at) ? `, ${agoPhrase(at, now)}` : '';
+  const from = receipt.oldSha && receipt.oldSha !== receipt.newSha ? ` from build ${receipt.oldSha.slice(0, 7)}` : '';
+  return `- Your person upgraded you to this build${from}${when}, and it changed you: ${shown.join('; ')}${more}. These are their working notes on what is now different about how you behave and what you can do — if they mention updating you or ask what is new, you know what changed and say it in your own words, never read the notes out.`;
+}
+
+export function renderUpdateStatus(version: VersionInfo, status: UpdateStatus, now = Date.now(), lastUpgrade?: UpdateReceipt | null): string {
   const buildLine = version.shortSha
     ? version.branch
       ? `- You are running build ${version.shortSha} on branch ${version.branch}.`
@@ -1276,9 +1300,11 @@ export function renderUpdateStatus(version: VersionInfo, status: UpdateStatus, n
     : status.updateAvailable && status.remoteSha
       ? `- A newer build (${status.remoteSha.slice(0, 7)}) is waiting on the server.`
       : `- No newer build is waiting, as of ${lastCheckedPhrase(status.lastCheckAt, now)}.`;
+  const upgradeLine = lastUpgradeLine(lastUpgrade, now);
   return [
     '## Your build and how you get updated (facts; say them plainly if asked)',
     buildLine,
+    ...(upgradeLine ? [upgradeLine] : []),
     waitingLine,
     '- You cannot update yourself. Your person does it in a terminal on the server, one command from the Irises folder: `bash scripts/update.sh`. It pulls, rebuilds, restarts you, and restarts the engine gateway. There is no chat command for it — if they ask you to update, say that plainly and hand them the command exactly as written, once.',
     // The scope travels with the rule. This is the only sentence in the prompt that says "you cannot
@@ -1558,7 +1584,7 @@ export function buildSystemPromptSections(
   // "last checked" phrase ages. ONE snapshot, so the sha she names and the verdict she reports cannot
   // come from two different reads.
   const updateSnapshot = getUpdateStatus();
-  push('update_status', renderUpdateStatus(updateSnapshot.current, updateSnapshot));
+  push('update_status', renderUpdateStatus(updateSnapshot.current, updateSnapshot, Date.now(), lastUpgradeFor(updateSnapshot.current.sha)));
 
   // Who they are + how to address them (a saved preference / their name / nothing) now lives in the
   // shared user-context block below via buildContextBlock. Here we only add the onboarding nudge
