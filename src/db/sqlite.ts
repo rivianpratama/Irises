@@ -14,6 +14,13 @@ import { DatabaseSync, StatementSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { dbPath, irisesHome, ensureDir } from './stateDir.js';
+import os from 'node:os';
+
+function isUnderTmp(p: string): boolean {
+  const real = (x: string) => { try { return fs.realpathSync(x); } catch { return path.resolve(x); } };
+  const rel = path.relative(real(os.tmpdir()), real(p));
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
 
 // Bump only for changes CREATE IF NOT EXISTS cannot express (column changes,
 // index rewrites); branch on the old version before setting the new one.
@@ -408,6 +415,12 @@ export function closeDb(): void {
  * Replaces the old `mem.<table>.clear()` pattern from the deleted Map store.
  */
 export function resetStorageForTests(): void {
+  // A test file run outside `npm test` (a bare `tsx --test <file>`) never gets the runner's
+  // DATA_BACKEND=memory, lands on the real store, and this wipes the person's whole history and
+  // memories. Only an ephemeral store may be reset: the memory driver, or a home under the OS temp dir.
+  if (dbPath() !== ':memory:' && !isUnderTmp(irisesHome())) {
+    throw new Error(`resetStorageForTests refused to wipe ${irisesHome()} — run tests through npm test (DATA_BACKEND=memory)`);
+  }
   const d = getDb();
   d.exec(`
     DELETE FROM messages;
