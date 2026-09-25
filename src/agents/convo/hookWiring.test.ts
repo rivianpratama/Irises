@@ -883,7 +883,7 @@ test('an IDLE message through the front door renders the hooks block, the Turn l
   // The anchor's law at the recency edge is the HOOK one, and it agrees with the section.
   assert.ok(system.includes('- This is an idle turn: one hook, of a kind the hooks section above still allows, and only one.'),
     'the drift anchor states the hook law');
-  assert.ok(!system.includes('- Three sharp things in a row already, or your weather closed the beat: this reply is one plain short bubble, a tapback, or nothing.'),
+  assert.ok(!system.includes('- Your weather closed the beat, or you have been sharp three times running with no question left to hand them: this reply is one plain short bubble, a tapback, or nothing.'),
     '…and not the quiet law, which is not this turn');
   // NOTHING in the assembled prompt tells her to send them to bed — the complaint that produced
   // this design was that one line arriving every night, from seven places at once.

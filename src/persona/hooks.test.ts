@@ -98,16 +98,26 @@ test('an idle turn with an empty ledger opens all four carrying kinds', () => {
   assert.equal(directive.heavy, undefined, 'weight is a property of a thing handed over, and nothing was');
 });
 
-// THE load-bearing rule. Three sharp replies in a row and the fourth turn is quiet — no hook, no
-// thread offer, no moment, nothing billed.
-test('three hooked replies in a row force the fourth turn quiet', () => {
+// THE load-bearing rule. Three sharp replies in a row and the fourth turn stops talking at them: it
+// hands them the turn with a question, and nothing else is open, offered or sampled.
+test('three hooked replies in a row narrow the fourth turn to a question', () => {
   const { directive, report } = pick(state({ lastKinds: ['judgment', 'callback', 'tangent'] }));
-  assert.equal(directive.mode, 'quiet');
-  assert.equal(directive.offerAllowed, false, 'the thread OFFER is off too — nothing is billed on a quiet turn');
+  assert.equal(directive.mode, 'hook');
+  assert.deepEqual(directive.forbidden, ['judgment', 'callback', 'tangent']);
+  assert.equal(directive.offerAllowed, false, 'the thread OFFER is off — the question is the whole beat');
   assert.equal(directive.moments, false);
-  assert.deepEqual(directive.forbidden, []);
   assert.equal(report.reason, 'kill_switch');
   assert.deepEqual(report.lastKinds, ['judgment', 'callback', 'tangent'], 'the receipt shows the run it fired on');
+});
+
+// When the question is not hers to ask, the switch falls back to quiet, whatever closed it.
+test('the kill switch goes quiet when no question is left to hand them', () => {
+  const run = state({ lastKinds: ['judgment', 'callback', 'tangent'] });
+  assert.equal(pick(run, { affect: { ...OPEN, question: 'closed' } }).directive.mode, 'quiet');
+  assert.equal(pick(run, { isGroup: true }).directive.mode, 'quiet');
+  const asked = pick(state({ lastKinds: ['judgment', 'question', 'question'] }));
+  assert.equal(asked.directive.mode, 'quiet', 'two questions running leave no third to hand them');
+  assert.equal(asked.report.reason, 'kill_switch');
 });
 
 // `none` is a first-class entry: one flat reply anywhere in the window breaks the run. Without it
@@ -129,8 +139,8 @@ test('a short ledger cannot fire the switch, and a long one is read at its tail'
   // A hand-built (or hand-edited) state longer than the cap is read exactly as the store would have
   // capped it: the tail is the run, and the older entries are already spent.
   const long: HookKind[] = ['judgment', 'callback', 'none', 'judgment', 'tangent', 'callback'];
-  const { directive, report } = pick(state({ lastKinds: long }));
-  assert.equal(directive.mode, 'quiet');
+  const { report } = pick(state({ lastKinds: long }));
+  assert.equal(report.reason, 'kill_switch');
   assert.deepEqual(report.lastKinds, ['judgment', 'tangent', 'callback'], 'only the window the cap keeps');
 });
 
@@ -263,7 +273,7 @@ test('a share turn is its own mode, its own bucket, and opens all four kinds', (
 // answers, and the share one is not even a different reason.
 test('the kill switch never fires on a share turn', () => {
   const full = state({ lastKinds: ['judgment', 'callback', 'tangent'] });
-  assert.equal(pick(full).directive.mode, 'quiet', 'the same window forces an IDLE turn quiet');
+  assert.equal(pick(full).report.reason, 'kill_switch', 'the same window fires the switch on an IDLE turn');
   const { directive, report } = pick(full, { shape: 'share' });
   assert.equal(directive.mode, 'share');
   assert.equal(report.reason, 'share');
@@ -451,7 +461,7 @@ test('hookKindOpen answers whether a beat is OPEN, never what the mode says', ()
 test('the kill switch and the affect floor still fire at night', () => {
   const late: HookAffectInput = { ...OPEN, lateNight: true };
   const killed = pick(state({ lastKinds: ['judgment', 'callback', 'tangent'] }), { affect: late });
-  assert.equal(killed.directive.mode, 'quiet');
+  assert.deepEqual(killed.directive.forbidden, ['judgment', 'callback', 'tangent']);
   assert.equal(killed.report.reason, 'kill_switch');
   const floored = pick(state(), { affect: { ...OPEN, hooks: 'none', lateNight: true } });
   assert.equal(floored.directive.mode, 'quiet');
@@ -687,7 +697,7 @@ test('the late line rides along on a hook turn, and the quiet block never needs 
 test('the quiet block renders char-for-char', () => {
   assert.equal(renderHooksSection({ ...HOOK_DIRECTIVE, mode: 'quiet', offerAllowed: false }), [
     '## This turn is quiet (INTERNAL)',
-    'Three sharp things in a row already, or your weather says so. One plain short bubble, or a tapback, or nothing. No hook, no question, no offer. Do not explain the quiet.',
+    'Your weather says so, or you have been sharp three times running with nothing left to hand them. One plain short bubble, or a tapback, or nothing. No hook, no question, no offer. Do not explain the quiet.',
     'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
   ].join('\n'));
 });

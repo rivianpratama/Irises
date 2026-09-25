@@ -317,8 +317,8 @@ test('the two gauges that close the extra beat close the question too, from both
   assert.equal(q({ social_battery: SOCIAL_BATTERY_TIGHT - 1 }), 'open');
 });
 
-test('the carried read closes the question on the four turns a question would land wrong', () => {
-  assert.deepEqual([...QUESTION_CLOSED_MODES], ['overwhelmed', 'deflecting', 'joking', 'confused']);
+test('the carried read closes the question on the three turns a question would land wrong', () => {
+  assert.deepEqual([...QUESTION_CLOSED_MODES], ['overwhelmed', 'deflecting', 'confused']);
   for (const m of INTENT_MODES) {
     assert.equal(
       compileAffect(carried('hopeful'), COMPUTED, undefined, mode(m)).question,

@@ -187,7 +187,7 @@ const MODE_LAWS: Record<DriftMode, string> = {
 const MODE_OPENERS: Record<DriftMode, string> = {
   task: 'This is a task turn',
   hook: 'This is an idle turn',
-  quiet: 'Three sharp things in a row already',
+  quiet: 'Your weather closed the beat',
   share: 'This is a share turn',
 };
 
@@ -227,7 +227,7 @@ test('the share law reads true whether four kinds are open or none', () => {
   // The dose and the gate, stated at the edge because they are the two rules a long thread loses
   // first: the section can leave the question open and still be read as an instruction to ask.
   assert.ok(share.includes('only when the section left the question open'));
-  assert.ok(share.includes('One question at most, never on two turns running.'));
+  assert.ok(share.includes('One question at most. When they just answered yours, what you make of the answer comes first'));
 
   // The three shapes that wear a follow-up's clothes (switch, mirror, me-too), named as bans.
   for (const ban of ['Never a switch', 'never a question that turns back on you', 'never a me-too']) {

@@ -418,8 +418,17 @@ export function selectHook(
   });
 
   // The kill switch. A full window with no `none` in it means she has been sharp three times running
-  // at someone who has asked for nothing three times running.
-  if (lastKinds.length >= HOOK_RUN_LIMIT && lastKinds.every(k => k !== 'none')) return quiet('kill_switch');
+  // at someone who has asked for nothing three times running. Silence there ends the conversation, so
+  // when a question is still hers to ask, the exit is handing them the turn; quiet only when it is not.
+  if (lastKinds.length >= HOOK_RUN_LIMIT && lastKinds.every(k => k !== 'none')) {
+    const canAsk = affect.question === 'open' && affect.hooks !== 'none' && !isGroup && repeated !== 'question';
+    if (!canAsk) return quiet('kill_switch');
+    const forbidden = HOOK_WORDS.filter(w => w !== 'question');
+    return {
+      directive: { idle: true, mode: 'hook', forbidden, lateNight: affect.lateNight, moments: false, offerAllowed: false, playLevel: computePlayLevel('hook', affect), englishLooseness: affect.englishLooseness as 0 | 1 | 2 | 3 | undefined },
+      report: report('kill_switch', forbidden),
+    };
+  }
   // The affect floor: the compiled directive can close hooks outright (a flat mood, a spent battery).
   if (affect.hooks === 'none') return quiet('affect_floor');
 
@@ -576,7 +585,7 @@ export const LOOSE_LEVEL_LINES: Record<0 | 1 | 2 | 3, string> = {
 };
 
 export const QUIET_HEADING = '## This turn is quiet (INTERNAL)';
-export const QUIET_LAW = 'Three sharp things in a row already, or your weather says so. One plain short bubble, or a tapback, or nothing. No hook, no question, no offer. Do not explain the quiet.';
+export const QUIET_LAW = 'Your weather says so, or you have been sharp three times running with nothing left to hand them. One plain short bubble, or a tapback, or nothing. No hook, no question, no offer. Do not explain the quiet.';
 
 // ── The share block ─────────────────────────────────────────────────────────────────────────────
 //

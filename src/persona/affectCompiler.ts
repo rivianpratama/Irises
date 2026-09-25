@@ -182,9 +182,9 @@ export const RAPPORT_QUESTION_BAND = 3;
 
 /** Carried reads that close the question whatever the wheel says. Not a weight list: each of these
  *  is a turn where a question of hers takes the reply somewhere it must not go — someone drowning
- *  is not being asked for detail, someone dodging is not asked again, a bit is not interrogated,
- *  and a person already lost gets an answer rather than another question. */
-export const QUESTION_CLOSED_MODES: readonly IntentMode[] = ['overwhelmed', 'deflecting', 'joking', 'confused'];
+ *  is not being asked for detail, someone dodging is not asked again, and a person already lost
+ *  gets an answer rather than another question. A bit stays open: a question inside it plays along. */
+export const QUESTION_CLOSED_MODES: readonly IntentMode[] = ['overwhelmed', 'deflecting', 'confused'];
 
 /** Carried reads that make a share HEAVY. `overwhelmed` sits in both sets, which is the honest
  *  reading: the turn is weighty AND no question opens on it. */

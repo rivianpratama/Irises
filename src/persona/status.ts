@@ -271,7 +271,7 @@ export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
     // on a turn the person is fine, and pins a theme to the fact rung for a distress that was hers.
     // A third gate reads it now, one turn later than the other two: `compileQuestionGate`
     // (persona/affectCompiler.ts) carries the mode forward and closes the follow-up question on the
-    // modes where asking is the wrong move (overwhelmed, deflecting, joking, confused). Same reason
+    // modes where asking is the wrong move (overwhelmed, deflecting, confused). Same reason
     // the subject clause is load-bearing — a mode read off HER shuts the question on a turn the
     // person was perfectly fine.
     description: `what THEY are doing this turn — one of: ${INTENT_MODES.join(' | ')}`,
