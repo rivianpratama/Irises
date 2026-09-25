@@ -232,7 +232,7 @@ function innerWeatherSection(): string {
  * it now says only that it is late and everything gets smaller. Ceiling ratcheted to +0.8% of the
  * new number, the same band it has always stood at.
  */
-const INNER_WEATHER_CEILING = 2_408;
+const INNER_WEATHER_CEILING = 2_573;
 
 /** How much the ceiling may sit above the measurement, copied from promptBudget.test.ts so this
  *  section is held to the same band as every other prose line. The downward assertion below is the

@@ -419,11 +419,14 @@ export function selectHook(
 
   // The kill switch. A full window with no `none` in it means she has been sharp three times running
   // at someone who has asked for nothing three times running. Silence there ends the conversation, so
-  // when a question is still hers to ask, the exit is handing them the turn; quiet only when it is not.
+  // the exit is handing them the turn (a question) or opening up (a rant, which rides as a tangent);
+  // quiet only when neither is hers.
   if (lastKinds.length >= HOOK_RUN_LIMIT && lastKinds.every(k => k !== 'none')) {
-    const canAsk = affect.question === 'open' && affect.hooks !== 'none' && !isGroup && repeated !== 'question';
-    if (!canAsk) return quiet('kill_switch');
-    const forbidden = HOOK_WORDS.filter(w => w !== 'question');
+    const open = affect.hooks !== 'none';
+    const canAsk = open && affect.question === 'open' && !isGroup && repeated !== 'question';
+    const canRant = open && affect.hooks !== 'no_tangent' && repeated !== 'tangent';
+    if (!canAsk && !canRant) return quiet('kill_switch');
+    const forbidden = HOOK_WORDS.filter(w => !(w === 'question' && canAsk) && !(w === 'tangent' && canRant));
     return {
       directive: { idle: true, mode: 'hook', forbidden, lateNight: affect.lateNight, moments: false, offerAllowed: false, playLevel: computePlayLevel('hook', affect), englishLooseness: affect.englishLooseness as 0 | 1 | 2 | 3 | undefined },
       report: report('kill_switch', forbidden),

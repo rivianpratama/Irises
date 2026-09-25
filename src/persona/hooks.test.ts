@@ -98,26 +98,27 @@ test('an idle turn with an empty ledger opens all four carrying kinds', () => {
   assert.equal(directive.heavy, undefined, 'weight is a property of a thing handed over, and nothing was');
 });
 
-// THE load-bearing rule. Three sharp replies in a row and the fourth turn stops talking at them: it
-// hands them the turn with a question, and nothing else is open, offered or sampled.
-test('three hooked replies in a row narrow the fourth turn to a question', () => {
+// THE load-bearing rule. Three sharp replies in a row and the fourth turn stops performing at them:
+// it hands them the turn with a question or opens up with a rant (a tangent), nothing offered or sampled.
+test('three hooked replies in a row narrow the fourth turn to a question or a rant', () => {
   const { directive, report } = pick(state({ lastKinds: ['judgment', 'callback', 'tangent'] }));
   assert.equal(directive.mode, 'hook');
-  assert.deepEqual(directive.forbidden, ['judgment', 'callback', 'tangent']);
-  assert.equal(directive.offerAllowed, false, 'the thread OFFER is off — the question is the whole beat');
+  assert.deepEqual(directive.forbidden, ['judgment', 'callback']);
+  assert.equal(directive.offerAllowed, false, 'the thread OFFER is off, the move is the whole beat');
   assert.equal(directive.moments, false);
   assert.equal(report.reason, 'kill_switch');
   assert.deepEqual(report.lastKinds, ['judgment', 'callback', 'tangent'], 'the receipt shows the run it fired on');
 });
 
-// When the question is not hers to ask, the switch falls back to quiet, whatever closed it.
-test('the kill switch goes quiet when no question is left to hand them', () => {
+// Each exit has its own gates, and the switch goes quiet only when both are shut.
+test('the kill switch keeps whichever exit is open, and goes quiet when neither is', () => {
   const run = state({ lastKinds: ['judgment', 'callback', 'tangent'] });
-  assert.equal(pick(run, { affect: { ...OPEN, question: 'closed' } }).directive.mode, 'quiet');
-  assert.equal(pick(run, { isGroup: true }).directive.mode, 'quiet');
-  const asked = pick(state({ lastKinds: ['judgment', 'question', 'question'] }));
-  assert.equal(asked.directive.mode, 'quiet', 'two questions running leave no third to hand them');
-  assert.equal(asked.report.reason, 'kill_switch');
+  assert.deepEqual(pick(run, { affect: { ...OPEN, question: 'closed' } }).directive.forbidden, ['judgment', 'callback', 'question']);
+  assert.deepEqual(pick(run, { isGroup: true }).directive.forbidden, ['judgment', 'callback', 'question']);
+  assert.deepEqual(pick(run, { affect: { ...OPEN, hooks: 'no_tangent' } }).directive.forbidden, ['judgment', 'callback', 'tangent']);
+  const neither = pick(run, { affect: { ...OPEN, hooks: 'no_tangent', question: 'closed' } });
+  assert.equal(neither.directive.mode, 'quiet');
+  assert.equal(neither.report.reason, 'kill_switch');
 });
 
 // `none` is a first-class entry: one flat reply anywhere in the window breaks the run. Without it
@@ -211,7 +212,7 @@ test('a group forbids judgment and keeps the rest', () => {
 // non-group guard for this reason.
 test('the kill switch fires in a group too', () => {
   const { directive, report } = pick(state({ lastKinds: ['callback', 'tangent', 'callback'] }), { isGroup: true });
-  assert.equal(directive.mode, 'quiet');
+  assert.deepEqual(directive.forbidden, ['judgment', 'callback', 'question'], 'a room closes the question, the rant stays');
   assert.equal(report.reason, 'kill_switch');
 });
 
@@ -461,7 +462,7 @@ test('hookKindOpen answers whether a beat is OPEN, never what the mode says', ()
 test('the kill switch and the affect floor still fire at night', () => {
   const late: HookAffectInput = { ...OPEN, lateNight: true };
   const killed = pick(state({ lastKinds: ['judgment', 'callback', 'tangent'] }), { affect: late });
-  assert.deepEqual(killed.directive.forbidden, ['judgment', 'callback', 'tangent']);
+  assert.deepEqual(killed.directive.forbidden, ['judgment', 'callback']);
   assert.equal(killed.report.reason, 'kill_switch');
   const floored = pick(state(), { affect: { ...OPEN, hooks: 'none', lateNight: true } });
   assert.equal(floored.directive.mode, 'quiet');
