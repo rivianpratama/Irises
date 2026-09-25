@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { isIdleTurn, classifyNeeded, type IdleFacts, type IdleVerdict } from './idle.js';
 import { selectHook, renderHooksSection, defaultHookState, TAKE_HEADING, type HookAffectInput } from './hooks.js';
 import { parseTurnedDown, coerceStatus } from './status.js';
-import { foldOwedAsks, matchesOwed, renderOwedSection, OWED_MAX, OWED_TTL_MS } from '../memory/owedAsks.js';
+import { foldOwedAsks, matchesOwed, raisesOwed, renderOwedSection, OWED_MAX, OWED_TTL_MS } from '../memory/owedAsks.js';
 import { foldSelf, parseSelfReply, renderSelfSection, cleanSelfText, MAX_SELF_ENTRIES } from '../memory/selfHarvest.js';
 import { pickSeed, weatherAllows } from '../memory/musings.js';
 import { readIdleVerdict } from '../agents/convo/idleClassify.js';
@@ -130,6 +130,17 @@ test('a put-off is owed until it is asked for again, looked into, or stale', () 
   const asks = ['draft the landlord email', 'compare two gaming laptops', 'plan a kyoto itinerary', 'summarize that paper'];
   for (const [i, a] of asks.entries()) many = foldOwedAsks(many, { texts: [], turnedDown: `later: ${a}` }, NOW + i);
   assert.equal(many.length, OWED_MAX);
+});
+
+test('she checks once: an owed ask is spent the moment her reply raises it', () => {
+  const put = foldOwedAsks([], { texts: [], turnedDown: 'later: mechanical keyboard comparison under 100' }, NOW);
+  // The not-now reply that minted it never counts as raising it.
+  const minted = foldOwedAsks([], { texts: [], turnedDown: 'later: mechanical keyboard comparison under 100', raised: 'not today, the keyboard one stays owed' }, NOW);
+  assert.equal(minted.length, 1);
+  assert.deepEqual(foldOwedAsks(put, { texts: ['hey'], raised: 'wait u still need the keyboard thing or u sorted it?' }, NOW + 1000), []);
+  // A reply about something else leaves it owed, and filler words prove nothing.
+  assert.equal(foldOwedAsks(put, { texts: ['hey'], raised: 'lol that meeting sounds rough' }, NOW + 1000).length, 1);
+  assert.equal(raisesOwed('mechanical keyboard comparison under 100', 'under the weather today'), false);
 });
 
 test('one shared word never settles an owed ask, and the section has no digits', () => {

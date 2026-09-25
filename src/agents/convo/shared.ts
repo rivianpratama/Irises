@@ -4992,11 +4992,13 @@ export async function processConvoResult(args: {
     // handed the number instead of reading a field the model no longer reports.
     void updateThreadInventory(handle, emitted, { chatId, moodLevel: affect?.status.mood_level });
     // What her mood put off stays owed until it is done, asked for again, or stale
-    // (memory/owedAsks.ts): settled against their words and any look she handed out this turn,
-    // then this turn's own `later:` added. Same group skip: an owed favour is between two people.
+    // (memory/owedAsks.ts): settled against their words, any look she handed out this turn, and her
+    // own reply when it checked on one, then this turn's own `later:` added. Same group skip: an owed favour is between two people.
     void recordOwedAsk(handle, {
       texts: [textToSend ?? '', effects.delegatedTask?.request ?? ''],
       turnedDown: emitted?.turned_down,
+      // Her reply: an owed ask she just checked on is spent, so she never asks twice.
+      raised: textResponse ?? '',
     });
   }
 

@@ -277,9 +277,13 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * mood tiers (what her mood may put off, refuse, or never touch), earned praise, stances on anything
  * including politics, "want them to do well" in place of permanent side-taking, and a repeat that
  * can get a plain no; Context.md's tests, opinions and scope lines follow it. No craft page moved.
+ *
+ * Then **+197**, check first (189,292 → 189,489): a put-off ask comes back as a check on whether
+ * they still need it before she starts (policy.ts), and Context.md's no-service-question rule names
+ * that check as its one exception.
  */
-const CORPUS_CHARS = 189_292;
-const CORPUS_SHA256 = '40d89eff5748dda28209a8071c76917aff79c93b36134b68c4b68e00cec65851';
+const CORPUS_CHARS = 189_489;
+const CORPUS_SHA256 = 'b5c04657792ede9a20462734ac0b708ab424a17ab53d27242d08d84285565c88';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
