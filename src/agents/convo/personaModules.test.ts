@@ -264,8 +264,8 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * an unstamped message right before theirs, and any unstamped message is her own system. Every
  * other file held.
  */
-const CORPUS_CHARS = 157_836;
-const CORPUS_SHA256 = 'f4347641a58d84a265235e6493030b7510febca20c56ac7fdfd925ed13052ba3';
+const CORPUS_CHARS = 157_585;
+const CORPUS_SHA256 = '7c255acac04cdc09fd2b42852c263a168aa5a5f0405268ec3096aee09f89426a';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
