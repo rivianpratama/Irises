@@ -416,7 +416,7 @@ test('a blank user gets the discovery scaffold: the open slots, their tradecraft
   assert.ok(out.includes("## What you don't know about them YET"));
   // Slot tradecraft: signals + elicitation moves, not bare labels.
   assert.ok(out.includes('their NAME: unknown'));
-  assert.ok(out.includes("i'm irises, by the way")); // give-yours-to-get-theirs move
+  assert.ok(out.includes('trade for it: yours, then theirs, lightly and once')); // the traded ask
   assert.ok(out.includes('their TIMEZONE / where they are: unknown'));
   assert.ok(out.includes('area code')); // free signals listed
   assert.ok(out.includes('HOW they want to be addressed: unknown'));

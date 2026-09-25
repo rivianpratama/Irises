@@ -341,8 +341,11 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
  *
  * Then DOWN to 0.0063: Context.md gained a stretched-word bank (the shapes, a set of in-the-moment
  * examples, and the four ways a stretch goes wrong) so elongation shows up often and looks right.
+ *
+ * Then DOWN to 0.0062: craft/onboarding.md (loaded by the mature fixture's discovery state) gained
+ * the first principles of why people answer cheap questions and shrug at open ones, with examples.
  */
-export const MIN_TRANSCRIPT_SHARE = 0.0063;
+export const MIN_TRANSCRIPT_SHARE = 0.0062;
 
 /**
  * Phrases that must exist in the persona, verbatim — the rules whose deletion would be silent.

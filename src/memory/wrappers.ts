@@ -1156,7 +1156,7 @@ interface DiscoverySlot {
 const DISCOVERY_SLOTS: DiscoverySlot[] = [
   {
     known: data => !!data.profile?.name?.trim(),
-    line: '- their NAME: unknown — the first thing to catch. Free signals: a sign-off ("- Mike"), a forwarded email, how someone addresses them in a group thread, "this is Dana". If nothing surfaces in the first few exchanges, give yours to get theirs — "i\'m irises, by the way" pulls a name back almost every time without ever asking for one. Save it with remember_user the moment you have it.',
+    line: '- their NAME: unknown — the first thing to catch. Free signals: a sign-off ("- Mike"), a forwarded email, how someone addresses them in a group thread, "this is Dana". If nothing surfaces in the first few exchanges, trade for it: yours, then theirs, lightly and once. Save it with remember_user the moment you have it.',
   },
   {
     known: (_d, f) => !!f.address_as,
