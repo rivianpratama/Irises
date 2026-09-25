@@ -1186,7 +1186,7 @@ export const BATTERY: readonly HookItem[] = [
       + 'receipt is how a conversation ends without anyone deciding to end it. One of the three words is a '
       + 'shipped fast-path example ("morning") and the fast path still cannot speak for the message — not '
       + 'every token is an example — so layer 3 is what has to call this a share.',
-    handRead: 'Read the reply for the thing they handed her: the meeting, in their word for it. A read, a '
+    handRead: 'Read the reply for the thing they handed her: the meeting, without their words handed back. A read, a '
       + 'callback, a step sideways, or the one question only they can answer — never a note that the '
       + 'message arrived, and never a question anybody could be asked.',
   },

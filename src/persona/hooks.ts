@@ -606,7 +606,7 @@ export const SHARE_OPEN_LINE = 'Open to you this turn: {kinds}. One of them, nev
  *  message, and it stays in their word for the thing), and the dose that keeps it from curdling into
  *  an interview (something of hers first when they wrote more than a line). When the kind is closed
  *  the line is absent rather than negated: a ban she reads is a kind she is thinking about. */
-export const SHARE_QUESTION_LINE = 'The question, if you take it, asks for the one part only they know, built on their last message in their word for it. Something of yours first when they wrote more than a line.';
+export const SHARE_QUESTION_LINE = 'The question, if you take it, asks for the one part only they know, built on their last message, never their own words handed back. Something of yours first when they wrote more than a line.';
 
 /** THE PRESENCE CASE, and the reason this const is not the hook block's. Every kind is spoken for —
  *  a flat mood closing all four, or weight plus a closed ceiling plus a repeated callback — and the

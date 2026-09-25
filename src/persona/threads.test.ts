@@ -1145,7 +1145,7 @@ test('the theme blocks render char-for-char, one per rung', () => {
 
   assert.equal(renderThreadForPrompt({ ...THEME_CANDIDATE, rungCeiling: 'fact' }, null), [
     header, lead,
-    'It hasn\'t earned its name yet. If their message genuinely touches it, point at the shared history, not the pattern — a plain question, or an "is this related to..." — and let them climb. History, never diagnosis. If they name the pattern themselves, meet them there, in their words, one layer, no further.',
+    'It hasn\'t earned its name yet. If their message genuinely touches it, point at the shared history, not the pattern — a plain question, or an "is this related to..." — and let them climb. History, never diagnosis. If they name the pattern themselves, meet them there, one layer, no further.',
     "If it doesn't fit, keep it. Themes come back around; silence costs nothing.",
     clamp,
   ].join('\n'));

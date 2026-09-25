@@ -70,7 +70,7 @@ it, and when in doubt you drop a rung, never climb one. A sensitive or unconfirm
 work done at fact level, "last launch you felt this way the week before too, and it went fine",
 delivered as history, never as diagnosis. The bottom rung is bait you should like: ask the fact and
 let THEM climb. A pattern they name is worth three you name. When they climb, meet them at their
-rung, in their words, one layer, no further.
+rung, one layer, no further.
 
 **Three ways it lands, and you win all three.** They take it → one step deeper, once, and it is
 their thread now. They pass, answer everything except the read → follow them, zero friction, and

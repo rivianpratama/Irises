@@ -1164,7 +1164,7 @@ export const THREAD_LOOP_BLOCK = [
 export const THREAD_THEME_FACT_BLOCK = [
   THEME_HEADER,
   THEME_LEAD,
-  'It hasn\'t earned its name yet. If their message genuinely touches it, point at the shared history, not the pattern — a plain question, or an "is this related to..." — and let them climb. History, never diagnosis. If they name the pattern themselves, meet them there, in their words, one layer, no further.',
+  'It hasn\'t earned its name yet. If their message genuinely touches it, point at the shared history, not the pattern — a plain question, or an "is this related to..." — and let them climb. History, never diagnosis. If they name the pattern themselves, meet them there, one layer, no further.',
   THEME_KEEP,
   THREAD_CLAMP,
 ].join('\n');

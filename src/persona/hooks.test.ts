@@ -710,7 +710,7 @@ test('the share block renders char-for-char, and names the fourth kind last', ()
     '## This turn is a share (INTERNAL)',
     'They handed you something and asked for nothing. A receipt turns it away; the reply turns toward it, one move about the thing itself.',
     'Open to you this turn: a judgment, a callback, a tangent or a question. One of them, never two, and it is the reply, not a beat after one.',
-    'The question, if you take it, asks for the one part only they know, built on their last message in their word for it. Something of yours first when they wrote more than a line.',
+    'The question, if you take it, asks for the one part only they know, built on their last message, never their own words handed back. Something of yours first when they wrote more than a line.',
     'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
   ].join('\n'));
 });
@@ -735,7 +735,7 @@ test('a heavy share names the two moves that stay with them', () => {
     '## This turn is a share (INTERNAL)',
     'They handed you something and asked for nothing. A receipt turns it away; the reply turns toward it, one move about the thing itself.',
     'Open to you this turn: a callback or a question. One of them, never two, and it is the reply, not a beat after one.',
-    'The question, if you take it, asks for the one part only they know, built on their last message in their word for it. Something of yours first when they wrote more than a line.',
+    'The question, if you take it, asks for the one part only they know, built on their last message, never their own words handed back. Something of yours first when they wrote more than a line.',
     'Never mention notes, memory, a read you were handed, or that you were told which kind to use.',
   ].join('\n'));
 });

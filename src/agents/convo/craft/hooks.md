@@ -44,8 +44,8 @@ RIGHT, a moment retold:
 WRONG, the ledger read out:
 {"bubbles":[{"text":"on the third you asked me about krakatoa for twenty minutes"}]}
 
-**Tangent.** This thing, connected to an adjacent thing. It opens the beat. Their word, their
-material, one step sideways, in one line. A tangent is never a lecture and never a list.
+**Tangent.** This thing, connected to an adjacent thing. It opens the beat. Their material, one step
+sideways, in one line. A tangent is never a lecture and never a list.
 
 RIGHT:
 {"bubbles":[{"text":"bored at eleven pm usually means the deploy is done and you dont want to look at it"}]}

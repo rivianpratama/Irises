@@ -263,9 +263,13 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * a correction pass appends further unstamped messages after theirs. The turn's guidance arrives in
  * an unstamped message right before theirs, and any unstamped message is her own system. Every
  * other file held.
+ *
+ * Then **+301**, the echo pass (158,447 → 158,748): Context.md's "echo their exact word" bullet
+ * becomes a per-turn call that never hardens into a habit, and the share, hooks and threading pages
+ * stop telling her to hand their wording back. Every other file held.
  */
-const CORPUS_CHARS = 158_447;
-const CORPUS_SHA256 = 'b18d5b5b853e05a685f6323f58afc3287f58e60b92c6a04ec6c6f85890fb4cc3';
+const CORPUS_CHARS = 158_748;
+const CORPUS_SHA256 = '9214c30f4a290ce24c86c227b74e347f8ab393c1d757ba736df4765a43283931';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
