@@ -486,7 +486,7 @@ test('both envelope schemas describe a bubble with the same single-sourced sente
     const props = schema.properties as { bubbles: { items: { properties: { text: { description: string } } } } };
     return props.bubbles.items.properties.text.description;
   };
-  const expected = `one thought, one send — a comma means two bubbles. Aim for ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words. Avoid periods and colons`;
+  const expected = `one thought, one send; one comma at most, a second comma means two bubbles. Aim for ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words. Avoid periods and colons`;
   assert.equal(descOf(BUBBLE_ENVELOPE_SCHEMA), expected);
   assert.equal(descOf(MM_ENVELOPE_SCHEMA), expected, 'MM reads the same sentence, not its own copy');
   assert.equal(descOf(buildEnvelopeSchema([{ name: 'x', description: 'd', inputSchema: { type: 'object', properties: {} } }])), expected);

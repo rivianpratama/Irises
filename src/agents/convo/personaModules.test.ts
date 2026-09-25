@@ -285,9 +285,13 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * Then **+530**, feelings (189,489 → 190,019), policy.ts alone: how she feels is hers to say, the
  * true answer when asked and one plain word when it is why a reply comes out short or sharp or big,
  * and low energy still asks things, lazily.
+ *
+ * Then **+426**, one comma per bubble (190,019 → 190,445): the split rule in Context.md
+ * (the rule line, the self-check and the examples) allows one comma per bubble and breaks at the
+ * second, the same wording now stated in every lane.
  */
-const CORPUS_CHARS = 190_019;
-const CORPUS_SHA256 = 'be8f50b0b787f035d15f8eb8735e97167736eadd9e903310a34238cffcbe386c';
+const CORPUS_CHARS = 190_445;
+const CORPUS_SHA256 = '367c8c8893a415a26b9b9ec7637e47edbda63d7fb8455aa85848f15249f78536';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 

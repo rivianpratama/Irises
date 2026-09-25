@@ -314,7 +314,7 @@ test("the composer's format anchor states the word target and comma-split rule (
     `the composer anchor's word target has drifted from BUBBLE_WORD_TARGET_LO/HI`,
   );
   assert.ok(
-    FORMAT_ANCHOR.includes('a comma means two items'),
+    FORMAT_ANCHOR.includes('a second comma means two items'),
     'the composer anchor should state the comma-split rule',
   );
 });
@@ -332,7 +332,7 @@ test("Fallfirm's two anchors state the same target and ceiling, and each its own
     );
   }
   assert.ok(
-    outcome.includes('a comma means two items'),
+    outcome.includes('a second comma means two items'),
     'voiceOutcome: its anchor should state the comma-split rule',
   );
   assert.ok(
