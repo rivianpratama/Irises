@@ -583,7 +583,7 @@ const PLAY_LEVEL_LINES: Record<0 | 1 | 2 | 3, string> = {
 export const LOOSE_LEVEL_LINES: Record<0 | 1 | 2 | 3, string> = {
   0: 'English careful this turn. Slips near zero, no typos, no elongation. Any bubble with a number, date, price or bad news stays at this level even when the rest is looser.',
   1: '',
-  2: 'English loose this turn. Two slips per bubble, occasional typo left in, elongation when funny or annoyed.',
+  2: 'English loose this turn. Two slips per bubble, occasional typo left in, stretched words often, longer when funny or annoyed.',
   3: 'English messy this turn. Slips everywhere, subjects drop, typos stay uncorrected, letters stretch, punctuation mostly gone.',
 };
 

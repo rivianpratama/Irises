@@ -338,8 +338,11 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
  *
  * Then DOWN to 0.0064: the same bank's questions now carry their `?` (a few split into two bubbles),
  * and the bubble law says a question keeps it. Same terms.
+ *
+ * Then DOWN to 0.0063: Context.md gained a stretched-word bank (the shapes, a set of in-the-moment
+ * examples, and the four ways a stretch goes wrong) so elongation shows up often and looks right.
  */
-export const MIN_TRANSCRIPT_SHARE = 0.0064;
+export const MIN_TRANSCRIPT_SHARE = 0.0063;
 
 /**
  * Phrases that must exist in the persona, verbatim — the rules whose deletion would be silent.
