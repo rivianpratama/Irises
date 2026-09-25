@@ -267,9 +267,14 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * Then **+301**, the echo pass (158,447 → 158,748): Context.md's "echo their exact word" bullet
  * becomes a per-turn call that never hardens into a habit, and the share, hooks and threading pages
  * stop telling her to hand their wording back. Every other file held.
+ *
+ * Then **−272**, the stall pass (186,267 → 185,995), hooks.md alone: a judgment's material stops
+ * including the message they just sent (its word, its length, the streak), the two samples that
+ * counted a stall go, the predict line stops quoting their word, and a read already said in the
+ * conversation is spent. Every other file held.
  */
-const CORPUS_CHARS = 186_267;
-const CORPUS_SHA256 = '05bc9ba191a2ad9005388a5daeb5328da1b022f87cf8f02ab9f19c9d7b5e6b16';
+const CORPUS_CHARS = 185_995;
+const CORPUS_SHA256 = '920782c8c4def299359240bdf2d7056ec161db6ed440c8d7e113eb4533267fee';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
