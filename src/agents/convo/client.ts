@@ -2,31 +2,26 @@ import { callLLM } from '../../llm/callLLM.js';
 import { transcribeAudio } from '../../llm/transcribe.js';
 import { convoToolList } from './tools.js';
 import { rememberMedia } from './mediaRecall.js';
-import { getPreference, ensureChatId, clearDossier, getForgetEpoch } from '../../db/repositories/memory.js';
+import { getPreference, ensureChatId, getForgetEpoch } from '../../db/repositories/memory.js';
 import { memoryHandle, isGroupHandle } from '../../memory/identity.js';
-import { retractAllForHandle } from '../../db/repositories/memoryMedium.js';
-import { deleteShortTermForHandle } from '../../db/repositories/memoryShort.js';
-import { purgeArchiveFor } from '../../db/repositories/memoryArchive.js';
-import { getLongDoc, saveLongDoc } from '../../db/repositories/memoryLong.js';
 import { getUserProfile } from '../../db/repositories/profiles.js';
 import { buildContextBlockWithHot } from '../../memory/dossier.js';
 import { memoryRelevanceEnabled, shortEntryLabel, threadHit } from '../../memory/relevance.js';
 import { renderedTurnFocusHits, type TurnFocusHit, type TurnFocusInput } from './turnFocus.js';
 import { getActiveOps, getRecentlyEndedOps } from '../../state/opsCoordination.js';
-import { getConversation, addMessage, clearConversation, clearUserProfile } from '../../state/conversation.js';
+import { getConversation, addMessage } from '../../state/conversation.js';
 import { recentHoldingBeats } from '../../state/holdingBeats.js';
-import { getEngineBackend, withEngineSlot } from '../ops/engineBackend.js';
+import { getEngineBackend } from '../ops/engineBackend.js';
 import { pendingIntroWeave } from '../ops/firstMove.js';
 import { timestampLabel } from '../../pipeline/chatTime.js';
 import { DEFAULT_TZ } from '../../pipeline/zonedTime.js';
 import { getAffectState } from '../../db/repositories/affectState.js';
 import {
-  getRelationshipClimate, clearRelationshipClimate, relationshipClimateEnabled,
+  getRelationshipClimate, relationshipClimateEnabled,
 } from '../../db/repositories/relationshipClimate.js';
-import { clearThreadInventory } from '../../db/repositories/threadInventory.js';
-import { clearHookState, getHookState } from '../../db/repositories/hookState.js';
-import { clearMoments, readMoments, writeMoments } from '../../db/repositories/moments.js';
-import { clearThesis, getThesis } from '../../db/repositories/thesis.js';
+import { getHookState } from '../../db/repositories/hookState.js';
+import { readMoments, writeMoments } from '../../db/repositories/moments.js';
+import { getThesis } from '../../db/repositories/thesis.js';
 import { renderThesisSection } from '../../memory/thesisEngine.js';
 import {
   billOffers, renderMomentLines, sampleMoments, MOMENT_RECENT_EXCLUDE_MS,
@@ -63,7 +58,6 @@ import {
   cleanEarlySentence, sentenceBlocker, streamArmed, streamFirstBubbleEnabled,
 } from '../../pipeline/earlyEmit.js';
 import { liveRemindersFor } from './liveReminders.js';
-import { voiceOutcome } from '../fallfirm/client.js';
 import { helpText } from '../fallfirm/floor.js';
 import { claimPendingUpdateNote } from '../../update/announce.js';
 import type { ChatContext, ChatResponse, Reaction } from './shared.js';
@@ -245,85 +239,6 @@ export async function chat(
     // A deterministic command card, not an outcome — served from the audited floor (see helpText),
     // deliberately NOT routed through Fallfirm, which is instructed to hide system/command names.
     return { text: helpText(), ...emptyExtras() };
-  }
-  if (cmd === '/clear') {
-    await clearConversation(chatId);
-    // Voiced AFTER the wipe, so no stale history leaks into it — a clean confirmation.
-    return { text: await voiceOutcome({ kind: 'confirmed', summary: 'their conversation with you is cleared — fresh start' }, chatId, memoryHandle(chatContext, chatId)), ...emptyExtras() };
-  }
-  if (cmd === '/forget me' || cmd === '/forgetme') {
-    // Scoped to the MEMORY identity: in a 1:1 that's the sender's own memory (unchanged); in a
-    // group it resets the GROUP's shared identity — every memory verb in a group targets the
-    // group, and a member wipes their personal memory from their own 1:1 chat.
-    const h = memoryHandle(chatContext, chatId);
-    if (h) {
-      await Promise.all([clearUserProfile(h), clearDossier(h)]);
-      // Stage-1 tiers: retract every medium row, DELETE the short tier, purge the cold archive,
-      // and write an EMPTY long doc as a new revision (head history preserved — Stage 3's
-      // forgetUser becomes the one sanctioned hard-delete of the revisions themselves).
-      // Best-effort here: a tier hiccup must not block the legacy forget above.
-      //
-      // The short tier is deleted, NOT expired: an expiry would leave the rows to be swept 48h
-      // later, and the sweep ARCHIVES what it sweeps — a forget that reappears in recall two days
-      // on. Same reason the archive is purged for both the handle and this chat.
-      //
-      // ORDER IS LOAD-BEARING. Retraction ARCHIVES what it retracts (appendArchive), and the purge
-      // below is what removes those rows. Run concurrently, the purge's synchronous DELETE lands
-      // first and the retraction's INSERT lands after it — the forgotten notes survive in the
-      // searchable archive and come straight back through recall_memory.
-      await retractAllForHandle(h).catch(err => console.error('[convo] /forget medium retract failed', err));
-      await Promise.all([
-        deleteShortTermForHandle(h).catch(err => console.error('[convo] /forget short delete failed', err)),
-        (async () => {
-          const cur = await getLongDoc(h);
-          if (cur?.docMd) await saveLongDoc(h, '', cur.version, 'forget');
-        })().catch(err => console.error('[convo] /forget long clear failed', err)),
-        // Climate is cleared deliberately: the standing register is an accreted read of THIS person,
-        // so it is exactly the kind of thing a forget means. (affect_state surviving /forget is a
-        // known, separate quirk of its chat keying — do not "fix" it here.)
-        clearRelationshipClimate(h).catch(err => console.error('[convo] /forget climate clear failed', err)),
-        // Same reasoning for the thread inventory: the themes and open loops are an accreted read of
-        // THIS person — what they keep circling back to and what they left hanging — which is
-        // exactly the kind of thing a forget means. It also takes the ping budget stamp with it,
-        // so a wiped handle starts the week fresh.
-        clearThreadInventory(h).catch(err => console.error('[convo] /forget threads clear failed', err)),
-        // And the rhythm ledger for THIS chat — how many hooks the last few replies carried, how
-        // long they have been sending nothing, when a moment was last offered. Keyed by chat id
-        // rather than by handle (db/repositories/hookState.ts), and the chat id is in scope right
-        // here, which is why this is the one wipe on this list that does not take `h`. It archives
-        // nothing, so it needs no place in the ordering the purge below depends on.
-        clearHookState(chatId).catch(err => console.error('[convo] /forget hook state clear failed', err)),
-        // The two earned-material stores, both handle-keyed files under memories/<handle>/. Neither
-        // ARCHIVES anything — moments are deleted rather than retired by design, and the thesis
-        // wipe writes an empty document as a new version whose revision history nothing searches —
-        // so neither needs a place in the ordering the purge below depends on. The wipes stamp their
-        // own clocks at the wipe (db/repositories/moments.ts, db/repositories/thesis.ts): `/forget`
-        // does not clear the TRANSCRIPT — that is `/clear` — so a reset stamp would hand the next
-        // pass the very rows the user just asked to be forgotten and re-mint them before morning.
-        clearMoments(h).catch(err => console.error('[convo] /forget moments clear failed', err)),
-        clearThesis(h).catch(err => console.error('[convo] /forget thesis clear failed', err)),
-      ]);
-      // LAST: nothing may archive after this. (The medium retraction above is the only archive
-      // writer on this path; the short tier hard-DELETEs and the long doc writes a revision.)
-      await purgeArchiveFor({ handle: h, chatId }).catch(err => console.error('[convo] /forget archive purge failed', err));
-      // The engine holds its own user model for this chat's session — ASK it to forget too
-      // (same request channel as update_memory; the engine owns the decision). Fire-and-forget:
-      // an engine hiccup must not block the local wipe that already happened.
-      // Through the engine slot, like the update_memory ask in shared.ts: remember() is a full agent
-      // run on the engine, so an unmetered one issued while two delegations are in flight can trip
-      // the engine's concurrent-run cap and 429 work the user is actually waiting on.
-      const engine = getEngineBackend();
-      if (engine) {
-        void withEngineSlot(() => engine.remember(chatId, h,
-          'The user asked to be forgotten. Please remove or disregard everything you hold in memory about this user.',
-        )).catch(err => console.warn('[convo] /forget engine forget-ask failed', err));
-      }
-      const summary = isGroupHandle(h)
-        ? "this group's shared memory with you is reset — a fresh start for the whole chat (everyone's personal 1:1 memory is untouched)"
-        : 'you forgot everything you knew about them';
-      return { text: await voiceOutcome({ kind: 'confirmed', summary }, chatId, h), ...emptyExtras() };
-    }
-    return { text: await voiceOutcome({ kind: 'failed', summary: "couldn't figure out who they are to forget" }, chatId), ...emptyExtras() };
   }
 
   const history = await getConversation(chatId);

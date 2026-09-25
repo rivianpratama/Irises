@@ -390,17 +390,3 @@ test('a GROUP room is offered no moment and gets no read — every per-person st
   assert.equal((await readMoments(SENDER)).entries[0].offered, 0);
 });
 
-test('/forget wipes both stores', async () => {
-  assert.equal(await writeMoments(SENDER, [moment()], FROZEN_MS - DAY, []), true);
-  assert.equal(await saveThesis(SENDER, READ, 0, THESIS_REWRITE_WRITER), 1);
-
-  const { call } = fakeLane(envelope(['done']));
-  await chat(randomUUID(), '/forget me', emptyMedia(), clientCtx(), call);
-
-  const file = await readMoments(SENDER);
-  assert.deepEqual(file.entries, [], 'the diary is gone, and nothing archived it');
-  // The wipe STAMPS the harvest clock rather than resetting it: /forget does not clear the
-  // transcript, so an open window would re-mint the same moments before morning.
-  assert.equal(file.lastHarvestAt, FROZEN_MS);
-  assert.equal(splitThesisDoc((await getThesis(SENDER))?.docMd ?? '').thesis, '', 'the read is gone');
-});

@@ -542,7 +542,7 @@ test('the flag off files no event; on, exactly one turn:trace', () => {
   assert.equal(detail.bubbles.count, 2);
   assert.equal(detail.prompt.transcriptRows, 3);
 
-  // A missing draft is not an event either: the command fast paths (/help, /clear) never build a
+  // A missing draft is not an event either: the command fast path (/help) never builds a
   // prompt, so there is nothing to attribute.
   recordTurnTrace(undefined, { chatId, handle: PROFILE.handle, bubbles: TWO_BUBBLES });
   assert.equal(getTraces().length, 1);

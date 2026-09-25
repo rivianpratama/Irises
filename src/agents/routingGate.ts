@@ -65,7 +65,7 @@ const PROPER_NOUN = /\w\s([A-Z][a-z]{2,})/;
 // ~/Documents yesterday") stays local.
 // Precision: the token must START a word (whitespace / quote / bracket / message start), so
 // "and/or", "read/write", "8/22" and "50/50" can't look like paths; an absolute path needs TWO
-// segments, so a stray "/" or a slash-command ("/help", "/clear") isn't one.
+// segments, so a stray "/" or a slash-command ("/help") isn't one.
 const PATH_TOKEN = /(?:^|[\s"'`([])(?:~\/[\w.-]+|\.{1,2}\/[\w.-]+|\/[\w.-]+\/[\w.-]+)/;
 // The ask wrapped around that path: a question, a "can you", a please, or an inspection/naming verb.
 const PATH_ASK = new RegExp(String.raw`\?|\b(?:can|could|would|will|do) (?:you|u|ya)\b|\bplease\b|\b(?:${INSPECT}|cat|name|tell me|what|which|where|any)\b`, 'i');

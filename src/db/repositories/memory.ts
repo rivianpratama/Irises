@@ -108,7 +108,7 @@ export async function getMemory(handle: string): Promise<AgentMemory | null> {
  * prefs from scratch on the next upsert and silently wipe them. Returns null only for a
  * genuinely-absent row (no prefs row AND no dossier file).
  */
-function getMemoryStrict(handle: string): AgentMemory | null {
+export function getMemoryStrict(handle: string): AgentMemory | null {
   const prefs = readPrefsStrict(handle);                       // throws on read/parse failure
   const dossierMd = readTextIfExists(dossierPath(handle));     // throws on non-ENOENT
   if (prefs === null && dossierMd === null) return null;
@@ -116,6 +116,8 @@ function getMemoryStrict(handle: string): AgentMemory | null {
 }
 
 // ── /forget epochs (the mid-merge race) ─────────────────────────────────────────────
+// The /forget and /clear chat commands were removed (2026-09-25): nothing in production calls
+// clearDossier or bumps the epoch any more. The fences stay as the seam the tests drive.
 // The dossier refresh is a long read→LLM→write. A /forget that lands INSIDE that window used
 // to be undone seconds later: the merge had already read the pre-forget doc and happily wrote
 // it back over the wipe. The epoch is the fence — clearDossier bumps it, and a merge that

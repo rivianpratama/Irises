@@ -556,7 +556,7 @@ export function turnTraceEnabled(): boolean {
  * the only point that knows both halves, and calling it once there is what makes the event
  * per-turn.
  *
- * A missing draft is not an event: the command fast paths (/help, /clear, /forget me) never build a
+ * A missing draft is not an event: the command fast path (/help) never builds a
  * prompt or reach the model, so there is nothing to attribute. Never throws — diagnostics must not
  * be able to break a reply that already went out.
  */

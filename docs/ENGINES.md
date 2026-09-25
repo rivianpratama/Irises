@@ -381,7 +381,7 @@ herself ungrounded rather than not at all.
 
 **This is the sanctioned reverse flow, not a new one.** Per *Memory boundary* below, Irises never
 reads engine storage: the profile arrives as a **chat reply the engine composed itself**, exactly
-like `update_memory` and `/forget me` travel outward as requests rather than writes. And it arrives
+like `update_memory` travels outward as a request rather than a write. And it arrives
 as *untrusted input* — the reply is sanitized at the door (headings and scope sections stripped so a
 reply cannot legislate what she refuses to do, brackets and fences removed because these strings are
 quoted into prompts, hard caps on every field, non-`true` history coerced to false) before one
@@ -391,8 +391,7 @@ decides and writes.
 **One-shot, and it stays that way.** State lives in `$IRISES_HOME/first-move.json` (default
 `~/.irises`), keyed by engine name, claimed *before* the send. It survives restarts and
 `scripts/update.sh`, and an `--uninstall` without `--purge-data` — none of which touch
-`$IRISES_HOME` — so the introduction can never fire twice. `/forget me` deliberately does **not** re-arm it: forgetting what she knows about
-someone is not the same as never having met them. Deleting the file by hand is the only way to make
+`$IRISES_HOME` — so the introduction can never fire twice. Deleting the file by hand is the only way to make
 her do it again. `ENGINE_ONBOARDING=off` only removes the wait-for-doctrine gate (the first move
 still runs); `CONVO_THREADING_ENABLED=false` only skips the seeded themes.
 
@@ -661,8 +660,8 @@ Two memories exist side by side, on purpose, with a one-way contract:
   it is **never** inside the engine's workspace, and no engine code path can write it.
 - **The engine's memory** — whatever the engine keeps for its own sessions (hermes
   `memories/MEMORY.md`/`USER.md`, OpenClaw's workspace + memory index). Irises never
-  writes engine storage directly. It **asks**: the `update_memory` tool and `/forget me`
-  both send a natural-language request through the chat's engine session (`remember()` in
+  writes engine storage directly. It **asks**: the `update_memory` tool
+  sends a natural-language request through the chat's engine session (`remember()` in
   `src/agents/ops/engineBackend.ts`), and the engine's own memory loop decides what to
   keep, change, or drop.
 

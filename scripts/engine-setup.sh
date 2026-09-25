@@ -1228,6 +1228,9 @@ data_step() {
       read -r answer || answer=""
     fi
     if [ "$answer" = "delete" ]; then
+      case "$home" in
+        ""|/|"$HOME"|"$HOME/") die 1 "refusing to delete '$home' — that is not an Irises state directory" ;;
+      esac
       rm -rf "$home"
       say "removed $home"
     else

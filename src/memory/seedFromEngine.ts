@@ -25,7 +25,7 @@
 // No LLM call anywhere in here, by design. The engine already wrote the prose; a summarizer pass
 // over a summary would only add a place for a hallucination to enter durable memory.
 
-import { getForgetEpoch, getMemory } from '../db/repositories/memory.js';
+import { getForgetEpoch, getMemoryStrict } from '../db/repositories/memory.js';
 import { getLongDoc } from '../db/repositories/memoryLong.js';
 import { addImportantNote, upsertFact } from '../db/repositories/memoryMedium.js';
 import { setUserName } from '../db/repositories/profiles.js';
@@ -182,7 +182,9 @@ async function seedDossier(handle: string, profile: EngineProfile): Promise<bool
   const doc = buildSeedDossier(profile);
   if (!doc) return false;
 
-  const memory = await getMemory(handle);
+  // Strict: an unreadable dossier throws (the caller logs it) instead of reading as "empty" and
+  // being seeded over.
+  const memory = getMemoryStrict(handle);
   if ((memory?.dossierMd ?? '').trim()) return false;
   const long = await getLongDoc(handle);
   if ((long?.docMd ?? '').trim()) return false;

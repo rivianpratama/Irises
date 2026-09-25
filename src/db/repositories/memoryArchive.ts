@@ -211,9 +211,12 @@ export function __setArchiveEntriesDelayForTests(ms: number | null): void {
  * whose real work must land regardless (a lineage copy is strictly a bonus). Content is sliced
  * to the cap, unknown sources are dropped with a log, and the per-handle cap is enforced
  * opportunistically as part of the write, so no separate sweep is needed to bound a hot handle.
+ * Resolves false when any row failed to insert, so a caller that DELETES after archiving (the
+ * message prune, the short-term sweep) can keep its rows rather than lose the only copy.
  */
-export async function archiveEntries(entries: ArchiveInput[]): Promise<void> {
-  if (!entries.length) return;
+export async function archiveEntries(entries: ArchiveInput[]): Promise<boolean> {
+  if (!entries.length) return true;
+  let ok = true;
   const delay = insertDelayForTests;
   if (delay != null) await new Promise(r => setTimeout(r, delay));
   const now = Date.now();
@@ -244,6 +247,7 @@ export async function archiveEntries(entries: ArchiveInput[]): Promise<void> {
     } catch (error) {
       // Logged, not thrown: the caller already retired the row upstream.
       logDbError('archiveEntries', error);
+      ok = false;
     }
   }
   // Cap enforcement once per handle per BATCH, not per row: the COUNT scans a handle's whole
@@ -257,6 +261,7 @@ export async function archiveEntries(entries: ArchiveInput[]): Promise<void> {
       logDbError('archiveEntries cap', error);
     }
   }
+  return ok;
 }
 
 /** Drop the oldest rows for a handle once it passes the cap. Runs as part of every write (a COUNT

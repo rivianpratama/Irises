@@ -69,8 +69,6 @@ function withFacts(line: string, facts: string | undefined): string {
 export function helpText(): string {
   return [
     'commands:',
-    '/clear - reset our conversation',
-    '/forget me - erase what i know about you',
     '/help - this message',
   ].join('\n');
 }

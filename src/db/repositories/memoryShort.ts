@@ -182,10 +182,10 @@ export async function sweepExpiredShortTerm(graceMs: number = SHORT_SWEEP_GRACE_
   try {
     // Archive before the delete: a day's research/media/email findings are exactly what a
     // "what did you find out about that last month" question needs, and this is the last
-    // moment they exist. Best-effort (archiveEntries never throws) — the sweep still runs.
+    // moment they exist. archiveEntries never throws; a partial archive keeps the rows (below).
     const rows = stmt('SELECT * FROM memory_short WHERE expires_at < ?').all(cutoff) as unknown as ShortRow[];
     if (rows.length) {
-      await archiveEntries(rows.map(fromRow).map(e => ({
+      const archived = await archiveEntries(rows.map(fromRow).map(e => ({
         source: 'short_expired' as const,
         agentHandle: e.agentHandle,
         chatId: e.chatId,
@@ -195,6 +195,11 @@ export async function sweepExpiredShortTerm(graceMs: number = SHORT_SWEEP_GRACE_
         meta: { ...e.meta, ...(e.taskId ? { taskId: e.taskId } : {}) },
         createdAt: e.createdAt,
       })));
+      // This is the last moment these rows exist, so a row the archive could not take is kept.
+      if (!archived) {
+        console.warn('[memory-short] sweep skipped — the archive did not take every row, so none were deleted');
+        return 0;
+      }
     }
     const res = stmt('DELETE FROM memory_short WHERE expires_at < ?').run(cutoff);
     return Number(res.changes);

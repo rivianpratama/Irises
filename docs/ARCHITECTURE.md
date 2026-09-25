@@ -104,7 +104,7 @@ Beside the tiers sit `MOMENTS.md` (timestamped episodes in her own voice, folded
 **Forgetting** got more design attention than recall, which is the right way round for something that holds a person:
 
 - Retiring is not deleting. An edited or evicted entry flips status, gets a `supersededBy` pointer, and lands in the archive with its lineage intact.
-- `/forget` is the one sanctioned hard delete — and every slow background writer (the dossier pass, the note groomer, the embedding backfill, the nightly and weekly passes) is fenced by a **forget epoch** read before its slow call and re-read before its write, so a wipe landing mid-flight can't be undone by work that started before it.
+- No chat command deletes memory (`/forget me` and `/clear` were removed 2026-09-25). The **forget epoch** fences on the slow background writers remain as test seams; nothing in production bumps the epoch any more.
 - Vectors are a forget-leak surface: a vector outliving its row is a deleted memory still semantically reachable. So they cascade, are deleted *before* their parents rather than trusting the pragma, and all four ways a row can leave the archive carry regression tests.
 - Moments are **deleted, not archived** — a roast diary must not come back through recall.
 
@@ -118,7 +118,7 @@ Irises keeps its own memory and the engine keeps its own; the contract between t
 - One personality string, four surfaces, rendered byte-identically.
 - Code owns every number; the model owns only judgments.
 - Routing is derived from the chatId, never stored.
-- Memory retires rather than deletes; `/forget` is the only hard delete, and every background writer is fenced against it.
+- Memory retires rather than deletes; no chat command hard-deletes it.
 - Fail loud: an unroutable chatId throws, and a missing persona file fails the first turn that needs it rather than serving a persona-less agent.
 
 ### A map of the code
