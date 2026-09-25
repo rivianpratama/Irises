@@ -326,8 +326,13 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
  * charged against this line until now. The rest is `persona`'s own +40 (Context.md's two new data
  * tags, see that line above). The floor follows the share down rather than standing a hair above
  * the reading it is meant to sit under.
+ *
+ * Then DOWN to 0.0069 for the curious-while-newly-acquainted change: the onboarding craft page
+ * (craft/onboarding.md) now asks her to ask about someone she barely knows noticeably more than
+ * usual, and the mature fixture's discovery state still loads that page, so its added paragraph is
+ * charged here. Same terms as above: the floor follows the share down.
  */
-export const MIN_TRANSCRIPT_SHARE = 0.0070;
+export const MIN_TRANSCRIPT_SHARE = 0.0069;
 
 /**
  * Phrases that must exist in the persona, verbatim — the rules whose deletion would be silent.
