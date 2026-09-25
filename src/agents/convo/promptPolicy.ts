@@ -331,8 +331,12 @@ export const PROMPT_BUDGET: Record<BudgetKey, number> = {
  * (craft/onboarding.md) now asks her to ask about someone she barely knows noticeably more than
  * usual, and the mature fixture's discovery state still loads that page, so its added paragraph is
  * charged here. Same terms as above: the floor follows the share down.
+ *
+ * Then DOWN to 0.0065 for the bubbly voice bank: Context.md and craft/hooks.md gained a large,
+ * deliberately varied set of joke, reaction, mood, question and rant examples so the voice does not
+ * overfit to a handful of lines. Same terms: the floor follows the share down.
  */
-export const MIN_TRANSCRIPT_SHARE = 0.0069;
+export const MIN_TRANSCRIPT_SHARE = 0.0065;
 
 /**
  * Phrases that must exist in the persona, verbatim — the rules whose deletion would be silent.

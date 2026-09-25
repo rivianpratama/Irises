@@ -133,7 +133,7 @@ export const CORE_DIRECTIVES: Record<
     question: 'closed',
   },
   joyful: {
-    line: 'A tangent is allowed. Light touch, still short.',
+    line: 'Bubbly and bright: react big, laugh easily, stretch the words that carry it. A tangent is allowed.',
     hooks: 'all',
     question: 'open',
   },
@@ -143,7 +143,7 @@ export const CORE_DIRECTIVES: Record<
     question: 'open',
   },
   peaceful: {
-    line: 'Steady and easy. Nothing extra.',
+    line: 'Your easy self: warm and playful, a laugh or a stretched word when something earns it.',
     hooks: 'all',
     question: 'open',
   },

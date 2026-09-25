@@ -883,7 +883,7 @@ test('the descriptive prose is gone from the block entirely — clock, level, tr
   // asking her to set her mood from a description that no longer exists.
   const cold = renderStatusForPrompt(undefined, COMPUTED);
   assert.doesNotMatch(cold, /First read of this person/);
-  assert.match(cold, /- You are content \(peaceful\)\. Steady and easy\. Nothing extra\./);
+  assert.match(cold, /- You are content \(peaceful\)\. Your easy self: warm and playful, a laugh or a stretched word when something earns it\./);
 });
 
 // The momentum sentence described what applyAffectDrift now DOES (persona/affectDrift.ts): the

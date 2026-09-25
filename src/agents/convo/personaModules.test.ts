@@ -268,8 +268,8 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * becomes a per-turn call that never hardens into a habit, and the share, hooks and threading pages
  * stop telling her to hand their wording back. Every other file held.
  */
-const CORPUS_CHARS = 162_027;
-const CORPUS_SHA256 = '3e5d887c91c553aec8e531f7e81eb0630d6d7f127967eaa08cdf374c784c041c';
+const CORPUS_CHARS = 177_955;
+const CORPUS_SHA256 = '3bfc891daeafdaa344a906ff2f427917e6c0a5225783a7e9f083727aa8e50c57';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
