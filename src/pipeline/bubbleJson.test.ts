@@ -251,13 +251,13 @@ test('a bubble text that itself contains --- re-splits downstream (documented be
   assert.deepEqual(splitIntoBubbles(legacy), ['a', 'b']);
 });
 
-test('a bubble the model overpacked is still split by the 20-word backstop', () => {
-  // JSON parses fine, but the single text is a 24-word wall — splitLongBubble must still fire.
-  const wall = 'the option period ends march 14 so you still have your contingency rights until then and i can pull the exact contract language for you';
+test('a bubble the model overpacked is still split by the word backstop', () => {
+  // JSON parses fine, but the single text is a 55-word wall — splitLongBubble must still fire.
+  const wall = 'the option period ends march 14 so you still have your contingency rights until then and i can pull the exact contract language for you if that would help you decide and the inspection report came back clean on the mechanical systems but flagged the roof as needing replacement within the next two to three years which the seller might address';
   const legacy = normalizeLlmText(JSON.stringify({ bubbles: [{ text: wall }] }))!;
   const out = splitIntoBubbles(legacy);
   const words = (s: string) => s.split(/\s+/).filter(Boolean).length;
-  for (const b of out) assert.ok(words(b) <= 20, `bubble over ceiling: "${b}"`);
+  for (const b of out) assert.ok(words(b) <= MAX_BUBBLE_WORDS, `bubble over ceiling: "${b}"`);
 });
 
 // ── written tool calls (the toolsViaJson envelope) ───────────────────────────────────────────────
@@ -469,14 +469,14 @@ test('parseReply tolerates a null / missing status without breaking the envelope
   assert.equal(missing.statusRaw, undefined);
 });
 
-// ── the bubble law: two numbers, one source ──────────────────────────────────────────────────
-// BUBBLE_LAW_MAX is what the model is TOLD (three bubbles, no exceptions); BUBBLE_HARD_CAP is the
-// runaway guard the parser enforces above it. They used to be the same literal `5` in code while
-// the persona said `3`, which is exactly the drift these two names exist to stop.
+// ── the bubble thresholds: two numbers, one source ───────────────────────────────────────────
+// BUBBLE_LAW_MAX is the report threshold (above this the reply is flagged as verbose);
+// BUBBLE_HARD_CAP is the runaway guard the parser enforces — the prompts no longer state a hard
+// count cap, but the code guard prevents runaway model output.
 
-test('the law the model is told is tighter than the runaway guard, and MAX_BUBBLES is the old name', () => {
-  assert.equal(BUBBLE_LAW_MAX, 3);
-  assert.equal(BUBBLE_HARD_CAP, 5);
+test('the law threshold is below the runaway guard, and MAX_BUBBLES is the old name', () => {
+  assert.equal(BUBBLE_LAW_MAX, 10);
+  assert.equal(BUBBLE_HARD_CAP, 15);
   assert.equal(MAX_BUBBLES, BUBBLE_HARD_CAP, 'the old export name is an alias, same number');
   assert.ok(BUBBLE_LAW_MAX < BUBBLE_HARD_CAP, 'the guard has to sit above the law it backstops');
 });
@@ -486,14 +486,14 @@ test('both envelope schemas describe a bubble with the same single-sourced sente
     const props = schema.properties as { bubbles: { items: { properties: { text: { description: string } } } } };
     return props.bubbles.items.properties.text.description;
   };
-  const expected = `one short thought. One sentence or question, ideally ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words, never past ${MAX_BUBBLE_WORDS}`;
+  const expected = `one thought, one send — a comma means two bubbles. Aim for ${BUBBLE_WORD_TARGET_LO}-${BUBBLE_WORD_TARGET_HI} words. Avoid periods and colons`;
   assert.equal(descOf(BUBBLE_ENVELOPE_SCHEMA), expected);
   assert.equal(descOf(MM_ENVELOPE_SCHEMA), expected, 'MM reads the same sentence, not its own copy');
   assert.equal(descOf(buildEnvelopeSchema([{ name: 'x', description: 'd', inputSchema: { type: 'object', properties: {} } }])), expected);
   // Every digit in that sentence came from a constant — no bare bubble number left behind.
   assert.deepEqual(
     [...expected.matchAll(/\d+/g)].map(m => Number(m[0])),
-    [BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI, MAX_BUBBLE_WORDS],
+    [BUBBLE_WORD_TARGET_LO, BUBBLE_WORD_TARGET_HI],
   );
 });
 
@@ -517,20 +517,21 @@ test('BubbleReport counts what ships and the longest bubble in words', () => {
   assert.deepEqual(report, { count: 2, maxWords: 7, overLaw: false, hardCapped: false, splits: 0 });
 });
 
-test('overLaw fires on the fourth bubble, not the third', () => {
-  assert.equal(deliver(envelope('a', 'b', 'c')).report.overLaw, false, 'three is the law, not a breach');
-  const four = deliver(envelope('a', 'b', 'c', 'd')).report;
-  assert.equal(four.count, 4);
-  assert.equal(four.overLaw, true);
-  assert.equal(four.hardCapped, false, 'four is over the law but under the guard');
+test('overLaw fires on the eleventh bubble, not the tenth', () => {
+  const atLaw = deliver(envelope(...Array.from({ length: 10 }, (_, i) => String.fromCharCode(97 + i)))).report;
+  assert.equal(atLaw.overLaw, false, 'ten is the law threshold, not a breach');
+  const eleven = deliver(envelope(...Array.from({ length: 11 }, (_, i) => String.fromCharCode(97 + i)))).report;
+  assert.equal(eleven.count, 11);
+  assert.equal(eleven.overLaw, true);
+  assert.equal(eleven.hardCapped, false, 'eleven is over the law but under the guard');
 });
 
-test('hardCapped is true when the parser had to cap a six-bubble reply', () => {
-  const six = deliver(envelope('a', 'b', 'c', 'd', 'e', 'f')).report;
-  assert.equal(six.hardCapped, true);
-  assert.equal(six.count, BUBBLE_HARD_CAP);
-  assert.equal(six.overLaw, true);
-  assert.equal(deliver(envelope('a', 'b', 'c', 'd', 'e')).report.hardCapped, false, 'at the cap is not over it');
+test('hardCapped is true when the parser had to cap a reply over the guard', () => {
+  const over = deliver(envelope(...Array.from({ length: 16 }, (_, i) => `b${i}`))).report;
+  assert.equal(over.hardCapped, true);
+  assert.equal(over.count, BUBBLE_HARD_CAP);
+  assert.equal(over.overLaw, true);
+  assert.equal(deliver(envelope(...Array.from({ length: 15 }, (_, i) => `b${i}`))).report.hardCapped, false, 'at the cap is not over it');
 });
 
 // The flag is a property of ONE parse, not of the process. Every one of these parses runs through
@@ -540,19 +541,19 @@ test('hardCapped is true when the parser had to cap a six-bubble reply', () => {
 // retry-validation parses (convo/shared.ts). A tally drained at the send boundary attributed all of
 // them to whichever chat sent next; the flag riding the parse cannot.
 test("a capped parse somewhere else can't flip hardCapped on an unrelated reply", () => {
-  const capped = envelope('a', 'b', 'c', 'd', 'e', 'f');
+  const overCap = envelope(...Array.from({ length: 18 }, (_, i) => `b${i}`));
 
   // A Composer / Fallfirm re-voice that capped: its own parse says so, loudly.
-  assert.equal(parseReply(capped).hardCapped, true, 'the capped parse owns its own flag');
+  assert.equal(parseReply(overCap).hardCapped, true, 'the capped parse owns its own flag');
   // A tool-call-only parse that capped and DISCARDED its bubbles (callLLM reads only .toolCalls).
   const toolOnly = JSON.stringify({
     tool_calls: [{ name: 'delegate_to_ops', args: { request: 'x' } }],
-    bubbles: ['a', 'b', 'c', 'd', 'e', 'f'].map(text => ({ text })),
+    bubbles: Array.from({ length: 18 }, (_, i) => ({ text: `b${i}` })),
   });
   assert.equal(parseReply(toolOnly).hardCapped, true);
   assert.ok(parseReply(toolOnly).toolCalls?.length, 'and it is the tool calls that caller wanted');
   // A retry-validation parse of the same capped turn (shared.ts checks .wasEnvelope only).
-  assert.equal(parseReply(capped).wasEnvelope, true);
+  assert.equal(parseReply(overCap).wasEnvelope, true);
 
   // None of that reaches the next reply's receipt: this one shipped two clean bubbles.
   assert.deepEqual(
@@ -562,9 +563,10 @@ test("a capped parse somewhere else can't flip hardCapped on an unrelated reply"
 });
 
 test('the word ceiling still fires after the count cap, and no word is lost', () => {
-  // Six bubbles where the LAST one — the one the cap deliberately keeps — is a 24-word wall.
-  const wall = 'the option period ends march 14 so you still have your contingency rights until then and i can pull the exact contract language for you';
-  const { bubbles, report } = deliver(envelope('a', 'b', 'c', 'd', 'e', wall));
+  // 16 bubbles where the LAST one — the one the cap deliberately keeps — is a 55-word wall.
+  const filler = Array.from({ length: 15 }, (_, i) => `filler${i}`);
+  const wall = 'the option period ends march 14 so you still have your contingency rights until then and i can pull the exact contract language for you if that would help you decide and the inspection report came back clean on the mechanical systems but flagged the roof as needing replacement within the next two to three years which the seller might address';
+  const { bubbles, report } = deliver(envelope(...filler, wall));
   assert.equal(report.hardCapped, true, 'the count cap fired');
   assert.ok(report.splits >= 1, 'and the word ceiling still ran on what survived it');
   assert.equal(report.count, BUBBLE_HARD_CAP + report.splits, 'the ceiling adds bubbles above the cap');

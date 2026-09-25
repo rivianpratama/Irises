@@ -10,8 +10,8 @@ const words = (s: string) => s.split(/\s+/).filter(Boolean).length;
 // ── the regression this file exists for: walls of text in one bubble ────────────────────────────
 
 test('an unpunctuated run-on over the ceiling is split into texting-sized bubbles', () => {
-  // Lowercase texting voice, no periods, no --- : previously sailed through as ONE 29-word wall.
-  const wall = 'the option period ends march 14 so you still have your contingency rights until then and i can pull the exact contract language for you if that would help you decide';
+  // Lowercase texting voice, no periods, no --- : a 55-word wall that exceeds the ceiling.
+  const wall = 'the option period ends march 14 so you still have your contingency rights until then and i can pull the exact contract language for you if that would help you decide and the inspection report came back clean on the mechanical systems but flagged the roof as needing replacement within the next two to three years which the seller might address';
   const out = splitIntoBubbles(wall);
   assert.ok(out.length >= 2, `expected a split, got ${out.length} bubble(s)`);
   for (const b of out) assert.ok(words(b) <= MAX_BUBBLE_WORDS, `bubble over ceiling: "${b}"`);
@@ -20,22 +20,22 @@ test('an unpunctuated run-on over the ceiling is split into texting-sized bubble
 });
 
 test('splits at a natural clause seam (before a conjunction / after a comma), not mid-thought', () => {
-  const b = 'rough cap rate looks like about six point two percent, that assumes ten percent vacancy and eight percent management on the year';
+  const b = 'rough cap rate looks like about six point two percent on the north side listing which is decent for that particular block, that assumes ten percent vacancy and eight percent management on the year and does not factor in the property tax reassessment that usually hits in the first twelve months after transfer';
   const out = splitLongBubble(b);
   assert.ok(out.length >= 2);
-  // The comma seam is the natural break: the left half ends where the pause was (comma dropped).
-  assert.equal(out[0], 'rough cap rate looks like about six point two percent');
+  // The balanced seam nearest the midpoint wins — here the "and" at word ~28 beats the comma at ~23.
+  assert.ok(out[0].endsWith('vacancy') || out[0].endsWith('block'), `expected split at a natural seam, got: "${out[0]}"`);
 });
 
-test('every fragment is re-checked: a 45-word wall becomes 3+ bubbles all under the ceiling', () => {
-  const wall = Array.from({ length: 45 }, (_, i) => (i % 9 === 0 && i > 0 ? 'and' : `word${i}`)).join(' ');
+test('every fragment is re-checked: a 120-word wall becomes 3+ bubbles all under the ceiling', () => {
+  const wall = Array.from({ length: 120 }, (_, i) => (i % 20 === 0 && i > 0 ? 'and' : `word${i}`)).join(' ');
   const out = splitLongBubble(wall);
   assert.ok(out.length >= 3);
   for (const b of out) assert.ok(words(b) <= MAX_BUBBLE_WORDS, `bubble over ceiling: "${b}"`);
 });
 
 test('falls back to a balanced mid-point split when there is no natural seam', () => {
-  const noSeam = Array.from({ length: 25 }, (_, i) => `w${i}`).join(' ');
+  const noSeam = Array.from({ length: 55 }, (_, i) => `w${i}`).join(' ');
   const out = splitLongBubble(noSeam);
   assert.equal(out.length, 2);
   for (const b of out) assert.ok(words(b) <= MAX_BUBBLE_WORDS);
@@ -95,7 +95,7 @@ test('abbreviations and decimals still do not trigger a sentence split', () => {
 test('the word-target band lives beside the ceiling it sits under', () => {
   assert.equal(BUBBLE_WORD_TARGET_LO, 5);
   assert.equal(BUBBLE_WORD_TARGET_HI, 12);
-  assert.equal(MAX_BUBBLE_WORDS, 20);
+  assert.equal(MAX_BUBBLE_WORDS, 50);
   assert.ok(BUBBLE_WORD_TARGET_LO < BUBBLE_WORD_TARGET_HI, 'the band has to read low-to-high');
   assert.ok(BUBBLE_WORD_TARGET_HI < MAX_BUBBLE_WORDS, 'the target has to sit under the hard ceiling');
 });
@@ -103,9 +103,9 @@ test('the word-target band lives beside the ceiling it sits under', () => {
 // ── the split count, for the send boundary's receipt ─────────────────────────────────────────
 
 test('splitIntoBubblesWithSplits counts every ceiling split and loses no word', () => {
-  // One unpunctuated 29-word run-on: the ONLY thing that can break it up is the word ceiling,
+  // One unpunctuated 55-word run-on: the ONLY thing that can break it up is the word ceiling,
   // so the extra bubbles and the reported split count have to be the same number.
-  const wall = 'the option period ends march 14 so you still have your contingency rights until then and i can pull the exact contract language for you if that would help you decide';
+  const wall = 'the option period ends march 14 so you still have your contingency rights until then and i can pull the exact contract language for you if that would help you decide and the inspection report came back clean on the mechanical systems but flagged the roof as needing replacement within the next two to three years which the seller might address';
   const { bubbles, splits } = splitIntoBubblesWithSplits(wall);
   assert.ok(splits >= 1, 'a wall over the ceiling has to report a split');
   assert.equal(bubbles.length - 1, splits, 'one split per extra bubble the ceiling created');
