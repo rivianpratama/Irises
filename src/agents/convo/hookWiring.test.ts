@@ -927,7 +927,7 @@ test('a TASK message closes the thread offer, renders no hooks block, and still 
   // Layer 3 was reached and, with no lane configured, failed toward task — the whole point of the
   // asymmetry (persona/idle.ts). The receipt is what says the fallback ran at all.
   const classified = receipt('idle:classify');
-  assert.equal(classified?.verdict, 'unclear');
+  assert.equal(classified?.verdict, 'failed');
   assert.equal(classified?.cached, false);
   // ONE row, and this is the prefetch's own pin. The call was started in parallel with the memory
   // read (convo/client.ts) and the gate consumed the PENDING PROMISE rather than a warmed cache — a

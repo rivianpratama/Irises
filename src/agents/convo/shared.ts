@@ -1937,7 +1937,7 @@ export function buildSystemPromptSections(
       : hookDirective.mode === 'task' ? (hookDirective.take ? 'take' : hookDirective.spent ? 'spent' : 'task')
       : hookDirective.mode === 'share' ? 'share'
         : kindOpen ? 'hook' : 'quiet';
-  const behaviorAnchor = renderDriftAnchor(anchorMode, windowChars);
+  const behaviorAnchor = renderDriftAnchor(anchorMode, windowChars, hookDirective?.slip);
 
   // The bubble guidance below is interpolated from the constants the pipeline actually
   // ENFORCES (pipeline/bubbles.ts, pipeline/bubbleJson.ts), never spelled out: what the model is

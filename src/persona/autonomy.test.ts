@@ -95,9 +95,28 @@ test('running on empty marks a plain task, and the recency edge states the tired
   const computed = { cycle: { phase: 'follicular', day: 8, load: 40 }, circadian: { slot: 'afternoon', energy: 70 } } as never;
   const row = (label: string, battery = 70) => ({ mood_label: label, social_battery: battery, mood_level: 60 }) as never;
   assert.equal(compileAffect(row('drained'), computed).spent, true);
-  assert.equal(compileAffect(row('playful', 20), computed).spent, true);
+  assert.equal(compileAffect(row('playful', 20), computed).spent, false, 'a tired battery alone is not running on empty');
   assert.equal(compileAffect(row('playful'), computed).spent, false);
   assert.equal(compileAffect(undefined, computed).spent, false);
+});
+
+test('an extreme feeling slips out at the recency edge, as a seventh bullet on that turn only', () => {
+  const plain = renderDriftAnchor('share', 0);
+  const slipped = renderDriftAnchor('share', 0, 'on edge');
+  assert.equal(slipped.split('\n').length, plain.split('\n').length + 1);
+  assert.ok(slipped.endsWith('the one exception to never about you.'));
+  assert.ok(slipped.includes('how on edge you are today'));
+  assert.equal(renderDriftAnchor('quiet', 0, 'on edge'), renderDriftAnchor('quiet', 0), 'a quiet turn stays quiet');
+  const d = selectHook(defaultHookState(), 'share', 'classify', { ...AFFECT, slip: 'on edge' }, false, NOW);
+  assert.equal(d.directive.slip, 'on edge');
+  // The slip takes the turn's one move as a tangent about her, on a share and on an idle turn.
+  assert.deepEqual(d.directive.forbidden, ['judgment', 'callback', 'question']);
+  assert.ok(renderHooksSection(d.directive).includes('This turn the tangent is you: how on edge you are today'));
+  const idle = selectHook(defaultHookState(), 'idle', 'fast_path', { ...AFFECT, slip: 'sleepy' }, false, NOW);
+  assert.deepEqual(idle.directive.forbidden, ['judgment', 'callback', 'question']);
+  // …unless a tangent is not hers this turn (two in a row, a heavy share): then nothing is narrowed.
+  const tired = selectHook({ ...defaultHookState(), lastKinds: ['tangent', 'tangent'] }, 'idle', 'fast_path', { ...AFFECT, slip: 'sleepy' }, false, NOW);
+  assert.ok(tired.directive.forbidden.includes('tangent') && !tired.directive.forbidden.includes('question'));
 });
 
 // ── a mood's no ───────────────────────────────────────────────────────────────

@@ -278,7 +278,7 @@ export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
     // The word is the WHOLE mood report now: `coreForLabel` (mood.ts) files it under a core, and the
     // core's valence band is what the level may sit in — so "delighted at 12" is no longer an
     // expressible state, and she can no longer contradict her own label with a core.
-    description: 'one feeling word for how you actually are right now, from the vocabulary below (e.g. hopeful, drained, content, anxious)',
+    description: 'one feeling word for how you actually are right now, from the vocabulary below (e.g. hopeful, drained, content, anxious); when your weather says what you feel underneath, the word fits it',
     consumers: ['coreForLabel', 'moodOf', 'renderStatusForPrompt', 'renderStatusForComposer', 'pushMood'],
   },
   {
@@ -666,7 +666,7 @@ export function pushMood(history: MoodPoint[], s: AffectStatus): MoodPoint[] {
 // last of which asked her to hedge MORE when the gauges were low. It now says what the block
 // actually decides: how sharp, how short, and how much she bothers.
 const INTERNAL_WEATHER_HEADER =
-  '## Where you are right now (INTERNAL weather, never say, name, or hint any of this; it only sets how sharp, how short, and how much you bother)';
+  '## Where you are right now (INTERNAL weather: the machinery and its reasons never surface, but how you feel is yours to say in plain words when it shows; it sets how sharp, how short, and how much you bother)';
 
 /**
  * The per-turn "internal weather" block injected into the dynamic prompt (NOT the cached persona).

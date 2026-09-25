@@ -149,7 +149,8 @@ test('every consumer the table names is still an exported function', () => {
 // one field that lets her mood say no out loud. Its description carries the tiers her mood gets no
 // say on, because a field that could be set on a fact they asked for would let a bad mood skip the
 // routing floor on exactly the turn it exists for.
-const SCHEMA_JSON_CEILING = 4_200;
+// Feelings (2026-09-26): +67, to 4,224, `mood_label` asked to fit the feelings her weather names.
+const SCHEMA_JSON_CEILING = 4_290;
 
 /** How much the ceiling may sit above the measurement, copied from promptBudget.test.ts so this copy
  *  of the descriptions is held to the same band as the `status_contract` copy of them. The downward

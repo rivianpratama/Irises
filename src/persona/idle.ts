@@ -71,7 +71,7 @@ export type TurnKind = typeof TURN_KINDS[number];
  *  the fallback is a seam, and a caller that wires a different classifier still has to answer this
  *  question in these words. `share` is the one that carries the bid — a message that TELLS her
  *  something and asks for nothing — and it is the reading `stall` used to swallow. */
-export type IdleVerdict = 'stall' | 'share' | 'ask' | 'take' | 'unclear';
+export type IdleVerdict = 'stall' | 'share' | 'ask' | 'take' | 'unclear' | 'failed';
 
 /** Which layer decided, for the receipt (`hooks:select` carries it, persona/hooks.ts). Four values,
  *  disjoint and exhaustive: `veto` a structural fact, `fast_path` the English examples, `classify`
@@ -556,7 +556,12 @@ export async function isIdleTurn(
     // `share` needs no qualification — the classifier read a bid in the message itself. A `stall` is
     // a share only in the two cases the message could not have been a filler: it answers a follow-up
     // of hers, or a signal already said it is too long, too numerous or too many messages to be one.
-    const shape: TurnKind = word === 'share'
+    // A genuine `unclear` on a message with no question mark and no other veto is a person saying
+    // something the lane could not place out of context ("thinking", "because im your developer"),
+    // which is a thing handed to her far more often than a piece of work: with the share shape on it
+    // is a share. A FAILED call (`failed`: a dead lane, a timeout, an unreadable answer) still fails
+    // toward task, the gate's rule for everything it could not read at all.
+    const shape: TurnKind = word === 'share' || (word === 'unclear' && shareOn)
       ? 'share'
       : word === 'stall'
         ? (relaxed || signals.length ? 'share' : 'idle')

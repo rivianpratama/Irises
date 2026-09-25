@@ -609,6 +609,8 @@ export async function chat(
         lastOutcome: last?.thread_outcome ?? null,
         englishLooseness: affectDirective.englishLooseness,
         spent: affectDirective.spent,
+        low: affectDirective.low,
+        slip: affectDirective.feelingSlip || undefined,
       },
       isGroupChat, nowMs, idle.take === true,
     );

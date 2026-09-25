@@ -145,11 +145,19 @@ test('a short ledger cannot fire the switch, and a long one is read at its tail'
   assert.deepEqual(report.lastKinds, ['judgment', 'tangent', 'callback'], 'only the window the cap keeps');
 });
 
-test('a flat mood closes hooks outright, in its own bucket', () => {
-  const { directive, report } = pick(state(), { affect: { ...OPEN, hooks: 'none' } });
-  assert.equal(directive.mode, 'quiet');
-  assert.equal(directive.offerAllowed, false);
-  assert.equal(report.reason, 'affect_floor');
+test('a flat mood closes hooks outright, in its own bucket, and leaves one lazy question when the gate is open', () => {
+  const closed = pick(state(), { affect: { ...OPEN, hooks: 'none', question: 'closed' } });
+  assert.equal(closed.directive.mode, 'quiet');
+  assert.equal(closed.directive.offerAllowed, false);
+  assert.equal(closed.report.reason, 'affect_floor');
+  // A low mood still asks things, lazily (2026-09-26): the question is the one move left.
+  const lazy = pick(state(), { affect: { ...OPEN, hooks: 'none' } });
+  assert.equal(lazy.directive.mode, 'hook');
+  assert.deepEqual(lazy.directive.forbidden, ['judgment', 'callback', 'tangent']);
+  assert.equal(lazy.directive.low, true);
+  assert.equal(lazy.report.reason, 'affect_floor');
+  // …never in a room, and never a second question in a row.
+  assert.equal(pick(state(), { affect: { ...OPEN, hooks: 'none' }, isGroup: true }).directive.mode, 'quiet');
 });
 
 // Precedence, stated as a test rather than as a comment: when both would fire, the receipt says
@@ -287,9 +295,11 @@ test('the kill switch never fires on a share turn', () => {
 // one plain sentence about their thing is what is left. A mood too flat for a move is not a reason to
 // answer a person with nothing.
 test('a flat mood narrows a share turn to presence and never closes it', () => {
-  const { directive, report } = pick(state(), { shape: 'share', affect: { ...OPEN, hooks: 'none' } });
+  const { directive, report } = pick(state(), { shape: 'share', affect: { ...OPEN, hooks: 'none', question: 'closed' } });
   assert.equal(directive.mode, 'share', 'never quiet');
   assert.deepEqual(directive.forbidden, [...HOOK_WORDS]);
+  // With the gate open, a flat mood still leaves the (lazy) question.
+  assert.deepEqual(pick(state(), { shape: 'share', affect: { ...OPEN, hooks: 'none' } }).directive.forbidden, ['judgment', 'callback', 'tangent']);
   assert.equal(directive.offerAllowed, true);
   assert.equal(report.reason, 'share', 'and no affect_floor bucket: nothing was floored, the turn was narrowed');
   assert.equal(hookKindOpen(directive), false, 'nothing open, and the section still forbids silence');
@@ -464,7 +474,7 @@ test('the kill switch and the affect floor still fire at night', () => {
   const killed = pick(state({ lastKinds: ['judgment', 'callback', 'tangent'] }), { affect: late });
   assert.deepEqual(killed.directive.forbidden, ['judgment', 'callback']);
   assert.equal(killed.report.reason, 'kill_switch');
-  const floored = pick(state(), { affect: { ...OPEN, hooks: 'none', lateNight: true } });
+  const floored = pick(state(), { affect: { ...OPEN, hooks: 'none', question: 'closed', lateNight: true } });
   assert.equal(floored.directive.mode, 'quiet');
   assert.equal(floored.report.reason, 'affect_floor');
 });

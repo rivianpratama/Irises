@@ -94,6 +94,17 @@ export interface AffectDirective {
    *  state in which her mood puts an open-ended ask off rather than merely shortening the answer;
    *  the hook selector carries it onto a task directive and the drift anchor states it last. */
   spent: boolean;
+  /** Her weather is low: a sad, mad or scared core, a mood under the hook floor, or a battery tight
+   *  enough for two bubbles or fewer. She says how she feels when it shows and asks lazily. */
+  low: boolean;
+  /** What she feels underneath, in plain words, strongest first (at most two), read off her needs
+   *  the way The Sims turns meters into moodlets (`compileFeelings`). Empty when nothing stands out. */
+  feelings: string[];
+  /** The strongest feeling is extreme (FEELING_STRONG). */
+  feelingStrong: boolean;
+  /** …and this is one of the turns it slips into the reply (FEELING_SLIP_PERCENT of them): the
+   *  feeling's word, or '' on every other turn. */
+  feelingSlip: string;
 }
 
 /**
@@ -127,12 +138,12 @@ export const CORE_DIRECTIVES: Record<
   mad: {
     line: 'Sharper and shorter than usual. A judgment comes easily today; keep it on what they did, never on who they are. A favour asked in the same breath as a put-down gets a flat no.',
     hooks: 'all',
-    question: 'closed',
+    question: 'open',
   },
   sad: {
     line: 'Fewer words. No tangents. Answer, then stop. Anything open-ended they ask today, research, long writing, a favour with no clock, is too much: say not now, and it stays owed.',
     hooks: 'no_tangent',
-    question: 'closed',
+    question: 'open',
   },
   scared: {
     line: 'Flat and careful. No judgment this turn; a callback or nothing.',
@@ -196,6 +207,66 @@ export const QUESTION_CLOSED_MODES: readonly IntentMode[] = ['overwhelmed', 'def
 /** Carried reads that make a share HEAVY. `overwhelmed` sits in both sets, which is the honest
  *  reading: the turn is weighty AND no question opens on it. */
 export const HEAVY_MODES: readonly IntentMode[] = ['venting', 'overwhelmed'];
+
+/**
+ * HER NEEDS, AS FEELINGS. The gauges and the clock are meters she never sees; what reaches her is at
+ * most two moodlets in plain words, the Sims arrangement: a need past its threshold becomes a named
+ * state with a strength, and the strongest win. Each row reads ONE meter, names the plain feeling a
+ * person in that state would name, and scores how far past the line it is. The words are hers to
+ * say (tired, on edge, fond of them) and never the meter behind them.
+ *
+ * Kept to the six gauges and the body clock, and only the states that change how a reply comes out:
+ * a feeling with no effect on the reply is not worth her attention, and a longer list would read as
+ * a checklist she has to perform.
+ */
+export interface Moodlet { word: string; strength: number }
+
+export function compileFeelings(last: AffectStatus | undefined, computed: ComputedState): string[] {
+  return compileMoodlets(last, computed).map(m => m.word);
+}
+
+/** How far past its line the strongest feeling has to be before it is EXTREME: strong enough to
+ *  slip into a reply that is about something else. Fifteen points on a 1-100 meter is well past
+ *  ordinary drift and short of every ceiling, so it takes a real day to get there. */
+export const FEELING_STRONG = 15;
+
+/** The same moodlets with their strengths, strongest first, at most two. */
+export function compileMoodlets(last: AffectStatus | undefined, computed: ComputedState): Moodlet[] {
+  const out: Moodlet[] = [];
+  const add = (word: string, strength: number) => { if (strength > 0) out.push({ word, strength }); };
+  const energy = level(computed.circadian.energy);
+  const late = LATE_SLOTS.includes(computed.circadian.slot);
+  add(late ? 'sleepy' : 'tired', 40 - energy);
+  if (last) {
+    const battery = level(last.social_battery);
+    // A drained battery past the one-bubble line is its own state: done with people for now.
+    if (battery < 25) add('peopled out', 35 - battery);
+    else add(late ? 'sleepy' : 'tired', SOCIAL_BATTERY_MINIMAL - battery);
+    add('on edge', level(last.anxiety) - 65);
+    add('impatient', 35 - level(last.patience));
+    add('low', HOOK_MOOD_FLOOR - level(last.mood_level));
+    add('buzzing', level(last.mood_level) - 82);
+    add('fond of them', Math.min(level(last.warmth) - 65, level(last.rapport) - 55));
+  }
+  const best = new Map<string, number>();
+  for (const m of out) best.set(m.word, Math.max(best.get(m.word) ?? 0, m.strength));
+  return [...best.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2).map(([word, strength]) => ({ word, strength }));
+}
+
+/** Of the turns an extreme feeling is carried into, the share on which it slips out. A person who is
+ *  very tired does not announce it every message, and one who never lets it show is hiding it. */
+export const FEELING_SLIP_PERCENT = 40;
+
+/** A stable per-turn draw in [0, 100) off the carried row's stamp: pure (no Math.random), different
+ *  from one turn to the next because every turn writes a new stamp. */
+function turnDraw(at: unknown): number {
+  const n = typeof at === 'number' && Number.isFinite(at) ? Math.floor(at) : 0;
+  // Reduced before it is scattered, so every step stays inside exact double arithmetic.
+  return ((Math.abs(n) % 1_000_003) * 7919) % 100;
+}
+
+/** The line that hands her the feelings. No reasons and no numbers ride with them. */
+export const FEELINGS_LINE = 'Underneath, right now, you are {feelings}. That is the true answer when they ask how you are, said in your own words; unasked, name it once when it is why the reply comes out the way it does, and never the reason behind it.';
 
 /** The mood a turn with no carried row compiles to. `peaceful`/`content` because it is the same
  *  fallback the rest of the wheel already uses for a word it cannot place (mood.ts coreForLabel),
@@ -285,8 +356,9 @@ export function compileQuestionGate(
   if (carried && QUESTION_CLOSED_MODES.includes(carried.intentMode)) return 'closed';
   if (!last) return 'open';
   if (level(last.rapport) < RAPPORT_RESTING - RAPPORT_QUESTION_BAND) return 'closed';
-  if (level(last.social_battery) < SOCIAL_BATTERY_MINIMAL) return 'closed';
-  if (level(last.mood_level) < HOOK_MOOD_FLOOR) return 'closed';
+  // A tired battery and a flat mood no longer close it (2026-09-26, the owner's call): a person who
+  // is low still asks things, lazily, and a question that never comes is how a late conversation
+  // dies. The `low` flag makes whatever she asks on those turns small instead.
   return 'open';
 }
 
@@ -349,7 +421,15 @@ export function compileAffect(
     heavy: compileHeavy(carried),
     lateNight,
     englishLooseness,
-    spent: mood.core === 'sad' || brevity === 'minimal',
+    // Sad alone: a tired battery at midnight is ordinary and must not make her put off every
+    // open-ended ask; a sad core is the state that does.
+    spent: mood.core === 'sad',
+    low: mood.core === 'sad' || mood.core === 'mad' || mood.core === 'scared'
+      || brevity !== 'normal' || (!!last && level(last.mood_level) < HOOK_MOOD_FLOOR),
+    feelings: compileFeelings(last, computed),
+    feelingStrong: (compileMoodlets(last, computed)[0]?.strength ?? 0) >= FEELING_STRONG,
+    feelingSlip: (compileMoodlets(last, computed)[0]?.strength ?? 0) >= FEELING_STRONG && turnDraw(last?.at) < FEELING_SLIP_PERCENT
+      ? compileMoodlets(last, computed)[0].word : '',
   };
 }
 
@@ -362,7 +442,7 @@ export function compileAffect(
 /** One line, by band. `normal` is absent rather than empty — a band with nothing to say renders
  *  nothing, which is the house rule for every optional section. */
 export const BREVITY_LINES: Record<Exclude<BrevityBand, 'normal'>, string> = {
-  minimal: 'One bubble this turn. Say the one thing and stop. Anything open-ended waits until you have more in you: say not now.',
+  minimal: 'One bubble this turn. Say the one thing and stop.',
   tight: 'Fewer words than usual. Two bubbles at most.',
 };
 
@@ -411,6 +491,12 @@ export function renderAffectDirective(
   lines.push(...renderBrevityLine(directive.brevity));
   if (directive.lateNight) lines.push(`- ${LATE_NIGHT_LINE}`);
   lines.push(renderMoodLine(directive.mood));
+  if (directive.feelings.length) {
+    const line = FEELINGS_LINE.replace('{feelings}', directive.feelings.join(' and '));
+    // The slip itself is stated in the turn's own section (persona/hooks.ts SLIP_LINE), next to the
+    // law it rides beside; the weather only names the feeling.
+    lines.push(`- ${line}`);
+  }
   // The self-recursive loop, unchanged and byte-identical: last turn's private note, quoted back.
   if (last?.meta_prompt) lines.push(`- Your read going into this message (from last turn): "${last.meta_prompt}"`);
   return lines;

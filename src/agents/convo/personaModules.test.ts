@@ -281,9 +281,13 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * Then **+197**, check first (189,292 → 189,489): a put-off ask comes back as a check on whether
  * they still need it before she starts (policy.ts), and Context.md's no-service-question rule names
  * that check as its one exception.
+ *
+ * Then **+530**, feelings (189,489 → 190,019), policy.ts alone: how she feels is hers to say, the
+ * true answer when asked and one plain word when it is why a reply comes out short or sharp or big,
+ * and low energy still asks things, lazily.
  */
-const CORPUS_CHARS = 189_489;
-const CORPUS_SHA256 = 'b5c04657792ede9a20462734ac0b708ab424a17ab53d27242d08d84285565c88';
+const CORPUS_CHARS = 190_019;
+const CORPUS_SHA256 = 'be8f50b0b787f035d15f8eb8735e97167736eadd9e903310a34238cffcbe386c';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 

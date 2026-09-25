@@ -60,7 +60,7 @@ export const IDLE_CLASSIFY_PROMPT = [
   'One short message from a person to their assistant follows. Answer with exactly one word.',
   'stall — a greeting, an acknowledgement, a sign-off, a laugh, a filler: it asks for nothing and tells nothing.',
   "share — it tells the assistant something about the person's own day, life, plans or feelings, and asks for nothing.",
-  "take — it asks for the assistant's own opinion, taste, feeling or experience, and nothing that has to be looked up or done.",
+  "take — it asks for the assistant's own opinion, taste, feeling or experience, with or without a question mark, and nothing that has to be looked up or done.",
   'ask — it asks for something to be looked up, worked out or done, gives an instruction, or carries a fact the assistant must act on.',
   'unclear — you cannot tell.',
 ].join('\n');
@@ -113,7 +113,9 @@ export function readIdleVerdict(text: string | null | undefined): IdleVerdict {
   if (word.startsWith('share')) return 'share';
   if (word.startsWith('ask')) return 'ask';
   if (word.startsWith('take')) return 'take';
-  return 'unclear';
+  if (word.startsWith('unclear')) return 'unclear';
+  // Anything else (an empty answer from a starved reasoning model, a sentence) is not a reading.
+  return 'failed';
 }
 
 /** Insertion-ordered, which is what makes the eviction below oldest-first: a Map iterates in the
@@ -211,6 +213,8 @@ function runClassify(ctx: ClassifyCtx, text: string, key: string): Promise<Class
         trace: { chatId: ctx.chatId, handle: ctx.handle, label: 'idle:classify_call' },
       }), ctx.timeoutMs ?? IDLE_CLASSIFY_TIMEOUT_MS);
       verdict = readIdleVerdict(res.text);
+      // An answer that is not one of the words taught the cache nothing, like any other failure.
+      if (verdict === 'failed') return { failed: 'unreadable', timedOut: false };
     } catch (err) {
       // Not reported as an error: an install with no classify lane would file one on every stall,
       // and the consequence of this failure is one flat reply. The reading's receipt is the record,
@@ -297,10 +301,10 @@ export function makeIdleClassifier(ctx: ClassifyCtx): (text: string) => Promise<
     if (running) {
       const joined = await running;
       if (typeof joined === 'string') return file(joined, 'joined');
-      if (joined.timedOut) return file('unclear', 'joined', joined.failed);
+      if (joined.timedOut) return file('failed', 'joined', joined.failed);
     }
 
     const own = await runClassify(ctx, text, key);
-    return typeof own === 'string' ? file(own, 'call') : file('unclear', 'call', own.failed);
+    return typeof own === 'string' ? file(own, 'call') : file('failed', 'call', own.failed);
   };
 }

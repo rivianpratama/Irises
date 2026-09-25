@@ -49,7 +49,7 @@ function receipts() {
 
 // ── the verdict reader ───────────────────────────────────────────────────────
 
-test('a one-word answer is read past its punctuation, and anything unknown is unclear', () => {
+test('a one-word answer is read past its punctuation, and anything unknown is a failed reading', () => {
   assert.equal(readIdleVerdict('stall'), 'stall');
   assert.equal(readIdleVerdict('  STALL.\n'), 'stall', 'a lane that punctuates has still answered');
   assert.equal(readIdleVerdict('share'), 'share');
@@ -58,7 +58,7 @@ test('a one-word answer is read past its punctuation, and anything unknown is un
   assert.equal(readIdleVerdict('unclear'), 'unclear');
   // Failing toward task: everything that is not one of the four is the last one.
   for (const junk of ['', null, undefined, 'idle', 'bid', 'yes', '{"verdict":"stall"}']) {
-    assert.equal(readIdleVerdict(junk as string), 'unclear', JSON.stringify(junk));
+    assert.equal(readIdleVerdict(junk as string), 'failed', JSON.stringify(junk));
   }
 });
 
@@ -89,7 +89,7 @@ test('a thrown lane is a TASK turn, and the receipt says the call failed rather 
   });
   assert.deepEqual(await isIdleTurn(NON_ENGLISH_STALL, CLEAR, classify), { shape: 'task', layer: 'classify', signals: [] });
   const [only] = receipts();
-  assert.equal((only as { verdict: string }).verdict, 'unclear', 'a dead lane settles nothing');
+  assert.equal((only as { verdict: string }).verdict, 'failed', 'a dead lane settles nothing');
   assert.equal((only as { failed?: string }).failed, 'TypeError', 'and the receipt tells a dead lane from a hedging one');
 });
 
@@ -276,7 +276,7 @@ test('a warm call that failed teaches nothing, and the reading makes its own cal
   assert.deepEqual(receipts(), [{ verdict: 'stall', cached: false, chars: 3 }]);
 });
 
-test('a warm call that timed out is read as unclear, not waited on a second time', async () => {
+test('a warm call that timed out is read as failed, not waited on a second time', async () => {
   setup();
   // The one failure a retry cannot help: the lane already had the whole deadline and spent it, so a
   // second call would only stack a second deadline on the reply path behind the first.
@@ -291,7 +291,7 @@ test('a warm call that timed out is read as unclear, not waited on a second time
   warmIdleClassify({ chatId: 'c1', llm, timeoutMs: 20 }, 'えっとね');
   const verdict = await makeIdleClassifier({ chatId: 'c1', llm, timeoutMs: 20 })('えっとね');
   late.forEach(clearTimeout);
-  assert.equal(verdict, 'unclear', 'the same verdict a timeout on the reading itself produces');
+  assert.equal(verdict, 'failed', 'the same verdict a timeout on the reading itself produces');
   assert.equal(calls, 1, 'no second call after the warm spent the deadline');
-  assert.deepEqual(receipts(), [{ verdict: 'unclear', cached: false, joined: true, chars: 4, failed: 'Error' }]);
+  assert.deepEqual(receipts(), [{ verdict: 'failed', cached: false, joined: true, chars: 4, failed: 'Error' }]);
 });

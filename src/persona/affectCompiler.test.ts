@@ -24,6 +24,7 @@ process.env.TZ = 'UTC';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { compileFeelings, FEELINGS_LINE } from './affectCompiler.js';
 import {
   compileAffect, compileQuestionGate, compileHeavy,
   renderAffectDirective, renderMoodLine, renderBrevityLine,
@@ -105,8 +106,8 @@ function deepFreeze<T>(v: T): T {
 
 test('every core carries one imperative, the permission that sentence describes, and a question ceiling', () => {
   const expected: Record<MoodCore, { hooks: HookAllowance; question: QuestionGate }> = {
-    mad: { hooks: 'all', question: 'closed' },
-    sad: { hooks: 'no_tangent', question: 'closed' },
+    mad: { hooks: 'all', question: 'open' },
+    sad: { hooks: 'no_tangent', question: 'open' },
     scared: { hooks: 'no_judgment', question: 'closed' },
     joyful: { hooks: 'all', question: 'open' },
     powerful: { hooks: 'all', question: 'open' },
@@ -127,13 +128,10 @@ test('every core carries one imperative, the permission that sentence describes,
     // as a section that either carries its question line or does not, and an imperative announcing
     // an available question would be read as an instruction to ask one.
     assert.doesNotMatch(row.line, /question/i, `${core}: the question ceiling reached an imperative`);
-    // So it is pinned to the chart instead of to the sentence, on the split the wheel already makes:
-    // the cores that sit high on the valence bands open the question, the low three close it.
-    const [bandFloor] = CORE_VALENCE_BAND[core];
-    assert.equal(row.question, bandFloor > MIDPOINT ? 'open' : 'closed', `${core}: valence band floor`);
-    // And a core already withdrawing a kind never spends their effort on a question: the cheaper
-    // move being shut is the stronger statement of the two.
-    if (row.hooks !== 'all') assert.equal(row.question, 'closed', `${core}: a closed kind, an open question`);
+    // Since 2026-09-26 only fear closes it: a sad or mad person still asks things, lazily (the `low`
+    // flag shrinks the question), while a scared one stays flat and careful.
+    assert.equal(row.question, core === 'scared' ? 'closed' : 'open', `${core}: only fear closes the question`);
+    void CORE_VALENCE_BAND; void MIDPOINT;
   }
 });
 
@@ -306,15 +304,17 @@ test('closeness closes the question a band below resting, and the band IS the ga
   assert.equal(q(RAPPORT_RESTING - 2 * spec.down + spec.up), 'open', 'and one landing reopens it');
 });
 
-test('the two gauges that close the extra beat close the question too, from both sides', () => {
-  const q = (gauges: Partial<AffectGauges>) => compileAffect(carried('hopeful', gauges), COMPUTED).question;
-  assert.equal(q({ social_battery: SOCIAL_BATTERY_MINIMAL }), 'open');
-  assert.equal(q({ social_battery: SOCIAL_BATTERY_MINIMAL - 1 }), 'closed');
-  assert.equal(q({ mood_level: HOOK_MOOD_FLOOR }), 'open');
-  assert.equal(q({ mood_level: HOOK_MOOD_FLOOR - 1 }), 'closed');
+test('a tired battery and a flat mood leave the question open, and mark the turn low instead', () => {
+  const q = (gauges: Partial<AffectGauges>) => compileAffect(carried('hopeful', gauges), COMPUTED);
+  // Since 2026-09-26: a person who is low still asks things, lazily.
+  assert.equal(q({ social_battery: SOCIAL_BATTERY_MINIMAL - 1 }).question, 'open');
+  assert.equal(q({ social_battery: SOCIAL_BATTERY_MINIMAL - 1 }).low, true);
+  assert.equal(q({ mood_level: HOOK_MOOD_FLOOR - 1 }).question, 'open');
+  assert.equal(q({ mood_level: HOOK_MOOD_FLOOR - 1 }).low, true);
+  assert.equal(q({}).low, false);
   // The tight cut is about LENGTH and says nothing about whether she may ask: a two-bubble reply is
   // still a reply, and the question fits in one of them.
-  assert.equal(q({ social_battery: SOCIAL_BATTERY_TIGHT - 1 }), 'open');
+  assert.equal(q({ social_battery: SOCIAL_BATTERY_TIGHT - 1 }).question, 'open');
 });
 
 test('the carried read closes the question on the three turns a question would land wrong', () => {
@@ -349,7 +349,7 @@ test('the ceiling is one-way: no gauge and no read opens a question the core shu
 test('the gate stands alone, and a cold start leaves the question open', () => {
   assert.equal(compileAffect(undefined, COMPUTED).question, 'open');
   assert.equal(compileQuestionGate(undefined, 'peaceful'), 'open');
-  assert.equal(compileQuestionGate(undefined, 'sad'), 'closed', 'the wheel applies with no row too');
+  assert.equal(compileQuestionGate(undefined, 'scared'), 'closed', 'the wheel applies with no row too');
   assert.equal(compileQuestionGate(undefined, 'peaceful', mode('overwhelmed')), 'closed');
   // A garbled stored gauge lands in a band rather than closing by accident — the same rescue
   // `brevityOf` gets, and in the same direction.
@@ -395,7 +395,7 @@ test('no carried row compiles to the loosest reading, and the clock still applie
   const d = compileAffect(undefined, COMPUTED);
   assert.deepEqual(d, {
     mood: DEFAULT_MOOD, bubbleCap: 3, brevity: 'normal', hooks: 'all',
-    question: 'open', heavy: false, lateNight: false, englishLooseness: 1, spent: false,
+    question: 'open', heavy: false, lateNight: false, englishLooseness: 1, spent: false, low: false, feelings: [], feelingStrong: false, feelingSlip: '',
   } satisfies AffectDirective);
   // A first message is not a tired one — but it can still be a late one, and it can still land in a
   // relationship that has moved. Neither of those is about HER.
@@ -412,8 +412,28 @@ test('the block renders in the prose order: shape, late, mood, self-note', () =>
     `- ${BREVITY_LINES.minimal}`,
     `- ${LATE_NIGHT_LINE}`,
     '- You are hopeful (powerful). A judgment lands flat and certain. Do not explain it.',
+    `- ${FEELINGS_LINE.replace('{feelings}', 'peopled out and sleepy')}`,
     '- Your read going into this message (from last turn): "they are about to ask about thursday"',
   ]);
+});
+
+test('her needs become at most two plain feelings, strongest first, and nothing when none stands out', () => {
+  assert.deepEqual(compileFeelings(carried('hopeful'), COMPUTED), []);
+  assert.deepEqual(compileFeelings(undefined, at(2)), ['sleepy'], 'the body clock alone, at night');
+  assert.deepEqual(compileFeelings(carried('hopeful', { anxiety: 90, patience: 20, social_battery: 60 }), COMPUTED), ['on edge', 'impatient']);
+  assert.deepEqual(compileFeelings(carried('hopeful', { warmth: 80, rapport: 70 }), COMPUTED), ['fond of them']);
+  assert.ok(compileFeelings(carried('hopeful', { social_battery: 10 }), COMPUTED).includes('peopled out'));
+  for (const w of compileFeelings(carried('hopeful', { anxiety: 99, mood_level: 5, social_battery: 5 }), at(2))) assert.doesNotMatch(w, /\d/);
+  // Only an extreme one may slip into talk about anything else.
+  assert.equal(compileAffect(undefined, at(2)).feelingStrong, false, 'an ordinary sleepy night');
+  assert.equal(compileAffect(carried('hopeful', { anxiety: 90 }), COMPUTED).feelingStrong, true);
+  assert.equal(compileAffect(carried('hopeful', { anxiety: 70 }), COMPUTED).feelingStrong, false);
+  // An extreme feeling slips out on some turns and not others, and never when it is not extreme.
+  const slips = Array.from({ length: 200 }, (_, i) => compileAffect({ ...carried('hopeful', { anxiety: 90 }), at: 1_790_000_000_000 + i * 37_123 }, COMPUTED).feelingSlip);
+  assert.ok(slips.every(w => w === '' || w === 'on edge'), 'the slipped word is the strongest feeling');
+  const share = slips.filter(Boolean).length / slips.length;
+  assert.ok(share > 0.25 && share < 0.55, `slips on about four turns in ten, got ${share}`);
+  assert.equal(compileAffect({ ...carried('hopeful', { anxiety: 70 }), at: 1 }, COMPUTED).feelingSlip, '');
 });
 
 test('the optional lines are absent rather than empty', () => {
@@ -465,6 +485,6 @@ test('the compile is pure: frozen inputs survive it and the same inputs give the
   assert.deepEqual(a, b);
   assert.deepEqual(a, {
     mood: { core: 'sad', word: 'drained' }, bubbleCap: 1, brevity: 'minimal', hooks: 'none',
-    question: 'closed', heavy: true, lateNight: true, englishLooseness: 1, spent: true,
+    question: 'open', heavy: true, lateNight: true, englishLooseness: 1, spent: true, low: true, feelings: ['low', 'sleepy'], feelingStrong: true, feelingSlip: 'low',
   } satisfies AffectDirective);
 });

@@ -553,7 +553,7 @@ const SCHEMA_V2 = {
     "mood_label", "mood_shift", "intent_mode", "terminal_closure", "epistemic_trigger", "meta_prompt", "hook_kind", "language_request", "turned_down", "thread_note", "thread_outcome",
   ],
   properties: {
-    mood_label: { type: "string", description: "one feeling word for how you actually are right now, from the vocabulary below (e.g. hopeful, drained, content, anxious)" },
+    mood_label: { type: "string", description: "one feeling word for how you actually are right now, from the vocabulary below (e.g. hopeful, drained, content, anxious); when your weather says what you feel underneath, the word fits it" },
     mood_shift: { type: "string", description: "how this message moved you from the mood you carried in — one of: lifted | steady | dipped | broke. Direction only, never how far, and steady is the honest answer on most turns; broke is a genuine breaking point, not a bad turn" },
     intent_mode: { type: "string", description: "what THEY are doing this turn — one of: questioning | joking | agreeing | thanking | sharing_update | confused | overwhelmed | venting | brainstorming | deflecting | asking_help | off_track" },
     terminal_closure: { type: "boolean", description: "true when the conversation is resolved / they are closing → reply minimally or react only" },
@@ -772,7 +772,7 @@ test('the contract asks for a direction and says the numbers are kept for her', 
 test('renderStatusForPrompt always warns it is internal, and carries prior mood when present', () => {
   const cold = renderStatusForPrompt(undefined, COMPUTED);
   assert.match(cold, /INTERNAL weather/);
-  assert.match(cold, /never say/i);
+  assert.match(cold, /never surface/i);
 
   const full = carried(0);
   const warm = renderStatusForPrompt({ last: full, moodHistory: [{ level: 72, core: 'joyful', label: 'hopeful', at: 0 }] }, COMPUTED);
@@ -851,7 +851,7 @@ test('the weather block compiles the gauges to instructions, and hands back no g
   // Three points on the battery: full, tight, spent.
   assert.deepEqual(directiveLines({ social_battery: 90 })[0], '- You are hopeful (powerful). A judgment lands flat and certain. Do not explain it.');
   assert.deepEqual(directiveLines({ social_battery: 45 })[0], '- Fewer words than usual. Two bubbles at most.');
-  assert.deepEqual(directiveLines({ social_battery: 20 })[0], '- One bubble this turn. Say the one thing and stop. Anything open-ended waits until you have more in you: say not now.');
+  assert.deepEqual(directiveLines({ social_battery: 20 })[0], '- One bubble this turn. Say the one thing and stop.');
 
   // Every boundary, from both sides — a cut that slid by a point is invisible otherwise. The
   // thresholds are read off the compiler rather than repeated, so this cannot pin a stale number.
@@ -935,7 +935,7 @@ test('renderStatusForComposer carries the mood + the leak-guard + the fidelity c
 
   // the proven leak-guard header + the added fidelity clause
   assert.match(out, /INTERNAL weather/);
-  assert.match(out, /never say/i);
+  assert.match(out, /never surface/i);
   assert.match(out, /never adds, drops, softens, or sharpens a fact/);
 
   // excluded fields must NOT leak into the composer block

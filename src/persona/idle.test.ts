@@ -315,8 +315,8 @@ test('a stall the English list cannot read is idle, through the classifier', asy
   assert.equal(c.calls.length, 6, 'one call each');
 });
 
-test('the classifier is read strictly: only the exact words stall and share are not work', async () => {
-  for (const verdict of ['ask', 'unclear', 'STALL?', 'stalling', 'sharing', 'yes', '', 'stall me']) {
+test('the classifier is read strictly: only the exact words stall, share and unclear are not work', async () => {
+  for (const verdict of ['ask', 'failed', 'STALL?', 'stalling', 'sharing', 'yes', '', 'stall me']) {
     const c = stub(verdict);
     assert.deepEqual(await isIdleTurn('bosan', CLEAR, c.fn, SHARE_ON), { shape: 'task', layer: 'classify', signals: [] },
       JSON.stringify(verdict));
@@ -326,6 +326,10 @@ test('the classifier is read strictly: only the exact words stall and share are 
     const c = stub(verdict);
     assert.deepEqual(await isIdleTurn('bosan', CLEAR, c.fn), { shape: 'idle', layer: 'classify', signals: [] }, JSON.stringify(verdict));
   }
+  // A genuine unclear is a person saying something the lane could not place: a share when the shape
+  // is on, the old task when it is off. A failed reading is always a task.
+  assert.deepEqual(await isIdleTurn('bosan', CLEAR, stub('unclear').fn, SHARE_ON), { shape: 'share', layer: 'classify', signals: [] });
+  assert.deepEqual(await isIdleTurn('bosan', CLEAR, stub('unclear').fn), { shape: 'task', layer: 'classify', signals: [] });
   for (const verdict of ['share', 'SHARE', ' share\n']) {
     const c = stub(verdict);
     assert.deepEqual(await isIdleTurn('bosan', CLEAR, c.fn, SHARE_ON), { shape: 'share', layer: 'classify', signals: [] },

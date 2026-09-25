@@ -178,10 +178,15 @@ export interface HookAffectInput {
    *  rendered). Passed through so the renderer can write the instruction without seeing the
    *  affect compiler. */
   englishLooseness?: number;
-  /** She is running on empty this turn (affect compiler `spent`): a sad core or a spent social
-   *  battery. Read only by the task branch, where it marks the directive so the recency edge states
+  /** She is running on empty this turn (affect compiler `spent`): a sad core. Read only by the
+   *  task branch, where it marks the directive so the recency edge states
    *  the tired law (persona/policy.ts, the `spent` drift mode). */
   spent?: boolean;
+  /** Her weather is low (a sad, mad or scared core, a flat mood, a tired battery). Carried onto the
+   *  directive so the section tells her to keep whatever she asks lazy and low-effort. */
+  low?: boolean;
+  /** The extreme feeling that slips out this turn (affect compiler `feelingSlip`), or absent. */
+  slip?: string;
 }
 
 /** 0 = no comedy, 1 = dry, 2 = normal, 3 = hot. The dial the jester reads before deciding
@@ -229,6 +234,11 @@ export interface HookDirective {
   /** A task turn on which she is running on empty: an open-ended ask gets a not now and stays owed,
    *  while a fact, a clock or their safety is still answered. Only ever set on a plain `task`. */
   spent?: boolean;
+  /** Her weather is low this turn: what she asks, she asks lazily (LOW_LINE). */
+  low?: boolean;
+  /** The extreme feeling of hers that slips into this reply, stated at the recency edge
+   *  (persona/policy.ts renderDriftAnchor). Never on a quiet turn. */
+  slip?: string;
 }
 
 /**
@@ -370,13 +380,13 @@ export function selectHook(
     // They asked what she thinks. Still a task (the answer is owed and nothing is hooked on), but
     // the answer is hers, so the play dial reads her mood the way an idle turn's does.
     return {
-      directive: { idle: false, mode: 'task', take: true, forbidden: [], lateNight: affect.lateNight, moments: false, offerAllowed: false, playLevel: computePlayLevel('hook', affect), englishLooseness: affect.englishLooseness as 0 | 1 | 2 | 3 | undefined },
+      directive: { idle: false, mode: 'task', take: true, forbidden: [], lateNight: affect.lateNight, moments: false, offerAllowed: false, playLevel: computePlayLevel('hook', affect), englishLooseness: affect.englishLooseness as 0 | 1 | 2 | 3 | undefined, ...(affect.slip ? { slip: affect.slip } : {}) },
       report: report('take', []),
     };
   }
   if (shape === 'task') {
     return {
-      directive: { idle: false, mode: 'task', forbidden: [], lateNight: affect.lateNight, moments: false, offerAllowed: false, playLevel: 0, englishLooseness: affect.englishLooseness as 0 | 1 | 2 | 3 | undefined, ...(affect.spent ? { spent: true } : {}) },
+      directive: { idle: false, mode: 'task', forbidden: [], lateNight: affect.lateNight, moments: false, offerAllowed: false, playLevel: 0, englishLooseness: affect.englishLooseness as 0 | 1 | 2 | 3 | undefined, ...(affect.spent ? { spent: true } : {}), ...(affect.slip ? { slip: affect.slip } : {}) },
       report: report('not_idle', []),
     };
   }
@@ -393,7 +403,7 @@ export function selectHook(
       // closed, the turn still a share turn, and the section's own law is that one plain sentence
       // about their thing is what is left. A mood too flat for a move is not a reason to answer a
       // person with nothing.
-      affect.hooks === 'none'
+      (affect.hooks === 'none' && !(w === 'question' && affect.question === 'open'))
       || w === repeated
       || (affect.hooks === 'no_judgment' && w === 'judgment')
       || (affect.hooks === 'no_tangent' && w === 'tangent')
@@ -410,13 +420,18 @@ export function selectHook(
       // down. A callback and — when the ceiling left it open — a question about what happened or how
       // it sat are what is left.
       || (affect.heavy && (w === 'judgment' || w === 'tangent')));
+    // An extreme feeling slipping out takes the turn's one move, as a tangent about her, whenever a
+    // tangent is still hers to make: the move list is what she obeys, and a slip stated anywhere
+    // else lost to the share law in every live replay.
+    const slipTurn = !!affect.slip && !forbidden.includes('tangent');
+    const shareForbidden = slipTurn ? HOOK_WORDS.filter(w => w !== 'tangent') : forbidden;
 
     return {
       directive: {
         // NOT an idle turn: they said something. The streak this feeds counts silences.
         idle: false,
         mode: 'share',
-        forbidden,
+        forbidden: shareForbidden,
         heavy: affect.heavy,
         lateNight: affect.lateNight,
         // A moment rides out as a callback about something OLD, and this turn already has something
@@ -427,8 +442,10 @@ export function selectHook(
         offerAllowed: true,
         playLevel: computePlayLevel('share', affect),
         englishLooseness: affect.englishLooseness as 0 | 1 | 2 | 3 | undefined,
+        ...(affect.low ? { low: true } : {}),
+        ...(affect.slip ? { slip: affect.slip } : {}),
       },
-      report: report('share', forbidden),
+      report: report('share', shareForbidden),
     };
   }
 
@@ -453,7 +470,16 @@ export function selectHook(
     };
   }
   // The affect floor: the compiled directive can close hooks outright (a flat mood, a spent battery).
-  if (affect.hooks === 'none') return quiet('affect_floor');
+  // …except that a low mood still asks things, lazily: when the question gate is open, the one
+  // move left is a low-effort question, and the `low` line says how small it comes out.
+  if (affect.hooks === 'none') {
+    if (affect.question !== 'open' || isGroup || repeated === 'question') return quiet('affect_floor');
+    const forbidden = HOOK_WORDS.filter(w => w !== 'question');
+    return {
+      directive: { idle: true, mode: 'hook', forbidden, lateNight: affect.lateNight, moments: false, offerAllowed: false, playLevel: 0, englishLooseness: affect.englishLooseness as 0 | 1 | 2 | 3 | undefined, low: true },
+      report: report('affect_floor', forbidden),
+    };
+  }
 
   const forbidden = HOOK_WORDS.filter(w =>
     w === repeated
@@ -464,22 +490,26 @@ export function selectHook(
     || (isGroup && (w === 'judgment' || w === 'question'))
     // The affect ceiling: her weather says the question stays closed this turn.
     || (w === 'question' && affect.question === 'closed'));
+  // The slip takes the one hook the same way it takes a share's move (see the share branch).
+  const hookForbidden = affect.slip && !forbidden.includes('tangent') ? HOOK_WORDS.filter(w => w !== 'tangent') : forbidden;
 
   return {
     directive: {
       idle: true,
       mode: 'hook',
-      forbidden,
+      forbidden: hookForbidden,
       lateNight: affect.lateNight,
       // A moment can only ride out as a callback, so a forbidden callback makes the sample dead
       // weight — and sampling bills the moment either way, which is why the gate sits here rather
       // than in the renderer.
-      moments: !forbidden.includes('callback') && state.idleSinceMoment >= MOMENT_IDLE_INTERVAL && !isGroup,
+      moments: !hookForbidden.includes('callback') && state.idleSinceMoment >= MOMENT_IDLE_INTERVAL && !isGroup,
       offerAllowed: true,
       playLevel: computePlayLevel('hook', affect),
       englishLooseness: affect.englishLooseness as 0 | 1 | 2 | 3 | undefined,
+      ...(affect.low ? { low: true } : {}),
+      ...(affect.slip ? { slip: affect.slip } : {}),
     },
-    report: report('hook', forbidden),
+    report: report('hook', hookForbidden),
   };
 }
 
@@ -657,6 +687,13 @@ export const TAKE_HEADING = '## This turn is a take (INTERNAL)';
 export const TAKE_LEAD = 'They asked what you think, like, feel or would do, and your take is the whole answer. Your mood sets the volume it comes out at, dry or bouncing, one line or a rant. Commit to a side and say why.';
 export const TAKE_LATE_LINE = 'It is late where they are: the same take, smaller and quieter.';
 
+/** Her weather is low. She says how she feels when it shows, plainly, and asks what she asks with no
+ *  effort spent on it. Rendered on hook and share turns whenever the directive carries `low`. */
+/** On a slip turn whose one move is a tangent: the tangent is her. `{feeling}` is the moodlet. */
+export const SLIP_TANGENT_LINE = 'This turn the tangent is you: how {feeling} you are today, a few plain words, hooked onto what they sent.';
+
+export const LOW_LINE = 'You are low right now. Whatever you ask, ask it lazy: a few words, no effort spent dressing it up, and it still keeps its question mark.';
+
 export const SHARE_LATE_LINE ='It is late where they are: one short bubble and nothing heavy. Same move, lower volume.';
 
 /** The allowed kinds as English — `a judgment, a callback or a tangent` on a hook turn, and the same
@@ -702,6 +739,7 @@ export function renderHooksSection(directive: HookDirective, momentLines: string
     if (directive.mode === 'share') {
       lines.push(SHARE_HEADING, SHARE_LEAD);
       lines.push(allowed.length > 0 ? SHARE_OPEN_LINE.replace('{kinds}', nameKinds(allowed)) : SHARE_NONE_OPEN);
+      if (directive.slip && allowed.length === 1 && allowed[0] === 'tangent') lines.push(SLIP_TANGENT_LINE.replace('{feeling}', directive.slip));
       // Under the sentence that named it, and only when it is actually hers this turn: the line is
       // what a follow-up IS, and it has nothing to say on a turn where the kind is closed.
       if (allowed.includes('question')) lines.push(SHARE_QUESTION_LINE);
@@ -711,11 +749,13 @@ export function renderHooksSection(directive: HookDirective, momentLines: string
     } else {
       lines.push(HOOK_HEADING, HOOK_LEAD);
       lines.push(allowed.length > 0 ? HOOK_OPEN_LINE.replace('{kinds}', nameKinds(allowed)) : HOOK_NONE_OPEN);
+      if (directive.slip && allowed.length === 1 && allowed[0] === 'tangent') lines.push(SLIP_TANGENT_LINE.replace('{feeling}', directive.slip));
       if (directive.lateNight) lines.push(HOOK_LATE_LINE);
       const moments = directive.moments ? momentLines.map(l => l.trim()).filter(Boolean) : [];
       if (moments.length > 0) lines.push(MOMENTS_LEAD, ...moments);
     }
   }
+  if (directive.low && directive.mode !== 'quiet') lines.push(LOW_LINE);
   const looseLine = LOOSE_LEVEL_LINES[directive.englishLooseness ?? 1];
   if (looseLine) lines.push(looseLine);
   const playLine = PLAY_LEVEL_LINES[directive.playLevel];
