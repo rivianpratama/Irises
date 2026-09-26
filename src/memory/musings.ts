@@ -11,6 +11,8 @@
 //
 // The bounds are code, in the order the sweep checks them, cheapest first:
 //   • the flag, then a real 1:1 person (never a room);
+//   • someone she knows: familiar or close (persona/familiarity.ts), when the familiarity mask is on.
+//     A stranger, and someone with no row yet, gets no text she was not asked for;
 //   • they talked to her within MUSING_ACTIVE_WITHIN_MS, so a thread they walked away from is not
 //     one she keeps texting into;
 //   • the chat has been quiet MUSING_QUIET_MS, so a live conversation keeps the thought for itself;
@@ -29,7 +31,9 @@ import { getAffectState } from '../db/repositories/affectState.js';
 import { readSelf } from '../db/repositories/self.js';
 import { readMoments } from '../db/repositories/moments.js';
 import { getThreadInventory, threadingEnabled } from '../db/repositories/threadInventory.js';
-import { musingsEnabled, momentsEnabled, selfEnabled } from '../persona/featureFlags.js';
+import { familiarityEnabled, musingsEnabled, momentsEnabled, selfEnabled } from '../persona/featureFlags.js';
+import { getFamiliarity } from '../db/repositories/familiarity.js';
+import { familiarityBandFor, type FamiliarityBand } from '../persona/familiarity.js';
 import { isGroupHandle } from './identity.js';
 import { dayKey, hourInZone } from '../pipeline/chatTime.js';
 import { DEFAULT_TZ } from '../pipeline/zonedTime.js';
@@ -113,6 +117,12 @@ export function weatherAllows(last: { mood_core?: string; mood_level?: number; s
   return true;
 }
 
+/** Pure: does she know them well enough to text first? Familiar or close. A thought of her own is a
+ *  back-stage move, and a stranger is still front stage. */
+export function familiarityAllows(band: FamiliarityBand): boolean {
+  return band === 'familiar' || band === 'close';
+}
+
 interface SweepCounts {
   considered: number;
   sent: number;
@@ -141,6 +151,12 @@ export async function runMusingSweep(deps: MusingDeps, opts: { now?: number; ran
         const handles = await distinctUserHandles(chatId, 2);
         if (handles.length !== 1 || isGroupHandle(handles[0])) { skip('group'); continue; }
         const handle = handles[0];
+        // The stored band, as the turn reads it before any rapport notch; no row is a stranger. With
+        // the mask off there is no gate at all.
+        if (familiarityEnabled()) {
+          const row = await getFamiliarity(handle);
+          if (!familiarityAllows(familiarityBandFor({ group: false, level: row?.level ?? null }))) { skip('familiarity'); continue; }
+        }
 
         const lastMusingAt = (await getPreference<number>(handle, 'last_musing_at')) ?? 0;
         if (now - lastMusingAt < MUSING_GAP_MS) { skip('budget'); continue; }

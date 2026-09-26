@@ -85,6 +85,14 @@ test('the turn:trace cell prints the hook mode beside the beat it qualifies', ()
     'the mode is not rendered beside the kind in the turn:trace row');
 });
 
+// The familiarity row sits under "Right now", beside the mood it masks. Defined AND called, the same
+// pin the three earned-material panels get, since a panel that is never called renders nothing.
+test('the Inner state view renders the familiarity row beside the mood', () => {
+  const js = VIEWS.find(v => v.id === 'affect')?.js ?? '';
+  assert.ok(js.includes('function familiarityPanel('), 'familiarityPanel is not defined');
+  assert.ok(js.includes('moodPanel(d) + familiarityPanel(d)'), 'the row does not render beside the mood');
+});
+
 test('login page stays standalone and self-closing', () => {
   assert.ok(LOGIN_PAGE.includes('/dashboard/login'));
   assert.equal(LOGIN_PAGE.split('<script>').length, 2);

@@ -1079,6 +1079,20 @@ test('a default climate leaves renderStatusForPrompt byte-identical to no climat
   assert.equal(renderStatusForPrompt(undefined, COMPUTED, defaultClimate()), renderStatusForPrompt(undefined, COMPUTED));
 });
 
+// The familiarity band reaches this block through the one compile. Absent is no mask, which is the
+// pre-mask block byte for byte even on a row where rapport has been landing badly. On this fixture a
+// band changes the mood line and nothing else in the block, because it carries no feelings: where
+// there are some, stranger and acquaintance also swap the feelings line for its asked-only variant.
+test('no band is the pre-mask weather block, and a band moves only the mood line', () => {
+  const state = { last: carried(0, { rapport: 20 }), moodHistory: [] };
+  const today = renderStatusForPrompt(state, COMPUTED, movedClimate(), true);
+  assert.equal(renderStatusForPrompt(state, COMPUTED, movedClimate(), true, undefined), today);
+  assert.ok(today.includes('- You are hopeful (powerful). A judgment lands flat and certain. Do not explain it.'), 'no band: the core\'s own line');
+  const stranger = renderStatusForPrompt(state, COMPUTED, movedClimate(), true, 'stranger');
+  assert.ok(stranger.includes('- You are hopeful (powerful). Someone you barely know does not get to see it: composed and pleasant, and none of it reaches the words.'), 'stranger: the composed line');
+  assert.equal(withoutMoodLine(stranger), withoutMoodLine(today), 'the climate span, the self-note and the tail are the same block');
+});
+
 // The intended behaviour CHANGE: climate has no staleness gate, because a weeks-scale register
 // cannot go stale in 45 minutes. A proactive delivery hours later still speaks in the right register.
 test('composer: a stale mood plus a moved climate yields a climate-ONLY block', () => {
@@ -1112,4 +1126,30 @@ test('composer: a stale mood plus a DEFAULT climate is still "" (both halves emp
   const fresh = carried(Date.now());
   const state = { last: fresh, moodHistory: [] };
   assert.equal(renderStatusForComposer(state, defaultClimate()), renderStatusForComposer(state));
+});
+
+// The Composer wears the mask Convo's block wears, notch included. Absent is no mask: the Composer
+// block byte for byte as it stood before the feature, even on a row where rapport has been landing
+// badly. A band changes the mood line and nothing else the block carries: the header, the brevity
+// line and the ease line are the same bytes.
+test('composer: no band is today\'s block, and a band masks the mood line alone', () => {
+  const state = { last: carried(Date.now(), { rapport: 20, social_battery: 45 }), moodHistory: [] };
+  const today = renderStatusForComposer(state, movedClimate());
+  assert.equal(renderStatusForComposer(state, movedClimate(), undefined), today);
+  assert.equal(today.split('\n')[1], '- You are hopeful (powerful). A judgment lands flat and certain. Do not explain it.');
+  const stranger = renderStatusForComposer(state, movedClimate(), 'stranger');
+  assert.equal(stranger.split('\n')[1], '- You are hopeful (powerful). Someone you barely know does not get to see it: composed and pleasant, and none of it reaches the words.');
+  assert.ok(stranger.includes('- Fewer words than usual. Two bubbles at most.'), 'shape passes the mask');
+  assert.equal(withoutMoodLine(stranger), withoutMoodLine(today), 'everything but the mood line is the same block');
+  // The notch: a sad row relayed to someone close keeps its put-off only while rapport holds.
+  const drained = (rapport: number) => ({ last: { ...carried(Date.now(), { rapport }), mood_label: 'drained' }, moodHistory: [] });
+  assert.equal(
+    renderStatusForComposer(drained(40), undefined, 'close').split('\n')[1],
+    '- You are drained (sad). Fewer words. No tangents. Answer, then stop. Anything open-ended they ask today, research, long writing, a favour with no clock, is too much: say not now, and it stays owed.',
+  );
+  assert.equal(
+    renderStatusForComposer(drained(20), undefined, 'close').split('\n')[1],
+    '- You are drained (sad). Fewer words. No tangents. Answer, then stop.',
+    'close pulled up to familiar: the say clause is gone',
+  );
 });

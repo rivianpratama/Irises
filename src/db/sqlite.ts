@@ -77,6 +77,20 @@ CREATE TABLE IF NOT EXISTS relationship_climate (
   updated_at   INTEGER NOT NULL
 );
 
+-- Familiarity: how well she knows this person, as one stored 1-100 level plus the two lived-exchange
+-- counters it is partly made of. Keyed by the MEMORY handle, like relationship_climate. The level is
+-- arithmetic over the stores (persona/familiarity.ts) written by the post-reply pass
+-- (memory/familiarityPass.ts), and it never reaches a prompt: the turn reads it as a band. A handle
+-- with no row reads as a stranger, and a room never gets a row.
+CREATE TABLE IF NOT EXISTS familiarity (
+  handle      TEXT PRIMARY KEY,
+  level       INTEGER NOT NULL DEFAULT 1,
+  turns       INTEGER NOT NULL DEFAULT 0,
+  active_days INTEGER NOT NULL DEFAULT 0,
+  last_day    TEXT    NOT NULL DEFAULT '',
+  updated_at  INTEGER NOT NULL
+);
+
 -- Conversational threading: what recurs in a person's life (themes — values, tensions, goals, the
 -- phrases they coin) and what they left hanging (loops — a pending outcome with a how-did-it-go
 -- attached), plus the offer ledger that bills every time one of them is surfaced.
@@ -431,6 +445,7 @@ export function resetStorageForTests(): void {
     DELETE FROM agent_prefs;
     DELETE FROM affect_state;
     DELETE FROM relationship_climate;
+    DELETE FROM familiarity;
     DELETE FROM thread_inventory;
     DELETE FROM hook_state;
     DELETE FROM sent_messages;

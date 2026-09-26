@@ -1,6 +1,6 @@
 // Run with: npm test   (TZ=UTC, DATA_BACKEND=memory)
 //
-// The Inner-state panel's nine SHAPERS, and nothing else. The route around them is a read of seven
+// The Inner-state panel's ten SHAPERS, and nothing else. The route around them is a read of seven
 // repositories behind the dashboard's own auth + cache, and the client half is a browser string the
 // existing views.test.ts already scans — what is worth pinning here is the arithmetic that turns
 // stored rows into what an operator reads:
@@ -19,7 +19,8 @@
 //   • the rhythm ledger, as the four fields an operator is shown rather than whatever the store
 //     happens to hold;
 //   • the last N `turn:trace` receipts, flattened out of the persisted turn payloads;
-//   • the approvals parked on this person's yes, which nothing here can settle.
+//   • the approvals parked on this person's yes, which nothing here can settle;
+//   • how well she knows them, as the stored level beside the band her replies compile under.
 //
 // Every one of them is pure and takes its clock injected.
 
@@ -28,8 +29,9 @@ import assert from 'node:assert/strict';
 
 import {
   affectTrail, climateDialRows, threadSummary, traceRows, pendingApprovalRows,
-  thesisSummary, momentRows, momentsFileState, rhythmSummary,
+  thesisSummary, momentRows, momentsFileState, rhythmSummary, familiaritySummary,
 } from './affect.js';
+import { emptyEvidence } from '../../../persona/familiarity.js';
 import { MOOD_HISTORY_CAP, type AffectState, type AffectStatus } from '../../../persona/status.js';
 import { CLIMATE_WINDOW_CAP, type RelationshipClimate } from '../../../persona/climate.js';
 import { defaultThreadInventory, type ThreadInventory } from '../../../persona/threads.js';
@@ -458,4 +460,43 @@ test('pending approvals read as id, request, state and how long the ask has been
 
 test('an approval panel with nothing pending is empty, not a row of blanks', () => {
   assert.deepEqual(pendingApprovalRows([], NOW), []);
+});
+
+// ── how well she knows them ──────────────────────────────────────────────────
+// The one surface the number reaches: the stored level, the band it cuts to, the band her replies are
+// actually compiled under, the pace ceiling, the two counters, and what each source is worth.
+
+const FAM_ROW = { level: 52, turns: 40, activeDays: 14, lastDay: '2026-09-02', updatedAt: NOW };
+const FAM_EVIDENCE = { ...emptyEvidence(), turns: 40, activeDays: 14, statedFacts: 3, name: 1, moments: 2 };
+
+test('the familiarity row is the stored level, the band it cuts to, and what each source is worth', () => {
+  const f = familiaritySummary(FAM_ROW, FAM_EVIDENCE, status(), { enabled: true, group: false });
+  assert.deepEqual(
+    { level: f.level, band: f.band, effectiveBand: f.effectiveBand, reguarded: f.reguarded, ceiling: f.ceiling, turns: f.turns, activeDays: f.activeDays },
+    { level: 52, band: 'familiar', effectiveBand: 'familiar', reguarded: false, ceiling: 52, turns: 40, activeDays: 14 },
+  );
+  assert.deepEqual(f.sources.find(s => s.key === 'statedFacts'), { key: 'statedFacts', count: 3, points: 6, cap: 16 });
+  assert.deepEqual(f.sources.find(s => s.key === 'turns'), { key: 'turns', count: 40, points: 10, cap: 20 });
+  assert.equal(f.sources.reduce((n, s) => n + s.cap, 0), 100, 'every source is on the panel');
+});
+
+test('rapport landing badly shows as a notch, and the switch off shows the close band replies compile under', () => {
+  const notched = familiaritySummary(FAM_ROW, FAM_EVIDENCE, status({ rapport: 20 }), { enabled: true, group: false });
+  assert.equal(notched.effectiveBand, 'acquaintance');
+  assert.equal(notched.reguarded, true);
+  const off = familiaritySummary(FAM_ROW, FAM_EVIDENCE, status({ rapport: 20 }), { enabled: false, group: false });
+  assert.equal(off.band, 'familiar', 'what is stored is still shown');
+  assert.equal(off.effectiveBand, 'close');
+  assert.equal(off.reguarded, false);
+});
+
+test('no row yet reads as a stranger at the bottom, and a room is a stranger whatever it stores', () => {
+  const none = familiaritySummary(null, emptyEvidence(), undefined, { enabled: true, group: false });
+  assert.deepEqual(
+    { level: none.level, band: none.band, effectiveBand: none.effectiveBand, ceiling: none.ceiling, turns: none.turns, activeDays: none.activeDays },
+    { level: 1, band: 'stranger', effectiveBand: 'stranger', ceiling: 10, turns: 0, activeDays: 0 },
+  );
+  const room = familiaritySummary({ ...FAM_ROW, level: 90 }, FAM_EVIDENCE, status(), { enabled: true, group: true });
+  assert.equal(room.band, 'stranger');
+  assert.equal(room.effectiveBand, 'stranger');
 });

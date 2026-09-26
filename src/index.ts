@@ -1051,6 +1051,7 @@ async function processMessage(agentClient: AgentClient, chatId: string, from: st
   // re-acquires the mouth and VOICES under it. A media_read task goes to MM (silent run), everything
   // else to Ops (progress-pinged).
   if (delegatedTask) {
+    if (isGroupChat) delegatedTask.room = true;
     opsCancel = new AbortController();
     // The estimate is chosen ONCE here and read by every later ping (opsCoordination), so it takes
     // the leg budget this task will actually run on — a walled-URL browser look gets minutes, and a

@@ -658,6 +658,33 @@ test('in a group, a cancel from one member retires the ask it drops, so its owne
   assert.equal(await getPreference(owner, 'pending_approval'), null, 'and the owner\'s ask went with the row');
 });
 
+test('an action parked in a room and approved from the asker\'s own chat still relays as the room', async () => {
+  // The marker is keyed on the sender alone, so the yes can come from their one-to-one, and that turn
+  // is not a group turn. The task is rebuilt from the parked brief and relayed back to the room, so
+  // the room stamp has to ride the brief itself or the relay speaks with the member's own band.
+  __resetOpsCoordination();
+  clearTraces();
+  const room = randomUUID();
+  const owner = `+1555850${(seq++).toString().padStart(4, '0')}`;
+  await processConvoResult({
+    chatId: room, handle: groupHandle(room), history: [], media: emptyMedia(), textToSend: ACT_ASK,
+    chatContext: { isGroupChat: true, participantNames: ['Sam', 'Jo'], chatName: 'the flat', senderHandle: owner } as ChatContext,
+    res: makeResult(['on it'], [delegate(ACT_ASK, 'act')]), turn: reasker(['want me to go ahead?']).turn,
+  });
+  const row = listPendingApprovals(room)[0];
+  assert.ok(row, 'the action is parked in the room');
+  assert.equal((row.meta.task as { room?: boolean }).room, true, 'the parked brief carries the room');
+
+  const out = await processConvoResult({
+    chatId: randomUUID(), handle: owner, history: [], media: emptyMedia(), textToSend: 'yes',
+    chatContext: { isGroupChat: false, participantNames: [], chatName: null, senderHandle: owner },
+    res: makeResult(['on it']), turn: reasker(['never asked']).turn,
+  });
+  assert.ok(out.delegatedTask, 'the yes from their own chat runs it');
+  assert.equal(out.delegatedTask!.chatId, room, 'and its receipt goes back to the room');
+  assert.equal(out.delegatedTask!.room, true, 'so the relay speaks in front of the room');
+});
+
 test('a parked action keeps its question when a cancel in the same turn misses', async () => {
   // The question is the one thing a parked turn owes: without it the action sits parked and nobody
   // was asked. A cancel that missed beside it used to REPLACE the whole reply with its correction,

@@ -63,6 +63,20 @@ test('the block opens on its own heading and carries exactly one', () => {
   assert.ok(!PERSONA_BLOCK.endsWith('\n'), 'no trailing newline: the callers join sections themselves');
 });
 
+// The familiarity mask's law, stated once where every lane reads it: with someone she barely knows a
+// feeling is not volunteered yet, and asked, the true word is still said, small. The block
+// hard-wraps, so the pin reads it with the wraps as spaces, and the sentence is the owner's, byte for
+// byte, seated right after the feelings law it qualifies.
+test('the feelings law names the mask once, right after the reason it never gives', () => {
+  const flat = PERSONA_BLOCK.replace(/\n/g, ' ');
+  const sentence = 'With someone you barely know, none of that is volunteered yet: asked, the true word said small; unasked, the feeling stays yours and only the volume shows.';
+  assert.ok(
+    flat.includes(`and never the reason behind it. ${sentence} The good ones mostly show in how you write;`),
+    'the mask sentence sits right after "and never the reason behind it." and right before "The good ones"',
+  );
+  assert.equal(flat.split(sentence).length - 1, 1, 'stated once');
+});
+
 /**
  * The turn shapes, in the order the block defines them. Mirrored as literals for the same reason the
  * envelope keys below are: this module is a leaf and its test keeps that property, so the list the

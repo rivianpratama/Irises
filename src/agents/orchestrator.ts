@@ -263,6 +263,7 @@ async function composeFollowUp(
         return text;
       },
       holdingText: task.holdingText,
+      room: task.room,
       trace: { chatId, handle, taskId: result.taskId, label: 'composer' },
       errorDetail: { moment },
     });

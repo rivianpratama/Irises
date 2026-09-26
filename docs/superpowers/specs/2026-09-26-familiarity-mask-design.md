@@ -74,7 +74,7 @@ value and a cap; the caps sum to 100 and the test pins that sum.
 | name known | `profile.name` non-null | 2 | 2 |
 | moments | `MomentsFile.entries.length` | 2 | 12 |
 | themes they picked up | `ThreadInventory.themes` with `uptakes >= 1` | 2 | 8 |
-| open loops | `ThreadInventory.loops.length` | 1 | 4 |
+| open loops | `ThreadInventory.loops` still open or asked (an ended loop waits out the prune) | 1 | 4 |
 | her own SELF entries | `SelfFile.entries` with kind stance, taste or changed (a learned entry is about them, not her) | 2 | 8 |
 
 A store behind a flag that is off contributes zero; she genuinely holds less. The lived-exchange
@@ -87,15 +87,20 @@ acquaintance and never gets a musing.
   acquaintance from day 5, familiar from day 14 and close from day 22, and only if the evidence is
   there; the ceiling itself reaches 100 on day 30. A fact dump in one evening hits the ceiling.
 - **Slew.** The stored level moves toward `target` by at most `FAMILIARITY_SLEW = 2` a turn, in
-  either direction. A new row starts at 1. Bands cannot flap turn to turn.
-- **No clock decay.** Nothing reads elapsed time. The level falls only when evidence shrinks
-  (a cap eviction, a superseded fact, a pruned theme).
+  either direction. Bands cannot flap turn to turn. A first row is the exception: it lands straight
+  on `target`, so someone she has known for months is not a stranger for days after the mask ships
+  (a genuinely new person still lands at 13 or below, where the evidence and the pace ceiling both
+  bind). A degraded first read stores 1, and the next clean pass slews from there.
+- **No clock decay.** Nothing reads elapsed time but a first row's seed (below). The level falls
+  only when evidence shrinks (a cap eviction, a superseded fact, a pruned theme).
 
 **When it is computed.** In the post-reply pass in `src/agents/convo/shared.ts`, beside
-`updateRelationshipClimate` and under the same group skip: tick the counters, read the stores,
-compute the target, slew, save. Fire-and-forget like its neighbours, failure a silent no-op. The
-turn itself only reads the stored row. A one-turn lag behind the harvests is fine under a 2-point
-slew.
+`updateRelationshipClimate` and under the same group skip: read the stores, tick the counters,
+compute the target, slew, save. A first row is seeded from tenure before the tick: active days are
+the whole days since the profile's first-seen date, capped at `FAMILIARITY_SEED_DAYS_CAP = 30`, and
+turns are the thread inventory's harvested-turn count; today's turn and day are then counted on
+top. Fire-and-forget like its neighbours, failure a silent no-op. The turn itself only reads the
+stored row. A one-turn lag behind the harvests is fine under a 2-point slew.
 
 **Bands**, named after Knapp's stages, cut on the stored level:
 
@@ -188,7 +193,7 @@ The feelings paragraph in `src/persona/policy.ts` states the general law once fo
 surfaces, and today it says a feeling gets named unasked. One sentence is appended after "and
 never the reason behind it.":
 
-`With someone you barely know, none of that is theirs yet: the feeling stays yours, and only the volume shows.`
+`With someone you barely know, none of that is volunteered yet: asked, the true word said small; unasked, the feeling stays yours and only the volume shows.`
 
 The per-turn weather line is what enforces it; the persona sentence keeps the law consistent at
 the primacy edge. The `persona` budget pin in `src/agents/convo/promptPolicy.ts` is re-measured.
@@ -216,7 +221,8 @@ build is inert.
 ### 7. Tests
 
 - `src/persona/familiarity.test.ts` (pure): caps sum to 100; each source capped; provenance
-  discounts; pace ceiling by active days; slew in both directions from 1; a new row starts at 1;
+  discounts; pace ceiling by active days; slew in both directions from 1; a first row's counters
+  seeded from tenure (capped at 30 days, garbage and the future read as none);
   bands at their edges; rapport re-guard drops one notch and never below stranger; rooms read as
   stranger.
 - `src/persona/affectCompiler.test.ts`: the band table above pinned field by field; the `say`

@@ -289,9 +289,17 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * Then **+426**, one comma per bubble (190,019 → 190,445): the split rule in Context.md
  * (the rule line, the self-check and the examples) allows one comma per bubble and breaks at the
  * second, the same wording now stated in every lane.
+ *
+ * Then **+156**, the familiarity mask (190,445 → 190,601), policy.ts alone: one sentence appended to
+ * the feelings paragraph, after "and never the reason behind it.", saying that with someone she
+ * barely knows none of it is volunteered yet: asked, the true word is said small, and unasked the
+ * feeling stays hers and only the volume shows. It is the primacy-edge copy of the law the per-turn
+ * weather line enforces (persona/affectCompiler.ts MASK_LINES). The sentence was first written at
+ * +110 and reworded before the branch closed, because its first wording could be read as holding
+ * back even the asked answer, which the honesty rule forbids. Every other file held.
  */
-const CORPUS_CHARS = 190_445;
-const CORPUS_SHA256 = '367c8c8893a415a26b9b9ec7637e47edbda63d7fb8455aa85848f15249f78536';
+const CORPUS_CHARS = 190_601;
+const CORPUS_SHA256 = 'f366f56fe5a73a70fa126a6ac32e75a8308b1b45ab0e8b20699acb7d9c96b687';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 

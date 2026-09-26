@@ -86,7 +86,9 @@ import {
   hookKindOpen, QUIET_LAW, quietViolation, recordHook, renderHooksSection, shapeOf,
   type HookDirective, type HookSelectReport, type HookState, type HookWord,
 } from '../../persona/hooks.js';
-import { hooksEnabled, momentsEnabled, selfEnabled, thesisEnabled } from '../../persona/featureFlags.js';
+import { familiarityEnabled, hooksEnabled, momentsEnabled, selfEnabled, thesisEnabled } from '../../persona/featureFlags.js';
+import type { FamiliarityBand } from '../../persona/familiarity.js';
+import { updateFamiliarity } from '../../memory/familiarityPass.js';
 import { saveHookState } from '../../db/repositories/hookState.js';
 import { getAffectState, saveAffectState } from '../../db/repositories/affectState.js';
 import type { RelationshipClimate } from '../../persona/climate.js';
@@ -1387,6 +1389,11 @@ export interface PersonaTurn {
   self?: string;
   /** What her mood put off for them and still owes (memory/owedAsks.ts), rendered. */
   owed?: string;
+  /** How well she knows them, as the band that masks her mood (persona/familiarity.ts): the value
+   *  convo/client.ts read once and also handed the hook engine's compile, after the flag and the room
+   *  rule and before the rapport notch (the compiler applies that). Absent when the flag is off,
+   *  which compiles the weather exactly as it was before the mask existed. */
+  familiarity?: FamiliarityBand;
 }
 
 /**
@@ -1785,7 +1792,7 @@ export function buildSystemPromptSections(
   // still wants the envelope filled, the pointer is what has to move, not this condition.
   // (internalWeather.test.ts's "no computed state" case is what pins the off path.)
   if (computed) {
-    push('weather', renderStatusForPrompt(affectState, computed, climate, kindOpen));
+    push('weather', renderStatusForPrompt(affectState, computed, climate, kindOpen, personaTurn?.familiarity));
     push('status_contract', renderStatusContract());
   }
 
@@ -3491,6 +3498,10 @@ async function dispatchToolCalls(calls: LlmToolCall[], effects: TurnEffects, ctx
         addressHint: input.address ? String(input.address) : undefined,
         dealHint: input.deal_ref ? String(input.deal_ref) : undefined,
         replyToMessageId: chatContext?.incomingMessageId,
+        // Stamped where the task is BUILT, so it serialises into a parked approval and survives the
+        // rebuild: the yes can come from the asker's own chat, where the approving turn is not a
+        // group turn, while the relay still goes back to this room (index.ts keeps a backstop).
+        ...(chatContext.isGroupChat ? { room: true } : {}),
         attempt,
         // This turn's comprehension score rides the task (in-flight, never persisted) so the
         // composer can caveat a look launched from a shaky read.
@@ -4967,6 +4978,11 @@ export async function processConvoResult(args: {
     // its own reason, on top of the transcript one: the eval prompt is single-relationship, and in a
     // room one member could move a dial that colours her voice for everyone else in it.
     void updateRelationshipClimate(handle, recent, { chatId });
+    // And how well she knows them (persona/familiarity.ts): this replied turn is counted, the stores
+    // she holds about them are read, and the stored level slews toward what they add up to. No call,
+    // and the turn never waits on it. It rides this group skip because a room is front stage and has
+    // no level; the flag is read here as well as inside the pass, the house rule for a call site.
+    if (familiarityEnabled()) void updateFamiliarity(handle, { chatId });
     // And the two EARNED-MATERIAL passes, off the SAME assembled window and under the same group
     // skip — a moment is an episode with one person in it, and a read is what she thinks about one
     // person; a room's transcript is several people's words interleaved. Both are throttled off

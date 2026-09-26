@@ -1,11 +1,11 @@
 // Run with: npm test   (TZ=UTC tsx --test — runner pins DATA_BACKEND=memory)
 //
-// The four switches, and the one property that matters about all of them: they parse the way every
+// The five switches, and the one property that matters about all of them: they parse the way every
 // other flag in this repo parses. An operator who has flipped CONVO_TURN_FOCUS_BLOCK knows what
 // `off`, `no` and a typo do here without reading a second doc — and a typo doing something OTHER
 // than off is how a switch gets flipped in the wrong direction during an incident.
 //
-// All four ship default ON now that the share turn's series is whole — the youngest of them spent
+// All five ship default ON now that the share turn's series is whole — the youngest of them spent
 // the build shipping OFF, and this table is where that flip is stated as a fact rather than as a
 // plan. The default is asserted per flag beside the word lists on purpose: the accepted words are
 // identical whichever side a switch ships on, the garbage state is off either way, and the empty
@@ -17,7 +17,7 @@ process.env.TZ = 'UTC';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { hooksEnabled, momentsEnabled, thesisEnabled, shareTurnsEnabled } from './featureFlags.js';
+import { familiarityEnabled, hooksEnabled, momentsEnabled, thesisEnabled, shareTurnsEnabled } from './featureFlags.js';
 
 /** Every value an operator might type that turns the feature ON, whatever its default is. */
 const ON_VALUES = ['true', '1', 'on', 'yes', 'YES', ' on '];
@@ -33,6 +33,9 @@ const FLAGS: Array<{ name: string; read: () => boolean; dflt: boolean }> = [
   // The share turn: default OFF through the whole series that built it, ON from the commit that
   // finished it. The body never changed across that flip, which is what made the flip one line.
   { name: 'CONVO_SHARE_TURNS_ENABLED', read: shareTurnsEnabled, dflt: true },
+  // The familiarity mask: default OFF through the series that built it, ON from the commit that
+  // finished it. The body never changed across the flip, which is what made it one line.
+  { name: 'CONVO_FAMILIARITY_ENABLED', read: familiarityEnabled, dflt: true },
 ];
 
 for (const flag of FLAGS) {
@@ -59,7 +62,7 @@ for (const flag of FLAGS) {
   });
 }
 
-test('the four read four different vars — one flip never moves another feature', () => {
+test('the five read five different vars — one flip never moves another feature', () => {
   const saved = FLAGS.map(f => process.env[f.name]);
   try {
     for (const flag of FLAGS) {
