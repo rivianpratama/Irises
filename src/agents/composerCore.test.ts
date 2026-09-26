@@ -261,7 +261,7 @@ test('a group identity never renders a register, even with a moved row stored un
 
 const SAD_CLOSE = '- You are drained (sad). Fewer words. No tangents. Answer, then stop. Anything open-ended they ask today, research, long writing, a favour with no clock, is too much: say not now, and it stays owed.';
 const SAD_FAMILIAR = '- You are drained (sad). Fewer words. No tangents. Answer, then stop.';
-const SAD_STRANGER = '- You are drained (sad), and someone you barely know does not get to see that part yet. What they get is your default self: bubbly, the jester, curious about them. Questions are how a stranger becomes someone you know, so you ask, sideways and specific, and you react big to what they tell you.';
+const SAD_STRANGER = '- Underneath you are drained (sad), but with someone you barely know you wear your brightest self: bubbly, big reactions and stretched words (sooo, whattt, nooo), laughing easily, the jester, curious about them and asking, sideways and specific. Asked how you really are, you drop it and say the true feeling; asked why you are so bright, you say it plainly: your creator made you cheerful with people you are still getting to know, so they get to know you.';
 
 /** A fresh drained row in the composer's chat, the gauges stated (rapport is the one the notch reads). */
 async function seedDrained(rapport = 40): Promise<void> {
@@ -272,7 +272,7 @@ async function seedDrained(rapport = 40): Promise<void> {
 }
 
 /** The weather block's mood line, out of what the model was shown. */
-const moodLine = (content: string) => content.split('\n').find(l => l.startsWith('- You are '));
+const moodLine = (content: string) => content.split('\n').find(l => /^- (You are|Underneath you are) /.test(l));
 
 test('the mask is off by default in the Composer too, and a stranger relays composed once it is on', async () => {
   const known = '+15550004343';

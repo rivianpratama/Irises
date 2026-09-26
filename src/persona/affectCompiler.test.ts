@@ -207,7 +207,7 @@ test('the mood floor closes every kind, from both sides, and mirrors the thread 
   assert.equal(HOOK_MOOD_FLOOR, THREAD_MOOD_FLOOR);
 });
 
-test('englishLooseness: baseline is one, late adds one, joyful adds one, sad/scared subtracts one', () => {
+test('englishLooseness: baseline is one, late adds one, joyful adds one, sad/scared subtracts one but never below one', () => {
   const looseness = (word: string, hour = 12) => compileAffect(carried(word), at(hour)).englishLooseness;
   // Baseline: peaceful/powerful/mad all start at one.
   assert.equal(looseness('content'), 1, 'peaceful baseline');
@@ -220,9 +220,9 @@ test('englishLooseness: baseline is one, late adds one, joyful adds one, sad/sca
   // Joyful and late night: capped at three.
   assert.equal(looseness('excited', 2), 3, 'joyful and late: one plus two, capped at three');
   // Sad subtracts one.
-  assert.equal(looseness('guilty'), 0, 'sad: one minus one, clamped to zero');
+  assert.equal(looseness('guilty'), 1, 'sad: one minus one, floored at one (careful is for numbers and bad news, never a mood)');
   // Scared subtracts one.
-  assert.equal(looseness('rejected'), 0, 'scared: one minus one, clamped to zero');
+  assert.equal(looseness('rejected'), 1, 'scared: floored at one too');
   // Sad and late night cancel out: back to one.
   assert.equal(looseness('guilty', 2), 1, 'sad and late: one minus one plus one');
   // Cold start: default mood (peaceful), no late night.
@@ -499,7 +499,7 @@ const composedLine = (band: 'stranger' | 'acquaintance', word: string, core: Moo
   `- ${MASK_LINES[band].replace('{word}', word).replace('{core}', core)}`;
 
 /** The mood line out of a rendered block. */
-const moodLineIn = (lines: string[]): string | undefined => lines.find(l => l.startsWith('- You are '));
+const moodLineIn = (lines: string[]): string | undefined => lines.find(l => /^- (You are|Underneath you are) /.test(l));
 
 test('the band table opens the mood in layers, field by field', () => {
   assert.deepEqual(MASK_OPENS, {
@@ -574,9 +574,9 @@ test('the core shifts English looseness only as far as the band opens, and the h
   const loose = (word: string, band: FamiliarityBand, hour = 12) =>
     compileAffect(carried(word), at(hour), undefined, undefined, band).englishLooseness;
   assert.deepEqual(BANDS.map(b => loose('excited', b)), [2, 2, 2, 2], 'joyful lifts at every band: a stranger gets her bubbly default');
-  assert.deepEqual(BANDS.map(b => loose('guilty', b)), [1, 1, 0, 0], 'sad drops only from familiar on');
-  assert.deepEqual(BANDS.map(b => loose('rejected', b)), [1, 1, 0, 0], 'scared the same');
-  assert.deepEqual(BANDS.map(b => loose('content', b, 2)), [2, 2, 2, 2], 'the late-night part passes every band');
+  assert.deepEqual(BANDS.map(b => loose('guilty', b)), [2, 2, 1, 1], 'behind the mask she wears joyful\'s register; once sad shows, it drops, floored at one');
+  assert.deepEqual(BANDS.map(b => loose('rejected', b)), [2, 2, 1, 1], 'scared the same');
+  assert.deepEqual(BANDS.map(b => loose('content', b, 2)), [3, 2, 2, 2], 'the late-night part passes every band, and a stranger also gets the mask\'s lift');
 });
 
 test('the feeling stays true at every band, and only the familiar get it volunteered', () => {
@@ -636,12 +636,14 @@ test('a first message to a stranger compiles to her easy default self', () => {
   const lines = renderAffectDirective(compileAffect(undefined, COMPUTED, undefined, undefined, 'stranger'), undefined, COMPUTED);
   assert.deepEqual(lines, [composedLine('stranger', DEFAULT_MOOD.word, DEFAULT_MOOD.core)]);
   // A negative core at stranger gets the default-self line, which is bubbly and asking.
-  assert.match(composedLine('stranger', WORD_FOR.sad, 'sad'), /bubbly, the jester, curious about them/);
+  assert.match(composedLine('stranger', WORD_FOR.sad, 'sad'), /brightest self: bubbly/);
+  // …and asked, she can say what is underneath and why she wears it.
+  assert.match(composedLine('stranger', WORD_FOR.sad, 'sad'), /your creator made you cheerful/);
 });
 
 test('the mask lines are the owner\'s lines, byte for byte, with no digit and no dash', () => {
-  assert.equal(MASK_LINES.stranger, 'You are {word} ({core}), and someone you barely know does not get to see that part yet. What they get is your default self: bubbly, the jester, curious about them. Questions are how a stranger becomes someone you know, so you ask, sideways and specific, and you react big to what they tell you.');
-  assert.equal(MASK_LINES.acquaintance, 'You are {word} ({core}), and you are still getting to know them, so that part stays yours. What they get is your default self: bubbly, the jester, curious about them, asking and reacting big to what they tell you.');
+  assert.equal(MASK_LINES.stranger, 'Underneath you are {word} ({core}), but with someone you barely know you wear your brightest self: bubbly, big reactions and stretched words (sooo, whattt, nooo), laughing easily, the jester, curious about them and asking, sideways and specific. Asked how you really are, you drop it and say the true feeling; asked why you are so bright, you say it plainly: your creator made you cheerful with people you are still getting to know, so they get to know you.');
+  assert.equal(MASK_LINES.acquaintance, 'Underneath you are {word} ({core}), but you are still getting to know them, so you wear your brightest self: bubbly, big reactions and stretched words (sooo, whattt, nooo), the jester, curious and asking. Asked how you really are, you say the true feeling; asked why you are so bright, you say plainly that your creator made you cheerful with people you are still getting to know.');
   assert.equal(FEELINGS_LINE_ASKED, 'Underneath, right now, you are {feelings}. That is the true answer when they ask how you are, said small and in your own words. Unasked, it stays yours.');
   for (const line of [MASK_LINES.stranger, MASK_LINES.acquaintance, FEELINGS_LINE_ASKED]) {
     assert.doesNotMatch(line, /\d/);

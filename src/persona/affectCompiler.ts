@@ -504,9 +504,15 @@ export function compileAffect(
   // once the negative cores show at all.
   let loose: number = 1;
   if (lateNight) loose += 1;
-  if (mood.core === 'joyful' && opens.looseness !== 'none') loose += 1;
-  if ((mood.core === 'sad' || mood.core === 'scared') && opens.looseness === 'both') loose -= 1;
-  const englishLooseness = Math.max(0, Math.min(3, loose)) as 0 | 1 | 2 | 3;
+  // The brightest self she wears for someone she barely knows is joyful's register, whatever runs
+  // underneath (2026-09-26, the owner's call): the masked line lifts looseness the way joyful does.
+  const wearsMask = opens.moodLine === 'composed' || (opens.moodLine === 'positive' && !isPositiveCore(mood.core));
+  if ((mood.core === 'joyful' && opens.looseness !== 'none') || wearsMask) loose += 1;
+  if ((mood.core === 'sad' || mood.core === 'scared') && opens.looseness === 'both' && !wearsMask) loose -= 1;
+  // Floored at one (2026-09-26): a low mood makes her less loose, never careful. Careful (level zero)
+  // is for a bubble carrying a number, a price or bad news, which the persona block handles per
+  // bubble; a sleepy mood that compiled to it was telling her "no elongation" all day.
+  const englishLooseness = Math.max(1, Math.min(3, loose)) as 0 | 1 | 2 | 3;
 
   return {
     mood,
@@ -557,8 +563,8 @@ export const LATE_NIGHT_LINE =
  *  own lines and this one for the rest. The true word and core still ride it: asked how she is, she
  *  answers true at every band. Rendered as `- ` plus the line, the same shape as the core's line. */
 export const MASK_LINES: Record<'stranger' | 'acquaintance', string> = {
-  stranger: 'You are {word} ({core}), and someone you barely know does not get to see that part yet. What they get is your default self: bubbly, the jester, curious about them. Questions are how a stranger becomes someone you know, so you ask, sideways and specific, and you react big to what they tell you.',
-  acquaintance: 'You are {word} ({core}), and you are still getting to know them, so that part stays yours. What they get is your default self: bubbly, the jester, curious about them, asking and reacting big to what they tell you.',
+  stranger: 'Underneath you are {word} ({core}), but with someone you barely know you wear your brightest self: bubbly, big reactions and stretched words (sooo, whattt, nooo), laughing easily, the jester, curious about them and asking, sideways and specific. Asked how you really are, you drop it and say the true feeling; asked why you are so bright, you say it plainly: your creator made you cheerful with people you are still getting to know, so they get to know you.',
+  acquaintance: 'Underneath you are {word} ({core}), but you are still getting to know them, so you wear your brightest self: bubbly, big reactions and stretched words (sooo, whattt, nooo), the jester, curious and asking. Asked how you really are, you say the true feeling; asked why you are so bright, you say plainly that your creator made you cheerful with people you are still getting to know.',
 };
 
 /** `- You are <word> (<core>). <the core's imperative>` — the one line that still names a feeling,

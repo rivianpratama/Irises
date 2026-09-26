@@ -734,7 +734,9 @@ function nameKinds(kinds: readonly HookWord[]): string {
  * share turn for the same reason).
  */
 export function renderHooksSection(directive: HookDirective, momentLines: string[] = []): string {
-  if (directive.mode === 'task' && !directive.take) return '';
+  // A plain task carries no move, but it still carries her English: a looseness line, when there is
+  // one, rides alone so stretched words do not vanish on every turn they asked her something.
+  if (directive.mode === 'task' && !directive.take) return LOOSE_LEVEL_LINES[directive.englishLooseness ?? 1] || '';
   const lines: string[] = [];
   if (directive.mode === 'task') {
     lines.push(TAKE_HEADING, TAKE_LEAD);

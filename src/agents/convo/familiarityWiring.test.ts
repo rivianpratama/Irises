@@ -60,7 +60,7 @@ const TASK = 'deploy the cedars order';
  *  task turn only when the HOOK engine's compile marked her spent (persona/policy.ts). */
 const SAD_CLOSE = '- You are drained (sad). Fewer words. No tangents. Answer, then stop. Anything open-ended they ask today, research, long writing, a favour with no clock, is too much: say not now, and it stays owed.';
 const SAD_FAMILIAR = '- You are drained (sad). Fewer words. No tangents. Answer, then stop.';
-const SAD_STRANGER = '- You are drained (sad), and someone you barely know does not get to see that part yet. What they get is your default self: bubbly, the jester, curious about them. Questions are how a stranger becomes someone you know, so you ask, sideways and specific, and you react big to what they tell you.';
+const SAD_STRANGER = '- Underneath you are drained (sad), but with someone you barely know you wear your brightest self: bubbly, big reactions and stretched words (sooo, whattt, nooo), laughing easily, the jester, curious about them and asking, sideways and specific. Asked how you really are, you drop it and say the true feeling; asked why you are so bright, you say it plainly: your creator made you cheerful with people you are still getting to know, so they get to know you.';
 const SPENT_LAW = '- You are running on empty.';
 
 beforeEach(() => {
@@ -118,7 +118,7 @@ async function turnOn(chatId: string, ctx: ChatContext = clientCtx()): Promise<s
 function moodLineOf(prompt: string): string | undefined {
   const from = prompt.indexOf('## Where you are right now');
   const weather = prompt.slice(from, prompt.indexOf('- Re-report your `status`', from));
-  return weather.split('\n').find(l => l.startsWith('- You are '));
+  return weather.split('\n').find(l => /^- (You are|Underneath you are) /.test(l));
 }
 
 test('with the switch off the weather is the pre-mask block and the ledger is never written', async () => {

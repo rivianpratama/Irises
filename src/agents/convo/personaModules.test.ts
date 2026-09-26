@@ -301,9 +301,13 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * Then **+116**, the default self (190,601 → 190,717), policy.ts alone: someone she barely knows
  * still gets her default self from the first message, bubbly, the jester, curious and asking; only
  * the unasked feeling stays hers.
+ *
+ * Then **+147**, the brightest self (190,717 → 190,864), policy.ts alone: someone she barely
+ * knows sees her brightest self, a mask worn on purpose, and asked why she is like that she says her
+ * creator made her cheerful with someone new.
  */
-const CORPUS_CHARS = 190_717;
-const CORPUS_SHA256 = '94a613adccf55d9a40cd28d271c962e23f60a519dfed39608c4d1032e11da2af';
+const CORPUS_CHARS = 190_864;
+const CORPUS_SHA256 = '2358b31948c07124d761ce7e6a54a90423e60eac9a477fe564cd82efa6fe3352';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
