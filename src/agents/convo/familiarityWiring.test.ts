@@ -136,9 +136,11 @@ test('switched on, a stranger gets the composed line, the hook engine agrees, an
   const prompt = await turnOn(chatId);   // no row yet: a stranger
   assert.equal(moodLineOf(prompt), SAD_STRANGER, 'composed, and the say clause is gone with the rest');
   assert.ok(!prompt.includes(SPENT_LAW), 'the task directive is not marked spent: the same band reached both compiles');
-  // Chained per handle, so awaiting one more pass waits out the turn's own.
+  // Chained per handle, so awaiting one more pass waits out the turn's own. That pass found no row and
+  // seeded one from tenure: no profile to date, and the one turn the thread harvest has counted (this
+  // turn's own, saved just before the pass reads it), with the turn ticked on top. This pass is one more.
   await updateFamiliarity(SENDER);
-  assert.equal((await getFamiliarity(SENDER))?.turns, 2);
+  assert.equal((await getFamiliarity(SENDER))?.turns, 3, 'the harvested turn, the turn\'s own tick, and this pass');
 });
 
 test('someone close gets the whole weather, and rapport landing badly pulls it back a band', async () => {

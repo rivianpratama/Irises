@@ -1,8 +1,9 @@
 // Run with: npm test   (TZ=UTC tsx --test — runner pins DATA_BACKEND=memory)
 // The familiarity pass, end to end against the ephemeral store: a replied turn is counted once and a
 // day once, what she holds is read off the stores it lives in (a store behind a switch that is off
-// holds nothing), the stored level moves at most two points toward what that adds up to, a room is
-// never counted, and a band change files one receipt.
+// holds nothing), a first row is seeded from tenure and lands on its target, every later pass moves
+// the stored level at most two points toward what that adds up to, a room is never counted, and a
+// band change files one receipt.
 process.env.TZ = 'UTC';
 
 import fs from 'node:fs';
@@ -13,13 +14,13 @@ import { memoriesDir } from '../db/stateDir.js';
 import { resetStorageForTests } from '../db/sqlite.js';
 import { getFamiliarity, saveFamiliarity, type FamiliarityRow } from '../db/repositories/familiarity.js';
 import { upsertFact } from '../db/repositories/memoryMedium.js';
-import { addUserFact, setUserName } from '../db/repositories/profiles.js';
+import { addUserFact, setUserName, updateUserProfile } from '../db/repositories/profiles.js';
 import { writeMoments } from '../db/repositories/moments.js';
 import { writeSelf, type SelfEntry, type SelfKind } from '../db/repositories/self.js';
 import { saveThreadInventory } from '../db/repositories/threadInventory.js';
 import { defaultThreadInventory, type LoopStatus, type OpenLoop, type ThreadTheme } from '../persona/threads.js';
 import type { MomentEntry } from '../persona/moments.js';
-import { emptyEvidence, FAMILIARITY_SLEW } from '../persona/familiarity.js';
+import { bandOf, emptyEvidence, FAMILIARITY_SLEW, FAMILIARITY_START, targetLevel } from '../persona/familiarity.js';
 import { SEED_SOURCE } from './provenance.js';
 import { groupHandle } from './identity.js';
 import { getTraces, clearTraces } from '../diagnostics/trace.js';
@@ -69,8 +70,20 @@ function loop(id: string, status: LoopStatus = 'open'): OpenLoop {
   };
 }
 
-/** One of everything, in every store the pass reads. */
-async function seedEverything(): Promise<void> {
+/** A profile first seen at `at`. The profile stamps its own clock, and tenure is what a first row
+ *  is seeded from, so a test that cannot age a profile cannot tell a seed from a fresh start. */
+async function firstSeenAt(handle: string, at: number): Promise<void> {
+  const real = Date.now;
+  Date.now = () => at;
+  try {
+    await updateUserProfile(handle, {});
+  } finally {
+    Date.now = real;
+  }
+}
+
+/** One of everything, in every store the pass reads, with the harvest's own turn count. */
+async function seedEverything(harvestCount = 0): Promise<void> {
   process.env.MEMORY_PROVENANCE_ENABLED = 'true';
   await upsertFact(H, 'job', 'runs a plant nursery');                       // their words
   await upsertFact(H, 'pet', 'probably a cat person', 'convo', 'inferred');  // her guess
@@ -82,7 +95,7 @@ async function seedEverything(): Promise<void> {
   await writeSelf(H, [selfEntry('s1', 'stance'), selfEntry('s2', 'taste'), selfEntry('s3', 'learned'), selfEntry('s4', 'changed')], 0, []);
   // Two loops still pending (open, and asked about) and two that have ended but wait out the prune.
   const loops = [loop('l1'), loop('l2', 'asked'), loop('l3', 'resolved'), loop('l4', 'expired')];
-  await saveThreadInventory(H, { ...defaultThreadInventory(), themes: [theme('t1', 1), theme('t2', 0)], loops });
+  await saveThreadInventory(H, { ...defaultThreadInventory(), themes: [theme('t1', 1), theme('t2', 0)], loops, harvestCount });
 }
 
 // ── the counters ─────────────────────────────────────────────────────────────
@@ -104,6 +117,58 @@ test('the same day is one day however many turns it holds, and the next day is a
 test('passes fired together still count every turn', async () => {
   await Promise.all([updateFamiliarity(H, { now: T0 }), updateFamiliarity(H, { now: T0 + 1 }), updateFamiliarity(H, { now: T0 + 2 })]);
   assert.equal((await row(H))?.turns, 3, 'serialized per handle, so no tick is lost to a race');
+});
+
+// ── the first row ────────────────────────────────────────────────────────────
+
+test('someone she has known for months lands on their target on the first pass, seeded from tenure', async () => {
+  await firstSeenAt(H, T0 - 200 * DAY);
+  await seedEverything(120);
+  await updateFamiliarity(H, { now: T0 });
+  const first = await row(H);
+  const target = targetLevel(await gatherFamiliarityEvidence(H, { turns: 121, activeDays: 31 }));
+  assert.deepEqual(first, { level: target, turns: 121, activeDays: 31, lastDay: '2026-09-20' },
+    'days capped at thirty and the harvested turns, today on top, and the level straight to the target');
+  assert.equal(bandOf(target), 'familiar', 'months of held material: no stranger for days');
+  // Every later pass slews: with her stances switched off the target falls six, the level two.
+  process.env.MEMORY_SELF_ENABLED = 'off';
+  await updateFamiliarity(H, { now: T0 + 60_000 });
+  assert.deepEqual(await row(H), { level: target - FAMILIARITY_SLEW, turns: 122, activeDays: 31, lastDay: '2026-09-20' },
+    'a row exists now, so the counters are its own and the move is paced');
+});
+
+test('someone new lands where the evidence and the pace put them, which is the bottom', async () => {
+  await firstSeenAt(H, T0);
+  await updateFamiliarity(H, { now: T0 });
+  const first = await row(H);
+  assert.ok((first?.level ?? 0) <= 13, 'one day allows thirteen at most');
+  assert.deepEqual(first, { level: 1, turns: 1, activeDays: 1, lastDay: '2026-09-20' }, 'nothing held: the bottom, and today counted');
+});
+
+test('a fact dump the evening she meets them still stops at the pace ceiling', async () => {
+  await firstSeenAt(H, T0);
+  await seedEverything();
+  await updateFamiliarity(H, { now: T0 });
+  assert.equal((await row(H))?.level, 13, 'one active day allows thirteen, whatever she holds');
+});
+
+test('an unreadable store on the first pass stores the seeded counters at the start, and the next pass slews', async () => {
+  await firstSeenAt(H, T0 - 200 * DAY);
+  await saveThreadInventory(H, { ...defaultThreadInventory(), harvestCount: 120 });
+  const broken = path.join(memoriesDir(H), 'MOMENTS.md');
+  fs.mkdirSync(broken, { recursive: true });
+  const original = console.error;
+  console.error = () => {};
+  try {
+    await updateFamiliarity(H, { now: T0 });
+  } finally {
+    console.error = original;
+  }
+  assert.deepEqual(await row(H), { level: FAMILIARITY_START, turns: 121, activeDays: 31, lastDay: '2026-09-20' },
+    'a first row that could not read its evidence does not jump, and its tenure is still kept');
+  fs.rmSync(broken, { recursive: true, force: true });
+  await updateFamiliarity(H, { now: T0 + 60_000 });
+  assert.equal((await row(H))?.level, FAMILIARITY_START + FAMILIARITY_SLEW, 'a row exists now: the clean pass slews from the start');
 });
 
 // ── the slew ─────────────────────────────────────────────────────────────────

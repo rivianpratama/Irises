@@ -8,7 +8,9 @@
 //     than one the engine handed over.
 //   • THE PACE IS THE DAYS. However much she holds, the level cannot pass ten plus three per active
 //     day, so a fact dump in one evening hits the ceiling.
-//   • THE SLEW IS TWO. The stored level moves at most two points a turn either way, from one.
+//   • THE SLEW IS TWO. The stored level moves at most two points a turn either way.
+//   • A FIRST ROW IS SEEDED FROM TENURE. The days since they were first seen, capped at thirty, and
+//     the turns the thread harvest has counted, with today's tick on top.
 //   • A ROOM IS A STRANGER, whatever is stored.
 process.env.TZ = 'UTC';
 
@@ -16,8 +18,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   FAMILIARITY_BANDS, FAMILIARITY_SOURCES, FAMILIARITY_SLEW, FAMILIARITY_START, BAND_FLOORS,
+  FAMILIARITY_SEED_DAYS_CAP,
   bandOf, clampLevel, emptyEvidence, evidenceScore, familiarityBandFor, lowerBand, paceCeiling,
-  slewLevel, sourcePoints, targetLevel, tickCounters, utcDay,
+  seedCounters, slewLevel, sourcePoints, targetLevel, tickCounters, utcDay,
   type FamiliarityBand, type FamiliarityCounters, type FamiliarityEvidence, type FamiliaritySourceKey,
 } from './familiarity.js';
 
@@ -88,12 +91,12 @@ test('the target is the evidence under the pace ceiling, so a fact dump in one e
   assert.equal(targetLevel(emptyEvidence()), 1);
 });
 
-test('the slew moves at most two a turn in either direction, and a new row starts at one', () => {
+test('the slew moves at most two a turn in either direction, and no level reads as one', () => {
   assert.equal(FAMILIARITY_SLEW, 2);
   assert.equal(FAMILIARITY_START, 1);
-  assert.equal(slewLevel(null, 1), 1, 'a new row starts at one');
+  assert.equal(slewLevel(null, 1), 1, 'no level starts at one');
   assert.equal(slewLevel(null, 0), 1, 'and never below it');
-  assert.equal(slewLevel(null, 50), 3, 'a new row starts at one and moves two');
+  assert.equal(slewLevel(null, 50), 3, 'no level starts at one and moves two');
   assert.equal(slewLevel(3, 1), 1, 'down from three is back to one');
   assert.equal(slewLevel(50, 1), 48);
   assert.equal(slewLevel(50, 100), 52);
@@ -144,6 +147,31 @@ test('a turn counts once and a UTC day counts once, however many turns it holds'
   assert.deepEqual(tickCounters(nextDay, t0), { turns: 4, activeDays: 2, lastDay: '2026-09-21' });
   // A row whose day stamp did not parse counts the next turn's day.
   assert.deepEqual(tickCounters({ turns: 9, activeDays: 3, lastDay: '' }, t0), { turns: 10, activeDays: 4, lastDay: '2026-09-20' });
+});
+
+test('a first row is seeded from tenure: whole days since first seen up to thirty, and the harvested turns', () => {
+  const now = Date.UTC(2026, 8, 20, 12, 0, 0);
+  const DAY = 24 * 60 * 60 * 1000;
+  assert.equal(FAMILIARITY_SEED_DAYS_CAP, 30, 'the day the pace ceiling reaches a hundred');
+  assert.equal(paceCeiling(FAMILIARITY_SEED_DAYS_CAP), 100);
+  assert.deepEqual(seedCounters({ firstSeenMs: now - 200 * DAY, harvestCount: 120 }, now), { turns: 120, activeDays: 30, lastDay: '' });
+  assert.equal(seedCounters({ firstSeenMs: now - 5.5 * DAY, harvestCount: 0 }, now).activeDays, 5, 'whole days only');
+  assert.equal(seedCounters({ firstSeenMs: now - 60_000, harvestCount: 0 }, now).activeDays, 0, 'first seen today is no days yet');
+  assert.deepEqual(seedCounters({ firstSeenMs: null, harvestCount: 0 }, now), { turns: 0, activeDays: 0, lastDay: '' }, 'no profile, no tenure');
+  assert.equal(seedCounters({ firstSeenMs: now + 3 * DAY, harvestCount: 0 }, now).activeDays, 0, 'a first-seen in the future is no days');
+  for (const garbage of [Number.NaN, 0, -5 * DAY, Number.POSITIVE_INFINITY]) {
+    assert.equal(seedCounters({ firstSeenMs: garbage, harvestCount: 0 }, now).activeDays, 0, `a garbled first-seen (${garbage}) is no days`);
+  }
+  for (const garbage of [Number.NaN, -3, Number.POSITIVE_INFINITY]) {
+    assert.equal(seedCounters({ firstSeenMs: null, harvestCount: garbage }, now).turns, 0, `a garbled harvest count (${garbage}) is no turns`);
+  }
+});
+
+test('the tick on a seed counts today\'s turn and day on top, and an empty seed ticks like no row at all', () => {
+  const now = Date.UTC(2026, 8, 20, 12, 0, 0);
+  const seed = seedCounters({ firstSeenMs: now - 200 * 24 * 60 * 60 * 1000, harvestCount: 120 }, now);
+  assert.deepEqual(tickCounters(seed, now), { turns: 121, activeDays: 31, lastDay: '2026-09-20' });
+  assert.deepEqual(tickCounters(seedCounters({ firstSeenMs: null, harvestCount: 0 }, now), now), tickCounters(null, now));
 });
 
 // ══ 4. The walk ══════════════════════════════════════════════════════════════

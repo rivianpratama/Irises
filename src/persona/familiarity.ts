@@ -20,6 +20,8 @@
 // them read off the memory stores at compute time, each source worth a fixed number of points up to
 // its own cap. The caps sum to a hundred. Nothing here reads a clock: a quiet stretch is not evidence,
 // so the level never decays on silence (climate's rule) and falls only when what she holds shrinks.
+// A first row is seeded from tenure (days since first seen, the harvested turns) and lands on its
+// target, so someone she has known for months is not a stranger the day the mask ships.
 //
 // PURE and a LEAF: no DB, no clock read, no env, and it imports nothing, so the compiler, the
 // repository, the musings sweep and the dashboard can all import it for the price of a string.
@@ -146,8 +148,9 @@ export function targetLevel(ev: FamiliarityEvidence): number {
   return clampLevel(Math.floor(Math.min(evidenceScore(ev), paceCeiling(ev.activeDays))));
 }
 
-/** One turn's move toward the target, at most FAMILIARITY_SLEW either way. `from` null is a new row,
- *  which starts at FAMILIARITY_START and moves from there in the same turn. */
+/** One turn's move toward the target, at most FAMILIARITY_SLEW either way. `from` null starts at
+ *  FAMILIARITY_START. (The pass never slews a first row: it seeds one from tenure, seedCounters, and
+ *  lands it on its target.) */
 export function slewLevel(from: number | null, target: number): number {
   const start = from === null ? FAMILIARITY_START : clampLevel(from);
   const step = Math.max(-FAMILIARITY_SLEW, Math.min(FAMILIARITY_SLEW, clampLevel(target) - start));
@@ -173,6 +176,25 @@ export function lowerBand(band: FamiliarityBand): FamiliarityBand {
 export function familiarityBandFor(read: { group: boolean; level: number | null }): FamiliarityBand {
   if (read.group) return 'stranger';
   return bandOf(read.level ?? FAMILIARITY_START);
+}
+
+/** The most days a first row is seeded with: the day the pace ceiling reaches a hundred. */
+export const FAMILIARITY_SEED_DAYS_CAP = 30;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** A first row's counters, from what the stores already say: whole days since they were first seen
+ *  (none for no profile, a garbled stamp or one in the future), capped at FAMILIARITY_SEED_DAYS_CAP,
+ *  and the turns the thread harvest has counted. No day stamp, so the tick that follows counts today
+ *  as a fresh day. */
+export function seedCounters(read: { firstSeenMs: number | null; harvestCount: number }, nowMs: number): FamiliarityCounters {
+  const first = read.firstSeenMs;
+  const days = typeof first === 'number' && first > 0 ? countOf((nowMs - first) / DAY_MS) : 0;
+  return {
+    turns: Math.floor(countOf(read.harvestCount)),
+    activeDays: Math.min(FAMILIARITY_SEED_DAYS_CAP, Math.floor(days)),
+    lastDay: '',
+  };
 }
 
 /** The UTC day an instant falls on, `YYYY-MM-DD`. */

@@ -3,6 +3,10 @@
 // call, and the turn never waits on it: agents/convo/shared.ts fires it beside the climate eval,
 // under the same group skip, and a failure costs this one tick and nothing else.
 //
+// A FIRST ROW is seeded from tenure (the profile's first-seen days and the harvested turns, read in
+// the same store reads as the evidence) and lands straight on its target, so someone she has known
+// for months is not walked up from the bottom two points a turn. Every later pass slews.
+//
 // The turn reads only the stored row, so the mask runs one turn behind the harvests. A two-point
 // slew makes that lag invisible.
 //
@@ -22,7 +26,7 @@ import { readSelf, type SelfKind } from '../db/repositories/self.js';
 import { getThreadInventory, threadingEnabled } from '../db/repositories/threadInventory.js';
 import { familiarityEnabled, momentsEnabled, selfEnabled } from '../persona/featureFlags.js';
 import {
-  FAMILIARITY_START, bandOf, slewLevel, targetLevel, tickCounters, type FamiliarityEvidence,
+  FAMILIARITY_START, bandOf, seedCounters, slewLevel, targetLevel, tickCounters, type FamiliarityEvidence,
 } from '../persona/familiarity.js';
 import { partitionMediumRows } from './mediumTerm.js';
 import { LEGACY_FACT_PROV, parseProvenance, type Provenance } from './provenance.js';
@@ -36,6 +40,9 @@ export const FAMILIARITY_BAND_LABEL = 'familiarity:band';
 /** The SELF.md kinds that are about HER. A learned entry is about them, and is not counted. */
 const HER_OWN: ReadonlySet<SelfKind> = new Set<SelfKind>(['stance', 'taste', 'changed']);
 
+/** What she holds, without the two lived-exchange counters (those are the row's, not the stores'). */
+type HeldCounts = Omit<FamiliarityEvidence, 'turns' | 'activeDays'>;
+
 /**
  * What she holds about this person, as counts, plus the two lived-exchange counters handed in. Every
  * read here degrades to empty on its own, so this never throws. A store behind a switch that is off
@@ -47,15 +54,23 @@ export async function gatherFamiliarityEvidence(
   handle: string,
   counters: { turns: number; activeDays: number },
 ): Promise<FamiliarityEvidence> {
-  return (await gatherHeld(handle, counters)).evidence;
+  return withCounters((await gatherHeld(handle)).held, counters);
 }
 
-/** The evidence, and whether a file-backed store came back `degraded`: unreadable, and so empty for
- *  a reason that says nothing about what she holds. */
-async function gatherHeld(
-  handle: string,
-  counters: { turns: number; activeDays: number },
-): Promise<{ evidence: FamiliarityEvidence; degraded: boolean }> {
+/** The evidence: the held counts, and the lived-exchange counters beside them. */
+function withCounters(held: HeldCounts, counters: { turns: number; activeDays: number }): FamiliarityEvidence {
+  return { turns: counters.turns, activeDays: counters.activeDays, ...held };
+}
+
+/** One read of every store: the held counts; the two readings a first row is seeded from (the
+ *  profile's first-seen instant in ms, the inventory's harvested turns); and whether a file-backed
+ *  store came back `degraded`: unreadable, and so empty for a reason that says nothing about what
+ *  she holds. */
+async function gatherHeld(handle: string): Promise<{
+  held: HeldCounts;
+  seed: { firstSeenMs: number | null; harvestCount: number };
+  degraded: boolean;
+}> {
   const [facts, profile, moments, inventory, self] = await Promise.all([
     listMediumActive(handle, ['fact']),
     getUserProfile(handle),
@@ -68,9 +83,7 @@ async function gatherHeld(
   for (const key of Object.keys(medium.facts)) byProv[medium.factProv?.[key] ?? LEGACY_FACT_PROV]++;
   // An unprefixed profile fact is a legacy row, which reads as stated (provenance.ts LEGACY_FACT_PROV).
   for (const fact of profile?.facts ?? []) byProv[parseProvenance(fact).prov ?? LEGACY_FACT_PROV]++;
-  const evidence: FamiliarityEvidence = {
-    turns: counters.turns,
-    activeDays: counters.activeDays,
+  const held: HeldCounts = {
     statedFacts: byProv.stated,
     inferredFacts: byProv.inferred,
     seededFacts: byProv.seeded,
@@ -82,23 +95,30 @@ async function gatherHeld(
     loops: inventory?.loops.filter(l => l.status === 'open' || l.status === 'asked').length ?? 0,
     selfEntries: self?.entries.filter(e => HER_OWN.has(e.kind)).length ?? 0,
   };
-  return { evidence, degraded: !!moments?.degraded || !!self?.degraded };
+  // The profile speaks epoch SECONDS (db/types.ts); seedCounters reads a garbled one as no days.
+  const seed = {
+    firstSeenMs: typeof profile?.firstSeen === 'number' ? profile.firstSeen * 1000 : null,
+    harvestCount: inventory?.harvestCount ?? 0,
+  };
+  return { held, seed, degraded: !!moments?.degraded || !!self?.degraded };
 }
 
-/** One pass: tick, read, slew, save, and receipt a band change. */
+/** One pass: read, tick (a first row seeded from tenure), move, save, and receipt a band change. */
 async function familiarityPass(handle: string, opts: { chatId?: string; now?: number }): Promise<void> {
   const now = opts.now ?? Date.now();
   // Read BEFORE the stores and handed to the save: a /forget landing mid-pass must not have its wipe
   // undone by a level computed from what it wiped.
   const epoch = getForgetEpoch(handle);
   const prior = await getFamiliarity(handle);
-  const counters = tickCounters(prior, now);
-  const { evidence, degraded } = await gatherHeld(handle, counters);
+  const { held, seed, degraded } = await gatherHeld(handle);
+  const counters = tickCounters(prior ?? seedCounters(seed, now), now);
+  const target = targetLevel(withCounters(held, counters));
   // An unreadable store reads as empty, and empty would pull the level down. So a degraded read holds
-  // the level where it was; the turn and the day are still counted, because those are true.
+  // the level where it was, and a first row at the start (one that could not read its evidence must
+  // not jump); the turn and the day are still counted, because those are true.
   const level = degraded
     ? prior?.level ?? FAMILIARITY_START
-    : slewLevel(prior?.level ?? null, targetLevel(evidence));
+    : prior ? slewLevel(prior.level, target) : target;
   const saved = await saveFamiliarity(handle, { level, ...counters }, { ifForgetEpoch: epoch });
   if (!saved) return;
   const from = bandOf(prior?.level ?? FAMILIARITY_START);
