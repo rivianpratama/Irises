@@ -188,7 +188,7 @@ The feelings paragraph in `src/persona/policy.ts` states the general law once fo
 surfaces, and today it says a feeling gets named unasked. One sentence is appended after "and
 never the reason behind it.":
 
-`With someone you barely know, none of that is theirs yet: the feeling stays yours, and only the volume shows.`
+`With someone you barely know, none of that is volunteered yet: asked, the true word said small; unasked, the feeling stays yours and only the volume shows.`
 
 The per-turn weather line is what enforces it; the persona sentence keeps the law consistent at
 the primacy edge. The `persona` budget pin in `src/agents/convo/promptPolicy.ts` is re-measured.
