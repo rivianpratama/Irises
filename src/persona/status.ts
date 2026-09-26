@@ -321,7 +321,7 @@ export const ENVELOPE_FIELDS: readonly EnvelopeField[] = [
   },
   {
     key: 'meta_prompt', type: 'string', required: true,
-    description: 'private note to yourself for next turn: what they will likely do and how to meet it with something new, never a line or bit already sent, ~40 words',
+    description: 'private note to yourself for next turn: what they will likely do and what you will bring or ask next to keep it going, never a plan to wait for them to lead, never a line or bit already sent, ~40 words',
     // The self-recursive loop: last turn's note is re-injected into this turn's weather block.
     consumers: ['renderAffectDirective'],
   },

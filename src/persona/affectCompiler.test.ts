@@ -327,8 +327,8 @@ test('a tired battery and a flat mood leave the question open, and mark the turn
   assert.equal(q({ social_battery: SOCIAL_BATTERY_TIGHT - 1 }).question, 'open');
 });
 
-test('the carried read closes the question on the three turns a question would land wrong', () => {
-  assert.deepEqual([...QUESTION_CLOSED_MODES], ['overwhelmed', 'deflecting', 'confused']);
+test('the carried read closes the question on the two turns a question would land wrong', () => {
+  assert.deepEqual([...QUESTION_CLOSED_MODES], ['overwhelmed', 'confused']);
   for (const m of INTENT_MODES) {
     assert.equal(
       compileAffect(carried('hopeful'), COMPUTED, undefined, mode(m)).question,

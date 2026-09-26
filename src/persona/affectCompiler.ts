@@ -225,7 +225,10 @@ export const RAPPORT_QUESTION_BAND = 3;
  *  is a turn where a question of hers takes the reply somewhere it must not go — someone drowning
  *  is not being asked for detail, someone dodging is not asked again, and a person already lost
  *  gets an answer rather than another question. A bit stays open: a question inside it plays along. */
-export const QUESTION_CLOSED_MODES: readonly IntentMode[] = ['overwhelmed', 'deflecting', 'confused'];
+// `deflecting` left this list on 2026-09-26: a flat "yeah" or "hmm" was being read as a dodge, which
+// closed her question on exactly the turns the thread was running dry. Not asking the same thing
+// twice is the ledger's job (a repeated question is forbidden in persona/hooks.ts).
+export const QUESTION_CLOSED_MODES: readonly IntentMode[] = ['overwhelmed', 'confused'];
 
 /** Carried reads that make a share HEAVY. `overwhelmed` sits in both sets, which is the honest
  *  reading: the turn is weighty AND no question opens on it. */

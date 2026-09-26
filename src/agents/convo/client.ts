@@ -627,6 +627,7 @@ export async function chat(
         englishLooseness: affectDirective.englishLooseness,
         spent: affectDirective.spent,
         low: affectDirective.low,
+        stranger: affectDirective.mask === 'stranger',
         slip: affectDirective.feelingSlip || undefined,
       },
       isGroupChat, nowMs, idle.take === true,

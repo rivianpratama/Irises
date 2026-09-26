@@ -186,7 +186,10 @@ test('the same kind twice in a row forbids the third', () => {
   // The fourth word obeys the same repeat rule: two questions in a row closes the next one.
   assert.deepEqual(pick(state({ lastKinds: ['none', 'question', 'question'] })).directive.forbidden, ['question']);
   // Two of the same kind NOT adjacent is not a tic.
-  assert.deepEqual(pick(state({ lastKinds: ['judgment', 'none', 'judgment'] })).directive.forbidden, []);
+  assert.deepEqual(pick(state({ lastKinds: ['tangent', 'none', 'tangent'] })).directive.forbidden, []);
+  // …except a judgment, which never follows a judgment (the persona's never-twice rule).
+  assert.deepEqual(pick(state({ lastKinds: ['judgment', 'none', 'judgment'] })).directive.forbidden, ['judgment']);
+  assert.deepEqual(pick(state({ lastKinds: ['judgment', 'judgment', 'none'] })).directive.forbidden, []);
   // And two flat replies in a row is just a conversation, not a repeated kind.
   assert.deepEqual(pick(state({ lastKinds: ['tangent', 'none', 'none'] })).directive.forbidden, []);
 });
@@ -324,12 +327,18 @@ test('a question at the ledger tail does not close the next share turn', () => {
   assert.deepEqual(after.directive.forbidden, [],
     'the tail question is the last kind, not a ban — the ceiling decides');
   const later = pick(state({ lastKinds: ['question', 'none', 'judgment'] }), { shape: 'share' });
-  assert.deepEqual(later.directive.forbidden, [], 'one reply on: still open');
+  assert.deepEqual(later.directive.forbidden, ['judgment'], 'one reply on: the question still open, and no judgment after a judgment');
 });
 
 // A room closes the two moves that need one person to be aimed at: a verdict in front of an audience,
 // and a follow-up that puts one member on the spot to answer in front of everyone. A callback and a
 // tangent are about the thing, so they survive — the same fence every per-person read sits behind.
+test('a stranger gets no judgment on an idle or a share turn, and everything else stays open', () => {
+  assert.deepEqual(pick(state(), { affect: { ...OPEN, stranger: true } }).directive.forbidden, ['judgment']);
+  assert.deepEqual(pick(state(), { shape: 'share', affect: { ...OPEN, stranger: true } }).directive.forbidden, ['judgment']);
+  assert.deepEqual(pick(state(), { affect: OPEN }).directive.forbidden, []);
+});
+
 test('a room closes the judgment and the question on a share turn', () => {
   const { directive } = pick(state(), { shape: 'share', isGroup: true });
   assert.equal(directive.mode, 'share');

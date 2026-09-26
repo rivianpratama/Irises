@@ -187,6 +187,9 @@ export interface HookAffectInput {
   low?: boolean;
   /** The extreme feeling that slips out this turn (affect compiler `feelingSlip`), or absent. */
   slip?: string;
+  /** They are a stranger to her (the familiarity mask's effective band). Her default self gets to
+   *  know someone by asking, so a judgment, which needs material she does not have yet, is closed. */
+  stranger?: boolean;
 }
 
 /** 0 = no comedy, 1 = dry, 2 = normal, 3 = hot. The dial the jester reads before deciding
@@ -419,7 +422,8 @@ export function selectHook(
       // analysis, and analysis is not company; a tangent walks away from the thing they just put
       // down. A callback and — when the ceiling left it open — a question about what happened or how
       // it sat are what is left.
-      || (affect.heavy && (w === 'judgment' || w === 'tangent')));
+      || (affect.heavy && (w === 'judgment' || w === 'tangent'))
+      || (w === 'judgment' && (affect.stranger || lastKinds[lastKinds.length - 1] === 'judgment')));
     // An extreme feeling slipping out takes the turn's one move, as a tangent about her, whenever a
     // tangent is still hers to make: the move list is what she obeys, and a slip stated anywhere
     // else lost to the share law in every live replay.
@@ -489,7 +493,10 @@ export function selectHook(
     // follow-up question (puts one member on the spot to answer in front of everyone).
     || (isGroup && (w === 'judgment' || w === 'question'))
     // The affect ceiling: her weather says the question stays closed this turn.
-    || (w === 'question' && affect.question === 'closed'));
+    || (w === 'question' && affect.question === 'closed')
+    // Never two judgments in a row (the persona's own rule), and none at all for a stranger: her
+    // default self keeps a conversation alive by asking and bringing something of hers.
+    || (w === 'judgment' && (affect.stranger || lastKinds[lastKinds.length - 1] === 'judgment')));
   // The slip takes the one hook the same way it takes a share's move (see the share branch).
   const hookForbidden = affect.slip && !forbidden.includes('tangent') ? HOOK_WORDS.filter(w => w !== 'tangent') : forbidden;
 
