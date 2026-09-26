@@ -69,6 +69,9 @@ export interface ComposerCoreArgs {
   buildInstruction: (history: StoredMessage[]) => string;
   /** The line already on the user's screen, when there is one: continuity anchor + echo tripwire. */
   holdingText?: string;
+  /** The message goes into a group chat. A relayed look keys `handle` on the member who asked, so
+   *  the handle alone cannot say so; with this set the familiarity mask reads a room (a stranger). */
+  room?: boolean;
   trace: { chatId: string; handle: string; taskId?: string; label: string };
   /** Extra detail on the retry_exhausted incident row (the moment, the push kind, …). */
   errorDetail?: Record<string, unknown>;
@@ -101,6 +104,8 @@ export async function composeWithComposer(args: ComposerCoreArgs): Promise<strin
   // The flag is read ONCE, because it decides both whether the row is read and whether the mood line
   // is masked at all, and those have to agree.
   const familiarityOn = familiarityEnabled();
+  // A room is a room whoever asked: the caller's word, or a group identity in the handle itself.
+  const room = args.room === true || isGroupHandle(handle);
   const [history, userCtx, affect, climate, familiarityRow] = await Promise.all([
     getConversation(chatId),
     buildUserMemory('composer', handle),
@@ -111,14 +116,14 @@ export async function composeWithComposer(args: ComposerCoreArgs): Promise<strin
       ? getRelationshipClimate(handle)
       : Promise.resolve(defaultClimate()),
     // The climate read's gates, plus the mask's own flag: no identity and a room both skip the read.
-    handle && familiarityOn && !isGroupHandle(handle)
+    handle && familiarityOn && !room
       ? getFamiliarity(handle)
       : Promise.resolve(null),
   ]);
   // The band Convo's turn would read off the same row (agents/convo/client.ts): a room is a
   // stranger, no row is the bottom of the scale, and with the flag off there is no mask at all.
   const familiarity: FamiliarityBand | undefined = familiarityOn
-    ? familiarityBandFor({ group: !!handle && isGroupHandle(handle), level: familiarityRow?.level ?? null })
+    ? familiarityBandFor({ group: room, level: familiarityRow?.level ?? null })
     : undefined;
 
   // The internal-weather block ('' when there's no carried mood or it's stale AND the climate is at

@@ -214,11 +214,12 @@ const MOVED: RelationshipClimate = {
 };
 
 /** Compose one message for `handle` and return what the model was shown. */
-async function composedFor(handle: string): Promise<string> {
+async function composedFor(handle: string, opts: { room?: boolean } = {}): Promise<string> {
   const captured: LlmRequest[] = [];
   await composeWithComposer({
     ...base,
     handle,
+    ...opts,
     trace: { chatId: 'web:a', handle, label: 'composer-test' },
     buildInstruction: () => 'the deadline is march 14',
     llm: fakeLlm('{"bubbles":[{"text":"ok"}]}', captured),
@@ -304,6 +305,23 @@ test('a room relays composed whatever its row says, and rapport landing badly no
     assert.equal(moodLine(await composedFor(close)), SAD_CLOSE, 'someone close gets the whole line');
     await seedDrained(20);
     assert.equal(moodLine(await composedFor(close)), SAD_FAMILIAR, 'close pulled up to familiar: no put-off');
+  } finally {
+    delete process.env.CONVO_FAMILIARITY_ENABLED;
+  }
+});
+
+// A look delegated out of a room keys on the member who asked (their prefs, their research stash),
+// so its handle is personal and says nothing about who else will read the answer. The caller says
+// so, and the relay into a room is a stranger whatever that member's own row holds.
+test('a relay into a room is a stranger even under the asker\'s own close row', async () => {
+  process.env.CONVO_FAMILIARITY_ENABLED = 'on';
+  try {
+    await seedDrained();
+    const owner = '+15550004646';
+    await saveFamiliarity(owner, { level: 90, turns: 400, activeDays: 40, lastDay: '2026-01-05' });
+    assert.equal(moodLine(await composedFor(owner)), SAD_CLOSE, 'one to one, the owner gets the whole line');
+    assert.equal(moodLine(await composedFor(owner, { room: true })), SAD_STRANGER, 'in a room, composed');
+    assert.equal((await getFamiliarity(owner))?.turns, 400, 'and the owner\'s own row is left as it was');
   } finally {
     delete process.env.CONVO_FAMILIARITY_ENABLED;
   }
