@@ -24,16 +24,17 @@ process.env.TZ = 'UTC';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { compileFeelings, FEELINGS_LINE } from './affectCompiler.js';
+import { compileFeelings, FEELINGS_LINE, FEELINGS_LINE_ASKED } from './affectCompiler.js';
 import {
-  compileAffect, compileQuestionGate, compileHeavy,
+  compileAffect, compileQuestionGate, compileHeavy, compileMask,
   renderAffectDirective, renderMoodLine, renderBrevityLine,
-  moodOf, brevityOf, capFor, tightenHooks,
-  CORE_DIRECTIVES, DEFAULT_MOOD, BREVITY_LINES, LATE_NIGHT_LINE,
+  moodOf, brevityOf, capFor, tightenHooks, isPositiveCore,
+  CORE_DIRECTIVES, DEFAULT_MOOD, BREVITY_LINES, LATE_NIGHT_LINE, MASK_LINES, MASK_OPENS,
   HOOK_MOOD_FLOOR, SOCIAL_BATTERY_MINIMAL, SOCIAL_BATTERY_TIGHT,
   RAPPORT_RESTING, RAPPORT_QUESTION_BAND, QUESTION_CLOSED_MODES, HEAVY_MODES,
   type AffectDirective, type BrevityBand, type CarriedIntent, type HookAllowance, type QuestionGate,
 } from './affectCompiler.js';
+import { FAMILIARITY_BANDS, type FamiliarityBand } from './familiarity.js';
 import {
   coerceStatus, mergeStatus, INTENT_MODES,
   type AffectGauges, type AffectStatus, type ComputedState, type IntentMode,
@@ -76,6 +77,11 @@ function carried(label = 'hopeful', gauges: Partial<AffectGauges> = {}, meta = '
 const WORD_FOR: Record<MoodCore, string> = Object.fromEntries(
   MOOD_CORES.map(c => [c, WILLCOX_WHEEL[c].secondary[0]]),
 ) as Record<MoodCore, string>;
+
+/** A core's whole close-band sentence: its line, then its say clause when it has one. This is what
+ *  the mood line carried before the say split, so every pin that used to read `.line` reads this. */
+const fullLine = (core: MoodCore): string =>
+  [CORE_DIRECTIVES[core].line, CORE_DIRECTIVES[core].say].filter(Boolean).join(' ');
 
 /** A carried read of what THEY were doing last turn, as the caller hands it over once the freshness
  *  window has already been checked (the window is threads.ts's `AFFECT_FRESH_MS` and the caller's
@@ -128,6 +134,10 @@ test('every core carries one imperative, the permission that sentence describes,
     // as a section that either carries its question line or does not, and an imperative announcing
     // an available question would be read as an instruction to ask one.
     assert.doesNotMatch(row.line, /question/i, `${core}: the question ceiling reached an imperative`);
+    if (row.say !== undefined) {
+      assert.doesNotMatch(row.say, /\d/, `${core}: a number reached its say clause`);
+      assert.doesNotMatch(row.say, /question/i, `${core}: the question ceiling reached its say clause`);
+    }
     // Since 2026-09-26 only fear closes it: a sad or mad person still asks things, lazily (the `low`
     // flag shrinks the question), while a scared one stays flat and careful.
     assert.equal(row.question, core === 'scared' ? 'closed' : 'open', `${core}: only fear closes the question`);
@@ -140,7 +150,7 @@ test('the carried WORD picks the core, and the core picks the line', () => {
     const word = WORD_FOR[core];
     const d = compileAffect(carried(word), COMPUTED);
     assert.deepEqual(d.mood, { core, word }, `${word} files under ${core}`);
-    assert.equal(renderMoodLine(d.mood), `- You are ${word} (${core}). ${CORE_DIRECTIVES[core].line}`);
+    assert.equal(renderMoodLine(d.mood), `- You are ${word} (${core}). ${fullLine(core)}`);
   }
 });
 
@@ -383,7 +393,7 @@ test('neither ceiling reaches a rendered line', () => {
     const row = carried(WORD_FOR[core]);
     assert.deepEqual(
       renderAffectDirective(compileAffect(row, COMPUTED), row, COMPUTED),
-      [`- You are ${WORD_FOR[core]} (${core}). ${CORE_DIRECTIVES[core].line}`],
+      [`- You are ${WORD_FOR[core]} (${core}). ${fullLine(core)}`],
       core,
     );
   }
@@ -396,6 +406,7 @@ test('no carried row compiles to the loosest reading, and the clock still applie
   assert.deepEqual(d, {
     mood: DEFAULT_MOOD, bubbleCap: 3, brevity: 'normal', hooks: 'all',
     question: 'open', heavy: false, lateNight: false, englishLooseness: 1, spent: false, low: false, feelings: [], feelingStrong: false, feelingSlip: '',
+    mask: 'close',
   } satisfies AffectDirective);
   // A first message is not a tired one — but it can still be a late one, and it can still land in a
   // relationship that has moved. Neither of those is about HER.
@@ -450,15 +461,18 @@ test('the cold start renders one line, and it is an instruction', () => {
   assert.deepEqual(lines, [`- You are ${DEFAULT_MOOD.word} (${DEFAULT_MOOD.core}). ${CORE_DIRECTIVES[DEFAULT_MOOD.core].line}`]);
 });
 
-test('not one digit reaches a rendered line, in any branch', () => {
-  for (const core of MOOD_CORES) {
-    for (const battery of [10, 45, 90]) {
-      for (const hour of [2, 16, 23]) {
-        for (const climate of [undefined, defaultClimate(), belowBand('candor'), belowBand('playfulness')]) {
-          const last = carried(WORD_FOR[core], { social_battery: battery }, 'a note with no numbers in it');
-          const computed = at(hour);
-          for (const line of renderAffectDirective(compileAffect(last, computed, climate), last, computed, climate)) {
-            assert.doesNotMatch(line, /\d/, `${core} / battery ${battery} / hour ${hour}: ${line}`);
+test('not one digit reaches a rendered line, in any branch and at any band', () => {
+  for (const band of [undefined, ...FAMILIARITY_BANDS]) {
+    for (const core of MOOD_CORES) {
+      for (const battery of [10, 45, 90]) {
+        for (const hour of [2, 16, 23]) {
+          for (const climate of [undefined, defaultClimate(), belowBand('candor'), belowBand('playfulness')]) {
+            // An extreme edge, so the feelings line renders in whichever variant the band picks.
+            const last = carried(WORD_FOR[core], { social_battery: battery, anxiety: 90 }, 'a note with no numbers in it');
+            const computed = at(hour);
+            for (const line of renderAffectDirective(compileAffect(last, computed, climate, undefined, band), last, computed, climate)) {
+              assert.doesNotMatch(line, /\d/, `${band ?? 'no mask'} / ${core} / battery ${battery} / hour ${hour}: ${line}`);
+            }
           }
         }
       }
@@ -471,6 +485,168 @@ test("the self-note is quoted verbatim — it is the only line that is hers", ()
   const last = carried('hopeful', {}, note);
   const lines = renderAffectDirective(compileAffect(last, COMPUTED), last, COMPUTED);
   assert.ok(lines.includes(`- Your read going into this message (from last turn): "${note}"`));
+});
+
+// ══ 7b. The familiarity mask ═════════════════════════════════════════════════
+// How well she knows them decides what of the weather compiles into an instruction. Shape and energy
+// always pass; content opens in layers, positive before negative; the gauges and the true word run
+// underneath at every band. No band at all is the pre-mask compile, byte for byte.
+
+const BANDS: readonly FamiliarityBand[] = FAMILIARITY_BANDS;
+
+/** The composed line a band renders for a mood, placeholders filled. */
+const composedLine = (band: 'stranger' | 'acquaintance', word: string, core: MoodCore): string =>
+  `- ${MASK_LINES[band].replace('{word}', word).replace('{core}', core)}`;
+
+/** The mood line out of a rendered block. */
+const moodLineIn = (lines: string[]): string | undefined => lines.find(l => l.startsWith('- You are '));
+
+test('the band table opens the mood in layers, field by field', () => {
+  assert.deepEqual(MASK_OPENS, {
+    stranger: { moodLine: 'composed', looseness: 'none', feelingsLine: 'asked', slip: false, low: false, spent: false },
+    acquaintance: { moodLine: 'positive', looseness: 'joyful', feelingsLine: 'asked', slip: false, low: false, spent: false },
+    familiar: { moodLine: 'base', looseness: 'both', feelingsLine: 'full', slip: true, low: true, spent: false },
+    close: { moodLine: 'full', looseness: 'both', feelingsLine: 'full', slip: true, low: true, spent: true },
+  });
+  assert.deepEqual(Object.keys(MASK_OPENS), [...FAMILIARITY_BANDS]);
+});
+
+test('the positive cores are the chart\'s own upper half', () => {
+  assert.deepEqual(MOOD_CORES.filter(isPositiveCore), ['joyful', 'powerful', 'peaceful']);
+  assert.deepEqual(
+    MOOD_CORES.filter(c => CORE_VALENCE_BAND[c][0] >= MIDPOINT), MOOD_CORES.filter(isPositiveCore),
+    'the same division the question ceiling was drawn on',
+  );
+});
+
+test('the say split renders the close band byte-identical to the unsplit sentences', () => {
+  assert.equal(CORE_DIRECTIVES.mad.line, 'Sharper and shorter than usual. A judgment comes easily today; keep it on what they did, never on who they are.');
+  assert.equal(CORE_DIRECTIVES.mad.say, 'A favour asked in the same breath as a put-down gets a flat no.');
+  assert.equal(CORE_DIRECTIVES.sad.line, 'Fewer words. No tangents. Answer, then stop.');
+  assert.equal(CORE_DIRECTIVES.sad.say, 'Anything open-ended they ask today, research, long writing, a favour with no clock, is too much: say not now, and it stays owed.');
+  for (const core of ['scared', 'joyful', 'powerful', 'peaceful'] as const) {
+    assert.equal(CORE_DIRECTIVES[core].say, undefined, `${core} has no say clause`);
+  }
+  // The two sentences exactly as main rendered them before the split.
+  const mad = '- You are angry (mad). Sharper and shorter than usual. A judgment comes easily today; keep it on what they did, never on who they are. A favour asked in the same breath as a put-down gets a flat no.';
+  const sad = '- You are drained (sad). Fewer words. No tangents. Answer, then stop. Anything open-ended they ask today, research, long writing, a favour with no clock, is too much: say not now, and it stays owed.';
+  assert.equal(renderMoodLine({ core: 'mad', word: 'angry' }), mad);
+  assert.equal(renderMoodLine({ core: 'mad', word: 'angry' }, 'close'), mad);
+  assert.equal(renderMoodLine({ core: 'sad', word: 'drained' }), sad);
+  assert.equal(renderMoodLine({ core: 'sad', word: 'drained' }, 'close'), sad);
+});
+
+test('no band at all is the pre-mask compile, a low rapport included', () => {
+  for (const core of MOOD_CORES) {
+    for (const rapport of [20, RAPPORT_RESTING, 90]) {
+      for (const social_battery of [10, 45, 90]) {
+        const last = carried(WORD_FOR[core], { rapport, social_battery });
+        const d = compileAffect(last, COMPUTED);
+        const tag = `${core} / rapport ${rapport} / battery ${social_battery}`;
+        assert.deepEqual(d, compileAffect(last, COMPUTED, undefined, undefined, undefined), tag);
+        assert.equal(d.mask, 'close', `${tag}: the rapport notch only applies to a band someone passed`);
+        assert.equal(d.spent, core === 'sad', `${tag}: spent reads as it always did`);
+        assert.equal(moodLineIn(renderAffectDirective(d, last, COMPUTED)), `- You are ${WORD_FOR[core]} (${core}). ${fullLine(core)}`, tag);
+      }
+    }
+  }
+});
+
+test('each band renders the mood line its row names, for every core', () => {
+  for (const core of MOOD_CORES) {
+    const word = WORD_FOR[core];
+    const line = (band: FamiliarityBand) => renderMoodLine({ core, word }, band);
+    const base = `- You are ${word} (${core}). ${CORE_DIRECTIVES[core].line}`;
+    assert.equal(line('stranger'), composedLine('stranger', word, core), `${core}: a stranger sees her composed`);
+    assert.equal(line('acquaintance'), isPositiveCore(core) ? base : composedLine('acquaintance', word, core),
+      `${core}: an acquaintance sees the positive cores and nothing negative`);
+    assert.equal(line('familiar'), base, `${core}: familiar sees every core's base line`);
+    assert.equal(line('close'), `- You are ${word} (${core}). ${fullLine(core)}`, `${core}: close sees the say clause too`);
+  }
+  // The renderer picks by the directive's own mask.
+  const last = carried(WORD_FOR.sad);
+  assert.equal(
+    moodLineIn(renderAffectDirective(compileAffect(last, COMPUTED, undefined, undefined, 'stranger'), last, COMPUTED)),
+    composedLine('stranger', WORD_FOR.sad, 'sad'),
+  );
+});
+
+test('the core shifts English looseness only as far as the band opens, and the hour always does', () => {
+  const loose = (word: string, band: FamiliarityBand, hour = 12) =>
+    compileAffect(carried(word), at(hour), undefined, undefined, band).englishLooseness;
+  assert.deepEqual(BANDS.map(b => loose('excited', b)), [1, 2, 2, 2], 'joyful lifts from acquaintance on');
+  assert.deepEqual(BANDS.map(b => loose('guilty', b)), [1, 1, 0, 0], 'sad drops only from familiar on');
+  assert.deepEqual(BANDS.map(b => loose('rejected', b)), [1, 1, 0, 0], 'scared the same');
+  assert.deepEqual(BANDS.map(b => loose('content', b, 2)), [2, 2, 2, 2], 'the late-night part passes every band');
+});
+
+test('the feeling stays true at every band, and only the familiar get it volunteered', () => {
+  const last = carried('hopeful', { anxiety: 90 });
+  for (const band of BANDS) {
+    const d = compileAffect(last, COMPUTED, undefined, undefined, band);
+    assert.deepEqual(d.feelings, ['on edge'], `${band}: the feeling itself is never masked`);
+    const template = band === 'stranger' || band === 'acquaintance' ? FEELINGS_LINE_ASKED : FEELINGS_LINE;
+    assert.ok(renderAffectDirective(d, last, COMPUTED).includes(`- ${template.replace('{feelings}', 'on edge')}`), band);
+  }
+});
+
+test('the slip, the low flag and the put-off open by band, never before the table says', () => {
+  // A sad core with an extreme edge, on a stamp whose draw slips (turnDraw(1) is under the slip share).
+  const row = { ...carried('drained', { anxiety: 90 }), at: 1 };
+  const by = (band: FamiliarityBand) => compileAffect(row, COMPUTED, undefined, undefined, band);
+  assert.deepEqual(BANDS.map(b => by(b).feelingSlip), ['', '', 'on edge', 'on edge']);
+  assert.deepEqual(BANDS.map(b => by(b).low), [false, false, true, true]);
+  assert.deepEqual(BANDS.map(b => by(b).spent), [false, false, false, true]);
+});
+
+test('shape, energy and the ceilings pass every band untouched, and so does the word', () => {
+  for (const core of MOOD_CORES) {
+    for (const battery of [10, 45, 90]) {
+      for (const hour of [2, 16]) {
+        const last = carried(WORD_FOR[core], { social_battery: battery });
+        const computed = at(hour);
+        const close = compileAffect(last, computed, belowBand('playfulness'), mode('venting'), 'close');
+        for (const band of BANDS) {
+          const d = compileAffect(last, computed, belowBand('playfulness'), mode('venting'), band);
+          for (const k of ['mood', 'brevity', 'bubbleCap', 'hooks', 'question', 'heavy', 'lateNight', 'feelings', 'feelingStrong'] as const) {
+            assert.deepEqual(d[k], close[k], `${core} / ${battery} / ${hour} / ${band}: ${k}`);
+          }
+        }
+      }
+    }
+  }
+});
+
+test('rapport landing badly pulls the mask up one band, on the question gate\'s own line', () => {
+  const floor = RAPPORT_RESTING - RAPPORT_QUESTION_BAND;
+  const with_ = (rapport: number, band: FamiliarityBand) =>
+    compileAffect(carried('hopeful', { rapport }), COMPUTED, undefined, undefined, band);
+  assert.equal(with_(floor, 'close').mask, 'close');
+  assert.equal(with_(floor - 1, 'close').mask, 'familiar');
+  assert.equal(with_(floor - 1, 'familiar').mask, 'acquaintance');
+  assert.equal(with_(floor - 1, 'acquaintance').mask, 'stranger');
+  assert.equal(with_(floor - 1, 'stranger').mask, 'stranger', 'never below stranger');
+  // One threshold for landing badly: the notch and the closed question arrive on the same point.
+  assert.equal(with_(floor - 1, 'close').question, 'closed');
+  assert.equal(with_(floor, 'close').question, 'open');
+  assert.equal(compileMask('close', undefined), 'close', 'no row is no evidence of anything landing badly');
+  assert.equal(compileMask('close', { ...carried(), rapport: 'nonsense' as unknown as number }), 'close');
+});
+
+test('a first message to a stranger compiles to the composed line with the default word', () => {
+  const lines = renderAffectDirective(compileAffect(undefined, COMPUTED, undefined, undefined, 'stranger'), undefined, COMPUTED);
+  assert.deepEqual(lines, [composedLine('stranger', DEFAULT_MOOD.word, DEFAULT_MOOD.core)]);
+  assert.ok(!lines.join('\n').includes('Your easy self'));
+});
+
+test('the mask lines are the owner\'s lines, byte for byte, with no digit and no dash', () => {
+  assert.equal(MASK_LINES.stranger, 'You are {word} ({core}). Someone you barely know does not get to see it: composed and pleasant, and none of it reaches the words.');
+  assert.equal(MASK_LINES.acquaintance, 'You are {word} ({core}). You are still getting to know them, so it stays yours: composed and pleasant, and none of it reaches the words.');
+  assert.equal(FEELINGS_LINE_ASKED, 'Underneath, right now, you are {feelings}. That is the true answer when they ask how you are, said small and in your own words. Unasked, it stays yours.');
+  for (const line of [MASK_LINES.stranger, MASK_LINES.acquaintance, FEELINGS_LINE_ASKED]) {
+    assert.doesNotMatch(line, /\d/);
+    assert.doesNotMatch(line, /—|–/);
+  }
 });
 
 // ══ 8. Purity ════════════════════════════════════════════════════════════════
@@ -486,5 +662,6 @@ test('the compile is pure: frozen inputs survive it and the same inputs give the
   assert.deepEqual(a, {
     mood: { core: 'sad', word: 'drained' }, bubbleCap: 1, brevity: 'minimal', hooks: 'none',
     question: 'open', heavy: true, lateNight: true, englishLooseness: 1, spent: true, low: true, feelings: ['low', 'sleepy'], feelingStrong: true, feelingSlip: 'low',
+    mask: 'close',
   } satisfies AffectDirective);
 });

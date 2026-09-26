@@ -64,6 +64,8 @@ import { HOOK_WORDS, type HookWord } from './hooks.js';
 import type { CycleState } from './cycle.js';
 import type { CircadianState } from './circadian.js';
 import { climateLines, climateLinesForComposer, type RelationshipClimate } from './climate.js';
+// The band name only. A leaf, and a type: the value the compile reads arrives as an argument.
+import type { FamiliarityBand } from './familiarity.js';
 
 export type { MoodCore } from './mood.js';
 export type { CyclePhase } from './cycle.js';
@@ -696,15 +698,22 @@ const INTERNAL_WEATHER_HEADER =
  * Optional, defaulting to FALSE, and the default is the safe direction rather than a shrug: a caller
  * with no rhythm engine (a non-Convo lane, the flag off, a test) is on a turn with no hook to spend,
  * and the flat-answer register is what it should read.
+ *
+ * `familiarity` is how well she knows them, as the band the stored level cuts to
+ * (persona/familiarity.ts), handed straight to the compile. It is the SAME value convo/client.ts
+ * hands the hook engine's compile (it rides PersonaTurn to the assembler), so this block and the hook
+ * directive can never disagree about how much of her mood shows. Absent is no mask at all: the block
+ * byte for byte as it stood before the mask existed (pinned in status.test.ts).
  */
 export function renderStatusForPrompt(
   state: AffectState | undefined,
   computed: ComputedState,
   climate?: RelationshipClimate,
   kindOpen = false,
+  familiarity?: FamiliarityBand,
 ): string {
   const last = state?.last;
-  const directive = compileAffect(last, computed, climate);
+  const directive = compileAffect(last, computed, climate, undefined, familiarity);
   return [
     INTERNAL_WEATHER_HEADER,
     ...renderAffectDirective(directive, last, computed, climate),

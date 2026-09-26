@@ -32,13 +32,23 @@
 // arrives as `ComputedState`, the register as `RelationshipClimate`, the carried row as the last
 // `AffectStatus`, and the same three inputs always compile to the same directive.
 //
+// THE MASK is the last stage, and it decides what compiles, never what is true. How well she knows
+// them arrives as a band (persona/familiarity.ts); `compileMask` pulls it up one notch when rapport
+// has been landing badly, on the question gate's own line; MASK_OPENS says, band by band, which
+// layers of the mood reach an instruction. Shape and energy always pass (the battery, the hook
+// allowance the core carries, the question ceiling, the hour). Content opens in order, positive
+// before negative, and the deepest layer, her mood putting an ask off, opens last. The gauges and
+// the reported word run underneath at every band, and asked how she is she answers true at every
+// band (FEELINGS_LINE_ASKED). No band at all is no mask: the compile as it stood before the stage.
+//
 // IMPORT DIRECTION, and it has to stay this way: status.ts imports this file BY VALUE, so everything
 // this file takes from status.ts is `import type` and erased at compile time — the same edge, and the
-// same argument, as affectDrift.ts's header states for itself. mood.ts and climate.ts are leaves, so
-// those two are ordinary value imports and nothing can load back through them.
+// same argument, as affectDrift.ts's header states for itself. mood.ts, climate.ts and familiarity.ts
+// are leaves, so those three are ordinary value imports and nothing can load back through them.
 
-import { coreForLabel, type MoodCore } from './mood.js';
+import { coreForLabel, CORE_VALENCE_BAND, type MoodCore } from './mood.js';
 import { bandForDial, clampToSpec, type RelationshipClimate } from './climate.js';
+import { lowerBand, type FamiliarityBand } from './familiarity.js';
 import type { CircadianSlot } from './circadian.js';
 import type { AffectStatus, ComputedState, IntentMode } from './status.js';
 
@@ -105,6 +115,10 @@ export interface AffectDirective {
   /** …and this is one of the turns it slips into the reply (FEELING_SLIP_PERCENT of them): the
    *  feeling's word, or '' on every other turn. */
   feelingSlip: string;
+  /** How much of all this they get to see: the familiarity band after the rapport notch
+   *  (`compileMask`), or `close` when the caller passed no band. The renderer reads it to pick the
+   *  mood line and the feelings line; every field above is already masked by it. */
+  mask: FamiliarityBand;
 }
 
 /**
@@ -133,15 +147,21 @@ export interface AffectDirective {
  */
 export const CORE_DIRECTIVES: Record<
   MoodCore,
-  { line: string; hooks: Exclude<HookAllowance, 'none'>; question: QuestionGate }
+  { line: string; say?: string; hooks: Exclude<HookAllowance, 'none'>; question: QuestionGate }
 > = {
+  // `say` is the part of a core's sentence that acts on them (a flat no, a put-off) rather than
+  // colouring the reply. It is the deepest layer the familiarity mask opens, so it renders only at
+  // the close band, joined to `line` with one space: the close band is byte-identical to the
+  // unsplit sentence (renderMoodLine).
   mad: {
-    line: 'Sharper and shorter than usual. A judgment comes easily today; keep it on what they did, never on who they are. A favour asked in the same breath as a put-down gets a flat no.',
+    line: 'Sharper and shorter than usual. A judgment comes easily today; keep it on what they did, never on who they are.',
+    say: 'A favour asked in the same breath as a put-down gets a flat no.',
     hooks: 'all',
     question: 'open',
   },
   sad: {
-    line: 'Fewer words. No tangents. Answer, then stop. Anything open-ended they ask today, research, long writing, a favour with no clock, is too much: say not now, and it stays owed.',
+    line: 'Fewer words. No tangents. Answer, then stop.',
+    say: 'Anything open-ended they ask today, research, long writing, a favour with no clock, is too much: say not now, and it stays owed.',
     hooks: 'no_tangent',
     question: 'open',
   },
@@ -268,6 +288,10 @@ function turnDraw(at: unknown): number {
 /** The line that hands her the feelings. No reasons and no numbers ride with them. */
 export const FEELINGS_LINE = 'Underneath, right now, you are {feelings}. That is the true answer when they ask how you are, said in your own words; unasked, name it once when it is why the reply comes out the way it does, and never the reason behind it.';
 
+/** The same hand-over at the two bands where a feeling is not theirs yet (spec §3, Fable's line). It
+ *  is still the true answer when they ask, said small; unasked, nothing of it is volunteered. */
+export const FEELINGS_LINE_ASKED = 'Underneath, right now, you are {feelings}. That is the true answer when they ask how you are, said small and in your own words. Unasked, it stays yours.';
+
 /** The mood a turn with no carried row compiles to. `peaceful`/`content` because it is the same
  *  fallback the rest of the wheel already uses for a word it cannot place (mood.ts coreForLabel),
  *  and because "even and flat, nothing extra" is the honest instruction for a first message: she has
@@ -369,6 +393,53 @@ export function compileHeavy(carried?: CarriedIntent): boolean {
   return !!carried && HEAVY_MODES.includes(carried.intentMode);
 }
 
+// ── The mask ─────────────────────────────────────────────────────────────────────────
+
+/** What one band lets through. Every field names a layer of the mood's CONTENT; shape and energy are
+ *  not in here because they pass every band. */
+export interface MaskOpens {
+  /** Which mood line renders: the composed line for every core, the positive cores' own lines with
+   *  the composed line for the rest, every core's base line, or the base line with its say clause. */
+  moodLine: 'composed' | 'positive' | 'base' | 'full';
+  /** The core's own shift to English looseness: none, joyful's lift only, or both directions. */
+  looseness: 'none' | 'joyful' | 'both';
+  /** The feelings line: the asked-only variant, or the full one. */
+  feelingsLine: 'asked' | 'full';
+  /** Whether an extreme feeling may slip into the reply. */
+  slip: boolean;
+  /** Whether her low weather reaches the hook section (she asks lazily). */
+  low: boolean;
+  /** Whether a sad core may put an open-ended ask off. The last layer to open. */
+  spent: boolean;
+}
+
+/** The spec's band table (§2), row for row. Cumulative: nothing a band opens closes again above it. */
+export const MASK_OPENS: Record<FamiliarityBand, MaskOpens> = {
+  stranger: { moodLine: 'composed', looseness: 'none', feelingsLine: 'asked', slip: false, low: false, spent: false },
+  acquaintance: { moodLine: 'positive', looseness: 'joyful', feelingsLine: 'asked', slip: false, low: false, spent: false },
+  familiar: { moodLine: 'base', looseness: 'both', feelingsLine: 'full', slip: true, low: true, spent: false },
+  close: { moodLine: 'full', looseness: 'both', feelingsLine: 'full', slip: true, low: true, spent: true },
+};
+
+/** The wheel's own split (mood.ts CORE_VALENCE_BAND): a core whose band starts above the midpoint is
+ *  a positive one. Read off the chart rather than listed, so the mask opens on the same division the
+ *  question ceiling was drawn on. */
+export function isPositiveCore(core: MoodCore): boolean {
+  return CORE_VALENCE_BAND[core][0] >= 50;
+}
+
+/**
+ * The band this turn is compiled under: the one the caller read, pulled up a notch when rapport has
+ * been landing badly. The threshold is the question gate's own (`RAPPORT_RESTING -
+ * RAPPORT_QUESTION_BAND`), on purpose: one line for "landing badly", so the question closing and the
+ * mask coming back up arrive on the same point. No carried row is no evidence of anything landing
+ * badly, and a garbled rapport reads as the middle, the same rescue the question gate gets.
+ */
+export function compileMask(familiarity: FamiliarityBand, last: AffectStatus | undefined): FamiliarityBand {
+  if (last && level(last.rapport) < RAPPORT_RESTING - RAPPORT_QUESTION_BAND) return lowerBand(familiarity);
+  return familiarity;
+}
+
 /**
  * The whole compile. Five inputs' worth of machinery — the carried row's gauges and its feeling
  * word, the clock's slot, the standing register's two floor bands, last turn's read of what they
@@ -395,9 +466,14 @@ export function compileAffect(
   computed: ComputedState,
   climate?: RelationshipClimate,
   carried?: CarriedIntent,
+  familiarity?: FamiliarityBand,
 ): AffectDirective {
   const mood = moodOf(last);
   const brevity = brevityOf(last);
+  // No band is no mask: the close band with no rapport notch, which is this compile as it stood
+  // before the mask existed, for every caller that passes nothing (the flag off, every older test).
+  const mask: FamiliarityBand = familiarity === undefined ? 'close' : compileMask(familiarity, last);
+  const opens = MASK_OPENS[mask];
 
   let hooks: HookAllowance = CORE_DIRECTIVES[mood.core].hooks;
   if (bandForDial(climate, 'candor') === 'below') hooks = tightenHooks(hooks, 'no_judgment');
@@ -406,10 +482,13 @@ export function compileAffect(
 
   const lateNight = LATE_SLOTS.includes(computed.circadian.slot);
 
+  // The hour's share of looseness is energy and passes every band. The core's share is content, so it
+  // opens with the band: joyful's lift from acquaintance on, the careful drop of sad and scared only
+  // once the negative cores show at all.
   let loose: number = 1;
   if (lateNight) loose += 1;
-  if (mood.core === 'joyful') loose += 1;
-  if (mood.core === 'sad' || mood.core === 'scared') loose -= 1;
+  if (mood.core === 'joyful' && opens.looseness !== 'none') loose += 1;
+  if ((mood.core === 'sad' || mood.core === 'scared') && opens.looseness === 'both') loose -= 1;
   const englishLooseness = Math.max(0, Math.min(3, loose)) as 0 | 1 | 2 | 3;
 
   return {
@@ -422,14 +501,16 @@ export function compileAffect(
     lateNight,
     englishLooseness,
     // Sad alone: a tired battery at midnight is ordinary and must not make her put off every
-    // open-ended ask; a sad core is the state that does.
-    spent: mood.core === 'sad',
-    low: mood.core === 'sad' || mood.core === 'mad' || mood.core === 'scared'
-      || brevity !== 'normal' || (!!last && level(last.mood_level) < HOOK_MOOD_FLOOR),
+    // open-ended ask; a sad core is the state that does. And only at the close band: putting their
+    // ask off is the deepest layer the mask opens.
+    spent: opens.spent && mood.core === 'sad',
+    low: opens.low && (mood.core === 'sad' || mood.core === 'mad' || mood.core === 'scared'
+      || brevity !== 'normal' || (!!last && level(last.mood_level) < HOOK_MOOD_FLOOR)),
     feelings: compileFeelings(last, computed),
     feelingStrong: (compileMoodlets(last, computed)[0]?.strength ?? 0) >= FEELING_STRONG,
-    feelingSlip: (compileMoodlets(last, computed)[0]?.strength ?? 0) >= FEELING_STRONG && turnDraw(last?.at) < FEELING_SLIP_PERCENT
+    feelingSlip: opens.slip && (compileMoodlets(last, computed)[0]?.strength ?? 0) >= FEELING_STRONG && turnDraw(last?.at) < FEELING_SLIP_PERCENT
       ? compileMoodlets(last, computed)[0].word : '',
+    mask,
   };
 }
 
@@ -452,10 +533,28 @@ export const BREVITY_LINES: Record<Exclude<BrevityBand, 'normal'>, string> = {
 export const LATE_NIGHT_LINE =
   'It is late where they are. Smaller and quieter than daytime: fewer words and nothing heavy.';
 
+/** The composed mood line, keyed by the effective band and used in place of the core's line (spec §3,
+ *  Fable's lines, pasted byte-for-byte). The true word and core still ride it: asked how she is, she
+ *  answers true at every band. Rendered as `- ` plus the line, the same shape as the core's line. */
+export const MASK_LINES: Record<'stranger' | 'acquaintance', string> = {
+  stranger: 'You are {word} ({core}). Someone you barely know does not get to see it: composed and pleasant, and none of it reaches the words.',
+  acquaintance: 'You are {word} ({core}). You are still getting to know them, so it stays yours: composed and pleasant, and none of it reaches the words.',
+};
+
 /** `- You are <word> (<core>). <the core's imperative>` — the one line that still names a feeling,
- *  and it names it in order to hand over an instruction. */
-export function renderMoodLine(mood: { core: MoodCore; word: string }): string {
-  return `- You are ${mood.word} (${mood.core}). ${CORE_DIRECTIVES[mood.core].line}`;
+ *  and it names it in order to hand over an instruction. `mask` picks which imperative: the composed
+ *  line at the front bands (for every core at stranger, for the negative cores at acquaintance), the
+ *  core's base line at familiar, and the base line with its say clause at close. The default is close,
+ *  which renders every core's sentence exactly as it stood before the say split. */
+export function renderMoodLine(mood: { core: MoodCore; word: string }, mask: FamiliarityBand = 'close'): string {
+  const row = CORE_DIRECTIVES[mood.core];
+  const opens = MASK_OPENS[mask].moodLine;
+  if (opens === 'composed' || (opens === 'positive' && !isPositiveCore(mood.core))) {
+    const line = MASK_LINES[mask === 'stranger' ? 'stranger' : 'acquaintance'];
+    return `- ${line.replace('{word}', () => mood.word).replace('{core}', () => mood.core)}`;
+  }
+  const say = opens === 'full' && row.say ? ` ${row.say}` : '';
+  return `- You are ${mood.word} (${mood.core}). ${row.line}${say}`;
 }
 
 /** Zero or one line. Returns an array so callers splice it rather than filtering a null. */
@@ -490,9 +589,10 @@ export function renderAffectDirective(
   const lines: string[] = [];
   lines.push(...renderBrevityLine(directive.brevity));
   if (directive.lateNight) lines.push(`- ${LATE_NIGHT_LINE}`);
-  lines.push(renderMoodLine(directive.mood));
+  lines.push(renderMoodLine(directive.mood, directive.mask));
   if (directive.feelings.length) {
-    const line = FEELINGS_LINE.replace('{feelings}', directive.feelings.join(' and '));
+    const template = MASK_OPENS[directive.mask].feelingsLine === 'full' ? FEELINGS_LINE : FEELINGS_LINE_ASKED;
+    const line = template.replace('{feelings}', directive.feelings.join(' and '));
     // The slip itself is stated in the turn's own section (persona/hooks.ts SLIP_LINE), next to the
     // law it rides beside; the weather only names the feeling.
     lines.push(`- ${line}`);

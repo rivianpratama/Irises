@@ -1079,6 +1079,19 @@ test('a default climate leaves renderStatusForPrompt byte-identical to no climat
   assert.equal(renderStatusForPrompt(undefined, COMPUTED, defaultClimate()), renderStatusForPrompt(undefined, COMPUTED));
 });
 
+// The familiarity band reaches this block through the one compile. Absent is no mask, which is the
+// pre-mask block byte for byte even on a row where rapport has been landing badly; a band changes the
+// mood line and nothing else in the block.
+test('no band is the pre-mask weather block, and a band moves only the mood line', () => {
+  const state = { last: carried(0, { rapport: 20 }), moodHistory: [] };
+  const today = renderStatusForPrompt(state, COMPUTED, movedClimate(), true);
+  assert.equal(renderStatusForPrompt(state, COMPUTED, movedClimate(), true, undefined), today);
+  assert.ok(today.includes('- You are hopeful (powerful). A judgment lands flat and certain. Do not explain it.'));
+  const stranger = renderStatusForPrompt(state, COMPUTED, movedClimate(), true, 'stranger');
+  assert.ok(stranger.includes('- You are hopeful (powerful). Someone you barely know does not get to see it: composed and pleasant, and none of it reaches the words.'));
+  assert.equal(withoutMoodLine(stranger), withoutMoodLine(today), 'the climate span, the self-note and the tail are the same block');
+});
+
 // The intended behaviour CHANGE: climate has no staleness gate, because a weeks-scale register
 // cannot go stale in 45 minutes. A proactive delivery hours later still speaks in the right register.
 test('composer: a stale mood plus a moved climate yields a climate-ONLY block', () => {
