@@ -10,7 +10,7 @@ import { listPendingApprovals, type OpsTaskRow } from '../../../db/repositories/
 import { listFullTurnHistory } from '../../../db/repositories/diagnosticTurnHistory.js';
 import { getTurns, type Turn } from '../../turns.js';
 import { TURN_TRACE_LABEL } from '../../traceLabels.js';
-import { MOOD_HISTORY_CAP, type AffectState, type MoodShift } from '../../../persona/status.js';
+import { MOOD_HISTORY_CAP, type AffectState, type AffectStatus, type MoodShift } from '../../../persona/status.js';
 import {
   DIALS, CLIMATE_WINDOW_CAP, spentInWindow, type DialKey, type RelationshipClimate,
 } from '../../../persona/climate.js';
@@ -21,6 +21,15 @@ import { MIN_TRANSCRIPT_SHARE } from '../../../agents/convo/promptPolicy.js';
 import { PENDING_ASK_TTL_MS } from '../../../memory/dossier.js';
 import { authed } from '../auth.js';
 import { cached } from '../cache.js';
+import { getFamiliarity, type FamiliarityRow } from '../../../db/repositories/familiarity.js';
+import { gatherFamiliarityEvidence } from '../../../memory/familiarityPass.js';
+import { isGroupHandle } from '../../../memory/identity.js';
+import { familiarityEnabled } from '../../../persona/featureFlags.js';
+import { compileMask } from '../../../persona/affectCompiler.js';
+import {
+  FAMILIARITY_START, familiarityBandFor, paceCeiling, sourcePoints,
+  type FamiliarityBand, type FamiliarityEvidence, type SourcePoints,
+} from '../../../persona/familiarity.js';
 
 // Inner state: read-only per-user view of the state that colours a reply without ever being said —
 // the affect trail, the climate dials, the thread inventory, her one read on this person and the
@@ -48,6 +57,10 @@ import { cached } from '../cache.js';
 // Every shaper is pure with its clock injected; affect.test.ts covers them. The route is the usual
 // auth + cache wrapper around eight reads of seven stores (the thesis takes two: the head and its
 // revision list).
+//
+// The familiarity row joins them (persona/familiarity.ts): the stored level, which is the one place
+// that number is ever shown, beside the band her replies are actually compiled under. Its evidence is
+// read off the same stores the post-reply pass reads (memory/familiarityPass.ts), read-only.
 
 /** How many receipts the panel shows. Twenty is what the persisted history keeps per key anyway. */
 export const TRACE_ROWS = 20;
@@ -586,6 +599,44 @@ export function pendingApprovalRows(rows: readonly OpsTaskRow[], nowMs: number):
   });
 }
 
+// ── how well she knows them ──────────────────────────────────────────────────
+
+/** The familiarity row as the panel reads it. `band` is what the stored level cuts to (a room is a
+ *  stranger whatever it stores); `effectiveBand` is what her replies are compiled under: the rapport
+ *  notch applied, or `close` with the switch off, which is no mask at all. `sources` is every row of
+ *  the source table with its count, its points and its cap. */
+export interface FamiliaritySummary {
+  level: number;
+  band: FamiliarityBand;
+  effectiveBand: FamiliarityBand;
+  reguarded: boolean;
+  ceiling: number;
+  turns: number;
+  activeDays: number;
+  sources: SourcePoints[];
+}
+
+/** The row, its evidence and the carried affect row, shaped for reading. Pure. */
+export function familiaritySummary(
+  row: FamiliarityRow | null,
+  evidence: FamiliarityEvidence,
+  last: AffectStatus | undefined,
+  opts: { enabled: boolean; group: boolean },
+): FamiliaritySummary {
+  const band = familiarityBandFor({ group: opts.group, level: row?.level ?? null });
+  const effectiveBand: FamiliarityBand = opts.enabled ? compileMask(band, last) : 'close';
+  return {
+    level: row?.level ?? FAMILIARITY_START,
+    band,
+    effectiveBand,
+    reguarded: opts.enabled && effectiveBand !== band,
+    ceiling: paceCeiling(row?.activeDays ?? 0),
+    turns: row?.turns ?? 0,
+    activeDays: row?.activeDays ?? 0,
+    sources: sourcePoints(evidence),
+  };
+}
+
 // ── the route ────────────────────────────────────────────────────────────────
 
 /** Live turns win over their own persisted copies (fresher events) — the Turn cost view's read. */
@@ -612,7 +663,7 @@ export function registerAffectRoutes(router: Router): void {
         // about one room); the thesis and the moments file are keyed by HANDLE like climate. No read
         // here is gated on its feature flag: a flag removes the machinery that WRITES, and what is
         // already on disk is exactly what an operator turning a flag off wants to look at.
-        const [state, climate, inventory, turns, thesisRead, thesisRevs, momentsFile, hookState] =
+        const [state, climate, inventory, turns, thesisRead, thesisRevs, momentsFile, hookState, familiarityRow] =
           await Promise.all([
             chatId ? getAffectState(chatId) : Promise.resolve({ moodHistory: [] } as AffectState),
             getRelationshipClimate(handle),
@@ -624,7 +675,13 @@ export function registerAffectRoutes(router: Router): void {
             listThesisRevisions(handle, THESIS_REVISION_ROWS),
             readMoments(handle),
             chatId ? getHookState(chatId) : Promise.resolve(defaultHookState()),
+            getFamiliarity(handle),
           ]);
+        // What the level is made of, off the same stores the post-reply pass reads, with the row's
+        // own counters for the two lived-exchange sources.
+        const familiarityEvidence = await gatherFamiliarityEvidence(handle, {
+          turns: familiarityRow?.turns ?? 0, activeDays: familiarityRow?.activeDays ?? 0,
+        });
         const now = Date.now();
         return {
           handle,
@@ -645,6 +702,9 @@ export function registerAffectRoutes(router: Router): void {
           trail: affectTrail(state),
           dials: climateDialRows(climate, now),
           climate: { lastEvalAt: climate.lastEvalAt, evalCount: climate.evalCount },
+          familiarity: familiaritySummary(familiarityRow, familiarityEvidence, state.last, {
+            enabled: familiarityEnabled(), group: isGroupHandle(handle),
+          }),
           // The three earned-material stores, in the order a reply builds on them: the read, the
           // moments a callback is sampled from, and the rhythm that decides whether either is
           // reached for at all. Both file-backed stores carry their read state beside their content

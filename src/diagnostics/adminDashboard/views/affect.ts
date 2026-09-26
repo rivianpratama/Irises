@@ -1,5 +1,6 @@
 // Inner state: read-only per-user view of what colours a reply without ever being said — the mood
-// she carried into the last turn and the trail behind it, the weeks-scale climate dials inside their
+// she carried into the last turn and how well she knows them (the familiarity level, the one place
+// that number is shown), the trail behind it, the weeks-scale climate dials inside their
 // code-owned bounds, her one read on this person, the moments a callback is sampled from, the hook
 // rhythm that decides whether either is reached for, the thread inventory as counts and labels, and
 // the last twenty `turn:trace` receipts (section sizes, the transcript's share of the prompt, every
@@ -79,6 +80,26 @@ export const AFFECT_JS = `
       + '<span>social battery <b>'+g.social_battery+'</b></span><span>anxiety <b>'+g.anxiety+'</b></span>'
       + '<span>rapport <b>'+g.rapport+'</b></span></div>'
       + (m.metaPrompt ? '<div class="prewrap">'+M.esc(m.metaPrompt)+'</div>' : '');
+  }
+
+  // How well she knows them: the stored level on a dial-style bar, the pace ceiling as the notch,
+  // and the band beside the level. When her replies compile under another band (rapport pulled the
+  // mask up one, or the switch is off) that band is named too, since it is the one that counts.
+  function familiarityPanel(d){
+    var f = d.familiarity;
+    if (!f) return '';
+    var pct = function(v){ return Math.max(0, Math.min(100, v)); };
+    var band = M.esc(f.band) + (f.effectiveBand !== f.band
+      ? ' \\u2192 <b>'+M.esc(f.effectiveBand)+'</b> ('+(f.reguarded ? 'rapport' : 'mask off')+')'
+      : '');
+    return '<div class="dial"><span>familiarity <b>'+f.level+'</b></span>'
+      + '<span class="track"><i class="fill" style="width:'+pct(f.level)+'%"></i>'
+      + '<i class="mark" style="left:'+pct(f.ceiling)+'%" title="pace ceiling"></i></span>'
+      + '<span class="bounds">'+band+'</span></div>'
+      + '<div class="kv gauges"><span>turns <b>'+f.turns+'</b></span><span>days <b>'+f.activeDays+'</b></span>'
+      + '<span>ceiling <b>'+f.ceiling+'</b></span>'
+      + (f.sources||[]).map(function(s){ return '<span>'+M.esc(s.key)+' <b>'+s.points+'</b>/'+s.cap+'</span>'; }).join('')
+      + '</div>';
   }
 
   function trailPanel(d){
@@ -295,7 +316,7 @@ export const AFFECT_JS = `
     if (!S.handle){ el.innerHTML = '<div class="empty">pick a user to read their inner state</div>'; return; }
     if (!S.data){ el.innerHTML = '<div class="empty">loading\\u2026</div>'; return; }
     var d = S.data;
-    el.innerHTML = '<h3 class="sh">Right now</h3>' + moodPanel(d)
+    el.innerHTML = '<h3 class="sh">Right now</h3>' + moodPanel(d) + familiarityPanel(d)
       + '<h3 class="sh">Mood trail (last '+(d.trail||[]).length+')</h3>' + trailPanel(d)
       + '<h3 class="sh">Relationship climate</h3>' + dialsPanel(d)
       + '<h3 class="sh">Her read on them</h3>' + thesisPanel(d)
