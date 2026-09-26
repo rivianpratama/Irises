@@ -45,7 +45,7 @@ import {
 // the same terminal edge affectDrift.ts describes for itself: affectCompiler.ts takes `AffectStatus`
 // and `ComputedState` from here as `import type` only, so nothing loads back.
 import {
-  compileAffect, renderAffectDirective, brevityOf, moodOf, renderBrevityLine, renderMoodLine,
+  compileAffect, compileMask, renderAffectDirective, brevityOf, moodOf, renderBrevityLine, renderMoodLine,
 } from './affectCompiler.js';
 // The gauges this file no longer asks the model for. A VALUE import, and it is the direction that
 // makes the cycle impossible: affectDrift.ts imports from here `import type` only (its own comment
@@ -798,17 +798,26 @@ export function renderStatusContract(): string {
  *
  * Returns '' only when BOTH parts are empty — no fresh mood AND a climate still at its defaults,
  * which is byte-for-byte the old behaviour for every caller that passes no climate.
+ *
+ * THE MASK rides here too, and it has to: a stranger who asked for research gets the answer relayed
+ * through this block, and a mood Convo's own turn kept to itself must not surface in the relay.
+ * `familiarity` is the band the stored level cuts to (persona/familiarity.ts), notched on rapport
+ * exactly as Convo's compile notches it (affectCompiler.ts compileMask), and it picks the mood line
+ * and nothing else: the brevity line and the ease-only climate subset pass every band. Absent is no
+ * mask at all, the block byte for byte as it stood before the feature (pinned in status.test.ts).
  */
 export function renderStatusForComposer(
   state: AffectState | null | undefined,
   climate?: RelationshipClimate,
+  familiarity?: FamiliarityBand,
 ): string {
   const last = state?.last;
+  const mask: FamiliarityBand = familiarity === undefined ? 'close' : compileMask(familiarity, last);
   // The mood line first, then the brevity line — the prose's order for this surface
   // (policy-strings.md, "Composer variant"), and the opposite of Convo's, where the shape lines lead
   // because a hook has to be measured against them. Nothing here has a hook to measure.
   const moodPart = last && Date.now() - last.at <= 45 * 60_000
-    ? [renderMoodLine(moodOf(last)), ...renderBrevityLine(brevityOf(last))]
+    ? [renderMoodLine(moodOf(last), mask), ...renderBrevityLine(brevityOf(last))]
     : [];
   const climatePart = climateLinesForComposer(climate);
   if (!moodPart.length && !climatePart.length) return '';

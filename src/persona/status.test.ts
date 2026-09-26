@@ -1126,3 +1126,29 @@ test('composer: a stale mood plus a DEFAULT climate is still "" (both halves emp
   const state = { last: fresh, moodHistory: [] };
   assert.equal(renderStatusForComposer(state, defaultClimate()), renderStatusForComposer(state));
 });
+
+// The Composer wears the mask Convo's block wears, notch included. Absent is no mask: the Composer
+// block byte for byte as it stood before the feature, even on a row where rapport has been landing
+// badly. A band changes the mood line and nothing else the block carries: the header, the brevity
+// line and the ease line are the same bytes.
+test('composer: no band is today\'s block, and a band masks the mood line alone', () => {
+  const state = { last: carried(Date.now(), { rapport: 20, social_battery: 45 }), moodHistory: [] };
+  const today = renderStatusForComposer(state, movedClimate());
+  assert.equal(renderStatusForComposer(state, movedClimate(), undefined), today);
+  assert.equal(today.split('\n')[1], '- You are hopeful (powerful). A judgment lands flat and certain. Do not explain it.');
+  const stranger = renderStatusForComposer(state, movedClimate(), 'stranger');
+  assert.equal(stranger.split('\n')[1], '- You are hopeful (powerful). Someone you barely know does not get to see it: composed and pleasant, and none of it reaches the words.');
+  assert.ok(stranger.includes('- Fewer words than usual. Two bubbles at most.'), 'shape passes the mask');
+  assert.equal(withoutMoodLine(stranger), withoutMoodLine(today), 'everything but the mood line is the same block');
+  // The notch: a sad row relayed to someone close keeps its put-off only while rapport holds.
+  const drained = (rapport: number) => ({ last: { ...carried(Date.now(), { rapport }), mood_label: 'drained' }, moodHistory: [] });
+  assert.equal(
+    renderStatusForComposer(drained(40), undefined, 'close').split('\n')[1],
+    '- You are drained (sad). Fewer words. No tangents. Answer, then stop. Anything open-ended they ask today, research, long writing, a favour with no clock, is too much: say not now, and it stays owed.',
+  );
+  assert.equal(
+    renderStatusForComposer(drained(20), undefined, 'close').split('\n')[1],
+    '- You are drained (sad). Fewer words. No tangents. Answer, then stop.',
+    'close pulled up to familiar: the say clause is gone',
+  );
+});

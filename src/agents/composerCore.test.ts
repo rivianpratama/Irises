@@ -19,6 +19,7 @@ import { saveRelationshipClimate } from '../db/repositories/relationshipClimate.
 import { defaultClimate, type RelationshipClimate } from '../persona/climate.js';
 import { groupHandle } from '../memory/identity.js';
 import { resetStorageForTests } from '../db/sqlite.js';
+import { getFamiliarity, saveFamiliarity } from '../db/repositories/familiarity.js';
 import type { LlmRequest, LlmResult } from '../llm/types.js';
 
 function fakeLlm(text: string, captured: LlmRequest[] = []) {
@@ -250,6 +251,62 @@ test('a group identity never renders a register, even with a moved row stored un
   const g = groupHandle('web:a');
   await saveRelationshipClimate(g, MOVED);
   assert.doesNotMatch(await composedFor(g), /standing register/);
+});
+
+// --- the familiarity mask: the Composer relays a stranger composed ------------------------------
+// The same band Convo's turn reads, off the same row, under the same gates, with the same rapport
+// notch, and never written from here. A drained row files under sad, the one core whose close line
+// carries a put-off clause, so close, familiar and stranger are three different lines.
+
+const SAD_CLOSE = '- You are drained (sad). Fewer words. No tangents. Answer, then stop. Anything open-ended they ask today, research, long writing, a favour with no clock, is too much: say not now, and it stays owed.';
+const SAD_FAMILIAR = '- You are drained (sad). Fewer words. No tangents. Answer, then stop.';
+const SAD_STRANGER = '- You are drained (sad). Someone you barely know does not get to see it: composed and pleasant, and none of it reaches the words.';
+
+/** A fresh drained row in the composer's chat, the gauges stated (rapport is the one the notch reads). */
+async function seedDrained(rapport = 40): Promise<void> {
+  await saveAffectState('web:a', {
+    ...mergeStatus(coerceStatus({ ...RAW, mood_label: 'drained', mood_core: 'sad' })!, COMPUTED, Date.now()),
+    mood_level: 60, anxiety: 40, warmth: 60, social_battery: 70, rapport, patience: 60,
+  });
+}
+
+/** The weather block's mood line, out of what the model was shown. */
+const moodLine = (content: string) => content.split('\n').find(l => l.startsWith('- You are '));
+
+test('the mask is off by default in the Composer too, and a stranger relays composed once it is on', async () => {
+  const known = '+15550004343';
+  const fresh = '+15550004444';
+  await seedDrained();
+  await saveFamiliarity(known, { level: 5, turns: 3, activeDays: 1, lastDay: '2026-01-05' });
+  process.env.CONVO_FAMILIARITY_ENABLED = 'off';
+  try {
+    assert.equal(moodLine(await composedFor(known)), SAD_CLOSE, 'off: no mask, whatever is stored');
+    process.env.CONVO_FAMILIARITY_ENABLED = 'on';
+    assert.equal(moodLine(await composedFor(fresh)), SAD_STRANGER, 'on, and no row yet: a stranger');
+    assert.equal(moodLine(await composedFor(known)), SAD_STRANGER, 'on, and a low row: still a stranger');
+    assert.equal(await getFamiliarity(fresh), null, 'the Composer never writes the ledger');
+    assert.equal((await getFamiliarity(known))?.turns, 3, 'nor counts a turn on a row that exists');
+  } finally {
+    delete process.env.CONVO_FAMILIARITY_ENABLED;
+  }
+});
+
+test('a room relays composed whatever its row says, and rapport landing badly notches the relay', async () => {
+  process.env.CONVO_FAMILIARITY_ENABLED = 'on';
+  try {
+    await seedDrained();
+    const room = groupHandle('web:a');
+    await saveFamiliarity(room, { level: 95, turns: 500, activeDays: 60, lastDay: '2026-01-05' });
+    assert.equal(moodLine(await composedFor(room)), SAD_STRANGER, 'a room is front stage');
+
+    const close = '+15550004545';
+    await saveFamiliarity(close, { level: 90, turns: 400, activeDays: 40, lastDay: '2026-01-05' });
+    assert.equal(moodLine(await composedFor(close)), SAD_CLOSE, 'someone close gets the whole line');
+    await seedDrained(20);
+    assert.equal(moodLine(await composedFor(close)), SAD_FAMILIAR, 'close pulled up to familiar: no put-off');
+  } finally {
+    delete process.env.CONVO_FAMILIARITY_ENABLED;
+  }
 });
 
 // --- the dynamic block's own order ---------------------------------------------------------------

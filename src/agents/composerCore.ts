@@ -18,6 +18,9 @@ import { renderStatusForComposer } from '../persona/status.js';
 import { getRelationshipClimate, relationshipClimateEnabled } from '../db/repositories/relationshipClimate.js';
 import { defaultClimate } from '../persona/climate.js';
 import { isGroupHandle } from '../memory/identity.js';
+import { getFamiliarity } from '../db/repositories/familiarity.js';
+import { familiarityEnabled } from '../persona/featureFlags.js';
+import { familiarityBandFor, type FamiliarityBand } from '../persona/familiarity.js';
 import { getConversation, type StoredMessage } from '../state/conversation.js';
 import { stripEchoedHolding } from './guardrails.js';
 import { parseReply } from '../pipeline/bubbleJson.js';
@@ -93,7 +96,12 @@ export async function composeWithComposer(args: ComposerCoreArgs): Promise<strin
   // (persona/climate.ts), handle-keyed like the memory layer rather than chat-keyed like the affect.
   // Unlike the mood it has no staleness gate — a register built over weeks is still true on a
   // delivery hours later — so it is exactly what keeps a proactive push in the right voice.
-  const [history, userCtx, affect, climate] = await Promise.all([
+  // A FIFTH read, and the last: how well she knows them (persona/familiarity.ts), READ-ONLY like the
+  // affect. The ledger is Convo's post-reply pass to write; a relay is not a turn she replied to.
+  // The flag is read ONCE, because it decides both whether the row is read and whether the mood line
+  // is masked at all, and those have to agree.
+  const familiarityOn = familiarityEnabled();
+  const [history, userCtx, affect, climate, familiarityRow] = await Promise.all([
     getConversation(chatId),
     buildUserMemory('composer', handle),
     getAffectState(chatId),
@@ -102,13 +110,22 @@ export async function composeWithComposer(args: ComposerCoreArgs): Promise<strin
     handle && relationshipClimateEnabled() && !isGroupHandle(handle)
       ? getRelationshipClimate(handle)
       : Promise.resolve(defaultClimate()),
+    // The climate read's gates, plus the mask's own flag: no identity and a room both skip the read.
+    handle && familiarityOn && !isGroupHandle(handle)
+      ? getFamiliarity(handle)
+      : Promise.resolve(null),
   ]);
+  // The band Convo's turn would read off the same row (agents/convo/client.ts): a room is a
+  // stranger, no row is the bottom of the scale, and with the flag off there is no mask at all.
+  const familiarity: FamiliarityBand | undefined = familiarityOn
+    ? familiarityBandFor({ group: !!handle && isGroupHandle(handle), level: familiarityRow?.level ?? null })
+    : undefined;
 
   // The internal-weather block ('' when there's no carried mood or it's stale AND the climate is at
   // its defaults). It sits behind the shared persona block and ahead of everything else: it colours
   // voice while the FACTS from buildInstruction stay late, and the FORMAT_ANCHOR (appended below)
   // remains the very last tokens the model reads.
-  const weather = renderStatusForComposer(affect, climate);
+  const weather = renderStatusForComposer(affect, climate, familiarity);
   // Honor everything we durably know about the user — the wrapped memory tiers per the agent
   // matrix (flexible style layer ONLY for the composer: medium facts would compete with the
   // content it relays — a fidelity hazard). Pre-wrapped: its own tags + handling prose ride inside
