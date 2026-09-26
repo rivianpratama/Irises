@@ -8,7 +8,7 @@ process.env.TZ = 'UTC';
 import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createProactiveDelivery, resolveProactiveHandle, type ProactiveDeliveryDeps } from './proactiveDelivery.js';
-import { insertPending } from '../db/repositories/proactive.js';
+import { insertPending, sweepOldProactive } from '../db/repositories/proactive.js';
 import { addMessage } from '../db/repositories/conversations.js';
 import { listShortTerm, addShortTerm } from '../db/repositories/memoryShort.js';
 import { setPreference } from '../db/repositories/memory.js';
@@ -282,4 +282,14 @@ test('start() is idempotent and its timers never hold the process open', () => {
   const { pipeline } = harness();
   pipeline.start();
   pipeline.start();
+});
+
+test('retention keeps a settled reminder past the 7-day line, and still sweeps other kinds there', async () => {
+  const tenDaysAgo = Date.now() - 10 * 86400000;
+  const reminder = await insertPending({ chatId: 'web:a', kind: 'reminder', text: 'last week\'s brief', dedupeKey: 'r' });
+  const memo = await insertPending({ chatId: 'web:a', kind: 'memo', text: 'old memo', dedupeKey: 'm' });
+  stmt("UPDATE proactive_deliveries SET status = 'delivered', created_at = ? WHERE id IN (?, ?)").run(tenDaysAgo, reminder, memo);
+  assert.equal(await sweepOldProactive(), 1);
+  const left = stmt('SELECT id FROM proactive_deliveries').all() as Array<{ id: string }>;
+  assert.deepEqual(left.map(r => r.id), [reminder]);
 });

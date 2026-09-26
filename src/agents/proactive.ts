@@ -22,6 +22,8 @@ import type { Outcome } from './fallfirm/floor.js';
 import { getThreadInventory, threadingEnabled } from '../db/repositories/threadInventory.js';
 import { topStandingThread } from '../persona/threads.js';
 import { isGroupHandle } from '../memory/identity.js';
+import { listRecentReminders, PROACTIVE_REMINDER_MAX_AGE_MS } from '../db/repositories/proactive.js';
+import { timestampLabel } from '../pipeline/chatTime.js';
 
 // `proactive_deliveries.kind` is a bare TEXT column with no CHECK, so a new kind needs no migration.
 export type ProactiveKind = 'reminder' | 'email' | 'memo' | 'update' | 'callback' | 'introduction' | 'musing';
@@ -97,6 +99,42 @@ export function fallfirmOutcomeFor(payload: ProactivePayload): Outcome {
  *  be telling the model it holds no news about news it is literally carrying. */
 const CALLBACK_FIDELITY = 'the line below is the thread itself, in words they have used — the only thing you may point at. you hold no outcome and no news: nothing gets guessed, assumed, or hoped into a fact.';
 
+/** The one way a reminder may go unsent: she judged that nothing in it is new to them. Offered only
+ *  when earlier reminder texts are in view, and stripped in voiceProactive so it never reaches a
+ *  bubble. */
+export const SKIP_MARK = '[[skip]]';
+
+/** How many earlier reminder texts she sees, and how much of each. The window is the reminder
+ *  retention itself, so a weekly or monthly job's previous run is still in reach. */
+const EARLIER_REMINDERS_LIMIT = 6;
+const EARLIER_REMINDER_MAX_CHARS = 2000;
+
+/** A reminder text this chat already heard — the payload of an earlier delivery. */
+export interface EarlierReminder {
+  at: number;
+  text: string;
+}
+
+/** A repeating reminder is voiced against what they already heard. Chat-scoped on purpose: a text
+ *  from a different reminder of theirs still counts as heard, and she is the one who judges which of
+ *  them bear on this one. */
+function earlierRemindersBlock(earlier: EarlierReminder[]): string {
+  const lines = earlier.map(r => {
+    const label = timestampLabel(r.at);
+    const text = r.text.length > EARLIER_REMINDER_MAX_CHARS ? `${r.text.slice(0, EARLIER_REMINDER_MAX_CHARS)}…` : r.text;
+    return `${label ? `[${label}] ` : ''}"${text}"`;
+  });
+  return [
+    'reminders repeat, and they already heard these earlier reminder texts from you, oldest first. they are here so you can tell what is new:',
+    ...lines,
+    `what they already heard is old news. carry a piece of it forward only when it has moved since, when they still need it to act, or when hearing it every time is the whole point of the reminder. lead with what is new or changed. an earlier text from a different reminder of theirs still counts as heard. when nothing in what you're delivering is new to them, it is your call: one short beat that says so, or nothing at all. to send nothing, reply with exactly ${SKIP_MARK} and nothing else.`,
+  ].join('\n');
+}
+
+/** Earlier reminder texts are a second thing in view on the tightest-fidelity kind, so the contract
+ *  names what they may do: subtract, and anchor a change. Nothing else. */
+const EARLIER_REMINDERS_FIDELITY = 'the earlier reminder texts above only decide what gets left out and what changed: nothing from them is said again, except as the before-side of a change.';
+
 /** A standing thread offered to a proactive turn as COLOUR — a register to speak in, never a second
  *  fact source. Label and note are model-authored prose, sanitized at the door by
  *  `sanitizeThreadText` (status.ts): one line, capped, no angle brackets, backticks or braces. */
@@ -141,14 +179,17 @@ function continuityLineFor(payload: ProactivePayload, continuity: ProactiveConti
  *  suggests, the very next thing read is the sentence saying the payload wins. An introduction
  *  stacks its own mark on the line right under the first: it is still a text no one asked for, and
  *  additionally the first one there has ever been. */
-function buildProactiveInstruction(payload: ProactivePayload, continuity?: ProactiveContinuity | null): string {
+function buildProactiveInstruction(payload: ProactivePayload, continuity?: ProactiveContinuity | null, earlier?: EarlierReminder[]): string {
+  const withEarlier = payload.kind === 'reminder' && !!earlier?.length;
   return [
     payload.kind === 'introduction' ? `${PROACTIVE_MARK}\n${INTRODUCTION_MARK}` : PROACTIVE_MARK,
     COMPOSER_FRAMING[payload.kind],
     payload.framing,
     continuityLineFor(payload, continuity),
+    withEarlier ? earlierRemindersBlock(earlier!) : undefined,
     'the line below is the only place your facts come from. the thread above is there for voice, register and continuity ONLY — never for content, never as a second source. if the thread and this line disagree, this line wins, silently, with no mention of the difference. nothing here gets rounded, filled in, or guessed at: if a detail is not below, it does not exist.',
     payload.kind === 'callback' ? CALLBACK_FIDELITY : undefined,
+    withEarlier ? EARLIER_REMINDERS_FIDELITY : undefined,
     payload.kind === 'musing'
       ? `the seed, yours to grow a thought from and never to read out:\n"${payload.text}"`
       : `what you're delivering:\n"${payload.text}"`,
@@ -174,6 +215,29 @@ async function readContinuity(handle: string): Promise<ProactiveContinuity | nul
   }
 }
 
+/** The reminder texts this chat already heard, oldest first. The push being voiced is still pending,
+ *  so it is never in its own history. Any failure reads as no history: voiced exactly as before. */
+async function readEarlierReminders(chatId: string): Promise<EarlierReminder[]> {
+  try {
+    const rows = await listRecentReminders(chatId, Date.now() - PROACTIVE_REMINDER_MAX_AGE_MS, EARLIER_REMINDERS_LIMIT);
+    return rows.reverse().map(r => ({ at: r.createdAt, text: r.text }));
+  } catch (err) {
+    console.error('[proactive] earlier-reminder read failed — voicing without history', err);
+    return [];
+  }
+}
+
+/** Honour the skip mark: a bubble that is only the mark goes, the mark is cut from any other, and
+ *  nothing left is '' (the mouth's silent drop). A beat sent with the mark still ships. */
+function applySkipMark(text: string): string {
+  if (!text.includes(SKIP_MARK)) return text;
+  return text
+    .split('\n---\n')
+    .map(part => part.split(SKIP_MARK).join('').trim())
+    .filter(Boolean)
+    .join('\n---\n');
+}
+
 /**
  * Voice one proactive delivery in Irises's own tone. Degrades to Fallfirm (and, under that, the
  * hardcoded floor) exactly like the reactive path, so a proactive message NEVER goes silent once
@@ -181,14 +245,16 @@ async function readContinuity(handle: string): Promise<ProactiveContinuity | nul
  */
 export async function voiceProactive(payload: ProactivePayload, chatId: string, handle: string): Promise<string> {
   const continuity = await readContinuity(handle);
+  const earlier = payload.kind === 'reminder' ? await readEarlierReminders(chatId) : [];
   try {
-    return await composeWithComposer({
+    const text = await composeWithComposer({
       chatId,
       handle,
-      buildInstruction: () => buildProactiveInstruction(payload, continuity),
+      buildInstruction: () => buildProactiveInstruction(payload, continuity, earlier),
       trace: { chatId, handle, label: 'composer-proactive' },
       errorDetail: { proactiveKind: payload.kind },
     });
+    return earlier.length ? applySkipMark(text) : text;
   } catch (err) {
     // A musing is the one kind whose moment can simply pass: nobody is owed it, and the Fallfirm
     // path would relay the seed as facts. Empty text is a silent drop at the mouth.
@@ -202,4 +268,4 @@ export async function voiceProactive(payload: ProactivePayload, chatId: string, 
 }
 
 /** Test seam: the instruction builder and the continuity pre-read (private to the module otherwise). */
-export const _internal = { buildProactiveInstruction, readContinuity };
+export const _internal = { buildProactiveInstruction, readContinuity, readEarlierReminders, applySkipMark };

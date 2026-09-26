@@ -11,7 +11,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PROACTIVE_MARK, INTRODUCTION_MARK, fallfirmOutcomeFor, voiceProactive, _internal, type ProactiveKind, type ProactiveContinuity } from './proactive.js';
 import { fallfirmFloor } from './fallfirm/floor.js';
-import { resetStorageForTests } from '../db/sqlite.js';
+import { resetStorageForTests, stmt } from '../db/sqlite.js';
+import { insertPending } from '../db/repositories/proactive.js';
 import { saveThreadInventory } from '../db/repositories/threadInventory.js';
 import { defaultThreadInventory, type ThreadTheme } from '../persona/threads.js';
 import { groupHandle } from '../memory/identity.js';
@@ -283,4 +284,45 @@ test('with no voice model configured, the floor still lands with the substance',
   const text = await voiceProactive(payload, 'web:a', '');
   assert.equal(text, fallfirmFloor(fallfirmOutcomeFor(payload)));
   assert.match(text, /pick up the dry cleaning by 6/, 'the thing they were promised still reaches them');
+});
+
+// ── Repeating reminders ──────────────────────────────────────────────────────────────
+// A reminder is voiced against the reminder texts this chat already heard, so a repeat can lead
+// with what changed, and say nothing when nothing did.
+
+test('earlier reminder texts sit above the fidelity clause, with the skip rule and their own contract', () => {
+  const earlier = [{ at: Date.parse('2026-09-25T00:02:00Z'), text: 'fires are the big story' }];
+  const instruction = _internal.buildProactiveInstruction({ kind: 'reminder', text: 'fires still the big story' }, null, earlier);
+  const blockAt = instruction.indexOf('"fires are the big story"');
+  const fidelityAt = instruction.indexOf('only place your facts come from');
+  assert.ok(blockAt > 0 && fidelityAt > blockAt, 'history before the fidelity clause');
+  assert.match(instruction, /what they already heard is old news/);
+  assert.match(instruction, /reply with exactly \[\[skip\]\] and nothing else/);
+  assert.match(instruction, /nothing from them is said again, except as the before-side of a change/);
+  assert.ok(instruction.trimEnd().endsWith('"fires still the big story"'), 'the payload is still read last');
+  // Only reminders carry it: another kind handed the same history ignores it.
+  assert.doesNotMatch(_internal.buildProactiveInstruction({ kind: 'memo', text: 'x' }, null, earlier), /old news/);
+});
+
+test('the pre-read returns this chat\'s delivered reminders, oldest first, six at most', async () => {
+  const base = Date.now() - 20 * 86400000;
+  for (let i = 0; i < 8; i++) {
+    const id = await insertPending({ chatId: CH, kind: 'reminder', text: `brief ${i}`, dedupeKey: `k${i}` });
+    stmt("UPDATE proactive_deliveries SET status = 'delivered', created_at = ? WHERE id = ?").run(base + i * 86400000, id);
+  }
+  await insertPending({ chatId: CH, kind: 'reminder', text: 'being voiced now', dedupeKey: 'now' });
+  const memo = await insertPending({ chatId: CH, kind: 'memo', text: 'a memo', dedupeKey: 'm' });
+  stmt("UPDATE proactive_deliveries SET status = 'delivered' WHERE id = ?").run(memo);
+  const other = await insertPending({ chatId: 'web:other', kind: 'reminder', text: 'another chat', dedupeKey: 'o' });
+  stmt("UPDATE proactive_deliveries SET status = 'delivered' WHERE id = ?").run(other);
+
+  const earlier = await _internal.readEarlierReminders(CH);
+  assert.deepEqual(earlier.map(r => r.text), ['brief 2', 'brief 3', 'brief 4', 'brief 5', 'brief 6', 'brief 7']);
+});
+
+test('the skip mark alone sends nothing; a beat sent with it ships without it', () => {
+  assert.equal(_internal.applySkipMark('[[skip]]'), '');
+  assert.equal(_internal.applySkipMark('same fires story, nothing moved\n---\n[[skip]]'), 'same fires story, nothing moved');
+  assert.equal(_internal.applySkipMark('quiet one today [[skip]]'), 'quiet one today');
+  assert.equal(_internal.applySkipMark('no mark here'), 'no mark here');
 });
