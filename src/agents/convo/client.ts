@@ -19,6 +19,8 @@ import { getAffectState } from '../../db/repositories/affectState.js';
 import {
   getRelationshipClimate, relationshipClimateEnabled,
 } from '../../db/repositories/relationshipClimate.js';
+import { getFamiliarity } from '../../db/repositories/familiarity.js';
+import { familiarityBandFor, type FamiliarityBand } from '../../persona/familiarity.js';
 import { getHookState } from '../../db/repositories/hookState.js';
 import { readMoments, writeMoments } from '../../db/repositories/moments.js';
 import { getThesis } from '../../db/repositories/thesis.js';
@@ -36,7 +38,7 @@ import {
 } from '../../persona/idle.js';
 import { makeIdleClassifier } from './idleClassify.js';
 import { defaultHookState, selectHook, type HookDirective, type HookSelectReport } from '../../persona/hooks.js';
-import { hooksEnabled, momentsEnabled, selfEnabled, shareTurnsEnabled, thesisEnabled } from '../../persona/featureFlags.js';
+import { familiarityEnabled, hooksEnabled, momentsEnabled, selfEnabled, shareTurnsEnabled, thesisEnabled } from '../../persona/featureFlags.js';
 import { compileAffect, type CarriedIntent } from '../../persona/affectCompiler.js';
 import { AFFECT_FRESH_MS } from '../../persona/threads.js';
 import { classifyConsent } from '../ops/consent.js';
@@ -334,7 +336,10 @@ export async function chat(
     ? parkedApprovalStanding(chatContext?.senderHandle)
     : Promise.resolve(false);
 
-  const [context, agentTz, climate, thesisDoc, whoProfile, holdingBeats, selfFile, owedAsks] = handle
+  // Read ONCE for the turn: it decides whether the ledger row is read below and whether the two
+  // compiles get a band at all, and those have to agree.
+  const familiarityOn = familiarityEnabled();
+  const [context, agentTz, climate, thesisDoc, whoProfile, holdingBeats, selfFile, owedAsks, familiarityRow] = handle
     ? await Promise.all([
         // Pass the current turn text so the short-tier renderer can gate whether the freshest research
         // look renders in full (on-topic follow-up) or collapses to a settled digest line (topic moved on).
@@ -376,8 +381,12 @@ export async function chat(
         selfEnabled() && !isGroupHandle(handle) ? readSelf(handle) : Promise.resolve(null),
         // What her mood put off for them and still owes (memory/owedAsks.ts). A pref read.
         !isGroupHandle(handle) ? readOwedAsks(handle) : Promise.resolve([] as OwedAsk[]),
+        // How well she knows them (persona/familiarity.ts): the stored level the post-reply pass
+        // keeps. Handle-keyed like the climate. Two gates, and both skip the read: the flag, and a
+        // room, which is front stage and never has a level of its own.
+        familiarityOn && !isGroupHandle(handle) ? getFamiliarity(handle) : Promise.resolve(null),
       ])
-    : [{ block: '', hotLook: null, turn: null, gates: {}, craft: {}, pendingAsk: false }, undefined, defaultClimate(), null, null, [], null, [] as OwedAsk[]];
+    : [{ block: '', hotLook: null, turn: null, gates: {}, craft: {}, pendingAsk: false }, undefined, defaultClimate(), null, null, [], null, [] as OwedAsk[], null];
   const contextBlock = context.block;
   // The read as the `thesis` dyn section, or '' — which pushes nothing, so an install with no thesis
   // builds a prompt byte-identical to one that never had the feature. `renderThesisSection` splits
@@ -386,6 +395,14 @@ export async function chat(
   const thesisSection = thesisDoc ? renderThesisSection(thesisDoc.docMd) : '';
   const selfSection = selfFile ? renderSelfSection(selfFile.entries) : '';
   const owedSection = renderOwedSection(owedAsks, Date.now());
+  // THE MASK for this turn, decided once and handed to both compiles below — the hook engine's and
+  // the weather block's (it rides `personaTurn` to the assembler) — so the two can never disagree
+  // about how much of her mood shows. A room is a stranger and no row is the bottom of the scale
+  // (persona/familiarity.ts familiarityBandFor). Undefined with the flag off: no mask at all, which
+  // compiles exactly as before the feature existed.
+  const familiarity: FamiliarityBand | undefined = familiarityOn
+    ? familiarityBandFor({ group: isGroupHandle(handle), level: familiarityRow?.level ?? null })
+    : undefined;
 
   // THE zone for this turn, resolved once here and handed to everything that renders a clock: the
   // circadian baseline, the tapped-reply date label that rides into durable history, the transcript
@@ -591,7 +608,7 @@ export async function chat(
     // The affect directive is compiled from exactly the row the weather block is rendered from, so
     // "her mood closed the hook" and "her mood set the register" can never be two different reads of
     // the same turn.
-    const affectDirective = compileAffect(last, computed, climate, carried);
+    const affectDirective = compileAffect(last, computed, climate, carried, familiarity);
     const picked = selectHook(
       // The gate's own reading, whole. The selector is the one place the three kinds are still three
       // — everything downstream of it reads the MODE it produced (persona/hooks.ts `HookMode`), which
@@ -799,7 +816,7 @@ export async function chat(
   // hook directive (which the `hooks` section and the drift anchor's mode read), the sampled moment
   // lines that ride inside that section when the directive allows one, and her one read on this
   // person. Each renders nothing when it is empty.
-  const personaTurn = { hooks: hookDirective, moments: momentLines, thesis: thesisSection, self: selfSection, owed: owedSection };
+  const personaTurn = { hooks: hookDirective, moments: momentLines, thesis: thesisSection, self: selfSection, owed: owedSection, familiarity };
   // What stands live beyond the running lookups (convo/shared.ts LiveState): their reminders, read
   // above within its budget, the lookups that ended in the last few minutes, and her own recent
   // holding beats from the batch above.
