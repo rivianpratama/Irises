@@ -123,3 +123,20 @@ export function musingsEnabled(): boolean {
   if (v === '') return true;
   return ['true', '1', 'on', 'yes'].includes(v);
 }
+
+/**
+ * The familiarity mask (env: CONVO_FAMILIARITY_ENABLED). Default OFF while it lands.
+ *
+ * Gates all three ends of how well she knows a person (persona/familiarity.ts): the post-reply pass
+ * that counts the turn and slews the stored level (memory/familiarityPass.ts), the turn-time read
+ * that hands the band to both compiles of a turn (agents/convo/client.ts), and the musings gate that
+ * keeps her own texts to people she knows (memory/musings.ts). Off means no ledger read or write, no
+ * gate, and every reply compiled with no mask at all, which is the per-turn prompt byte for byte as
+ * it stood before the feature. It ships OFF for the length of the series that builds it, the
+ * shareTurnsEnabled precedent, and the last commit of that series flips it.
+ */
+export function familiarityEnabled(): boolean {
+  const v = (process.env.CONVO_FAMILIARITY_ENABLED || '').trim().toLowerCase();
+  if (v === '') return false;
+  return ['true', '1', 'on', 'yes'].includes(v);
+}

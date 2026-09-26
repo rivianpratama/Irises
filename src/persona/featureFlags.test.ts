@@ -17,7 +17,7 @@ process.env.TZ = 'UTC';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { hooksEnabled, momentsEnabled, thesisEnabled, shareTurnsEnabled } from './featureFlags.js';
+import { familiarityEnabled, hooksEnabled, momentsEnabled, thesisEnabled, shareTurnsEnabled } from './featureFlags.js';
 
 /** Every value an operator might type that turns the feature ON, whatever its default is. */
 const ON_VALUES = ['true', '1', 'on', 'yes', 'YES', ' on '];
@@ -33,6 +33,9 @@ const FLAGS: Array<{ name: string; read: () => boolean; dflt: boolean }> = [
   // The share turn: default OFF through the whole series that built it, ON from the commit that
   // finished it. The body never changed across that flip, which is what made the flip one line.
   { name: 'CONVO_SHARE_TURNS_ENABLED', read: shareTurnsEnabled, dflt: true },
+  // The familiarity mask: default OFF for the length of the series that builds it, so every
+  // half-built commit is inert; the last commit of that series flips this row with the parser.
+  { name: 'CONVO_FAMILIARITY_ENABLED', read: familiarityEnabled, dflt: false },
 ];
 
 for (const flag of FLAGS) {

@@ -41,7 +41,7 @@ import { outcomePassEnabled } from '../src/agents/convo/actionResults.js';
 import { starvedRetryEnabled, reasoningDisableEnabled, llmCallTimeoutMs } from '../src/llm/openrouterRequest.js';
 import { browserLegBudgetMs, opsCancelEngineAbortEnabled } from '../src/agents/ops/engineBackend.js';
 import { leafExamplesExtra } from '../src/persona/idle.js';
-import { hooksEnabled, momentsEnabled, thesisEnabled, shareTurnsEnabled, selfEnabled, musingsEnabled } from '../src/persona/featureFlags.js';
+import { hooksEnabled, momentsEnabled, thesisEnabled, shareTurnsEnabled, selfEnabled, musingsEnabled, familiarityEnabled } from '../src/persona/featureFlags.js';
 
 const REPO = process.cwd();
 const APP_ENV = readFileSync(join(REPO, 'deploy/app.env'), 'utf8');
@@ -82,6 +82,9 @@ const FLAGS: readonly FlagDoc[] = [
   // gets flipped in the wrong direction at 3am. Nothing about this row changed at the flip: it
   // reads the answer out of the parser, which is the whole reason it survives one.
   { name: 'CONVO_SHARE_TURNS_ENABLED', probe: () => onOff(shareTurnsEnabled()) },
+  // The familiarity mask ships the same way the share turn did: `off` while its series lands, `on`
+  // from the commit that finishes it, both env files following the parser in that same commit.
+  { name: 'CONVO_FAMILIARITY_ENABLED', probe: () => onOff(familiarityEnabled()) },
   { name: 'CONVO_HISTORY_MAX', probe: () => String(convoHistoryMax()) },
   { name: 'OPS_WALLED_URL_HINT', probe: () => onOff(walledUrlHintEnabled()) },
   { name: 'HERMES_SESSION_ROTATION', probe: () => hermesSessionRotation() },
