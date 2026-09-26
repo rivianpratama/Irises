@@ -40,3 +40,5 @@ docs/COMPETITORS.md
 scripts/convergence/.DS_Store
 scripts/convergence/results/multiturn-research-test.md
 /docs/superpowers
+.DS_Store
+bridge/.DS_Store
