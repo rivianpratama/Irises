@@ -58,7 +58,8 @@ function sweepDaily(): void {
   void sweepArchiveCaps().then(n => {
     if (n > 0) console.log(`[retention] archive sweep: ${n} over-cap rows`);
   });
-  // Settled proactive-delivery rows past 7d (the repository owns its own error handling). Pending
+  // Settled proactive-delivery rows past 7d, reminders past 35d (the history a recurring reminder is
+  // voiced against). The repository owns its own error handling. Pending
   // rows are never swept — a quiet-hours deferral must survive until its morning arrives.
   void sweepOldProactive().then(n => {
     if (n > 0) console.log(`[retention] proactive sweep: ${n} settled delivery rows`);

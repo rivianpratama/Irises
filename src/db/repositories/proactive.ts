@@ -34,6 +34,9 @@ export interface ProactiveDeliveryRow {
 
 /** Rows deleted this long after they settled (delivered/failed only). */
 export const PROACTIVE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+/** Settled REMINDER rows live longer: they are the history a recurring reminder is voiced against
+ *  (what the user already heard), and a weekly or monthly job needs its previous run still here. */
+export const PROACTIVE_REMINDER_MAX_AGE_MS = 35 * 24 * 60 * 60 * 1000;
 /** How long an immediate-path row may sit pending before the sweep treats it as crash debris.
  *  Comfortably past the mouth's voice timeout, so a live send is never swept out from under itself. */
 export const PROACTIVE_STUCK_GRACE_MS = Number(process.env.PROACTIVE_STUCK_GRACE_MS || 5 * 60_000);
@@ -161,13 +164,39 @@ export async function listDue(nowMs: number, limit = 20): Promise<ProactiveDeliv
   }
 }
 
-/** Hard-delete SETTLED rows past `maxAgeMs` (called by the daily retention sweep). Pending rows are
- *  never swept — a deferral or a crash-recovery row must survive until it is delivered. */
-export async function sweepOldProactive(maxAgeMs: number = PROACTIVE_MAX_AGE_MS): Promise<number> {
+/**
+ * The reminders this chat already heard, newest first: delivered rows only, so the push being voiced
+ * right now (still pending) is never its own history. A run she chose to skip is delivered too, and
+ * rightly counts: its content was old news. Reads degrade to [] (voiced as if there were no history).
+ */
+export async function listRecentReminders(chatId: string, sinceMs: number, limit: number): Promise<ProactiveDeliveryRow[]> {
   try {
+    const rows = stmt(
+      `SELECT * FROM proactive_deliveries
+       WHERE chat_id = ? AND kind = 'reminder' AND status = 'delivered' AND created_at > ?
+       ORDER BY created_at DESC
+       LIMIT ?`
+    ).all(chatId, sinceMs, limit) as unknown as Row[];
+    return rows.map(fromRow);
+  } catch (error) {
+    logDbError('listRecentReminders', error);
+    return [];
+  }
+}
+
+/** Hard-delete SETTLED rows past `maxAgeMs` (reminders past `reminderMaxAgeMs`), called by the daily
+ *  retention sweep. Pending rows are never swept — a deferral or a crash-recovery row must survive
+ *  until it is delivered. */
+export async function sweepOldProactive(
+  maxAgeMs: number = PROACTIVE_MAX_AGE_MS,
+  reminderMaxAgeMs: number = PROACTIVE_REMINDER_MAX_AGE_MS,
+): Promise<number> {
+  try {
+    const now = Date.now();
     const res = stmt(
-      "DELETE FROM proactive_deliveries WHERE status IN ('delivered','failed') AND created_at <= ?"
-    ).run(Date.now() - maxAgeMs);
+      `DELETE FROM proactive_deliveries WHERE status IN ('delivered','failed')
+         AND ((kind = 'reminder' AND created_at <= ?) OR (kind != 'reminder' AND created_at <= ?))`
+    ).run(now - reminderMaxAgeMs, now - maxAgeMs);
     return Number(res.changes);
   } catch (error) {
     logDbError('sweepOldProactive', error);
