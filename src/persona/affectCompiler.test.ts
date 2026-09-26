@@ -503,7 +503,7 @@ const moodLineIn = (lines: string[]): string | undefined => lines.find(l => l.st
 
 test('the band table opens the mood in layers, field by field', () => {
   assert.deepEqual(MASK_OPENS, {
-    stranger: { moodLine: 'composed', looseness: 'none', feelingsLine: 'asked', slip: false, low: false, spent: false },
+    stranger: { moodLine: 'composed', looseness: 'joyful', feelingsLine: 'asked', slip: false, low: false, spent: false },
     acquaintance: { moodLine: 'positive', looseness: 'joyful', feelingsLine: 'asked', slip: false, low: false, spent: false },
     familiar: { moodLine: 'base', looseness: 'both', feelingsLine: 'full', slip: true, low: true, spent: false },
     close: { moodLine: 'full', looseness: 'both', feelingsLine: 'full', slip: true, low: true, spent: true },
@@ -556,7 +556,7 @@ test('each band renders the mood line its row names, for every core', () => {
     const word = WORD_FOR[core];
     const line = (band: FamiliarityBand) => renderMoodLine({ core, word }, band);
     const base = `- You are ${word} (${core}). ${CORE_DIRECTIVES[core].line}`;
-    assert.equal(line('stranger'), composedLine('stranger', word, core), `${core}: a stranger sees her composed`);
+    assert.equal(line('stranger'), composedLine('stranger', word, core), `${core}: a stranger gets her default self`);
     assert.equal(line('acquaintance'), isPositiveCore(core) ? base : composedLine('acquaintance', word, core),
       `${core}: an acquaintance sees the positive cores and nothing negative`);
     assert.equal(line('familiar'), base, `${core}: familiar sees every core's base line`);
@@ -573,7 +573,7 @@ test('each band renders the mood line its row names, for every core', () => {
 test('the core shifts English looseness only as far as the band opens, and the hour always does', () => {
   const loose = (word: string, band: FamiliarityBand, hour = 12) =>
     compileAffect(carried(word), at(hour), undefined, undefined, band).englishLooseness;
-  assert.deepEqual(BANDS.map(b => loose('excited', b)), [1, 2, 2, 2], 'joyful lifts from acquaintance on');
+  assert.deepEqual(BANDS.map(b => loose('excited', b)), [2, 2, 2, 2], 'joyful lifts at every band: a stranger gets her bubbly default');
   assert.deepEqual(BANDS.map(b => loose('guilty', b)), [1, 1, 0, 0], 'sad drops only from familiar on');
   assert.deepEqual(BANDS.map(b => loose('rejected', b)), [1, 1, 0, 0], 'scared the same');
   assert.deepEqual(BANDS.map(b => loose('content', b, 2)), [2, 2, 2, 2], 'the late-night part passes every band');
@@ -632,15 +632,16 @@ test('rapport landing badly pulls the mask up one band, on the question gate\'s 
   assert.equal(compileMask('close', { ...carried(), rapport: 'nonsense' as unknown as number }), 'close');
 });
 
-test('a first message to a stranger compiles to the composed line with the default word', () => {
+test('a first message to a stranger compiles to her easy default self', () => {
   const lines = renderAffectDirective(compileAffect(undefined, COMPUTED, undefined, undefined, 'stranger'), undefined, COMPUTED);
   assert.deepEqual(lines, [composedLine('stranger', DEFAULT_MOOD.word, DEFAULT_MOOD.core)]);
-  assert.ok(!lines.join('\n').includes('Your easy self'), 'a stranger never gets the cold-start easy line');
+  // A negative core at stranger gets the default-self line, which is bubbly and asking.
+  assert.match(composedLine('stranger', WORD_FOR.sad, 'sad'), /bubbly, the jester, curious about them/);
 });
 
 test('the mask lines are the owner\'s lines, byte for byte, with no digit and no dash', () => {
-  assert.equal(MASK_LINES.stranger, 'You are {word} ({core}). Someone you barely know does not get to see it: composed and pleasant, and none of it reaches the words.');
-  assert.equal(MASK_LINES.acquaintance, 'You are {word} ({core}). You are still getting to know them, so it stays yours: composed and pleasant, and none of it reaches the words.');
+  assert.equal(MASK_LINES.stranger, 'You are {word} ({core}), and someone you barely know does not get to see that part yet. What they get is your default self: bubbly, the jester, curious about them. Questions are how a stranger becomes someone you know, so you ask, sideways and specific, and you react big to what they tell you.');
+  assert.equal(MASK_LINES.acquaintance, 'You are {word} ({core}), and you are still getting to know them, so that part stays yours. What they get is your default self: bubbly, the jester, curious about them, asking and reacting big to what they tell you.');
   assert.equal(FEELINGS_LINE_ASKED, 'Underneath, right now, you are {feelings}. That is the true answer when they ask how you are, said small and in your own words. Unasked, it stays yours.');
   for (const line of [MASK_LINES.stranger, MASK_LINES.acquaintance, FEELINGS_LINE_ASKED]) {
     assert.doesNotMatch(line, /\d/);

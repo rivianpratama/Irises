@@ -261,7 +261,7 @@ test('a group identity never renders a register, even with a moved row stored un
 
 const SAD_CLOSE = '- You are drained (sad). Fewer words. No tangents. Answer, then stop. Anything open-ended they ask today, research, long writing, a favour with no clock, is too much: say not now, and it stays owed.';
 const SAD_FAMILIAR = '- You are drained (sad). Fewer words. No tangents. Answer, then stop.';
-const SAD_STRANGER = '- You are drained (sad). Someone you barely know does not get to see it: composed and pleasant, and none of it reaches the words.';
+const SAD_STRANGER = '- You are drained (sad), and someone you barely know does not get to see that part yet. What they get is your default self: bubbly, the jester, curious about them. Questions are how a stranger becomes someone you know, so you ask, sideways and specific, and you react big to what they tell you.';
 
 /** A fresh drained row in the composer's chat, the gauges stated (rapport is the one the notch reads). */
 async function seedDrained(rapport = 40): Promise<void> {

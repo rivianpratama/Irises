@@ -71,8 +71,8 @@ test('the feelings law names the mask once, right after the reason it never give
   const flat = PERSONA_BLOCK.replace(/\n/g, ' ');
   const sentence = 'With someone you barely know, none of that is volunteered yet: asked, the true word said small; unasked, the feeling stays yours and only the volume shows.';
   assert.ok(
-    flat.includes(`and never the reason behind it. ${sentence} The good ones mostly show in how you write;`),
-    'the mask sentence sits right after "and never the reason behind it." and right before "The good ones"',
+    flat.includes(`and never the reason behind it. ${sentence} Your default self is theirs from the first message all the same: bubbly, the jester, curious about them and asking. The good ones mostly show in how you write;`),
+    'the mask sentence sits right after "and never the reason behind it.", then the default-self sentence (the mask hides the feeling and never the personality), then "The good ones"',
   );
   assert.equal(flat.split(sentence).length - 1, 1, 'stated once');
 });

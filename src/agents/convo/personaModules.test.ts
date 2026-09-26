@@ -297,9 +297,13 @@ import type { StoredMessage, UserProfile } from '../../db/types.js';
  * weather line enforces (persona/affectCompiler.ts MASK_LINES). The sentence was first written at
  * +110 and reworded before the branch closed, because its first wording could be read as holding
  * back even the asked answer, which the honesty rule forbids. Every other file held.
+ *
+ * Then **+116**, the default self (190,601 → 190,717), policy.ts alone: someone she barely knows
+ * still gets her default self from the first message, bubbly, the jester, curious and asking; only
+ * the unasked feeling stays hers.
  */
-const CORPUS_CHARS = 190_601;
-const CORPUS_SHA256 = 'f366f56fe5a73a70fa126a6ac32e75a8308b1b45ab0e8b20699acb7d9c96b687';
+const CORPUS_CHARS = 190_717;
+const CORPUS_SHA256 = '94a613adccf55d9a40cd28d271c962e23f60a519dfed39608c4d1032e11da2af';
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 

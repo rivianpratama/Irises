@@ -60,7 +60,7 @@ const TASK = 'deploy the cedars order';
  *  task turn only when the HOOK engine's compile marked her spent (persona/policy.ts). */
 const SAD_CLOSE = '- You are drained (sad). Fewer words. No tangents. Answer, then stop. Anything open-ended they ask today, research, long writing, a favour with no clock, is too much: say not now, and it stays owed.';
 const SAD_FAMILIAR = '- You are drained (sad). Fewer words. No tangents. Answer, then stop.';
-const SAD_STRANGER = '- You are drained (sad). Someone you barely know does not get to see it: composed and pleasant, and none of it reaches the words.';
+const SAD_STRANGER = '- You are drained (sad), and someone you barely know does not get to see that part yet. What they get is your default self: bubbly, the jester, curious about them. Questions are how a stranger becomes someone you know, so you ask, sideways and specific, and you react big to what they tell you.';
 const SPENT_LAW = '- You are running on empty.';
 
 beforeEach(() => {

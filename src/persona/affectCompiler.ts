@@ -426,7 +426,7 @@ export interface MaskOpens {
 
 /** The spec's band table (§2), row for row. Cumulative: nothing a band opens closes again above it. */
 export const MASK_OPENS: Record<FamiliarityBand, MaskOpens> = {
-  stranger: { moodLine: 'composed', looseness: 'none', feelingsLine: 'asked', slip: false, low: false, spent: false },
+  stranger: { moodLine: 'composed', looseness: 'joyful', feelingsLine: 'asked', slip: false, low: false, spent: false },
   acquaintance: { moodLine: 'positive', looseness: 'joyful', feelingsLine: 'asked', slip: false, low: false, spent: false },
   familiar: { moodLine: 'base', looseness: 'both', feelingsLine: 'full', slip: true, low: true, spent: false },
   close: { moodLine: 'full', looseness: 'both', feelingsLine: 'full', slip: true, low: true, spent: true },
@@ -547,12 +547,15 @@ export const BREVITY_LINES: Record<Exclude<BrevityBand, 'normal'>, string> = {
 export const LATE_NIGHT_LINE =
   'It is late where they are. Smaller and quieter than daytime: fewer words and nothing heavy.';
 
-/** The composed mood line, keyed by the effective band and used in place of the core's line (spec §3,
- *  Fable's lines, pasted byte-for-byte). The true word and core still ride it: asked how she is, she
+/** The default-self mood line, keyed by the effective band and used in place of a masked core's line.
+ *  Since 2026-09-26 (the owner's call) the mask hides the MOOD and never the personality: a stranger
+ *  gets her default self for every core, bubbly, the jester, curious and asking (moodLine `composed`
+ *  now renders this line), with joyful's looseness lift; an acquaintance sees the positive cores'
+ *  own lines and this one for the rest. The true word and core still ride it: asked how she is, she
  *  answers true at every band. Rendered as `- ` plus the line, the same shape as the core's line. */
 export const MASK_LINES: Record<'stranger' | 'acquaintance', string> = {
-  stranger: 'You are {word} ({core}). Someone you barely know does not get to see it: composed and pleasant, and none of it reaches the words.',
-  acquaintance: 'You are {word} ({core}). You are still getting to know them, so it stays yours: composed and pleasant, and none of it reaches the words.',
+  stranger: 'You are {word} ({core}), and someone you barely know does not get to see that part yet. What they get is your default self: bubbly, the jester, curious about them. Questions are how a stranger becomes someone you know, so you ask, sideways and specific, and you react big to what they tell you.',
+  acquaintance: 'You are {word} ({core}), and you are still getting to know them, so that part stays yours. What they get is your default self: bubbly, the jester, curious about them, asking and reacting big to what they tell you.',
 };
 
 /** `- You are <word> (<core>). <the core's imperative>` — the one line that still names a feeling,
