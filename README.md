@@ -13,7 +13,7 @@ Irises texts like a person and hands the heavy work to hermes.
 <br>
 <br>
 
-<a href="LICENSE"><img alt="License MIT" src="https://img.shields.io/badge/license-MIT-000000?style=flat-square"></a>
+<a href="LICENSE"><img alt="License Apache 2.0" src="https://img.shields.io/badge/license-Apache--2.0-000000?style=flat-square"></a>
 <a href="https://nodejs.org/"><img alt="Node 22" src="https://img.shields.io/badge/node-%E2%89%A5%2022.13-000000?style=flat-square&logo=node.js&logoColor=white"></a>
 <a href="https://www.typescriptlang.org/"><img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.x-000000?style=flat-square&logo=typescript&logoColor=white"></a>
 <a href="https://github.com/NousResearch/hermes-agent"><img alt="Engine hermes-agent" src="https://img.shields.io/badge/engine-hermes--agent-000000?style=flat-square"></a>
@@ -460,7 +460,15 @@ Please keep the parts that make Irises one person intact. Those parts are the bu
 
 ## License
 
-Irises is released under the [MIT License](LICENSE).
+Irises is released under the [Apache License 2.0](LICENSE). You can use it, fork it and build commercial products on it.
+
+The license asks one thing in return: credit. If you ship Irises or a work based on it, keep the [NOTICE](NOTICE) file with it. That puts the attribution in your product's open-source notices, alongside the copyright and license notices in the source. Mark the files you changed as changed. The license doesn't grant use of the Irises name except to describe where your work came from.
+
+If your product shows credits, an About screen or an open-source notices page, the line to use is:
+
+> Based on [Irises](https://github.com/rivianpratama/Irises) by Rivian.
+
+To cite Irises in writing, use the **Cite this repository** button on GitHub (it reads [CITATION.cff](CITATION.cff)).
 
 <br>
 
