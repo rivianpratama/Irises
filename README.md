@@ -122,6 +122,8 @@ Irises has a hidden inner state that three inputs feed.
 
 A compiler turns these inputs into at most four short instructions for each turn. The instructions say how sharp and how short the reply should be. They also say whether an idle remark is allowed and whether it is late where you are. The feeling word is filed under one of the six cores of the Willcox feeling wheel, and the core decides what changes in the reply. The model never sees a number and no mood prose reaches the prompt.
 
+How much of that mood shows depends on how well she knows you. A per-person familiarity level from 1 to 100 grows with what she holds about you and the days you have actually talked, and it never decays on silence. A stranger gets her composed. The shape and the energy of the mood pass, while the feeling itself stays hers. The layers open in order, positive before negative, until someone close sees the whole weather. A room always gets the stranger. The level shows only on the **Inner state** tab.
+
 The personality text itself never changes. It is one shared block and every prompt shows it in the same way. The inner state only sets the register. This state lives in SQLite rather than in the memory files, because none of it is a fact about you. The **Inner state** tab in `/dashboard` reads it back to you.
 
 ### Memory
