@@ -5,8 +5,11 @@
 // never counted, and a band change files one receipt.
 process.env.TZ = 'UTC';
 
+import fs from 'node:fs';
+import path from 'node:path';
 import test, { beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { memoriesDir } from '../db/stateDir.js';
 import { resetStorageForTests } from '../db/sqlite.js';
 import { getFamiliarity, saveFamiliarity, type FamiliarityRow } from '../db/repositories/familiarity.js';
 import { upsertFact } from '../db/repositories/memoryMedium.js';
@@ -14,7 +17,7 @@ import { addUserFact, setUserName } from '../db/repositories/profiles.js';
 import { writeMoments } from '../db/repositories/moments.js';
 import { writeSelf, type SelfEntry, type SelfKind } from '../db/repositories/self.js';
 import { saveThreadInventory } from '../db/repositories/threadInventory.js';
-import { defaultThreadInventory, type OpenLoop, type ThreadTheme } from '../persona/threads.js';
+import { defaultThreadInventory, type LoopStatus, type OpenLoop, type ThreadTheme } from '../persona/threads.js';
 import type { MomentEntry } from '../persona/moments.js';
 import { emptyEvidence, FAMILIARITY_SLEW } from '../persona/familiarity.js';
 import { SEED_SOURCE } from './provenance.js';
@@ -57,10 +60,12 @@ function theme(id: string, uptakes: number): ThreadTheme {
     soreAt: 0, uptakes, passes: 0, pushbacks: 0, mintedDistressed: false,
   };
 }
-function loop(id: string): OpenLoop {
+function loop(id: string, status: LoopStatus = 'open'): OpenLoop {
+  const closed = status === 'resolved' || status === 'expired';
   return {
-    id, label: 'the interview', note: 'the thing on thursday', status: 'open',
-    capturedAt: T0, lastSeenAt: T0, offeredAt: 0, askedAt: 0, resolvedAt: 0, passes: 0,
+    id, label: 'the interview', note: 'the thing on thursday', status,
+    capturedAt: T0, lastSeenAt: T0, offeredAt: 0, askedAt: status === 'asked' ? T0 : 0,
+    resolvedAt: closed ? T0 : 0, passes: 0,
   };
 }
 
@@ -75,7 +80,9 @@ async function seedEverything(): Promise<void> {
   await setUserName(H, 'Ada');
   await writeMoments(H, [moment('m1'), moment('m2')], 0, []);
   await writeSelf(H, [selfEntry('s1', 'stance'), selfEntry('s2', 'taste'), selfEntry('s3', 'learned'), selfEntry('s4', 'changed')], 0, []);
-  await saveThreadInventory(H, { ...defaultThreadInventory(), themes: [theme('t1', 1), theme('t2', 0)], loops: [loop('l1')] });
+  // Two loops still pending (open, and asked about) and two that have ended but wait out the prune.
+  const loops = [loop('l1'), loop('l2', 'asked'), loop('l3', 'resolved'), loop('l4', 'expired')];
+  await saveThreadInventory(H, { ...defaultThreadInventory(), themes: [theme('t1', 1), theme('t2', 0)], loops });
 }
 
 // ── the counters ─────────────────────────────────────────────────────────────
@@ -112,6 +119,29 @@ test('the stored level moves at most two points a turn, in either direction', as
   assert.equal((await row(H))?.level, 60 - FAMILIARITY_SLEW);
 });
 
+// A file that fails to read comes back empty and `degraded`, and empty is not evidence of holding
+// less. A directory where the file should be is the stores' own unreadable fixture (moments.test.ts).
+for (const file of ['MOMENTS.md', 'SELF.md']) {
+  test(`an unreadable ${file} holds the level where it was, and the turn still counts`, async () => {
+    // Nothing held and a short tenure: the target sits below the stored thirty, so a clean read falls.
+    await saveFamiliarity(H, { level: 30, turns: 50, activeDays: 10, lastDay: '2026-09-19' });
+    const broken = path.join(memoriesDir(H), file);
+    fs.mkdirSync(broken, { recursive: true });
+    const original = console.error;
+    console.error = () => {};
+    try {
+      await updateFamiliarity(H, { now: T0 });
+    } finally {
+      console.error = original;
+    }
+    assert.deepEqual(await row(H), { level: 30, turns: 51, activeDays: 11, lastDay: '2026-09-20' }, 'held, and counted');
+    // The same pass over a readable store does fall, so the hold was the degraded read.
+    fs.rmSync(broken, { recursive: true, force: true });
+    await updateFamiliarity(H, { now: T0 + 60_000 });
+    assert.equal((await row(H))?.level, 30 - FAMILIARITY_SLEW, 'a clean read slews as usual');
+  });
+}
+
 // ── the receipt ──────────────────────────────────────────────────────────────
 
 test('a band change files one receipt with both bands and the level, and a steady band files none', async () => {
@@ -142,11 +172,11 @@ test('a room is never counted, and with the switch off nobody is', async () => {
 
 // ── the evidence ─────────────────────────────────────────────────────────────
 
-test('what she holds is read off each store, facts counted by who said so', async () => {
+test('what she holds is read off each store, facts counted by who said so and loops only while open', async () => {
   await seedEverything();
   assert.deepEqual(await gatherFamiliarityEvidence(H, { turns: 7, activeDays: 3 }), {
     turns: 7, activeDays: 3, statedFacts: 2, inferredFacts: 2, seededFacts: 1, name: 1,
-    moments: 2, themesTaken: 1, loops: 1, selfEntries: 3,
+    moments: 2, themesTaken: 1, loops: 2, selfEntries: 3,
   });
 });
 

@@ -74,7 +74,7 @@ value and a cap; the caps sum to 100 and the test pins that sum.
 | name known | `profile.name` non-null | 2 | 2 |
 | moments | `MomentsFile.entries.length` | 2 | 12 |
 | themes they picked up | `ThreadInventory.themes` with `uptakes >= 1` | 2 | 8 |
-| open loops | `ThreadInventory.loops.length` | 1 | 4 |
+| open loops | `ThreadInventory.loops` still open or asked (an ended loop waits out the prune) | 1 | 4 |
 | her own SELF entries | `SelfFile.entries` with kind stance, taste or changed (a learned entry is about them, not her) | 2 | 8 |
 
 A store behind a flag that is off contributes zero; she genuinely holds less. The lived-exchange

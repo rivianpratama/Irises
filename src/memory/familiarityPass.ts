@@ -7,9 +7,11 @@
 // slew makes that lag invisible.
 //
 // SERIALIZED PER HANDLE, in this module: a fast follow-up can start its pass before the last one has
-// saved, and two passes that both read the same row would lose a tick. The chain is local on purpose
-// (the shared per-handle lock in db/repositories/memory.ts is taken by some of the reads below, and a
-// pass holding it would deadlock on its own read).
+// saved, and two passes that both read the same row would lose a tick. The chain QUEUES, where its
+// siblings skip: climate and the harvests drop a call that lands while one is in flight, which for a
+// counter would be a turn never counted. And it is local rather than the shared per-handle lock in
+// db/repositories/memory.ts, because nothing here writes what that lock guards, so there is no
+// reason to wait behind the harvests' writes.
 
 import { getFamiliarity, saveFamiliarity } from '../db/repositories/familiarity.js';
 import { getForgetEpoch } from '../db/repositories/memory.js';
@@ -26,6 +28,7 @@ import { partitionMediumRows } from './mediumTerm.js';
 import { LEGACY_FACT_PROV, parseProvenance, type Provenance } from './provenance.js';
 import { isGroupHandle } from './identity.js';
 import { record } from '../diagnostics/trace.js';
+import { reportError } from '../diagnostics/errorLog.js';
 
 /** Filed whenever the stored band changes, with the old band, the new one and the level. */
 export const FAMILIARITY_BAND_LABEL = 'familiarity:band';
@@ -44,6 +47,15 @@ export async function gatherFamiliarityEvidence(
   handle: string,
   counters: { turns: number; activeDays: number },
 ): Promise<FamiliarityEvidence> {
+  return (await gatherHeld(handle, counters)).evidence;
+}
+
+/** The evidence, and whether a file-backed store came back `degraded`: unreadable, and so empty for
+ *  a reason that says nothing about what she holds. */
+async function gatherHeld(
+  handle: string,
+  counters: { turns: number; activeDays: number },
+): Promise<{ evidence: FamiliarityEvidence; degraded: boolean }> {
   const [facts, profile, moments, inventory, self] = await Promise.all([
     listMediumActive(handle, ['fact']),
     getUserProfile(handle),
@@ -56,7 +68,7 @@ export async function gatherFamiliarityEvidence(
   for (const key of Object.keys(medium.facts)) byProv[medium.factProv?.[key] ?? LEGACY_FACT_PROV]++;
   // An unprefixed profile fact is a legacy row, which reads as stated (provenance.ts LEGACY_FACT_PROV).
   for (const fact of profile?.facts ?? []) byProv[parseProvenance(fact).prov ?? LEGACY_FACT_PROV]++;
-  return {
+  const evidence: FamiliarityEvidence = {
     turns: counters.turns,
     activeDays: counters.activeDays,
     statedFacts: byProv.stated,
@@ -65,9 +77,12 @@ export async function gatherFamiliarityEvidence(
     name: profile?.name ? 1 : 0,
     moments: moments?.entries.length ?? 0,
     themesTaken: inventory?.themes.filter(t => t.uptakes >= 1).length ?? 0,
-    loops: inventory?.loops.length ?? 0,
+    // Still open: a resolved or expired loop is kept a week before the prune (threads.ts), and it is
+    // no longer something pending in their life. The live set is threads.ts's own reading of it.
+    loops: inventory?.loops.filter(l => l.status === 'open' || l.status === 'asked').length ?? 0,
     selfEntries: self?.entries.filter(e => HER_OWN.has(e.kind)).length ?? 0,
   };
+  return { evidence, degraded: !!moments?.degraded || !!self?.degraded };
 }
 
 /** One pass: tick, read, slew, save, and receipt a band change. */
@@ -78,8 +93,12 @@ async function familiarityPass(handle: string, opts: { chatId?: string; now?: nu
   const epoch = getForgetEpoch(handle);
   const prior = await getFamiliarity(handle);
   const counters = tickCounters(prior, now);
-  const evidence = await gatherFamiliarityEvidence(handle, counters);
-  const level = slewLevel(prior?.level ?? null, targetLevel(evidence));
+  const { evidence, degraded } = await gatherHeld(handle, counters);
+  // An unreadable store reads as empty, and empty would pull the level down. So a degraded read holds
+  // the level where it was; the turn and the day are still counted, because those are true.
+  const level = degraded
+    ? prior?.level ?? FAMILIARITY_START
+    : slewLevel(prior?.level ?? null, targetLevel(evidence));
   const saved = await saveFamiliarity(handle, { level, ...counters }, { ifForgetEpoch: epoch });
   if (!saved) return;
   const from = bandOf(prior?.level ?? FAMILIARITY_START);
@@ -93,7 +112,7 @@ const chains = new Map<string, Promise<void>>();
 
 /**
  * Count this replied turn for `handle` and move its level. Fire-and-forget at the call site; the
- * returned promise never rejects (a failure is logged and the level stays where it was), and it
+ * returned promise never rejects (a failure is reported and the level stays where it was), and it
  * resolves once THIS handle's queued passes up to and including this one have run. A no-op with the
  * switch off, with no handle, and for a room, which is front stage and never gets a level.
  */
@@ -101,7 +120,16 @@ export function updateFamiliarity(handle: string, opts: { chatId?: string; now?:
   if (!familiarityEnabled() || !handle || isGroupHandle(handle)) return Promise.resolve();
   const next = (chains.get(handle) ?? Promise.resolve())
     .then(() => familiarityPass(handle, opts))
-    .catch(err => { console.warn('[familiarity] pass failed, the level is unchanged', err); });
+    .catch(err => {
+      reportError({
+        source: 'memory',
+        category: 'other',
+        severity: 'warn',
+        message: 'familiarity pass failed, the level is unchanged',
+        err,
+        handle,
+      });
+    });
   chains.set(handle, next);
   void next.then(() => { if (chains.get(handle) === next) chains.delete(handle); });
   return next;
