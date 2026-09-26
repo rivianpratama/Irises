@@ -117,7 +117,10 @@ export interface AffectDirective {
   feelingSlip: string;
   /** How much of all this they get to see: the familiarity band after the rapport notch
    *  (`compileMask`), or `close` when the caller passed no band. The renderer reads it to pick the
-   *  mood line and the feelings line; every field above is already masked by it. */
+   *  mood line and the feelings line. Of the fields above, only the content ones are already masked
+   *  by it (the core's share of `englishLooseness`, `low`, `spent`, `feelingSlip`); the shape and
+   *  energy ones (`bubbleCap`, `brevity`, `hooks`, `question`, `lateNight`) pass every band on
+   *  purpose. */
   mask: FamiliarityBand;
 }
 
@@ -353,6 +356,14 @@ export function capFor(brevity: BrevityBand): 1 | 2 | 3 {
   return brevity === 'minimal' ? 1 : brevity === 'tight' ? 2 : 3;
 }
 
+/** Rapport has been landing badly: the carried gauge sits more than the question band below resting.
+ *  The one line for it, read by the question gate and by the mask's notch alike, so the question
+ *  closing and the mask coming back up arrive on the same point. A garbled gauge reads as the middle
+ *  (`level`), which is not landing badly. */
+function rapportLandingBadly(last: AffectStatus): boolean {
+  return level(last.rapport) < RAPPORT_RESTING - RAPPORT_QUESTION_BAND;
+}
+
 /**
  * The CEILING on her one question, from the four things that can say no.
  *
@@ -379,7 +390,7 @@ export function compileQuestionGate(
   if (CORE_DIRECTIVES[core].question === 'closed') return 'closed';
   if (carried && QUESTION_CLOSED_MODES.includes(carried.intentMode)) return 'closed';
   if (!last) return 'open';
-  if (level(last.rapport) < RAPPORT_RESTING - RAPPORT_QUESTION_BAND) return 'closed';
+  if (rapportLandingBadly(last)) return 'closed';
   // A tired battery and a flat mood no longer close it (2026-09-26, the owner's call): a person who
   // is low still asks things, lazily, and a question that never comes is how a late conversation
   // dies. The `low` flag makes whatever she asks on those turns small instead.
@@ -421,22 +432,25 @@ export const MASK_OPENS: Record<FamiliarityBand, MaskOpens> = {
   close: { moodLine: 'full', looseness: 'both', feelingsLine: 'full', slip: true, low: true, spent: true },
 };
 
-/** The wheel's own split (mood.ts CORE_VALENCE_BAND): a core whose band starts above the midpoint is
- *  a positive one. Read off the chart rather than listed, so the mask opens on the same division the
- *  question ceiling was drawn on. */
+/** The wheel's midpoint, where the positive cores' bands start. */
+const POSITIVE_CORE_FLOOR = 50;
+
+/** The wheel's own split (mood.ts CORE_VALENCE_BAND): a core whose band starts at or above the
+ *  midpoint (POSITIVE_CORE_FLOOR) is a positive one. Read off the chart rather than listed, so the
+ *  mask opens on the same division the question ceiling was drawn on. */
 export function isPositiveCore(core: MoodCore): boolean {
-  return CORE_VALENCE_BAND[core][0] >= 50;
+  return CORE_VALENCE_BAND[core][0] >= POSITIVE_CORE_FLOOR;
 }
 
 /**
  * The band this turn is compiled under: the one the caller read, pulled up a notch when rapport has
- * been landing badly. The threshold is the question gate's own (`RAPPORT_RESTING -
- * RAPPORT_QUESTION_BAND`), on purpose: one line for "landing badly", so the question closing and the
- * mask coming back up arrive on the same point. No carried row is no evidence of anything landing
- * badly, and a garbled rapport reads as the middle, the same rescue the question gate gets.
+ * been landing badly. The threshold is the question gate's own (`rapportLandingBadly`), on purpose:
+ * one line for "landing badly", so the question closing and the mask coming back up arrive on the
+ * same point. No carried row is no evidence of anything landing badly, and a garbled rapport reads
+ * as the middle, the same rescue the question gate gets.
  */
 export function compileMask(familiarity: FamiliarityBand, last: AffectStatus | undefined): FamiliarityBand {
-  if (last && level(last.rapport) < RAPPORT_RESTING - RAPPORT_QUESTION_BAND) return lowerBand(familiarity);
+  if (last && rapportLandingBadly(last)) return lowerBand(familiarity);
   return familiarity;
 }
 

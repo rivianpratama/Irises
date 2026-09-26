@@ -118,7 +118,7 @@ function moodLineOf(prompt: string): string | undefined {
   return weather.split('\n').find(l => l.startsWith('- You are '));
 }
 
-test('with the switch off the weather is the pre-mask block and the ledger is never touched', async () => {
+test('with the switch off the weather is the pre-mask block and the ledger is never written', async () => {
   process.env.CONVO_FAMILIARITY_ENABLED = 'off';
   await saveFamiliarity(SENDER, { level: 5, turns: 3, activeDays: 1, lastDay: '2026-01-05' });
   const chatId = randomUUID();
@@ -164,5 +164,10 @@ test('a room is a stranger whatever its row says, and the pass never writes one'
   await seedSad(chatId);
   const prompt = await turnOn(chatId, clientCtx({ isGroupChat: true, participantNames: ['Sam', 'Ada'], chatName: 'nursery crew' }));
   assert.equal(moodLineOf(prompt), SAD_STRANGER);
+  assert.ok(!prompt.includes(SPENT_LAW), 'the hook engine read the room as a stranger too');
   assert.equal((await getFamiliarity(groupHandle(chatId)))?.turns, 500, 'the room row was not counted');
+  assert.equal(await getFamiliarity(SENDER), null, 'nor was the member who spoke: a room turn is nobody\'s');
+  // Chained per handle, so one more pass waits out any the room turn queued for them: this is the first.
+  await updateFamiliarity(SENDER);
+  assert.equal((await getFamiliarity(SENDER))?.turns, 1, 'no pass was queued for the sender');
 });

@@ -55,8 +55,8 @@ import {
 // forever. `api/memory.ts` ships `mediumPreserved` for the same reason on the same grammar.
 //
 // Every shaper is pure with its clock injected; affect.test.ts covers them. The route is the usual
-// auth + cache wrapper around eight reads of seven stores (the thesis takes two: the head and its
-// revision list).
+// auth + cache wrapper around nine reads of eight stores (the thesis takes two: the head and its
+// revision list), then the familiarity evidence gather.
 //
 // The familiarity row joins them (persona/familiarity.ts): the stored level, which is the one place
 // that number is ever shown, beside the band her replies are actually compiled under. Its evidence is

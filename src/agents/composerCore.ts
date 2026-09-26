@@ -115,7 +115,8 @@ export async function composeWithComposer(args: ComposerCoreArgs): Promise<strin
     handle && relationshipClimateEnabled() && !isGroupHandle(handle)
       ? getRelationshipClimate(handle)
       : Promise.resolve(defaultClimate()),
-    // The climate read's gates, plus the mask's own flag: no identity and a room both skip the read.
+    // The climate read's identity gate, the mask's own flag, and `room` above in place of the group
+    // handle test (the caller's word counts too): no identity and a room both skip the read.
     handle && familiarityOn && !room
       ? getFamiliarity(handle)
       : Promise.resolve(null),

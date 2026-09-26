@@ -1,6 +1,6 @@
 // Run with: npm test   (TZ=UTC, DATA_BACKEND=memory)
 //
-// The Inner-state panel's nine SHAPERS, and nothing else. The route around them is a read of seven
+// The Inner-state panel's ten SHAPERS, and nothing else. The route around them is a read of seven
 // repositories behind the dashboard's own auth + cache, and the client half is a browser string the
 // existing views.test.ts already scans — what is worth pinning here is the arithmetic that turns
 // stored rows into what an operator reads:
@@ -19,7 +19,8 @@
 //   • the rhythm ledger, as the four fields an operator is shown rather than whatever the store
 //     happens to hold;
 //   • the last N `turn:trace` receipts, flattened out of the persisted turn payloads;
-//   • the approvals parked on this person's yes, which nothing here can settle.
+//   • the approvals parked on this person's yes, which nothing here can settle;
+//   • how well she knows them, as the stored level beside the band her replies compile under.
 //
 // Every one of them is pure and takes its clock injected.
 

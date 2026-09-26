@@ -1,11 +1,11 @@
 // Run with: npm test   (TZ=UTC tsx --test — runner pins DATA_BACKEND=memory)
 //
-// The four switches, and the one property that matters about all of them: they parse the way every
+// The five switches, and the one property that matters about all of them: they parse the way every
 // other flag in this repo parses. An operator who has flipped CONVO_TURN_FOCUS_BLOCK knows what
 // `off`, `no` and a typo do here without reading a second doc — and a typo doing something OTHER
 // than off is how a switch gets flipped in the wrong direction during an incident.
 //
-// All four ship default ON now that the share turn's series is whole — the youngest of them spent
+// All five ship default ON now that the share turn's series is whole — the youngest of them spent
 // the build shipping OFF, and this table is where that flip is stated as a fact rather than as a
 // plan. The default is asserted per flag beside the word lists on purpose: the accepted words are
 // identical whichever side a switch ships on, the garbage state is off either way, and the empty

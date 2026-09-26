@@ -1080,15 +1080,16 @@ test('a default climate leaves renderStatusForPrompt byte-identical to no climat
 });
 
 // The familiarity band reaches this block through the one compile. Absent is no mask, which is the
-// pre-mask block byte for byte even on a row where rapport has been landing badly; a band changes the
-// mood line and nothing else in the block.
+// pre-mask block byte for byte even on a row where rapport has been landing badly. On this fixture a
+// band changes the mood line and nothing else in the block, because it carries no feelings: where
+// there are some, stranger and acquaintance also swap the feelings line for its asked-only variant.
 test('no band is the pre-mask weather block, and a band moves only the mood line', () => {
   const state = { last: carried(0, { rapport: 20 }), moodHistory: [] };
   const today = renderStatusForPrompt(state, COMPUTED, movedClimate(), true);
   assert.equal(renderStatusForPrompt(state, COMPUTED, movedClimate(), true, undefined), today);
-  assert.ok(today.includes('- You are hopeful (powerful). A judgment lands flat and certain. Do not explain it.'));
+  assert.ok(today.includes('- You are hopeful (powerful). A judgment lands flat and certain. Do not explain it.'), 'no band: the core\'s own line');
   const stranger = renderStatusForPrompt(state, COMPUTED, movedClimate(), true, 'stranger');
-  assert.ok(stranger.includes('- You are hopeful (powerful). Someone you barely know does not get to see it: composed and pleasant, and none of it reaches the words.'));
+  assert.ok(stranger.includes('- You are hopeful (powerful). Someone you barely know does not get to see it: composed and pleasant, and none of it reaches the words.'), 'stranger: the composed line');
   assert.equal(withoutMoodLine(stranger), withoutMoodLine(today), 'the climate span, the self-note and the tail are the same block');
 });
 

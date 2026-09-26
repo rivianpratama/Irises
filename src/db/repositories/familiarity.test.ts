@@ -33,7 +33,7 @@ test('save then get round-trips the level, the counters and the day, stamped wit
   assert.equal(await saveFamiliarity(h, ROW), true);
   const got = await getFamiliarity(h);
   assert.deepEqual(bare(got), ROW);
-  assert.ok((got?.updatedAt ?? 0) > 0);
+  assert.ok((got?.updatedAt ?? 0) > 0, 'the save stamps its write clock');
   // Upsert, not insert: a second save replaces the row rather than throwing on the key.
   assert.equal(await saveFamiliarity(h, { ...ROW, level: 54, turns: 141 }), true);
   assert.deepEqual(bare(await getFamiliarity(h)), { ...ROW, level: 54, turns: 141 });

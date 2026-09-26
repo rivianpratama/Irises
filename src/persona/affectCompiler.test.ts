@@ -543,7 +543,6 @@ test('no band at all is the pre-mask compile, a low rapport included', () => {
         const last = carried(WORD_FOR[core], { rapport, social_battery });
         const d = compileAffect(last, COMPUTED);
         const tag = `${core} / rapport ${rapport} / battery ${social_battery}`;
-        assert.deepEqual(d, compileAffect(last, COMPUTED, undefined, undefined, undefined), tag);
         assert.equal(d.mask, 'close', `${tag}: the rapport notch only applies to a band someone passed`);
         assert.equal(d.spent, core === 'sad', `${tag}: spent reads as it always did`);
         assert.equal(moodLineIn(renderAffectDirective(d, last, COMPUTED)), `- You are ${WORD_FOR[core]} (${core}). ${fullLine(core)}`, tag);
@@ -636,7 +635,7 @@ test('rapport landing badly pulls the mask up one band, on the question gate\'s 
 test('a first message to a stranger compiles to the composed line with the default word', () => {
   const lines = renderAffectDirective(compileAffect(undefined, COMPUTED, undefined, undefined, 'stranger'), undefined, COMPUTED);
   assert.deepEqual(lines, [composedLine('stranger', DEFAULT_MOOD.word, DEFAULT_MOOD.core)]);
-  assert.ok(!lines.join('\n').includes('Your easy self'));
+  assert.ok(!lines.join('\n').includes('Your easy self'), 'a stranger never gets the cold-start easy line');
 });
 
 test('the mask lines are the owner\'s lines, byte for byte, with no digit and no dash', () => {
