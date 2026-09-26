@@ -95,7 +95,7 @@ acquaintance and never gets a musing.
   only when evidence shrinks (a cap eviction, a superseded fact, a pruned theme).
 
 **When it is computed.** In the post-reply pass in `src/agents/convo/shared.ts`, beside
-`updateRelationshipClimate` and under the same group skip: tick the counters, read the stores,
+`updateRelationshipClimate` and under the same group skip: read the stores, tick the counters,
 compute the target, slew, save. A first row is seeded from tenure before the tick: active days are
 the whole days since the profile's first-seen date, capped at `FAMILIARITY_SEED_DAYS_CAP = 30`, and
 turns are the thread inventory's harvested-turn count; today's turn and day are then counted on
