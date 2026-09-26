@@ -78,13 +78,14 @@ value and a cap; the caps sum to 100 and the test pins that sum.
 | her own SELF entries | `SelfFile.entries` with kind stance, taste or changed (a learned entry is about them, not her) | 2 | 8 |
 
 A store behind a flag that is off contributes zero; she genuinely holds less. The lived-exchange
-half still climbs, so a memory-flags-off install reaches the middle of the scale on tenure alone.
+half still climbs, but it tops out at 40, so a person she holds nothing about stays an
+acquaintance and never gets a musing.
 
 **Three bounds.**
 
 - **Pace ceiling.** `target = min(evidence, 10 + 3 * active_days, 100)`. A daily texter can reach
-  acquaintance around day 5, familiar around day 14 and close around day 30, and only if the
-  evidence is there. A fact dump in one evening hits the ceiling.
+  acquaintance from day 5, familiar from day 14 and close from day 22, and only if the evidence is
+  there; the ceiling itself reaches 100 on day 30. A fact dump in one evening hits the ceiling.
 - **Slew.** The stored level moves toward `target` by at most `FAMILIARITY_SLEW = 2` a turn, in
   either direction. A new row starts at 1. Bands cannot flap turn to turn.
 - **No clock decay.** Nothing reads elapsed time. The level falls only when evidence shrinks
@@ -115,9 +116,11 @@ read nor written.
 
 ### 2. The mask: one stage inside the compiler
 
-`compileAffect` gains a `familiarity: FamiliarityBand` argument (default `close`, so every
-existing caller and test is unchanged). The directive gains `mask: FamiliarityBand`, the effective
-band after the rapport notch, which the renderer reads to pick lines. `renderStatusForPrompt`
+`compileAffect` gains an optional `familiarity: FamiliarityBand` argument. Absent means no mask:
+the close band with no rapport notch, which is the compile exactly as it stood, so every existing
+caller and test is unchanged and the flag-off path stays byte-identical even when rapport is low.
+An explicit `close` can be notched down to familiar. The directive gains `mask: FamiliarityBand`,
+the effective band after the rapport notch, which the renderer reads to pick lines. `renderStatusForPrompt`
 (`src/persona/status.ts`) takes the same argument and hands it through, and the two call sites in
 `src/agents/convo/client.ts` pass the same value, so the weather block and the hook engine can
 never disagree about the band. The gauges, the reported word and the drift are untouched at every
@@ -154,6 +157,12 @@ same shape as the charter's AI-honesty rule: upfront if asked, never volunteered
 
 **Cold start.** No affect row at stranger compiles to the composed line with the default word, not
 to "your easy self".
+
+**The Composer.** `renderStatusForComposer` (`src/persona/status.ts`) renders the same mood line
+for relayed and proactive replies, so it takes the same optional band and applies the same rapport
+notch. `src/agents/composerCore.ts` reads the stored row beside its climate read, under the same
+flag and room gates, and passes the band; it never writes the ledger. A stranger's delegated answer
+is relayed composed.
 
 **Musings.** `src/memory/musings.ts` gains `familiarityAllows(band)`: familiar or close. The
 sweep reads the stored row for the handle; a missing row is stranger. Skip reason `familiarity`.
@@ -197,8 +206,9 @@ the primacy edge. The `persona` budget pin in `src/agents/convo/promptPolicy.ts`
 ### 6. Flag and rollout
 
 `CONVO_FAMILIARITY_ENABLED`, in `src/persona/featureFlags.ts`, the house four-line shape. Off:
-no ledger read or write, no musings gate, band `close` everywhere, and the prompt byte-identical
-to today. Documented in `.env.example` and `deploy/app.env` for `scripts/flagDocs.test.ts`.
+no ledger read or write, no musings gate, no band passed anywhere (the pre-mask compile), and the
+per-turn prompt byte-identical to today. The one exception is the persona sentence in §4:
+`policy.ts` is a leaf that reads no env, so that sentence ships unconditionally in the flip commit. Documented in `.env.example` and `deploy/app.env` for `scripts/flagDocs.test.ts`.
 
 During the series the empty default reads OFF; the last commit flips it to ON. Every intermediate
 build is inert.
@@ -214,7 +224,10 @@ build is inert.
   default argument leaves every existing case unchanged.
 - `src/memory/musings.test.ts` (new): `familiarityAllows` and the sweep's `familiarity` skip
   reason.
-- Repository test for the `familiarity` table: tick, same-day guard, slew, save, degrade.
+- Repository test for the `familiarity` table: save, degrade, forget fence, clear. The tick, the
+  same-day guard and the slew are pure and are pinned in `familiarity.test.ts` and the pass test.
+- Composer test: a stranger's relay carries the composed line; no band leaves the Composer block
+  byte-identical; a low rapport notches the band there too.
 - Dashboard api test for the payload row.
 - `scripts/flagDocs.test.ts` rows; `promptPolicy.test.ts` pins for `weather` and `persona`.
 - Always `DATA_BACKEND=memory` for any test run (2026-09-25 incident).
