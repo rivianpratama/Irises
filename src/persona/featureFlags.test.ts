@@ -33,9 +33,9 @@ const FLAGS: Array<{ name: string; read: () => boolean; dflt: boolean }> = [
   // The share turn: default OFF through the whole series that built it, ON from the commit that
   // finished it. The body never changed across that flip, which is what made the flip one line.
   { name: 'CONVO_SHARE_TURNS_ENABLED', read: shareTurnsEnabled, dflt: true },
-  // The familiarity mask: default OFF for the length of the series that builds it, so every
-  // half-built commit is inert; the last commit of that series flips this row with the parser.
-  { name: 'CONVO_FAMILIARITY_ENABLED', read: familiarityEnabled, dflt: false },
+  // The familiarity mask: default OFF through the series that built it, ON from the commit that
+  // finished it. The body never changed across the flip, which is what made it one line.
+  { name: 'CONVO_FAMILIARITY_ENABLED', read: familiarityEnabled, dflt: true },
 ];
 
 for (const flag of FLAGS) {
@@ -62,7 +62,7 @@ for (const flag of FLAGS) {
   });
 }
 
-test('the four read four different vars — one flip never moves another feature', () => {
+test('the five read five different vars — one flip never moves another feature', () => {
   const saved = FLAGS.map(f => process.env[f.name]);
   try {
     for (const flag of FLAGS) {
