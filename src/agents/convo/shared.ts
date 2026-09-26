@@ -3498,6 +3498,10 @@ async function dispatchToolCalls(calls: LlmToolCall[], effects: TurnEffects, ctx
         addressHint: input.address ? String(input.address) : undefined,
         dealHint: input.deal_ref ? String(input.deal_ref) : undefined,
         replyToMessageId: chatContext?.incomingMessageId,
+        // Stamped where the task is BUILT, so it serialises into a parked approval and survives the
+        // rebuild: the yes can come from the asker's own chat, where the approving turn is not a
+        // group turn, while the relay still goes back to this room (index.ts keeps a backstop).
+        ...(chatContext.isGroupChat ? { room: true } : {}),
         attempt,
         // This turn's comprehension score rides the task (in-flight, never persisted) so the
         // composer can caveat a look launched from a shaky read.

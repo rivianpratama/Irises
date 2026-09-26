@@ -45,7 +45,9 @@ export interface OpsTask {
   replyToMessageId?: string; // inbound message that triggered this task; the follow-up threads back to it
   // True when the look was delegated out of a group chat; absent is a 1:1. `agentHandle` stays the
   // member who asked (their prefs, their research stash), so this is what tells the composed relay
-  // it speaks in front of a room. Stamped at the one kickoff site (index.ts), like replyToMessageId.
+  // it speaks in front of a room. Stamped where the delegation is built (convo/shared.ts), so a
+  // parked action approved from the asker's own chat keeps it; the kickoff site (index.ts) stamps it
+  // too, as a backstop.
   room?: boolean;
   // Set ONLY by the orchestrator's retry leg — the id of the task this is a cheap second attempt
   // at, after a transient lane blip (an llm_error / rate limit, not a research failure). It does
