@@ -6,7 +6,7 @@ description: >
   and suppresses hermes's own reply for those chats. Fronting is opt-in per chat/platform via
   IRISES_FRONT patterns; everything else flows to hermes untouched.
 author: Irises
-license: MIT
+license: Apache-2.0
 requires_env:
   - IRISES_BRIDGE_TOKEN
 optional_env:
